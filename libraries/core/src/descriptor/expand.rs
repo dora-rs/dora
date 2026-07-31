@@ -631,11 +631,16 @@ fn expand_module_node(
     Ok((final_nodes, output_map))
 }
 
-/// Substitute `${_param.name}` references in a node's args and inject params
-/// into the node's env map as `EnvValue::String` entries.
+/// Substitute `${_param.name}` references in node args and inject params into
+/// the node's env map as `EnvValue::String` entries.
 fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
     // Substitute in args
     if let Some(ref mut args) = node.args {
+        *args = substitute_params_in_str(args, params);
+    }
+    if let Some(ref mut custom) = node.custom
+        && let Some(ref mut args) = custom.args
+    {
         *args = substitute_params_in_str(args, params);
     }
 
@@ -1556,6 +1561,60 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --verbose"));
+    }
+
+    #[test]
+    fn expand_params_in_custom_args() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "custom_args_module.yml",
+            r#"
+module:
+  name: custom_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: runner
+    custom:
+      path: runner.py
+      source: Local
+      args: --speed ${_param.speed} --verbose
+      inputs:
+        data: _mod/data
+      outputs:
+        - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: custom_args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let runner = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runner")
+            .unwrap();
+        assert_eq!(
+            runner.custom.as_ref().unwrap().args.as_deref(),
+            Some("--speed 2.0 --verbose")
+        );
     }
 
     // ---- Feature 5: module-level build ----
