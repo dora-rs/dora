@@ -1476,10 +1476,13 @@ impl DoraNode {
         // place: pre-write the UInt8 IPC header into the (shared-memory) sample,
         // then let the caller write their bytes straight into the data region —
         // zero payload copies (and the SHM sample is moved into zenoh's `put`).
-        let total = ipc_encode::uint8_ipc_len(data_len)
+        // Prepare the UInt8 IPC header once, then size and fill the sample from
+        // it — avoids rebuilding the layout + IPC headers for the length query.
+        let prepared = ipc_encode::PreparedUint8Ipc::new(data_len)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-        let mut sample = self.allocate_data_sample(total)?;
-        let offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_len)
+        let mut sample = self.allocate_data_sample(prepared.byte_len())?;
+        let offset = prepared
+            .encode_header_into(&mut sample)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
         data(&mut sample[offset..offset + data_len]);
 
@@ -1563,10 +1566,13 @@ impl DoraNode {
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
 
-        let sample = match ipc_encode::ipc_fast_path_len(&arrow_array) {
-            Some(len) => {
-                let mut s = self.allocate_data_sample(len)?;
-                ipc_encode::encode_ipc_into(&arrow_array, &mut s)
+        let sample = match ipc_encode::PreparedIpc::new(&arrow_array) {
+            Some(prepared) => {
+                // Prepare once: size the sample from the prepared layout, then
+                // encode into it — avoids rebuilding the layout + IPC headers.
+                let mut s = self.allocate_data_sample(prepared.byte_len())?;
+                prepared
+                    .encode_into(&mut s)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 s
             }
