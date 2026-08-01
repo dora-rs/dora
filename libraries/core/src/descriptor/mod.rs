@@ -396,9 +396,17 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         path.to_owned()
     };
 
-    // Search path within current working directory
-    if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
-        Ok(abs_path)
+    // Search path within current working directory. Deliberately NOT
+    // `canonicalize()`: that follows symlinks, and a virtualenv's
+    // `bin/python` is a symlink whose *location* is what CPython uses to
+    // discover `pyvenv.cfg`. Resolving it before exec runs the base
+    // interpreter with no venv, so imports that work in a shell fail
+    // under dora (dora-rs/dora#2918). `path::absolute` only prepends the
+    // cwd and drops `.` components; symlinks and `..` are left for the
+    // kernel to resolve at exec time, which matches shell behavior.
+    let joined = working_dir.join(&path);
+    if joined.exists() {
+        std::path::absolute(&joined).map_err(Into::into)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
     } else if which::which("uv").is_ok() {
@@ -702,6 +710,44 @@ nodes:
         assert!(
             result.is_err(),
             "expected Err for a binary that exists nowhere, got {result:?}"
+        );
+    }
+
+    /// dora-rs/dora#2918: resolving a node path must NOT follow symlinks.
+    ///
+    /// A virtualenv's `bin/python` is a symlink to the base interpreter,
+    /// and CPython's venv discovery hinges on that: it looks for
+    /// `pyvenv.cfg` relative to the path it was *invoked* as, not the
+    /// symlink's target. Canonicalizing before exec therefore runs the
+    /// base interpreter with no venv — imports that work in a shell
+    /// (`.venv/bin/python -c "import numpy"`) fail under dora with
+    /// `ModuleNotFoundError`.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_preserves_symlinks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("base-interpreter.bin");
+        std::fs::write(&target, b"x").unwrap();
+        let link = tmp.path().join("venv-python.bin");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // relative source resolved against the working dir
+        let resolved = resolve_path("venv-python.bin", tmp.path()).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "resolve_path followed the symlink: {} — venv discovery \
+             (pyvenv.cfg) is keyed off the symlink location, so execing \
+             the target bypasses the venv",
+            resolved.display()
+        );
+
+        // absolute source (the shape from the issue: `path: /…/.venv/bin/python`)
+        let resolved = resolve_path(link.to_str().unwrap(), Path::new("/")).unwrap();
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "absolute symlink path was canonicalized: {}",
+            resolved.display()
         );
     }
 
