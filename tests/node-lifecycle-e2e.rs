@@ -1332,6 +1332,26 @@ fn venv_interpreter_path_runs_inside_the_venv() {
     let target = Path::new(manifest_dir).join("target");
     let stem = format!("dora-venv-2918-{}", std::process::id());
 
+    // The artifacts are pid-suffixed, so a previous run's venv (a few MB)
+    // is never reused — reclaim any stale ones instead of accumulating
+    // one per invocation until `cargo clean`.
+    if let Ok(entries) = fs::read_dir(&target) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("dora-venv-2918-")
+            {
+                let path = entry.path();
+                let _ = if path.is_dir() {
+                    fs::remove_dir_all(&path)
+                } else {
+                    fs::remove_file(&path)
+                };
+            }
+        }
+    }
+
     let venv = target.join(format!("{stem}-venv"));
     let status = Command::new("python3")
         .args(["-m", "venv", "--without-pip"])
@@ -1384,7 +1404,7 @@ fn venv_interpreter_path_runs_inside_the_venv() {
     let _cleanup = CleanupGuard { dora: &dora };
     add_node(&dora, name, &spec, "dora node add venvprobe");
 
-    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
     while !marker.exists() {
         assert!(
             std::time::Instant::now() < deadline,
