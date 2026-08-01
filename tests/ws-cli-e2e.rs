@@ -1181,6 +1181,9 @@ mod real_dataflow {
     /// which is all this test observes, and `ClusterGuard` tears the
     /// dataflow down. The idle is bounded (120s) so a probe orphaned by
     /// teardown ordering self-reaps.
+    ///
+    /// Unix-only: relies on `python3` on PATH and on direct exec of a
+    /// shebang-less `.py` probe, both of which differ on Windows.
     #[test]
     #[cfg(unix)]
     fn e2e_start_env_flag_reaches_daemon_spawned_nodes() {
@@ -1213,9 +1216,13 @@ mod real_dataflow {
             &probe,
             concat!(
                 "import os, time\n",
-                "with open(os.environ['PROBE_OUT'], 'w') as f:\n",
+                "out = os.environ['PROBE_OUT']\n",
+                // write-then-rename: the poller checks existence, so the
+                // final name must never be observable half-written
+                "with open(out + '.tmp', 'w') as f:\n",
                 "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
                 "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "os.replace(out + '.tmp', out)\n",
                 "time.sleep(120)\n",
             ),
         )
@@ -1258,7 +1265,9 @@ mod real_dataflow {
         while !marker.exists() {
             assert!(
                 std::time::Instant::now() < deadline,
-                "probe never wrote its marker — the node was not spawned"
+                "probe never wrote its marker — the node was not spawned \
+                 (is `python3` installed? the probe is a python script the \
+                 daemon spawns)"
             );
             std::thread::sleep(Duration::from_millis(200));
         }
@@ -1273,6 +1282,106 @@ mod real_dataflow {
             lines.get(1).copied(),
             Some("node-wins"),
             "node-level env: must still win over --env; got {content:?}"
+        );
+    }
+
+    /// The `dora run` half of #2919, which reaches the daemon by a
+    /// different route: `run` builds a `descriptor_override` and hands it
+    /// to the in-process `Daemon::run_dataflow`, rather than serializing
+    /// a `ControlRequest::Start`. That wiring — the empty-env
+    /// passthrough, the hub-resolved-vs-disk base, and the merge itself —
+    /// is not touched by the `start` test above.
+    ///
+    /// Runs local-only: no coordinator, no daemon process, no port 6013,
+    /// so it cannot contend with the networked tests in this file.
+    /// `--stop-after` bounds it; the probe writes its marker at spawn and
+    /// then idles until stopped.
+    ///
+    /// Unix-only for the same reasons as the `start` test.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_run_env_flag_reaches_locally_spawned_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-runenv-2919-")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let stem = format!("dora-runenv-2919-{}", std::process::id());
+        let probe = target.join(format!("{stem}-probe.py"));
+        let marker = target.join(format!("{stem}-out.txt"));
+        let yaml = target.join(format!("{stem}.yml"));
+        std::fs::write(
+            &probe,
+            concat!(
+                "import os, time\n",
+                "out = os.environ['PROBE_OUT']\n",
+                "with open(out + '.tmp', 'w') as f:\n",
+                "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
+                "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "os.replace(out + '.tmp', out)\n",
+                "time.sleep(120)\n",
+            ),
+        )
+        .expect("failed to write probe");
+        std::fs::write(
+            &yaml,
+            format!(
+                "env:\n  \
+                   E2919_VAR: from-yaml\n\
+                 nodes:\n  \
+                 - id: probe\n    \
+                   path: {probe}\n    \
+                   env:\n      \
+                     PROBE_OUT: {marker}\n      \
+                     E2919_NODE: node-wins\n    \
+                   outputs:\n      - value\n",
+                probe = probe.display(),
+                marker = marker.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        let output = Command::new(&dora)
+            .args([
+                "run",
+                yaml.to_str().unwrap(),
+                "--stop-after",
+                "12s",
+                "--env",
+                "E2919_VAR=from-cli",
+                "--env",
+                "E2919_NODE=cli-loses",
+            ])
+            .output()
+            .expect("failed to run dora run");
+
+        let content = std::fs::read_to_string(&marker).unwrap_or_else(|e| {
+            panic!(
+                "probe never wrote its marker ({e}) — is `python3` installed? \
+                 dora run stderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("from-cli"),
+            "--env must override the dataflow-level env: block under `dora run`; got {content:?}"
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("node-wins"),
+            "node-level env: must still win over --env under `dora run`; got {content:?}"
         );
     }
 

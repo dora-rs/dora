@@ -21,6 +21,7 @@ use crate::{
     session::DataflowSession,
 };
 use dora_core::build::LogLevelOrStdout;
+use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_daemon::{Daemon, LogDestination, flume};
 use eyre::Context;
 use std::{path::PathBuf, time::Duration};
@@ -114,6 +115,9 @@ pub struct Run {
     /// under `dora start` (where nodes inherit the DAEMON's environment
     /// instead). Applies at spawn time only; `build:` commands are
     /// unaffected.
+    /// Values must survive the descriptor encoding verbatim: a literal
+    /// `$` is refused (the receiving process would expand it) and so are
+    /// numeric-looking values that would be coerced.
     #[clap(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
 }
@@ -178,6 +182,10 @@ impl Executable for Run {
 
         let dataflow_path =
             resolve_dataflow(self.dataflow.clone()).context("could not resolve dataflow")?;
+        // Validate `--env` BEFORE building: a typo should fail in
+        // milliseconds, not after a full dataflow build.
+        let env_overrides = crate::env_overrides::parse_env_overrides(&self.env)?;
+
         build_dataflow(BuildConfig {
             dataflow: dataflow_path.to_string_lossy().into_owned(),
             uv: self.uv,
@@ -192,6 +200,23 @@ impl Executable for Run {
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
+
+        // `--env` merges into the dataflow-level `env:` of the descriptor
+        // handed to the in-process daemon. The hub-resolved descriptor
+        // (when present) is the mandatory base — the on-disk YAML still
+        // has unresolved `hub:` references. Without `--env`, pass the
+        // session state through unchanged.
+        let descriptor_override = if env_overrides.is_empty() {
+            dataflow_session.resolved_dataflow.clone()
+        } else {
+            let mut descriptor = match dataflow_session.resolved_dataflow.clone() {
+                Some(resolved) => resolved,
+                None => Descriptor::blocking_read(&dataflow_path)
+                    .context("failed to read dataflow descriptor for --env")?,
+            };
+            crate::env_overrides::apply_env_overrides(&mut descriptor, env_overrides);
+            Some(descriptor)
+        };
 
         let node_filters = match &self.log_filter {
             Some(filter) => parse_log_filter(filter).map_err(|e| eyre::eyre!(e))?,
@@ -226,24 +251,6 @@ impl Executable for Run {
         // `run_dataflow` takes `&Path`, so the returned future borrows
         // non-`'static`; move an owned `PathBuf` (plus the other Run
         // fields) into the spawned task so the future is `'static`.
-        // `--env` merges into the dataflow-level `env:` of the descriptor
-        // handed to the in-process daemon. The hub-resolved descriptor
-        // (when present) is the mandatory base — the on-disk YAML still
-        // has unresolved `hub:` references. Without `--env`, pass the
-        // session state through unchanged.
-        let env_overrides = crate::env_overrides::parse_env_overrides(&self.env)?;
-        let descriptor_override = if env_overrides.is_empty() {
-            dataflow_session.resolved_dataflow.clone()
-        } else {
-            let mut descriptor = match dataflow_session.resolved_dataflow.clone() {
-                Some(resolved) => resolved,
-                None => <dora_message::descriptor::Descriptor as dora_core::descriptor::DescriptorExt>::blocking_read(&dataflow_path)
-                    .context("failed to read dataflow descriptor for --env")?,
-            };
-            crate::env_overrides::apply_env_overrides(&mut descriptor, env_overrides);
-            Some(descriptor)
-        };
-
         let dataflow_path_for_daemon = dataflow_path.clone();
         let uv = self.uv;
         let stop_after = self.stop_after;

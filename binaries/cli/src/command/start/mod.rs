@@ -14,9 +14,9 @@ use crate::{
     ws_client::WsSession,
 };
 use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage};
+use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, descriptor::EnvValue};
 use eyre::Context;
-use std::{io::IsTerminal, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, io::IsTerminal, net::SocketAddr, path::PathBuf};
 use uuid::Uuid;
 
 mod attach;
@@ -55,6 +55,11 @@ pub struct Start {
     /// NOT inherit this CLI invocation's environment — `--env` is the
     /// supported way to parameterize a run without editing the YAML.
     /// Applies at spawn time only; `build:` commands are unaffected.
+    /// Values must survive the descriptor encoding verbatim: a literal
+    /// `$` is refused (the receiving process would expand it) and so are
+    /// numeric-looking values that would be coerced. They are also
+    /// persisted with the dataflow in the coordinator's state store and
+    /// visible in `ps` — prefer a node `env:` block for secrets.
     #[clap(long = "env", value_name = "KEY=VALUE")]
     env: Vec<String>,
 }
@@ -122,7 +127,7 @@ fn start_dataflow(
     coordinator_socket: SocketAddr,
     uv: bool,
     debug: bool,
-    env_overrides: std::collections::BTreeMap<String, dora_message::descriptor::EnvValue>,
+    env_overrides: BTreeMap<String, EnvValue>,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let working_dir = dataflow

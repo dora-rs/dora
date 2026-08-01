@@ -11,23 +11,25 @@
 //!
 //! Precedence (most specific wins):
 //! node `env:`  >  `--env`  >  dataflow-level `env:` in the YAML.
-//! The node-over-global half is the existing [`merge_env`] behavior in
-//! `dora-core`; this module implements the `--env`-over-global half.
+//! The node-over-global half is the existing (private) `merge_env`
+//! behavior in `dora-core`'s descriptor resolution; this module
+//! implements the `--env`-over-global half.
 //!
 //! `--env` applies at *spawn* time only. Neither `dora start` nor
 //! `dora run` re-runs `build:` commands, so build-time environment
 //! still comes from node/dataflow `env:` at `dora build` time.
-//!
-//! [`merge_env`]: dora_core::descriptor
 
 use std::collections::BTreeMap;
 
 use dora_message::descriptor::{Descriptor, EnvValue};
-use eyre::{Result, bail};
+use eyre::{Context, Result, bail};
 
 /// Parse repeated `--env KEY=VALUE` flags. The value may itself contain
 /// `=` (only the first one splits). A repeated key keeps the last
 /// occurrence, matching `docker run -e` behavior.
+///
+/// Values are rejected unless they survive the descriptor's wire
+/// encoding unchanged — see [`ensure_wire_safe`].
 pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue>> {
     let mut overrides = BTreeMap::new();
     for flag in flags {
@@ -37,9 +39,57 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
         if key.is_empty() {
             bail!("invalid --env `{flag}`: empty key");
         }
+        ensure_wire_safe(key, value)?;
         overrides.insert(key.to_string(), EnvValue::String(value.to_string()));
     }
     Ok(overrides)
+}
+
+/// Reject a `--env` value that the descriptor's wire encoding would not
+/// deliver verbatim.
+///
+/// `EnvValue` is an untagged enum whose variants deserialize through
+/// `with_expand_envs`, so a value is re-interpreted *every time the
+/// descriptor is deserialized* — in the coordinator, then again in the
+/// daemon. Two consequences, both verified against `dora-message`:
+///
+/// * **`$` is expanded in the receiving process.** A wire value of
+///   `${DORA_AUTH_TOKEN}` becomes the *coordinator's or daemon's* token
+///   by the time a node sees it, which would let `--env` read host
+///   secrets that `strip_denied_env` exists to keep out of nodes (that
+///   guard matches key names, so an innocuous key sails through).
+///   YAML `env:` values are expanded CLI-side when the descriptor is
+///   read, so they reach the wire already substituted — `--env` is the
+///   only path that can put an unexpanded `$` on it.
+/// * **Numeric-looking strings are coerced.** `1.10` arrives as `1.1`,
+///   `01234` as `1234`, because the untagged enum tries `Bool`,
+///   `Integer` and `Float` before `String`.
+///
+/// Escaping cannot fix either: the value is deserialized twice, so a
+/// `$$` that survives one hop is expanded on the next. Rejecting is the
+/// honest option — silently handing a node a different value than the
+/// operator typed is worse than refusing to start.
+fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
+    let encoded = serde_json::to_string(&EnvValue::String(value.to_string()))
+        .with_context(|| format!("failed to encode --env `{key}`"))?;
+    match serde_json::from_str::<EnvValue>(&encoded) {
+        Ok(decoded) if decoded.to_string() == value => Ok(()),
+        Ok(decoded) => bail!(
+            "--env `{key}={value}` would not survive the dataflow descriptor's \
+             encoding: nodes would receive `{decoded}` instead.\n\n  \
+             hint: values containing `$` are expanded by the process that \
+             receives the descriptor, and numeric-looking values are coerced \
+             (`1.10` -> `1.1`). Set this one in the node's `env:` block in the \
+             dataflow YAML instead."
+        ),
+        Err(err) => bail!(
+            "--env `{key}={value}` cannot be represented in the dataflow \
+             descriptor: {err}.\n\n  \
+             hint: a literal `$` cannot be carried through `--env` — the \
+             descriptor expands it on receipt. Set this one in the node's \
+             `env:` block in the dataflow YAML instead."
+        ),
+    }
 }
 
 /// Merge `--env` overrides into the descriptor's dataflow-level `env:`
@@ -112,6 +162,76 @@ mod tests {
         assert_eq!(parsed["FOO"], EnvValue::String("second".into()));
     }
 
+    /// The security property: a `$` that reaches the wire is expanded by
+    /// whichever process deserializes the descriptor next (coordinator,
+    /// then daemon), so `--env X=${DORA_AUTH_TOKEN}` would hand a node
+    /// the DAEMON's token. `strip_denied_env` cannot catch it — that
+    /// guard matches key names, and the key here is innocuous.
+    #[test]
+    fn rejects_values_that_would_be_env_expanded_on_the_wire() {
+        // Unset variable: expansion fails outright on decode.
+        let result = parse_env_overrides(&flags(&["LEAK=${DORA_TEST_2919_UNSET}"]));
+        let err = result.expect_err("a wire-expanded value must be rejected");
+        assert!(
+            err.to_string().contains("LEAK"),
+            "the error must name the offending key: {err}"
+        );
+
+        // Set variable: expansion SUCCEEDS and silently substitutes — the
+        // real exfiltration shape, where the deserializing daemon holds
+        // the secret. Rejected because the decoded value differs from
+        // what the operator typed. `PATH` stands in for the secret; it is
+        // set in every environment this runs in.
+        let result = parse_env_overrides(&flags(&["LEAK=${PATH}"]));
+        assert!(
+            result.is_err(),
+            "a value that expands to the receiving process's env must be \
+             rejected, got {result:?}"
+        );
+    }
+
+    /// A literal `$` cannot be carried either: escaping does not compose
+    /// across two deserialization hops, so this is refused rather than
+    /// silently mangled.
+    #[test]
+    fn rejects_values_containing_a_literal_dollar() {
+        let result = parse_env_overrides(&flags(&["PW=p$ssw0rd"]));
+        assert!(result.is_err(), "expected Err, got {result:?}");
+    }
+
+    /// The untagged `EnvValue` enum tries Bool/Integer/Float before
+    /// String, so numeric-looking values are coerced in transit. Better
+    /// to refuse than to hand a node `1.1` when the operator typed
+    /// `1.10`.
+    #[test]
+    fn rejects_values_the_wire_encoding_would_coerce() {
+        for value in ["VERSION=1.10", "ZIP=01234", "SCI=1e5"] {
+            let result = parse_env_overrides(&flags(&[value]));
+            assert!(
+                result.is_err(),
+                "`{value}` is silently coerced on the wire and must be rejected, got {result:?}"
+            );
+        }
+    }
+
+    /// Values that DO survive the encoding must still be accepted —
+    /// including ones that merely look risky.
+    #[test]
+    fn accepts_values_that_survive_the_wire_encoding() {
+        let parsed = parse_env_overrides(&flags(&[
+            "PLAIN=hello world",
+            "PATHISH=/usr/local/bin:/usr/bin",
+            "UNICODE=café ☕",
+            "DASHED=--level=debug",
+            "TRUEISH=truthy",
+            "EMPTY=",
+        ]))
+        .expect("these values are wire-safe");
+        assert_eq!(parsed["PLAIN"], EnvValue::String("hello world".into()));
+        assert_eq!(parsed["UNICODE"], EnvValue::String("café ☕".into()));
+        assert_eq!(parsed["EMPTY"], EnvValue::String(String::new()));
+    }
+
     #[test]
     fn no_overrides_leaves_descriptor_untouched() {
         let mut descriptor: Descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
@@ -143,6 +263,30 @@ nodes: []
             env["FROM_YAML"],
             EnvValue::String("yaml".into()),
             "non-conflicting yaml keys must survive"
+        );
+    }
+
+    /// The premise behind the merge PLACEMENT in `dora start`: applying
+    /// `--env` changes the descriptor's source fingerprint, which is
+    /// compared against `dora build`-time state for hub dataflows and
+    /// feeds `invalidate_if_build_inputs_changed`. Hoisting the merge
+    /// above those checks would therefore reject hub dataflows as
+    /// "changed since build" and clobber the cached build id on every
+    /// `--env` run — this pins that the ordering constraint is real, not
+    /// just asserted in a comment.
+    #[test]
+    fn applying_overrides_changes_the_descriptor_fingerprint() {
+        let mut descriptor: Descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
+        let before = serde_yaml::to_string(&descriptor).unwrap();
+        apply_env_overrides(
+            &mut descriptor,
+            parse_env_overrides(&flags(&["FOO=bar"])).unwrap(),
+        );
+        let after = serde_yaml::to_string(&descriptor).unwrap();
+        assert_ne!(
+            before, after,
+            "if --env did not alter the descriptor, the merge-placement \
+             constraint in `dora start` would be vacuous"
         );
     }
 
