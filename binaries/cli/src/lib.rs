@@ -6,6 +6,7 @@ use std::{
 
 mod command;
 mod common;
+mod env_overrides;
 mod formatting;
 pub mod output;
 pub mod session;

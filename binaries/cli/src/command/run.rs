@@ -105,6 +105,17 @@ pub struct Run {
     /// --hub-override`; `dora run` is always local, so it applies directly.
     #[clap(long = "hub-override", value_name = "PKG=PATH")]
     pub hub_override: Vec<String>,
+    /// Set an environment variable for every node of this dataflow
+    /// (repeatable). Merges into the dataflow-level `env:` block;
+    /// node-level `env:` entries still win on conflict.
+    ///
+    /// Under `dora run` nodes also inherit this process's environment,
+    /// but `--env` is the portable spelling that behaves identically
+    /// under `dora start` (where nodes inherit the DAEMON's environment
+    /// instead). Applies at spawn time only; `build:` commands are
+    /// unaffected.
+    #[clap(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
 }
 
 impl Run {
@@ -123,6 +134,7 @@ impl Run {
             lockfile: None,
             working_dir: None,
             hub_override: Vec::new(),
+            env: Vec::new(),
         }
     }
 
@@ -214,6 +226,24 @@ impl Executable for Run {
         // `run_dataflow` takes `&Path`, so the returned future borrows
         // non-`'static`; move an owned `PathBuf` (plus the other Run
         // fields) into the spawned task so the future is `'static`.
+        // `--env` merges into the dataflow-level `env:` of the descriptor
+        // handed to the in-process daemon. The hub-resolved descriptor
+        // (when present) is the mandatory base — the on-disk YAML still
+        // has unresolved `hub:` references. Without `--env`, pass the
+        // session state through unchanged.
+        let env_overrides = crate::env_overrides::parse_env_overrides(&self.env)?;
+        let descriptor_override = if env_overrides.is_empty() {
+            dataflow_session.resolved_dataflow.clone()
+        } else {
+            let mut descriptor = match dataflow_session.resolved_dataflow.clone() {
+                Some(resolved) => resolved,
+                None => <dora_message::descriptor::Descriptor as dora_core::descriptor::DescriptorExt>::blocking_read(&dataflow_path)
+                    .context("failed to read dataflow descriptor for --env")?,
+            };
+            crate::env_overrides::apply_env_overrides(&mut descriptor, env_overrides);
+            Some(descriptor)
+        };
+
         let dataflow_path_for_daemon = dataflow_path.clone();
         let uv = self.uv;
         let stop_after = self.stop_after;
@@ -231,9 +261,8 @@ impl Executable for Run {
                 stop_after,
                 debug,
                 working_dir_override,
-                // hub: dataflows run from the desugared descriptor stored at
-                // build time (the on-disk YAML has unresolved references)
-                dataflow_session.resolved_dataflow,
+                // hub-resolved descriptor and/or `--env` merge — see above
+                descriptor_override,
             )
             .await
         });

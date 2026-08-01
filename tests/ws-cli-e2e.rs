@@ -1164,6 +1164,118 @@ mod real_dataflow {
         }
     }
 
+    /// dora-rs/dora#2919: `dora start --env KEY=VAL` must reach
+    /// daemon-spawned nodes with the documented precedence:
+    /// node `env:` > `--env` > dataflow-level `env:`.
+    ///
+    /// Under `dora start` nodes inherit the DAEMON's environment, not
+    /// the CLI invocation's, so `--env` is the only run-parameterization
+    /// channel that doesn't require editing the YAML. One probe pins the
+    /// whole chain: the dataflow YAML sets `E2919_VAR: from-yaml`
+    /// (--env must beat it) and the node sets `E2919_NODE: node-wins`
+    /// (--env must lose to it).
+    ///
+    /// The probe is a plain python script, not a dora node — it writes
+    /// the two variables to a marker and idles. It never subscribes, so
+    /// the dataflow sits in startup; the marker is written at spawn,
+    /// which is all this test observes, and `ClusterGuard` tears the
+    /// dataflow down. The idle is bounded (120s) so a probe orphaned by
+    /// teardown ordering self-reaps.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_start_env_flag_reaches_daemon_spawned_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        // pid-suffixed artifacts are never reused — reclaim stale ones
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-env-2919-")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let stem = format!("dora-env-2919-{}", std::process::id());
+        let probe = target.join(format!("{stem}-probe.py"));
+        let marker = target.join(format!("{stem}-out.txt"));
+        let yaml = target.join(format!("{stem}.yml"));
+        // concat!, not a `\`-continued literal: Rust's line continuation
+        // strips leading whitespace, which would flatten the indented
+        // python block and crash the probe with an IndentationError.
+        std::fs::write(
+            &probe,
+            concat!(
+                "import os, time\n",
+                "with open(os.environ['PROBE_OUT'], 'w') as f:\n",
+                "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
+                "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "time.sleep(120)\n",
+            ),
+        )
+        .expect("failed to write probe");
+        std::fs::write(
+            &yaml,
+            format!(
+                "env:\n  \
+                   E2919_VAR: from-yaml\n\
+                 nodes:\n  \
+                 - id: probe\n    \
+                   path: {probe}\n    \
+                   env:\n      \
+                     PROBE_OUT: {marker}\n      \
+                     E2919_NODE: node-wins\n    \
+                   outputs:\n      - value\n",
+                probe = probe.display(),
+                marker = marker.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        let status = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--env",
+                "E2919_VAR=from-cli",
+                "--env",
+                "E2919_NODE=cli-loses",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(status.success(), "dora start --env failed");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "probe never wrote its marker — the node was not spawned"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let content = std::fs::read_to_string(&marker).expect("failed to read marker");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("from-cli"),
+            "--env must override the dataflow-level env: block; got {content:?}"
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("node-wins"),
+            "node-level env: must still win over --env; got {content:?}"
+        );
+    }
+
     /// Full lifecycle: start -> list (shows dataflow) -> stop -> destroy
     #[test]
     fn e2e_start_list_stop() {

@@ -1,0 +1,177 @@
+//! `--env KEY=VALUE` support for `dora start` / `dora run`
+//! (dora-rs/dora#2919).
+//!
+//! With `dora run`, nodes historically inherited the CLI process
+//! environment; with `dora start` they inherit the *daemon's*, so a
+//! `MYVAR=x dora start …` invocation silently configured nothing. The
+//! portable spelling for both commands is `--env`, implemented as a
+//! CLI-side merge into the dataflow-level `env:` block of the descriptor
+//! that is already shipped to the coordinator/daemon — no protocol
+//! change, and the daemon-side env denylist still applies.
+//!
+//! Precedence (most specific wins):
+//! node `env:`  >  `--env`  >  dataflow-level `env:` in the YAML.
+//! The node-over-global half is the existing [`merge_env`] behavior in
+//! `dora-core`; this module implements the `--env`-over-global half.
+//!
+//! `--env` applies at *spawn* time only. Neither `dora start` nor
+//! `dora run` re-runs `build:` commands, so build-time environment
+//! still comes from node/dataflow `env:` at `dora build` time.
+//!
+//! [`merge_env`]: dora_core::descriptor
+
+use std::collections::BTreeMap;
+
+use dora_message::descriptor::{Descriptor, EnvValue};
+use eyre::{Result, bail};
+
+/// Parse repeated `--env KEY=VALUE` flags. The value may itself contain
+/// `=` (only the first one splits). A repeated key keeps the last
+/// occurrence, matching `docker run -e` behavior.
+pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue>> {
+    let mut overrides = BTreeMap::new();
+    for flag in flags {
+        let Some((key, value)) = flag.split_once('=') else {
+            bail!("invalid --env `{flag}`: expected KEY=VALUE");
+        };
+        if key.is_empty() {
+            bail!("invalid --env `{flag}`: empty key");
+        }
+        overrides.insert(key.to_string(), EnvValue::String(value.to_string()));
+    }
+    Ok(overrides)
+}
+
+/// Merge `--env` overrides into the descriptor's dataflow-level `env:`
+/// block, with the overrides winning on key conflict. Per-node `env:`
+/// entries still win over the result — that is `merge_env`'s existing
+/// contract in `dora-core`, exercised end to end by the e2e test.
+///
+/// Callers in `dora start` must apply this AFTER the dataflow-session
+/// fingerprint checks: both the hub `fingerprint_source` comparison and
+/// `invalidate_if_build_inputs_changed` hash the descriptor (env
+/// included), so an earlier merge would reject hub dataflows as
+/// "changed since build" and spuriously invalidate the cached build id
+/// on every `--env` change.
+pub fn apply_env_overrides(descriptor: &mut Descriptor, overrides: BTreeMap<String, EnvValue>) {
+    if overrides.is_empty() {
+        // Don't turn `env: None` into `Some({})` — a no-op invocation
+        // must leave the descriptor byte-identical.
+        return;
+    }
+    descriptor
+        .env
+        .get_or_insert_with(Default::default)
+        .extend(overrides);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_core::descriptor::DescriptorExt;
+
+    fn flags(items: &[&str]) -> Vec<String> {
+        items.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn parses_key_value_pairs() {
+        let parsed = parse_env_overrides(&flags(&["FOO=bar", "SEED=42"])).unwrap();
+        assert_eq!(parsed["FOO"], EnvValue::String("bar".into()));
+        assert_eq!(parsed["SEED"], EnvValue::String("42".into()));
+    }
+
+    #[test]
+    fn value_may_contain_equals() {
+        let parsed = parse_env_overrides(&flags(&["OPTS=--level=debug"])).unwrap();
+        assert_eq!(parsed["OPTS"], EnvValue::String("--level=debug".into()));
+    }
+
+    #[test]
+    fn empty_value_is_allowed() {
+        // `--env FOO=` explicitly sets an empty string, mirroring shells.
+        let parsed = parse_env_overrides(&flags(&["FOO="])).unwrap();
+        assert_eq!(parsed["FOO"], EnvValue::String(String::new()));
+    }
+
+    #[test]
+    fn missing_equals_is_rejected() {
+        let result = parse_env_overrides(&flags(&["JUSTAKEY"]));
+        assert!(result.is_err(), "expected Err, got {result:?}");
+    }
+
+    #[test]
+    fn empty_key_is_rejected() {
+        let result = parse_env_overrides(&flags(&["=value"]));
+        assert!(result.is_err(), "expected Err, got {result:?}");
+    }
+
+    #[test]
+    fn repeated_key_keeps_the_last_occurrence() {
+        let parsed = parse_env_overrides(&flags(&["FOO=first", "FOO=second"])).unwrap();
+        assert_eq!(parsed["FOO"], EnvValue::String("second".into()));
+    }
+
+    #[test]
+    fn no_overrides_leaves_descriptor_untouched() {
+        let mut descriptor: Descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
+        assert!(descriptor.env.is_none());
+        apply_env_overrides(&mut descriptor, BTreeMap::new());
+        assert!(
+            descriptor.env.is_none(),
+            "a no-op --env must not materialize an empty env block"
+        );
+    }
+
+    #[test]
+    fn overrides_win_over_dataflow_level_env() {
+        let yaml = b"
+env:
+  FROM_YAML: yaml
+  SHARED: yaml
+nodes: []
+"
+        .to_vec();
+        let mut descriptor: Descriptor = Descriptor::parse(yaml).unwrap();
+        let overrides = parse_env_overrides(&flags(&["SHARED=cli", "CLI_ONLY=cli"])).unwrap();
+        apply_env_overrides(&mut descriptor, overrides);
+
+        let env = descriptor.env.as_ref().unwrap();
+        assert_eq!(env["SHARED"], EnvValue::String("cli".into()));
+        assert_eq!(env["CLI_ONLY"], EnvValue::String("cli".into()));
+        assert_eq!(
+            env["FROM_YAML"],
+            EnvValue::String("yaml".into()),
+            "non-conflicting yaml keys must survive"
+        );
+    }
+
+    /// The full precedence chain, through the same `merge_env` the
+    /// daemon-side spawn uses: node `env:` > `--env` > dataflow `env:`.
+    #[test]
+    fn node_env_still_wins_after_overrides() {
+        let yaml = b"
+env:
+  VAR: yaml
+nodes:
+  - id: probe
+    path: probe.bin
+    env:
+      VAR: node
+    outputs:
+      - value
+"
+        .to_vec();
+        let mut descriptor: Descriptor = Descriptor::parse(yaml).unwrap();
+        let overrides = parse_env_overrides(&flags(&["VAR=cli"])).unwrap();
+        apply_env_overrides(&mut descriptor, overrides);
+
+        let resolved = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = &resolved[&"probe".to_string().into()];
+        assert_eq!(
+            node.env.as_ref().unwrap()["VAR"],
+            EnvValue::String("node".into()),
+            "node-level env must win over --env"
+        );
+    }
+}
