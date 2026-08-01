@@ -1307,6 +1307,127 @@ fn crash_before_subscribe_does_not_kill_the_startup_cohort() {
     );
 }
 
+/// dora-rs/dora#2918: a node whose `path:` is a virtualenv interpreter
+/// must actually run inside that venv.
+///
+/// A venv's `bin/python` is a symlink, and CPython finds `pyvenv.cfg`
+/// relative to the path it was *invoked* as — that is the entire venv
+/// mechanism. `resolve_path` used to `canonicalize()` before exec, which
+/// resolved the symlink and ran the base interpreter instead: imports
+/// that worked in a shell (`.venv/bin/python -c "import numpy"`) failed
+/// under dora with `ModuleNotFoundError`, and the documented escape
+/// hatch for giving a dynamic node an explicit environment didn't work.
+///
+/// The probe is not a dora node (that would need dora-rs installed into
+/// the scratch venv — network, plus the PyPI/workspace drift from
+/// #1710). It writes `sys.prefix` to a marker and exits; the daemon
+/// marks it Failed, which post-#2933 harms nothing, and the marker tells
+/// us which interpreter really ran. The venv is created with
+/// `--without-pip`, so this needs only a bare `python3`.
+#[test]
+#[cfg(unix)]
+fn venv_interpreter_path_runs_inside_the_venv() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let target = Path::new(manifest_dir).join("target");
+    let stem = format!("dora-venv-2918-{}", std::process::id());
+
+    // The artifacts are pid-suffixed, so a previous run's venv (a few MB)
+    // is never reused — reclaim any stale ones instead of accumulating
+    // one per invocation until `cargo clean`.
+    if let Ok(entries) = fs::read_dir(&target) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("dora-venv-2918-")
+            {
+                let path = entry.path();
+                let _ = if path.is_dir() {
+                    fs::remove_dir_all(&path)
+                } else {
+                    fs::remove_file(&path)
+                };
+            }
+        }
+    }
+
+    let venv = target.join(format!("{stem}-venv"));
+    let status = Command::new("python3")
+        .args(["-m", "venv", "--without-pip"])
+        .arg(&venv)
+        .status()
+        .expect("failed to run python3 -m venv");
+    assert!(status.success(), "python3 -m venv failed");
+    let venv_python = venv.join("bin/python");
+    assert!(
+        venv_python
+            .symlink_metadata()
+            .expect("venv python missing")
+            .file_type()
+            .is_symlink(),
+        "test premise: {} should be a symlink (venvs on unix)",
+        venv_python.display()
+    );
+
+    let probe = target.join(format!("{stem}-probe.py"));
+    let marker = target.join(format!("{stem}-prefix.txt"));
+    let _ = fs::remove_file(&marker);
+    fs::write(
+        &probe,
+        "import sys, os\nopen(os.environ['PROBE_OUT'], 'w').write(sys.prefix)\n",
+    )
+    .expect("failed to write probe script");
+
+    // The probe interpreter itself is not a `.py` path, so the yaml's
+    // `path:` is the venv python and the script rides in `args:` —
+    // exactly the shape from the issue report.
+    let spec = target.join(format!("{stem}.yml"));
+    fs::write(
+        &spec,
+        format!(
+            "id: venvprobe\n\
+             path: {python}\n\
+             args: {probe}\n\
+             env:\n  \
+               PROBE_OUT: {marker}\n\
+             outputs:\n  - value\n",
+            python = venv_python.display(),
+            probe = probe.display(),
+            marker = marker.display(),
+        ),
+    )
+    .expect("failed to write node spec");
+
+    let name = "rustlc-venv";
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+    add_node(&dora, name, &spec, "dora node add venvprobe");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !marker.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "probe never ran — check `dora logs {name} --node venvprobe`"
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    let prefix = fs::read_to_string(&marker).expect("failed to read marker");
+    // Compare on canonicalized forms: sys.prefix reflects how CPython
+    // resolved the venv dir, which may differ from our path in /tmp
+    // symlinkage (e.g. /tmp vs /private/tmp on macOS).
+    let got = Path::new(prefix.trim())
+        .canonicalize()
+        .unwrap_or_else(|_| std::path::PathBuf::from(prefix.trim()));
+    let want = venv.canonicalize().expect("venv path should canonicalize");
+    assert_eq!(
+        got, want,
+        "the spawned node ran OUTSIDE its venv: sys.prefix is {got:?} instead of the \
+         venv — the interpreter symlink was resolved before exec, bypassing pyvenv.cfg \
+         discovery (#2918)"
+    );
+}
+
 /// Removing a node that has not yet subscribed must release the startup
 /// barrier — the `RemoveNode` wiring, which no other test covers.
 ///

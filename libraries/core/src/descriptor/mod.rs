@@ -396,9 +396,10 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         path.to_owned()
     };
 
-    // Search path within current working directory
-    if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
-        Ok(abs_path)
+    // Search path within current working directory.
+    let joined = working_dir.join(&path);
+    if joined.exists() {
+        absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
     } else if which::which("uv").is_ok() {
@@ -474,13 +475,37 @@ fn confine(candidate: &Path, root: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Make an existing executable path absolute WITHOUT following symlinks.
+///
+/// Deliberately not `canonicalize()`: that resolves symlinks, and a
+/// virtualenv's `bin/python` is a symlink whose *location* is what
+/// CPython uses to discover `pyvenv.cfg`. Resolving it before exec runs
+/// the base interpreter with no venv, so imports that work in a shell
+/// fail under dora (dora-rs/dora#2918). `path::absolute` only prepends
+/// the cwd and drops `.` components; symlinks and `..` are left for the
+/// kernel to resolve at exec time, which matches shell behavior.
+///
+/// Errors if the path does not exist (`exists()` traverses symlinks, so
+/// a dangling link counts as missing — same outcome canonicalize gave).
+/// Shared by every [`resolve_path`] branch so the no-symlink-resolution
+/// contract cannot regress in one branch while the tests exercise
+/// another.
+fn absolutize_preserving_symlinks(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("path {} does not exist", path.display());
+    }
+    std::path::absolute(path)
+        .with_context(|| format!("failed to make path {} absolute", path.display()))
+}
+
 /// Resolve `path` against the `uv`-managed environment by running
 /// `uv run which <path>`, returning an absolute path.
 ///
 /// Unlike a fire-and-forget spawn, this waits for the child, checks its
-/// exit status (so a missing binary surfaces as an error), and canonicalizes
-/// the captured location so the result matches the absolute-path contract of
-/// the other [`resolve_path`] branches.
+/// exit status (so a missing binary surfaces as an error), and verifies
+/// the captured location exists — without resolving symlinks, which
+/// would reintroduce the venv bypass fixed for the working-dir branch
+/// (dora-rs/dora#2918).
 fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
     let which = if cfg!(windows) { "where" } else { "which" };
     let output = Command::new("uv")
@@ -500,9 +525,8 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| eyre::eyre!("`uv run {which} {}` produced no output", path.display()))?;
-    PathBuf::from(resolved)
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize uv-resolved path {resolved}"))
+    absolutize_preserving_symlinks(Path::new(resolved))
+        .with_context(|| format!("uv-resolved path {resolved} is not usable"))
 }
 
 pub trait NodeExt {
@@ -702,6 +726,77 @@ nodes:
         assert!(
             result.is_err(),
             "expected Err for a binary that exists nowhere, got {result:?}"
+        );
+    }
+
+    /// dora-rs/dora#2918: resolving a node path must NOT follow symlinks.
+    ///
+    /// A virtualenv's `bin/python` is a symlink to the base interpreter,
+    /// and CPython's venv discovery hinges on that: it looks for
+    /// `pyvenv.cfg` relative to the path it was *invoked* as, not the
+    /// symlink's target. Canonicalizing before exec therefore runs the
+    /// base interpreter with no venv — imports that work in a shell
+    /// (`.venv/bin/python -c "import numpy"`) fail under dora with
+    /// `ModuleNotFoundError`.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_preserves_symlinks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("base-interpreter.bin");
+        std::fs::write(&target, b"x").unwrap();
+        let link = tmp.path().join("venv-python.bin");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // relative source resolved against the working dir
+        let resolved = resolve_path("venv-python.bin", tmp.path()).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "resolve_path followed the symlink: {} — venv discovery \
+             (pyvenv.cfg) is keyed off the symlink location, so execing \
+             the target bypasses the venv",
+            resolved.display()
+        );
+
+        // absolute source (the shape from the issue: `path: /…/.venv/bin/python`)
+        let resolved = resolve_path(link.to_str().unwrap(), Path::new("/")).unwrap();
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "absolute symlink path was canonicalized: {}",
+            resolved.display()
+        );
+
+        // `..` components survive too: they are resolved by the kernel at
+        // exec time, AFTER any symlinked directories — which is the
+        // shell-matching semantic. A lexical "cleanup" that collapses
+        // them would resolve differently through symlinked dirs.
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let resolved = resolve_path("sub/../venv-python.bin", tmp.path()).unwrap();
+        assert!(
+            resolved.ends_with("sub/../venv-python.bin"),
+            "`..` was normalized away: {}",
+            resolved.display()
+        );
+    }
+
+    /// A dangling symlink is "missing": `exists()` traverses the link, so
+    /// resolution falls through to the uv/$PATH branches and ultimately
+    /// errors — the same outcome the old `canonicalize()` failure gave.
+    /// Pins the branch boundary so a switch to `symlink_metadata()`
+    /// (which would treat the dangling link as present and exec a
+    /// guaranteed-ENOENT path) doesn't slip in silently.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_treats_dangling_symlink_as_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let link = tmp.path().join("dangling-2918-regression.bin");
+        std::os::unix::fs::symlink(tmp.path().join("no-such-target"), &link).unwrap();
+
+        let result = resolve_path("dangling-2918-regression.bin", tmp.path());
+        assert!(
+            result.is_err(),
+            "a dangling symlink must not resolve (nothing on uv/$PATH matches \
+             this name either), got {result:?}"
         );
     }
 

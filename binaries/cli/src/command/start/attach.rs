@@ -51,6 +51,15 @@ pub fn attach_dataflow(
                             .wrap_err_with(|| {
                                 format!("failed to resolve node source `{}`", python_source.source)
                             })?;
+                        // Canonicalize for the WATCH MAP only: `notify`
+                        // backends (FSEvents in particular) report real
+                        // paths, and the lookup below is a plain `==` on
+                        // the event path. Since #2918 `resolve_path` no
+                        // longer canonicalizes (exec must preserve venv
+                        // symlinks), so a symlinked or `..`-containing
+                        // source would silently never match its own
+                        // modification events without this.
+                        let path = path.canonicalize().unwrap_or(path);
                         node_path_lookup
                             .insert(path, (dataflow_id, node.id.clone(), Some(op.id.clone())));
                     }
