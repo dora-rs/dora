@@ -1287,9 +1287,15 @@ impl Node {
                             let _ = bound.call_method1("_ipc_close", (slot.gpu_buf,));
                         }
                     } else if slot.gpu_va != 0 {
+                        // Host-registered mapping (effective_as_cuda branch):
+                        // must cudaHostUnregister before munmap.  _unregister_host
+                        // requires the original host pointer (shmem base), not the
+                        // device VA returned by cudaHostGetDevicePointer — passing
+                        // the device VA makes cudaHostUnregister fail and leaks the
+                        // pin over an address range that then gets munmap'd.
                         if let Ok(helpers) = get_cuda_helpers(py) {
                             let bound = helpers.bind(py);
-                            let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
+                            let _ = bound.call_method1("_unregister_host", (slot.host_base,));
                         }
                     }
                     // Drop slot → munmap
@@ -2074,11 +2080,13 @@ impl Node {
                     dtoh_copy_ok = false;
                 }
                 if !dtoh_copy_ok {
-                    if !is_pinned {
-                        if let Ok(helpers) = get_cuda_helpers(py) {
-                            let bound = helpers.bind(py);
-                            let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
-                        }
+                    // The matching `_register_host` above is unconditional (it
+                    // runs whenever `!receiver_is_cuda`), so the unregister must
+                    // be too — gating it on `!is_pinned` would leak the pin if
+                    // `should_pin` is ever tuned to pin CUDA sources.
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
                     }
                     shmem.set_owner(true);
                     eyre::bail!(
