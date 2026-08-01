@@ -2295,12 +2295,17 @@ impl Daemon {
                         }
                     }
 
-                    // Mark as pending
                     if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
-                    } else {
-                        dataflow.pending_nodes.insert(node_id.clone());
                     }
+                    // Deliberately NOT enrolled in `pending_nodes`: this
+                    // node is not part of the descriptor the dataflow
+                    // started from, so it must neither gate that
+                    // cohort's barrier nor inherit its failures.
+                    // Enrolling it meant a crash here was broadcast as
+                    // the subscribe result of unrelated nodes, and a
+                    // node that never subscribed could stall startup
+                    // outright (dora-rs/dora#2917).
 
                     // Insert the running node
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
@@ -2464,6 +2469,56 @@ impl Daemon {
                     dataflow.descriptor.nodes.retain(|n| n.id != node_id);
                     Ok(())
                 })();
+
+                // Outside the closure because it is async. Why removal
+                // has to drive the barrier at all: see
+                // `PendingNodes::handle_node_removal`.
+                let result = match result {
+                    Err(err) => Err(err),
+                    Ok(()) => {
+                        let mut logger = self.logger.for_dataflow(dataflow_id);
+                        // The closure above already resolved this id, and
+                        // nothing awaits in between, so a miss here is a
+                        // bug rather than a race — report it instead of
+                        // returning success like the closure's own
+                        // `no running dataflow` arm would.
+                        match self.running.get_mut(&dataflow_id) {
+                            Some(dataflow) => {
+                                let status = dataflow
+                                    .pending_nodes
+                                    .handle_node_removal(
+                                        &node_id,
+                                        &mut self.coordinator_sender,
+                                        &self.clock,
+                                        &mut dataflow.cascading_error_causes,
+                                        &mut logger,
+                                    )
+                                    .await;
+                                match status {
+                                    Ok(DataflowStatus::AllNodesReady)
+                                        if !dataflow.dataflow_started =>
+                                    {
+                                        logger
+                                            .log(
+                                                LogLevel::Info,
+                                                None,
+                                                Some("daemon".into()),
+                                                "all nodes are ready after node removal, \
+                                                 starting dataflow",
+                                            )
+                                            .await;
+                                        dataflow.start(&self.events_tx, &self.clock).await
+                                    }
+                                    Ok(_) => Ok(()),
+                                    Err(err) => Err(err),
+                                }
+                            }
+                            None => Err(eyre!(
+                                "dataflow `{dataflow_id}` disappeared while removing `{node_id}`"
+                            )),
+                        }
+                    }
+                };
 
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "RemoveNode failed: {err:?}");

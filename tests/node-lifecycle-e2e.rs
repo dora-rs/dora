@@ -795,11 +795,11 @@ fn write_stop_delay_yml(file_stem: &str, delay_ms: u64, exit_code: i32) -> StopD
     StopDelaySpec { yml, marker }
 }
 
-/// Run `dora node add` for the `filter` node from `spec`. Returns once
+/// Run `dora node add` for the node described by `spec`. Returns once
 /// the CLI call completes, without waiting for the node to come up, so
 /// a caller can observe state that is only true in the moments right
 /// after the add.
-fn add_filter(dora: &str, name: &str, spec: &Path, label: &str) {
+fn add_node(dora: &str, name: &str, spec: &Path, label: &str) {
     let (ok, _, stderr) = run_capture(
         Command::new(dora).args([
             "node",
@@ -830,7 +830,7 @@ fn wait_for_filter_pid(dora: &str, name: &str, label: &str) -> String {
 /// Add the `filter` node from `spec`, then wait for it to report
 /// `Running` and return its pid.
 fn add_filter_and_wait(dora: &str, name: &str, spec: &Path, label: &str) -> String {
-    add_filter(dora, name, spec, label);
+    add_node(dora, name, spec, label);
     wait_for_filter_pid(dora, name, label)
 }
 
@@ -964,7 +964,7 @@ fn hot_swap_survives_predecessor_exit_after_readd() {
         "dora node remove filter",
     );
     assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
-    add_filter(&dora, name, &spec.yml, "dora node re-add filter");
+    add_node(&dora, name, &spec.yml, "dora node re-add filter");
 
     // Prove the window this test exists to cover was actually open: the
     // predecessor must still be alive at the moment the re-add returns,
@@ -1125,6 +1125,278 @@ fn hot_swap_survives_predecessor_exit_before_readd() {
         "`dora node list` reports filter Running, but `dora stop` blames it for \
          the removed incarnation's exit.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+}
+
+/// A binary that exits non-zero immediately without ever connecting to
+/// the daemon — the "crashed at import" shape from dora-rs/dora#2917.
+///
+/// `false(1)` rather than a fixture crate: it needs to do nothing at
+/// all, and adding another workspace member would put another nested
+/// `cargo build` on the critical path of this already-slow CI job.
+#[cfg(unix)]
+fn never_subscribes_binary() -> &'static str {
+    ["/usr/bin/false", "/bin/false"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+        .expect("no `false` binary found at /usr/bin/false or /bin/false")
+}
+
+/// Write a `dora node add --from-yaml` spec for an arbitrary id/path.
+#[cfg(unix)]
+fn write_node_yml(file_stem: &str, id: &str, path: &str) -> std::path::PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let yml = dir.join(format!("dora-{file_stem}-{}.yml", std::process::id()));
+    fs::write(
+        &yml,
+        format!("id: {id}\npath: {path}\noutputs:\n  - value\n"),
+    )
+    .expect("failed to write node spec");
+    yml
+}
+
+/// Regression guard for dora-rs/dora#2917: one node that dies before
+/// subscribing must not fail an unrelated node's `Node()` init.
+///
+/// `PendingNodes` is a dataflow-wide *startup* barrier. When a node
+/// exits before subscribing it lands in `exited_before_subscribe`, and
+/// `PendingNodes::answer_subscribe_requests` hands every waiting
+/// subscriber one shared `Err` naming that node. That is correct while
+/// the dataflow is starting — if a node dies then, nothing can start.
+///
+/// Nodes added later *used to* join the same barrier via
+/// `DaemonCoordinatorEvent::AddNode`, so the error reached nodes that
+/// had nothing to do with it. They are no longer enrolled, and only
+/// members of the startup cohort inherit its failures.
+///
+/// This pins the *sticky* variant rather than the concurrent race the
+/// issue reported, because it is deterministic: `exited_before_subscribe`
+/// is only ever pushed to, never cleared, so a single crashed node
+/// poisons every later `dora node add` on that dataflow for as long as
+/// it runs. The reporter's workaround (sequence the adds) does not help
+/// here — the crash and the healthy add are already fully sequenced.
+#[test]
+#[cfg(unix)]
+fn dynamic_add_survives_earlier_crash_before_subscribe() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-crosstalk";
+    let crasher_yml = write_node_yml("crasher", "crasher", never_subscribes_binary());
+    let healthy = write_stop_delay_yml("crosstalk-healthy", 0, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    // 0. Let the dataflow's own nodes finish subscribing before adding
+    //    anything. `Running` in `dora node list` only means the process
+    //    is in `running_nodes`; it does not mean the node has subscribed
+    //    yet, and there is no CLI observable for that. Adding the
+    //    crasher while the initial cohort is still mid-subscribe hits a
+    //    harsher variant of the same bug (asserted at step 3 below), and
+    //    this test is pinning the sticky one.
+    std::thread::sleep(Duration::from_secs(8));
+
+    // 1. A node that exits non-zero without ever reaching the daemon.
+    //    `node add` still succeeds: the daemon replies once the spawn
+    //    succeeds, and this process only fails afterwards.
+    add_node(&dora, name, &crasher_yml, "dora node add crasher");
+
+    // 2. Let the daemon account that exit. Fully sequenced — no overlap
+    //    with the healthy add below, so nothing here is a race.
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(20), |m| {
+        m.get("crasher").is_none_or(|(s, _, _)| s != "Running")
+    });
+    assert!(
+        parse_node_list(&list_out)
+            .get("crasher")
+            .is_none_or(|(s, _, _)| s != "Running"),
+        "crasher should not be Running; it exits immediately\nlist:\n{list_out}"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+
+    // 3. The dataflow's own nodes must be untouched. If they are gone,
+    //    the crasher landed while they were still subscribing and took
+    //    the whole startup cohort down with it — the same
+    //    `exited_before_subscribe` broadcast, one step earlier. That is
+    //    a real defect too, but it is not what this test pins, and
+    //    letting it fall through would fail the healthy add below with
+    //    a misleading "no dataflow is running".
+    let (_, list_out, _) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after crasher",
+    );
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("sender"), Some((s, _, _)) if s == "Running")
+            && matches!(nodes.get("receiver"), Some((s, _, _)) if s == "Running"),
+        "the crasher took down the dataflow's own nodes, so it landed during their \
+         subscribe window rather than after it — raise the settle at step 0 to pin the \
+         sticky variant (#2917)\nlist:\n{list_out}"
+    );
+
+    // 4. A healthy, unrelated node added afterwards must come up.
+    //    Before #2917 its `Node()` init was answered with the crasher's
+    //    failure ("Node crasher exited before initializing dora"), so it
+    //    exited and never reached Running.
+    add_node(&dora, name, &healthy.yml, "dora node add healthy");
+
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(20), |m| {
+        m.get("filter").is_some_and(|(s, _, _)| s == "Running")
+    });
+    let filter_state = parse_node_list(&list_out).get("filter").cloned();
+    assert!(
+        matches!(&filter_state, Some((s, _, _)) if s == "Running"),
+        "a healthy node added after an unrelated node crashed before subscribing \
+         must still initialize; got {filter_state:?}. Check `dora logs {name} --node filter` \
+         for the other node's error delivered into this one's `Node()` init (#2917).\
+         \nlist:\n{list_out}"
+    );
+}
+
+/// The harsher half of dora-rs/dora#2917: a runtime-added node that
+/// crashes *while the dataflow's own nodes are still subscribing* must
+/// not take that whole cohort down with it.
+///
+/// Same broadcast as the sibling test, one step earlier. The crasher
+/// used to land in `local_nodes` (`AddNode`, `lib.rs`), so its exit was
+/// recorded in `exited_before_subscribe` and delivered as the subscribe
+/// result of the dataflow's own sender and receiver — killing a
+/// dataflow that was running fine, rather than only poisoning later
+/// additions.
+///
+/// Deliberately adds the crasher with no settle, which is what makes
+/// this the startup-window case: `start_lifecycle` returns as soon as
+/// both nodes report `Running`, and `Running` only means "in
+/// `running_nodes`", not "subscribed".
+///
+/// Verified to discriminate: against the pre-fix daemon this fails with
+/// `sender=None receiver=None` — the cohort is gone — while the sibling
+/// test fails on its own healthy node instead. Entry into the window is
+/// still timing-dependent and unobserved; if the cohort has already
+/// subscribed by the time the crasher lands, this degrades to asserting
+/// that a dead runtime addition is harmless, which is worth asserting
+/// anyway.
+#[test]
+#[cfg(unix)]
+fn crash_before_subscribe_does_not_kill_the_startup_cohort() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-cohort";
+    let crasher_yml = write_node_yml("cohort-crasher", "crasher", never_subscribes_binary());
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    add_node(&dora, name, &crasher_yml, "dora node add crasher");
+
+    // Outlast the crasher's exit and the daemon accounting it.
+    std::thread::sleep(Duration::from_secs(6));
+
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after crasher",
+    );
+    assert!(
+        ok,
+        "dora node list failed — the dataflow itself is gone, so the crasher took \
+         the startup cohort with it (#2917).\nstderr:\n{stderr}"
+    );
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("sender"), Some((s, _, _)) if s == "Running")
+            && matches!(nodes.get("receiver"), Some((s, _, _)) if s == "Running"),
+        "the dataflow's own nodes must survive a runtime-added node crashing before \
+         it subscribed; got sender={:?} receiver={:?}\nlist:\n{list_out}",
+        nodes.get("sender"),
+        nodes.get("receiver")
+    );
+}
+
+/// Removing a node that has not yet subscribed must release the startup
+/// barrier — the `RemoveNode` wiring, which no other test covers.
+///
+/// The unit tests in `pending.rs` prove `handle_node_removal` reports
+/// the cohort ready; nothing proved the daemon actually calls it and
+/// starts the dataflow. Deleting that whole block from the `RemoveNode`
+/// handler left every other test in this PR green.
+///
+/// The dataflow here is two independent source nodes: `quick` connects
+/// immediately and parks on the barrier, `slow` sleeps well past the
+/// removal before it would connect, so it is provably still pending
+/// when it is removed. That removal is the only thing that can complete
+/// the cohort — the removed process's own exit cannot, since its id is
+/// gone from `local_nodes` by then — so if the barrier is not
+/// re-evaluated, `quick` stays parked forever and never reports
+/// `Running`.
+#[test]
+#[cfg(unix)]
+fn removing_an_unsubscribed_node_releases_the_startup_barrier() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    ensure_cli_built();
+    ensure_stop_delay_built();
+    let dora = dora_bin();
+    cleanup_stale(&dora);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let node_bin = format!("{manifest_dir}/target/debug/stop-delay-node");
+    let target = Path::new(manifest_dir).join("target");
+    let stem = format!("dora-barrier-release-{}", std::process::id());
+    let dataflow = target.join(format!("{stem}.yml"));
+    // `quick` writes this once its `Node()` init returns. That is the
+    // only observable for the barrier having released: `dora node list`
+    // reports `Running` for any spawned process, including one still
+    // parked inside `Node()`.
+    let ready = target.join(format!("{stem}.ready"));
+    let _ = fs::remove_file(&ready);
+    fs::write(
+        &dataflow,
+        format!(
+            "nodes:\n  \
+             - id: quick\n    \
+               path: {node_bin}\n    \
+               env:\n      \
+                 DORA_TEST_READY_FILE: {ready}\n    \
+               outputs:\n      - value\n  \
+             - id: slow\n    \
+               path: {node_bin}\n    \
+               env:\n      \
+                 DORA_TEST_INIT_DELAY_MS: 60000\n    \
+               outputs:\n      - value\n",
+            ready = ready.display()
+        ),
+    )
+    .expect("failed to write barrier-release dataflow");
+
+    let (ok, _, stderr) = run_capture(Command::new(&dora).arg("up"), "dora up");
+    assert!(ok, "dora up failed.\nstderr:\n{stderr}");
+    let name = "rustlc-barrier";
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "start",
+            dataflow.to_str().unwrap(),
+            "--detach",
+            "--name",
+            name,
+        ]),
+        "dora start",
+    );
+    assert!(ok, "dora start failed.\nstderr:\n{stderr}");
+
+    // `slow` is sleeping for a full minute before it would connect, so
+    // it is unambiguously still pending here — no timing guess.
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args(["node", "remove", "--dataflow", name, "slow"]),
+        "dora node remove slow",
+    );
+    assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while !ready.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "removing the last pending node did not release the barrier: `quick` never \
+             got past its `Node()` init, so the dataflow never started. (`dora node list` \
+             would show it `Running` regardless — that is why this waits on {ready:?}.)",
+            ready = ready
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    }
 }
 
 #[test]
