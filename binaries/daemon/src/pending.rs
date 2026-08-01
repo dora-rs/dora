@@ -28,10 +28,26 @@ pub struct PendingNodes {
     ///
     /// Subscribe requests block the node until all other nodes are ready too.
     waiting_subscribers: HashMap<NodeId, oneshot::Sender<DaemonReply>>,
+    /// Nodes added to this dataflow at runtime (`dora node add`) rather
+    /// than declared in its descriptor.
+    ///
+    /// They still wait on the barrier — a node added while the dataflow
+    /// is coming up should not start producing before its consumers are
+    /// listening — but they are not *part* of the startup cohort:
+    /// their failures never gate the cohort, and the cohort's failures
+    /// are never reported as theirs (dora-rs/dora#2917).
+    runtime_added: HashSet<NodeId>,
     /// List of nodes that finished before connecting to the dora daemon.
     ///
     /// If this list is non-empty, we should not start the dataflow at all. Instead,
     /// we report an error to the other nodes.
+    ///
+    /// Only ever holds startup-cohort nodes: runtime additions are kept
+    /// out of `local_nodes`, so `handle_node_stop` cannot record them
+    /// here. That scoping matters because this list is never cleared —
+    /// were a runtime addition able to land in it, one crashed node
+    /// would poison every later `dora node add` for the life of the
+    /// dataflow (dora-rs/dora#2917).
     exited_before_subscribe: Vec<NodeId>,
 
     /// Whether the local init result was already reported to the coordinator.
@@ -46,6 +62,7 @@ impl PendingNodes {
             local_nodes: HashSet::new(),
             external_nodes: false,
             waiting_subscribers: HashMap::new(),
+            runtime_added: HashSet::new(),
             exited_before_subscribe: Default::default(),
             reported_init_to_coordinator: false,
         }
@@ -53,6 +70,15 @@ impl PendingNodes {
 
     pub fn insert(&mut self, node_id: NodeId) {
         self.local_nodes.insert(node_id);
+    }
+
+    /// Register a node added at runtime (`dora node add`).
+    ///
+    /// Deliberately NOT `local_nodes`: a runtime addition must not gate
+    /// the startup barrier (a node that never subscribes would stall it
+    /// forever) and must not be able to fail it (dora-rs/dora#2917).
+    pub fn insert_runtime_added(&mut self, node_id: NodeId) {
+        self.runtime_added.insert(node_id);
     }
 
     pub fn set_external_nodes(&mut self, value: bool) {
@@ -192,10 +218,23 @@ impl PendingNodes {
         // answer all subscribe requests
         let subscribe_replies = std::mem::take(&mut self.waiting_subscribers);
         for (node_id, reply_sender) in subscribe_replies.into_iter() {
-            if let Some(causing_node) = node_exited_before_subscribe {
+            // A startup failure is a property of the startup cohort, not
+            // of the dataflow forever after. Reporting it to a node that
+            // was added at runtime blames it for something it has no
+            // relationship to, and (because the node then fails its own
+            // `Node()` init) takes down a healthy node
+            // (dora-rs/dora#2917).
+            let scoped_result = if self.runtime_added.contains(&node_id) {
+                Ok(())
+            } else {
+                result.clone()
+            };
+            if scoped_result.is_err()
+                && let Some(causing_node) = node_exited_before_subscribe
+            {
                 cascading_errors.report_cascading_error(causing_node.clone(), node_id.clone());
             }
-            let _ = reply_sender.send(DaemonReply::Result(result.clone()));
+            let _ = reply_sender.send(DaemonReply::Result(scoped_result));
         }
     }
 

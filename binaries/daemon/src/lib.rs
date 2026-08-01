@@ -2295,12 +2295,19 @@ impl Daemon {
                         }
                     }
 
-                    // Mark as pending
                     if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
-                    } else {
-                        dataflow.pending_nodes.insert(node_id.clone());
                     }
+                    // Register as a runtime addition rather than a
+                    // member of the startup cohort. This node was not in
+                    // the descriptor the dataflow started from, so it
+                    // must neither gate that cohort's barrier nor
+                    // inherit its failures — previously it joined
+                    // `local_nodes`, which meant a crash here was
+                    // broadcast as the subscribe result of unrelated
+                    // nodes, and a node that never subscribed could
+                    // stall startup outright (dora-rs/dora#2917).
+                    dataflow.pending_nodes.insert_runtime_added(node_id.clone());
 
                     // Insert the running node
                     dataflow.running_nodes.insert(node_id.clone(), running_node);

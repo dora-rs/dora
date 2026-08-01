@@ -1271,6 +1271,68 @@ fn dynamic_add_survives_earlier_crash_before_subscribe() {
     );
 }
 
+/// The harsher half of dora-rs/dora#2917: a runtime-added node that
+/// crashes *while the dataflow's own nodes are still subscribing* must
+/// not take that whole cohort down with it.
+///
+/// Same broadcast as the sibling test, one step earlier. The crasher
+/// used to land in `local_nodes` (`AddNode`, `lib.rs`), so its exit was
+/// recorded in `exited_before_subscribe` and delivered as the subscribe
+/// result of the dataflow's own sender and receiver — killing a
+/// dataflow that was running fine, rather than only poisoning later
+/// additions.
+///
+/// Deliberately adds the crasher with no settle, which is what makes
+/// this the startup-window case: `start_lifecycle` returns as soon as
+/// both nodes report `Running`, and `Running` only means "in
+/// `running_nodes`", not "subscribed". A partial revert of the fix
+/// (scoping the subscribe reply but still enrolling runtime additions
+/// in the cohort) leaves the sibling test green and fails this one.
+#[test]
+#[cfg(unix)]
+fn crash_before_subscribe_does_not_kill_the_startup_cohort() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-cohort";
+    let crasher_yml = write_node_yml("cohort-crasher", "crasher", never_subscribes_binary());
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "add",
+            "--dataflow",
+            name,
+            "--from-yaml",
+            crasher_yml.to_str().unwrap(),
+        ]),
+        "dora node add crasher",
+    );
+    assert!(ok, "dora node add crasher failed.\nstderr:\n{stderr}");
+
+    // Outlast the crasher's exit and the daemon accounting it.
+    std::thread::sleep(Duration::from_secs(6));
+
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after crasher",
+    );
+    assert!(
+        ok,
+        "dora node list failed — the dataflow itself is gone, so the crasher took \
+         the startup cohort with it (#2917).\nstderr:\n{stderr}"
+    );
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("sender"), Some((s, _, _)) if s == "Running")
+            && matches!(nodes.get("receiver"), Some((s, _, _)) if s == "Running"),
+        "the dataflow's own nodes must survive a runtime-added node crashing before \
+         it subscribed; got sender={:?} receiver={:?}\nlist:\n{list_out}",
+        nodes.get("sender"),
+        nodes.get("receiver")
+    );
+}
+
 #[test]
 // C++ fixture is deliberately Unix-only: the existing cmake-dataflow
 // example in this repo explicitly skips Windows
