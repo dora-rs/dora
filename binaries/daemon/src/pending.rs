@@ -54,7 +54,7 @@ pub struct PendingNodes {
     /// Holds cohort members only — `handle_node_stop` records a node
     /// here only if it was still in `local_nodes`. Nothing else clears
     /// this list, so anything that leaks in poisons the dataflow for as
-    /// long as it runs; `remove_node` exists to keep a removed node's
+    /// long as it runs; `handle_node_removal` exists to keep a removed node’s
     /// id from doing exactly that (dora-rs/dora#2917).
     exited_before_subscribe: Vec<NodeId>,
 
@@ -84,19 +84,37 @@ impl PendingNodes {
     }
 
     /// Forget a node that has been removed from the dataflow
-    /// (`dora node remove`).
+    /// (`dora node remove`), then re-evaluate the barrier.
     ///
-    /// Without this a removed node keeps gating the barrier until it
-    /// exits, and its id can still reach `exited_before_subscribe` — a
-    /// list nothing clears — so a `remove` + re-`add` of a node that
-    /// had not yet subscribed would poison every later subscribe for
-    /// the life of the dataflow, naming an id that is alive again by
-    /// then (dora-rs/dora#2917).
-    pub fn remove_node(&mut self, node_id: &NodeId) {
+    /// Scrubbing is needed because a removed node otherwise keeps
+    /// gating the barrier until it exits, and its id can still reach
+    /// `exited_before_subscribe` — a list nothing clears — so a
+    /// `remove` + re-`add` of a node that had not yet subscribed would
+    /// poison every later subscribe for the life of the dataflow,
+    /// naming an id that is alive again by then (dora-rs/dora#2917).
+    ///
+    /// Re-evaluating is just as necessary: removing a node that had not
+    /// yet subscribed can be the thing that completes the cohort. The
+    /// removed process's own exit cannot release the barrier later —
+    /// its id is gone from `local_nodes` by then, so `handle_node_stop`
+    /// does nothing — so if this did not drive the same transition as a
+    /// subscription, the last pending member's removal would strand
+    /// every parked subscriber and the dataflow would never start.
+    pub async fn handle_node_removal(
+        &mut self,
+        node_id: &NodeId,
+        coordinator_sender: &mut Option<CoordinatorSender>,
+        clock: &HLC,
+        cascading_errors: &mut CascadingErrorCauses,
+        logger: &mut DataflowLogger<'_>,
+    ) -> eyre::Result<DataflowStatus> {
         self.local_nodes.remove(node_id);
         self.cohort.remove(node_id);
         self.waiting_subscribers.remove(node_id);
         self.exited_before_subscribe.retain(|id| id != node_id);
+
+        self.update_dataflow_status(coordinator_sender, clock, cascading_errors, logger)
+            .await
     }
 
     pub fn set_external_nodes(&mut self, value: bool) {
@@ -305,6 +323,7 @@ pub enum DataflowStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::log::DaemonLogger;
 
     fn pending() -> PendingNodes {
         PendingNodes::new(uuid::Uuid::nil(), DaemonId::new(None))
@@ -421,17 +440,38 @@ mod tests {
         );
     }
 
-    /// `remove_node` has to scrub every trace, or a removed id keeps
-    /// gating startup and can still poison later subscribes.
-    #[test]
-    fn remove_node_scrubs_barrier_state() {
+    /// A `DataflowLogger` for tests. `LogDestination::Tracing` needs no
+    /// coordinator connection or channel.
+    fn test_logger() -> DaemonLogger {
+        let daemon_id = DaemonId::new(None);
+        crate::log::Logger {
+            destination: crate::log::LogDestination::Tracing,
+            daemon_id: daemon_id.clone(),
+            clock: std::sync::Arc::new(HLC::default()),
+        }
+        .for_daemon(daemon_id)
+    }
+
+    /// Removal has to scrub every trace, or a removed id keeps gating
+    /// startup and can still poison later subscribes.
+    #[tokio::test]
+    async fn removal_scrubs_barrier_state() {
         let removed = node("removed");
         let mut p = pending();
         p.insert(removed.clone());
         let _rx = park(&mut p, &removed);
         p.exited_before_subscribe.push(removed.clone());
 
-        p.remove_node(&removed);
+        let mut daemon_logger = test_logger();
+        p.handle_node_removal(
+            &removed,
+            &mut None,
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+        )
+        .await
+        .expect("removal should succeed");
 
         assert!(!p.local_nodes_pending(), "removed node still gates startup");
         assert!(!p.cohort.contains(&removed));
@@ -439,6 +479,49 @@ mod tests {
         assert!(
             p.exited_before_subscribe.is_empty(),
             "a removed id left in `exited_before_subscribe` poisons every later subscribe"
+        );
+    }
+
+    /// Removing the LAST pending cohort member must complete the
+    /// barrier, exactly as that member subscribing would have.
+    ///
+    /// The removed process's own exit cannot do it later — its id is
+    /// gone from `local_nodes`, so `handle_node_stop` is a no-op — so if
+    /// removal does not drive the transition, every already-parked
+    /// subscriber is stranded and `dataflow.start()` is never called.
+    #[tokio::test]
+    async fn removing_the_last_pending_member_releases_parked_subscribers() {
+        let (waiting, never_subscribed) = (node("waiting"), node("never-subscribed"));
+        let mut p = pending();
+        p.insert(waiting.clone());
+        p.insert(never_subscribed.clone());
+
+        // One cohort member subscribed and is parked; the other never
+        // will, and is removed by the operator.
+        let mut rx = park(&mut p, &waiting);
+        p.local_nodes.remove(&waiting);
+        assert!(p.local_nodes_pending(), "the other member still gates");
+
+        let mut daemon_logger = test_logger();
+        let status = p
+            .handle_node_removal(
+                &never_subscribed,
+                &mut None,
+                &HLC::default(),
+                &mut CascadingErrorCauses::default(),
+                &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+            )
+            .await
+            .expect("removal should succeed");
+
+        assert!(
+            matches!(status, DataflowStatus::AllNodesReady),
+            "removing the last pending member must report the cohort ready"
+        );
+        assert_eq!(
+            reply_of(&mut rx),
+            Ok(()),
+            "the parked subscriber was stranded by the removal"
         );
     }
 
@@ -454,7 +537,16 @@ mod tests {
         p.exited_before_subscribe.push(id.clone());
         // Operator removes it, then adds a replacement (runtime
         // additions are not enrolled).
-        p.remove_node(&id);
+        let mut daemon_logger = test_logger();
+        p.handle_node_removal(
+            &id,
+            &mut None,
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+        )
+        .await
+        .expect("removal should succeed");
         let mut rx = park(&mut p, &id);
 
         p.answer_subscribe_requests(Vec::new(), &mut CascadingErrorCauses::default())

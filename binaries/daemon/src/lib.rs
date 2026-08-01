@@ -2457,13 +2457,6 @@ impl Daemon {
                     // subscribes and could be selected mid-startup (dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
-                    // Drop the node from the startup barrier too. A node
-                    // removed before it subscribed would otherwise keep
-                    // gating startup until it exits, and its id would
-                    // still reach `exited_before_subscribe` — which
-                    // nothing clears — poisoning every later subscribe
-                    // on this dataflow (dora-rs/dora#2917).
-                    dataflow.pending_nodes.remove_node(&node_id);
                     // Purge per-node bookkeeping keyed by node id that the
                     // routing cleanup above doesn't touch. Otherwise stale
                     // input_deadlines/broken_inputs entries are re-scanned
@@ -2476,6 +2469,46 @@ impl Daemon {
                     dataflow.descriptor.nodes.retain(|n| n.id != node_id);
                     Ok(())
                 })();
+
+                // Drop the node from the startup barrier and re-evaluate
+                // it. Done outside the closure because it is async, and
+                // it cannot be skipped: removing a node that had not yet
+                // subscribed can be what completes the cohort, and the
+                // removed process's later exit can no longer release the
+                // barrier once its id is gone from `local_nodes`. Without
+                // this, removing the last pending member would strand
+                // every parked subscriber and the dataflow would never
+                // start (dora-rs/dora#2917).
+                let result = match result {
+                    Err(err) => Err(err),
+                    Ok(()) => {
+                        let mut logger = self.logger.for_dataflow(dataflow_id);
+                        match self.running.get_mut(&dataflow_id) {
+                            Some(dataflow) => {
+                                let status = dataflow
+                                    .pending_nodes
+                                    .handle_node_removal(
+                                        &node_id,
+                                        &mut self.coordinator_sender,
+                                        &self.clock,
+                                        &mut dataflow.cascading_error_causes,
+                                        &mut logger,
+                                    )
+                                    .await;
+                                match status {
+                                    Ok(DataflowStatus::AllNodesReady)
+                                        if !dataflow.dataflow_started =>
+                                    {
+                                        dataflow.start(&self.events_tx, &self.clock).await
+                                    }
+                                    Ok(_) => Ok(()),
+                                    Err(err) => Err(err),
+                                }
+                            }
+                            None => Ok(()),
+                        }
+                    }
+                };
 
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "RemoveNode failed: {err:?}");
