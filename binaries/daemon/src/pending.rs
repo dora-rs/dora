@@ -38,13 +38,6 @@ pub struct PendingNodes {
     /// nor inherit its failures (dora-rs/dora#2917). They still wait on
     /// it, so a node arriving mid-startup does not begin producing
     /// before its consumers are listening.
-    ///
-    /// Caveat, pre-existing and not addressed here: on a dataflow with
-    /// external nodes, `update_dataflow_status` parks waiters and
-    /// returns `Pending` without answering, leaving
-    /// `handle_external_all_nodes_ready` — a one-shot event at dataflow
-    /// start — as the only path that ever answers them. A node that
-    /// subscribes after that has fired waits forever.
     cohort: HashSet<NodeId>,
     /// List of nodes that finished before connecting to the dora daemon.
     ///
@@ -204,6 +197,14 @@ impl PendingNodes {
         Ok(())
     }
 
+    /// Re-evaluate the barrier after something changed the pending set.
+    ///
+    /// Known limitation, pre-existing and tracked in dora-rs/dora#2938:
+    /// the `external_nodes` branch parks waiters and returns `Pending`
+    /// without answering them, leaving `handle_external_all_nodes_ready`
+    /// — driven by a one-shot coordinator broadcast at dataflow start —
+    /// as the only path that ever does. Anything subscribing after that
+    /// has fired waits forever on a multi-daemon dataflow.
     async fn update_dataflow_status(
         &mut self,
         coordinator_sender: &mut Option<CoordinatorSender>,
@@ -368,8 +369,11 @@ mod tests {
         );
     }
 
-    /// dora-rs/dora#2917: a node that was never in the cohort — a
-    /// runtime `dora node add` — must not be blamed for it.
+    /// dora-rs/dora#2917: a node that was never in the cohort must not
+    /// be blamed for its failure. Covers both spellings at once —
+    /// a runtime `dora node add` and a descriptor-declared dynamic node
+    /// are the same case here, since neither is enrolled via `insert`
+    /// and `PendingNodes` has no notion of dynamic-ness.
     #[tokio::test]
     async fn non_cohort_nodes_are_not_blamed_for_startup_failures() {
         let (dead, added) = (node("dead"), node("added-at-runtime"));
@@ -386,22 +390,6 @@ mod tests {
             Ok(()),
             "a node outside the startup cohort must not inherit its failure"
         );
-    }
-
-    /// The same exemption has to hold for dynamic nodes, which connect
-    /// on their own schedule and are never enrolled via `insert`.
-    #[tokio::test]
-    async fn dynamic_nodes_are_not_blamed_for_startup_failures() {
-        let (dead, dynamic) = (node("dead"), node("dynamic"));
-        let mut p = pending();
-        p.insert(dead.clone());
-        let mut rx = park(&mut p, &dynamic);
-        p.exited_before_subscribe.push(dead.clone());
-
-        p.answer_subscribe_requests(Vec::new(), &mut CascadingErrorCauses::default())
-            .await;
-
-        assert_eq!(reply_of(&mut rx), Ok(()));
     }
 
     /// Only cohort members are recorded as causes, so a non-cohort node
@@ -423,23 +411,6 @@ mod tests {
         assert_eq!(causes.error_caused_by(&added), None);
     }
 
-    /// A runtime addition must not gate the barrier. Before #2917 it
-    /// joined `local_nodes`, so one that never subscribed stalled
-    /// startup for everyone.
-    #[test]
-    fn runtime_additions_do_not_gate_the_barrier() {
-        let mut p = pending();
-        p.insert(node("cohort-member"));
-        assert!(p.local_nodes_pending());
-
-        // A runtime addition is simply never enrolled.
-        p.local_nodes.remove(&node("cohort-member"));
-        assert!(
-            !p.local_nodes_pending(),
-            "only cohort members may hold the barrier open"
-        );
-    }
-
     /// A `DataflowLogger` for tests. `LogDestination::Tracing` needs no
     /// coordinator connection or channel.
     fn test_logger() -> DaemonLogger {
@@ -459,7 +430,7 @@ mod tests {
         let removed = node("removed");
         let mut p = pending();
         p.insert(removed.clone());
-        let _rx = park(&mut p, &removed);
+        let mut rx = park(&mut p, &removed);
         p.exited_before_subscribe.push(removed.clone());
 
         let mut daemon_logger = test_logger();
@@ -475,10 +446,18 @@ mod tests {
 
         assert!(!p.local_nodes_pending(), "removed node still gates startup");
         assert!(!p.cohort.contains(&removed));
-        assert!(!p.waiting_subscribers.contains_key(&removed));
         assert!(
             p.exited_before_subscribe.is_empty(),
             "a removed id left in `exited_before_subscribe` poisons every later subscribe"
+        );
+        // Asserting on the receiver, not on `waiting_subscribers`:
+        // `answer_subscribe_requests` drains that map unconditionally, so
+        // a `contains_key` check passes even when the scrub is deleted.
+        // A dropped sender is what actually distinguishes "the removed
+        // node's parked request was discarded" from "it was answered".
+        assert!(
+            matches!(rx.try_recv(), Err(oneshot::error::TryRecvError::Closed)),
+            "a removed node's parked subscribe should be dropped, not answered"
         );
     }
 
@@ -556,6 +535,133 @@ mod tests {
             reply_of(&mut rx),
             Ok(()),
             "the replacement inherited its dead predecessor's failure"
+        );
+    }
+    /// `handle_node_stop` is the only production writer of
+    /// `exited_before_subscribe`, and the whole fix rests on it
+    /// recording cohort members only. Every other test pushes into that
+    /// vector by hand, so without this the invariant is unverified —
+    /// making the guard unconditional would restore #2917 through the
+    /// other half of the mechanism with all tests still green.
+    #[tokio::test]
+    async fn only_cohort_members_are_recorded_as_exited_before_subscribe() {
+        let (member, outsider) = (node("member"), node("outsider"));
+        let mut p = pending();
+        p.insert(member.clone());
+        let mut daemon_logger = test_logger();
+
+        // A node that was never enrolled exits before subscribing.
+        p.handle_node_stop(
+            &outsider,
+            &mut None,
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+        )
+        .await
+        .expect("stop should succeed");
+        assert!(
+            p.exited_before_subscribe.is_empty(),
+            "a node outside the cohort must not be able to fail the barrier"
+        );
+
+        // A cohort member doing the same IS recorded.
+        p.handle_node_stop(
+            &member,
+            &mut None,
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+        )
+        .await
+        .expect("stop should succeed");
+        assert_eq!(p.exited_before_subscribe, vec![member]);
+    }
+
+    /// End to end through the production writer: a cohort member dies
+    /// before subscribing, and a non-cohort node parked at that moment
+    /// is still answered `Ok`.
+    #[tokio::test]
+    async fn cohort_death_recorded_by_handle_node_stop_spares_non_cohort_waiters() {
+        let (dead, outsider) = (node("dead"), node("outsider"));
+        let mut p = pending();
+        p.insert(dead.clone());
+        let mut rx = park(&mut p, &outsider);
+        let mut daemon_logger = test_logger();
+
+        p.handle_node_stop(
+            &dead,
+            &mut None,
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+        )
+        .await
+        .expect("stop should succeed");
+
+        assert_eq!(
+            reply_of(&mut rx),
+            Ok(()),
+            "the parked non-cohort node inherited a cohort member's death"
+        );
+    }
+
+    /// With external (multi-daemon) nodes the barrier is resolved by the
+    /// coordinator, so a local removal that empties `local_nodes`
+    /// reports readiness upward instead of answering waiters, and does
+    /// so at most once.
+    #[tokio::test]
+    async fn external_dataflows_report_ready_upward_at_most_once() {
+        let member = node("member");
+        let mut p = pending();
+        p.insert(member.clone());
+        p.set_external_nodes(true);
+        let mut daemon_logger = test_logger();
+
+        // No coordinator sender wired up, so reporting fails loudly
+        // rather than silently claiming the cohort is ready.
+        let status = p
+            .handle_node_removal(
+                &member,
+                &mut None,
+                &HLC::default(),
+                &mut CascadingErrorCauses::default(),
+                &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+            )
+            .await;
+        assert!(
+            status.is_err(),
+            "reporting readiness with no coordinator sender must surface an error"
+        );
+        assert!(
+            !p.reported_init_to_coordinator,
+            "a failed report must not latch, or the retry is lost"
+        );
+    }
+
+    /// The external `exited_before_subscribe` list the coordinator sends
+    /// is scoped the same way as the local one.
+    #[tokio::test]
+    async fn external_failures_are_scoped_to_the_cohort_too() {
+        let (remote_dead, member, outsider) = (node("remote"), node("member"), node("outsider"));
+        let mut p = pending();
+        p.insert(member.clone());
+        let mut member_rx = park(&mut p, &member);
+        let mut outsider_rx = park(&mut p, &outsider);
+
+        p.handle_external_all_nodes_ready(
+            vec![remote_dead.clone()],
+            &mut CascadingErrorCauses::default(),
+        )
+        .await
+        .expect("external ready should succeed");
+
+        let err = reply_of(&mut member_rx).expect_err("cohort member should inherit");
+        assert!(err.contains("remote"), "should name the remote node: {err}");
+        assert_eq!(
+            reply_of(&mut outsider_rx),
+            Ok(()),
+            "a non-cohort node must not inherit a remote startup failure either"
         );
     }
 }

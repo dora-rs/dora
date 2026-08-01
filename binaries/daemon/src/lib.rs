@@ -2470,19 +2470,18 @@ impl Daemon {
                     Ok(())
                 })();
 
-                // Drop the node from the startup barrier and re-evaluate
-                // it. Done outside the closure because it is async, and
-                // it cannot be skipped: removing a node that had not yet
-                // subscribed can be what completes the cohort, and the
-                // removed process's later exit can no longer release the
-                // barrier once its id is gone from `local_nodes`. Without
-                // this, removing the last pending member would strand
-                // every parked subscriber and the dataflow would never
-                // start (dora-rs/dora#2917).
+                // Outside the closure because it is async. Why removal
+                // has to drive the barrier at all: see
+                // `PendingNodes::handle_node_removal`.
                 let result = match result {
                     Err(err) => Err(err),
                     Ok(()) => {
                         let mut logger = self.logger.for_dataflow(dataflow_id);
+                        // The closure above already resolved this id, and
+                        // nothing awaits in between, so a miss here is a
+                        // bug rather than a race — report it instead of
+                        // returning success like the closure's own
+                        // `no running dataflow` arm would.
                         match self.running.get_mut(&dataflow_id) {
                             Some(dataflow) => {
                                 let status = dataflow
@@ -2499,13 +2498,24 @@ impl Daemon {
                                     Ok(DataflowStatus::AllNodesReady)
                                         if !dataflow.dataflow_started =>
                                     {
+                                        logger
+                                            .log(
+                                                LogLevel::Info,
+                                                None,
+                                                Some("daemon".into()),
+                                                "all nodes are ready after node removal, \
+                                                 starting dataflow",
+                                            )
+                                            .await;
                                         dataflow.start(&self.events_tx, &self.clock).await
                                     }
                                     Ok(_) => Ok(()),
                                     Err(err) => Err(err),
                                 }
                             }
-                            None => Ok(()),
+                            None => Err(eyre!(
+                                "dataflow `{dataflow_id}` disappeared while removing `{node_id}`"
+                            )),
                         }
                     }
                 };
