@@ -2298,16 +2298,14 @@ impl Daemon {
                     if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
                     }
-                    // Register as a runtime addition rather than a
-                    // member of the startup cohort. This node was not in
-                    // the descriptor the dataflow started from, so it
-                    // must neither gate that cohort's barrier nor
-                    // inherit its failures — previously it joined
-                    // `local_nodes`, which meant a crash here was
-                    // broadcast as the subscribe result of unrelated
-                    // nodes, and a node that never subscribed could
-                    // stall startup outright (dora-rs/dora#2917).
-                    dataflow.pending_nodes.insert_runtime_added(node_id.clone());
+                    // Deliberately NOT enrolled in `pending_nodes`: this
+                    // node is not part of the descriptor the dataflow
+                    // started from, so it must neither gate that
+                    // cohort's barrier nor inherit its failures.
+                    // Enrolling it meant a crash here was broadcast as
+                    // the subscribe result of unrelated nodes, and a
+                    // node that never subscribed could stall startup
+                    // outright (dora-rs/dora#2917).
 
                     // Insert the running node
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
@@ -2459,6 +2457,13 @@ impl Daemon {
                     // subscribes and could be selected mid-startup (dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
+                    // Drop the node from the startup barrier too. A node
+                    // removed before it subscribed would otherwise keep
+                    // gating startup until it exits, and its id would
+                    // still reach `exited_before_subscribe` — which
+                    // nothing clears — poisoning every later subscribe
+                    // on this dataflow (dora-rs/dora#2917).
+                    dataflow.pending_nodes.remove_node(&node_id);
                     // Purge per-node bookkeeping keyed by node id that the
                     // routing cleanup above doesn't touch. Otherwise stale
                     // input_deadlines/broken_inputs entries are re-scanned
