@@ -23,7 +23,7 @@ use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeI
 /// List nodes in a specific dataflow:
 ///   dora node list --dataflow my-dataflow
 ///
-/// List nodes as JSON:
+/// List nodes as a JSON array (parses as a single JSON document):
 ///   dora node list --format json
 #[derive(Debug, Args)]
 #[clap(verbatim_doc_comment)]
@@ -188,11 +188,55 @@ fn list(
             tw.flush()?;
         }
         OutputFormat::Json => {
-            for entry in entries {
-                println!("{}", serde_json::to_string(&entry)?);
-            }
+            // Emit a single JSON document (an array) rather than JSON Lines, so
+            // callers can parse the whole output with one `json.loads` — the
+            // common `--format json` contract, and consistent with sibling
+            // `dora node info --format json`. An empty result prints `[]`.
+            println!("{}", serde_json::to_string_pretty(&entries)?);
         }
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputEntry;
+
+    fn entry(node: &str) -> OutputEntry {
+        OutputEntry {
+            node: node.to_string(),
+            status: "Running".to_string(),
+            pid: "42".to_string(),
+            cpu: "1.0%".to_string(),
+            memory: "10 MB".to_string(),
+            restarts: "0".to_string(),
+            dataflow: None,
+        }
+    }
+
+    #[test]
+    fn json_output_is_a_single_array_document() {
+        // Regression for #2922: `--format json` used to emit JSON Lines (one
+        // object per line), which does not parse with a single `json.loads`.
+        // The whole output must now be one JSON document — an array.
+        let entries = vec![entry("a"), entry("b")];
+        let rendered = serde_json::to_string_pretty(&entries).unwrap();
+
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        let arr = parsed
+            .as_array()
+            .expect("output must parse as a JSON array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0]["node"], "a");
+        assert_eq!(arr[1]["node"], "b");
+    }
+
+    #[test]
+    fn empty_json_output_is_an_empty_array() {
+        let entries: Vec<OutputEntry> = Vec::new();
+        let rendered = serde_json::to_string_pretty(&entries).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&rendered).unwrap();
+        assert_eq!(parsed.as_array().map(|a| a.len()), Some(0));
+    }
 }
