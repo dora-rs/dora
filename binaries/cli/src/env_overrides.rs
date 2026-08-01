@@ -69,7 +69,33 @@ pub fn parse_env_overrides(flags: &[String]) -> Result<BTreeMap<String, EnvValue
 /// `$$` that survives one hop is expanded on the next. Rejecting is the
 /// honest option — silently handing a node a different value than the
 /// operator typed is worse than refusing to start.
+///
+/// The `$` rule is deliberately **syntactic**, not "does this value
+/// survive a round-trip in the CLI's process". That round-trip is not a
+/// sound test of the security property: expansion happens against
+/// *whichever* environment decodes the descriptor, so a CLI-local
+/// variable that refers to itself (`DORA_AUTH_TOKEN='${DORA_AUTH_TOKEN}'`)
+/// makes the CLI-side round-trip an identity — passing the check — while
+/// the wire still carries `${DORA_AUTH_TOKEN}` for the daemon to expand
+/// against the *real* secret. Refusing every `$` closes that fixed-point
+/// bypass by never letting an expandable value reach the wire at all.
 fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
+    if value.contains('$') {
+        bail!(
+            "--env `{key}={value}` contains `$`, which cannot be carried in a \
+             dataflow descriptor: the process that receives it (coordinator, \
+             then daemon) expands the value against ITS OWN environment, so \
+             `$VAR` would resolve to that host's variable rather than \
+             yours.\n\n  \
+             hint: expand it in your shell first (`--env {key}=\"$VAR\"` \
+             without quotes around the `$`), or set this one in the node's \
+             `env:` block in the dataflow YAML."
+        );
+    }
+
+    // Beyond `$`, the untagged enum coerces numeric-looking strings —
+    // `1.10` decodes as Float(1.1). A round-trip IS a sound test for
+    // that, since no environment lookup is involved.
     let encoded = serde_json::to_string(&EnvValue::String(value.to_string()))
         .with_context(|| format!("failed to encode --env `{key}`"))?;
     match serde_json::from_str::<EnvValue>(&encoded) {
@@ -77,17 +103,15 @@ fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
         Ok(decoded) => bail!(
             "--env `{key}={value}` would not survive the dataflow descriptor's \
              encoding: nodes would receive `{decoded}` instead.\n\n  \
-             hint: values containing `$` are expanded by the process that \
-             receives the descriptor, and numeric-looking values are coerced \
-             (`1.10` -> `1.1`). Set this one in the node's `env:` block in the \
-             dataflow YAML instead."
+             hint: numeric-looking values are coerced (`1.10` -> `1.1`, \
+             `01234` -> `1234`). Set this one in the node's `env:` block in \
+             the dataflow YAML instead."
         ),
         Err(err) => bail!(
             "--env `{key}={value}` cannot be represented in the dataflow \
              descriptor: {err}.\n\n  \
-             hint: a literal `$` cannot be carried through `--env` — the \
-             descriptor expands it on receipt. Set this one in the node's \
-             `env:` block in the dataflow YAML instead."
+             hint: set this one in the node's `env:` block in the dataflow \
+             YAML instead."
         ),
     }
 }
@@ -169,24 +193,62 @@ mod tests {
     /// guard matches key names, and the key here is innocuous.
     #[test]
     fn rejects_values_that_would_be_env_expanded_on_the_wire() {
-        // Unset variable: expansion fails outright on decode.
-        let result = parse_env_overrides(&flags(&["LEAK=${DORA_TEST_2919_UNSET}"]));
-        let err = result.expect_err("a wire-expanded value must be rejected");
-        assert!(
-            err.to_string().contains("LEAK"),
-            "the error must name the offending key: {err}"
-        );
+        for value in [
+            "LEAK=${DORA_TEST_2919_UNSET}", // unset here, maybe set on the host
+            "LEAK=${PATH}",                 // set here AND on the host
+            "LEAK=$PATH",                   // brace-less form
+            "LEAK=prefix-${PATH}-suffix",   // embedded, not the whole value
+        ] {
+            let result = parse_env_overrides(&flags(&[value]));
+            let err = result.expect_err("a wire-expandable value must be rejected");
+            assert!(
+                err.to_string().contains("LEAK"),
+                "the error must name the offending key: {err}"
+            );
+        }
+    }
 
-        // Set variable: expansion SUCCEEDS and silently substitutes — the
-        // real exfiltration shape, where the deserializing daemon holds
-        // the secret. Rejected because the decoded value differs from
-        // what the operator typed. `PATH` stands in for the secret; it is
-        // set in every environment this runs in.
-        let result = parse_env_overrides(&flags(&["LEAK=${PATH}"]));
+    /// The fixed-point bypass this check exists to close: expansion runs
+    /// against whichever environment decodes the descriptor, so a
+    /// CLI-local variable that refers to itself makes a CLI-side
+    /// round-trip an identity — while the wire still carries `$VAR` for
+    /// the DAEMON to expand against the real secret. A round-trip test
+    /// passes this; a syntactic `$` rule does not.
+    ///
+    /// Uses a scoped child process rather than `set_var`, which is
+    /// `unsafe` in edition 2024 and would race sibling tests.
+    #[test]
+    fn self_referential_local_variable_cannot_smuggle_a_dollar_through() {
+        let exe = std::env::current_exe().expect("test binary path");
+        let output = std::process::Command::new(exe)
+            .args(["--exact", "env_overrides::tests::self_referential_child"])
+            .env("DORA_TEST_2919_SELFREF", "${DORA_TEST_2919_SELFREF}")
+            .env("RUST_TEST_NOCAPTURE", "0")
+            .output()
+            .expect("failed to re-run test binary");
+        assert!(
+            output.status.success(),
+            "the self-referential value was NOT rejected — a `$` reached the \
+             wire.\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
+    /// Child of `self_referential_local_variable_cannot_smuggle_a_dollar_through`;
+    /// only meaningful with `DORA_TEST_2919_SELFREF` set to its own
+    /// reference, so it is a no-op when run directly.
+    #[test]
+    fn self_referential_child() {
+        let Ok(value) = std::env::var("DORA_TEST_2919_SELFREF") else {
+            return; // not the child invocation
+        };
+        assert_eq!(value, "${DORA_TEST_2919_SELFREF}", "child env not set up");
+        let result = parse_env_overrides(&flags(&["LEAK=${DORA_TEST_2919_SELFREF}"]));
         assert!(
             result.is_err(),
-            "a value that expands to the receiving process's env must be \
-             rejected, got {result:?}"
+            "a self-referential expansion round-trips to itself, so it must be \
+             caught syntactically rather than by comparison, got {result:?}"
         );
     }
 

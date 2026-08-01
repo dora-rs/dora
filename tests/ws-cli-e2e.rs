@@ -1285,6 +1285,154 @@ mod real_dataflow {
         );
     }
 
+    /// #2919 P2: a node added to a RUNNING dataflow must inherit that
+    /// dataflow's env, including anything set via `dora start --env`.
+    ///
+    /// `dora node add` resolves the incoming node through a temporary
+    /// single-node descriptor in the coordinator; that descriptor was
+    /// built with `env: None`, so the dataflow-into-node merge had
+    /// nothing to merge and an added node silently saw none of the
+    /// dataflow's environment. Reproduced as `<unset>` before the fix.
+    ///
+    /// Unix-only for the same reasons as the sibling env tests.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_dynamically_added_node_inherits_dataflow_env() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-addenv-2919-")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let stem = format!("dora-addenv-2919-{}", std::process::id());
+        let probe = target.join(format!("{stem}-probe.py"));
+        let base_marker = target.join(format!("{stem}-base.txt"));
+        let added_marker = target.join(format!("{stem}-added.txt"));
+        let yaml = target.join(format!("{stem}.yml"));
+        let added_yaml = target.join(format!("{stem}-added.yml"));
+        std::fs::write(
+            &probe,
+            concat!(
+                "import os, time\n",
+                "out = os.environ['PROBE_OUT']\n",
+                "with open(out + '.tmp', 'w') as f:\n",
+                "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
+                "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "os.replace(out + '.tmp', out)\n",
+                "time.sleep(120)\n",
+            ),
+        )
+        .expect("failed to write probe");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: base\n    \
+                   path: {probe}\n    \
+                   env:\n      \
+                     PROBE_OUT: {base_marker}\n    \
+                   outputs:\n      - value\n",
+                probe = probe.display(),
+                base_marker = base_marker.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+        // The added node sets its own E2919_NODE, so this also pins that
+        // node-level env still wins for dynamically added nodes.
+        std::fs::write(
+            &added_yaml,
+            format!(
+                "id: added\n\
+                 path: {probe}\n\
+                 env:\n  \
+                   PROBE_OUT: {added_marker}\n  \
+                   E2919_NODE: node-wins\n\
+                 outputs:\n  - value\n",
+                probe = probe.display(),
+                added_marker = added_marker.display(),
+            ),
+        )
+        .expect("failed to write added node yaml");
+
+        let status = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--name",
+                "addenv",
+                "--env",
+                "E2919_VAR=from-cli",
+                "--env",
+                "E2919_NODE=cli-loses",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(status.success(), "dora start --env failed");
+
+        // Wait for the base node so the dataflow is up before adding.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !base_marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "base node never spawned (is `python3` installed?)"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        let output = Command::new(&dora)
+            .args([
+                "node",
+                "add",
+                "--dataflow",
+                "addenv",
+                "--from-yaml",
+                added_yaml.to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run dora node add");
+        assert!(
+            output.status.success(),
+            "dora node add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !added_marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "added node never spawned"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let content = std::fs::read_to_string(&added_marker).expect("failed to read marker");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("from-cli"),
+            "a node added to a running dataflow must inherit its env \
+             (including `--env`); got {content:?}"
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("node-wins"),
+            "node-level env: must still win for added nodes; got {content:?}"
+        );
+    }
+
     /// The `dora run` half of #2919, which reaches the daemon by a
     /// different route: `run` builds a `descriptor_override` and hands it
     /// to the in-process `Daemon::run_dataflow`, rather than serializing
