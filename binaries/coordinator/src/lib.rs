@@ -1585,6 +1585,17 @@ async fn start_inner(
 
                                         // Resolve the Node into a ResolvedNode via a
                                         // temporary single-node descriptor.
+                                        //
+                                        // Carry the running dataflow's own `env:`
+                                        // into that descriptor so the added node
+                                        // inherits it exactly as its statically
+                                        // declared peers did — `resolve_aliases_and_set_defaults`
+                                        // performs the dataflow-into-node merge
+                                        // (node keys still win). Passing `None`
+                                        // here meant a node added later silently
+                                        // saw none of the dataflow's environment,
+                                        // including anything set via `dora start
+                                        // --env` (dora-rs/dora#2919).
                                         let tmp_desc = dora_message::descriptor::Descriptor {
                                             nodes: vec![node],
                                             communication: Default::default(),
@@ -1593,7 +1604,7 @@ async fn start_inner(
                                             health_check_interval: None,
                                             strict_types: None,
                                             type_rules: Vec::new(),
-                                            env: None,
+                                            env: dataflow.descriptor.env.clone(),
                                         };
                                         match tmp_desc.resolve_aliases_and_set_defaults() {
                                             Ok(mut resolved_map) => {

@@ -14,9 +14,9 @@ use crate::{
     ws_client::WsSession,
 };
 use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage};
+use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, descriptor::EnvValue};
 use eyre::Context;
-use std::{io::IsTerminal, net::SocketAddr, path::PathBuf};
+use std::{collections::BTreeMap, io::IsTerminal, net::SocketAddr, path::PathBuf};
 use uuid::Uuid;
 
 mod attach;
@@ -47,6 +47,21 @@ pub struct Start {
     /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
     #[clap(long, action)]
     debug: bool,
+    /// Set an environment variable for every node of this dataflow
+    /// (repeatable). Merges into the dataflow-level `env:` block;
+    /// node-level `env:` entries still win on conflict.
+    ///
+    /// Nodes started via `dora start` are spawned by the DAEMON and do
+    /// NOT inherit this CLI invocation's environment — `--env` is the
+    /// supported way to parameterize a run without editing the YAML.
+    /// Applies at spawn time only; `build:` commands are unaffected.
+    /// Values must survive the descriptor encoding verbatim: a literal
+    /// `$` is refused (the receiving process would expand it) and so are
+    /// numeric-looking values that would be coerced. They are also
+    /// persisted with the dataflow in the coordinator's state store and
+    /// visible in `ps` — prefer a node `env:` block for secrets.
+    #[clap(long = "env", value_name = "KEY=VALUE")]
+    env: Vec<String>,
 }
 
 impl Executable for Start {
@@ -54,12 +69,14 @@ impl Executable for Start {
         default_tracing()?;
         let coordinator_socket = self.coordinator.socket_addr();
 
+        let env_overrides = crate::env_overrides::parse_env_overrides(&self.env)?;
         let (dataflow, dataflow_descriptor, session, dataflow_id) = start_dataflow(
             self.dataflow,
             self.name,
             coordinator_socket,
             self.uv,
             self.debug,
+            env_overrides,
         )?;
 
         let attach = match (self.attach, self.detach) {
@@ -110,6 +127,7 @@ fn start_dataflow(
     coordinator_socket: SocketAddr,
     uv: bool,
     debug: bool,
+    env_overrides: BTreeMap<String, EnvValue>,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let working_dir = dataflow
@@ -183,6 +201,14 @@ fn start_dataflow(
     if debug {
         dataflow_descriptor.debug.enable_debug_inspection = true;
     }
+
+    // Merge `--env` LAST: the hub `fingerprint_source` comparison and
+    // `invalidate_if_build_inputs_changed` above both hash the
+    // descriptor (env included) against `dora build`-time state, and
+    // `--env` is a spawn-time input, not a build input — merging
+    // earlier would reject hub dataflows as "changed since build" and
+    // invalidate the cached build id on every `--env` change.
+    crate::env_overrides::apply_env_overrides(&mut dataflow_descriptor, env_overrides);
 
     let session = connect_to_coordinator(coordinator_socket)?;
 
