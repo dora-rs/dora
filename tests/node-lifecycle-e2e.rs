@@ -1127,6 +1127,150 @@ fn hot_swap_survives_predecessor_exit_before_readd() {
     );
 }
 
+/// A binary that exits non-zero immediately without ever connecting to
+/// the daemon — the "crashed at import" shape from dora-rs/dora#2917.
+///
+/// `false(1)` rather than a fixture crate: it needs to do nothing at
+/// all, and adding another workspace member would put another nested
+/// `cargo build` on the critical path of this already-slow CI job.
+#[cfg(unix)]
+fn never_subscribes_binary() -> &'static str {
+    ["/usr/bin/false", "/bin/false"]
+        .into_iter()
+        .find(|p| Path::new(p).exists())
+        .expect("no `false` binary found at /usr/bin/false or /bin/false")
+}
+
+/// Write a `dora node add --from-yaml` spec for an arbitrary id/path.
+#[cfg(unix)]
+fn write_node_yml(file_stem: &str, id: &str, path: &str) -> std::path::PathBuf {
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let yml = dir.join(format!("dora-{file_stem}-{}.yml", std::process::id()));
+    fs::write(
+        &yml,
+        format!("id: {id}\npath: {path}\noutputs:\n  - value\n"),
+    )
+    .expect("failed to write node spec");
+    yml
+}
+
+/// Regression guard for dora-rs/dora#2917: one node that dies before
+/// subscribing must not fail an unrelated node's `Node()` init.
+///
+/// `PendingNodes` is a dataflow-wide *startup* barrier. When a node
+/// exits before subscribing it lands in `exited_before_subscribe`
+/// (`binaries/daemon/src/pending.rs:100`), and `answer_subscribe_requests`
+/// then hands every waiting subscriber one shared `Err` naming that node
+/// (`pending.rs:183-198`). That is correct while the dataflow is
+/// starting — if a node dies then, nothing can start — but nodes added
+/// later join the same barrier via `AddNode`
+/// (`binaries/daemon/src/lib.rs:2302`), so the error reaches nodes that
+/// have nothing to do with it.
+///
+/// This pins the *sticky* variant rather than the concurrent race the
+/// issue reported, because it is deterministic: `exited_before_subscribe`
+/// is only ever pushed to, never cleared, so a single crashed node
+/// poisons every later `dora node add` on that dataflow for as long as
+/// it runs. The reporter's workaround (sequence the adds) does not help
+/// here — the crash and the healthy add are already fully sequenced.
+#[test]
+#[cfg(unix)]
+fn dynamic_add_survives_earlier_crash_before_subscribe() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-crosstalk";
+    let crasher_yml = write_node_yml("crasher", "crasher", never_subscribes_binary());
+    let healthy = write_stop_delay_yml("crosstalk-healthy", 0, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    // 0. Let the dataflow's own nodes finish subscribing before adding
+    //    anything. `Running` in `dora node list` only means the process
+    //    is in `running_nodes`; it does not mean the node has subscribed
+    //    yet, and there is no CLI observable for that. Adding the
+    //    crasher while the initial cohort is still mid-subscribe hits a
+    //    harsher variant of the same bug (asserted at step 2 below), and
+    //    this test is pinning the sticky one.
+    std::thread::sleep(Duration::from_secs(8));
+
+    // 1. A node that exits non-zero without ever reaching the daemon.
+    //    `node add` still succeeds: the daemon replies once the spawn
+    //    succeeds, and this process only fails afterwards.
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "add",
+            "--dataflow",
+            name,
+            "--from-yaml",
+            crasher_yml.to_str().unwrap(),
+        ]),
+        "dora node add crasher",
+    );
+    assert!(ok, "dora node add crasher failed.\nstderr:\n{stderr}");
+
+    // 2. Let the daemon account that exit. Fully sequenced — no overlap
+    //    with the healthy add below, so nothing here is a race.
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(20), |m| {
+        m.get("crasher").is_none_or(|(s, _, _)| s != "Running")
+    });
+    assert!(
+        parse_node_list(&list_out)
+            .get("crasher")
+            .is_none_or(|(s, _, _)| s != "Running"),
+        "crasher should not be Running; it exits immediately\nlist:\n{list_out}"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+
+    // 2. The dataflow's own nodes must be untouched. If they are gone,
+    //    the crasher landed while they were still subscribing and took
+    //    the whole startup cohort down with it — the same
+    //    `exited_before_subscribe` broadcast, one step earlier. That is
+    //    a real defect too, but it is not what this test pins, and
+    //    letting it fall through would fail the healthy add below with
+    //    a misleading "no dataflow is running".
+    let (_, list_out, _) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after crasher",
+    );
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("sender"), Some((s, _, _)) if s == "Running")
+            && matches!(nodes.get("receiver"), Some((s, _, _)) if s == "Running"),
+        "the crasher took down the dataflow's own nodes, so it landed during their \
+         subscribe window rather than after it — raise the settle at step 0 to pin the \
+         sticky variant (#2917)\nlist:\n{list_out}"
+    );
+
+    // 3. A healthy, unrelated node added afterwards must come up. Today
+    //    its `Node()` init is answered with the crasher's failure
+    //    ("Node crasher exited before initializing dora"), so it exits
+    //    and never reaches Running.
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "add",
+            "--dataflow",
+            name,
+            "--from-yaml",
+            healthy.yml.to_str().unwrap(),
+        ]),
+        "dora node add healthy",
+    );
+    assert!(ok, "dora node add healthy failed.\nstderr:\n{stderr}");
+
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(20), |m| {
+        m.get("filter").is_some_and(|(s, _, _)| s == "Running")
+    });
+    let filter_state = parse_node_list(&list_out).get("filter").cloned();
+    assert!(
+        matches!(&filter_state, Some((s, _, _)) if s == "Running"),
+        "a healthy node added after an unrelated node crashed before subscribing \
+         must still initialize; got {filter_state:?}. Check `dora logs {name} --node filter` \
+         for the other node's error delivered into this one's `Node()` init (#2917).\
+         \nlist:\n{list_out}"
+    );
+}
+
 #[test]
 // C++ fixture is deliberately Unix-only: the existing cmake-dataflow
 // example in this repo explicitly skips Windows
