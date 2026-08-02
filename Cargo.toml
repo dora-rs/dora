@@ -206,6 +206,7 @@ tracing = { workspace = true }
 futures = { workspace = true }
 tokio-stream = "0.1.18"
 tempfile = { workspace = true }
+redb = "2"
 assert2 = "0.4.0"
 tokio-tungstenite = "0.29"
 libloading = "0.9"

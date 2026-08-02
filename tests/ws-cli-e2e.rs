@@ -1016,11 +1016,13 @@ mod real_dataflow {
     use dora_message::{
         cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
     };
+    use redb::{Database, TableDefinition};
     use std::net::SocketAddr;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Once;
     use std::time::Duration;
+    use tempfile::tempdir;
     use uuid::Uuid;
 
     static BUILD: Once = Once::new();
@@ -1063,6 +1065,69 @@ mod real_dataflow {
                 .expect("failed to build");
             assert!(status.success());
         });
+    }
+
+    fn write_legacy_coordinator_redb(home: &Path) {
+        let path = home.join(".dora").join("coordinator.redb");
+        std::fs::create_dir_all(path.parent().unwrap()).expect("create .dora dir");
+        let db = Database::create(&path).expect("create redb file");
+        let txn = db.begin_write().expect("begin redb write");
+        {
+            let mut meta: redb::Table<'_, &str, u32> = txn
+                .open_table(TableDefinition::new("meta"))
+                .expect("open meta table");
+            meta.insert("schema_version", 2u32)
+                .expect("write legacy schema version");
+        }
+        txn.commit().expect("commit redb fixture");
+    }
+
+    fn allocate_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("local addr")
+            .port()
+    }
+
+    fn run_dora_with_home(
+        dora: &str,
+        home: &Path,
+        port: u16,
+        args: &[&str],
+    ) -> (std::process::ExitStatus, String, String) {
+        let mut cmd = Command::new(dora);
+        cmd.args(args);
+        cmd.env("HOME", home);
+        cmd.env("DORA_COORDINATOR_PORT", port.to_string());
+        let out = cmd
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .output()
+            .expect("failed to spawn dora");
+        let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+        let stderr = String::from_utf8_lossy(&out.stderr).into_owned();
+        (out.status, stdout, stderr)
+    }
+
+    #[test]
+    fn e2e_up_reports_redb_schema_mismatch_from_coordinator() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("temp home");
+        write_legacy_coordinator_redb(home.path());
+        let port = allocate_port();
+
+        let (status, stdout, stderr) = run_dora_with_home(&dora, home.path(), port, &["up"]);
+        assert!(
+            !status.success(),
+            "dora up should fail with a legacy redb file; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("redb schema version mismatch")
+                || stdout.contains("redb schema version mismatch"),
+            "startup error should expose the coordinator crash cause, got stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
     }
 
     fn cleanup(dora: &str) {

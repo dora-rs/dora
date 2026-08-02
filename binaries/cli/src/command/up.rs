@@ -10,6 +10,7 @@ use eyre::{Context, ContextCompat, bail};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
+use uuid::Uuid;
 
 #[derive(Debug, clap::Args)]
 /// Spawn coordinator and daemon in local mode (with default config)
@@ -54,15 +55,8 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
             session
         }
         Err(_) => {
-            start_coordinator(auth).wrap_err("failed to start dora-coordinator")?;
-
-            connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
-                eyre::eyre!(
-                    "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
-                     hint: is port {port} already in use? Check with `dora status`\n  \
-                     or stop the existing coordinator with `dora down`"
-                )
-            })?
+            let startup = start_coordinator(auth)?;
+            wait_for_coordinator_start(coordinator_addr, port, startup)?
         }
     };
 
@@ -87,6 +81,61 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+struct CoordinatorStartup {
+    stderr_path: std::path::PathBuf,
+    child: std::process::Child,
+}
+
+fn wait_for_coordinator_start(
+    coordinator_addr: SocketAddr,
+    port: u16,
+    mut startup: CoordinatorStartup,
+) -> eyre::Result<crate::ws_client::WsSession> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = startup
+            .child
+            .try_wait()
+            .wrap_err("failed to poll coordinator")?
+        {
+            let stderr = captured_stderr(&startup.stderr_path);
+            let _ = fs::remove_file(&startup.stderr_path);
+            if stderr.is_empty() {
+                eyre::bail!("coordinator exited before it became ready: {status}");
+            }
+            eyre::bail!("coordinator exited before it became ready: {status}\n{stderr}");
+        }
+        match connect_to_coordinator(coordinator_addr) {
+            Ok(session) => {
+                let _ = fs::remove_file(&startup.stderr_path);
+                return Ok(session);
+            }
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => {
+                let stderr = captured_stderr(&startup.stderr_path);
+                let _ = fs::remove_file(&startup.stderr_path);
+                if stderr.is_empty() {
+                    eyre::bail!(
+                        "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  hint: is port {port} already in use? Check with `dora status`\n  or stop the existing coordinator with `dora down`"
+                    );
+                }
+                eyre::bail!(
+                    "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  coordinator stderr:\n{stderr}\n\n  hint: is port {port} already in use? Check with `dora status`\n  or stop the existing coordinator with `dora down`"
+                );
+            }
+        }
+    }
+}
+
+fn captured_stderr(path: &Path) -> String {
+    fs::read_to_string(path)
+        .unwrap_or_default()
+        .trim()
+        .to_owned()
 }
 
 pub(crate) fn down(
@@ -156,7 +205,7 @@ pub(crate) fn detach_process(cmd: &mut Command) {
     }
 }
 
-fn start_coordinator(auth: bool) -> eyre::Result<()> {
+fn start_coordinator(auth: bool) -> eyre::Result<CoordinatorStartup> {
     let path = dora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
@@ -164,15 +213,26 @@ fn start_coordinator(auth: bool) -> eyre::Result<()> {
     if auth {
         cmd.arg("--auth");
     }
-    detach_process(&mut cmd);
-    cmd.spawn().wrap_err(
+    let stderr_path =
+        std::env::temp_dir().join(format!("dora-coordinator-{}.stderr", Uuid::new_v4()));
+    let stderr_file =
+        fs::File::create(&stderr_path).wrap_err("failed to create coordinator stderr capture")?;
+    cmd.stdin(Stdio::null());
+    cmd.stdout(Stdio::null());
+    cmd.stderr(stderr_file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        cmd.process_group(0);
+    }
+    let child = cmd.spawn().wrap_err(
         "failed to run `dora coordinator`\n\n  \
          hint: ensure the `dora` binary is in your PATH",
     )?;
 
     println!("started dora coordinator");
 
-    Ok(())
+    Ok(CoordinatorStartup { stderr_path, child })
 }
 
 fn start_daemon() -> eyre::Result<()> {
