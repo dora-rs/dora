@@ -1,0 +1,22 @@
+[package]
+name = "drain-recording-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: counts the data inputs it receives, exits when the
+# daemon tells it all inputs are closed, and writes the count to
+# `$DORA_TEST_DRAIN_RECORD`. Lets a test assert that a node drained
+# AFTER doing its work rather than at startup (dora-rs/dora#2920).
+
+[[bin]]
+name = "drain-recording-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

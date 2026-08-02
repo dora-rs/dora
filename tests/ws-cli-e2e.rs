@@ -1313,14 +1313,25 @@ mod real_dataflow {
                 "-p",
                 "emit-then-exit-source-node",
                 "-p",
-                "rust-dynamic-add-remove-receiver",
+                "drain-recording-node",
             ])
             .status()
             .expect("failed to build fixtures");
         assert!(status.success(), "failed to build fixtures");
 
         let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        // Sweep stale artifacts from earlier runs, as the sibling tests do.
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("dora-timer-2920-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
         let yaml = target.join(format!("dora-timer-2920-{}.yml", std::process::id()));
+        let record = target.join(format!("dora-timer-2920-{}.record", std::process::id()));
+        let _ = std::fs::remove_file(&record);
         std::fs::write(
             &yaml,
             format!(
@@ -1332,13 +1343,14 @@ mod real_dataflow {
                    outputs:\n      - value\n  \
                  - id: consumer\n    \
                    path: {consumer}\n    \
+                   env:\n      \
+                     DORA_TEST_DRAIN_RECORD: {record}\n    \
                    inputs:\n      \
                      value: producer/value\n      \
                      tick: dora/timer/millis/200\n",
                 producer = target.join("debug/emit-then-exit-source-node").display(),
-                consumer = target
-                    .join("debug/rust-dynamic-add-remove-receiver")
-                    .display(),
+                consumer = target.join("debug/drain-recording-node").display(),
+                record = record.display(),
             ),
         )
         .expect("failed to write dataflow yaml");
@@ -1360,7 +1372,26 @@ mod real_dataflow {
                 None => std::thread::sleep(Duration::from_millis(200)),
             }
         };
-        let _ = without.kill();
+        // SIGTERM, not `kill()`. `Child::kill` sends SIGKILL, which
+        // `dora run` cannot handle, so its spawned nodes are orphaned and
+        // keep running for the rest of the CI job — verified: the
+        // consumer survives indefinitely. SIGTERM gives the run a chance
+        // to tear its nodes down (dora-rs/dora#2949), and we only escalate
+        // if it ignores that.
+        let _ = Command::new("kill")
+            .args(["-TERM", &without.id().to_string()])
+            .status();
+        let term_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match without.try_wait().expect("try_wait failed") {
+                Some(_) => break,
+                None if std::time::Instant::now() >= term_deadline => {
+                    let _ = without.kill();
+                    break;
+                }
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
         let _ = without.wait();
         assert!(
             !exited_on_its_own,
@@ -1377,7 +1408,10 @@ mod real_dataflow {
         let mut with = Command::new(&dora)
             .args(["run", yaml.to_str().unwrap(), "--exit-when-nodes-finish"])
             .stdout(Stdio::null())
-            .stderr(Stdio::piped())
+            // Null, not piped: nothing reads this pipe, and a `dora run`
+            // that fills the buffer would then block on write and look
+            // like the hang this test is trying to detect.
+            .stderr(Stdio::null())
             .spawn()
             .expect("failed to spawn dora run");
         let deadline = std::time::Instant::now() + Duration::from_secs(60);
@@ -1400,6 +1434,36 @@ mod real_dataflow {
             status.success(),
             "`dora run --exit-when-nodes-finish` exited with {status}"
         );
+
+        // Terminating is necessary but not sufficient: draining the
+        // consumer at startup, before the producer ever sent anything,
+        // would also terminate and also exit 0. Assert it did its work
+        // first, and that it left because it was told all inputs were
+        // closed rather than because its event stream happened to end.
+        let recorded = std::fs::read_to_string(&record).unwrap_or_else(|e| {
+            panic!(
+                "consumer wrote no drain record at {} ({e}) — it did not reach \
+                 a clean exit",
+                record.display()
+            )
+        });
+        let (inputs, drained) = recorded
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("malformed drain record {recorded:?}"));
+        assert_eq!(
+            drained, "true",
+            "consumer exited without receiving AllInputsClosed (record: {recorded:?}) \
+             — the dataflow ended for some other reason, so this test would pass \
+             even if the drain opt-in did nothing"
+        );
+        assert!(
+            inputs.parse::<u64>().expect("input count") > 0,
+            "consumer drained without ever receiving `value` (record: {recorded:?}) \
+             — it was stopped at startup, not after finishing its work"
+        );
+
+        let _ = std::fs::remove_file(&yaml);
+        let _ = std::fs::remove_file(&record);
     }
 
     /// #2919 P2: a node added to a RUNNING dataflow must inherit that

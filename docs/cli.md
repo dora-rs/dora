@@ -35,6 +35,12 @@ dora new my-robot --kind dataflow --lang rust
 # Run locally (no coordinator/daemon needed)
 dora run dataflow.yml
 
+# Exit as soon as every node has finished. Without this, a dataflow in
+# which any node consumes a `dora/timer/...` input never ends on its
+# own: a timer input has no upstream node, so it never closes, and the
+# node consuming it is never told its inputs are done.
+dora run dataflow.yml --exit-when-nodes-finish
+
 # Or use coordinator/daemon for production
 dora up
 dora start dataflow.yml --attach
@@ -277,6 +283,7 @@ dora run <PATH> [OPTIONS]
 | `--uv` | false | Use `uv` for Python node management |
 | `--debug` | false | Enable debug topics (equivalent to `enable_debug_inspection: true`) |
 | `--allow-shell-nodes` | false | Enable shell-based node execution |
+| `--exit-when-nodes-finish` | false | Exit once all nodes finish, treating `dora/timer/...` inputs as a clock rather than as work |
 | `--log-level <LEVEL>` | `stdout` | Min display level: `error\|warn\|info\|debug\|trace\|stdout` |
 | `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact` |
 | `--log-filter <FILTER>` | | Per-node level overrides: `"node1=debug,node2=warn"` |

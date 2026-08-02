@@ -11,7 +11,6 @@ use dora_core::{
 };
 use dora_message::{
     common::DaemonId,
-    config::InputMapping,
     daemon_to_node::{NodeConfig, NodeEvent},
     descriptor::RestartPolicy,
     metadata::{self},
@@ -221,6 +220,15 @@ pub struct RunningDataflow {
     pub(crate) connected_nodes: BTreeSet<NodeId>,
     /// Nodes already escalated by the finish-straggler watchdog (one-shot).
     pub(crate) finish_escalated: BTreeSet<NodeId>,
+    /// Per node, the inputs that can ever close — i.e. those fed by
+    /// another node's output rather than by the daemon.
+    ///
+    /// Recorded where inputs are registered, so it sees the same
+    /// resolved view as `open_inputs` (notably `node_inputs`, which
+    /// flattens a runtime node's `operators[].config.inputs`). Timer and
+    /// Logs inputs are excluded: they have no upstream node and so never
+    /// close. Used by [`RunningDataflow::is_drained`] (#2920).
+    pub(crate) data_inputs: BTreeMap<NodeId, BTreeSet<DataId>>,
     /// Whether timer inputs keep a node from draining.
     ///
     /// A timer input is registered in `open_inputs` like any other but is
@@ -298,6 +306,7 @@ impl RunningDataflow {
             all_inputs_closed_at: HashMap::new(),
             connected_nodes: BTreeSet::new(),
             finish_escalated: BTreeSet::new(),
+            data_inputs: BTreeMap::new(),
             timers_gate_drain: true,
             stop_sent: false,
             empty_set: BTreeSet::new(),
@@ -726,51 +735,42 @@ impl RunningDataflow {
 
     /// Whether `input_id` on `node_id` is fed by a timer rather than by
     /// another node's output.
-    fn is_timer_input(&self, node_id: &NodeId, input_id: &DataId) -> bool {
-        self.timers
-            .values()
-            .any(|receivers| receivers.contains(&(node_id.clone(), input_id.clone())))
-    }
-
     /// Whether `node_id` has finished draining — i.e. whether it should
     /// be told `AllInputsClosed`.
     ///
     /// With `timers_gate_drain` (the default) this is simply "no open
-    /// inputs left". With it off, timer inputs are ignored, so a node
-    /// drains once its data inputs have closed even though its clock
-    /// keeps ticking (dora-rs/dora#2920).
+    /// inputs left". With it off, only inputs that *can* close count, so
+    /// a node drains once its data inputs have closed even though its
+    /// clock keeps ticking (dora-rs/dora#2920).
     ///
-    /// A node whose inputs are ALL timers is never considered drained:
-    /// it has no data dependency that could finish, which makes it a
-    /// source in every sense that matters here, and the existing
-    /// source-node rule already says sources are not told to finish.
-    /// Without this, enabling the flag would tell every timer-driven
-    /// producer to stop the moment the dataflow started.
+    /// A node with no data inputs at all — timer-only, logs-only, or no
+    /// inputs — is never considered drained. It has no dependency that
+    /// could ever finish, which makes it a source, and sources are not
+    /// told to finish. Without this, enabling the opt-in would stop
+    /// every timer-driven producer the moment the dataflow started.
+    ///
+    /// This deliberately reads `data_inputs`, recorded when inputs were
+    /// registered, rather than re-deriving the answer from the
+    /// descriptor: a runtime (`operators:`) node keeps its inputs under
+    /// `operators[].config.inputs` and has an empty top-level `inputs`
+    /// map, so a descriptor-derived check reports "no data inputs" for
+    /// every operator node and hangs the dataflow it was meant to end.
     pub(crate) fn is_drained(&self, node_id: &NodeId) -> bool {
         let open = self.open_inputs(node_id);
         if self.timers_gate_drain {
             return open.is_empty();
         }
-        if !self.has_data_input(node_id) {
+        let Some(data_inputs) = self.data_inputs.get(node_id) else {
             return false;
-        }
-        open.iter().all(|input| self.is_timer_input(node_id, input))
+        };
+        !data_inputs.is_empty() && data_inputs.is_disjoint(open)
     }
 
-    /// Whether the descriptor declares at least one non-timer input for
-    /// this node. Read from the stored descriptor, matching how the
-    /// source-node check in `handle_outputs_done` decides the same
-    /// question.
-    fn has_data_input(&self, node_id: &NodeId) -> bool {
-        self.descriptor
-            .nodes
-            .iter()
-            .find(|n| &n.id == node_id)
-            .is_some_and(|node| {
-                node.inputs
-                    .values()
-                    .any(|input| !matches!(input.mapping, InputMapping::Timer { .. }))
-            })
+    /// Whether this node declared at least one input that can ever close.
+    pub(crate) fn has_data_input(&self, node_id: &NodeId) -> bool {
+        self.data_inputs
+            .get(node_id)
+            .is_some_and(|inputs| !inputs.is_empty())
     }
 
     /// All output ids produced by `node_id`, whether they are consumed by a
@@ -845,6 +845,20 @@ impl RunningDataflow {
     /// "silent and never drained" exactly like a wedge, but is alive by design
     /// (dora-rs/dora#2270) — e.g. a long-running timer-only side-effect node.
     fn node_never_finishes(&self, node_id: &NodeId) -> bool {
+        // Under the drain opt-in a node with data inputs DOES finish, even
+        // though it is also fed by a timer or logs. Treating it as
+        // never-finishing would veto the straggler watchdog for the whole
+        // dataflow (see `select_finish_stragglers`) exactly on the path
+        // where nodes newly receive `AllInputsClosed` — so a drained node
+        // that then wedges could never be escalated (#2920).
+        if !self.timers_gate_drain && self.has_data_input(node_id) {
+            return false;
+        }
+        // NOTE: this misclassifies a runtime (`operators:`) node as a
+        // source, because its inputs live under `operators[].config.inputs`
+        // and the top-level map is empty. Pre-existing and left alone here:
+        // correcting it would newly arm the straggler watchdog for operator
+        // dataflows, which is a behavior change well outside #2920.
         let is_source = self
             .descriptor
             .nodes
@@ -1027,14 +1041,22 @@ mod tests {
     }
 
     /// A dataflow with `node` declared as in `descriptor_with_node`, its
-    /// inputs all currently open, and timer inputs registered as timers.
+    /// inputs all currently open, timer inputs registered as timers, and
+    /// data inputs recorded in `data_inputs` — mirroring what the daemon
+    /// does when it registers a node's inputs.
     fn dataflow_with_node(node_id: &str, inputs: &[(&str, bool)]) -> RunningDataflow {
-        let node: NodeId = node_id.to_string().into();
         let mut df = RunningDataflow::new(
             uuid::Uuid::nil(),
             DaemonId::new(None),
             descriptor_with_node(node_id, inputs),
         );
+        register_inputs(&mut df, node_id, inputs);
+        df
+    }
+
+    /// Register one node's inputs the way the daemon's spawn path does.
+    fn register_inputs(df: &mut RunningDataflow, node_id: &str, inputs: &[(&str, bool)]) {
+        let node: NodeId = node_id.to_string().into();
         for (id, is_timer) in inputs {
             let input: DataId = id.to_string().into();
             df.open_inputs
@@ -1046,9 +1068,13 @@ mod tests {
                     .entry(Duration::from_millis(100))
                     .or_default()
                     .insert((node.clone(), input));
+            } else {
+                df.data_inputs
+                    .entry(node.clone())
+                    .or_default()
+                    .insert(input);
             }
         }
-        df
     }
 
     /// Default behavior is unchanged: every input gates the drain, so a
@@ -1115,6 +1141,105 @@ mod tests {
         let mut df = dataflow_with_node("source", &[]);
         df.timers_gate_drain = false;
         assert!(!df.is_drained(&node));
+    }
+
+    /// A data input must only satisfy the node that declared it. Keying
+    /// the drain on the input id alone would drain any node sharing an
+    /// input name with another node's timer — and `tick` is the most
+    /// common input name in this repo's own dataflows.
+    #[test]
+    fn drain_does_not_confuse_inputs_that_share_a_name_across_nodes() {
+        let ticker: NodeId = "ticker".to_string().into();
+        let worker: NodeId = "worker".to_string().into();
+        let mut df = dataflow_with_node("ticker", &[("tick", true)]);
+        // `worker` also has an input called `tick`, but its is real data.
+        register_inputs(&mut df, "worker", &[("tick", false)]);
+        df.timers_gate_drain = false;
+
+        assert!(
+            !df.is_drained(&worker),
+            "worker's `tick` is a DATA input and is still open; it must not \
+             be drained just because another node has a timer named `tick`"
+        );
+        assert!(!df.is_drained(&ticker), "ticker is timer-only, so a source");
+
+        df.open_inputs
+            .get_mut(&worker)
+            .unwrap()
+            .remove(&DataId::from("tick".to_string()));
+        assert!(df.is_drained(&worker), "worker's data input has now closed");
+    }
+
+    /// A runtime (`operators:`) node keeps its inputs under
+    /// `operators[].config.inputs`, leaving the node's own `inputs` map
+    /// empty. Deriving "has data inputs" from the descriptor therefore
+    /// reported false for every operator node and hung the dataflow the
+    /// opt-in was meant to end. Recording the inputs at registration time
+    /// is what makes this work.
+    #[test]
+    fn operator_nodes_drain_under_the_opt_in() {
+        let yaml = "nodes:\n  \
+                    - id: sink\n    \
+                      operators:\n      \
+                        - id: op\n        \
+                          shared-library: dummy\n        \
+                          inputs:\n          \
+                            data: source/op/data\n";
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let node: NodeId = "sink".to_string().into();
+        assert!(
+            descriptor.nodes[0].inputs.is_empty(),
+            "precondition: an operator node's top-level `inputs` map is empty, \
+             which is exactly why the descriptor cannot answer this question"
+        );
+
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), descriptor);
+        // The daemon registers the flattened `op/data` input.
+        register_inputs(&mut df, "sink", &[("op/data", false)]);
+        df.timers_gate_drain = false;
+
+        assert!(!df.is_drained(&node), "the operator's data input is open");
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("op/data".to_string()));
+        assert!(
+            df.is_drained(&node),
+            "an operator node must drain once its data inputs close, exactly \
+             like a custom node"
+        );
+    }
+
+    /// The straggler watchdog must stay armed for nodes the opt-in drains.
+    /// `node_never_finishes` vetoes escalation for the whole dataflow, so
+    /// leaving timer-fed nodes marked never-finishing would disable the
+    /// safety net precisely where nodes newly get `AllInputsClosed`.
+    #[test]
+    fn opt_in_keeps_the_straggler_watchdog_armed_for_drainable_nodes() {
+        let node: NodeId = "consumer".to_string().into();
+        let mut df = dataflow_with_node("consumer", &[("value", false), ("tick", true)]);
+
+        assert!(
+            df.node_never_finishes(&node),
+            "by default a timer-fed node genuinely never finishes"
+        );
+
+        df.timers_gate_drain = false;
+        assert!(
+            !df.node_never_finishes(&node),
+            "under the opt-in this node DOES finish, so the watchdog must be \
+             able to escalate it if it then wedges"
+        );
+    }
+
+    /// Timer-only nodes stay exempt from the watchdog even under the
+    /// opt-in — they really never finish.
+    #[test]
+    fn opt_in_leaves_timer_only_nodes_exempt_from_the_watchdog() {
+        let node: NodeId = "ticker".to_string().into();
+        let mut df = dataflow_with_node("ticker", &[("tick", true)]);
+        df.timers_gate_drain = false;
+        assert!(df.node_never_finishes(&node));
     }
 
     fn empty_descriptor() -> Descriptor {
