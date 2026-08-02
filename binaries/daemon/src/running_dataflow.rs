@@ -733,8 +733,42 @@ impl RunningDataflow {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
 
-    /// Whether `input_id` on `node_id` is fed by a timer rather than by
-    /// another node's output.
+    /// Wire up a node-to-node edge added at runtime (`dora node connect`).
+    ///
+    /// Kept here, rather than inline in the `AddMapping` handler, so the
+    /// state it has to keep in step — `mappings`, `open_inputs`,
+    /// `data_inputs` and the drain clock — can be exercised directly by a
+    /// test instead of only through the daemon event loop.
+    pub(crate) fn add_mapping(
+        &mut self,
+        source_node: NodeId,
+        source_output: DataId,
+        target_node: NodeId,
+        target_input: DataId,
+    ) {
+        self.mappings
+            .entry(OutputId(source_node, source_output))
+            .or_default()
+            .insert((target_node.clone(), target_input.clone()));
+        // Reopening an input ends any drain: clear the stale clock so
+        // the selector does not treat the node as drained-and-eligible
+        // on a timestamp from before the mapping was re-added (#2270).
+        self.all_inputs_closed_at.remove(&target_node);
+        self.open_inputs
+            .entry(target_node.clone())
+            .or_default()
+            .insert(target_input.clone());
+        // A mapping is by construction a node-to-node edge, so this is a
+        // data input and must gate the drain like any other. Without it
+        // the opt-in would not see the new input at all, and could report
+        // the node drained while an input that can still deliver is open
+        // (#2920).
+        self.data_inputs
+            .entry(target_node)
+            .or_default()
+            .insert(target_input);
+    }
+
     /// Whether `node_id` has finished draining — i.e. whether it should
     /// be told `AllInputsClosed`.
     ///
@@ -764,6 +798,43 @@ impl RunningDataflow {
             return false;
         };
         !data_inputs.is_empty() && data_inputs.is_disjoint(open)
+    }
+
+    /// Whether `node_id` has finished: drained, with no circuit-broken
+    /// input that could still recover and deliver more data.
+    ///
+    /// The shared half of both drain sites (`Daemon::subscribe` and
+    /// `signal_all_inputs_closed_if_drained`), which had already drifted —
+    /// only one of them excluded broken inputs. The source check is NOT
+    /// folded in here: it belongs only at the subscribe site, where a node
+    /// that never had inputs can reach the test. Adding it to the close
+    /// path would change default-mode behavior, and the failure mode of
+    /// getting that wrong is a missed `AllInputsClosed`, i.e. the hang
+    /// this issue exists to remove.
+    pub(crate) fn is_finished(&self, node_id: &NodeId) -> bool {
+        self.is_drained(node_id) && !self.has_broken_input(node_id)
+    }
+
+    /// Whether any of this node's inputs is circuit-broken (out of
+    /// `open_inputs`, but recoverable).
+    pub(crate) fn has_broken_input(&self, node_id: &NodeId) -> bool {
+        self.broken_inputs.keys().any(|(nid, _)| nid == node_id)
+    }
+
+    /// Whether a node that has just subscribed should immediately be told
+    /// `AllInputsClosed` — i.e. it is finished AND is not a source.
+    ///
+    /// The source half only matters here. On the close path a node reached
+    /// the test by having an input close, so it necessarily had one; but a
+    /// node can subscribe having never had any input, and in the default
+    /// mode "nothing open" reads as finished.
+    ///
+    /// Deliberately one method rather than two conditions at the call site:
+    /// the descriptor-derived version of this check silently reported every
+    /// runtime (`operators:`) node as a source and hung it, and a decision
+    /// spelled out at the call site cannot be unit-tested.
+    pub(crate) fn is_finished_non_source(&self, node_id: &NodeId) -> bool {
+        self.is_finished(node_id) && self.has_data_input(node_id)
     }
 
     /// Whether this node declared at least one input that can ever close.
@@ -845,13 +916,19 @@ impl RunningDataflow {
     /// "silent and never drained" exactly like a wedge, but is alive by design
     /// (dora-rs/dora#2270) — e.g. a long-running timer-only side-effect node.
     fn node_never_finishes(&self, node_id: &NodeId) -> bool {
-        // Under the drain opt-in a node with data inputs DOES finish, even
-        // though it is also fed by a timer or logs. Treating it as
+        // A node that HAS drained under the opt-in really can finish, even
+        // though a timer or logs input keeps it fed. Treating it as
         // never-finishing would veto the straggler watchdog for the whole
         // dataflow (see `select_finish_stragglers`) exactly on the path
         // where nodes newly receive `AllInputsClosed` — so a drained node
         // that then wedges could never be escalated (#2920).
-        if !self.timers_gate_drain && self.has_data_input(node_id) {
+        //
+        // Keyed on having drained, not on merely declaring data inputs: a
+        // timer-fed node whose data inputs are still open has not finished,
+        // and arming the watchdog for it would let a slow upstream plus a
+        // long timer interval read as "silent past the grace period" and
+        // get it escalated to SIGKILL while it is healthy.
+        if !self.timers_gate_drain && self.is_drained(node_id) {
             return false;
         }
         // NOTE: this misclassifies a runtime (`operators:`) node as a
@@ -1170,6 +1247,54 @@ mod tests {
         assert!(df.is_drained(&worker), "worker's data input has now closed");
     }
 
+    /// An input added at runtime (`dora node connect` -> `AddMapping`)
+    /// must gate the drain like a declared one. It is recorded in
+    /// `open_inputs`, so if it were missing from `data_inputs` the
+    /// disjointness test would simply not see it, and a node could be
+    /// told all its inputs were closed while an input that can still
+    /// deliver data was open.
+    #[test]
+    fn inputs_added_at_runtime_gate_the_drain() {
+        let node: NodeId = "consumer".to_string().into();
+        let mut df = dataflow_with_node("consumer", &[("value", false), ("tick", true)]);
+        df.timers_gate_drain = false;
+
+        // `dora node connect` wires up a second data input. This must go
+        // through the real handler helper: routing it via the test's own
+        // `register_inputs` would assert against a re-implementation of
+        // the very bookkeeping under test, and would still pass if
+        // `add_mapping` stopped recording the input.
+        df.add_mapping(
+            "producer".to_string().into(),
+            "late_out".to_string().into(),
+            node.clone(),
+            "late".to_string().into(),
+        );
+        assert!(
+            df.data_inputs
+                .get(&node)
+                .is_some_and(|inputs| inputs.contains(&DataId::from("late".to_string()))),
+            "add_mapping must record the new edge as a data input"
+        );
+
+        // The originally-declared input closes; `late` is still open.
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("value".to_string()));
+        assert!(
+            !df.is_drained(&node),
+            "a runtime-added input is still open, so the node has not finished \
+             — draining here would drop data that input can still deliver"
+        );
+
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("late".to_string()));
+        assert!(df.is_drained(&node), "now every data input has closed");
+    }
+
     /// A runtime (`operators:`) node keeps its inputs under
     /// `operators[].config.inputs`, leaving the node's own `inputs` map
     /// empty. Deriving "has data inputs" from the descriptor therefore
@@ -1210,6 +1335,84 @@ mod tests {
         );
     }
 
+    /// The send decision, not just the drain predicate. An operator node
+    /// must be told `AllInputsClosed`: deciding "is this a source" from
+    /// the descriptor calls every runtime node a source (its top-level
+    /// `inputs` map is empty) and skips the event, which is the hang this
+    /// issue is about.
+    #[test]
+    fn operator_nodes_are_told_all_inputs_closed() {
+        let yaml = "nodes:\n  \
+                    - id: sink\n    \
+                      operators:\n      \
+                        - id: op\n        \
+                          shared-library: dummy\n        \
+                          inputs:\n          \
+                            data: source/op/data\n";
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let node: NodeId = "sink".to_string().into();
+        let mut df = RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), descriptor);
+        register_inputs(&mut df, "sink", &[("op/data", false)]);
+        df.timers_gate_drain = false;
+
+        assert!(!df.is_finished(&node), "input still open");
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("op/data".to_string()));
+        assert!(
+            df.is_finished_non_source(&node),
+            "an operator node must not read as a source, or subscribe skips \
+             `AllInputsClosed` and it hangs forever — the failure this issue \
+             exists to fix. Deriving this from the descriptor gets it wrong, \
+             because a runtime node's top-level `inputs` map is empty."
+        );
+    }
+
+    /// Sources are never told to finish, in either mode.
+    #[test]
+    fn sources_are_not_told_all_inputs_closed() {
+        let source: NodeId = "source".to_string().into();
+        let mut df = dataflow_with_node("source", &[]);
+        // In the default mode a source looks drained (nothing is open), so
+        // the source check is what stops the event being sent.
+        assert!(df.is_finished(&source), "nothing is open");
+        assert!(
+            !df.is_finished_non_source(&source),
+            "but it is a source, so it must not be told to finish"
+        );
+        df.timers_gate_drain = false;
+        // Under the opt-in `is_drained` already excludes it.
+        assert!(!df.is_finished_non_source(&source));
+    }
+
+    /// A circuit-broken input is recoverable, so the node is not finished.
+    /// It leaves `open_inputs`, which would otherwise read as drained.
+    #[test]
+    fn circuit_broken_inputs_do_not_count_as_finished() {
+        let node: NodeId = "consumer".to_string().into();
+        let value = DataId::from("value".to_string());
+        let mut df = dataflow_with_node("consumer", &[("value", false), ("tick", true)]);
+        df.timers_gate_drain = false;
+
+        // break_input moves the input out of `open_inputs` but keeps it
+        // recoverable in `broken_inputs`.
+        df.open_inputs.get_mut(&node).unwrap().remove(&value);
+        df.broken_inputs
+            .insert((node.clone(), value.clone()), Default::default());
+
+        assert!(
+            df.is_drained(&node),
+            "precondition: with the input out of `open_inputs`, the drain \
+             predicate alone cannot tell this from a finished node"
+        );
+        assert!(
+            !df.is_finished(&node),
+            "a recoverable input must not end the node; it would exit for good \
+             and never see the data that arrives after recovery"
+        );
+    }
+
     /// The straggler watchdog must stay armed for nodes the opt-in drains.
     /// `node_never_finishes` vetoes escalation for the whole dataflow, so
     /// leaving timer-fed nodes marked never-finishing would disable the
@@ -1226,8 +1429,21 @@ mod tests {
 
         df.timers_gate_drain = false;
         assert!(
+            df.node_never_finishes(&node),
+            "the opt-in alone is not enough: this node's data input is still \
+             open, so it has NOT finished. Arming the watchdog here would let \
+             a slow upstream plus a long timer interval look like a wedge and \
+             get a healthy node SIGKILLed"
+        );
+
+        // Now it actually drains.
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("value".to_string()));
+        assert!(
             !df.node_never_finishes(&node),
-            "under the opt-in this node DOES finish, so the watchdog must be \
+            "having drained, this node CAN finish, so the watchdog must be \
              able to escalate it if it then wedges"
         );
     }

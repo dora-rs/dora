@@ -265,6 +265,36 @@ fn deliver_param_delete_strict(
 /// message routing. Fields are `pub(crate)` to enable `impl Daemon` blocks in
 /// submodules (e.g., `node_events.rs`, `dataflow_lifecycle.rs`) as part of the
 /// ongoing daemon module split.
+/// Optional behavior for [`Daemon::run_dataflow_with`].
+///
+/// A struct rather than more positional parameters so that adding an
+/// option later is not a breaking change for the published crate.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct RunDataflowOptions {
+    /// Let the dataflow finish once every node has, treating
+    /// `dora/timer/...` inputs as a clock rather than as work.
+    ///
+    /// A timer input never closes, so by default a node consuming one is
+    /// never told its inputs are done and the graph cannot end on its own
+    /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
+    /// timer is exactly what keeps it alive.
+    pub exit_when_nodes_finish: bool,
+}
+
+impl RunDataflowOptions {
+    /// Sets [`Self::exit_when_nodes_finish`].
+    ///
+    /// A setter rather than a struct literal because the type is
+    /// `#[non_exhaustive]`: callers outside this crate cannot construct it
+    /// directly, which is what lets a future option be added without
+    /// breaking them.
+    pub fn exit_when_nodes_finish(mut self, exit_when_nodes_finish: bool) -> Self {
+        self.exit_when_nodes_finish = exit_when_nodes_finish;
+        self
+    }
+}
+
 pub struct Daemon {
     pub(crate) running: HashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
@@ -1011,6 +1041,13 @@ impl Daemon {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Runs a single dataflow to completion with the default options.
+    ///
+    /// Signature deliberately unchanged: `dora-daemon` is published, so
+    /// adding a parameter here would break every downstream caller. New
+    /// options belong on [`RunDataflowOptions`], which is passed to
+    /// [`Daemon::run_dataflow_with`] and can grow without breaking anyone.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_dataflow(
         dataflow_path: &Path,
         build_id: Option<BuildId>,
@@ -1023,8 +1060,43 @@ impl Daemon {
         debug: bool,
         working_dir_override: Option<PathBuf>,
         descriptor_override: Option<Descriptor>,
-        exit_when_nodes_finish: bool,
     ) -> eyre::Result<DataflowResult> {
+        Self::run_dataflow_with(
+            dataflow_path,
+            build_id,
+            local_build,
+            session_id,
+            uv,
+            log_destination,
+            write_events_to,
+            stop_after,
+            debug,
+            working_dir_override,
+            descriptor_override,
+            RunDataflowOptions::default(),
+        )
+        .await
+    }
+
+    /// Runs a single dataflow to completion with explicit options.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_dataflow_with(
+        dataflow_path: &Path,
+        build_id: Option<BuildId>,
+        local_build: Option<BuildInfo>,
+        session_id: SessionId,
+        uv: bool,
+        log_destination: LogDestination,
+        write_events_to: Option<PathBuf>,
+        stop_after: Option<Duration>,
+        debug: bool,
+        working_dir_override: Option<PathBuf>,
+        descriptor_override: Option<Descriptor>,
+        options: RunDataflowOptions,
+    ) -> eyre::Result<DataflowResult> {
+        let RunDataflowOptions {
+            exit_when_nodes_finish,
+        } = options;
         let working_dir = match working_dir_override {
             Some(p) => p
                 .canonicalize()
@@ -2569,21 +2641,7 @@ impl Daemon {
                 // explicit `AddMappingResult` so the coordinator can pattern-
                 // match the outcome (same class as #1682's AddNodeResult).
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let output_id = OutputId(source_node, source_output);
-                    dataflow
-                        .mappings
-                        .entry(output_id)
-                        .or_default()
-                        .insert((target_node.clone(), target_input.clone()));
-                    // Reopening an input ends any drain: clear the stale clock so
-                    // the selector does not treat the node as drained-and-eligible
-                    // on a timestamp from before the mapping was re-added (#2270).
-                    dataflow.all_inputs_closed_at.remove(&target_node);
-                    dataflow
-                        .open_inputs
-                        .entry(target_node)
-                        .or_default()
-                        .insert(target_input);
+                    dataflow.add_mapping(source_node, source_output, target_node, target_input);
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
@@ -4461,25 +4519,33 @@ impl Daemon {
         //   - "is drained" covers the node we are about to tell to finish.
         //     Without it, such a node exits, gets restarted, is told to
         //     finish again, and loops until `max_restarts`.
-        // In the default mode the two are the same predicate.
+        // In the default mode the two are the same predicate. A node with a
+        // circuit-broken input is excluded either way: the input is
+        // recoverable, so the node is not done and must keep its restart
+        // policy — `disable_restart` is one-way, with no re-enable on
+        // recovery. This matches `signal_all_inputs_closed_if_drained`.
         if (dataflow.open_inputs(&node_id).is_empty() || dataflow.is_drained(&node_id))
+            && !dataflow.has_broken_input(&node_id)
             && let Some(node) = dataflow.running_nodes.get_mut(&node_id)
         {
             node.disable_restart();
         }
-        if dataflow.is_drained(&node_id)
-            && let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id)
-        {
-            if node.inputs.is_empty() {
-                // do not send AllInputsClosed for source nodes
-            } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
+        // Sources are not told to finish. The check reads the recorded data
+        // inputs rather than the descriptor: `descriptor.nodes[].inputs` is
+        // empty for a runtime (`operators:`) node, whose inputs live under
+        // `operators[].config.inputs`, so the descriptor calls every operator
+        // node a source and skips the event — the hang this issue is about
+        // (#2920). Under the opt-in `is_drained` already excludes sources;
+        // this still matters in the default mode, where a source has no open
+        // inputs and so looks drained.
+        if dataflow.is_finished_non_source(&node_id)
+            && send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
                 == Some(true)
-            {
-                dataflow.inc_pending(&node_id);
-                dataflow
-                    .all_inputs_closed_at
-                    .insert(node_id.clone(), Instant::now());
-            }
+        {
+            dataflow.inc_pending(&node_id);
+            dataflow
+                .all_inputs_closed_at
+                .insert(node_id.clone(), Instant::now());
         }
 
         // if a stop event was already sent for the dataflow, send it to
@@ -5865,8 +5931,12 @@ fn close_input(
     signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
 }
 
-/// If `receiver_id` has no remaining open inputs (and none are circuit-broken),
-/// disable its restart policy and notify it that all inputs are closed.
+/// If `receiver_id` has finished, disable its restart policy and notify it
+/// that all inputs are closed.
+///
+/// "Finished" is [`RunningDataflow::should_signal_all_inputs_closed`], which
+/// under `--exit-when-nodes-finish` means its data inputs have closed even
+/// while a timer keeps ticking.
 ///
 /// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
 /// no-op if the node still has open/broken inputs or has no subscribe channel.
@@ -5878,21 +5948,16 @@ fn signal_all_inputs_closed_if_drained(
     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
         return;
     };
-    let has_broken = dataflow
-        .broken_inputs
-        .keys()
-        .any(|(nid, _)| nid == receiver_id);
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
     // to tell to finish) disables restart.
     if (dataflow.open_inputs(receiver_id).is_empty() || dataflow.is_drained(receiver_id))
-        && !has_broken
+        && !dataflow.has_broken_input(receiver_id)
         && let Some(node) = dataflow.running_nodes.get_mut(receiver_id)
     {
         node.disable_restart();
     }
-    if dataflow.is_drained(receiver_id)
-        && !has_broken
+    if dataflow.is_finished(receiver_id)
         && send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true)
     {
         dataflow.inc_pending(receiver_id);

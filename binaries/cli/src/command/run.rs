@@ -22,7 +22,7 @@ use crate::{
 };
 use dora_core::build::LogLevelOrStdout;
 use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_daemon::{Daemon, LogDestination, flume};
+use dora_daemon::{Daemon, LogDestination, RunDataflowOptions, flume};
 use eyre::Context;
 use std::{path::PathBuf, time::Duration};
 use tokio::runtime::Builder;
@@ -274,7 +274,7 @@ impl Executable for Run {
         let working_dir_override = self.working_dir.clone();
         let exit_when_nodes_finish = self.exit_when_nodes_finish;
         let handle = rt.spawn(async move {
-            Daemon::run_dataflow(
+            Daemon::run_dataflow_with(
                 &dataflow_path_for_daemon,
                 dataflow_session.build_id,
                 dataflow_session.local_build,
@@ -287,7 +287,7 @@ impl Executable for Run {
                 working_dir_override,
                 // hub-resolved descriptor and/or `--env` merge — see above
                 descriptor_override,
-                exit_when_nodes_finish,
+                RunDataflowOptions::default().exit_when_nodes_finish(exit_when_nodes_finish),
             )
             .await
         });

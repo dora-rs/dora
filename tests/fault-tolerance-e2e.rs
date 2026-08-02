@@ -66,7 +66,6 @@ async fn restart_recovers_from_failure() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -119,7 +118,6 @@ async fn max_restarts_limit_reached() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -189,7 +187,6 @@ async fn max_restarts_exhaustion_marks_node_failed() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -262,7 +259,6 @@ async fn restart_policy_always_restarts_on_clean_exit() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -347,7 +343,6 @@ async fn restart_window_resets_restart_counter() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -435,7 +430,6 @@ async fn input_timeout_delivers_input_closed_to_downstream() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -526,7 +520,6 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -624,7 +617,6 @@ async fn node_restarted_is_delivered_to_downstream() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -708,7 +700,6 @@ async fn input_recovered_is_delivered_after_broken_input_receives_data() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -804,7 +795,6 @@ async fn health_check_timeout_exhausts_restart_budget() {
         false,
         None,
         None,
-        false,
     )
     .await;
 
@@ -878,7 +868,6 @@ async fn planned_stop_sigterm_reports_clean() {
         false,
         None,
         None,
-        false,
     )
     .await;
 

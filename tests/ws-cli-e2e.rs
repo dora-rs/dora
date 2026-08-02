@@ -1405,6 +1405,10 @@ mod real_dataflow {
         // run never returns, and a hanging test is far worse in CI than a
         // failing one — it burns the job's whole budget and reports
         // nothing useful.
+        // Clear the record the premise run may have written: its consumer
+        // can outlive the `dora run` we just reaped, and a late write of
+        // its own result would otherwise be read as this run's.
+        let _ = std::fs::remove_file(&record);
         let mut with = Command::new(&dora)
             .args(["run", yaml.to_str().unwrap(), "--exit-when-nodes-finish"])
             .stdout(Stdio::null())

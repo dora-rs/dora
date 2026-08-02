@@ -23,7 +23,11 @@ fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input { .. } => inputs += 1,
+            // Count ONLY the data input. Counting every input would
+            // include timer ticks, so "received something" would be
+            // satisfied by the clock alone and the test could pass on a
+            // run where the payload never arrived.
+            Event::Input { ref id, .. } if id.as_str() == "value" => inputs += 1,
             Event::Stop(StopCause::AllInputsClosed) => {
                 drained = true;
                 break;
