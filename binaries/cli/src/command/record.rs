@@ -386,9 +386,26 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     eprintln!("Recording... (press Ctrl-C to stop)");
 
-    // Set up Ctrl-C handler
+    // Set up Ctrl-C handler.
+    //
+    // The first Ctrl-C requests a graceful stop (finalize the recording and
+    // exit). Escalate on a repeated signal — mirroring the daemon, coordinator,
+    // and `dora start` attach handlers — so an operator is never stuck: the
+    // recording loop does blocking file I/O between poll ticks, and a write that
+    // wedges (full disk, stalled network mount, a large flush) would otherwise
+    // swallow every subsequent Ctrl-C with no way out but SIGKILL from another
+    // terminal. The second signal exits immediately with the conventional SIGINT
+    // status; the partial file is left in place, but the message warns that it
+    // may be truncated so `dora replay` is not handed a half-written file
+    // silently.
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
+    let mut signalled = false;
     ctrlc::set_handler(move || {
+        if signalled {
+            eprintln!("received second Ctrl-C -> exiting immediately (recording may be truncated)");
+            std::process::exit(130);
+        }
+        signalled = true;
         let _ = stop_tx.send(());
     })
     .wrap_err("failed to set ctrl-c handler")?;
