@@ -23,7 +23,7 @@ cleanup() { "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || t
 trap cleanup EXIT INT TERM
 
 "${compose[@]}" up -d "$service"
-timeout 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "${PROJECT}-${service}-1"
+timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "${PROJECT}-${service}-1"
 "${compose[@]}" exec -T "$service" bash -lc \
   "source /opt/ros/$DISTRO/setup.bash; dpkg-query -W 'ros-${DISTRO}-rmw-zenoh-cpp'; ros2 pkg executables rmw_zenoh_cpp"
 

@@ -138,7 +138,7 @@ passed=()
 failed=()
 for ex in "${EXAMPLES[@]}"; do
   echo "::: running example: $ex"
-  if QT_QPA_PLATFORM=offscreen timeout 600 \
+  if QT_QPA_PLATFORM=offscreen timeout -k 30s 600 \
        cargo run -q -p dora-ros2-bridge --example "$ex" --features ros2-examples; then
     passed+=("$ex")
     echo "    PASS  $ex"
