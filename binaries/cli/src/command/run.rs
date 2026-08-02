@@ -22,7 +22,7 @@ use crate::{
 };
 use dora_core::build::LogLevelOrStdout;
 use dora_core::descriptor::{Descriptor, DescriptorExt};
-use dora_daemon::{Daemon, LogDestination, flume};
+use dora_daemon::{Daemon, LogDestination, RunDataflowOptions, flume};
 use eyre::Context;
 use std::{path::PathBuf, time::Duration};
 use tokio::runtime::Builder;
@@ -120,6 +120,21 @@ pub struct Run {
     /// numeric-looking values that would be coerced.
     #[clap(long = "env", value_name = "KEY=VALUE")]
     pub env: Vec<String>,
+    /// Exit once every node has finished, treating `dora/timer/...`
+    /// inputs as a clock rather than as work.
+    ///
+    /// By default a node is only told its inputs are closed when ALL of
+    /// them are, and a timer input never closes — so a graph where any
+    /// node consumes a timer cannot finish on its own, even after every
+    /// worker has done its work. With this flag a node is finished once
+    /// its DATA inputs have closed, which makes "run N items and exit"
+    /// scriptable without wrapping the command in a timeout.
+    ///
+    /// Nodes whose inputs are all timers are unaffected: they have no
+    /// data dependency that could finish, so they are treated as
+    /// sources, exactly as a node with no inputs is.
+    #[clap(long, action)]
+    pub exit_when_nodes_finish: bool,
 }
 
 impl Run {
@@ -139,6 +154,7 @@ impl Run {
             working_dir: None,
             hub_override: Vec::new(),
             env: Vec::new(),
+            exit_when_nodes_finish: false,
         }
     }
 
@@ -256,8 +272,9 @@ impl Executable for Run {
         let stop_after = self.stop_after;
         let debug = self.debug;
         let working_dir_override = self.working_dir.clone();
+        let exit_when_nodes_finish = self.exit_when_nodes_finish;
         let handle = rt.spawn(async move {
-            Daemon::run_dataflow(
+            Daemon::run_dataflow_with(
                 &dataflow_path_for_daemon,
                 dataflow_session.build_id,
                 dataflow_session.local_build,
@@ -270,6 +287,7 @@ impl Executable for Run {
                 working_dir_override,
                 // hub-resolved descriptor and/or `--env` merge — see above
                 descriptor_override,
+                RunDataflowOptions::default().exit_when_nodes_finish(exit_when_nodes_finish),
             )
             .await
         });

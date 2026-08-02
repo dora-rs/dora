@@ -1285,6 +1285,191 @@ mod real_dataflow {
         );
     }
 
+    /// dora-rs/dora#2920: `dora run --exit-when-nodes-finish` must let a
+    /// timer-driven graph terminate once its work is done.
+    ///
+    /// A timer input is registered like any other but never closes —
+    /// there is no upstream node to finish — so by default a node
+    /// consuming `dora/timer/...` is never told its inputs are closed
+    /// and never exits. The reported shape: every worker finished, and
+    /// the dataflow still sat for 9+ minutes because one node was
+    /// discarding timer ticks.
+    ///
+    /// `producer` emits once on its first tick and exits; `consumer` has
+    /// that data input plus a timer of its own. Without the flag this
+    /// run never returns (asserted first, with a bounded wait); with it,
+    /// the dataflow completes on its own.
+    ///
+    /// Local-only: no coordinator, no daemon process, no port 6013.
+    /// Unix-only for the same reasons as the sibling run tests.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_run_exit_when_nodes_finish_terminates_timer_driven_graph() {
+        ensure_built();
+        let dora = dora_bin();
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "emit-then-exit-source-node",
+                "-p",
+                "drain-recording-node",
+            ])
+            .status()
+            .expect("failed to build fixtures");
+        assert!(status.success(), "failed to build fixtures");
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        // Sweep stale artifacts from earlier runs, as the sibling tests do.
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("dora-timer-2920-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let yaml = target.join(format!("dora-timer-2920-{}.yml", std::process::id()));
+        let record = target.join(format!("dora-timer-2920-{}.record", std::process::id()));
+        let _ = std::fs::remove_file(&record);
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: producer\n    \
+                   path: {producer}\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n    \
+                   outputs:\n      - value\n  \
+                 - id: consumer\n    \
+                   path: {consumer}\n    \
+                   env:\n      \
+                     DORA_TEST_DRAIN_RECORD: {record}\n    \
+                   inputs:\n      \
+                     value: producer/value\n      \
+                     tick: dora/timer/millis/200\n",
+                producer = target.join("debug/emit-then-exit-source-node").display(),
+                consumer = target.join("debug/drain-recording-node").display(),
+                record = record.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        // Premise: without the flag this graph does not terminate. Bound
+        // it so a regression that makes it exit on its own shows up here
+        // rather than silently making the flag look unnecessary.
+        let mut without = Command::new(&dora)
+            .args(["run", yaml.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn dora run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let exited_on_its_own = loop {
+            match without.try_wait().expect("try_wait failed") {
+                Some(_) => break true,
+                None if std::time::Instant::now() >= deadline => break false,
+                None => std::thread::sleep(Duration::from_millis(200)),
+            }
+        };
+        // SIGTERM, not `kill()`. `Child::kill` sends SIGKILL, which
+        // `dora run` cannot handle, so its spawned nodes are orphaned and
+        // keep running for the rest of the CI job — verified: the
+        // consumer survives indefinitely. SIGTERM gives the run a chance
+        // to tear its nodes down (dora-rs/dora#2949), and we only escalate
+        // if it ignores that.
+        let _ = Command::new("kill")
+            .args(["-TERM", &without.id().to_string()])
+            .status();
+        let term_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match without.try_wait().expect("try_wait failed") {
+                Some(_) => break,
+                None if std::time::Instant::now() >= term_deadline => {
+                    let _ = without.kill();
+                    break;
+                }
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        let _ = without.wait();
+        assert!(
+            !exited_on_its_own,
+            "test premise broken: this graph terminated WITHOUT \
+             --exit-when-nodes-finish, so the flag is not what this test thinks \
+             it is measuring"
+        );
+
+        // With the flag it must finish on its own, and cleanly. Bounded
+        // rather than a plain `.output()`: if the flag regresses, this
+        // run never returns, and a hanging test is far worse in CI than a
+        // failing one — it burns the job's whole budget and reports
+        // nothing useful.
+        // Clear the record the premise run may have written: its consumer
+        // can outlive the `dora run` we just reaped, and a late write of
+        // its own result would otherwise be read as this run's.
+        let _ = std::fs::remove_file(&record);
+        let mut with = Command::new(&dora)
+            .args(["run", yaml.to_str().unwrap(), "--exit-when-nodes-finish"])
+            .stdout(Stdio::null())
+            // Null, not piped: nothing reads this pipe, and a `dora run`
+            // that fills the buffer would then block on write and look
+            // like the hang this test is trying to detect.
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn dora run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            match with.try_wait().expect("try_wait failed") {
+                Some(status) => break Some(status),
+                None if std::time::Instant::now() >= deadline => break None,
+                None => std::thread::sleep(Duration::from_millis(200)),
+            }
+        };
+        let Some(status) = status else {
+            let _ = with.kill();
+            let _ = with.wait();
+            panic!(
+                "`dora run --exit-when-nodes-finish` never terminated — the timer \
+                 input is still gating the drain (#2920)"
+            );
+        };
+        assert!(
+            status.success(),
+            "`dora run --exit-when-nodes-finish` exited with {status}"
+        );
+
+        // Terminating is necessary but not sufficient: draining the
+        // consumer at startup, before the producer ever sent anything,
+        // would also terminate and also exit 0. Assert it did its work
+        // first, and that it left because it was told all inputs were
+        // closed rather than because its event stream happened to end.
+        let recorded = std::fs::read_to_string(&record).unwrap_or_else(|e| {
+            panic!(
+                "consumer wrote no drain record at {} ({e}) — it did not reach \
+                 a clean exit",
+                record.display()
+            )
+        });
+        let (inputs, drained) = recorded
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("malformed drain record {recorded:?}"));
+        assert_eq!(
+            drained, "true",
+            "consumer exited without receiving AllInputsClosed (record: {recorded:?}) \
+             — the dataflow ended for some other reason, so this test would pass \
+             even if the drain opt-in did nothing"
+        );
+        assert!(
+            inputs.parse::<u64>().expect("input count") > 0,
+            "consumer drained without ever receiving `value` (record: {recorded:?}) \
+             — it was stopped at startup, not after finishing its work"
+        );
+
+        let _ = std::fs::remove_file(&yaml);
+        let _ = std::fs::remove_file(&record);
+    }
+
     /// #2919 P2: a node added to a RUNNING dataflow must inherit that
     /// dataflow's env, including anything set via `dora start --env`.
     ///
