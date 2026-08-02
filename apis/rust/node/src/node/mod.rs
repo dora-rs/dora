@@ -715,9 +715,6 @@ pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 /// the daemon thread is busy inside `next_event` (dora-rs/dora#2855).
 const TESTING_DAEMON_CHANNEL_CAPACITY: usize = 256;
 
-/// Bound for joining the testing daemon thread after shutdown is signaled.
-const TESTING_DAEMON_JOIN_TIMEOUT: Duration = Duration::from_secs(2);
-
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -1179,10 +1176,13 @@ impl DoraNode {
                     };
                     let mut events =
                         IntegrationTestingEvents::new(input, output, options, shutdown.clone())?;
+                    let shutdown_for_loop = shutdown.clone();
                     let handle = std::thread::Builder::new()
                         .name("dora-testing-daemon".into())
                         .spawn(move || {
                             while let Some((request, reply_sender)) = receiver.blocking_recv() {
+                                let outputs_done =
+                                    matches!(request.inner, DaemonRequest::OutputsDone);
                                 let reply = events.request(&request);
                                 if reply_sender
                                     .send(reply.unwrap_or_else(|err| {
@@ -1191,6 +1191,13 @@ impl DoraNode {
                                     .is_err()
                                 {
                                     eprintln!("failed to send reply");
+                                }
+                                // Exit after OutputsDone under shutdown even if
+                                // EventStream still holds a sender clone — otherwise
+                                // node-first Drop waits forever on blocking_recv
+                                // (dora-rs/dora#2855).
+                                if outputs_done && shutdown_for_loop.load(Ordering::Relaxed) {
+                                    break;
                                 }
                             }
                         })
@@ -2607,22 +2614,13 @@ impl Drop for DoraNode {
             tracing::warn!("{err:?}")
         }
 
-        // Release the last testing-channel sender (event-stream clones are
-        // already gone when EventStream dropped first) and join the daemon
-        // thread so Drop cannot leave it blocked forever.
+        // Drop our channel sender and join the testing daemon. The daemon loop
+        // exits after OutputsDone under shutdown even when EventStream still
+        // holds a sender clone (dora-rs/dora#2855).
         if let Some(handle) = self.testing_daemon.take() {
             self.control_channel.close_channel();
-            let (tx, rx) = flume::bounded(1);
-            std::thread::spawn(move || {
-                let _ = tx.send(handle.join());
-            });
-            match rx.recv_timeout(TESTING_DAEMON_JOIN_TIMEOUT) {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) => tracing::warn!("testing daemon thread panicked"),
-                Err(_) => tracing::warn!(
-                    "testing daemon join timed out after {}s",
-                    TESTING_DAEMON_JOIN_TIMEOUT.as_secs()
-                ),
+            if handle.join().is_err() {
+                tracing::warn!("testing daemon thread panicked");
             }
         }
         self.testing_shutdown = None;
@@ -3353,12 +3351,11 @@ mod tests {
         (node, event_stream, rx)
     }
 
-    /// Regression for dora-rs/dora#2855: dropping a testing node while the
-    /// daemon thread is inside a scheduled `next_event` wait must not hang.
-    /// Before the fix, Drop's CloseOutputs handshake blocked until the sleep
-    /// finished (or deadlocked against the event-stream close path).
-    #[test]
-    fn init_testing_drop_during_scheduled_wait_does_not_hang() {
+    /// Comfortably below any multi-second join/sleep budget so node-first Drop
+    /// regressions surface without waiting on an internal timeout boundary.
+    const INIT_TESTING_DROP_BUDGET: Duration = Duration::from_millis(500);
+
+    fn init_testing_node_mid_scheduled_wait() -> (DoraNode, crate::EventStream) {
         let events = vec![TimedIncomingEvent {
             // Long enough that a hang is obvious; the shutdown flag must
             // interrupt well before this elapses.
@@ -3376,14 +3373,39 @@ mod tests {
 
         // Give the testing daemon a moment to enter next_event's sleep.
         std::thread::sleep(Duration::from_millis(50));
+        (node, event_stream)
+    }
+
+    /// Regression for dora-rs/dora#2855: events-then-node Drop while the daemon
+    /// is inside a scheduled `next_event` wait must not hang.
+    #[test]
+    fn init_testing_drop_events_then_node_during_scheduled_wait_does_not_hang() {
+        let (node, event_stream) = init_testing_node_mid_scheduled_wait();
 
         let start = Instant::now();
         drop(event_stream);
         drop(node);
         let elapsed = start.elapsed();
         assert!(
-            elapsed < Duration::from_secs(2),
-            "Drop hung for {elapsed:?}; expected interruptible testing-daemon shutdown"
+            elapsed < INIT_TESTING_DROP_BUDGET,
+            "events-then-node Drop hung for {elapsed:?}; expected interruptible testing-daemon shutdown"
+        );
+    }
+
+    /// Regression for dora-rs/dora#2855: node-then-events Drop must exit the
+    /// testing daemon after OutputsDone under shutdown even while EventStream
+    /// still holds a channel sender clone.
+    #[test]
+    fn init_testing_drop_node_then_events_during_scheduled_wait_does_not_hang() {
+        let (node, event_stream) = init_testing_node_mid_scheduled_wait();
+
+        let start = Instant::now();
+        drop(node);
+        drop(event_stream);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < INIT_TESTING_DROP_BUDGET,
+            "node-then-events Drop hung for {elapsed:?}; expected OutputsDone under shutdown to exit the testing daemon"
         );
     }
 

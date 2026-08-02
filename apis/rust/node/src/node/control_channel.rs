@@ -58,9 +58,9 @@ impl ControlChannel {
         Ok(Self { channel, clock })
     }
 
-    /// Drop the underlying daemon channel so a testing-mode mpsc sender is
-    /// released. After all other sender clones (event stream) are gone, the
-    /// testing daemon thread's `blocking_recv` returns `None` and exits.
+    /// Drop the underlying daemon channel so this control-channel sender clone
+    /// is released. The testing daemon exits after OutputsDone under shutdown
+    /// independently of remaining EventStream sender clones.
     pub(crate) fn close_channel(&mut self) {
         self.channel = DaemonChannel::Interactive(Default::default());
     }
