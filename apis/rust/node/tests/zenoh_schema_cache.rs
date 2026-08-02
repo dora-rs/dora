@@ -59,10 +59,13 @@ fn free_endpoint() -> String {
     format!("tcp/127.0.0.1:{port}")
 }
 
-/// Schema side-channel key. Must not end in an `@…` verbatim chunk: zenoh_ext
+/// Schema side-channel key. Lives under the dedicated `/schema/` plane (not
+/// under `/output/…`) and must not contain `@…` verbatim chunks: zenoh_ext
 /// liveliness tokens are `${remaining:**}/@adv/...` and `**` cannot cross
-/// verbatim chunks (#2923). Mirrors `dora_core::topics::zenoh_output_schema_topic`.
-const SCHEMA_KEY: &str = "dora/test/schema-cache/output/_schema";
+/// verbatim chunks (#2923). Layout mirrors
+/// `dora_core::topics::zenoh_output_schema_topic`
+/// (`…/schema/{node}/{hex(output)}`; hex("out") == `6f7574`).
+const SCHEMA_KEY: &str = "dora/test/schema-cache/schema/node/6f7574";
 
 #[test]
 fn advanced_pub_cache_serves_late_joining_subscriber() {
@@ -117,8 +120,8 @@ fn advanced_pub_cache_serves_late_joining_subscriber() {
 
 /// Subscriber is up first; the publisher appears later. Recovery requires
 /// `detect_late_publishers` to parse the publisher's liveliness token
-/// (`…/_schema/@adv/pub/…`). With the old `/@schema` key that parse failed
-/// (#2923) and this path silently never queried history.
+/// (`…/schema/{node}/{hex}/@adv/pub/…`). With the old `/@schema` key that
+/// parse failed (#2923) and this path silently never queried history.
 #[test]
 fn advanced_pub_cache_serves_when_publisher_joins_after_subscriber() {
     let endpoint = free_endpoint();
