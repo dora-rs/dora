@@ -35,6 +35,18 @@ use std::{
 use tokio::sync::mpsc;
 
 /// Environment variable names that must never be passed to spawned nodes.
+///
+/// Two groups:
+/// - dynamic-loader / auth variables that could inject shared libraries or leak
+///   the daemon's own secrets to child nodes;
+/// - the daemon's control-plane wiring variables. These are injected by the
+///   daemon from the authoritative node/runtime config *before* the descriptor's
+///   `env:` is applied, so without a denylist a later `.env()` from the
+///   descriptor would silently win — pointing a node's zenoh connect/listen at
+///   the wrong endpoint (a dataflow that starts cleanly and then exchanges
+///   nothing), or handing an operator runtime the wrong operator set. Denying
+///   them keeps the daemon's wiring authoritative and turns a would-be silent
+///   override into the visible warning below (#2944).
 const ENV_DENYLIST: &[&str] = &[
     "LD_PRELOAD",
     "LD_AUDIT",
@@ -43,13 +55,20 @@ const ENV_DENYLIST: &[&str] = &[
     "LD_LIBRARY_PATH",
     "DORA_AUTH_TOKEN",
     "DORA_ALLOW_SHELL_NODES",
+    // Control-plane wiring — owned by the daemon, never by the descriptor.
+    "DORA_NODE_CONFIG",
+    "DORA_RUNTIME_CONFIG",
+    DORA_ZENOH_LISTEN_ENV,
+    DORA_ZENOH_CONNECT_ENV,
+    DORA_ZENOH_MULTICAST_ENV,
 ];
 
 /// Returns true if the env var key is denied, logging a warning if so.
 fn is_denied_env(key: &str) -> bool {
     if ENV_DENYLIST.contains(&key) {
         tracing::warn!(
-            "skipping denied environment variable '{key}' (security: could inject shared libraries)"
+            "skipping denied environment variable '{key}': it is reserved for the daemon \
+             (dynamic-loader/auth hardening or control-plane wiring) and cannot be set by a node"
         );
         true
     } else {
@@ -721,6 +740,33 @@ mod tests {
             None,
             "a daemon still scouting must not disable it for its nodes"
         );
+    }
+
+    /// The daemon injects its control-plane wiring from the authoritative
+    /// node/runtime config before the descriptor's `env:` is applied, so a
+    /// descriptor must not be able to override it via a same-named `env:` entry.
+    /// `is_denied_env` is the guard that drops such an attempt (with a warning)
+    /// in the user-env loops, so pin that every control-plane key is denied
+    /// while an ordinary variable still passes through (#2944).
+    #[test]
+    fn control_plane_env_vars_are_denied() {
+        for key in [
+            "DORA_NODE_CONFIG",
+            "DORA_RUNTIME_CONFIG",
+            DORA_ZENOH_LISTEN_ENV,
+            DORA_ZENOH_CONNECT_ENV,
+            DORA_ZENOH_MULTICAST_ENV,
+        ] {
+            assert!(
+                is_denied_env(key),
+                "control-plane var {key} must not be overridable by a descriptor env:"
+            );
+        }
+        // The loader/auth hardening keys are still denied...
+        assert!(is_denied_env("LD_PRELOAD"));
+        assert!(is_denied_env("DORA_AUTH_TOKEN"));
+        // ...and an ordinary node-defined variable is still allowed through.
+        assert!(!is_denied_env("MY_NODE_SETTING"));
     }
 
     fn plan_for(yaml: &str, daemon: Option<&str>) -> BTreeMap<NodeId, NodeZenohPeering> {
