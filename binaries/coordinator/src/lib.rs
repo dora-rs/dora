@@ -293,6 +293,40 @@ async fn start_with_events(
     Ok((port, future))
 }
 
+/// Outcome of the coordinator's periodic heartbeat send to one daemon.
+///
+/// The heartbeat is written to the daemon's bounded command channel — the
+/// *same* channel that carries every coordinator→daemon command (spawn, stop,
+/// add/remove node, …), not a dedicated heartbeat channel. That makes the two
+/// failure shapes mean very different things, and the disconnect decision must
+/// tell them apart (see [`HeartbeatSendOutcome::should_disconnect`]).
+enum HeartbeatSendOutcome {
+    /// The heartbeat was enqueued for delivery.
+    Delivered,
+    /// `send()` returned an error, i.e. the daemon's WS writer task has
+    /// dropped its receiver. The connection is genuinely gone.
+    ChannelClosed,
+    /// The send did not complete within the timeout: the bounded command
+    /// channel is momentarily full (backpressure from a large spawn or a
+    /// burst of control commands), *not* a dead daemon.
+    TimedOut,
+}
+
+impl HeartbeatSendOutcome {
+    /// Whether this outcome should tear the daemon down.
+    ///
+    /// Only a closed channel does. A [`TimedOut`](Self::TimedOut) send means
+    /// the command channel is backed up, which says nothing about daemon
+    /// liveness — the daemon reports its own health through *inbound*
+    /// heartbeats (`last_heartbeat`), and the 30 s inbound threshold already
+    /// catches a genuinely dead daemon. Treating a transient send timeout as
+    /// death would let one slow WS write burst falsely disconnect a live
+    /// daemon and tear down all of its dataflows.
+    fn should_disconnect(&self) -> bool {
+        matches!(self, HeartbeatSendOutcome::ChannelClosed)
+    }
+}
+
 async fn start_inner(
     events: impl Stream<Item = Event> + Unpin,
     clock: Arc<HLC>,
@@ -2037,18 +2071,38 @@ async fn start_inner(
                         disconnected.insert(machine_id.clone());
                         continue;
                     }
-                    let result: eyre::Result<()> = tokio::time::timeout(
+                    let outcome = match tokio::time::timeout(
                         Duration::from_millis(500),
                         send_heartbeat_message(connection, clock.new_timestamp()),
                     )
                     .await
-                    .wrap_err("timeout")
-                    .and_then(|r| r)
-                    .wrap_err_with(|| {
-                        format!("failed to send heartbeat message to daemon at `{machine_id}`")
-                    });
-                    if let Err(err) = result {
-                        tracing::warn!("{err:?}");
+                    {
+                        Ok(Ok(())) => HeartbeatSendOutcome::Delivered,
+                        Ok(Err(err)) => {
+                            tracing::warn!(
+                                "heartbeat send channel to daemon at `{machine_id}` is closed: {err:?}"
+                            );
+                            HeartbeatSendOutcome::ChannelClosed
+                        }
+                        Err(_elapsed) => {
+                            // The 500 ms budget elapsed while the *bounded*
+                            // command channel was full — backpressure from a
+                            // large spawn or a burst of control commands, not a
+                            // dead daemon. Do not tear the daemon down: it is
+                            // proven alive by its recent inbound heartbeat
+                            // (checked just above against the 30 s threshold),
+                            // and disconnecting here would fail all of its
+                            // dataflows over transient congestion.
+                            tracing::warn!(
+                                "heartbeat send to daemon at `{machine_id}` timed out \
+                                 (command channel full); not disconnecting a live daemon \
+                                 (last inbound heartbeat {:?} ago)",
+                                connection.last_heartbeat.elapsed()
+                            );
+                            HeartbeatSendOutcome::TimedOut
+                        }
+                    };
+                    if outcome.should_disconnect() {
                         disconnected.insert(machine_id.clone());
                     }
                 }
@@ -4717,6 +4771,29 @@ mod tests {
     use std::collections::HashMap;
     use tokio::time::{Duration as TokioDuration, timeout};
     use uuid::Uuid;
+
+    // A heartbeat that could not be delivered because the *bounded command
+    // channel* was momentarily full (a `TimedOut` outcome) must NOT disconnect
+    // the daemon: the daemon reports its own liveness through inbound
+    // heartbeats, and the 30 s inbound threshold already catches a genuinely
+    // dead one. Only a closed send channel is a real death signal. Regression
+    // for a transient control-command burst falsely tearing down a live
+    // daemon's dataflows.
+    #[test]
+    fn heartbeat_timeout_does_not_disconnect_a_live_daemon() {
+        assert!(
+            HeartbeatSendOutcome::ChannelClosed.should_disconnect(),
+            "a closed heartbeat send channel must disconnect the daemon"
+        );
+        assert!(
+            !HeartbeatSendOutcome::TimedOut.should_disconnect(),
+            "a transient command-channel backpressure timeout must not disconnect a live daemon"
+        );
+        assert!(
+            !HeartbeatSendOutcome::Delivered.should_disconnect(),
+            "a delivered heartbeat must not disconnect the daemon"
+        );
+    }
 
     fn test_running_dataflow(
         dataflow_id: DataflowId,
