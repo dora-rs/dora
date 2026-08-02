@@ -6033,11 +6033,22 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
 /// and it would override the `SIG_IGN` that `nohup` installs for
 /// `dora cluster up`'s remote daemons.
 ///
-/// A second signal aborts, so a determined killer never has to escalate
-/// to SIGKILL — and `try_send` rather than an await keeps that escape
-/// hatch working even if the event loop is already wedged.
+/// Escalates on the same ladder as the ctrl-c handler below, and for the
+/// same reason: aborting on the SECOND signal would kill the process
+/// while the first signal's teardown is still running, orphaning exactly
+/// the node processes this exists to reap. So the second signal takes
+/// the `SecondCtrlC` path — an early but still unwinding exit, which
+/// drops the `RunningDataflow` and with it every `ProcessHandle` — and
+/// only a third aborts outright.
+///
+/// Delivery uses `try_send` rather than an await so a wedged event loop
+/// cannot swallow the escalation. A failure to deliver the FIRST signal
+/// is not fatal by itself (the operator can signal again); by the second
+/// there is nothing left to wait for.
 fn set_up_termination_handler(clock: Arc<HLC>) -> tokio::sync::mpsc::Receiver<Timestamped<Event>> {
-    let (tx, rx) = mpsc::channel(1);
+    // Room for both rungs of the ladder, so a queued `CtrlC` cannot make
+    // the follow-up `SecondCtrlC` undeliverable.
+    let (tx, rx) = mpsc::channel(2);
 
     #[cfg(unix)]
     tokio::spawn(async move {
@@ -6063,20 +6074,37 @@ fn set_up_termination_handler(clock: Arc<HLC>) -> tokio::sync::mpsc::Receiver<Ti
                 _ = sighup.recv() => {}
             }
             signals_seen += 1;
-            if signals_seen > 1 {
-                tracing::warn!("received second termination signal -> aborting immediately");
-                std::process::abort();
-            }
-            tracing::info!("received termination signal -> stopping dataflow");
+            let event = match signals_seen {
+                1 => {
+                    tracing::info!("received termination signal -> stopping dataflow");
+                    Event::CtrlC
+                }
+                2 => {
+                    tracing::warn!("received second termination signal -> exiting early");
+                    Event::SecondCtrlC
+                }
+                _ => {
+                    tracing::warn!("received third termination signal -> aborting immediately");
+                    std::process::abort();
+                }
+            };
             if tx
                 .try_send(Timestamped {
-                    inner: Event::CtrlC,
+                    inner: event,
                     timestamp: clock.new_timestamp(),
                 })
                 .is_err()
             {
-                tracing::warn!("could not deliver termination event -> aborting immediately");
-                std::process::abort();
+                // The event loop is not consuming. On the first signal
+                // that is worth reporting but not worth killing over —
+                // teardown may still be in flight, and a kill here would
+                // orphan the nodes. A second undeliverable signal means
+                // nothing is going to drain it.
+                if signals_seen >= 2 {
+                    tracing::warn!("could not deliver termination event -> aborting immediately");
+                    std::process::abort();
+                }
+                tracing::warn!("could not deliver termination event; signal again to force exit");
             }
         }
     });

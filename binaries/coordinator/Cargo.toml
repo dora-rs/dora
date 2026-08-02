@@ -29,7 +29,7 @@ futures-concurrency = "7.7.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 petname = "3.1.0"
-ctrlc = { version = "3.5.2", features = ["termination"] }
+ctrlc = "3.5.2"
 log = { version = "0.4.33", features = ["serde"] }
 dora-message = { workspace = true }
 dora-coordinator-store = { workspace = true }
