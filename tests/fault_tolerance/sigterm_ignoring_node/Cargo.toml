@@ -1,0 +1,23 @@
+[package]
+name = "sigterm-ignoring-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node that honors NEITHER the cooperative `Stop` nor SIGTERM,
+# so the daemon's only remaining lever is SIGKILL. Used to prove the
+# stop ladder actually reaches its hard-kill rung before the CLI exits
+# (dora-rs/dora#2920).
+
+[[bin]]
+name = "sigterm-ignoring-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
+libc = "0.2"

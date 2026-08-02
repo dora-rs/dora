@@ -7127,6 +7127,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "sigterm-ignoring-node"
+version = "1.0.0-rc.4"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+ "libc",
+]
+
+[[package]]
 name = "silent-source-node"
 version = "1.0.0-rc.4"
 dependencies = [
