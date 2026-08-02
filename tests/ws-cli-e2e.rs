@@ -1285,6 +1285,123 @@ mod real_dataflow {
         );
     }
 
+    /// dora-rs/dora#2920: `dora run --exit-when-nodes-finish` must let a
+    /// timer-driven graph terminate once its work is done.
+    ///
+    /// A timer input is registered like any other but never closes —
+    /// there is no upstream node to finish — so by default a node
+    /// consuming `dora/timer/...` is never told its inputs are closed
+    /// and never exits. The reported shape: every worker finished, and
+    /// the dataflow still sat for 9+ minutes because one node was
+    /// discarding timer ticks.
+    ///
+    /// `producer` emits once on its first tick and exits; `consumer` has
+    /// that data input plus a timer of its own. Without the flag this
+    /// run never returns (asserted first, with a bounded wait); with it,
+    /// the dataflow completes on its own.
+    ///
+    /// Local-only: no coordinator, no daemon process, no port 6013.
+    /// Unix-only for the same reasons as the sibling run tests.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_run_exit_when_nodes_finish_terminates_timer_driven_graph() {
+        ensure_built();
+        let dora = dora_bin();
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "emit-then-exit-source-node",
+                "-p",
+                "rust-dynamic-add-remove-receiver",
+            ])
+            .status()
+            .expect("failed to build fixtures");
+        assert!(status.success(), "failed to build fixtures");
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let yaml = target.join(format!("dora-timer-2920-{}.yml", std::process::id()));
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: producer\n    \
+                   path: {producer}\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n    \
+                   outputs:\n      - value\n  \
+                 - id: consumer\n    \
+                   path: {consumer}\n    \
+                   inputs:\n      \
+                     value: producer/value\n      \
+                     tick: dora/timer/millis/200\n",
+                producer = target.join("debug/emit-then-exit-source-node").display(),
+                consumer = target
+                    .join("debug/rust-dynamic-add-remove-receiver")
+                    .display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        // Premise: without the flag this graph does not terminate. Bound
+        // it so a regression that makes it exit on its own shows up here
+        // rather than silently making the flag look unnecessary.
+        let mut without = Command::new(&dora)
+            .args(["run", yaml.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn dora run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let exited_on_its_own = loop {
+            match without.try_wait().expect("try_wait failed") {
+                Some(_) => break true,
+                None if std::time::Instant::now() >= deadline => break false,
+                None => std::thread::sleep(Duration::from_millis(200)),
+            }
+        };
+        let _ = without.kill();
+        let _ = without.wait();
+        assert!(
+            !exited_on_its_own,
+            "test premise broken: this graph terminated WITHOUT \
+             --exit-when-nodes-finish, so the flag is not what this test thinks \
+             it is measuring"
+        );
+
+        // With the flag it must finish on its own, and cleanly. Bounded
+        // rather than a plain `.output()`: if the flag regresses, this
+        // run never returns, and a hanging test is far worse in CI than a
+        // failing one — it burns the job's whole budget and reports
+        // nothing useful.
+        let mut with = Command::new(&dora)
+            .args(["run", yaml.to_str().unwrap(), "--exit-when-nodes-finish"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn dora run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            match with.try_wait().expect("try_wait failed") {
+                Some(status) => break Some(status),
+                None if std::time::Instant::now() >= deadline => break None,
+                None => std::thread::sleep(Duration::from_millis(200)),
+            }
+        };
+        let Some(status) = status else {
+            let _ = with.kill();
+            let _ = with.wait();
+            panic!(
+                "`dora run --exit-when-nodes-finish` never terminated — the timer \
+                 input is still gating the drain (#2920)"
+            );
+        };
+        assert!(
+            status.success(),
+            "`dora run --exit-when-nodes-finish` exited with {status}"
+        );
+    }
+
     /// #2919 P2: a node added to a RUNNING dataflow must inherit that
     /// dataflow's env, including anything set via `dora start --env`.
     ///

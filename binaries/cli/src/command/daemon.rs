@@ -281,6 +281,9 @@ impl Executable for Daemon {
                             dataflow_session.build_id, dataflow_session.local_build, dataflow_session.session_id, false,
                             LogDestination::Tracing, None, None, false, None,
                             descriptor_override,
+                            // `dora daemon --run-dataflow` keeps the default
+                            // completion semantics; the opt-in lives on `dora run`.
+                            false,
                         ).await?;
                         handle_dataflow_result(result, None)
                     }

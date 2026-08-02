@@ -68,6 +68,7 @@ async fn run() {
         false,
         None,
         None,
+        false,
     )
     .await;
     let elapsed = started.elapsed();

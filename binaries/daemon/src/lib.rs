@@ -274,6 +274,12 @@ pub struct Daemon {
     pub(crate) daemon_id: DaemonId,
     pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     pub(crate) exit_when_all_finished: bool,
+    /// Run-scoped copy of `RunningDataflow::timers_gate_drain`, applied
+    /// to each dataflow as it is spawned. Only `dora run` can turn it
+    /// off (`--exit-when-nodes-finish`); a daemon serving a coordinator
+    /// keeps the default, since a long-lived dataflow is stopped
+    /// explicitly rather than by running out of work (#2920).
+    pub(crate) timers_gate_drain: bool,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
@@ -1017,6 +1023,7 @@ impl Daemon {
         debug: bool,
         working_dir_override: Option<PathBuf>,
         descriptor_override: Option<Descriptor>,
+        exit_when_nodes_finish: bool,
     ) -> eyre::Result<DataflowResult> {
         let working_dir = match working_dir_override {
             Some(p) => p
@@ -1176,6 +1183,7 @@ impl Daemon {
             // the daemon find each other, so keep it on when the descriptor
             // declares any.
             !has_dynamic_nodes,
+            exit_when_nodes_finish,
         );
 
         let spawn_result = reply_rx
@@ -1223,6 +1231,7 @@ impl Daemon {
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
         disable_multicast: bool,
+        exit_when_nodes_finish: bool,
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
@@ -1244,6 +1253,9 @@ impl Daemon {
             disable_multicast,
         )
         .await?;
+        // Applied to every dataflow this daemon spawns; only the
+        // single-shot `dora run` path can turn it off.
+        daemon.timers_gate_drain = !exit_when_nodes_finish;
         daemon
             .run_inner(
                 external_events,
@@ -1391,6 +1403,7 @@ impl Daemon {
             daemon_id,
             exit_when_done,
             exit_when_all_finished: false,
+            timers_gate_drain: true,
             dataflow_node_results: BTreeMap::new(),
             clock,
             ft_stats: Default::default(),
@@ -3140,6 +3153,7 @@ impl Daemon {
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
+        dataflow.timers_gate_drain = self.timers_gate_drain;
         // Decide who dials whom before anything spawns: zenoh 1.9 peers do not
         // relay, so a producer/consumer pair that never forms a direct link can
         // never exchange data. Assign the links explicitly instead of leaving
@@ -4414,7 +4428,7 @@ impl Daemon {
                 dataflow.inc_pending(&node_id);
             }
         }
-        if dataflow.open_inputs(&node_id).is_empty() {
+        if dataflow.is_drained(&node_id) {
             if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
                 node.disable_restart();
             }
@@ -5832,7 +5846,7 @@ fn signal_all_inputs_closed_if_drained(
         .broken_inputs
         .keys()
         .any(|(nid, _)| nid == receiver_id);
-    if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
+    if dataflow.is_drained(receiver_id) && !has_broken {
         if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
             node.disable_restart();
         }

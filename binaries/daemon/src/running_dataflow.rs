@@ -11,6 +11,7 @@ use dora_core::{
 };
 use dora_message::{
     common::DaemonId,
+    config::InputMapping,
     daemon_to_node::{NodeConfig, NodeEvent},
     descriptor::RestartPolicy,
     metadata::{self},
@@ -220,6 +221,19 @@ pub struct RunningDataflow {
     pub(crate) connected_nodes: BTreeSet<NodeId>,
     /// Nodes already escalated by the finish-straggler watchdog (one-shot).
     pub(crate) finish_escalated: BTreeSet<NodeId>,
+    /// Whether timer inputs keep a node from draining.
+    ///
+    /// A timer input is registered in `open_inputs` like any other but is
+    /// never closed — there is no upstream node to finish — so a node
+    /// consuming `dora/timer/...` can never reach "all inputs closed"
+    /// and is never told to finish. Any timer anywhere therefore makes a
+    /// graph unable to terminate on its own (dora-rs/dora#2920).
+    ///
+    /// `dora run --exit-when-nodes-finish` sets this false, which treats
+    /// a timer as a clock rather than a data dependency: a node drains
+    /// once its DATA inputs have closed. Off by default because it
+    /// changes when nodes are told to stop.
+    pub(crate) timers_gate_drain: bool,
     pub(crate) stop_sent: bool,
     pub(crate) empty_set: BTreeSet<DataId>,
     pub(crate) cascading_error_causes: CascadingErrorCauses,
@@ -284,6 +298,7 @@ impl RunningDataflow {
             all_inputs_closed_at: HashMap::new(),
             connected_nodes: BTreeSet::new(),
             finish_escalated: BTreeSet::new(),
+            timers_gate_drain: true,
             stop_sent: false,
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
@@ -709,6 +724,55 @@ impl RunningDataflow {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
 
+    /// Whether `input_id` on `node_id` is fed by a timer rather than by
+    /// another node's output.
+    fn is_timer_input(&self, node_id: &NodeId, input_id: &DataId) -> bool {
+        self.timers
+            .values()
+            .any(|receivers| receivers.contains(&(node_id.clone(), input_id.clone())))
+    }
+
+    /// Whether `node_id` has finished draining — i.e. whether it should
+    /// be told `AllInputsClosed`.
+    ///
+    /// With `timers_gate_drain` (the default) this is simply "no open
+    /// inputs left". With it off, timer inputs are ignored, so a node
+    /// drains once its data inputs have closed even though its clock
+    /// keeps ticking (dora-rs/dora#2920).
+    ///
+    /// A node whose inputs are ALL timers is never considered drained:
+    /// it has no data dependency that could finish, which makes it a
+    /// source in every sense that matters here, and the existing
+    /// source-node rule already says sources are not told to finish.
+    /// Without this, enabling the flag would tell every timer-driven
+    /// producer to stop the moment the dataflow started.
+    pub(crate) fn is_drained(&self, node_id: &NodeId) -> bool {
+        let open = self.open_inputs(node_id);
+        if self.timers_gate_drain {
+            return open.is_empty();
+        }
+        if !self.has_data_input(node_id) {
+            return false;
+        }
+        open.iter().all(|input| self.is_timer_input(node_id, input))
+    }
+
+    /// Whether the descriptor declares at least one non-timer input for
+    /// this node. Read from the stored descriptor, matching how the
+    /// source-node check in `handle_outputs_done` decides the same
+    /// question.
+    fn has_data_input(&self, node_id: &NodeId) -> bool {
+        self.descriptor
+            .nodes
+            .iter()
+            .find(|n| &n.id == node_id)
+            .is_some_and(|node| {
+                node.inputs
+                    .values()
+                    .any(|input| !matches!(input.mapping, InputMapping::Timer { .. }))
+            })
+    }
+
     /// All output ids produced by `node_id`, whether they are consumed by a
     /// local node (recorded in `mappings`) or only by nodes on another daemon
     /// (recorded in `open_external_mappings`).
@@ -942,6 +1006,116 @@ mod tests {
 
     // ---- dora-rs/dora#2827: NodeFailed propagation must not underflow the
     //      receiver's pending_messages counter ----
+
+    /// Build a descriptor with one node whose inputs are as given, via
+    /// the real YAML shape — `(input_id, is_timer)`. Parsing rather than
+    /// constructing means the `InputMapping` variants are exactly the
+    /// ones production builds.
+    fn descriptor_with_node(node_id: &str, inputs: &[(&str, bool)]) -> Descriptor {
+        let mut yaml = format!("nodes:\n  - id: {node_id}\n    path: dummy\n");
+        if !inputs.is_empty() {
+            yaml.push_str("    inputs:\n");
+            for (id, is_timer) in inputs {
+                if *is_timer {
+                    yaml.push_str(&format!("      {id}: dora/timer/millis/100\n"));
+                } else {
+                    yaml.push_str(&format!("      {id}: upstream/value\n"));
+                }
+            }
+        }
+        serde_yaml::from_str(&yaml).expect("test descriptor should parse")
+    }
+
+    /// A dataflow with `node` declared as in `descriptor_with_node`, its
+    /// inputs all currently open, and timer inputs registered as timers.
+    fn dataflow_with_node(node_id: &str, inputs: &[(&str, bool)]) -> RunningDataflow {
+        let node: NodeId = node_id.to_string().into();
+        let mut df = RunningDataflow::new(
+            uuid::Uuid::nil(),
+            DaemonId::new(None),
+            descriptor_with_node(node_id, inputs),
+        );
+        for (id, is_timer) in inputs {
+            let input: DataId = id.to_string().into();
+            df.open_inputs
+                .entry(node.clone())
+                .or_default()
+                .insert(input.clone());
+            if *is_timer {
+                df.timers
+                    .entry(Duration::from_millis(100))
+                    .or_default()
+                    .insert((node.clone(), input));
+            }
+        }
+        df
+    }
+
+    /// Default behavior is unchanged: every input gates the drain, so a
+    /// node with a live timer is never told its inputs closed. This is
+    /// the dora-rs/dora#2920 hang.
+    #[test]
+    fn timers_gate_drain_by_default() {
+        let node: NodeId = "consumer".to_string().into();
+        let mut df = dataflow_with_node("consumer", &[("value", false), ("tick", true)]);
+        assert!(!df.is_drained(&node), "nothing has closed yet");
+
+        // The data input closes; the timer keeps ticking.
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("value".to_string()));
+        assert!(
+            !df.is_drained(&node),
+            "by default a live timer must still gate the drain — that is the \
+             behavior the opt-in flag changes, and changing it silently would \
+             stop nodes that are still expected to run"
+        );
+    }
+
+    /// With the opt-in, a timer is a clock rather than a data
+    /// dependency: the node drains once its data inputs have closed.
+    #[test]
+    fn data_inputs_alone_gate_drain_when_opted_in() {
+        let node: NodeId = "consumer".to_string().into();
+        let mut df = dataflow_with_node("consumer", &[("value", false), ("tick", true)]);
+        df.timers_gate_drain = false;
+        assert!(!df.is_drained(&node), "the data input is still open");
+
+        df.open_inputs
+            .get_mut(&node)
+            .unwrap()
+            .remove(&DataId::from("value".to_string()));
+        assert!(
+            df.is_drained(&node),
+            "with the opt-in, a closed data input drains the node even though \
+             its timer is still registered"
+        );
+    }
+
+    /// A node whose inputs are ALL timers has no data dependency that
+    /// could ever finish, so it is a source. Draining it would tell every
+    /// timer-driven producer to stop the moment the dataflow started.
+    #[test]
+    fn timer_only_nodes_are_never_drained_even_when_opted_in() {
+        let node: NodeId = "ticker".to_string().into();
+        let mut df = dataflow_with_node("ticker", &[("tick", true)]);
+        df.timers_gate_drain = false;
+        assert!(
+            !df.is_drained(&node),
+            "a timer-only node is a source; draining it at startup would stop \
+             every timer-driven producer immediately"
+        );
+    }
+
+    /// And a node with no inputs at all stays a source under the opt-in.
+    #[test]
+    fn input_less_nodes_are_never_drained_even_when_opted_in() {
+        let node: NodeId = "source".to_string().into();
+        let mut df = dataflow_with_node("source", &[]);
+        df.timers_gate_drain = false;
+        assert!(!df.is_drained(&node));
+    }
 
     fn empty_descriptor() -> Descriptor {
         use dora_message::{config::CommunicationConfig, descriptor::Debug as DescriptorDebug};
