@@ -2150,6 +2150,7 @@ dependencies = [
  "eyre",
  "futures",
  "libloading 0.9.0",
+ "redb",
  "serde_json",
  "serde_yaml",
  "tempfile",

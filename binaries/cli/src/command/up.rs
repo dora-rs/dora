@@ -7,6 +7,7 @@ use crate::{
 use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
 use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
 use eyre::{Context, ContextCompat, bail};
+use std::io::{Read, Seek};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::{fs, net::SocketAddr, path::Path, process::Command, time::Duration};
@@ -24,12 +25,18 @@ pub struct Up {
     /// this token to connect.
     #[clap(long)]
     auth: bool,
+    /// Archive the default coordinator store before starting a fresh coordinator.
+    ///
+    /// Use this after an upgrade when the on-disk schema is incompatible.
+    /// The previous store is preserved next to the new one as a `.backup` file.
+    #[clap(long)]
+    recreate_store: bool,
 }
 
 impl Executable for Up {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up(self.config.as_deref(), self.auth)
+        up(self.config.as_deref(), self.auth, self.recreate_store)
     }
 }
 
@@ -37,7 +44,7 @@ impl Executable for Up {
 #[serde(deny_unknown_fields)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
+pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     let addr: std::net::IpAddr = std::env::var("DORA_COORDINATOR_ADDR")
         .ok()
@@ -54,15 +61,10 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
             session
         }
         Err(_) => {
-            start_coordinator(auth).wrap_err("failed to start dora-coordinator")?;
-
-            connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
-                eyre::eyre!(
-                    "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
-                     hint: is port {port} already in use? Check with `dora status`\n  \
-                     or stop the existing coordinator with `dora down`"
-                )
-            })?
+            if recreate_store {
+                archive_default_coordinator_store()?;
+            }
+            start_and_wait_for_coordinator(coordinator_addr, port, auth)?
         }
     };
 
@@ -87,6 +89,129 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool) -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+struct CoordinatorStartup {
+    child: std::process::Child,
+    stderr: fs::File,
+}
+
+fn start_and_wait_for_coordinator(
+    coordinator_addr: SocketAddr,
+    port: u16,
+    auth: bool,
+) -> eyre::Result<crate::ws_client::WsSession> {
+    let startup = start_coordinator(auth).wrap_err("failed to start dora-coordinator")?;
+    wait_for_coordinator_start(coordinator_addr, port, startup)
+}
+
+fn wait_for_coordinator_start(
+    coordinator_addr: SocketAddr,
+    port: u16,
+    mut startup: CoordinatorStartup,
+) -> eyre::Result<crate::ws_client::WsSession> {
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        if let Some(status) = startup
+            .child
+            .try_wait()
+            .wrap_err("failed to poll dora-coordinator")?
+        {
+            let stderr = captured_stderr(&mut startup.stderr)?;
+            let mut message = format!("coordinator exited before it became ready: {status}");
+            if !stderr.is_empty() {
+                message.push('\n');
+                message.push_str(&stderr);
+            }
+            if stderr.contains("redb schema version mismatch") {
+                message.push_str(
+                    "\n\n  hint: run `dora up --recreate-store` to archive the incompatible \
+                     store and create a fresh one",
+                );
+            }
+            bail!(message);
+        }
+
+        match connect_to_coordinator(coordinator_addr) {
+            Ok(session) => return Ok(session),
+            Err(_) if std::time::Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+            Err(err) => {
+                bail!(
+                    "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
+                     hint: is port {port} already in use? Check with `dora status`\n  \
+                     or stop the existing coordinator with `dora down`"
+                );
+            }
+        }
+    }
+}
+
+fn captured_stderr(file: &mut fs::File) -> eyre::Result<String> {
+    file.rewind()
+        .wrap_err("failed to rewind coordinator stderr capture")?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .wrap_err("failed to read coordinator stderr capture")?;
+    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+}
+
+fn archive_default_coordinator_store() -> eyre::Result<()> {
+    #[cfg(feature = "redb-backend")]
+    {
+        let path = super::coordinator::default_redb_path()?;
+        if !path.exists() {
+            println!(
+                "no coordinator store at `{}`; nothing to archive",
+                path.display()
+            );
+            return Ok(());
+        }
+
+        let backup = available_backup_path(&path)?;
+        fs::rename(&path, &backup).with_context(|| {
+            format!(
+                "failed to archive coordinator store `{}` as `{}`",
+                path.display(),
+                backup.display()
+            )
+        })?;
+        println!(
+            "archived coordinator store `{}` as `{}`",
+            path.display(),
+            backup.display()
+        );
+        Ok(())
+    }
+    #[cfg(not(feature = "redb-backend"))]
+    {
+        bail!("--recreate-store requires the `redb-backend` feature")
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+fn available_backup_path(path: &Path) -> eyre::Result<PathBuf> {
+    let file_name = path
+        .file_name()
+        .context("coordinator store path has no file name")?
+        .to_string_lossy();
+    let parent = path
+        .parent()
+        .context("coordinator store path has no parent directory")?;
+
+    for suffix in 0..u32::MAX {
+        let backup_name = if suffix == 0 {
+            format!("{file_name}.backup")
+        } else {
+            format!("{file_name}.backup.{suffix}")
+        };
+        let candidate = parent.join(backup_name);
+        if !candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+    bail!("could not find an available coordinator store backup path")
 }
 
 pub(crate) fn down(
@@ -146,9 +271,13 @@ pub(crate) fn dora_executable_path() -> eyre::Result<std::ffi::OsString> {
 /// - null stdio prevents broken-pipe crashes when the parent's terminal closes
 /// - new process group prevents terminal signals (SIGHUP/SIGINT) from propagating
 pub(crate) fn detach_process(cmd: &mut Command) {
+    detach_process_with_stderr(cmd, Stdio::null());
+}
+
+fn detach_process_with_stderr(cmd: &mut Command, stderr: impl Into<Stdio>) {
     cmd.stdin(Stdio::null());
     cmd.stdout(Stdio::null());
-    cmd.stderr(Stdio::null());
+    cmd.stderr(stderr);
     #[cfg(unix)]
     {
         use std::os::unix::process::CommandExt;
@@ -156,7 +285,7 @@ pub(crate) fn detach_process(cmd: &mut Command) {
     }
 }
 
-fn start_coordinator(auth: bool) -> eyre::Result<()> {
+fn start_coordinator(auth: bool) -> eyre::Result<CoordinatorStartup> {
     let path = dora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
@@ -164,15 +293,19 @@ fn start_coordinator(auth: bool) -> eyre::Result<()> {
     if auth {
         cmd.arg("--auth");
     }
-    detach_process(&mut cmd);
-    cmd.spawn().wrap_err(
+    let stderr = tempfile::tempfile().wrap_err("failed to create coordinator stderr capture")?;
+    let child_stderr = stderr
+        .try_clone()
+        .wrap_err("failed to clone coordinator stderr capture")?;
+    detach_process_with_stderr(&mut cmd, child_stderr);
+    let child = cmd.spawn().wrap_err(
         "failed to run `dora coordinator`\n\n  \
          hint: ensure the `dora` binary is in your PATH",
     )?;
 
     println!("started dora coordinator");
 
-    Ok(())
+    Ok(CoordinatorStartup { child, stderr })
 }
 
 fn start_daemon() -> eyre::Result<()> {

@@ -1016,11 +1016,13 @@ mod real_dataflow {
     use dora_message::{
         cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
     };
+    use redb::{Database, TableDefinition};
     use std::net::SocketAddr;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Once;
     use std::time::Duration;
+    use tempfile::tempdir;
     use uuid::Uuid;
 
     static BUILD: Once = Once::new();
@@ -1063,6 +1065,122 @@ mod real_dataflow {
                 .expect("failed to build");
             assert!(status.success());
         });
+    }
+
+    fn write_incompatible_coordinator_store(home: &Path) {
+        let path = home.join(".dora").join("coordinator.redb");
+        std::fs::create_dir_all(path.parent().expect("store parent"))
+            .expect("create store directory");
+        let db = Database::create(path).expect("create redb store");
+        let txn = db.begin_write().expect("begin redb transaction");
+        {
+            let mut meta: redb::Table<'_, &str, u32> = txn
+                .open_table(TableDefinition::new("meta"))
+                .expect("open metadata table");
+            meta.insert("schema_version", u32::MAX)
+                .expect("write incompatible schema version");
+        }
+        txn.commit().expect("commit incompatible store");
+    }
+
+    fn unused_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("read ephemeral port")
+            .port()
+    }
+
+    fn run_dora_isolated(
+        dora: &str,
+        home: &Path,
+        port: u16,
+        args: &[&str],
+    ) -> (std::process::ExitStatus, String, String) {
+        // Files avoid waiting for pipe EOF on Windows when a detached child
+        // inherits a standard-stream handle from `dora up`.
+        let stdout_path = home.join(format!("{}-stdout.txt", args.join("-")));
+        let stderr_path = home.join(format!("{}-stderr.txt", args.join("-")));
+        let stdout = std::fs::File::create(&stdout_path).expect("create stdout capture");
+        let stderr = std::fs::File::create(&stderr_path).expect("create stderr capture");
+        let status = Command::new(dora)
+            .args(args)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("DORA_COORDINATOR_PORT", port.to_string())
+            .stdout(stdout)
+            .stderr(stderr)
+            .status()
+            .expect("run isolated dora command");
+        let stdout = std::fs::read_to_string(stdout_path).unwrap_or_default();
+        let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
+        (status, stdout, stderr)
+    }
+
+    #[test]
+    fn e2e_up_reports_incompatible_coordinator_store() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_incompatible_coordinator_store(home.path());
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), unused_port(), &["up"]);
+
+        assert!(
+            !status.success(),
+            "dora up unexpectedly succeeded; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("redb schema version mismatch"),
+            "coordinator startup error was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("dora up --recreate-store"),
+            "recovery hint was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn e2e_up_recreate_store_archives_incompatible_store() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_incompatible_coordinator_store(home.path());
+        let port = unused_port();
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up", "--recreate-store"]);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            status.success(),
+            "dora up --recreate-store failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+        assert!(
+            stdout.contains("archived coordinator store"),
+            "store archive was not announced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let store_dir = home.path().join(".dora");
+        let has_backup = std::fs::read_dir(&store_dir)
+            .expect("read store directory")
+            .filter_map(Result::ok)
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("coordinator.redb.backup")
+            });
+        assert!(has_backup, "incompatible store was not archived");
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "fresh coordinator store was not created"
+        );
     }
 
     fn cleanup(dora: &str) {

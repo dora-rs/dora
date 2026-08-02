@@ -142,7 +142,7 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
 }
 
 #[cfg(feature = "redb-backend")]
-fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
+pub(crate) fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());

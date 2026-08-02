@@ -313,9 +313,17 @@ Start coordinator and daemon in local mode.
 
 ```
 dora up
+dora up --recreate-store
 ```
 
 Spawns `dora coordinator` and `dora daemon` as background processes. Waits for both to be ready before returning. Idempotent: if already running, does nothing.
+
+| Flag | Description |
+|------|-------------|
+| `--auth` | Enable token authentication for the coordinator |
+| `--recreate-store` | Archive `~/.dora/coordinator.redb` and start with a fresh persistent store |
+
+If the coordinator cannot start, `dora up` reports its startup error directly. After an upgrade reports an incompatible redb schema, rerun with `--recreate-store`. The old store is preserved alongside the new one as `coordinator.redb.backup` (or a numbered variant).
 
 When running the daemon directly (e.g., for distributed deployments), additional flags are available:
 

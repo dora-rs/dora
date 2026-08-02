@@ -269,6 +269,7 @@ mod tests {
     #[test]
     fn parse_up() {
         parse_ok(&["dora", "up"]);
+        parse_ok(&["dora", "up", "--recreate-store"]);
     }
 
     #[test]
