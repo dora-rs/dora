@@ -1016,12 +1016,13 @@ mod real_dataflow {
     use dora_message::{
         cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
     };
+    use fs2::FileExt as _;
     use redb::{Database, TableDefinition};
     use std::net::SocketAddr;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Once;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
     use uuid::Uuid;
 
@@ -1097,21 +1098,54 @@ mod real_dataflow {
         port: u16,
         args: &[&str],
     ) -> (std::process::ExitStatus, String, String) {
+        let capture_name = args.join("-");
+        let (child, stdout_path, stderr_path) =
+            spawn_dora_isolated(dora, home, port, args, &capture_name);
+        wait_for_dora_isolated(child, stdout_path, stderr_path)
+    }
+
+    fn spawn_dora_isolated(
+        dora: &str,
+        home: &Path,
+        port: u16,
+        args: &[&str],
+        capture_name: &str,
+    ) -> (std::process::Child, std::path::PathBuf, std::path::PathBuf) {
         // Files avoid waiting for pipe EOF on Windows when a detached child
         // inherits a standard-stream handle from `dora up`.
-        let stdout_path = home.join(format!("{}-stdout.txt", args.join("-")));
-        let stderr_path = home.join(format!("{}-stderr.txt", args.join("-")));
+        let stdout_path = home.join(format!("{capture_name}-stdout.txt"));
+        let stderr_path = home.join(format!("{capture_name}-stderr.txt"));
         let stdout = std::fs::File::create(&stdout_path).expect("create stdout capture");
         let stderr = std::fs::File::create(&stderr_path).expect("create stderr capture");
-        let status = Command::new(dora)
+        let child = Command::new(dora)
             .args(args)
             .env("HOME", home)
             .env("USERPROFILE", home)
             .env("DORA_COORDINATOR_PORT", port.to_string())
             .stdout(stdout)
             .stderr(stderr)
-            .status()
-            .expect("run isolated dora command");
+            .spawn()
+            .expect("spawn isolated dora command");
+        (child, stdout_path, stderr_path)
+    }
+
+    fn wait_for_dora_isolated(
+        mut child: std::process::Child,
+        stdout_path: std::path::PathBuf,
+        stderr_path: std::path::PathBuf,
+    ) -> (std::process::ExitStatus, String, String) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll isolated dora command") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("isolated dora command did not exit within 15 seconds");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
         let stdout = std::fs::read_to_string(stdout_path).unwrap_or_default();
         let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
         (status, stdout, stderr)
@@ -1180,6 +1214,102 @@ mod real_dataflow {
         assert!(
             store_dir.join("coordinator.redb").exists(),
             "fresh coordinator store was not created"
+        );
+    }
+
+    #[test]
+    fn e2e_concurrent_up_recreate_store_preserves_original_backup() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_incompatible_coordinator_store(home.path());
+        let port = unused_port();
+        let store_dir = home.path().join(".dora");
+        let lock_path = store_dir.join("coordinator.redb.recreate.lock");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .expect("open recreation lock");
+        lock.lock_exclusive().expect("hold recreation lock");
+
+        let (mut first, first_stdout, first_stderr) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["up", "--recreate-store"],
+            "first-recreate",
+        );
+        let (mut second, second_stdout, second_stderr) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["up", "--recreate-store"],
+            "second-recreate",
+        );
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            first.try_wait().expect("poll first recreation").is_none(),
+            "first recreation ignored the held store lock"
+        );
+        assert!(
+            second.try_wait().expect("poll second recreation").is_none(),
+            "second recreation ignored the held store lock"
+        );
+        fs2::FileExt::unlock(&lock).expect("release recreation lock");
+
+        let (first_status, first_stdout, first_stderr) =
+            wait_for_dora_isolated(first, first_stdout, first_stderr);
+        let (second_status, second_stdout, second_stderr) =
+            wait_for_dora_isolated(second, second_stdout, second_stderr);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            first_status.success(),
+            "first recreation failed; stdout:\n{first_stdout}\nstderr:\n{first_stderr}"
+        );
+        assert!(
+            second_status.success(),
+            "second recreation failed; stdout:\n{second_stdout}\nstderr:\n{second_stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+
+        let backups: Vec<_> = std::fs::read_dir(&store_dir)
+            .expect("read store directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("coordinator.redb.backup")
+                })
+            })
+            .collect();
+        assert_eq!(
+            backups.len(),
+            1,
+            "concurrent recreation should archive the original store exactly once"
+        );
+        let backup = Database::open(&backups[0]).expect("open archived store");
+        let txn = backup.begin_read().expect("read archived store");
+        let meta = txn
+            .open_table::<&str, u32>(TableDefinition::new("meta"))
+            .expect("open archived metadata table");
+        let archived_version = meta
+            .get("schema_version")
+            .expect("read archived schema version")
+            .expect("archived schema version exists")
+            .value();
+        assert_eq!(
+            archived_version,
+            u32::MAX,
+            "the original incompatible store backup was overwritten"
         );
     }
 

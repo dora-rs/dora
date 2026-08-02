@@ -55,17 +55,28 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -
         .and_then(|s| s.parse().ok())
         .unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
     let coordinator_addr = (addr, port).into();
+    // Keep the lock through daemon readiness so overlapping recreation commands
+    // cannot race either the fresh coordinator or its daemon startup.
+    let mut _recreation_lock = None;
     let session = match connect_to_coordinator(coordinator_addr) {
         Ok(session) => {
             println!("coordinator already running on {coordinator_addr}");
             session
         }
-        Err(_) => {
-            if recreate_store {
-                archive_default_coordinator_store()?;
+        Err(_) if recreate_store => {
+            _recreation_lock = Some(lock_default_coordinator_store_recreation()?);
+            match connect_to_coordinator(coordinator_addr) {
+                Ok(session) => {
+                    println!("coordinator already running on {coordinator_addr}");
+                    session
+                }
+                Err(_) => {
+                    archive_default_coordinator_store()?;
+                    start_and_wait_for_coordinator(coordinator_addr, port, auth)?
+                }
             }
-            start_and_wait_for_coordinator(coordinator_addr, port, auth)?
         }
+        Err(_) => start_and_wait_for_coordinator(coordinator_addr, port, auth)?,
     };
 
     if !daemon_running(&session)? {
@@ -188,6 +199,48 @@ fn archive_default_coordinator_store() -> eyre::Result<()> {
     {
         bail!("--recreate-store requires the `redb-backend` feature")
     }
+}
+
+fn lock_default_coordinator_store_recreation() -> eyre::Result<fs::File> {
+    #[cfg(feature = "redb-backend")]
+    {
+        let path = super::coordinator::default_redb_path()?;
+        lock_coordinator_store_recreation(&path)
+    }
+    #[cfg(not(feature = "redb-backend"))]
+    {
+        bail!("--recreate-store requires the `redb-backend` feature")
+    }
+}
+
+#[cfg(feature = "redb-backend")]
+fn lock_coordinator_store_recreation(path: &Path) -> eyre::Result<fs::File> {
+    use fs2::FileExt as _;
+
+    let file_name = path
+        .file_name()
+        .context("coordinator store path has no file name")?
+        .to_string_lossy();
+    let lock_path = path.with_file_name(format!("{file_name}.recreate.lock"));
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| {
+            format!(
+                "failed to open coordinator store recreation lock `{}`",
+                lock_path.display()
+            )
+        })?;
+    lock.lock_exclusive().with_context(|| {
+        format!(
+            "failed to lock coordinator store recreation at `{}`",
+            lock_path.display()
+        )
+    })?;
+    Ok(lock)
 }
 
 #[cfg(feature = "redb-backend")]
@@ -322,4 +375,48 @@ fn start_daemon() -> eyre::Result<()> {
     println!("started dora daemon");
 
     Ok(())
+}
+
+#[cfg(all(test, feature = "redb-backend"))]
+mod tests {
+    use super::{available_backup_path, lock_coordinator_store_recreation};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    #[test]
+    fn coordinator_store_backup_path_skips_existing_backups() {
+        let dir = tempfile::tempdir().expect("create temporary store directory");
+        let store = dir.path().join("coordinator.redb");
+        std::fs::write(dir.path().join("coordinator.redb.backup"), []).expect("create backup");
+        std::fs::write(dir.path().join("coordinator.redb.backup.1"), [])
+            .expect("create numbered backup");
+
+        let backup = available_backup_path(&store).expect("select available backup path");
+
+        assert_eq!(backup, dir.path().join("coordinator.redb.backup.2"));
+    }
+
+    #[test]
+    fn coordinator_store_recreation_lock_serializes_callers() {
+        let dir = tempfile::tempdir().expect("create temporary store directory");
+        let store = dir.path().join("coordinator.redb");
+        let first = lock_coordinator_store_recreation(&store).expect("acquire first lock");
+        let (tx, rx) = mpsc::channel();
+
+        let waiter = std::thread::spawn(move || {
+            let second = lock_coordinator_store_recreation(&store).expect("acquire second lock");
+            tx.send(second).expect("report acquired lock");
+        });
+
+        assert!(
+            rx.recv_timeout(Duration::from_millis(100)).is_err(),
+            "second recreation acquired the lock before the first released it"
+        );
+        drop(first);
+        let second = rx
+            .recv_timeout(Duration::from_secs(2))
+            .expect("second recreation did not acquire the released lock");
+        drop(second);
+        waiter.join().expect("join lock waiter");
+    }
 }
