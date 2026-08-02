@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -114,6 +117,10 @@ pub struct EventStream {
     /// Returning `None` here lets the caller exit and drops the
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
+    /// Testing-mode shutdown flag shared with the in-process daemon thread.
+    /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
+    /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
+    testing_shutdown: Option<Arc<AtomicBool>>,
 }
 
 /// Spawn the consumer half of the startup handshake: a thread that answers
@@ -215,9 +222,14 @@ impl EventStream {
                 }
             }
 
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
+        };
+
+        let testing_shutdown = match daemon_communication {
+            DaemonCommunicationWrapper::Testing { shutdown, .. } => Some(shutdown.clone()),
+            _ => None,
         };
 
         let close_channel = match daemon_communication {
@@ -233,7 +245,7 @@ impl EventStream {
                     }
                 }
             }
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
@@ -343,6 +355,7 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
+            testing_shutdown,
         )
     }
 
@@ -359,6 +372,7 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
+        testing_shutdown: Option<Arc<AtomicBool>>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -750,6 +764,7 @@ impl EventStream {
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
             stop_received: false,
+            testing_shutdown,
         })
     }
 
@@ -1746,6 +1761,11 @@ impl Drop for EventStream {
             inner: DaemonRequest::EventStreamDropped,
             timestamp: self.clock.new_timestamp(),
         };
+        // Interrupt a testing-daemon `next_event` sleep before the blocking
+        // close handshake so Drop cannot deadlock (dora-rs/dora#2855).
+        if let Some(shutdown) = &self.testing_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         let result = self
             .close_channel
             .request(&request)
