@@ -1095,6 +1095,7 @@ impl Daemon {
         let clock = Arc::new(HLC::default());
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
+        let termination_events = ReceiverStream::new(set_up_termination_handler(clock.clone()));
 
         // Set up optional timeout for --stop-after
         let timeout_events = if let Some(duration) = stop_after {
@@ -1137,6 +1138,7 @@ impl Daemon {
         let events = (
             coordinator_events,
             ctrlc_events,
+            termination_events,
             timeout_events,
             dynamic_node_events,
         )
@@ -6010,6 +6012,114 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
 
 // RunningDataflow and related types are in running_dataflow.rs
 // FaultToleranceStats and CascadingErrorCauses are in fault_tolerance.rs
+
+/// Treat SIGTERM/SIGHUP like Ctrl-C, but ONLY for the run-a-single-
+/// dataflow modes (`dora run`, `dora daemon --run-dataflow`).
+///
+/// Without this, killing the CLI runs no teardown at all and every node
+/// it spawned is orphaned: nodes are deliberately spawned as
+/// process-group leaders (so a terminal Ctrl-C cannot kill them out from
+/// under the daemon), which leaves an orphan with `ppid=1` and its own
+/// pgid — unreachable by both inherited signal delivery and a group-kill
+/// of the CLI. Only this teardown can reap them (dora-rs/dora#2920).
+///
+/// Deliberately scoped here rather than enabling `ctrlc`'s `termination`
+/// feature. `dora run`, `dora daemon` and `dora coordinator` are
+/// subcommands of ONE binary, and cargo unifies features, so that flag
+/// would change signal handling process-wide — making SIGTERM a graceful
+/// request everywhere. That is wrong for the long-lived services: a
+/// `pkill -TERM` of the coordinator would gracefully destroy its daemons
+/// instead of crashing (which the nightly crash-recovery jobs rely on),
+/// and it would override the `SIG_IGN` that `nohup` installs for
+/// `dora cluster up`'s remote daemons.
+///
+/// Escalates on the same ladder as the ctrl-c handler below, and for the
+/// same reason: aborting on the SECOND signal would kill the process
+/// while the first signal's teardown is still running, orphaning exactly
+/// the node processes this exists to reap. So the second signal takes
+/// the `SecondCtrlC` path — an early but still unwinding exit, which
+/// drops the `RunningDataflow` and with it every `ProcessHandle` — and
+/// only a third aborts outright.
+///
+/// Delivery uses `try_send` rather than an await so a wedged event loop
+/// cannot swallow the escalation. A failure to deliver the FIRST signal
+/// is not fatal by itself (the operator can signal again); by the second
+/// there is nothing left to wait for.
+fn set_up_termination_handler(clock: Arc<HLC>) -> tokio::sync::mpsc::Receiver<Timestamped<Event>> {
+    // Room for both rungs of the ladder, so a queued `CtrlC` cannot make
+    // the follow-up `SecondCtrlC` undeliverable.
+    let (tx, rx) = mpsc::channel(2);
+
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (mut sigterm, mut sighup) = match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(term), Ok(hup)) => (term, hup),
+            _ => {
+                tracing::warn!(
+                    "failed to install SIGTERM/SIGHUP handler; killing this process \
+                         will leak its node processes"
+                );
+                return;
+            }
+        };
+
+        let mut signals_seen = 0_u32;
+        loop {
+            tokio::select! {
+                _ = sigterm.recv() => {}
+                _ = sighup.recv() => {}
+            }
+            signals_seen += 1;
+            let event = match signals_seen {
+                1 => {
+                    tracing::info!("received termination signal -> stopping dataflow");
+                    Event::CtrlC
+                }
+                2 => {
+                    tracing::warn!("received second termination signal -> exiting early");
+                    Event::SecondCtrlC
+                }
+                _ => {
+                    tracing::warn!("received third termination signal -> aborting immediately");
+                    std::process::abort();
+                }
+            };
+            if tx
+                .try_send(Timestamped {
+                    inner: event,
+                    timestamp: clock.new_timestamp(),
+                })
+                .is_err()
+            {
+                // The event loop is not consuming. On the first signal
+                // that is worth reporting but not worth killing over —
+                // teardown may still be in flight, and a kill here would
+                // orphan the nodes. A second undeliverable signal means
+                // nothing is going to drain it.
+                if signals_seen >= 2 {
+                    tracing::warn!("could not deliver termination event -> aborting immediately");
+                    std::process::abort();
+                }
+                tracing::warn!("could not deliver termination event; signal again to force exit");
+            }
+        }
+    });
+
+    #[cfg(not(unix))]
+    {
+        // No SIGTERM/SIGHUP on Windows; console close is already covered
+        // by the ctrl-c handler. Keep the sender alive so the receiver
+        // pends forever instead of reading as an immediate event.
+        let _ = &clock;
+        std::mem::forget(tx);
+    }
+
+    rx
+}
 
 fn set_up_ctrlc_handler(
     clock: Arc<HLC>,
