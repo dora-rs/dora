@@ -6,6 +6,10 @@
 //! SequenceNumber sequencing via `sample_miss_detection` so no session
 //! timestamping is needed, `publisher_detection` + `detect_late_publishers`).
 //!
+//! Also covers the complementary case (publisher joins *after* the subscriber):
+//! that path depends on liveliness-token parsing, which fails when the schema
+//! key ends in an `@…` verbatim chunk (#2923).
+//!
 //! Runs in the default suite: it forms a loopback peer link on an OS-assigned
 //! port (a transient `TcpListener` bind reserves a free port, so there is no
 //! fixed-port clash) with multicast disabled. The cold-start path is covered
@@ -45,18 +49,27 @@ fn config(listen: &[&str], connect: &[&str]) -> zenoh::Config {
     c
 }
 
-#[test]
-fn advanced_pub_cache_serves_late_joining_subscriber() {
-    // OS-assigned free port: bind :0, read the port, release it. The brief gap
-    // before zenoh rebinds it is harmless (the socket was never connected, so no
-    // TIME_WAIT) and avoids the fixed-port clashes that would flake CI.
+/// Free loopback TCP endpoint for a one-shot peer link.
+fn free_endpoint() -> String {
     let port = std::net::TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let endpoint = format!("tcp/127.0.0.1:{port}");
-    let key = "dora/test/schema-cache/output/@schema";
+    format!("tcp/127.0.0.1:{port}")
+}
+
+/// Schema side-channel key. Must not end in an `@…` verbatim chunk: zenoh_ext
+/// liveliness tokens are `${remaining:**}/@adv/...` and `**` cannot cross
+/// verbatim chunks (#2923). Mirrors `dora_core::topics::zenoh_output_schema_topic`.
+const SCHEMA_KEY: &str = "dora/test/schema-cache/output/_schema";
+
+#[test]
+fn advanced_pub_cache_serves_late_joining_subscriber() {
+    // OS-assigned free port: bind :0, read the port, release it. The brief gap
+    // before zenoh rebinds it is harmless (the socket was never connected, so no
+    // TIME_WAIT) and avoids the fixed-port clashes that would flake CI.
+    let endpoint = free_endpoint();
     let schema = b"PRETEND-IPC-SCHEMA-MESSAGE";
 
     // Producer joins first and publishes the schema, then keeps its session
@@ -65,7 +78,7 @@ fn advanced_pub_cache_serves_late_joining_subscriber() {
         .wait()
         .unwrap();
     let publisher = pub_session
-        .declare_publisher(key)
+        .declare_publisher(SCHEMA_KEY)
         .congestion_control(CongestionControl::Block)
         .sample_miss_detection(MissDetectionConfig::default())
         .cache(CacheConfig::default())
@@ -84,7 +97,7 @@ fn advanced_pub_cache_serves_late_joining_subscriber() {
         .wait()
         .unwrap();
     let _subscriber = sub_session
-        .declare_subscriber(key)
+        .declare_subscriber(SCHEMA_KEY)
         .history(HistoryConfig::default().detect_late_publishers())
         .callback(move |sample| {
             let _ = tx.send(sample.payload().to_bytes().to_vec());
@@ -100,4 +113,50 @@ fn advanced_pub_cache_serves_late_joining_subscriber() {
         schema.as_slice(),
         "cached schema bytes must round-trip to the late joiner"
     );
+}
+
+/// Subscriber is up first; the publisher appears later. Recovery requires
+/// `detect_late_publishers` to parse the publisher's liveliness token
+/// (`…/_schema/@adv/pub/…`). With the old `/@schema` key that parse failed
+/// (#2923) and this path silently never queried history.
+#[test]
+fn advanced_pub_cache_serves_when_publisher_joins_after_subscriber() {
+    let endpoint = free_endpoint();
+    let schema = b"LATE-PUBLISHER-SCHEMA";
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let sub_session = zenoh::open(config(&[endpoint.as_str()], &[]))
+        .wait()
+        .unwrap();
+    let _subscriber = sub_session
+        .declare_subscriber(SCHEMA_KEY)
+        .history(HistoryConfig::default().detect_late_publishers())
+        .callback(move |sample| {
+            let _ = tx.send(sample.payload().to_bytes().to_vec());
+        })
+        .wait()
+        .unwrap();
+
+    // Give the liveliness subscriber time to come up before the publisher
+    // announces itself.
+    std::thread::sleep(Duration::from_millis(300));
+
+    let pub_session = zenoh::open(config(&[], &[endpoint.as_str()]))
+        .wait()
+        .unwrap();
+    let publisher = pub_session
+        .declare_publisher(SCHEMA_KEY)
+        .congestion_control(CongestionControl::Block)
+        .sample_miss_detection(MissDetectionConfig::default())
+        .cache(CacheConfig::default())
+        .publisher_detection()
+        .wait()
+        .unwrap();
+    publisher.put(schema.as_slice()).wait().unwrap();
+
+    let got = rx.recv_timeout(Duration::from_secs(10)).expect(
+        "subscriber that started first must recover schema via liveliness \
+             late-publisher detection (#2923)",
+    );
+    assert_eq!(got, schema.as_slice());
 }

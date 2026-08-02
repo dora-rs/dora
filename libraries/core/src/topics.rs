@@ -612,12 +612,19 @@ pub fn zenoh_output_publish_topic(
 }
 
 /// Zenoh key carrying the Arrow IPC **schema** for an output's data topic, as a
-/// `/@schema` sub-key of [`zenoh_output_publish_topic`]. The producer publishes
+/// `/_schema` sub-key of [`zenoh_output_publish_topic`]. The producer publishes
 /// the schema here (on change) through a zenoh-ext `AdvancedPublisher` whose
 /// cache retains the last sample; a subscriber's `AdvancedSubscriber` history
 /// query fetches it on join, so the data topic only ever carries schema-less
-/// record batches. The `@`-prefixed final chunk keeps it from matching the
-/// concrete data key (no cross-delivery to the data subscriber).
+/// record batches.
+///
+/// The extra final chunk keeps this key distinct from the concrete data key
+/// (exact-key subscribers never cross-deliver). It must **not** be `@`-prefixed:
+/// zenoh-ext liveliness tokens are
+/// `${remaining:**}/@adv/${entity}/${zid}/${eid}/${meta}` and Zenoh verbatim
+/// chunks (`@…`) are hermetic — `**` cannot cross them — so a key ending in
+/// `/@schema/@adv/…` fails `ke_liveliness::parse` and floods
+/// `Received malformed liveliness token key expression` warnings (#2923).
 #[cfg(feature = "zenoh")]
 pub fn zenoh_output_schema_topic(
     dataflow_id: uuid::Uuid,
@@ -625,7 +632,7 @@ pub fn zenoh_output_schema_topic(
     output_id: &dora_message::id::DataId,
 ) -> String {
     format!(
-        "{}/@schema",
+        "{}/_schema",
         zenoh_output_publish_topic(dataflow_id, node_id, output_id)
     )
 }
@@ -863,6 +870,33 @@ mod tests {
             for b in &topics[i + 1..] {
                 assert_ne!(a, b, "per-output zenoh keys must not overlap");
             }
+        }
+    }
+
+    // zenoh-ext publisher-detection liveliness uses
+    // `${remaining:**}/@adv/...`. Verbatim (`@…`) chunks are hermetic, so a
+    // schema key that itself ends in `/@schema` makes tokens unparseable and
+    // floods WARN logs (#2923). Keep the schema key free of `@` chunks.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn schema_topic_has_no_verbatim_chunks() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+        let topic = zenoh_output_schema_topic(dataflow_id, &node, &output);
+
+        assert!(
+            topic.ends_with("/_schema"),
+            "schema side-channel must be the `/_schema` sibling of the data key, got {topic}"
+        );
+        for chunk in topic.split('/') {
+            assert!(
+                !chunk.starts_with('@'),
+                "schema topic chunk `{chunk}` must not be verbatim (`@…`); \
+                 otherwise zenoh_ext liveliness tokens fail to parse (#2923)"
+            );
         }
     }
 
