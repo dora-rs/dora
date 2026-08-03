@@ -86,6 +86,11 @@ pub struct RunningNode {
     /// events cannot race ahead of registration. Dropping the sender without
     /// firing it (entry never registered) cancels the loop.
     pub(crate) restart_loop_start: Option<oneshot::Sender<()>>,
+    /// Keeps the node's TCP listener alive; when this entry (and the
+    /// restart loop's clone) drops, the listener stops accepting — so a
+    /// replaced or removed node does not leak its listener until the whole
+    /// dataflow finishes (dora-rs/dora#2988 review, finding 3).
+    pub(crate) _listener_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Monotonic identity of the process incarnation currently registered
     /// under this node ID. Lifecycle events from older incarnations must not
     /// mutate this entry or contribute results to it.
@@ -689,6 +694,30 @@ impl RunningDataflow {
             DEFAULT_STOP_GRACE,
         );
         Ok(())
+    }
+
+    /// Stop an already-unregistered (replaced) incarnation
+    /// (dora-rs/dora#2927): send `Stop` on the id's still-installed
+    /// subscribe channel and schedule the grace-kill escalation on the
+    /// taken process handle. Must be called BEFORE the old incarnation's
+    /// subscribe channel is removed from `subscribe_channels`, or the
+    /// `Stop` cannot reach it and only the kill escalation applies.
+    pub(crate) fn stop_replaced_incarnation(
+        &self,
+        node_id: &NodeId,
+        generation: u64,
+        process: Option<ProcessHandle>,
+        clock: &HLC,
+        grace_duration: Option<Duration>,
+    ) {
+        self.send_stop_and_schedule_kill(
+            node_id,
+            generation,
+            process,
+            clock,
+            grace_duration,
+            DEFAULT_STOP_GRACE,
+        );
     }
 
     /// Restart a single node. Re-enables restart so `restart_loop` picks it up.

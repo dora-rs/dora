@@ -336,6 +336,48 @@ pub struct Daemon {
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
+/// Whether a node-connection event belongs to a superseded incarnation.
+///
+/// Strictly-older comparison, deliberately not equality: generations are
+/// globally monotonic, and the restart loop publishes a successor's
+/// generation to the listener BEFORE spawning it, so a fast successor's
+/// events can carry a generation NEWER than the entry until its
+/// `ProcessHandleReplaced` is processed. Dropping those would eat the
+/// successor's one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
+fn event_generation_is_stale(entry_generation: u64, event_generation: u64) -> bool {
+    event_generation < entry_generation
+}
+
+/// Patch a stored descriptor entry with a replacement node's definition
+/// (dora-rs/dora#2988 review, finding 2). The stored descriptor is
+/// serialized into every spawned process's `DORA_NODE_CONFIG`, so the
+/// replacement must not receive the outgoing incarnation's path, env, or
+/// restart configuration through `DoraNode::dataflow_descriptor()`.
+/// Only `CoreNodeKind::Custom` reaches here — ReplaceNode's v1 scope
+/// rejects other kinds up front.
+fn patch_descriptor_entry(
+    entry: &mut dora_message::descriptor::Node,
+    resolved: &dora_core::descriptor::ResolvedNode,
+) {
+    if let CoreNodeKind::Custom(custom) = &resolved.kind {
+        entry.path = Some(custom.path.clone());
+        entry.args = custom.args.clone();
+        entry.env = resolved.env.clone();
+        entry.inputs = custom.run_config.inputs.clone();
+        entry.outputs = custom.run_config.outputs.clone();
+        entry.restart_policy = custom.restart_policy;
+        entry.max_restarts = custom.max_restarts;
+        entry.restart_delay = custom.restart_delay;
+        entry.max_restart_delay = custom.max_restart_delay;
+        entry.restart_window = custom.restart_window;
+        entry.health_check_timeout = custom.health_check_timeout;
+        entry.finish_grace_secs = custom.finish_grace_secs;
+        entry.send_stdout_as = custom.send_stdout_as.clone();
+        entry.send_logs_as = custom.send_logs_as.clone();
+        entry.min_log_level = custom.min_log_level.clone();
+    }
+}
+
 fn clear_node_result(results: &mut DaemonRunResult, dataflow_id: Uuid, node_id: &NodeId) {
     let remove_dataflow = results.get_mut(&dataflow_id).is_some_and(|node_results| {
         node_results.remove(node_id);
@@ -1625,8 +1667,40 @@ impl Daemon {
                 Event::Node {
                     dataflow_id: dataflow,
                     node_id,
+                    generation,
                     event,
-                } => self.handle_node_event(event, dataflow, node_id).await?,
+                } => {
+                    // Drop control events from a superseded incarnation: a
+                    // replaced or re-added id's old connection must not
+                    // mutate the current entry (close its outputs, remove
+                    // its subscription, ...) — dora-rs/dora#2926, #2927.
+                    // STRICTLY older only: the restart loop publishes the
+                    // successor's generation before spawning it, so a fast
+                    // successor can connect (and Subscribe) while the entry
+                    // still holds the predecessor's generation — a NEWER
+                    // event generation is that successor racing its own
+                    // `ProcessHandleReplaced` and must not be dropped, or
+                    // its one-shot Subscribe is lost and the incarnation
+                    // stays disconnected. Entry-absent passes through:
+                    // during startup a node can register before its
+                    // RunningNode is inserted, and the pending-nodes
+                    // barrier owns that window.
+                    let superseded = self
+                        .running
+                        .get(&dataflow)
+                        .and_then(|df| df.running_nodes.get(&node_id))
+                        .is_some_and(|node| event_generation_is_stale(node.generation, generation));
+                    if superseded {
+                        tracing::debug!(
+                            %dataflow,
+                            %node_id,
+                            generation,
+                            "dropping node event from superseded incarnation"
+                        );
+                    } else {
+                        self.handle_node_event(event, dataflow, node_id).await?
+                    }
+                }
                 Event::Dora(event) => self.handle_dora_event(event).await?,
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
                 Event::HeartbeatInterval => {
@@ -2645,6 +2719,336 @@ impl Daemon {
                     tracing::error!(%dataflow_id, %node_id, "RemoveNode failed: {err:?}");
                 }
                 let reply = DaemonCoordinatorReply::RemoveNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::ReplaceNode {
+                dataflow_id,
+                node,
+                uv,
+                grace_duration,
+            } => {
+                let node_id = node.id.clone();
+                tracing::info!(%dataflow_id, %node_id, "replacing node in running dataflow");
+
+                let result: eyre::Result<()> = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    // Replace must not swap a node the startup barrier is
+                    // still waiting on: the barrier tracks the original
+                    // incarnation's subscription, and a mid-barrier swap
+                    // would let the replacement inherit or corrupt that
+                    // cohort's state (cf. AddNode's deliberate
+                    // non-enrollment, dora-rs/dora#2917). Deliberately NOT
+                    // gated on `dataflow_started`: that flag is set by the
+                    // all-daemons-ready roundtrip, which can lag seconds
+                    // behind this node being visibly Running — the precise
+                    // hazard is this id gating the barrier, nothing more.
+                    eyre::ensure!(
+                        !dataflow.pending_nodes.is_pending(&node_id),
+                        "node `{node_id}` is still starting (startup barrier); \
+                         retry once the dataflow is ready"
+                    );
+                    eyre::ensure!(
+                        dataflow.running_nodes.contains_key(&node_id),
+                        "no running node `{node_id}` to replace; use `dora node add`"
+                    );
+                    // v1 scope (dora-rs/dora#2927): spawned custom nodes
+                    // only. A dynamic replacement spawns no process (the
+                    // command would kill the old node and leave nothing
+                    // running behind the id), an outgoing dynamic node has
+                    // no handle for the grace-kill escalation, and
+                    // runtime/operator nodes keep their inputs in a
+                    // different descriptor location than the node-level
+                    // comparison below.
+                    eyre::ensure!(
+                        !node.kind.dynamic()
+                            && matches!(node.kind, dora_core::descriptor::CoreNodeKind::Custom(_)),
+                        "`dora node replace` currently supports spawned custom nodes only; \
+                         the replacement definition for `{node_id}` is a {} node — use \
+                         `dora node remove` + `dora node add` instead",
+                        if node.kind.dynamic() {
+                            "dynamic"
+                        } else {
+                            "runtime/operator"
+                        }
+                    );
+                    eyre::ensure!(
+                        !dataflow.dynamic_nodes.contains(&node_id),
+                        "node `{node_id}` is a dynamic node; `dora node replace` currently \
+                         supports spawned custom nodes only — use `dora node remove` + \
+                         `dora node add` instead"
+                    );
+
+                    // --- same-edges validation -------------------------------
+                    // A replace is a swap, not a topology edit
+                    // (dora-rs/dora#2927): the replacement must keep the
+                    // node's LIVE input edges exactly and still produce
+                    // every output a consumer (local or on a remote
+                    // daemon) is mapped to. The live edge state
+                    // (mappings/timers/log subscriptions) is the source of
+                    // truth rather than the stored descriptor entry: entry
+                    // input locations vary by node kind and by how the
+                    // node entered the dataflow (spawn vs AddNode), while
+                    // the live maps are uniformly keyed and already
+                    // reflect `dora node connect`/`disconnect` edits.
+                    let new_inputs = node_inputs(&node);
+                    let mut current_edges: BTreeMap<DataId, InputMapping> = BTreeMap::new();
+                    for (output_id, receivers) in &dataflow.mappings {
+                        for (receiver, input_id) in receivers {
+                            if receiver == &node_id {
+                                current_edges.insert(
+                                    input_id.clone(),
+                                    InputMapping::User(dora_message::config::UserInputMapping {
+                                        source: output_id.0.clone(),
+                                        output: output_id.1.clone(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    for (interval, receivers) in &dataflow.timers {
+                        for (receiver, input_id) in receivers {
+                            if receiver == &node_id {
+                                current_edges.insert(
+                                    input_id.clone(),
+                                    InputMapping::Timer {
+                                        interval: *interval,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    for subscriber in &dataflow.log_subscribers {
+                        if subscriber.node_id == node_id {
+                            current_edges.insert(
+                                subscriber.input_id.clone(),
+                                InputMapping::Logs(subscriber.filter.clone()),
+                            );
+                        }
+                    }
+                    const EDGE_HINT: &str = "`dora node replace` keeps the node's edges — use \
+                         `dora node remove`/`add` or `dora node connect`/`disconnect` for \
+                         topology changes";
+                    for (input_id, input) in &new_inputs {
+                        match current_edges.remove(input_id) {
+                            Some(mapping) if mapping == input.mapping => {}
+                            Some(_) => {
+                                eyre::bail!("replacement remaps input `{input_id}`; {EDGE_HINT}")
+                            }
+                            None => {
+                                eyre::bail!("replacement adds input `{input_id}`; {EDGE_HINT}")
+                            }
+                        }
+                    }
+                    if let Some((input_id, _)) = current_edges.into_iter().next() {
+                        eyre::bail!("replacement drops input `{input_id}`; {EDGE_HINT}");
+                    }
+                    // `node_output_ids` chains local mappings AND
+                    // `open_external_mappings`, so outputs consumed only by
+                    // nodes on other daemons are covered too.
+                    let new_outputs = node.kind.run_config().outputs;
+                    for output_id in dataflow.node_output_ids(&node_id) {
+                        eyre::ensure!(
+                            new_outputs.contains(&output_id),
+                            "replacement does not declare output `{output_id}`, which \
+                             downstream nodes consume"
+                        );
+                    }
+
+                    // --- spawn the replacement (old incarnation untouched) ---
+                    // Any failure up to and including the spawn leaves the
+                    // current incarnation running (dora-rs/dora#2927).
+                    // NOTE: this block deliberately mirrors the AddNode
+                    // arm's spawn sequence above — keep the two in sync
+                    // when adding Spawner fields or spawn parameters.
+                    let base_working_dir = self
+                        .working_dir
+                        .get(&dataflow_id)
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let is_dynamic = node.kind.dynamic();
+                    let output_routing = output_routing::added_node_output_routing(
+                        &node_id,
+                        node.kind.run_config().outputs,
+                        &dataflow.mappings,
+                        &dataflow.open_external_mappings,
+                        &dataflow.dynamic_nodes,
+                    );
+                    // Fresh stderr buffer for the new incarnation; installed
+                    // into the map only after the spawn succeeds.
+                    let node_stderr = Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX));
+                    // Patch the descriptor CLONE handed to the spawner with
+                    // the replacement's definition before it is serialized
+                    // into the child's DORA_NODE_CONFIG — the stored
+                    // descriptor still describes the outgoing incarnation
+                    // at this point (state mutations are deferred until the
+                    // spawn succeeds).
+                    let mut descriptor = dataflow.descriptor.clone();
+                    if let Some(entry) = descriptor.nodes.iter_mut().find(|n| n.id == node_id) {
+                        patch_descriptor_entry(entry, &node);
+                    }
+                    let spawner = Spawner {
+                        dataflow_id,
+                        daemon_tx: self.events_tx.clone(),
+                        dataflow_descriptor: descriptor,
+                        clock: self.clock.clone(),
+                        uv,
+                        ft_stats: self.ft_stats.clone(),
+                        shutdown: dataflow.listener_shutdown_rx.clone(),
+                        zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+                        zenoh_peering: dataflow.zenoh_peering.clone(),
+                        disable_multicast: self.disable_multicast,
+                    };
+                    let mut logger = self
+                        .logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .try_clone()
+                        .await
+                        .context("failed to clone logger")?;
+                    let python_env_dir =
+                        dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let task = spawner
+                        .spawn_node(
+                            node.clone(),
+                            base_working_dir,
+                            python_env_dir,
+                            false,
+                            node_stderr.clone(),
+                            None,
+                            output_routing,
+                            &mut logger,
+                        )
+                        .await
+                        .wrap_err("failed to prepare replacement node")?;
+                    let prepared = task.await.wrap_err("failed to build replacement node")?;
+                    let mut running_node = prepared
+                        .spawn(logger)
+                        .await
+                        .wrap_err("failed to spawn replacement node")?;
+
+                    // --- commit: swap entries and stop the outgoing one ------
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("dataflow disappeared during replacement spawn"))?;
+                    // If the entry vanished mid-spawn (concurrent remove),
+                    // dropping `running_node` kills the fresh process via
+                    // its ProcessHandle Drop and cancels its (ungated)
+                    // restart loop — no orphan.
+                    let mut outgoing =
+                        dataflow.running_nodes.remove(&node_id).ok_or_else(|| {
+                            eyre!("node `{node_id}` was removed during the replacement spawn")
+                        })?;
+                    outgoing.disable_restart();
+                    let outgoing_generation = outgoing.generation;
+                    let outgoing_process = outgoing.process.take();
+                    // Stop the outgoing incarnation while its subscribe
+                    // channel is still installed so the graceful `Stop`
+                    // reaches it; its later exit event carries
+                    // `outgoing_generation` and is dropped by the
+                    // generation guard instead of being attributed to the
+                    // replacement (dora-rs/dora#2926).
+                    dataflow.stop_replaced_incarnation(
+                        &node_id,
+                        outgoing_generation,
+                        outgoing_process,
+                        &self.clock,
+                        grace_duration,
+                    );
+
+                    // Per-incarnation state reset. Three deliberate
+                    // NON-resets:
+                    // - mappings/timers/log subscriptions are keyed by
+                    //   (node id, input id) and the edges are validated
+                    //   identical, so they carry over unchanged;
+                    // - `open_inputs`/`data_inputs` record DATAFLOW-level
+                    //   input closure (an upstream that already finished),
+                    //   which is delivered exactly once and afterwards
+                    //   reconstructed from these maps by the subscribe-time
+                    //   replay — resetting them would make a replacement
+                    //   installed after an upstream finished wait forever
+                    //   on a dead input and hang dataflow completion;
+                    // - the descriptor entry keeps the outgoing
+                    //   definition's other fields (path/env/...) — stale
+                    //   metadata the daemon itself never consults (only
+                    //   `id` and `inputs` are read; the coordinator's
+                    //   descriptor holds the authoritative new definition).
+                    dataflow.subscribe_channels.remove(&node_id);
+                    dataflow.pending_messages.remove(&node_id);
+                    dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.connected_nodes.remove(&node_id);
+                    dataflow.finish_escalated.remove(&node_id);
+                    dataflow.cascading_error_causes.forget(&node_id);
+                    dataflow.forget_node_bookkeeping(&node_id);
+                    dataflow
+                        .node_stderr_most_recent
+                        .insert(node_id.clone(), node_stderr);
+
+                    // Re-register input deadlines, but only for inputs that
+                    // are still open — a deadline on an already-closed
+                    // input would be re-scanned forever without ever
+                    // arming.
+                    let still_open = dataflow.open_inputs.get(&node_id).cloned();
+                    for (input_id, input) in &new_inputs {
+                        if matches!(input.mapping, InputMapping::User(_))
+                            && let Some(timeout) = input.input_timeout
+                            && still_open
+                                .as_ref()
+                                .is_some_and(|open| open.contains(input_id))
+                        {
+                            dataflow.input_deadlines.insert(
+                                (node_id.clone(), input_id.clone()),
+                                InputDeadline {
+                                    timeout: Duration::from_secs_f64(timeout),
+                                    last_received: None,
+                                },
+                            );
+                        }
+                    }
+
+                    // Update the stored descriptor entry to the
+                    // replacement's definition — the same patch applied to
+                    // the spawn-time clone, so later spawns (and restart
+                    // respawns of OTHER nodes) serialize the replacement,
+                    // not the outgoing incarnation.
+                    if let Some(entry) = dataflow
+                        .descriptor
+                        .nodes
+                        .iter_mut()
+                        .find(|n| n.id == node_id)
+                    {
+                        patch_descriptor_entry(entry, &node);
+                    }
+
+                    running_node.mark_registered();
+                    dataflow.running_nodes.insert(node_id.clone(), running_node);
+
+                    tracing::info!(
+                        %dataflow_id,
+                        %node_id,
+                        outgoing_generation,
+                        dynamic = is_dynamic,
+                        "node replaced successfully"
+                    );
+                    Ok(())
+                }
+                .await;
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "ReplaceNode failed: {err:?}");
+                }
+                if result.is_ok() {
+                    // The outgoing (or an even earlier) incarnation's stale
+                    // result must not be attributed to the replacement.
+                    clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                }
+                let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
                 );
                 let _ = reply_tx.send(Some(reply));
@@ -6821,6 +7225,7 @@ mod fault_tolerance_tests {
         RunningNode {
             process: None,
             restart_loop_start: None,
+            _listener_shutdown: None,
             generation: 7,
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
@@ -6849,6 +7254,26 @@ mod fault_tolerance_tests {
             health_check_timeout: None,
             finish_grace_secs: None,
         }
+    }
+
+    /// dora-rs/dora#2988 review, finding 1: the Event::Node gate must be
+    /// STRICTLY-older, not exact-match. The restart loop publishes a
+    /// successor's generation before spawning it, so the successor's
+    /// connection can emit its one-shot Subscribe with a generation NEWER
+    /// than the entry — dropping that leaves the incarnation disconnected
+    /// forever.
+    #[test]
+    fn node_event_gate_drops_only_strictly_older_generations() {
+        // Predecessor's connection after a swap advanced the entry: stale.
+        assert!(event_generation_is_stale(8, 7));
+        // The entry's current incarnation: current.
+        assert!(!event_generation_is_stale(8, 8));
+        // Successor racing its own ProcessHandleReplaced: must pass.
+        assert!(
+            !event_generation_is_stale(8, 9),
+            "a successor's early events must not be dropped while the \
+             entry still holds the predecessor's generation"
+        );
     }
 
     #[test]

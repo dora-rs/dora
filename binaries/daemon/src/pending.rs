@@ -118,6 +118,14 @@ impl PendingNodes {
         !self.local_nodes.is_empty()
     }
 
+    /// Whether `node_id` is still gating the startup barrier: enrolled in
+    /// the cohort and not yet subscribed. Used by `ReplaceNode` to reject
+    /// swapping a node whose original incarnation the barrier still waits
+    /// on (dora-rs/dora#2927).
+    pub fn is_pending(&self, node_id: &NodeId) -> bool {
+        self.local_nodes.contains(node_id)
+    }
+
     pub async fn handle_node_subscription(
         &mut self,
         node_id: NodeId,
@@ -421,6 +429,37 @@ mod tests {
             clock: std::sync::Arc::new(HLC::default()),
         }
         .for_daemon(daemon_id)
+    }
+
+    /// `ReplaceNode`'s startup gate (dora-rs/dora#2927): a node is
+    /// "pending" from cohort enrollment until its subscription is
+    /// handled, and never for ids the barrier does not know.
+    #[tokio::test]
+    async fn is_pending_tracks_barrier_membership() {
+        let id = node("swapme");
+        let mut p = pending();
+        assert!(!p.is_pending(&id), "unknown ids are never pending");
+
+        p.insert(id.clone());
+        assert!(p.is_pending(&id), "enrolled node must gate the barrier");
+
+        let mut logger = test_logger();
+        let mut logger = logger.for_dataflow(uuid::Uuid::nil());
+        let (tx, _rx) = oneshot::channel();
+        p.handle_node_subscription(
+            id.clone(),
+            tx,
+            &mut None,
+            &HLC::default(),
+            &mut CascadingErrorCauses::default(),
+            &mut logger,
+        )
+        .await
+        .expect("subscription handling");
+        assert!(
+            !p.is_pending(&id),
+            "a subscribed node no longer gates the barrier"
+        );
     }
 
     /// Removal has to scrub every trace, or a removed id keeps gating

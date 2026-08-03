@@ -639,6 +639,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_node_replace() {
+        parse_ok(&[
+            "dora",
+            "node",
+            "replace",
+            "filter",
+            "--from-yaml",
+            "filter-node.yml",
+        ]);
+        parse_ok(&[
+            "dora",
+            "node",
+            "replace",
+            "-d",
+            "my-flow",
+            "filter",
+            "--from-yaml",
+            "filter-node.yml",
+            "--grace",
+            "5s",
+        ]);
+    }
+
+    #[test]
+    fn reject_node_replace_without_yaml() {
+        parse_err(&["dora", "node", "replace", "filter"]);
+    }
+
+    #[test]
     fn parse_node_stop() {
         parse_ok(&["dora", "node", "stop", "camera_node"]);
     }
