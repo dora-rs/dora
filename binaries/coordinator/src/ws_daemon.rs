@@ -3,6 +3,7 @@ use crate::{
     state::DaemonConnection,
 };
 use axum::extract::ws::{Message, WebSocket};
+use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
@@ -23,6 +24,7 @@ pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
+    store: Arc<dyn CoordinatorStore>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -73,6 +75,7 @@ pub(crate) async fn handle_daemon_ws(
                         &clock,
                         &cmd_tx,
                         &pending_replies,
+                        &store,
                         &mut tracked_daemon_id,
                         &mut tracked_connection_id,
                     ).await {
@@ -117,12 +120,14 @@ struct DaemonWsRequestRaw {
 }
 
 /// Handle a daemon request (event or register). Returns false if the event channel closed.
+#[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    store: &Arc<dyn CoordinatorStore>,
     tracked_daemon_id: &mut Option<DaemonId>,
     tracked_connection_id: &mut Option<Uuid>,
 ) -> bool {
@@ -209,12 +214,17 @@ async fn handle_daemon_request(
             }
         }
         CoordinatorRequest::ResolveMachine { machine_id } => {
-            tracing::warn!("ResolveMachine({machine_id}) not yet implemented");
-            // Stub reply over the same WS envelope the Register flow uses
+            // Resolve the machine id against the registered-daemon store;
+            // unknown machines (or store errors) resolve to `found: false`.
+            let found = store
+                .get_daemon_by_machine(&machine_id)
+                .map(|d| d.is_some())
+                .unwrap_or(false);
+            // Reply over the same WS envelope the Register flow uses
             // (`{"id", "method": "daemon_event", "params": <Timestamped<...>>}`),
             // mirroring `DaemonConnection::send`.
             let reply = Timestamped {
-                inner: ResolveMachineReply::ResolveMachineResult { found: false },
+                inner: ResolveMachineReply::ResolveMachineResult { found },
                 timestamp: clock.new_timestamp(),
             };
             let params = match serde_json::to_string(&reply) {
