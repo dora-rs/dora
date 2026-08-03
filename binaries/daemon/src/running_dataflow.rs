@@ -1467,6 +1467,7 @@ mod tests {
             debug: DescriptorDebug::default(),
             health_check_interval: None,
             strict_types: None,
+            exit_when_nodes_finish: None,
             type_rules: vec![],
             env: None,
         }

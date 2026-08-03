@@ -1470,6 +1470,145 @@ mod real_dataflow {
         let _ = std::fs::remove_file(&record);
     }
 
+    /// dora-rs/dora#2920: `dora start --exit-when-nodes-finish` must let
+    /// a timer-driven dataflow finish on its own.
+    ///
+    /// The `dora run` half of this shipped first; `start` goes through a
+    /// completely different path — CLI to coordinator to daemon — so it
+    /// needs its own proof. The setting travels on the descriptor rather
+    /// than the wire precisely so it survives that trip (and later,
+    /// auto-recovery and restart), which is exactly what this checks.
+    ///
+    /// Status, not absence: a finished dataflow REMAINS in `dora list`
+    /// with status `Finished`, so "no longer listed" would never become
+    /// true and would make this pass for the wrong reason.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_start_exit_when_nodes_finish_terminates_timer_driven_graph() {
+        ensure_built();
+        let dora = dora_bin();
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "emit-then-exit-source-node",
+                "-p",
+                "drain-recording-node",
+            ])
+            .status()
+            .expect("failed to build fixtures");
+        assert!(status.success(), "failed to build fixtures");
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let yaml = target.join(format!("dora-start-2920-{}.yml", std::process::id()));
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: producer\n    \
+                   path: {producer}\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n    \
+                   outputs:\n      - value\n  \
+                 - id: consumer\n    \
+                   path: {consumer}\n    \
+                   inputs:\n      \
+                     value: producer/value\n      \
+                     tick: dora/timer/millis/200\n",
+                producer = target.join("debug/emit-then-exit-source-node").display(),
+                consumer = target.join("debug/drain-recording-node").display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        start_cluster(&dora);
+        // Tear the cluster down on EVERY exit path. The premise assertion
+        // below fires before the explicit cleanup, so without this a
+        // broken premise would strand a coordinator, a daemon and this
+        // dataflow's nodes for the rest of the suite.
+        let _guard = ClusterGuard(&dora);
+
+        let status_of = |name: &str| -> String {
+            let out = Command::new(&dora)
+                .arg("list")
+                .output()
+                .expect("failed to run dora list");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find(|l| l.split_whitespace().nth(1) == Some(name))
+                .and_then(|l| l.split_whitespace().nth(2).map(str::to_owned))
+                .unwrap_or_default()
+        };
+        let settle = |name: &str, secs: u64| -> String {
+            let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+            loop {
+                let s = status_of(name);
+                if s == "Finished" || std::time::Instant::now() >= deadline {
+                    break s;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        };
+
+        // Premise: without the flag this graph does not finish on its own.
+        let started = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--name",
+                "e2e2920noflag",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(started.success(), "dora start (no flag) failed");
+        let without = settle("e2e2920noflag", 15);
+        let _ = Command::new(&dora)
+            .args(["stop", "--name", "e2e2920noflag"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        assert_ne!(
+            without, "Finished",
+            "test premise broken: this graph finished WITHOUT \
+             --exit-when-nodes-finish, so the flag is not what this test \
+             thinks it is measuring"
+        );
+
+        // With the flag it must reach `Finished` on its own.
+        let started = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--name",
+                "e2e2920flag",
+                "--exit-when-nodes-finish",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(started.success(), "dora start (with flag) failed");
+        let with = settle("e2e2920flag", 60);
+
+        let _ = Command::new(&dora)
+            .args(["stop", "--name", "e2e2920flag"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&yaml);
+
+        assert_eq!(
+            with, "Finished",
+            "`dora start --exit-when-nodes-finish` left the dataflow in state \
+             `{with}` — the timer is still gating the drain across the \
+             coordinator path (#2920)"
+        );
+    }
+
     /// #2919 P2: a node added to a RUNNING dataflow must inherit that
     /// dataflow's env, including anything set via `dora start --env`.
     ///

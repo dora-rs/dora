@@ -1605,6 +1605,7 @@ async fn start_inner(
                                             strict_types: None,
                                             type_rules: Vec::new(),
                                             env: dataflow.descriptor.env.clone(),
+                                            exit_when_nodes_finish: None,
                                         };
                                         match tmp_desc.resolve_aliases_and_set_defaults() {
                                             Ok(mut resolved_map) => {

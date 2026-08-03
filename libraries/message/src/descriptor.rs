@@ -114,6 +114,38 @@ pub struct Descriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict_types: Option<bool>,
 
+    /// Finish the dataflow once every node has, treating
+    /// `dora/timer/...` inputs as a clock rather than as work.
+    ///
+    /// A timer input has no upstream node, so it never closes. By default
+    /// a node consuming one is therefore never told its inputs are done
+    /// and the graph cannot end on its own, even after every node doing
+    /// real work has exited (dora-rs/dora#2920).
+    ///
+    /// Off by default: for a long-lived dataflow the timer is precisely
+    /// what keeps it alive. Nodes with no data inputs at all (timer-only
+    /// sources, or no inputs) are unaffected either way -- they have no
+    /// dependency that could finish, so they are treated as sources.
+    ///
+    /// Set by `dora run --exit-when-nodes-finish` and `dora start
+    /// --exit-when-nodes-finish`, and settable directly in YAML. It lives
+    /// on the descriptor rather than on the wire so that it survives the
+    /// events a dataflow outlives: auto-recovery re-spawn, coordinator
+    /// restart with state reconstruction, and `dora restart`.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// exit_when_nodes_finish: true
+    /// nodes:
+    ///   - id: worker
+    ///     path: ./worker
+    ///     inputs:
+    ///       tick: dora/timer/millis/100
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_when_nodes_finish: Option<bool>,
+
     /// Custom type compatibility rules.
     ///
     /// Each rule declares that a source type can be implicitly converted to

@@ -94,6 +94,7 @@ pub mod bench_support {
             debug: dora_message::descriptor::Debug::default(),
             health_check_interval: None,
             strict_types: None,
+            exit_when_nodes_finish: None,
             type_rules: vec![],
             env: None,
         };
@@ -275,11 +276,16 @@ pub struct RunDataflowOptions {
     /// Let the dataflow finish once every node has, treating
     /// `dora/timer/...` inputs as a clock rather than as work.
     ///
+    /// `None` leaves the descriptor's own `exit_when_nodes_finish`
+    /// setting alone; `Some(v)` overrides it in either direction, so a
+    /// caller can force the policy off for a descriptor that asks for
+    /// it.
+    ///
     /// A timer input never closes, so by default a node consuming one is
     /// never told its inputs are done and the graph cannot end on its own
     /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
     /// timer is exactly what keeps it alive.
-    pub exit_when_nodes_finish: bool,
+    pub exit_when_nodes_finish: Option<bool>,
 }
 
 impl RunDataflowOptions {
@@ -290,7 +296,7 @@ impl RunDataflowOptions {
     /// directly, which is what lets a future option be added without
     /// breaking them.
     pub fn exit_when_nodes_finish(mut self, exit_when_nodes_finish: bool) -> Self {
-        self.exit_when_nodes_finish = exit_when_nodes_finish;
+        self.exit_when_nodes_finish = Some(exit_when_nodes_finish);
         self
     }
 }
@@ -304,12 +310,6 @@ pub struct Daemon {
     pub(crate) daemon_id: DaemonId,
     pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     pub(crate) exit_when_all_finished: bool,
-    /// Run-scoped copy of `RunningDataflow::timers_gate_drain`, applied
-    /// to each dataflow as it is spawned. Only `dora run` can turn it
-    /// off (`--exit-when-nodes-finish`); a daemon serving a coordinator
-    /// keeps the default, since a long-lived dataflow is stopped
-    /// explicitly rather than by running out of work (#2920).
-    pub(crate) timers_gate_drain: bool,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
@@ -1124,6 +1124,13 @@ impl Daemon {
         if debug {
             descriptor.debug.enable_debug_inspection = true;
         }
+        // Fold the option into the descriptor, which is what the daemon
+        // actually reads. `dora start` sets the same field from its own
+        // flag, so both entry points converge on one source of truth
+        // rather than each carrying the setting separately (#2920).
+        // Set explicitly, so it overrides the descriptor either way; left
+        // unset, the descriptor's own setting stands.
+        descriptor.apply_exit_when_nodes_finish(exit_when_nodes_finish);
         if let Some(node) = descriptor.nodes.iter().find(|n| n.deploy.is_some()) {
             eyre::bail!(
                 "node {} has a `deploy` section, which is not supported in `dora run`\n\n
@@ -1255,7 +1262,6 @@ impl Daemon {
             // the daemon find each other, so keep it on when the descriptor
             // declares any.
             !has_dynamic_nodes,
-            exit_when_nodes_finish,
         );
 
         let spawn_result = reply_rx
@@ -1303,7 +1309,6 @@ impl Daemon {
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
         disable_multicast: bool,
-        exit_when_nodes_finish: bool,
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
@@ -1325,9 +1330,6 @@ impl Daemon {
             disable_multicast,
         )
         .await?;
-        // Applied to every dataflow this daemon spawns; only the
-        // single-shot `dora run` path can turn it off.
-        daemon.timers_gate_drain = !exit_when_nodes_finish;
         daemon
             .run_inner(
                 external_events,
@@ -1475,7 +1477,6 @@ impl Daemon {
             daemon_id,
             exit_when_done,
             exit_when_all_finished: false,
-            timers_gate_drain: true,
             dataflow_node_results: BTreeMap::new(),
             clock,
             ft_stats: Default::default(),
@@ -3221,7 +3222,13 @@ impl Daemon {
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
-        dataflow.timers_gate_drain = self.timers_gate_drain;
+        // Read from the descriptor, which is the one copy that survives
+        // everything a dataflow outlives: auto-recovery re-spawn,
+        // coordinator restart with state reconstruction, and `dora
+        // restart`. A daemon serving a coordinator hosts many dataflows
+        // and only some are batch-style, so this is necessarily
+        // per-dataflow rather than daemon-wide (#2920).
+        dataflow.timers_gate_drain = !dataflow.descriptor.exit_when_nodes_finish.unwrap_or(false);
         // Decide who dials whom before anything spawns: zenoh 1.9 peers do not
         // relay, so a producer/consumer pair that never forms a direct link can
         // never exchange data. Assign the links explicitly instead of leaving
@@ -6643,6 +6650,7 @@ mod fault_tolerance_tests {
             debug: DescriptorDebug::default(),
             health_check_interval: None,
             strict_types: None,
+            exit_when_nodes_finish: None,
             type_rules: vec![],
             env: None,
         };

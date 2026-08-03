@@ -36,6 +36,20 @@ pub trait DescriptorExt {
         &self,
         boundaries: &ModuleBoundaries,
     ) -> eyre::Result<String>;
+    /// Apply a command-line override to the dataflow's completion policy.
+    ///
+    /// `None` leaves the descriptor's own `exit_when_nodes_finish`
+    /// alone, so a setting written in the YAML stands; `Some(v)`
+    /// overrides it in either direction, so `--exit-when-nodes-finish`
+    /// can force the policy on and `=false` can force it off for a
+    /// descriptor that asks for it (dora-rs/dora#2920).
+    ///
+    /// Shared rather than spelled out at each call site: `dora run`,
+    /// `dora start` and the daemon all have to agree, and three copies
+    /// of the same three lines is how one of them ends up not being
+    /// updated.
+    fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>);
+
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
@@ -244,6 +258,12 @@ impl DescriptorExt for Descriptor {
         let resolved = self.resolve_aliases_and_set_defaults()?;
         let flowchart = visualize::visualize_nodes_with_boundaries(&resolved, boundaries);
         Ok(flowchart)
+    }
+
+    fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>) {
+        if let Some(over) = over {
+            self.exit_when_nodes_finish = Some(over);
+        }
     }
 
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor> {
@@ -606,6 +626,51 @@ enum NodeKindMut<'a> {
 
 #[cfg(test)]
 mod tests {
+    /// dora-rs/dora#2920: the command-line flag beats the descriptor in
+    /// BOTH directions, and its absence beats neither.
+    ///
+    /// The third state matters: if "flag omitted" meant `false`, a YAML
+    /// `exit_when_nodes_finish: true` would be overridden on every
+    /// invocation, and since `dora run` and `dora start` are the only
+    /// ways to start a dataflow, the descriptor field could never take
+    /// effect at all.
+    #[test]
+    fn exit_when_nodes_finish_override_semantics() {
+        use super::DescriptorExt;
+
+        let parse = |yaml: &str| -> Descriptor { serde_yaml::from_str(yaml).expect("parse") };
+        let with_setting = "exit_when_nodes_finish: true\nnodes:\n  - id: a\n    path: ./a\n";
+        let without = "nodes:\n  - id: a\n    path: ./a\n";
+
+        // Omitted: the descriptor decides, either way.
+        let mut d = parse(with_setting);
+        d.apply_exit_when_nodes_finish(None);
+        assert_eq!(
+            d.exit_when_nodes_finish,
+            Some(true),
+            "omitting the flag must not silently disable a policy the \
+             dataflow file asked for"
+        );
+
+        let mut d = parse(without);
+        d.apply_exit_when_nodes_finish(None);
+        assert_eq!(d.exit_when_nodes_finish, None, "and must not invent one");
+
+        // Given: it wins, including against an opposite descriptor value.
+        let mut d = parse(with_setting);
+        d.apply_exit_when_nodes_finish(Some(false));
+        assert_eq!(
+            d.exit_when_nodes_finish,
+            Some(false),
+            "`--exit-when-nodes-finish=false` must be able to turn OFF a \
+             policy the dataflow file turned on"
+        );
+
+        let mut d = parse(without);
+        d.apply_exit_when_nodes_finish(Some(true));
+        assert_eq!(d.exit_when_nodes_finish, Some(true));
+    }
+
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {

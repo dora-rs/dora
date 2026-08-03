@@ -133,8 +133,19 @@ pub struct Run {
     /// Nodes whose inputs are all timers are unaffected: they have no
     /// data dependency that could finish, so they are treated as
     /// sources, exactly as a node with no inputs is.
-    #[clap(long, action)]
-    pub exit_when_nodes_finish: bool,
+    ///
+    /// Overrides `exit_when_nodes_finish:` in the dataflow YAML in
+    /// either direction: pass the flag to force it on, or
+    /// `--exit-when-nodes-finish=false` to force it off for a descriptor
+    /// that asks for it. Omit it entirely and the descriptor decides.
+    #[clap(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL"
+    )]
+    pub exit_when_nodes_finish: Option<bool>,
 }
 
 impl Run {
@@ -154,7 +165,7 @@ impl Run {
             working_dir: None,
             hub_override: Vec::new(),
             env: Vec::new(),
-            exit_when_nodes_finish: false,
+            exit_when_nodes_finish: None,
         }
     }
 
@@ -287,7 +298,11 @@ impl Executable for Run {
                 working_dir_override,
                 // hub-resolved descriptor and/or `--env` merge — see above
                 descriptor_override,
-                RunDataflowOptions::default().exit_when_nodes_finish(exit_when_nodes_finish),
+                // Left unset the descriptor decides; given, it overrides.
+                match exit_when_nodes_finish {
+                    Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
+                    None => RunDataflowOptions::default(),
+                },
             )
             .await
         });

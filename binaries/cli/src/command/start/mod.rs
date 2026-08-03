@@ -60,6 +60,30 @@ pub struct Start {
     /// numeric-looking values that would be coerced. They are also
     /// persisted with the dataflow in the coordinator's state store and
     /// visible in `ps` — prefer a node `env:` block for secrets.
+    /// Exit once every node has finished, treating `dora/timer/...`
+    /// inputs as a clock rather than as work.
+    ///
+    /// A timer input never closes, so by default a dataflow in which any
+    /// node consumes one cannot end on its own, even after every node
+    /// doing real work has exited. With this flag a node is finished once
+    /// its DATA inputs have closed.
+    ///
+    /// Note this is usually what you want only for batch-style runs: a
+    /// long-lived dataflow is normally ended with `dora stop`, and there
+    /// the timer is exactly what keeps it alive.
+    ///
+    /// Overrides `exit_when_nodes_finish:` in the dataflow YAML in
+    /// either direction: pass the flag to force it on, or
+    /// `--exit-when-nodes-finish=false` to force it off for a descriptor
+    /// that asks for it. Omit it entirely and the descriptor decides.
+    #[clap(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL"
+    )]
+    pub exit_when_nodes_finish: Option<bool>,
     #[clap(long = "env", value_name = "KEY=VALUE")]
     env: Vec<String>,
 }
@@ -77,6 +101,7 @@ impl Executable for Start {
             self.uv,
             self.debug,
             env_overrides,
+            self.exit_when_nodes_finish,
         )?;
 
         let attach = match (self.attach, self.detach) {
@@ -128,6 +153,7 @@ fn start_dataflow(
     uv: bool,
     debug: bool,
     env_overrides: BTreeMap<String, EnvValue>,
+    exit_when_nodes_finish: Option<bool>,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
     let working_dir = dataflow
@@ -144,6 +170,11 @@ fn start_dataflow(
         })?
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
+    // Fold the flag into the descriptor, which is what the daemon reads
+    // and the one copy that survives auto-recovery, coordinator restart
+    // and `dora restart` (#2920). Given, it overrides the descriptor in
+    // either direction; omitted, the descriptor's own setting stands.
+    dataflow_descriptor.apply_exit_when_nodes_finish(exit_when_nodes_finish);
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
     // `hub:` references are desugared by `dora build`, which stores the
