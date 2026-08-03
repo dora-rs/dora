@@ -40,6 +40,7 @@ use futures::{TryFutureExt, future, stream};
 use futures_concurrency::stream::Merge;
 use local_listener::DynamicNodeEventWrapper;
 use log::{CoordinatorLogTarget, DaemonLogger, DataflowLogger, Logger};
+use shared_memory_extended::ShmemConf;
 use spawn::Spawner;
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
@@ -205,6 +206,207 @@ static PROXY_POOL_DATA: std::sync::LazyLock<
 static CROSS_POOLS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, String>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+// DORADMA shmem layout — must match the node API exactly
+// (apis/python/node/src/lib.rs): [magic:8][json_len:8][data_offset:8]
+// [ipc_present:8][ipc_handle:64][write_gen:8 @96][reserved:152][json:256]
+// [data:data_offset]. write_gen is the seqlock generation: even =
+// complete, odd = write in progress.
+const DORADMA_HEADER_SIZE: usize = 256;
+const DORADMA_MAGIC: &[u8; 8] = b"DORADMA\x00";
+
+/// Read 8 consecutive bytes from `ptr` as a little-endian u64. Same
+/// implementation as the node API's `read_header_u64` — the wire layout
+/// of the DORADMA header must be identical on both sides.
+fn read_header_u64(ptr: *const u8) -> u64 {
+    const { assert!(std::mem::size_of::<u64>() == 8) };
+    let mut buf = [0u8; 8];
+    unsafe { std::ptr::copy_nonoverlapping(ptr, buf.as_mut_ptr(), 8) };
+    u64::from_le_bytes(buf)
+}
+
+/// Write 8 bytes as a little-endian u64 at `ptr`. Mirror of the node
+/// API's header writes (`json_len_le` / `data_off_le` byte copies).
+fn write_header_u64(ptr: *mut u8, value: u64) {
+    const { assert!(std::mem::size_of::<u64>() == 8) };
+    let le = value.to_le_bytes();
+    unsafe { std::ptr::copy_nonoverlapping(le.as_ptr(), ptr, 8) };
+}
+
+/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
+/// **if the generation is even**: marks the generation odd (write in
+/// progress) and returns the even pre-write generation. If the
+/// generation is already odd (leftover from a previous failed write),
+/// the increment is skipped and the previous even generation is
+/// returned, so `seqlock_end`'s `pre + 2` always produces an even
+/// generation. Bit-identical to the node API's `seqlock_begin_if_even`.
+unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
+    unsafe {
+        let cur = std::ptr::read_volatile(gen_ptr);
+        if cur.is_multiple_of(2) {
+            std::ptr::write_volatile(gen_ptr, cur + 1);
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+        }
+        cur & !1 // always return the even baseline
+    }
+}
+
+/// Closes a memory-pool seqlock write (header offset 96): publishes
+/// `pre_write_gen + 2` (even = complete) when the copy succeeded, or
+/// rolls back to `pre_write_gen` when it failed. Bit-identical to the
+/// node API's `seqlock_end`.
+unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
+    unsafe {
+        if copy_ok {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
+        } else {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen);
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+    }
+}
+
+/// Create a CPU DORADMA pool mirror on this machine. Mirrors the node
+/// API's register_memory_pool shmem layout; even generation initially.
+/// The segment is deliberately left owner-less (`set_owner(false)`) so
+/// the /dev/shm name survives the handle drop — on Linux a created
+/// (owner) Shmem shm_unlinks on drop, which would remove the name local
+/// receivers open for the zero-copy fast path.
+fn create_cross_pool_shmem(
+    dataflow_id: &Uuid,
+    shared_memory_id: &str,
+    size: usize,
+    dtype: &str,
+    shape: &[i64],
+) -> eyre::Result<()> {
+    let (node_id, counter) = shared_memory_id
+        .strip_prefix("pool_")
+        .and_then(|s| s.rsplit_once('_'))
+        .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
+    let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+    let json = format!(
+        "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"cpu\"}}",
+        shape
+    );
+    let data_offset = DORADMA_HEADER_SIZE + json.len();
+    let conf = ShmemConf::new().os_id(&shmem_name).size(size + data_offset);
+    let mut shmem = conf
+        .create()
+        .map_err(|e| eyre::eyre!("create shmem: {e}"))?;
+    unsafe {
+        let ptr = shmem.as_ptr();
+        std::ptr::copy_nonoverlapping(DORADMA_MAGIC.as_ptr(), ptr, 8);
+        write_header_u64(ptr.add(8), json.len() as u64);
+        write_header_u64(ptr.add(16), data_offset as u64);
+        std::ptr::copy_nonoverlapping(json.as_ptr(), ptr.add(DORADMA_HEADER_SIZE), json.len());
+        write_header_u64(ptr.add(96), 0); // even generation
+    }
+    shmem.set_owner(false);
+    Ok(())
+}
+
+/// Write tensor bytes into a mirrored cross-machine pool under the
+/// DORADMA seqlock protocol (odd gen during write, even after).
+async fn write_cross_pool_data(
+    dataflow_id: &Uuid,
+    shared_memory_id: &str,
+    tensor_data: &[u8],
+    size: usize,
+) {
+    let (node_id, counter) = match shared_memory_id
+        .strip_prefix("pool_")
+        .and_then(|s| s.rsplit_once('_'))
+    {
+        Some(v) => v,
+        None => {
+            tracing::warn!("memory pool: invalid pool id {shared_memory_id}, dropping frame");
+            return;
+        }
+    };
+    let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+    let Ok(shmem) = ShmemConf::new().os_id(&shmem_name).open() else {
+        tracing::warn!(
+            "memory pool: pool {shared_memory_id} missing at write \
+             (sync register should have prevented this), dropping frame"
+        );
+        return;
+    };
+    unsafe {
+        let shmem_ptr = shmem.as_ptr();
+        let gen_ptr = shmem_ptr.add(96) as *mut u64;
+        let pre = seqlock_begin_if_even(gen_ptr);
+        let data_offset = read_header_u64(shmem_ptr.add(16)) as usize;
+        std::ptr::copy_nonoverlapping(
+            tensor_data.as_ptr(),
+            shmem_ptr.add(data_offset),
+            tensor_data.len().min(size),
+        );
+        seqlock_end(gen_ptr, pre, true);
+    }
+}
+
+/// Remove a mirrored cross-machine pool's shmem segment. Linux keeps
+/// pools in /dev/shm; the name is only removable by file unlink because
+/// the mirror handle was dropped owner-less (`set_owner(false)`).
+/// Path-traversal guarded, mirroring the memory-pool crate's
+/// `free_shared_memory` checks.
+fn remove_cross_pool_shmem(shmem_name: &str) {
+    if !shmem_name.starts_with("dora_pool_")
+        || shmem_name.contains('/')
+        || shmem_name.contains("..")
+    {
+        tracing::warn!("memory pool: refusing to remove shmem `{shmem_name}`: unexpected name");
+        return;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let shm_path = format!("/dev/shm/{shmem_name}");
+        match std::fs::remove_file(&shm_path) {
+            Ok(_) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(
+                    "memory pool: failed to unlink shared memory file {}: {}. \
+                     The file may still be in use by other processes.",
+                    shm_path,
+                    e
+                );
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        tracing::warn!("memory pool: shmem removal only implemented on Linux");
+    }
+}
+
+/// Publish an inter-daemon memory-pool event over the dataflow topic.
+/// serialize + declare + put all run off the event loop (Block congestion
+/// control can block declare_publisher on a degraded link).
+async fn publish_memory_pool_event(
+    session: &zenoh::Session,
+    clock: &Arc<HLC>,
+    dataflow_id: &Uuid,
+    event: &InterDaemonEvent,
+) -> eyre::Result<()> {
+    let serialized = bincode::serialize(&Timestamped {
+        inner: event.clone(),
+        timestamp: clock.new_timestamp(),
+    })?;
+    let topic = dataflow_memory_pool_topic(dataflow_id);
+    // Zenoh errors are boxed trait objects — eyre's `From` conversion
+    // needs a Sized error, so convert explicitly instead of `?`.
+    let publisher = session
+        .declare_publisher(topic.clone())
+        .congestion_control(CongestionControl::Block)
+        .await
+        .map_err(|e| eyre!("memory pool: declare_publisher({topic}) failed: {e}"))?;
+    publisher
+        .put(serialized)
+        .await
+        .map_err(|e| eyre!("memory pool: publish to {topic} failed: {e}"))?;
+    Ok(())
+}
 
 /// Pending synchronous register confirmations: pool id -> ack channel.
 static CROSS_REGISTER_PENDING: std::sync::LazyLock<
@@ -2967,14 +3169,28 @@ impl Daemon {
                 Ok(())
             }
             InterDaemonEvent::MemoryPoolWrite {
+                dataflow_id,
                 shared_memory_id,
                 tensor_data,
                 size,
                 device,
                 dtype,
                 shape,
-                ..
             } => {
+                // New cross-machine path: pool mirrored here — write the
+                // data straight into the DORADMA data region under the
+                // seqlock protocol (receiver reads its local pool
+                // zero-copy). Missing pool = should-not-happen defensive
+                // case: warn + drop (no creation, avoids leaks).
+                let is_cross = CROSS_POOLS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&shared_memory_id);
+                if is_cross {
+                    write_cross_pool_data(&dataflow_id, &shared_memory_id, &tensor_data, size)
+                        .await;
+                    return Ok(());
+                }
                 PROXY_POOL_DATA
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -2997,8 +3213,77 @@ impl Daemon {
                 }
                 Ok(())
             }
-            InterDaemonEvent::RegisterPool { .. } | InterDaemonEvent::FreePool { .. } => {
-                tracing::warn!("memory pool: cross-machine pool mirror not yet implemented");
+            InterDaemonEvent::RegisterPool {
+                dataflow_id,
+                shared_memory_id,
+                size,
+                dtype,
+                shape,
+                ..
+            } => {
+                let session = self.zenoh_session.clone();
+                let clock = self.clock.clone();
+                // 建池在 spawn 内（建池是毫秒级但发布可能 Block）
+                tokio::spawn(async move {
+                    let result = create_cross_pool_shmem(
+                        &dataflow_id,
+                        &shared_memory_id,
+                        size,
+                        &dtype,
+                        &shape,
+                    );
+                    let (ok, error) = match result {
+                        Ok(()) => (true, None),
+                        Err(e) => (false, Some(e.to_string())),
+                    };
+                    if ok {
+                        CROSS_POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(shared_memory_id.clone(), String::new());
+                        tracing::info!(
+                            "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
+                        );
+                    } else {
+                        tracing::warn!(
+                            "memory pool: failed to mirror pool {shared_memory_id}: {}",
+                            error.as_deref().unwrap_or("unknown")
+                        );
+                    }
+                    if let Err(e) = publish_memory_pool_event(
+                        &session,
+                        &clock,
+                        &dataflow_id,
+                        &InterDaemonEvent::RegisterPoolAck {
+                            dataflow_id,
+                            shared_memory_id,
+                            ok,
+                            error,
+                        },
+                    )
+                    .await
+                    {
+                        tracing::warn!("memory pool: failed to publish RegisterPoolAck: {e}");
+                    }
+                });
+                Ok(())
+            }
+            InterDaemonEvent::FreePool {
+                dataflow_id,
+                shared_memory_id,
+            } => {
+                CROSS_POOLS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&shared_memory_id);
+                if let Some((node_id, counter)) = shared_memory_id
+                    .strip_prefix("pool_")
+                    .and_then(|s| s.rsplit_once('_'))
+                {
+                    let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+                    remove_cross_pool_shmem(&shmem_name);
+                }
+                tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 Ok(())
             }
         }

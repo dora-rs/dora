@@ -6,7 +6,7 @@ use crate::{
     metadata::Metadata,
 };
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 #[allow(clippy::large_enum_variant)]
 pub enum InterDaemonEvent {
     Output {
