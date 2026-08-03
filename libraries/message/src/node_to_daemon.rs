@@ -50,6 +50,16 @@ pub enum DaemonRequest {
         dtype: String,
         shape: Vec<i64>,
     },
+    /// Cross-machine memory pool registration: the daemon resolves the
+    /// target machine via the coordinator and mirrors the pool there.
+    RegisterCrossMachinePool {
+        shared_memory_id: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    },
 }
 
 impl DaemonRequest {
@@ -68,7 +78,8 @@ impl DaemonRequest {
             | DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::WritePinnedMemory { .. } => true,
+            | DaemonRequest::WritePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. } => true,
         }
     }
 
@@ -87,7 +98,8 @@ impl DaemonRequest {
             | DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::WritePinnedMemory { .. } => false,
+            | DaemonRequest::WritePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. } => false,
         }
     }
 }

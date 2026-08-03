@@ -108,6 +108,10 @@ pub enum DaemonReply {
         dtype: String,
         shape: Vec<i64>,
     },
+    /// Result of a cross-machine pool registration. `Err` carries the
+    /// warning message (resolution failure or remote creation failure) —
+    /// the register is a warn-and-no-op in both cases.
+    CrossMachinePoolRegistered(Result<(), String>),
     Empty,
 }
 

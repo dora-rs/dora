@@ -35,4 +35,27 @@ pub enum InterDaemonEvent {
         dtype: String,
         shape: Vec<i64>,
     },
+    /// Cross-machine pool registration — the matching machine's daemon
+    /// mirrors the pool locally and replies with `RegisterPoolAck`.
+    RegisterPool {
+        dataflow_id: DataflowId,
+        machine_id: String,
+        shared_memory_id: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+    },
+    /// Acknowledge a cross-machine pool registration (sync register).
+    RegisterPoolAck {
+        dataflow_id: DataflowId,
+        shared_memory_id: String,
+        ok: bool,
+        error: Option<String>,
+    },
+    /// Release a cross-machine pool on the remote machine.
+    FreePool {
+        dataflow_id: DataflowId,
+        shared_memory_id: String,
+    },
 }
