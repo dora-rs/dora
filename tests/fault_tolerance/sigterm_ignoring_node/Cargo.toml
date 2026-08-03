@@ -21,11 +21,15 @@ path = "src/main.rs"
 dora-node-api = { workspace = true, default-features = false }
 eyre = { workspace = true }
 
-# Unix-only: on Windows `libc::signal` returns a `sighandler_t` (`usize`)
-# while `libc::SIG_ERR` is a `c_int`, so the check in `main` does not even
-# compile there. The fixture has no Windows build to guard, so the
-# dependency is scoped rather than the comparison widened with a cast —
-# a cast would be a no-op on Unix (and trip `clippy::unnecessary_cast`)
-# while keeping dead signal code alive on a platform without signals.
+# Scoped to unix, matching the `#[cfg(unix)]` on `main`: it keeps libc
+# out of the Windows dependency graph entirely, and makes "this fixture's
+# signal handling is Unix-only" enforced by the build rather than by
+# convention — uncfg'd `libc::` code added later fails to compile on
+# Windows instead of silently becoming part of the stub's build.
+#
+# The alternative, widening the guard with `libc::SIG_ERR as usize`, was
+# rejected: `signal` returns `sighandler_t` (`usize`) everywhere but
+# `SIG_ERR` is a `c_int` only on Windows, so the cast is a no-op on Unix
+# and trips `clippy::unnecessary_cast` there.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

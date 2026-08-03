@@ -10,11 +10,12 @@
 //! Unix-only in substance — the property it fakes is a signal
 //! disposition, which Windows has no equivalent for, and its only
 //! caller (`run_killed_by_sigterm_terminates_nodes_and_exits` in
-//! `tests/node-lifecycle-e2e.rs`) is `#[cfg(unix)]`. It stays a
-//! workspace member so `cargo check --all` keeps covering it, which
-//! means it must still *compile* on Windows: hence the stub `main`
-//! below rather than a `#![cfg(unix)]` on the crate, which would leave
-//! a bin target with no `main` at all.
+//! `tests/node-lifecycle-e2e.rs`) is `#[cfg(unix)]`. Cargo has no
+//! cfg-conditional `members`, so it stays a workspace member on every
+//! platform and must still *compile* on Windows for the nightly's
+//! `cargo test --all` to resolve — hence the stub `main` below rather
+//! than a `#![cfg(unix)]` on the crate, which would leave a bin target
+//! with no `main` at all.
 
 #[cfg(unix)]
 fn main() -> eyre::Result<()> {
