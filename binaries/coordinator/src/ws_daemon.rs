@@ -216,10 +216,13 @@ async fn handle_daemon_request(
         CoordinatorRequest::ResolveMachine { machine_id } => {
             // Resolve the machine id against the registered-daemon store;
             // unknown machines (or store errors) resolve to `found: false`.
-            let found = store
-                .get_daemon_by_machine(&machine_id)
-                .map(|d| d.is_some())
-                .unwrap_or(false);
+            let found = match store.get_daemon_by_machine(&machine_id) {
+                Ok(d) => d.is_some(),
+                Err(e) => {
+                    tracing::warn!("failed to resolve machine `{machine_id}`: {e}");
+                    false
+                }
+            };
             // Reply over the same WS envelope the Register flow uses
             // (`{"id", "method": "daemon_event", "params": <Timestamped<...>>}`),
             // mirroring `DaemonConnection::send`.
