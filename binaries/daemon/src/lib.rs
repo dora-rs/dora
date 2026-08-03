@@ -4345,7 +4345,9 @@ impl Daemon {
                             return Err(format!("RegisterPool 发布失败: {e}"));
                         }
                         // Await the remote RegisterPoolAck with a timeout.
-                        match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
+                        match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
+                            .await
+                        {
                             Ok(Ok(true)) => {
                                 CROSS_POOLS
                                     .lock()
