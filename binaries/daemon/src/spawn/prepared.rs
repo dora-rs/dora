@@ -511,30 +511,6 @@ impl PreparedNode {
                     Ok(NodeKind::Spawned { pid: new_pid }) => {
                         finished_rx = finished_rx_new;
                         let new_handle = crate::ProcessHandle::new(op_tx_new);
-                        if disable_restart.load(atomic::Ordering::Acquire) {
-                            logger
-                                .log(
-                                    LogLevel::Info,
-                                    Some("daemon".into()),
-                                    "restart cancelled: dataflow stopped during respawn"
-                                        .to_string(),
-                                )
-                                .await;
-                            // Dropping the handle kills the just-spawned
-                            // replacement (ProcessHandle::drop submits Kill).
-                            drop(new_handle);
-                            // The daemon still awaits a terminal event after
-                            // the earlier `restart: true`; settle it so the
-                            // entry is removed and the dataflow can finish.
-                            self.send_terminal_exit(
-                                generation,
-                                exit_status,
-                                restart_count,
-                                exited_pid,
-                            )
-                            .await;
-                            break;
-                        }
                         pid.store(new_pid, atomic::Ordering::Release);
                         let new_generation = crate::running_dataflow::next_node_generation();
                         // Install the new `ProcessHandle` in

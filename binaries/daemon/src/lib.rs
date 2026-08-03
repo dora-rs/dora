@@ -5398,13 +5398,18 @@ impl Daemon {
                             new_handle,
                         ) {
                             running_dataflow::HandleReplacement::Replaced => {}
-                            running_dataflow::HandleReplacement::RejectedTeardown => {
+                            running_dataflow::HandleReplacement::RejectedTeardown(new_handle) => {
+                                dataflow.stop_rejected_replacement(
+                                    &node_id,
+                                    new_generation,
+                                    new_handle,
+                                );
                                 tracing::info!(
                                     %dataflow_id,
                                     %node_id,
                                     new_generation,
-                                    "teardown won the respawn race: killed the \
-                                     replacement process, awaiting its terminal exit"
+                                    "teardown won the respawn race: stopping the replacement \
+                                     process with the active dataflow stop policy"
                                 );
                             }
                             running_dataflow::HandleReplacement::RejectedStale => {
@@ -6690,7 +6695,7 @@ mod debug_topic_tests {
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
-    use crate::running_dataflow::HandleReplacement;
+    use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
 
     use dora_message::{
@@ -6932,9 +6937,8 @@ mod fault_tolerance_tests {
         let (stale_tx, stale_rx) = flume::bounded(2);
         let outcome = node.replace_process_handle(6, 8, ProcessHandle::new(stale_tx));
 
-        assert_eq!(
-            outcome,
-            HandleReplacement::RejectedStale,
+        assert!(
+            matches!(outcome, HandleReplacement::RejectedStale),
             "a dead incarnation must not replace a live handle"
         );
         assert!(
@@ -6964,9 +6968,16 @@ mod fault_tolerance_tests {
         let (replacement_tx, replacement_rx) = flume::bounded(2);
         let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
 
-        assert_eq!(
-            outcome,
-            HandleReplacement::RejectedTeardown,
+        let HandleReplacement::RejectedTeardown(replacement) = outcome else {
+            panic!("teardown must win a race with process replacement");
+        };
+        assert!(
+            replacement_rx.try_recv().is_err(),
+            "the caller must retain the replacement for planned-stop routing"
+        );
+        drop(replacement);
+        assert!(
+            matches!(replacement_rx.try_recv(), Ok(ProcessOperation::Kill)),
             "teardown must win a race with process replacement"
         );
         // The generation must still advance: the restart loop now speaks
@@ -6980,12 +6991,52 @@ mod fault_tolerance_tests {
             "teardown rejection must not install the replacement handle"
         );
         assert!(live_rx.try_recv().is_err());
+        let _ = node.process.take();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn teardown_replacement_uses_configured_grace_period() {
+        let mut dataflow = test_dataflow();
+        dataflow.stop_process_policy = Some(StopProcessPolicy::Graceful(Duration::from_secs(4)));
+        let mut node = test_running_node();
+        node.disable_restart();
+
+        let (replacement_tx, replacement_rx) = flume::bounded(4);
+        let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
+        let HandleReplacement::RejectedTeardown(replacement) = outcome else {
+            panic!("teardown must retain ownership of the replacement handle");
+        };
+
+        let node_id: NodeId = "test".to_string().into();
+        dataflow.stop_rejected_replacement(&node_id, 8, replacement);
+        tokio::task::yield_now().await;
+
+        assert!(
+            replacement_rx.try_recv().is_err(),
+            "a racing replacement must not be killed immediately"
+        );
+        tokio::time::advance(Duration::from_secs(3)).await;
+        assert!(replacement_rx.try_recv().is_err());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            replacement_rx.try_recv(),
+            Ok(ProcessOperation::SoftKill)
+        ));
+        assert!(
+            dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 8)),
+            "the replacement stop must be classified as daemon-initiated"
+        );
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
         assert!(matches!(
             replacement_rx.try_recv(),
             Ok(ProcessOperation::Kill)
         ));
-
-        let _ = node.process.take();
     }
 
     #[test]
@@ -6997,7 +7048,7 @@ mod fault_tolerance_tests {
         let (new_tx, new_rx) = flume::bounded(2);
         let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(new_tx));
 
-        assert_eq!(outcome, HandleReplacement::Replaced);
+        assert!(matches!(outcome, HandleReplacement::Replaced));
         assert!(node.matches_generation(8));
         assert!(
             matches!(old_rx.try_recv(), Ok(ProcessOperation::Kill)),
