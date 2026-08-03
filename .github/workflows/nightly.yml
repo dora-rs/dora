@@ -1786,6 +1786,13 @@ jobs:
         run: cargo test -p dora-ros2-bridge-python
 
   # ===== MSRV check =====
+  # Advisory (`continue-on-error`) until these have run green for a
+  # stretch: they drive real ROS 2 containers, so a docker/apt hiccup
+  # should not redden a nightly. NOTE that this also hides them from
+  # `file-issue-on-failure` — `needs.<job>.result` reads `success` for a
+  # continue-on-error job — which is why they failed silently from the
+  # day they were added (#2790, 2026-07-21) until #2742 went looking.
+  # Drop `continue-on-error` once they are trustworthy.
   ros2-zenoh-humble:
     name: ROS2 Zenoh Interop (Humble)
     runs-on: ubuntu-latest
@@ -1796,6 +1803,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      # `ros2-zenoh-interop.sh` builds the ROS2 bridge wheel with maturin
+      # and installs it with pip, so the job needs a >=3.11 interpreter
+      # and maturin on PATH. Without them the script died on
+      # `maturin: command not found` (exit 127) before running a single
+      # case.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
       - run: scripts/ros2-zenoh-interop.sh humble all
       - if: failure()
         uses: actions/upload-artifact@v7
@@ -1803,6 +1820,7 @@ jobs:
           name: ros2-zenoh-humble-logs
           path: target/ros2-zenoh-logs
 
+  # Advisory for the same reason as `ros2-zenoh-humble` above.
   ros2-zenoh-kilted:
     name: ROS2 Zenoh Interop (Kilted)
     runs-on: ubuntu-latest
@@ -1813,6 +1831,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
       - run: scripts/ros2-zenoh-interop.sh kilted all
       - if: failure()
         uses: actions/upload-artifact@v7
