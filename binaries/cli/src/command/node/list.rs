@@ -208,7 +208,9 @@ mod tests {
 
         assert_eq!(error.kind(), ErrorKind::DisplayHelp);
         assert!(
-            error.to_string().contains("JSON Lines"),
+            error
+                .to_string()
+                .contains("JSON Lines (one object per line)"),
             "node list help must describe the line-oriented JSON contract"
         );
     }
