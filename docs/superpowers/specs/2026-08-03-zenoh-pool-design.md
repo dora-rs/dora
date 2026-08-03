@@ -105,11 +105,16 @@ node.register_memory_pool(tensor_info, "cpu", machine="B")
 write_memory_pool:
   本地快路径写（不变）
   + 全量数据 → zenoh MemoryPoolWrite → B daemon：
-     池存在（同步注册保证）→ seqlock：奇数代开始 → memcpy 直写数据区 → 偶数代
-     池缺失（安全网）→ 按事件 size/dtype/shape 惰性建池再写
+     池存在（同步注册保证，write 前池必已存在）→ seqlock：奇数代开始
+     → memcpy 直写数据区 → 偶数代
+     池缺失（不应发生；防御性）→ warn + 丢弃该帧，不建池（避免泄漏——
+     惰性建出的池不在 free 跟踪里，无人释放）
   A 侧：bincode 序列化缓冲复用（预分配 Vec，避免每帧新建）
   B 侧：单次 memcpy，无中间缓冲、无 hex、无代理池
 ```
+
+**不设惰性建池**：同步注册已保证池先于任何 write 存在；write 建池是多余的旁路，
+且 write 建的池游离于 free 跟踪之外（free 事件只引用已注册池），构成内存泄漏源。
 
 ### 4.3 读取（零改动）
 
@@ -138,9 +143,9 @@ node.free_memory_pool → daemon A：释放本地池 + 清 CROSS_POOLS 记录
 | B 不可达 / B 建池失败 | 仅 warn，**不创建任何池**（若本地池已创建则回滚，最终无池存在），register 返回 `None`，不崩溃 | `machine "B" 已解析但远端建池失败：<原因>，未创建跨机内存池` |
 
 两种失败的**行为完全一致**（警告 + 无池 + 不崩溃），仅**警告内容不同**——前者指"解析不到"，后者指"解析到了但创建失败"，便于诊断区分。
-| write 时池缺失（乱序防御） | 按事件元数据惰性建池 |
+| write 时池缺失（不应发生——同步注册保证） | warn + 丢弃该帧，不建池（防泄漏） |
 | read 时池缺失（不应发生） | 现有 3600s 窗口重试 |
-| register 后立即 write | 安全（同步注册保证池先存在；惰性建池兜底） |
+| register 后立即 write | 安全（同步注册保证池先存在） |
 
 ## 6. 测试
 
