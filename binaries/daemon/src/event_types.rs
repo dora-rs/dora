@@ -175,6 +175,7 @@ pub enum DoraEvent {
     SpawnedNodeResult {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        generation: u64,
         dynamic_node: bool,
         exit_status: NodeExitStatus,
         restart: bool,
@@ -191,6 +192,8 @@ pub enum DoraEvent {
     ProcessHandleReplaced {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        previous_generation: u64,
+        new_generation: u64,
         new_handle: crate::ProcessHandle,
     },
 }

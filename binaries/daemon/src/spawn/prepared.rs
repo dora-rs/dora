@@ -152,6 +152,7 @@ pub struct PreparedNode {
     pub(super) node_working_dir: PathBuf,
     pub(super) dataflow_id: DataflowId,
     pub(super) node: ResolvedNode,
+    pub(super) generation: u64,
     pub(super) node_config: NodeConfig,
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
@@ -172,6 +173,7 @@ impl PreparedNode {
     pub async fn spawn(self, mut logger: NodeLogger<'static>) -> eyre::Result<RunningNode> {
         let (op_tx, op_rx) = flume::bounded(2);
         let (finished_tx, finished_rx) = oneshot::channel();
+        let (registered_tx, registered_rx) = oneshot::channel();
         let kind = self
             .clone()
             .spawn_inner(&mut logger, op_rx, finished_tx)
@@ -186,6 +188,8 @@ impl PreparedNode {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned { .. } => Some(crate::ProcessHandle::new(op_tx)),
             },
+            restart_loop_start: Some(registered_tx),
+            generation: self.generation,
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
@@ -205,7 +209,10 @@ impl PreparedNode {
 
         tokio::spawn(self.restart_loop(
             logger,
-            finished_rx,
+            RestartLoopReceivers {
+                finished: finished_rx,
+                registered: registered_rx,
+            },
             disable_restart,
             force_restart_next,
             pid,
@@ -255,12 +262,17 @@ impl PreparedNode {
     async fn restart_loop(
         mut self,
         mut logger: NodeLogger<'static>,
-        mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
+        receivers: RestartLoopReceivers,
         disable_restart: Arc<AtomicBool>,
         force_restart_next: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
         shared_restart_count: Arc<AtomicU32>,
     ) {
+        if receivers.registered.await.is_err() {
+            return;
+        }
+        let mut finished_rx = receivers.finished;
+        let mut generation = self.generation;
         let config = self.restart_config();
         let mut restart_count: u32 = 0;
         let mut window_start = tokio::time::Instant::now();
@@ -351,6 +363,7 @@ impl PreparedNode {
             let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
+                generation,
                 exit_status,
                 dynamic_node: self.node.kind.dynamic(),
                 restart,
@@ -461,14 +474,30 @@ impl PreparedNode {
                 match result {
                     Ok(NodeKind::Spawned { pid: new_pid }) => {
                         finished_rx = finished_rx_new;
+                        let new_handle = crate::ProcessHandle::new(op_tx_new);
+                        if disable_restart.load(atomic::Ordering::Acquire) {
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    Some("daemon".into()),
+                                    "restart cancelled: dataflow stopped during respawn"
+                                        .to_string(),
+                                )
+                                .await;
+                            drop(new_handle);
+                            break;
+                        }
                         pid.store(new_pid, atomic::Ordering::Release);
+                        let new_generation = crate::running_dataflow::next_node_generation();
                         // Install the new `ProcessHandle` in
                         // `running_nodes` so subsequent stop/kill
                         // operations target this incarnation.
                         let handle_replaced = DoraEvent::ProcessHandleReplaced {
                             dataflow_id: self.dataflow_id,
                             node_id: self.node.id.clone(),
-                            new_handle: crate::ProcessHandle::new(op_tx_new),
+                            previous_generation: generation,
+                            new_generation,
+                            new_handle,
                         }
                         .into();
                         let msg = Timestamped {
@@ -476,6 +505,7 @@ impl PreparedNode {
                             timestamp: self.clock.clone().new_timestamp(),
                         };
                         let _ = self.daemon_tx.clone().send(msg).await;
+                        generation = new_generation;
                     }
                     Ok(NodeKind::Dynamic) => {
                         logger
@@ -1062,6 +1092,11 @@ struct NodeProcessFinished {
     // (dora-rs/adora#152). The receiver is now dropped at the end of
     // the spawn_inner task and each restart creates a fresh channel
     // pair.
+}
+
+struct RestartLoopReceivers {
+    finished: oneshot::Receiver<NodeProcessFinished>,
+    registered: oneshot::Receiver<()>,
 }
 
 #[cfg(test)]

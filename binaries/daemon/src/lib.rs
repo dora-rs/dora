@@ -336,6 +336,16 @@ pub struct Daemon {
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
+fn clear_node_result(results: &mut DaemonRunResult, dataflow_id: Uuid, node_id: &NodeId) {
+    let remove_dataflow = results.get_mut(&dataflow_id).is_some_and(|node_results| {
+        node_results.remove(node_id);
+        node_results.is_empty()
+    });
+    if remove_dataflow {
+        results.remove(&dataflow_id);
+    }
+}
+
 struct NodeBuildTask<F> {
     node_id: NodeId,
     dynamic_node: bool,
@@ -1704,7 +1714,12 @@ impl Daemon {
                 } => match result {
                     Ok(running_node) => {
                         if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                            dataflow.running_nodes.insert(node_id, running_node);
+                            dataflow.running_nodes.insert(node_id.clone(), running_node);
+                            dataflow
+                                .running_nodes
+                                .get_mut(&node_id)
+                                .expect("running node was just inserted")
+                                .mark_registered();
                         } else {
                             tracing::error!(
                                 "failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}"
@@ -2406,6 +2421,11 @@ impl Daemon {
 
                     // Insert the running node
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
+                    dataflow
+                        .running_nodes
+                        .get_mut(&node_id)
+                        .expect("running node was just inserted")
+                        .mark_registered();
 
                     // Update the daemon's stored descriptor so
                     // descriptor-based lookups (e.g. AllInputsClosed
@@ -2489,6 +2509,9 @@ impl Daemon {
 
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
+                }
+                if result.is_ok() {
+                    clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
                 }
                 // Return a specific `AddNodeResult` variant so the
                 // coordinator can validate the reply against its
@@ -5019,6 +5042,7 @@ impl Daemon {
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,
                 node_id,
+                generation,
                 dynamic_node,
                 exit_status,
                 restart,
@@ -5037,27 +5061,25 @@ impl Daemon {
                     )
                     .await;
 
-                if !restart
-                    && self
-                        .running
-                        .get(&dataflow_id)
-                        .and_then(|dataflow| dataflow.running_nodes.get(&node_id))
-                        .and_then(|node| node.pid.as_ref())
-                        .is_some_and(|current_pid| {
-                            current_pid.load(atomic::Ordering::Acquire) != pid
-                        })
-                {
+                let current_generation = self
+                    .running
+                    .get(&dataflow_id)
+                    .and_then(|dataflow| dataflow.running_nodes.get(&node_id));
+                if !current_generation.is_some_and(|node| node.matches_generation(generation)) {
                     logger
                         .log(
                             LogLevel::Debug,
                             Some("daemon".into()),
                             format!(
-                                "ignoring stale exit from pid {pid}; `{node_id}` has already been re-added"
+                                "ignoring stale exit from pid {pid} (generation {generation}); \
+                                 `{node_id}` has been removed or replaced"
                             ),
                         )
                         .await;
                     if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                        dataflow.grace_duration_kills.remove(&node_id);
+                        dataflow
+                            .grace_duration_kills
+                            .remove(&(node_id.clone(), generation));
                     }
                     return Ok(());
                 }
@@ -5072,7 +5094,10 @@ impl Daemon {
                             })
                             .cloned();
                         let grace_duration_kill = dataflow
-                            .map(|d| d.grace_duration_kills.contains(&node_id))
+                            .map(|d| {
+                                d.grace_duration_kills
+                                    .contains(&(node_id.clone(), generation))
+                            })
                             .unwrap_or_default();
                         // Killed by the finish-straggler watchdog
                         // (dora-rs/dora#2152): the node blocked an
@@ -5211,7 +5236,9 @@ impl Daemon {
                 // escalated node never restarts, so it cannot leak into
                 // a next incarnation.)
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    dataflow.grace_duration_kills.remove(&node_id);
+                    dataflow
+                        .grace_duration_kills
+                        .remove(&(node_id.clone(), generation));
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     // a respawned node must re-subscribe before it counts as
                     // connected, else a slow restart could be silence-escalated
@@ -5346,6 +5373,8 @@ impl Daemon {
             DoraEvent::ProcessHandleReplaced {
                 dataflow_id,
                 node_id,
+                previous_generation,
+                new_generation,
                 new_handle,
             } => {
                 // The per-node restart_loop just spawned a replacement
@@ -5355,11 +5384,19 @@ impl Daemon {
                 // predecessor's channel (dora-rs/adora#152).
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
-                        // Overwriting the previous Some(old_handle)
-                        // drops it, which currently fires its `Kill`
-                        // send on the already-closed old op_rx — a
-                        // no-op.
-                        node.process = Some(new_handle);
+                        if !node.replace_process_handle(
+                            previous_generation,
+                            new_generation,
+                            new_handle,
+                        ) {
+                            tracing::warn!(
+                                %dataflow_id,
+                                %node_id,
+                                previous_generation,
+                                current_generation = node.generation,
+                                "ignoring stale ProcessHandleReplaced event"
+                            );
+                        }
                     } else {
                         tracing::warn!(
                             %dataflow_id,
@@ -6757,6 +6794,8 @@ mod fault_tolerance_tests {
     fn test_running_node() -> RunningNode {
         RunningNode {
             process: None,
+            restart_loop_start: None,
+            generation: 7,
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
@@ -6784,6 +6823,168 @@ mod fault_tolerance_tests {
             health_check_timeout: None,
             finish_grace_secs: None,
         }
+    }
+
+    #[test]
+    fn running_node_rejects_stale_generation() {
+        let mut node = test_running_node();
+        let reused_pid = Arc::new(AtomicU32::new(42));
+        node.pid = Some(reused_pid);
+
+        assert!(node.matches_generation(7));
+        assert!(
+            !node.matches_generation(6),
+            "a reused PID must not make an older generation current"
+        );
+    }
+
+    #[tokio::test]
+    async fn restart_loop_waits_until_running_node_is_registered() {
+        let mut node = test_running_node();
+        let (start_tx, mut start_rx) = oneshot::channel();
+        node.restart_loop_start = Some(start_tx);
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(1), &mut start_rx)
+                .await
+                .is_err(),
+            "restart loop must remain gated before RunningNode insertion"
+        );
+
+        node.mark_registered();
+        assert!(start_rx.await.is_ok());
+    }
+
+    #[test]
+    fn planned_stop_markers_are_scoped_to_generation() {
+        let dataflow = test_dataflow();
+        let node_id: NodeId = "readded".to_string().into();
+
+        dataflow.grace_duration_kills.insert((node_id.clone(), 7));
+
+        assert!(
+            dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 7))
+        );
+        assert!(
+            !dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 8)),
+            "a successor must not inherit its predecessor's planned-stop marker"
+        );
+        dataflow.grace_duration_kills.remove(&(node_id.clone(), 6));
+        assert!(
+            dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 7)),
+            "cleaning a stale event must not clear another generation's marker"
+        );
+    }
+
+    #[test]
+    fn successful_readd_clears_only_the_previous_node_result() {
+        let dataflow_id = Uuid::new_v4();
+        let other_dataflow_id = Uuid::new_v4();
+        let single_result_dataflow_id = Uuid::new_v4();
+        let node_id: NodeId = "readded".to_string().into();
+        let other_node_id: NodeId = "other".to_string().into();
+        let mut results = BTreeMap::from([
+            (
+                dataflow_id,
+                BTreeMap::from([(node_id.clone(), Ok(())), (other_node_id.clone(), Ok(()))]),
+            ),
+            (
+                other_dataflow_id,
+                BTreeMap::from([(node_id.clone(), Ok(()))]),
+            ),
+            (
+                single_result_dataflow_id,
+                BTreeMap::from([(node_id.clone(), Ok(()))]),
+            ),
+        ]);
+
+        clear_node_result(&mut results, dataflow_id, &node_id);
+
+        assert!(!results[&dataflow_id].contains_key(&node_id));
+        assert!(results[&dataflow_id].contains_key(&other_node_id));
+        assert!(results[&other_dataflow_id].contains_key(&node_id));
+
+        clear_node_result(&mut results, single_result_dataflow_id, &node_id);
+        assert!(!results.contains_key(&single_result_dataflow_id));
+    }
+
+    #[test]
+    fn stale_handle_replacement_preserves_live_process() {
+        let mut node = test_running_node();
+        let (live_tx, live_rx) = flume::bounded(2);
+        node.process = Some(ProcessHandle::new(live_tx));
+
+        let (stale_tx, stale_rx) = flume::bounded(2);
+        let replaced = node.replace_process_handle(6, 8, ProcessHandle::new(stale_tx));
+
+        assert!(
+            !replaced,
+            "a dead incarnation must not replace a live handle"
+        );
+        assert!(
+            live_rx.try_recv().is_err(),
+            "rejecting a stale replacement must not kill the live successor"
+        );
+        assert!(
+            matches!(stale_rx.try_recv(), Ok(ProcessOperation::Kill)),
+            "the orphan process owned by the stale event should be killed"
+        );
+
+        // Avoid sending a drop-time Kill into `live_rx` after the assertions.
+        let _ = node.process.take();
+    }
+
+    #[test]
+    fn teardown_rejects_matching_handle_replacement() {
+        let mut node = test_running_node();
+        let (live_tx, live_rx) = flume::bounded(2);
+        node.process = Some(ProcessHandle::new(live_tx));
+        node.disable_restart();
+
+        let (replacement_tx, replacement_rx) = flume::bounded(2);
+        let replaced = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
+
+        assert!(
+            !replaced,
+            "teardown must win a race with process replacement"
+        );
+        assert!(node.matches_generation(7));
+        assert!(live_rx.try_recv().is_err());
+        assert!(matches!(
+            replacement_rx.try_recv(),
+            Ok(ProcessOperation::Kill)
+        ));
+
+        let _ = node.process.take();
+    }
+
+    #[test]
+    fn current_handle_replacement_advances_generation() {
+        let mut node = test_running_node();
+        let (old_tx, old_rx) = flume::bounded(2);
+        node.process = Some(ProcessHandle::new(old_tx));
+
+        let (new_tx, new_rx) = flume::bounded(2);
+        let replaced = node.replace_process_handle(7, 8, ProcessHandle::new(new_tx));
+
+        assert!(replaced);
+        assert!(node.matches_generation(8));
+        assert!(
+            matches!(old_rx.try_recv(), Ok(ProcessOperation::Kill)),
+            "replacing the current incarnation should retire its old handle"
+        );
+        assert!(
+            new_rx.try_recv().is_err(),
+            "the replacement process must remain live"
+        );
+
+        let _ = node.process.take();
     }
 
     fn test_clock() -> HLC {

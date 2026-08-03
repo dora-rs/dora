@@ -40,6 +40,7 @@ use std::{
 use tokio::sync::{
     broadcast,
     mpsc::{self, Sender},
+    oneshot,
 };
 use tracing::warn;
 
@@ -80,6 +81,11 @@ impl InputDeadline {
 #[derive(Debug)]
 pub struct RunningNode {
     pub(crate) process: Option<ProcessHandle>,
+    pub(crate) restart_loop_start: Option<oneshot::Sender<()>>,
+    /// Monotonic identity of the process incarnation currently registered
+    /// under this node ID. Lifecycle events from older incarnations must not
+    /// mutate this entry or contribute results to it.
+    pub(crate) generation: u64,
     pub(crate) node_config: NodeConfig,
     pub(crate) pid: Option<Arc<AtomicU32>>,
     pub(crate) restart_count: Arc<AtomicU32>,
@@ -101,6 +107,31 @@ pub struct RunningNode {
 }
 
 impl RunningNode {
+    pub(crate) fn mark_registered(&mut self) {
+        if let Some(start) = self.restart_loop_start.take() {
+            let _ = start.send(());
+        }
+    }
+
+    pub(crate) fn matches_generation(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
+    pub(crate) fn replace_process_handle(
+        &mut self,
+        previous_generation: u64,
+        new_generation: u64,
+        new_handle: ProcessHandle,
+    ) -> bool {
+        if !self.matches_generation(previous_generation) || self.restarts_disabled() {
+            return false;
+        }
+
+        self.process = Some(new_handle);
+        self.generation = new_generation;
+        true
+    }
+
     pub fn restarts_disabled(&self) -> bool {
         self.disable_restart.load(atomic::Ordering::Acquire)
     }
@@ -108,6 +139,18 @@ impl RunningNode {
     pub fn disable_restart(&mut self) {
         self.disable_restart.store(true, atomic::Ordering::Release);
     }
+}
+
+static NEXT_NODE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+pub(crate) fn next_node_generation() -> u64 {
+    NEXT_NODE_GENERATION
+        .fetch_update(
+            atomic::Ordering::Relaxed,
+            atomic::Ordering::Relaxed,
+            |generation| generation.checked_add(1),
+        )
+        .expect("node generation counter exhausted")
 }
 
 #[derive(Debug)]
@@ -245,7 +288,7 @@ pub struct RunningDataflow {
     pub(crate) stop_sent: bool,
     pub(crate) empty_set: BTreeSet<DataId>,
     pub(crate) cascading_error_causes: CascadingErrorCauses,
-    pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
+    pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     /// Reverse index from output to the set of CLI subscribers watching it.
@@ -484,10 +527,10 @@ impl RunningDataflow {
         let running_processes: Vec<_> = self
             .running_nodes
             .iter_mut()
-            .map(|(id, n)| (id.clone(), n.process.take()))
+            .map(|(id, n)| (id.clone(), n.generation, n.process.take()))
             .collect();
         if force {
-            for (node, proc) in &running_processes {
+            for (node, generation, proc) in &running_processes {
                 if let Some(proc) = proc
                     && proc.submit(ProcessOperation::Kill)
                 {
@@ -497,7 +540,8 @@ impl RunningDataflow {
                     // failure. Mirrors the graceful branch below; exit
                     // classification keys "the daemon asked this node to stop"
                     // off `grace_duration_kills` (see lib.rs exit handling).
-                    self.grace_duration_kills.insert(node.clone());
+                    self.grace_duration_kills
+                        .insert((node.clone(), *generation));
                 }
             }
         } else {
@@ -506,22 +550,22 @@ impl RunningDataflow {
                 let duration = grace_duration.unwrap_or(DEFAULT_STOP_GRACE);
                 tokio::time::sleep(duration).await;
 
-                for (node, proc) in &running_processes {
+                for (node, generation, proc) in &running_processes {
                     if let Some(proc) = proc
                         && proc.submit(ProcessOperation::SoftKill)
                     {
-                        grace_duration_kills.insert(node.clone());
+                        grace_duration_kills.insert((node.clone(), *generation));
                     }
                 }
 
                 let kill_duration = duration / 2;
                 tokio::time::sleep(kill_duration).await;
 
-                for (node, proc) in &running_processes {
+                for (node, generation, proc) in &running_processes {
                     if let Some(proc) = proc
                         && proc.submit(ProcessOperation::Kill)
                     {
-                        grace_duration_kills.insert(node.clone());
+                        grace_duration_kills.insert((node.clone(), *generation));
                         warn!(
                             "{node} was killed due to not stopping within the {:#?} grace period",
                             duration + kill_duration
@@ -561,9 +605,11 @@ impl RunningDataflow {
             .get_mut(node_id)
             .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
         node.disable_restart();
+        let generation = node.generation;
         let process = node.process.take();
         self.send_stop_and_schedule_kill(
             node_id,
+            generation,
             process,
             clock,
             grace_duration,
@@ -603,6 +649,7 @@ impl RunningDataflow {
                  already exited terminally)"
             ));
         }
+        let generation = node.generation;
         let process = node.process.take();
         // Clear any prior disable (e.g. from an earlier stop_single_node
         // or a cascading AllInputsClosed) so the restart_loop will pick
@@ -632,6 +679,7 @@ impl RunningDataflow {
         self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
             node_id,
+            generation,
             process,
             clock,
             grace_duration,
@@ -644,6 +692,7 @@ impl RunningDataflow {
     fn send_stop_and_schedule_kill(
         &self,
         node_id: &NodeId,
+        generation: u64,
         process: Option<ProcessHandle>,
         clock: &HLC,
         grace_duration: Option<Duration>,
@@ -671,11 +720,11 @@ impl RunningDataflow {
             tokio::spawn(async move {
                 tokio::time::sleep(duration).await;
                 if proc.submit(ProcessOperation::SoftKill) {
-                    grace_duration_kills.insert(node_id.clone());
+                    grace_duration_kills.insert((node_id.clone(), generation));
                 }
                 tokio::time::sleep(duration / 2).await;
                 if proc.submit(ProcessOperation::Kill) {
-                    grace_duration_kills.insert(node_id);
+                    grace_duration_kills.insert((node_id, generation));
                 }
             });
         }
