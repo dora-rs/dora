@@ -35,6 +35,12 @@ for i in range(MESSAGE_COUNT):
         tensor_info = node.read_memory_pool(memory_pool_id)
         torch_tensor = tensor_from_info(tensor_info)
         print(f"Receiver preview: {torch_tensor[:5]}")
+    else:
+        # The zero-copy in-place update only holds for local shmem views.
+        # Cross-machine proxy pools deliver fresh bytes per write, so the
+        # tensor must be re-read (and re-built) each iteration.
+        tensor_info = node.read_memory_pool(memory_pool_id)
+        torch_tensor = tensor_from_info(tensor_info)
 
     # The tensor is zero-copy — write_memory_pool on the sender overwrites
     # the shmem bytes in place, so the receiver's existing tensor object
