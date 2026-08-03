@@ -2125,6 +2125,32 @@ impl Node {
             }
         }
 
+        // Cross-machine: push the registered tensor through the daemon
+        // proxy so remote receivers can read it. The receiver's first read
+        // blocks on this data (flow control: the receiver cannot send
+        // next_require until it has the pool data), so the push must happen
+        // at registration — the write path alone would deadlock on
+        // message 1. Only for CPU receivers: GPU pools travel via the IPC
+        // handle, which the proxy path cannot carry.
+        if !receiver_is_cuda {
+            let tensor_bytes = unsafe { std::slice::from_raw_parts(ptr_val as *const u8, size) };
+            let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
+            if let Err(e) = self.node.get_mut().write_pinned_memory(
+                buffer_id.clone(),
+                tensor_bytes.to_vec(),
+                size,
+                tensor_device.clone(),
+                dtype.clone(),
+                shape_list.clone(),
+            ) {
+                tracing::error!(
+                    "[{}] register_memory_pool: daemon proxy push failed for {}: {e}",
+                    self.node_id,
+                    buffer_id
+                );
+            }
+        }
+
         // GPU pool: allocate GPU buffer on current device, copy data, export
         // IPC handle for cross-process zero-copy access.  When the source
         // tensor is also on CUDA (GPU→GPU), the source and pool buffer are on
@@ -2468,6 +2494,14 @@ impl Node {
             .get_item("device")?
             .ok_or_else(|| eyre::eyre!("missing device"))?
             .extract()?;
+        let dtype: String = tensor_info
+            .get_item("dtype")?
+            .ok_or_else(|| eyre::eyre!("missing dtype"))?
+            .extract()?;
+        let shape: Vec<i64> = tensor_info
+            .get_item("shape")?
+            .ok_or_else(|| eyre::eyre!("missing shape"))?
+            .extract()?;
         let is_cuda = tensor_device.starts_with("cuda");
 
         {
@@ -2785,15 +2819,25 @@ impl Node {
 
                         // Cross-machine: serialise tensor data and push
                         // through the daemon so remote receivers can read
-                        // from their local proxy pool.
+                        // from their local proxy pool. Log failures loudly —
+                        // a silent drop here strands remote readers with a
+                        // never-ready pool.
                         let tensor_bytes =
                             unsafe { std::slice::from_raw_parts(ptr_val as *const u8, size) };
-                        let _ = self.node.get_mut().write_pinned_memory(
+                        if let Err(e) = self.node.get_mut().write_pinned_memory(
                             buffer_id.clone(),
                             tensor_bytes.to_vec(),
                             size,
                             tensor_device.clone(),
-                        );
+                            dtype.clone(),
+                            shape.clone(),
+                        ) {
+                            tracing::error!(
+                                "[{}] write_memory_pool: daemon proxy push failed for {}: {e}",
+                                self.node_id,
+                                buffer_id
+                            );
+                        }
 
                         return Ok(());
                     }
@@ -3093,14 +3137,33 @@ impl Node {
             // mapped) so a concurrent writer doesn't cause a hard error.
             // Time-bounded: a GPU copy (cudaMemcpy + synchronize) takes
             // milliseconds, so we wait up to 500ms total with 1ms sleeps
-            // between attempts.
+            // between attempts. Cross-machine proxy pools arrive via the
+            // daemon over the network (MemoryPoolWrite event): a 61 MiB
+            // tensor fragments into 64 KiB zenoh batches and takes tens of
+            // seconds to cross a WAN, and the inter-daemon link itself can
+            // drop for minutes under host contention (zenoh reconnects with
+            // backoff, then the queued Block-mode put drains) — so the
+            // window is 3600s and the daemon fallback is polled inside it
+            // (throttled to 100ms).
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_millis(500))
+                .checked_add(std::time::Duration::from_millis(3_600_000))
                 .unwrap_or(std::time::Instant::now());
+            let mut last_daemon_proxy_query = std::time::Instant::now();
             loop {
                 match self.try_doradma_read(&buffer_id, py) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) if std::time::Instant::now() < deadline => {
+                        // Cross-machine proxy pool: poll the daemon
+                        // fallback inside the retry window (throttled) so
+                        // a WAN propagation delay doesn't fail the read.
+                        if last_daemon_proxy_query.elapsed()
+                            >= std::time::Duration::from_millis(100)
+                        {
+                            last_daemon_proxy_query = std::time::Instant::now();
+                            if let Some(result) = self.try_daemon_proxy_read(&buffer_id, py)? {
+                                return Ok(result);
+                            }
+                        }
                         // Transient — yield the GIL and sleep so the
                         // writer can complete its copy+sync.
                         py.detach(|| {
@@ -3116,59 +3179,14 @@ impl Node {
                 }
             }
             // Retries exhausted — fall back to the daemon for CPU pools.
+            if let Some(result) = self.try_daemon_proxy_read(&buffer_id, py)? {
+                return Ok(result);
+            }
             if let Ok(metadata) = self
                 .node
                 .get_mut()
                 .read_pinned_memory(buffer_id.clone(), false)
             {
-                // Cross-machine proxy pool: the daemon returned
-                // serialised tensor data (hex-encoded) because the
-                // sender is on a different host.
-                if let Some(hex_data) = metadata.parameters.get("proxy_data").and_then(|p| {
-                    if let Parameter::String(s) = p {
-                        Some(s.clone())
-                    } else {
-                        None
-                    }
-                }) {
-                    let tensor_bytes: Vec<u8> = (0..hex_data.len())
-                        .step_by(2)
-                        .filter_map(|i| {
-                            u8::from_str_radix(&hex_data[i..(i + 2).min(hex_data.len())], 16).ok()
-                        })
-                        .collect();
-                    let size = metadata
-                        .parameters
-                        .get("size")
-                        .and_then(|p| {
-                            if let Parameter::Integer(v) = p {
-                                Some(*v)
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or(tensor_bytes.len());
-                    let pinned_type = metadata
-                        .parameters
-                        .get("pinned_type")
-                        .and_then(|p| {
-                            if let Parameter::String(s) = p {
-                                Some(s.clone())
-                            } else {
-                                None
-                            }
-                        })
-                        .unwrap_or_else(|| "cpu".to_string());
-                    let bytes = PyBytes::new(py, &tensor_bytes);
-                    let dict = PyDict::new(py);
-                    dict.set_item("ptr", bytes.as_ptr() as i64)?;
-                    dict.set_item("size", size)?;
-                    dict.set_item("dtype", "uint8")?;
-                    dict.set_item("shape", vec![size])?;
-                    dict.set_item("device", pinned_type)?;
-                    return Ok(dict.into());
-                }
-
                 let size = metadata
                     .parameters
                     .get("size")
@@ -3565,6 +3583,99 @@ impl Node {
     /// via `next_require` round-trip signaling.
     ///
     /// Returns `Ok(Some(tensor_info_dict))` on success, `Ok(None)` to fall back to daemon.
+    /// Cross-machine proxy pool read: the daemon returns hex-encoded
+    /// tensor bytes when the pool was written on another host (the
+    /// `proxy_data` parameter). Returns `Ok(None)` when the pool is not
+    /// (yet) available on this daemon — callers poll this inside the
+    /// fast-path retry window so WAN propagation of the MemoryPoolWrite
+    /// event doesn't fail the read.
+    fn try_daemon_proxy_read(
+        &self,
+        buffer_id: &str,
+        py: Python<'_>,
+    ) -> eyre::Result<Option<Py<PyAny>>> {
+        let Ok(metadata) = self
+            .node
+            .get_mut()
+            .read_pinned_memory(buffer_id.to_string(), false)
+        else {
+            return Ok(None);
+        };
+        let Some(hex_data) = metadata.parameters.get("proxy_data").and_then(|p| {
+            if let Parameter::String(s) = p {
+                Some(s.clone())
+            } else {
+                None
+            }
+        }) else {
+            return Ok(None);
+        };
+        let tensor_bytes: Vec<u8> = (0..hex_data.len())
+            .step_by(2)
+            .filter_map(|i| u8::from_str_radix(&hex_data[i..(i + 2).min(hex_data.len())], 16).ok())
+            .collect();
+        let size = metadata
+            .parameters
+            .get("size")
+            .and_then(|p| {
+                if let Parameter::Integer(v) = p {
+                    Some(*v)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(tensor_bytes.len() as i64);
+        let pinned_type = metadata
+            .parameters
+            .get("pinned_type")
+            .and_then(|p| {
+                if let Parameter::String(s) = p {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "cpu".to_string());
+        // Sender's original dtype/shape (carried through the proxy reply)
+        // so the receiver rebuilds the real tensor; fall back to a uint8
+        // byte view for replies from older daemons.
+        let dtype = metadata
+            .parameters
+            .get("dtype")
+            .and_then(|p| {
+                if let Parameter::String(s) = p {
+                    Some(s.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "uint8".to_string());
+        let shape = metadata
+            .parameters
+            .get("shape")
+            .and_then(|p| {
+                if let Parameter::ListInt(v) = p {
+                    Some(v.clone())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| vec![size]);
+        let bytes = PyBytes::new(py, &tensor_bytes);
+        let dict = PyDict::new(py);
+        dict.set_item("ptr", bytes.as_ptr() as i64)?;
+        dict.set_item("size", size)?;
+        dict.set_item("dtype", dtype)?;
+        dict.set_item("shape", shape)?;
+        dict.set_item("device", pinned_type)?;
+        // Keep the PyBytes alive for as long as the dict (and any tensor
+        // built from its pointer) does — the CPU tensor path is a
+        // from_address view with no ownership, so a collected PyBytes
+        // leaves a dangling pointer behind (intermittent SIGSEGV).
+        dict.set_item("_proxy_bytes", bytes)?;
+        Ok(Some(dict.into()))
+    }
+
     fn try_doradma_read(&self, buffer_id: &str, py: Python<'_>) -> eyre::Result<Option<Py<PyAny>>> {
         // Format: "pool_{node_id}_{counter}".
         // Use rsplit to extract the counter from the end — the node_id
