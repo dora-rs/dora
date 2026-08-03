@@ -1712,14 +1712,14 @@ impl Daemon {
                     dynamic_node,
                     result,
                 } => match result {
-                    Ok(running_node) => {
+                    Ok(mut running_node) => {
                         if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+                            // Open the restart-loop gate before the insert:
+                            // the loop's first events are queued behind this
+                            // handler on the same event loop, so they cannot
+                            // be processed before the entry is registered.
+                            running_node.mark_registered();
                             dataflow.running_nodes.insert(node_id.clone(), running_node);
-                            dataflow
-                                .running_nodes
-                                .get_mut(&node_id)
-                                .expect("running node was just inserted")
-                                .mark_registered();
                         } else {
                             tracing::error!(
                                 "failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}"
@@ -2344,7 +2344,7 @@ impl Daemon {
                         .await
                         .wrap_err("failed to prepare node")?;
                     let prepared = task.await.wrap_err("failed to build node")?;
-                    let running_node = prepared
+                    let mut running_node = prepared
                         .spawn(logger)
                         .await
                         .wrap_err("failed to spawn node")?;
@@ -2419,13 +2419,13 @@ impl Daemon {
                     // node that never subscribed could stall startup
                     // outright (dora-rs/dora#2917).
 
-                    // Insert the running node
+                    // Open the restart-loop gate and insert the running
+                    // node. Marking before the insert is safe: the loop's
+                    // first events queue behind this handler on the same
+                    // event loop, so they cannot be processed before the
+                    // entry is registered.
+                    running_node.mark_registered();
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
-                    dataflow
-                        .running_nodes
-                        .get_mut(&node_id)
-                        .expect("running node was just inserted")
-                        .mark_registered();
 
                     // Update the daemon's stored descriptor so
                     // descriptor-based lookups (e.g. AllInputsClosed
@@ -5065,6 +5065,15 @@ impl Daemon {
                     .running
                     .get(&dataflow_id)
                     .and_then(|dataflow| dataflow.running_nodes.get(&node_id));
+                // Deliberate semantics of the entry-absent case: an exit
+                // arriving after `RemoveNode` took the entry out is dropped
+                // here WITHOUT running the finish accounting below. That
+                // means removing the last non-dynamic node leaves the
+                // dataflow alive (zero running nodes) until an explicit stop
+                // or a re-add — live-editing keep-alive, chosen over the
+                // pre-generation behavior where such a stale exit could both
+                // record a bogus result (dora-rs/dora#2926) and finish a
+                // dataflow out from under a concurrent re-add of the same id.
                 if !current_generation.is_some_and(|node| node.matches_generation(generation)) {
                     logger
                         .log(
@@ -5221,15 +5230,14 @@ impl Daemon {
                     }
                 };
 
-                // Clear the per-incarnation kill marker so it doesn't
-                // leak into the next incarnation. `grace_duration_kills`
-                // is keyed only by `node_id`; if `restart=true` and we
-                // didn't clear here, a later external SIGTERM or
-                // unrelated 143 exit from the restarted process would
-                // still see `grace_duration_kill=true` and be
-                // misreported as `Ok(())`. The marker has done its job
-                // for this exit — drop it. Same for the drain clock: a
-                // respawned node under the same id must start fresh.
+                // Drop the consumed kill marker. `grace_duration_kills` is
+                // keyed by `(node_id, generation)`, so a successor can no
+                // longer inherit its predecessor's marker structurally —
+                // removal here is hygiene for this incarnation's own entry
+                // (it was consumed classifying this exit), not the
+                // cross-incarnation leak protection it used to be. Same for
+                // the drain clock: a respawned node under the same id must
+                // start fresh.
                 // (`finish_escalated` is NOT cleared here — it is read
                 // and consumed by `handle_node_stop_inner` below to keep
                 // the coordinator-facing `clean_stop` flag honest; an
@@ -5384,18 +5392,30 @@ impl Daemon {
                 // predecessor's channel (dora-rs/adora#152).
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
-                        if !node.replace_process_handle(
+                        match node.replace_process_handle(
                             previous_generation,
                             new_generation,
                             new_handle,
                         ) {
-                            tracing::warn!(
-                                %dataflow_id,
-                                %node_id,
-                                previous_generation,
-                                current_generation = node.generation,
-                                "ignoring stale ProcessHandleReplaced event"
-                            );
+                            running_dataflow::HandleReplacement::Replaced => {}
+                            running_dataflow::HandleReplacement::RejectedTeardown => {
+                                tracing::info!(
+                                    %dataflow_id,
+                                    %node_id,
+                                    new_generation,
+                                    "teardown won the respawn race: killed the \
+                                     replacement process, awaiting its terminal exit"
+                                );
+                            }
+                            running_dataflow::HandleReplacement::RejectedStale => {
+                                tracing::warn!(
+                                    %dataflow_id,
+                                    %node_id,
+                                    previous_generation,
+                                    current_generation = node.generation,
+                                    "ignoring stale ProcessHandleReplaced event"
+                                );
+                            }
                         }
                     } else {
                         tracing::warn!(
@@ -6670,6 +6690,7 @@ mod debug_topic_tests {
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
+    use crate::running_dataflow::HandleReplacement;
     use std::sync::atomic::AtomicU32;
 
     use dora_message::{
@@ -6838,22 +6859,10 @@ mod fault_tolerance_tests {
         );
     }
 
-    #[tokio::test]
-    async fn restart_loop_waits_until_running_node_is_registered() {
-        let mut node = test_running_node();
-        let (start_tx, mut start_rx) = oneshot::channel();
-        node.restart_loop_start = Some(start_tx);
-
-        assert!(
-            tokio::time::timeout(Duration::from_millis(1), &mut start_rx)
-                .await
-                .is_err(),
-            "restart loop must remain gated before RunningNode insertion"
-        );
-
-        node.mark_registered();
-        assert!(start_rx.await.is_ok());
-    }
+    // The registration gate itself is tested through `restart_loop` in
+    // `spawn::prepared::tests` (`restart_loop_aborts_when_registration_never_happens`
+    // and `cancelled_restart_settles_terminal_exit`), which drive the real
+    // loop rather than restating oneshot-channel semantics here.
 
     #[test]
     fn planned_stop_markers_are_scoped_to_generation() {
@@ -6921,11 +6930,16 @@ mod fault_tolerance_tests {
         node.process = Some(ProcessHandle::new(live_tx));
 
         let (stale_tx, stale_rx) = flume::bounded(2);
-        let replaced = node.replace_process_handle(6, 8, ProcessHandle::new(stale_tx));
+        let outcome = node.replace_process_handle(6, 8, ProcessHandle::new(stale_tx));
 
-        assert!(
-            !replaced,
+        assert_eq!(
+            outcome,
+            HandleReplacement::RejectedStale,
             "a dead incarnation must not replace a live handle"
+        );
+        assert!(
+            node.matches_generation(7),
+            "a stale rejection must leave the live generation untouched"
         );
         assert!(
             live_rx.try_recv().is_err(),
@@ -6948,13 +6962,23 @@ mod fault_tolerance_tests {
         node.disable_restart();
 
         let (replacement_tx, replacement_rx) = flume::bounded(2);
-        let replaced = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
+        let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
 
-        assert!(
-            !replaced,
+        assert_eq!(
+            outcome,
+            HandleReplacement::RejectedTeardown,
             "teardown must win a race with process replacement"
         );
-        assert!(node.matches_generation(7));
+        // The generation must still advance: the restart loop now speaks
+        // generation 8, and its terminal SpawnedNodeResult has to match this
+        // entry or the node would stay registered forever and the dataflow
+        // could never finish.
+        assert!(node.matches_generation(8));
+        assert!(!node.matches_generation(7));
+        assert!(
+            node.process.is_some(),
+            "teardown rejection must not install the replacement handle"
+        );
         assert!(live_rx.try_recv().is_err());
         assert!(matches!(
             replacement_rx.try_recv(),
@@ -6971,9 +6995,9 @@ mod fault_tolerance_tests {
         node.process = Some(ProcessHandle::new(old_tx));
 
         let (new_tx, new_rx) = flume::bounded(2);
-        let replaced = node.replace_process_handle(7, 8, ProcessHandle::new(new_tx));
+        let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(new_tx));
 
-        assert!(replaced);
+        assert_eq!(outcome, HandleReplacement::Replaced);
         assert!(node.matches_generation(8));
         assert!(
             matches!(old_rx.try_recv(), Ok(ProcessOperation::Kill)),

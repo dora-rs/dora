@@ -1127,6 +1127,134 @@ fn hot_swap_survives_predecessor_exit_before_readd() {
     );
 }
 
+/// The dynamic-successor ordering from dora-rs/dora#2926 (scenario 2):
+/// a removed incarnation's failure lands while the id has no entry, so
+/// it is recorded under the bare node id — and a *dynamic* successor
+/// never emits a `SpawnedNodeResult` that would incidentally overwrite
+/// it. Only the `AddNode` handler's `clear_node_result` keeps the dead
+/// predecessor's exit code from being attributed to the successor when
+/// the dataflow stops.
+///
+/// (The issue's other named scenario — a `restart_loop` respawn racing
+/// a same-id re-add — has no deterministic e2e without a spawn-hold
+/// test hook in the daemon; both of its sides are pinned at unit level
+/// instead: `stale_handle_replacement_preserves_live_process` for the
+/// daemon-side rejection and `cancelled_restart_settles_terminal_exit`
+/// for the loop side.)
+#[test]
+#[cfg(unix)]
+fn hot_swap_dynamic_successor_not_blamed_for_predecessor_exit() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-swap-dynamic";
+    let broken = write_stop_delay_yml("dynamic-broken", 0, 1);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let old_pid = add_filter_and_wait(&dora, name, &broken.yml, "dora node add filter (broken)");
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args(["node", "remove", "--dataflow", name, "filter"]),
+        "dora node remove filter",
+    );
+    assert!(ok, "dora node remove failed.\nstderr:\n{stderr}");
+
+    // Enforce the ordering this scenario is about: the failure must be
+    // recorded while the id has no running_nodes entry.
+    wait_for_process_exit(&old_pid, Duration::from_secs(30));
+    assert_eq!(
+        broken.recorded_exits(),
+        vec!["1"],
+        "the removed incarnation must have exited 1 for this test to mean \
+         anything; marker file {:?} says otherwise",
+        broken.marker
+    );
+
+    // Re-add the same id as a DYNAMIC node: it never spawns a process
+    // and never reports a result, so nothing ever overwrites the
+    // predecessor's recorded failure — only `AddNode`'s result clearing
+    // protects the successor.
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dynamic_spec = Path::new(manifest_dir)
+        .join("target")
+        .join(format!("dora-dynamic-successor-{}.yml", std::process::id()));
+    fs::write(
+        &dynamic_spec,
+        "id: filter\npath: dynamic\noutputs:\n  - value\n",
+    )
+    .expect("failed to write dynamic successor spec");
+    add_node(
+        &dora,
+        name,
+        &dynamic_spec,
+        "dora node re-add filter (dynamic)",
+    );
+
+    // Let the daemon settle the add before stopping.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "`dora stop` blames the dynamic successor for the removed \
+         incarnation's exit 1 — the stale node result was not cleared on \
+         re-add.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Pins the deliberate keep-alive semantics of the generation guard
+/// (dora-rs/dora#2926 review, D2): an exit event whose entry was removed
+/// runs no finish accounting, so removing every node leaves a zero-node
+/// dataflow alive — for live editing and same-id re-adds — until an
+/// explicit `dora stop`, which must then succeed cleanly.
+#[test]
+#[cfg(unix)]
+fn removing_all_nodes_keeps_dataflow_alive_until_explicit_stop() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-remove-all";
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    for node in ["receiver", "sender"] {
+        let (ok, _, stderr) = run_capture(
+            Command::new(&dora).args(["node", "remove", "--dataflow", name, node]),
+            "dora node remove",
+        );
+        assert!(ok, "dora node remove {node} failed.\nstderr:\n{stderr}");
+    }
+
+    // Give the removed nodes' exit events time to reach the daemon; the
+    // generation guard must drop them without finishing the dataflow.
+    std::thread::sleep(Duration::from_secs(3));
+
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["list", "--format", "json"]),
+        "dora list after removing all nodes",
+    );
+    assert!(ok, "dora list failed.\nstderr:\n{stderr}");
+    let entry = list_out
+        .lines()
+        .find(|l| l.contains(&format!("\"name\":\"{name}\"")))
+        .unwrap_or_else(|| panic!("dataflow {name} missing from list:\n{list_out}"));
+    assert!(
+        entry.contains("\"status\":\"Running\""),
+        "a fully-emptied dataflow must stay alive until an explicit stop \
+         (live-editing keep-alive); got:\n{entry}"
+    );
+
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "`dora stop` on an intentionally-emptied dataflow must succeed.\
+         \nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
 /// A binary that exits non-zero immediately without ever connecting to
 /// the daemon — the "crashed at import" shape from dora-rs/dora#2917.
 ///

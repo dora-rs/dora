@@ -81,6 +81,10 @@ impl InputDeadline {
 #[derive(Debug)]
 pub struct RunningNode {
     pub(crate) process: Option<ProcessHandle>,
+    /// Gates this node's `restart_loop` until the daemon has inserted the
+    /// entry into `running_nodes` (`mark_registered`), so the loop's first
+    /// events cannot race ahead of registration. Dropping the sender without
+    /// firing it (entry never registered) cancels the loop.
     pub(crate) restart_loop_start: Option<oneshot::Sender<()>>,
     /// Monotonic identity of the process incarnation currently registered
     /// under this node ID. Lifecycle events from older incarnations must not
@@ -117,19 +121,36 @@ impl RunningNode {
         self.generation == generation
     }
 
+    /// Install a respawned incarnation's process handle.
+    ///
+    /// On every non-`Replaced` outcome `new_handle` is dropped here, and
+    /// `ProcessHandle::drop` submits `Kill` — that Drop is what reaps the
+    /// replacement process, so the handle must never be returned or leaked.
     pub(crate) fn replace_process_handle(
         &mut self,
         previous_generation: u64,
         new_generation: u64,
         new_handle: ProcessHandle,
-    ) -> bool {
-        if !self.matches_generation(previous_generation) || self.restarts_disabled() {
-            return false;
+    ) -> HandleReplacement {
+        if !self.matches_generation(previous_generation) {
+            // A dead incarnation must not replace a live successor's handle
+            // (dora-rs/dora#2926). Dropping `new_handle` kills the orphan.
+            return HandleReplacement::RejectedStale;
+        }
+        if self.restarts_disabled() {
+            // Teardown won the race: keep `process` empty (stop_all already
+            // took the old handle) and let the dropped `new_handle` kill the
+            // replacement. Still advance the generation: the restart loop
+            // already speaks `new_generation`, and its terminal
+            // `SpawnedNodeResult` must match this entry or the node would
+            // stay registered forever and the dataflow could never finish.
+            self.generation = new_generation;
+            return HandleReplacement::RejectedTeardown;
         }
 
         self.process = Some(new_handle);
         self.generation = new_generation;
-        true
+        HandleReplacement::Replaced
     }
 
     pub fn restarts_disabled(&self) -> bool {
@@ -141,8 +162,27 @@ impl RunningNode {
     }
 }
 
+/// Outcome of [`RunningNode::replace_process_handle`]. In both `Rejected*`
+/// cases the offered handle was dropped, which kills the replacement process.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HandleReplacement {
+    /// The handle was installed and the entry advanced to the new generation.
+    Replaced,
+    /// Teardown disabled restarts first; the entry's generation was still
+    /// advanced so the restart loop's terminal exit event is accepted.
+    RejectedTeardown,
+    /// The event belongs to a dead incarnation (generation mismatch); the
+    /// entry was left untouched.
+    RejectedStale,
+}
+
 static NEXT_NODE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
+/// Generations are unique across the whole daemon process — not per node —
+/// so a re-added node ID (or any freshly built `RunningNode`) can never
+/// reuse a predecessor's generation. Equality against the entry's stored
+/// generation is therefore collision-free proof that an event belongs to
+/// the currently registered incarnation.
 pub(crate) fn next_node_generation() -> u64 {
     NEXT_NODE_GENERATION
         .fetch_update(
@@ -288,6 +328,10 @@ pub struct RunningDataflow {
     pub(crate) stop_sent: bool,
     pub(crate) empty_set: BTreeSet<DataId>,
     pub(crate) cascading_error_causes: CascadingErrorCauses,
+    /// Planned-stop kill markers keyed by `(node id, generation)`: scoped to
+    /// one process incarnation so a re-added successor never inherits its
+    /// predecessor's marker, and cleaning up a stale event cannot clear a
+    /// live incarnation's marker.
     pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
