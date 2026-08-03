@@ -40,8 +40,49 @@ nodes:
 | `strict_types` | bool | `false` | Treat type warnings as errors in `validate` and `build` |
 | `type_rules` | list | `[]` | User-defined type compatibility rules (see [Type Annotations](types.md#user-defined-compatibility-rules)) |
 | `health_check_interval` | float | `5.0` | Seconds between daemon health check sweeps. For each node with `health_check_timeout` set, the daemon checks whether the node has communicated within its timeout; if not, the node is killed and its `restart_policy` is evaluated |
+| `exit_when_nodes_finish` | bool | `false` | Finish the dataflow once every node has, treating `dora/timer/...` inputs as a clock rather than as work. A timer input has no upstream node, so it never closes: by default a node consuming one is never told its inputs are done and the graph cannot end on its own. Overridden by `--exit-when-nodes-finish[=BOOL]` on `dora run` and `dora start` (see [Completion](#completion)) |
 | `_unstable_deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
 | `_unstable_debug` | object | -- | Debug options (see [Debug](#debug)) |
+
+## Completion
+
+By default a dataflow ends when every node has exited. A node is told its
+inputs are closed only when *all* of them are, and a `dora/timer/...`
+input never closes -- it has no upstream node that could finish it. So a
+graph in which any node consumes a timer cannot end on its own, even
+after every node doing real work has exited:
+
+```yaml
+nodes:
+  - id: worker
+    path: ./worker
+    inputs:
+      data: producer/out
+      tick: dora/timer/millis/100   # never closes
+```
+
+Set `exit_when_nodes_finish` to make a node finish once its **data**
+inputs have closed, with the timer treated as a clock rather than as work:
+
+```yaml
+exit_when_nodes_finish: true
+```
+
+Off by default, and usually only wanted for batch-style runs: for a
+long-lived dataflow the timer is precisely what keeps it alive, and such
+a dataflow is normally ended with `dora stop`.
+
+Nodes with no data inputs at all -- timer-only sources, or nodes with no
+inputs -- are unaffected. They have no dependency that could finish, so
+they are treated as sources and are never told to stop.
+
+The command line overrides this field in either direction:
+
+```bash
+dora run flow.yml --exit-when-nodes-finish          # force on
+dora start flow.yml --exit-when-nodes-finish=false  # force off
+dora start flow.yml                                 # the YAML decides
+```
 
 ## Node Configuration
 

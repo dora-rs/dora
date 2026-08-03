@@ -283,7 +283,7 @@ dora run <PATH> [OPTIONS]
 | `--uv` | false | Use `uv` for Python node management |
 | `--debug` | false | Enable debug topics (equivalent to `enable_debug_inspection: true`) |
 | `--allow-shell-nodes` | false | Enable shell-based node execution |
-| `--exit-when-nodes-finish` | false | Exit once all nodes finish, treating `dora/timer/...` inputs as a clock rather than as work |
+| `--exit-when-nodes-finish[=BOOL]` | descriptor | Exit once all nodes finish, treating `dora/timer/...` inputs as a clock rather than as work. Overrides `exit_when_nodes_finish:` in the YAML; omit it and the YAML decides |
 | `--log-level <LEVEL>` | `stdout` | Min display level: `error\|warn\|info\|debug\|trace\|stdout` |
 | `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact` |
 | `--log-filter <FILTER>` | | Per-node level overrides: `"node1=debug,node2=warn"` |
@@ -386,6 +386,7 @@ dora start <PATH> [OPTIONS]
 | `--debug` | false | Enable debug topics (equivalent to `enable_debug_inspection: true`) |
 | `--hot-reload` | false | Watch Python files and reload on change |
 | `--uv` | false | Use `uv` for Python nodes |
+| `--exit-when-nodes-finish[=BOOL]` | descriptor | Finish once all nodes have, treating `dora/timer/...` inputs as a clock rather than as work. Overrides `exit_when_nodes_finish:` in the YAML; omit it and the YAML decides |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
