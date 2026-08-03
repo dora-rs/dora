@@ -3395,6 +3395,48 @@ impl Daemon {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&shared_memory_id);
+                // The origin daemon's local pool lives in the
+                // MemoryPoolManager table; the cross-machine free must
+                // release it too, or its /dev/shm segment leaks until
+                // daemon exit. Mirrors never enter the table, so on the
+                // mirror daemon (or on the origin daemon if the pool was
+                // already freed) the lookup is an expected miss.
+                let id = MemoryPoolId {
+                    dataflow_id: dataflow_id.to_string(),
+                    id: shared_memory_id.clone(),
+                };
+                let table_result = self
+                    .memory_pool
+                    .free_memory_pool(&id, "<cross-machine free>");
+                if let Err(err) = &table_result {
+                    tracing::debug!(
+                        "memory pool: no local table entry for freed cross-machine pool {shared_memory_id}: {err}"
+                    );
+                } else {
+                    // Notify every node that registered or read the local
+                    // pool to drop its per-process caches (mirrors the
+                    // FreePinnedMemory cleanup fan-out; here there is no
+                    // initiator node to exclude).
+                    if let Ok((_meta, touched)) = &table_result
+                        && let Some(dataflow) = self.running.get(&dataflow_id)
+                    {
+                        let event = NodeEvent::FreeMemoryPool {
+                            shared_memory_id: shared_memory_id.clone(),
+                        };
+                        for (node, channel) in &dataflow.subscribe_channels {
+                            if touched.contains(node.as_ref())
+                                && let Err(e) =
+                                    send_with_timestamp(channel, event.clone(), &self.clock)
+                            {
+                                tracing::warn!(
+                                    node_id = %node,
+                                    pool = %shared_memory_id,
+                                    "failed to deliver FreeMemoryPool: {e}"
+                                );
+                            }
+                        }
+                    }
+                }
                 // Same machine-qualified id as `create_cross_pool_shmem`.
                 let Some(shmem_name) = cross_pool_shmem_name(
                     self.machine_id.as_deref().unwrap_or_default(),
