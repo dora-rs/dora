@@ -703,6 +703,12 @@ Lists nodes in a running dataflow with their status, CPU, memory, and restart co
 
 **Columns:** NODE, STATUS, PID, CPU%, MEMORY (MB), RESTARTS, DATAFLOW
 
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-d <DATAFLOW>`, `--dataflow` | all dataflows | Dataflow UUID or name |
+| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line) |
+| `-q`, `--quiet` | | Print only node IDs, one per line |
+
 ##### `dora node info`
 
 Show detailed information about a specific node including status, inputs, outputs, and metrics.

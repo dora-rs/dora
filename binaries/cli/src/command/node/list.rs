@@ -32,7 +32,7 @@ pub struct List {
     #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     pub dataflow: Option<String>,
 
-    /// Output format
+    /// Output format. `json` emits JSON Lines (one object per line)
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 
@@ -195,4 +195,21 @@ fn list(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::{Parser as _, error::ErrorKind};
+
+    #[test]
+    fn help_documents_json_lines_output() {
+        let error = crate::Args::try_parse_from(["dora", "node", "list", "--help"])
+            .expect_err("--help should stop command parsing");
+
+        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
+        assert!(
+            error.to_string().contains("JSON Lines"),
+            "node list help must describe the line-oriented JSON contract"
+        );
+    }
 }
