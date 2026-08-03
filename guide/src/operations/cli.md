@@ -293,7 +293,7 @@ dora run <PATH> [OPTIONS]
 | `--allow-shell-nodes` | false | Enable shell-based node execution |
 | `--exit-when-nodes-finish[=BOOL]` | descriptor | Exit once all nodes finish, treating `dora/timer/...` inputs as a clock rather than as work. Overrides `exit_when_nodes_finish:` in the YAML; omit it and the YAML decides |
 | `--log-level <LEVEL>` | `stdout` | Min display level: `error\|warn\|info\|debug\|trace\|stdout` |
-| `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact` |
+| `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact`; `json` emits JSON Lines (one object per log message) |
 | `--log-filter <FILTER>` | | Per-node level overrides: `"node1=debug,node2=warn"` |
 | `--locked` | false | Use pinned git source commits from a build lockfile |
 | `--write-lockfile` | false | Write resolved git source commits to a lockfile during pre-run build |
@@ -531,7 +531,7 @@ dora clean [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format <FMT>`, `-f` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line); failures go to stderr as JSON Lines |
+| `--format <FMT>`, `-f` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line); each failure is also one JSON object line on stderr, followed by a plain-text error summary (exit code is non-zero) |
 | `--quiet`, `-q` | false | Print only cleaned UUIDs |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
@@ -565,7 +565,7 @@ Node selection is via the `--node <NAME>` flag (not positional, as of #1883).
 | `--since <DURATION>` | | Show logs newer than duration ago |
 | `--until <DURATION>` | | Show logs older than duration ago |
 | `--level <LEVEL>` | `stdout` | Min log level |
-| `--log-format <FORMAT>` | `pretty` | Output format |
+| `--log-format <FORMAT>` | `pretty` | Output format: `pretty\|json\|compact`; `json` emits JSON Lines (one object per log message) |
 | `--log-filter <FILTER>` | | Per-node level overrides |
 | `--grep <PATTERN>` | | Case-insensitive text search |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
@@ -663,7 +663,7 @@ dora topic echo [OPTIONS] [DATA...]
 |------|---------|-------------|
 | `-d <DATAFLOW>`, `--dataflow` | required | Dataflow UUID or name |
 | `[DATA...]` | all outputs | Topics to echo (e.g., `node1/output`) |
-| `--format <FMT>` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per message) |
+| `--format <FMT>` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per decoded message); diagnostics go to stderr |
 
 Requires `_unstable_debug.enable_debug_inspection: true` in the descriptor.
 
@@ -960,6 +960,11 @@ dora status [OPTIONS]
 ```
 
 Reports coordinator connectivity, daemon status, and active dataflow count.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json`. JSON output is a single pretty-printed document, printed even when checks fail (failure detail goes to stderr; exit code is non-zero) |
+| `--dataflow <PATH>` | | Descriptor file to enable additional checks |
 
 #### `dora new`
 

@@ -264,7 +264,25 @@ mod tests {
             ),
             (
                 &["dora", "topic", "echo", "--help"],
-                "JSON Lines (one object per message)",
+                "JSON Lines (one object per decoded message)",
+            ),
+            (
+                &["dora", "logs", "--help"],
+                "JSON Lines (one object per log message)",
+            ),
+            (
+                &["dora", "run", "--help"],
+                "JSON Lines (one object per log message)",
+            ),
+            (
+                // top-level alias of `dora system status`
+                &["dora", "status", "--help"],
+                "a single pretty-printed JSON document",
+            ),
+            (
+                // `ps` alias resolves to `dora list`
+                &["dora", "ps", "--help"],
+                "JSON Lines (one object per line)",
             ),
             (
                 &["dora", "node", "list", "--help"],
@@ -546,6 +564,9 @@ mod tests {
     #[test]
     fn parse_node_list() {
         parse_ok(&["dora", "node", "list"]);
+        parse_ok(&["dora", "node", "list", "--format", "json"]);
+        // --quiet and --format conflict (documented in the flag table)
+        parse_err(&["dora", "node", "list", "-q", "--format", "json"]);
     }
 
     #[test]

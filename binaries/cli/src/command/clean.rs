@@ -31,8 +31,9 @@ pub struct CleanArgs {
     coordinator: CoordinatorOptions,
     /// Output format
     ///
-    /// `json` emits JSON Lines (one object per line); failures are
-    /// emitted as JSON Lines on stderr.
+    /// `json` emits JSON Lines (one object per line). Each failure is
+    /// additionally emitted as one JSON object line on stderr, followed
+    /// by a plain-text error summary (the command exits non-zero).
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
     /// Only print cleaned dataflow UUIDs, one per line
@@ -169,5 +170,49 @@ fn clean(
             "{} dataflow(s) could not be removed from the persisted store; their in-memory entries are preserved so a later `dora clean` can retry",
             failures.len()
         ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{CleanedEntry, FailedEntry};
+    use dora_message::coordinator_to_cli::DataflowStatus;
+    use uuid::Uuid;
+
+    /// Pins the JSONL contract the help text promises for `--format json`:
+    /// cleaned entries on stdout and failure entries on stderr each
+    /// serialize to a single line that parses as an independent JSON
+    /// object with stable keys.
+    #[test]
+    fn clean_entries_serialize_as_independent_single_line_objects() {
+        let cleaned = serde_json::to_string(&CleanedEntry {
+            uuid: Uuid::nil(),
+            name: "df".into(),
+            status: DataflowStatus::Finished,
+        })
+        .expect("serialize cleaned entry");
+        let failed = serde_json::to_string(&FailedEntry {
+            uuid: Uuid::nil(),
+            name: "df".into(),
+            error: "store unavailable".into(),
+        })
+        .expect("serialize failed entry");
+
+        for line in [&cleaned, &failed] {
+            assert!(!line.contains('\n'), "JSONL entries must be single-line");
+        }
+        let cleaned: serde_json::Value =
+            serde_json::from_str(&cleaned).expect("cleaned entry parses as standalone JSON");
+        for key in ["uuid", "name", "status"] {
+            assert!(
+                cleaned.get(key).is_some(),
+                "cleaned entry must have `{key}`"
+            );
+        }
+        let failed: serde_json::Value =
+            serde_json::from_str(&failed).expect("failed entry parses as standalone JSON");
+        for key in ["uuid", "name", "error"] {
+            assert!(failed.get(key).is_some(), "failed entry must have `{key}`");
+        }
     }
 }

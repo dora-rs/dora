@@ -204,7 +204,6 @@ fn list(
 #[cfg(test)]
 mod tests {
     use super::OutputEntry;
-    use clap::{Parser as _, error::ErrorKind};
 
     fn entry(node: &str, dataflow: Option<&str>) -> OutputEntry {
         OutputEntry {
@@ -241,20 +240,6 @@ mod tests {
         assert!(
             filtered.get("dataflow").is_none(),
             "`dataflow` must be omitted, not null, when filtering by dataflow"
-        );
-    }
-
-    #[test]
-    fn help_documents_json_lines_output() {
-        let error = crate::Args::try_parse_from(["dora", "node", "list", "--help"])
-            .expect_err("--help should stop command parsing");
-
-        assert_eq!(error.kind(), ErrorKind::DisplayHelp);
-        assert!(
-            error
-                .to_string()
-                .contains("JSON Lines (one object per line)"),
-            "node list help must describe the line-oriented JSON contract"
         );
     }
 }
