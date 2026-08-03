@@ -2314,12 +2314,54 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
         };
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
+    }
+
+    /// #2956: an output sent through `TestingOutput::ToChannel` must actually
+    /// arrive on the receiver. This is the end-to-end path that the flume →
+    /// `tokio::sync::mpsc` migration touched (`handle_output`'s
+    /// `blocking_send`). Plain `#[test]` on purpose: the testing daemon
+    /// bridge uses `blocking_send`/`blocking_recv`, which panic inside a tokio
+    /// runtime.
+    #[test]
+    fn to_channel_delivers_outputs() {
+        use arrow::array::Int32Array;
+
+        let events = vec![TimedIncomingEvent {
+            time_offset_secs: 0.0,
+            event: IncomingEvent::Stop,
+        }];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let outputs = TestingOutput::ToChannel(tx);
+        let options = TestingOptions {
+            skip_output_time_offsets: true,
+        };
+        let (mut node, _events) = crate::DoraNode::init_testing(inputs, outputs, options).unwrap();
+
+        node.send_output(
+            "out".parse().unwrap(),
+            Default::default(),
+            Int32Array::from(vec![1, 2, 3]),
+        )
+        .unwrap();
+
+        let received = rx
+            .try_recv()
+            .expect("output should have been delivered to the tokio mpsc channel");
+        assert_eq!(
+            received.get("id").and_then(|v| v.as_str()),
+            Some("out"),
+            "delivered output should carry the sent output id"
+        );
     }
 
     #[test]
@@ -2430,7 +2472,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2497,7 +2539,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,

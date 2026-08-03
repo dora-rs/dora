@@ -166,8 +166,12 @@ impl IntegrationTestingEvents {
                 writeln!(writer.as_mut()).context("failed to write newline to output file")?;
             }
             OutputWriter::Channel(sender) => {
+                // The testing daemon simulation runs on a dedicated
+                // `std::thread` outside any tokio runtime (see
+                // `DoraNode::init_testing`), so `blocking_send` is safe here
+                // and gives flume's original blocking-on-full semantics.
                 sender
-                    .send(output)
+                    .blocking_send(output)
                     .context("failed to send output to channel")?;
             }
         }
@@ -234,7 +238,7 @@ impl IntegrationTestingEvents {
 
 enum OutputWriter {
     Writer(Box<dyn Write + Send>),
-    Channel(flume::Sender<serde_json::Map<String, serde_json::Value>>),
+    Channel(tokio::sync::mpsc::Sender<serde_json::Map<String, serde_json::Value>>),
 }
 
 pub fn convert_output_to_json(
