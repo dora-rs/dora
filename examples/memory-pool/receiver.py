@@ -46,7 +46,14 @@ for i in range(MESSAGE_COUNT):
         # returns — so a read can return the *previous* frame.  Retry
         # until the expected frame arrives; each read consumes one proxy
         # entry.
-        for _ in range(600):
+        # Time-boxed, not count-boxed: a mirrored cross-machine pool reads
+        # in ~40ms locally (sender paces writes with a 20s sleep), so a
+        # count window burns through before the next frame lands; on a WAN
+        # each read is slow, so a count window is the right bound there.
+        # 300s covers the 20s pacing + handshake on the fast path and caps
+        # WAN waits at ~5 minutes.
+        deadline = time.time() + 300
+        while time.time() < deadline:
             tensor_info = node.read_memory_pool(memory_pool_id)
             torch_tensor = tensor_from_info(tensor_info)
             if int(torch_tensor[0].item()) == i:

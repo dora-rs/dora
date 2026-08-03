@@ -3820,15 +3820,37 @@ impl Node {
             }
         }
 
-        let shmem_name = format!(
+        // Cross-machine: the mirrored pool's OS id is machine-qualified
+        // (`dora_pool_{machine}_{df}_{node}_{counter}` — see the daemon's
+        // `create_cross_pool_shmem`) so a same-host dual-daemon test does
+        // not collide with the sender's local segment. Try the qualified
+        // name first (this node's machine via `DORA_MACHINE_ID`, injected
+        // by the spawning daemon), then the legacy unqualified name for
+        // local pools and nodes spawned without the env.
+        let mut names: Vec<String> = Vec::new();
+        if let Ok(machine) = std::env::var("DORA_MACHINE_ID")
+            && !machine.is_empty()
+        {
+            names.push(format!(
+                "dora_pool_{machine}_{}_{}_{}",
+                self.dataflow_id, pool_node_id, counter
+            ));
+        }
+        names.push(format!(
             "dora_pool_{}_{}_{}",
             self.dataflow_id, pool_node_id, counter
-        );
+        ));
 
         // Open shared memory
-        let shmem = match ShmemConf::new().os_id(&shmem_name).open() {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        let mut shmem = None;
+        for name in &names {
+            if let Ok(s) = ShmemConf::new().os_id(name).open() {
+                shmem = Some((s, name.clone()));
+                break;
+            }
+        }
+        let Some((shmem, _shmem_name)) = shmem else {
+            return Ok(None);
         };
 
         let shmem_ptr = shmem.as_ptr();

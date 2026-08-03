@@ -272,9 +272,21 @@ pub struct Spawner {
     /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
     /// node scouting for a daemon that no longer answers.
     pub disable_multicast: bool,
+    /// This machine's id (as registered with the coordinator), if any.
+    /// Forwarded to spawned nodes via `DORA_MACHINE_ID` so the node API can
+    /// derive the machine-qualified OS id of a mirrored cross-machine pool
+    /// (see `create_cross_pool_shmem` in the daemon).
+    pub machine_id: Option<String>,
 }
 
 impl Spawner {
+    fn maybe_inject_machine_id(&self, command: Command) -> Command {
+        match &self.machine_id {
+            Some(machine_id) => command.env("DORA_MACHINE_ID", machine_id),
+            None => command,
+        }
+    }
+
     fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {
         let command = match self.zenoh_peering.get(node_id) {
             Some(peering) => {
@@ -412,6 +424,7 @@ impl Spawner {
                             .wrap_err("failed to serialize node config")?,
                     );
                     command = self.maybe_inject_zenoh_connect(command, &node.id);
+                    command = self.maybe_inject_machine_id(command);
                     // Injecting the env variable defined in the `yaml` into
                     // the node runtime.
                     if let Some(envs) = &node.env {
@@ -619,6 +632,7 @@ impl Spawner {
                             .wrap_err("failed to serialize runtime config")?,
                     );
                     command = self.maybe_inject_zenoh_connect(command, &node.id);
+                    command = self.maybe_inject_machine_id(command);
                     // Injecting the env variable defined in the `yaml` into
                     // the node runtime.
                     if let Some(envs) = &node.env {
@@ -692,6 +706,7 @@ mod tests {
             // one a node without its own peering plan takes.
             zenoh_peering: Arc::new(BTreeMap::new()),
             disable_multicast,
+            machine_id: None,
         }
     }
 

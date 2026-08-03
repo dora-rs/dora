@@ -278,6 +278,7 @@ unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
 /// receivers open for the zero-copy fast path.
 fn create_cross_pool_shmem(
     dataflow_id: &Uuid,
+    machine_id: &str,
     shared_memory_id: &str,
     size: usize,
     dtype: &str,
@@ -287,7 +288,15 @@ fn create_cross_pool_shmem(
         .strip_prefix("pool_")
         .and_then(|s| s.rsplit_once('_'))
         .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
-    let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+    // Machine-qualified OS id: the mirror lives on the target machine's
+    // /dev/shm, which on a dual-daemon test host is the SAME namespace as
+    // the sender's local pool. An unqualified id would collide with the
+    // sender's local segment (create fails with EEXIST) whenever both
+    // daemons run on one host.
+    let shmem_name = format!(
+        "dora_pool_{machine_id}_{}_{}_{}",
+        dataflow_id, node_id, counter
+    );
     let json = format!(
         "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"cpu\"}}",
         shape
@@ -322,6 +331,7 @@ fn create_cross_pool_shmem(
 /// handler). Not async: there is nothing to await, the work is the copy.
 fn write_cross_pool_data(
     dataflow_id: &Uuid,
+    machine_id: &str,
     shared_memory_id: &str,
     tensor_data: &[u8],
     size: usize,
@@ -336,7 +346,11 @@ fn write_cross_pool_data(
             return;
         }
     };
-    let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+    // Must match the machine-qualified id used by `create_cross_pool_shmem`.
+    let shmem_name = format!(
+        "dora_pool_{machine_id}_{}_{}_{}",
+        dataflow_id, node_id, counter
+    );
     let Ok(shmem) = ShmemConf::new().os_id(&shmem_name).open() else {
         tracing::warn!(
             "memory pool: pool {shared_memory_id} missing at write \
@@ -2482,6 +2496,7 @@ impl Daemon {
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
+                        machine_id: self.machine_id.clone(),
                     };
                     let mut logger = self
                         .logger
@@ -3233,9 +3248,16 @@ impl Daemon {
                     // owned here for the proxy fallback below).
                     let shared_memory_id = shared_memory_id.clone();
                     let tensor_data = tensor_data.clone();
+                    let local_machine_id = self.machine_id.clone().unwrap_or_default();
                     tokio::spawn(async move {
                         // `dataflow_id` (Uuid) is Copy; captured by copy.
-                        write_cross_pool_data(&dataflow_id, &shared_memory_id, &tensor_data, size);
+                        write_cross_pool_data(
+                            &dataflow_id,
+                            &local_machine_id,
+                            &shared_memory_id,
+                            &tensor_data,
+                            size,
+                        );
                     });
                     return Ok(());
                 }
@@ -3279,10 +3301,14 @@ impl Daemon {
                 }
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
+                // The gating above guarantees this daemon IS the target
+                // machine, so its machine id is the mirror's namespace.
+                let local_machine_id = self.machine_id.clone();
                 // 建池在 spawn 内（建池是毫秒级但发布可能 Block）
                 tokio::spawn(async move {
                     let result = create_cross_pool_shmem(
                         &dataflow_id,
+                        local_machine_id.as_deref().unwrap_or_default(),
                         &shared_memory_id,
                         size,
                         &dtype,
@@ -3341,7 +3367,14 @@ impl Daemon {
                     );
                     return Ok(());
                 };
-                let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+                // Same machine-qualified id as `create_cross_pool_shmem`.
+                let shmem_name = format!(
+                    "dora_pool_{}_{}_{}_{}",
+                    self.machine_id.as_deref().unwrap_or_default(),
+                    dataflow_id,
+                    node_id,
+                    counter
+                );
                 remove_cross_pool_shmem(&shmem_name);
                 tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 Ok(())
@@ -3770,6 +3803,7 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
             disable_multicast: self.disable_multicast,
+            machine_id: self.machine_id.clone(),
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):

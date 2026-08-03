@@ -2,6 +2,7 @@
 """Send tensors through the memory-pool example dataflow."""
 
 import os
+import sys
 import threading
 import time
 
@@ -40,7 +41,15 @@ for i in range(MESSAGE_COUNT):
     if i == 0:
         print(f"Sender preview: {torch_tensor[:5]}")
         tensor_info = get_tensor_info(torch_tensor)
-        memory_pool_id = node.register_memory_pool(tensor_info, RECEIVER_DEVICE)
+        memory_pool_id = node.register_memory_pool(
+            tensor_info, RECEIVER_DEVICE, machine=os.getenv("cross_machine")
+        )
+        if memory_pool_id is None:
+            print(
+                "Cross-machine register failed (warned, no pool created) — exiting",
+                flush=True,
+            )
+            sys.exit(1)
         # Cross-machine: the register's proxy push can be lost while the
         # remote daemon's subscription is still replicating (observed as
         # the receiver reading the *next* write's data at iteration 0).
