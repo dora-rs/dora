@@ -159,6 +159,10 @@ pub struct PreparedNode {
     /// loop advances it before each respawn (the listener socket is bound
     /// once per node and reused across incarnations).
     pub(super) generation_counter: Arc<AtomicU64>,
+    /// Closing (or dropping every clone of) this sender shuts down the
+    /// node's TCP listener; a clone is stored in the RunningNode entry so
+    /// retiring the node retires its listener (dora-rs/dora#2988).
+    pub(super) listener_shutdown: tokio::sync::watch::Sender<bool>,
     pub(super) node_config: NodeConfig,
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
@@ -195,6 +199,7 @@ impl PreparedNode {
                 NodeKind::Spawned { .. } => Some(crate::ProcessHandle::new(op_tx)),
             },
             restart_loop_start: Some(registered_tx),
+            _listener_shutdown: Some(self.listener_shutdown.clone()),
             generation: self.generation,
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
@@ -1189,6 +1194,7 @@ mod tests {
             node: test_resolved_node(restart_delay_secs),
             generation,
             generation_counter: Arc::new(AtomicU64::new(generation)),
+            listener_shutdown: tokio::sync::watch::channel(false).0,
             node_config: test_node_config(),
             clock: Arc::new(HLC::default()),
             daemon_tx,

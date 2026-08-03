@@ -26,6 +26,7 @@ pub async fn listener_loop(
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    mut node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
         tokio::select! {
@@ -45,6 +46,19 @@ pub async fn listener_loop(
             }
             _ = shutdown.changed() => {
                 tracing::trace!("TCP listener shutting down");
+                break;
+            }
+            // Per-node lifetime (dora-rs/dora#2988 review, finding 3): the
+            // senders live in the node's RunningNode entry and its restart
+            // loop, so removing the node (replace/remove/teardown) closes
+            // this listener instead of leaking it until the whole dataflow
+            // finishes. `changed()` errors when the last sender drops —
+            // either way, stop accepting. Existing connections are
+            // unaffected (their tasks run independently and are
+            // generation-gated).
+            result = node_shutdown.changed() => {
+                let _ = result;
+                tracing::trace!("TCP listener shutting down (node retired)");
                 break;
             }
         }

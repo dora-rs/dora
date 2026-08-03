@@ -86,6 +86,11 @@ pub struct RunningNode {
     /// events cannot race ahead of registration. Dropping the sender without
     /// firing it (entry never registered) cancels the loop.
     pub(crate) restart_loop_start: Option<oneshot::Sender<()>>,
+    /// Keeps the node's TCP listener alive; when this entry (and the
+    /// restart loop's clone) drops, the listener stops accepting — so a
+    /// replaced or removed node does not leak its listener until the whole
+    /// dataflow finishes (dora-rs/dora#2988 review, finding 3).
+    pub(crate) _listener_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Monotonic identity of the process incarnation currently registered
     /// under this node ID. Lifecycle events from older incarnations must not
     /// mutate this entry or contribute results to it.

@@ -48,6 +48,7 @@ pub async fn spawn_listener_loop(
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
+    node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> eyre::Result<DaemonCommunication> {
     match config {
         LocalCommunicationConfig::Tcp => {
@@ -74,6 +75,7 @@ pub async fn spawn_listener_loop(
                     clock,
                     last_activity,
                     shutdown,
+                    node_shutdown,
                 )
                 .await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");

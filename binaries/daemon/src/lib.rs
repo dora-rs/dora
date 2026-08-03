@@ -336,6 +336,48 @@ pub struct Daemon {
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
+/// Whether a node-connection event belongs to a superseded incarnation.
+///
+/// Strictly-older comparison, deliberately not equality: generations are
+/// globally monotonic, and the restart loop publishes a successor's
+/// generation to the listener BEFORE spawning it, so a fast successor's
+/// events can carry a generation NEWER than the entry until its
+/// `ProcessHandleReplaced` is processed. Dropping those would eat the
+/// successor's one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
+fn event_generation_is_stale(entry_generation: u64, event_generation: u64) -> bool {
+    event_generation < entry_generation
+}
+
+/// Patch a stored descriptor entry with a replacement node's definition
+/// (dora-rs/dora#2988 review, finding 2). The stored descriptor is
+/// serialized into every spawned process's `DORA_NODE_CONFIG`, so the
+/// replacement must not receive the outgoing incarnation's path, env, or
+/// restart configuration through `DoraNode::dataflow_descriptor()`.
+/// Only `CoreNodeKind::Custom` reaches here — ReplaceNode's v1 scope
+/// rejects other kinds up front.
+fn patch_descriptor_entry(
+    entry: &mut dora_message::descriptor::Node,
+    resolved: &dora_core::descriptor::ResolvedNode,
+) {
+    if let CoreNodeKind::Custom(custom) = &resolved.kind {
+        entry.path = Some(custom.path.clone());
+        entry.args = custom.args.clone();
+        entry.env = resolved.env.clone();
+        entry.inputs = custom.run_config.inputs.clone();
+        entry.outputs = custom.run_config.outputs.clone();
+        entry.restart_policy = custom.restart_policy;
+        entry.max_restarts = custom.max_restarts;
+        entry.restart_delay = custom.restart_delay;
+        entry.max_restart_delay = custom.max_restart_delay;
+        entry.restart_window = custom.restart_window;
+        entry.health_check_timeout = custom.health_check_timeout;
+        entry.finish_grace_secs = custom.finish_grace_secs;
+        entry.send_stdout_as = custom.send_stdout_as.clone();
+        entry.send_logs_as = custom.send_logs_as.clone();
+        entry.min_log_level = custom.min_log_level.clone();
+    }
+}
+
 fn clear_node_result(results: &mut DaemonRunResult, dataflow_id: Uuid, node_id: &NodeId) {
     let remove_dataflow = results.get_mut(&dataflow_id).is_some_and(|node_results| {
         node_results.remove(node_id);
@@ -1632,14 +1674,22 @@ impl Daemon {
                     // replaced or re-added id's old connection must not
                     // mutate the current entry (close its outputs, remove
                     // its subscription, ...) — dora-rs/dora#2926, #2927.
-                    // Entry-absent passes through: during startup a node
-                    // can register before its RunningNode is inserted, and
-                    // the pending-nodes barrier owns that window.
+                    // STRICTLY older only: the restart loop publishes the
+                    // successor's generation before spawning it, so a fast
+                    // successor can connect (and Subscribe) while the entry
+                    // still holds the predecessor's generation — a NEWER
+                    // event generation is that successor racing its own
+                    // `ProcessHandleReplaced` and must not be dropped, or
+                    // its one-shot Subscribe is lost and the incarnation
+                    // stays disconnected. Entry-absent passes through:
+                    // during startup a node can register before its
+                    // RunningNode is inserted, and the pending-nodes
+                    // barrier owns that window.
                     let superseded = self
                         .running
                         .get(&dataflow)
                         .and_then(|df| df.running_nodes.get(&node_id))
-                        .is_some_and(|node| !node.matches_generation(generation));
+                        .is_some_and(|node| event_generation_is_stale(node.generation, generation));
                     if superseded {
                         tracing::debug!(
                             %dataflow,
@@ -2832,7 +2882,16 @@ impl Daemon {
                     // Fresh stderr buffer for the new incarnation; installed
                     // into the map only after the spawn succeeds.
                     let node_stderr = Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX));
-                    let descriptor = dataflow.descriptor.clone();
+                    // Patch the descriptor CLONE handed to the spawner with
+                    // the replacement's definition before it is serialized
+                    // into the child's DORA_NODE_CONFIG — the stored
+                    // descriptor still describes the outgoing incarnation
+                    // at this point (state mutations are deferred until the
+                    // spawn succeeds).
+                    let mut descriptor = dataflow.descriptor.clone();
+                    if let Some(entry) = descriptor.nodes.iter_mut().find(|n| n.id == node_id) {
+                        patch_descriptor_entry(entry, &node);
+                    }
                     let spawner = Spawner {
                         dataflow_id,
                         daemon_tx: self.events_tx.clone(),
@@ -2953,17 +3012,18 @@ impl Daemon {
                         }
                     }
 
-                    // Update the descriptor entry's inputs and outputs to
-                    // the replacement's definition (see the non-reset note
-                    // above for the remaining fields).
+                    // Update the stored descriptor entry to the
+                    // replacement's definition — the same patch applied to
+                    // the spawn-time clone, so later spawns (and restart
+                    // respawns of OTHER nodes) serialize the replacement,
+                    // not the outgoing incarnation.
                     if let Some(entry) = dataflow
                         .descriptor
                         .nodes
                         .iter_mut()
                         .find(|n| n.id == node_id)
                     {
-                        entry.inputs = new_inputs.into_iter().collect();
-                        entry.outputs = new_outputs;
+                        patch_descriptor_entry(entry, &node);
                     }
 
                     running_node.mark_registered();
@@ -7165,6 +7225,7 @@ mod fault_tolerance_tests {
         RunningNode {
             process: None,
             restart_loop_start: None,
+            _listener_shutdown: None,
             generation: 7,
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
@@ -7193,6 +7254,26 @@ mod fault_tolerance_tests {
             health_check_timeout: None,
             finish_grace_secs: None,
         }
+    }
+
+    /// dora-rs/dora#2988 review, finding 1: the Event::Node gate must be
+    /// STRICTLY-older, not exact-match. The restart loop publishes a
+    /// successor's generation before spawning it, so the successor's
+    /// connection can emit its one-shot Subscribe with a generation NEWER
+    /// than the entry — dropping that leaves the incarnation disconnected
+    /// forever.
+    #[test]
+    fn node_event_gate_drops_only_strictly_older_generations() {
+        // Predecessor's connection after a swap advanced the entry: stale.
+        assert!(event_generation_is_stale(8, 7));
+        // The entry's current incarnation: current.
+        assert!(!event_generation_is_stale(8, 8));
+        // Successor racing its own ProcessHandleReplaced: must pass.
+        assert!(
+            !event_generation_is_stale(8, 9),
+            "a successor's early events must not be dropped while the \
+             entry still holds the predecessor's generation"
+        );
     }
 
     #[test]
