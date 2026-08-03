@@ -4467,37 +4467,66 @@ impl Daemon {
                     dataflow_id: dataflow_id.to_string(),
                     id: shared_memory_id.clone(),
                 };
-                let result: Result<(), String> =
-                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
-                        Ok((_meta, touched)) => {
-                            // Send targeted cleanup to every node that
-                            // registered or read this pool — a single
-                            // free_memory_pool call by any node releases
-                            // per-process resources in all relevant nodes.
-                            // The initiator already released synchronously;
-                            // exclude it to avoid redundant work.
-                            if let Some(dataflow) = self.running.get(&dataflow_id) {
-                                let event = NodeEvent::FreeMemoryPool {
-                                    shared_memory_id: shared_memory_id.clone(),
-                                };
-                                for (node, channel) in &dataflow.subscribe_channels {
-                                    if touched.contains(node.as_ref())
-                                        && node.as_ref() != node_id.as_ref()
-                                        && let Err(e) =
-                                            send_with_timestamp(channel, event.clone(), &self.clock)
-                                    {
-                                        tracing::warn!(
-                                            node_id = %node,
-                                            pool = %shared_memory_id,
-                                            "failed to deliver FreeMemoryPool: {e}"
-                                        );
-                                    }
+                let result: Result<(), String> = match self
+                    .memory_pool
+                    .free_memory_pool(&id, node_id.as_ref())
+                {
+                    Ok((_meta, touched)) => {
+                        // Send targeted cleanup to every node that
+                        // registered or read this pool — a single
+                        // free_memory_pool call by any node releases
+                        // per-process resources in all relevant nodes.
+                        // The initiator already released synchronously;
+                        // exclude it to avoid redundant work.
+                        if let Some(dataflow) = self.running.get(&dataflow_id) {
+                            let event = NodeEvent::FreeMemoryPool {
+                                shared_memory_id: shared_memory_id.clone(),
+                            };
+                            for (node, channel) in &dataflow.subscribe_channels {
+                                if touched.contains(node.as_ref())
+                                    && node.as_ref() != node_id.as_ref()
+                                    && let Err(e) =
+                                        send_with_timestamp(channel, event.clone(), &self.clock)
+                                {
+                                    tracing::warn!(
+                                        node_id = %node,
+                                        pool = %shared_memory_id,
+                                        "failed to deliver FreeMemoryPool: {e}"
+                                    );
                                 }
                             }
-                            Ok(())
                         }
-                        Err(e) => Err(e),
-                    };
+                        // Cross-machine: forward the free to the peer
+                        // daemon so it releases the mirrored pool.
+                        if CROSS_POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&shared_memory_id)
+                            .is_some()
+                        {
+                            tracing::info!(
+                                "memory pool: forwarding free of {shared_memory_id} to peer"
+                            );
+                            if let Err(e) = publish_memory_pool_event(
+                                &self.zenoh_session,
+                                &self.clock,
+                                &dataflow_id,
+                                &InterDaemonEvent::FreePool {
+                                    dataflow_id,
+                                    shared_memory_id: shared_memory_id.clone(),
+                                },
+                            )
+                            .await
+                            {
+                                tracing::warn!(
+                                    "memory pool: failed to publish FreePool for {shared_memory_id}: {e}"
+                                );
+                            }
+                        }
+                        Ok(())
+                    }
+                    Err(e) => Err(e),
+                };
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
             DaemonNodeEvent::WriteMemoryPool {
