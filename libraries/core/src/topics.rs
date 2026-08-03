@@ -611,23 +611,50 @@ pub fn zenoh_output_publish_topic(
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
-/// Zenoh key carrying the Arrow IPC **schema** for an output's data topic, as a
-/// `/@schema` sub-key of [`zenoh_output_publish_topic`]. The producer publishes
-/// the schema here (on change) through a zenoh-ext `AdvancedPublisher` whose
-/// cache retains the last sample; a subscriber's `AdvancedSubscriber` history
-/// query fetches it on join, so the data topic only ever carries schema-less
-/// record batches. The `@`-prefixed final chunk keeps it from matching the
-/// concrete data key (no cross-delivery to the data subscriber).
+/// Hex-encode a `DataId` so it occupies exactly one zenoh key chunk.
+///
+/// A `DataId` may legally contain `/` (unlike a `NodeId`), so embedding one
+/// verbatim as a key segment would spill into extra chunks. Hex is unambiguous
+/// (`[0-9a-f]`, never `/`) and collision-free. Same helper previously used for
+/// readiness liveliness keys (#2666).
+#[cfg(feature = "zenoh")]
+fn hex_key_segment(id: &dora_message::id::DataId) -> String {
+    use std::fmt::Write;
+    let s: &str = id.as_ref();
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Zenoh key carrying the Arrow IPC **schema** for an output's data topic.
+///
+/// Layout: `dora/{network}/{dataflow}/schema/{node}/{hex(output_id)}`.
+///
+/// This lives under a dedicated `schema/` plane — **not** under
+/// [`zenoh_output_publish_topic`] — so it cannot collide with a nested DataId
+/// such as `cmd/_schema` (whose data topic would otherwise share a key with
+/// the schema side-channel for `cmd`), and so wildcard subscribers on the
+/// data-topic namespace never see schema traffic.
+///
+/// The output id is [hex-encoded](hex_key_segment) into a single chunk because
+/// DataIds may contain `/`. The key has no `@…` verbatim chunks: zenoh-ext
+/// liveliness tokens are `${remaining:**}/@adv/${entity}/${zid}/${eid}/${meta}`
+/// and Zenoh verbatim chunks are hermetic — `**` cannot cross them — so a key
+/// that introduced `@schema` before `/@adv/…` failed `ke_liveliness::parse`
+/// and flooded WARN logs (#2923). The producer still publishes here through a
+/// zenoh-ext `AdvancedPublisher` (cache + `publisher_detection`); subscribers
+/// recover via `AdvancedSubscriber` history.
 #[cfg(feature = "zenoh")]
 pub fn zenoh_output_schema_topic(
     dataflow_id: uuid::Uuid,
     node_id: &dora_message::id::NodeId,
     output_id: &dora_message::id::DataId,
 ) -> String {
-    format!(
-        "{}/@schema",
-        zenoh_output_publish_topic(dataflow_id, node_id, output_id)
-    )
+    let network_id = "default";
+    let output = hex_key_segment(output_id);
+    format!("dora/{network_id}/{dataflow_id}/schema/{node_id}/{output}")
 }
 
 /// Zenoh key on which consumers acknowledge a producer's startup route-probe
@@ -864,6 +891,55 @@ mod tests {
                 assert_ne!(a, b, "per-output zenoh keys must not overlap");
             }
         }
+    }
+
+    // zenoh-ext publisher-detection liveliness uses
+    // `${remaining:**}/@adv/...`. Verbatim (`@…`) chunks are hermetic, so a
+    // schema key that itself introduced `/@schema` before `/@adv/` made tokens
+    // unparseable and flooded WARN logs (#2923). Keep the schema key free of
+    // `@` chunks (AdvancedPublisher + publisher_detection still used).
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn schema_topic_has_no_verbatim_chunks() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+        let topic = zenoh_output_schema_topic(dataflow_id, &node, &output);
+
+        assert!(
+            topic.contains("/schema/"),
+            "schema side-channel must live under the dedicated `/schema/` plane, got {topic}"
+        );
+        assert!(
+            !topic.contains("/output/"),
+            "schema side-channel must not nest under the data-topic `/output/` path, got {topic}"
+        );
+        for chunk in topic.split('/') {
+            assert!(
+                !chunk.starts_with('@'),
+                "schema topic chunk `{chunk}` must not be verbatim (`@…`); \
+                 otherwise zenoh_ext liveliness tokens fail to parse (#2923)"
+            );
+        }
+    }
+
+    // `/_schema` nested under the output path collided with a valid DataId
+    // `cmd/_schema`. The schema plane must stay outside `output/{node}/{data_id}`.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn schema_topic_does_not_collide_with_nested_data_id() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let parent = DataId::from("cmd");
+        let nested = DataId::from("cmd/_schema");
+        assert_ne!(
+            zenoh_output_schema_topic(dataflow_id, &node, &parent),
+            zenoh_output_publish_topic(dataflow_id, &node, &nested),
+        );
     }
 
     // The ack design relies on exact-key matching instead of wildcards, so an
