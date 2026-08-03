@@ -337,6 +337,7 @@ fn run_hz(
                     }
                 }
                 InterDaemonEvent::OutputClosed { .. } => {}
+                InterDaemonEvent::MemoryPoolWrite { .. } => {}
             }
         }
     });
