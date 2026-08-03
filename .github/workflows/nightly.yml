@@ -1363,15 +1363,18 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    # Windows builds + Python Dynamic Node tests are slower than other
-    # platforms; 60 min is not enough when the runner is under load.
-    # 100 min: on 2026-06-11 (first run with the #2145 wheel cache) Windows
-    # finished all test steps at ~88 min but was killed at 90 during the
-    # post-job rust-cache save. The structural per-step rebuild creep is
-    # fixed (#2143); this covers the remaining fixed cost (23 min CLI build
-    # + 19 min venv setup) plus the cache save. Do not raise further —
-    # investigate per-step times instead (see #2143).
-    timeout-minutes: 100
+    # Windows is the binding platform here. The Python half now lives in
+    # `cli-tests-python`, so what is left is the CLI build (~29 min on
+    # Windows) plus the native template/dynamic/error-event steps
+    # (~14 min) — 60 min leaves room for a loaded runner without the
+    # 100-min budget that this job used to overrun (#2742).
+    #
+    # Do not fold the Python steps back in and do not raise this instead:
+    # the combined job hit the cap in the middle of "Test Python Operator
+    # example" on every nightly from 2026-07-30, which reported as
+    # `cancelled` rather than `failure` and therefore also blocked
+    # `close-issue-on-success` from ever firing.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -1394,7 +1397,12 @@ jobs:
       - name: Build CLI
         timeout-minutes: 45
         shell: bash
-        run: cargo install --path binaries/cli --locked
+        # Installed into the workspace instead of ~/.cargo/bin so it can
+        # be published as an artifact for `cli-tests-python`, which would
+        # otherwise repeat this build — ~29 min of the Windows budget.
+        run: |
+          cargo install --path binaries/cli --locked --root ./dist
+          echo "$PWD/dist/bin" >> "$GITHUB_PATH"
 
       - name: Test Rust template project
         timeout-minutes: 45
@@ -1448,6 +1456,93 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
 
+      - name: Test C template project
+        timeout-minutes: 45
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          dora new test_c_project --lang c --internal-create-with-path-dependencies
+          cd test_c_project
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora run dataflow.yml --stop-after 10s
+
+      - name: Test C++ template project
+        timeout-minutes: 45
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
+          cd test_cxx_project
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora run dataflow.yml --stop-after 10s
+
+      - name: Publish CLI for the Python half
+        uses: actions/upload-artifact@v7
+        with:
+          name: dora-cli-${{ matrix.platform }}
+          path: dist/bin/dora*
+          retention-days: 1
+
+  # The Python half of the CLI tests, split out of `cli-tests` in #2742.
+  #
+  # Combined, the two halves needed ~100 min on Windows — 29 min of CLI
+  # build, 25 min of venv setup and ~40 min of tests — and the job was
+  # killed by its own `timeout-minutes` partway through "Test Python
+  # Operator example" on every nightly from 2026-07-30 onward. That
+  # reported as `cancelled`, which is invisible to `file-issue-on-failure`
+  # (it only lists `failure`) and fatal to `close-issue-on-success` (it
+  # refuses to close on any `cancelled` need), so the nightly issue could
+  # neither name the problem nor ever close.
+  #
+  # Splitting rather than raising the cap keeps each half comfortably
+  # inside its budget, and reusing the CLI artifact means the split costs
+  # no extra build time.
+  cli-tests-python:
+    name: 'CLI Tests: Python (${{ matrix.platform }})'
+    runs-on: ${{ matrix.platform }}
+    needs: cli-tests
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Download CLI built by cli-tests
+        uses: actions/download-artifact@v8
+        with:
+          name: dora-cli-${{ matrix.platform }}
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        shell: bash
+        # upload-artifact does not preserve the executable bit; the chmod
+        # is a harmless no-op on Windows, where the bit is not what makes
+        # dora.exe runnable.
+        run: |
+          chmod +x ./cli-bin/dora* || true
+          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
+          dora --version
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -1595,30 +1690,6 @@ jobs:
         run: |
           dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
           dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
-
-      - name: Test C template project
-        timeout-minutes: 45
-        shell: bash
-        if: runner.os == 'Linux'
-        run: |
-          dora new test_c_project --lang c --internal-create-with-path-dependencies
-          cd test_c_project
-          cmake -B build
-          cmake --build build
-          cmake --install build
-          dora run dataflow.yml --stop-after 10s
-
-      - name: Test C++ template project
-        timeout-minutes: 45
-        shell: bash
-        if: runner.os == 'Linux'
-        run: |
-          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
-          cd test_cxx_project
-          cmake -B build
-          cmake --build build
-          cmake --install build
-          dora run dataflow.yml --stop-after 10s
 
   # Benchmark example on 3 platforms (matches upstream dora bench job).
   # Separate from the criterion regression job below.
@@ -1873,6 +1944,7 @@ jobs:
       - test-cross-platform
       - examples
       - cli-tests
+      - cli-tests-python
       - bench-example
       - cross-check
       - ros2-bridge
@@ -1971,7 +2043,9 @@ jobs:
               examples)
                 echo 'scripts/qa/ci-nightly-jobs.sh examples'
                 ;;
-              cli-tests)
+              cli-tests | cli-tests-python)
+                # The local runner is not split — no per-job time cap
+                # applies there — so it covers both halves.
                 echo 'scripts/qa/ci-nightly-jobs.sh cli-tests'
                 ;;
               bench-example)
@@ -2014,6 +2088,7 @@ jobs:
               test-cross-platform) echo '^Test \(.+\) \[nightly\]$' ;;
               examples) echo '^Examples \(.+\)$' ;;
               cli-tests) echo '^CLI Tests \(.+\)$' ;;
+              cli-tests-python) echo '^CLI Tests: Python \(.+\)$' ;;
               bench-example) echo '^Bench Example \(.+\)$' ;;
               cross-check) echo '^Cross-check \(.+\)$' ;;
               ros2-bridge) echo '^ROS2 Bridge Basic Checks$' ;;
@@ -2294,6 +2369,7 @@ jobs:
       - test-cross-platform
       - examples
       - cli-tests
+      - cli-tests-python
       - bench-example
       - cross-check
       - ros2-bridge
