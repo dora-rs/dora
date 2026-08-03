@@ -132,10 +132,12 @@ node.free_memory_pool → daemon A：释放本地池 + 清 CROSS_POOLS 记录
 
 ## 5. 错误处理
 
-| 场景 | 行为 |
-|---|---|
-| coordinator 找不到 machine / 无 coordinator | **仅 warn，不创建任何池**（本地也不建），register 返回 `None`，调用方检查处理（示例脚本对 None 优雅退出并告警），不崩溃 |
-| B 不可达 / B 建池失败 | **fail loud**（register 返回错误，不静默），**本地池回滚**（不留孤儿） |
+| 场景 | 行为 | 警告内容 |
+|---|---|---|
+| coordinator 找不到 machine / 无 coordinator | 仅 warn，**不创建任何池**（本地也不建），register 返回 `None`，调用方检查处理，不崩溃 | `machine "B" 无法解析：coordinator 无此机器或无 coordinator，未创建跨机内存池` |
+| B 不可达 / B 建池失败 | 仅 warn，**不创建任何池**（若本地池已创建则回滚，最终无池存在），register 返回 `None`，不崩溃 | `machine "B" 已解析但远端建池失败：<原因>，未创建跨机内存池` |
+
+两种失败的**行为完全一致**（警告 + 无池 + 不崩溃），仅**警告内容不同**——前者指"解析不到"，后者指"解析到了但创建失败"，便于诊断区分。
 | write 时池缺失（乱序防御） | 按事件元数据惰性建池 |
 | read 时池缺失（不应发生） | 现有 3600s 窗口重试 |
 | register 后立即 write | 安全（同步注册保证池先存在；惰性建池兜底） |
