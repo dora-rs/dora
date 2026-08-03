@@ -5,6 +5,13 @@ mod redb_store;
 
 pub use in_memory::InMemoryStore;
 
+/// Marker prefix of the error produced by `RedbStore::open` on a schema
+/// version mismatch. The CLI (`dora up`) matches coordinator stderr against
+/// this exact string to decide whether to suggest `--recreate-store`, so any
+/// rewording must update both sites together (covered end-to-end by
+/// `tests/ws-cli-e2e.rs::e2e_up_reports_incompatible_coordinator_store`).
+pub const SCHEMA_MISMATCH_MARKER: &str = "redb schema version mismatch";
+
 /// Maximum allowed length for a param key (bytes).
 pub const MAX_PARAM_KEY_BYTES: usize = 256;
 /// Maximum allowed size for a serialized param value (bytes).

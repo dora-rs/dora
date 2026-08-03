@@ -88,11 +88,12 @@ impl RedbStore {
             match stored {
                 Some(v) if v != SCHEMA_VERSION => {
                     return Err(eyre!(
-                        "redb schema version mismatch: database at `{}` has v{v}, \
+                        "{marker}: database at `{path}` has v{v}, \
                          but this binary expects v{SCHEMA_VERSION}. \
                          Delete the file and restart to create a fresh database, \
                          or use `--store memory` to bypass persistence.",
-                        path.display()
+                        marker = crate::SCHEMA_MISMATCH_MARKER,
+                        path = path.display()
                     ));
                 }
                 Some(_) => {} // version matches

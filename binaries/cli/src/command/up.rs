@@ -55,22 +55,27 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -
         .and_then(|s| s.parse().ok())
         .unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
     let coordinator_addr = (addr, port).into();
+    if recreate_store && !addr.is_loopback() {
+        bail!(
+            "--recreate-store only applies to the local default coordinator store, \
+             but DORA_COORDINATOR_ADDR is set to the non-loopback address {addr}\n\n  \
+             hint: unset DORA_COORDINATOR_ADDR, or run this command on the machine \
+             that hosts the coordinator store"
+        );
+    }
     // Keep the lock through daemon readiness so overlapping recreation commands
     // cannot race either the fresh coordinator or its daemon startup.
     let mut _recreation_lock = None;
     let session = match connect_to_coordinator(coordinator_addr) {
-        Ok(session) => {
-            println!("coordinator already running on {coordinator_addr}");
-            session
-        }
+        Ok(session) => attach_to_running_coordinator(session, coordinator_addr, recreate_store),
         Err(_) if recreate_store => {
             _recreation_lock = Some(lock_default_coordinator_store_recreation()?);
             match connect_to_coordinator(coordinator_addr) {
                 Ok(session) => {
-                    println!("coordinator already running on {coordinator_addr}");
-                    session
+                    attach_to_running_coordinator(session, coordinator_addr, recreate_store)
                 }
-                Err(_) => {
+                Err(err) => {
+                    ensure_no_listener_before_archive(coordinator_addr, err)?;
                     archive_default_coordinator_store()?;
                     start_and_wait_for_coordinator(coordinator_addr, port, auth)?
                 }
@@ -102,9 +107,46 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -
     Ok(())
 }
 
+fn attach_to_running_coordinator(
+    session: crate::ws_client::WsSession,
+    coordinator_addr: SocketAddr,
+    recreate_store: bool,
+) -> crate::ws_client::WsSession {
+    println!("coordinator already running on {coordinator_addr}");
+    if recreate_store {
+        println!(
+            "--recreate-store skipped: the running coordinator holds the store; \
+             run `dora down` first, then rerun `dora up --recreate-store`"
+        );
+    }
+    session
+}
+
+/// A failed WebSocket connect only proves the coordinator is absent when
+/// nothing is listening on the port at all. If a process is listening but the
+/// handshake failed (stale auth token, protocol mismatch), archiving would
+/// rename the store out from under a live coordinator, silently diverting all
+/// further writes into the backup file.
+fn ensure_no_listener_before_archive(
+    coordinator_addr: SocketAddr,
+    connect_err: eyre::Report,
+) -> eyre::Result<()> {
+    if std::net::TcpStream::connect_timeout(&coordinator_addr, Duration::from_secs(1)).is_ok() {
+        return Err(connect_err.wrap_err(format!(
+            "refusing to archive the coordinator store: a process is listening on \
+             {coordinator_addr} but the connection failed\n\n  \
+             hint: resolve the connection error below (e.g. an auth token mismatch), \
+             or stop the coordinator with `dora down` before recreating the store"
+        )));
+    }
+    Ok(())
+}
+
 struct CoordinatorStartup {
     child: std::process::Child,
-    stderr: fs::File,
+    /// `None` when the capture file could not be created; startup proceeds
+    /// without stderr in error reports rather than failing.
+    stderr: Option<fs::File>,
 }
 
 fn start_and_wait_for_coordinator(
@@ -128,13 +170,23 @@ fn wait_for_coordinator_start(
             .try_wait()
             .wrap_err("failed to poll dora-coordinator")?
         {
-            let stderr = captured_stderr(&mut startup.stderr)?;
+            // A concurrent `dora up` may have won the port race, in which case
+            // our child exits with a bind error while a healthy coordinator is
+            // accepting connections. Attach to the winner instead of failing,
+            // keeping `dora up` idempotent under concurrent invocation.
+            if let Ok(session) = connect_to_coordinator(coordinator_addr) {
+                println!("coordinator already running on {coordinator_addr}");
+                return Ok(session);
+            }
+            // Degrades to an empty capture on read failure: the exit status is
+            // the primary diagnostic and must not be lost to capture plumbing.
+            let stderr = captured_stderr(startup.stderr.as_mut());
             let mut message = format!("coordinator exited before it became ready: {status}");
             if !stderr.is_empty() {
                 message.push('\n');
                 message.push_str(&stderr);
             }
-            if stderr.contains("redb schema version mismatch") {
+            if stderr.contains(dora_coordinator::dora_coordinator_store::SCHEMA_MISMATCH_MARKER) {
                 message.push_str(
                     "\n\n  hint: run `dora up --recreate-store` to archive the incompatible \
                      store and create a fresh one",
@@ -149,6 +201,12 @@ fn wait_for_coordinator_start(
                 std::thread::sleep(Duration::from_millis(50));
             }
             Err(err) => {
+                // Don't leave a detached child racing the failure we are about
+                // to report: it could bind the port seconds after the user was
+                // told startup failed (and, with --recreate-store, after the
+                // recreation lock has been released).
+                let _ = startup.child.kill();
+                let _ = startup.child.wait();
                 bail!(
                     "timed out waiting for coordinator to start at {coordinator_addr}: {err}\n\n  \
                      hint: is port {port} already in use? Check with `dora status`\n  \
@@ -159,46 +217,94 @@ fn wait_for_coordinator_start(
     }
 }
 
-fn captured_stderr(file: &mut fs::File) -> eyre::Result<String> {
-    file.rewind()
-        .wrap_err("failed to rewind coordinator stderr capture")?;
+/// Best-effort read of the coordinator stderr capture; empty on any failure.
+fn captured_stderr(file: Option<&mut fs::File>) -> String {
+    let Some(file) = file else {
+        return String::new();
+    };
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)
-        .wrap_err("failed to read coordinator stderr capture")?;
-    Ok(String::from_utf8_lossy(&bytes).trim().to_owned())
+    if file.rewind().is_err() || file.read_to_end(&mut bytes).is_err() {
+        return String::new();
+    }
+    String::from_utf8_lossy(&bytes).trim().to_owned()
 }
+
+/// Open `~/.dora/coordinator-stderr.log` (truncated on each start) to capture
+/// the spawned coordinator's stderr. A named file keeps post-startup panics
+/// inspectable — an unlinked tempfile would be held invisibly by the detached
+/// coordinator for its entire lifetime. Returns `None` (capture disabled)
+/// instead of failing startup when the file cannot be created.
+fn open_coordinator_stderr_capture() -> Option<fs::File> {
+    let dir = super::coordinator::dora_dir();
+    fs::create_dir_all(&dir).ok()?;
+    fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(dir.join("coordinator-stderr.log"))
+        .ok()
+}
+
+#[cfg(not(feature = "redb-backend"))]
+const RECREATE_STORE_REQUIRES_REDB: &str = "--recreate-store requires the `redb-backend` feature";
 
 fn archive_default_coordinator_store() -> eyre::Result<()> {
     #[cfg(feature = "redb-backend")]
     {
         let path = super::coordinator::default_redb_path()?;
-        if !path.exists() {
-            println!(
-                "no coordinator store at `{}`; nothing to archive",
-                path.display()
-            );
-            return Ok(());
-        }
-
-        let backup = available_backup_path(&path)?;
-        fs::rename(&path, &backup).with_context(|| {
-            format!(
-                "failed to archive coordinator store `{}` as `{}`",
-                path.display(),
-                backup.display()
-            )
-        })?;
-        println!(
-            "archived coordinator store `{}` as `{}`",
-            path.display(),
-            backup.display()
-        );
-        Ok(())
+        archive_coordinator_store(&path)
     }
     #[cfg(not(feature = "redb-backend"))]
     {
-        bail!("--recreate-store requires the `redb-backend` feature")
+        bail!(RECREATE_STORE_REQUIRES_REDB)
     }
+}
+
+#[cfg(feature = "redb-backend")]
+fn archive_coordinator_store(path: &Path) -> eyre::Result<()> {
+    use fs2::FileExt as _;
+
+    if !path.exists() {
+        println!(
+            "no coordinator store at `{}`; nothing to archive",
+            path.display()
+        );
+        return Ok(());
+    }
+
+    // redb holds an exclusive OS lock on every open database. Trying that
+    // lock checks the actual invariant — "no live process has this store
+    // open" — which the TCP probe cannot: a coordinator on a non-default
+    // port, or one still in its pre-listen window, holds the file without
+    // answering the default address. Hold the lock across the rename so no
+    // opener can slip in between check and archive.
+    let store_file = fs::File::open(path)
+        .with_context(|| format!("failed to open coordinator store `{}`", path.display()))?;
+    if store_file.try_lock_exclusive().is_err() {
+        bail!(
+            "refusing to archive coordinator store `{}`: another process still \
+             has it open\n\n  \
+             hint: stop the coordinator with `dora down`, then rerun \
+             `dora up --recreate-store`",
+            path.display()
+        );
+    }
+
+    let backup = available_backup_path(path)?;
+    fs::rename(path, &backup).with_context(|| {
+        format!(
+            "failed to archive coordinator store `{}` as `{}`",
+            path.display(),
+            backup.display()
+        )
+    })?;
+    println!(
+        "archived coordinator store `{}` as `{}`",
+        path.display(),
+        backup.display()
+    );
+    Ok(())
 }
 
 fn lock_default_coordinator_store_recreation() -> eyre::Result<fs::File> {
@@ -209,7 +315,7 @@ fn lock_default_coordinator_store_recreation() -> eyre::Result<fs::File> {
     }
     #[cfg(not(feature = "redb-backend"))]
     {
-        bail!("--recreate-store requires the `redb-backend` feature")
+        bail!(RECREATE_STORE_REQUIRES_REDB)
     }
 }
 
@@ -234,12 +340,18 @@ fn lock_coordinator_store_recreation(path: &Path) -> eyre::Result<fs::File> {
                 lock_path.display()
             )
         })?;
-    lock.lock_exclusive().with_context(|| {
-        format!(
-            "failed to lock coordinator store recreation at `{}`",
-            lock_path.display()
-        )
-    })?;
+    // Announce contention before blocking: the holder keeps the lock through
+    // coordinator + daemon startup, so the wait is seconds in the normal case
+    // and would otherwise look like a silent hang.
+    if lock.try_lock_exclusive().is_err() {
+        println!("waiting for another `dora up --recreate-store` to finish...");
+        lock.lock_exclusive().with_context(|| {
+            format!(
+                "failed to lock coordinator store recreation at `{}`",
+                lock_path.display()
+            )
+        })?;
+    }
     Ok(lock)
 }
 
@@ -346,10 +458,12 @@ fn start_coordinator(auth: bool) -> eyre::Result<CoordinatorStartup> {
     if auth {
         cmd.arg("--auth");
     }
-    let stderr = tempfile::tempfile().wrap_err("failed to create coordinator stderr capture")?;
+    let stderr = open_coordinator_stderr_capture();
     let child_stderr = stderr
-        .try_clone()
-        .wrap_err("failed to clone coordinator stderr capture")?;
+        .as_ref()
+        .and_then(|file| file.try_clone().ok())
+        .map(Into::into)
+        .unwrap_or_else(Stdio::null);
     detach_process_with_stderr(&mut cmd, child_stderr);
     let child = cmd.spawn().wrap_err(
         "failed to run `dora coordinator`\n\n  \
@@ -377,11 +491,61 @@ fn start_daemon() -> eyre::Result<()> {
     Ok(())
 }
 
-#[cfg(all(test, feature = "redb-backend"))]
+#[cfg(test)]
+#[cfg(feature = "redb-backend")]
 mod tests {
-    use super::{available_backup_path, lock_coordinator_store_recreation};
+    use super::{
+        archive_coordinator_store, available_backup_path, ensure_no_listener_before_archive,
+        lock_coordinator_store_recreation,
+    };
     use std::sync::mpsc;
     use std::time::Duration;
+
+    #[test]
+    fn archive_refused_while_store_file_is_locked() {
+        use fs2::FileExt as _;
+
+        let dir = tempfile::tempdir().expect("create temporary store directory");
+        let store = dir.path().join("coordinator.redb");
+        std::fs::write(&store, [1u8]).expect("create store file");
+        let holder = std::fs::File::open(&store).expect("open store file");
+        holder
+            .try_lock_exclusive()
+            .expect("lock store file like an open database would");
+
+        let err = archive_coordinator_store(&store)
+            .expect_err("archive must be refused while the store file is locked");
+        assert!(
+            format!("{err:#}").contains("refusing to archive"),
+            "unexpected error: {err:#}"
+        );
+        assert!(store.exists(), "locked store must not be renamed");
+
+        fs2::FileExt::unlock(&holder).expect("release store lock");
+        archive_coordinator_store(&store).expect("archive must succeed once the lock is free");
+        assert!(!store.exists(), "store was not renamed");
+        assert!(
+            dir.path().join("coordinator.redb.backup").exists(),
+            "backup was not created"
+        );
+    }
+
+    #[test]
+    fn recreate_store_archive_refused_while_port_is_listening() {
+        let listener = std::net::TcpListener::bind(("127.0.0.1", 0)).expect("bind listener");
+        let addr = listener.local_addr().expect("listener addr");
+
+        let err = ensure_no_listener_before_archive(addr, eyre::eyre!("handshake failed"))
+            .expect_err("archive must be refused while a listener holds the port");
+        assert!(
+            format!("{err:#}").contains("refusing to archive"),
+            "unexpected error: {err:#}"
+        );
+
+        drop(listener);
+        ensure_no_listener_before_archive(addr, eyre::eyre!("connection refused"))
+            .expect("archive must be allowed when nothing is listening");
+    }
 
     #[test]
     fn coordinator_store_backup_path_skips_existing_backups() {

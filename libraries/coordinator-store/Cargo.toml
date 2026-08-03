@@ -17,7 +17,7 @@ dora-message = { workspace = true }
 bincode = { version = "2.0", features = ["serde"], optional = true }
 eyre = { workspace = true }
 libc = { version = "0.2", optional = true }
-redb = { version = "2", optional = true }
+redb = { workspace = true, optional = true }
 serde = { workspace = true }
 tracing = { workspace = true, optional = true }
 uuid = { workspace = true }

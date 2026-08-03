@@ -1122,11 +1122,41 @@ mod real_dataflow {
             .env("HOME", home)
             .env("USERPROFILE", home)
             .env("DORA_COORDINATOR_PORT", port.to_string())
+            // Complete the isolation: an inherited coordinator address would
+            // make these tests poll a foreign host after mutating the store.
+            .env_remove("DORA_COORDINATOR_ADDR")
+            .env_remove("DORA_COORDINATOR_INTERFACE")
             .stdout(stdout)
             .stderr(stderr)
             .spawn()
             .expect("spawn isolated dora command");
         (child, stdout_path, stderr_path)
+    }
+
+    /// Kills the wrapped `dora` CLI process on drop so assertion failures
+    /// cannot leak children blocked on the recreation lock — once the test's
+    /// lock is released by the panic, such a child would spawn a detached
+    /// coordinator + daemon pointing at the already-deleted temp HOME and
+    /// pollute the rest of the serially-run suite.
+    struct KillOnDrop(Option<std::process::Child>);
+
+    impl KillOnDrop {
+        fn child(&mut self) -> &mut std::process::Child {
+            self.0.as_mut().expect("child already taken")
+        }
+
+        fn into_inner(mut self) -> std::process::Child {
+            self.0.take().expect("child already taken")
+        }
+    }
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
     }
 
     fn wait_for_dora_isolated(
@@ -1201,20 +1231,30 @@ mod real_dataflow {
             "store archive was not announced; stdout:\n{stdout}\nstderr:\n{stderr}"
         );
         let store_dir = home.path().join(".dora");
-        let has_backup = std::fs::read_dir(&store_dir)
-            .expect("read store directory")
-            .filter_map(Result::ok)
-            .any(|entry| {
-                entry
-                    .file_name()
-                    .to_string_lossy()
-                    .starts_with("coordinator.redb.backup")
-            });
-        assert!(has_backup, "incompatible store was not archived");
+        assert!(
+            !backup_files(&store_dir).is_empty(),
+            "incompatible store was not archived"
+        );
         assert!(
             store_dir.join("coordinator.redb").exists(),
             "fresh coordinator store was not created"
         );
+    }
+
+    /// All `coordinator.redb.backup*` files in the store directory (the
+    /// naming scheme of `available_backup_path` in dora-cli).
+    fn backup_files(store_dir: &Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(store_dir)
+            .expect("read store directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("coordinator.redb.backup")
+                })
+            })
+            .collect()
     }
 
     #[test]
@@ -1235,35 +1275,57 @@ mod real_dataflow {
             .expect("open recreation lock");
         lock.lock_exclusive().expect("hold recreation lock");
 
-        let (mut first, first_stdout, first_stderr) = spawn_dora_isolated(
+        let (first, first_stdout, first_stderr) = spawn_dora_isolated(
             &dora,
             home.path(),
             port,
             &["up", "--recreate-store"],
             "first-recreate",
         );
-        let (mut second, second_stdout, second_stderr) = spawn_dora_isolated(
+        let mut first = KillOnDrop(Some(first));
+        let (second, second_stdout, second_stderr) = spawn_dora_isolated(
             &dora,
             home.path(),
             port,
             &["up", "--recreate-store"],
             "second-recreate",
         );
+        let mut second = KillOnDrop(Some(second));
         std::thread::sleep(Duration::from_millis(200));
         assert!(
-            first.try_wait().expect("poll first recreation").is_none(),
+            first
+                .child()
+                .try_wait()
+                .expect("poll first recreation")
+                .is_none(),
             "first recreation ignored the held store lock"
         );
         assert!(
-            second.try_wait().expect("poll second recreation").is_none(),
+            second
+                .child()
+                .try_wait()
+                .expect("poll second recreation")
+                .is_none(),
             "second recreation ignored the held store lock"
+        );
+        // Neither invocation may touch the store before holding the lock; if
+        // the lock acquisition is ever removed from `up()`, these assertions
+        // fail deterministically (the liveness checks above pass either way,
+        // and the final single-backup count is reachable without locking).
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "a recreation archived the store without holding the lock"
+        );
+        assert!(
+            backup_files(&store_dir).is_empty(),
+            "backup created while the external lock was held"
         );
         fs2::FileExt::unlock(&lock).expect("release recreation lock");
 
         let (first_status, first_stdout, first_stderr) =
-            wait_for_dora_isolated(first, first_stdout, first_stderr);
+            wait_for_dora_isolated(first.into_inner(), first_stdout, first_stderr);
         let (second_status, second_stdout, second_stderr) =
-            wait_for_dora_isolated(second, second_stdout, second_stderr);
+            wait_for_dora_isolated(second.into_inner(), second_stdout, second_stderr);
         let (down_status, down_stdout, down_stderr) =
             run_dora_isolated(&dora, home.path(), port, &["down"]);
 
@@ -1280,17 +1342,7 @@ mod real_dataflow {
             "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
         );
 
-        let backups: Vec<_> = std::fs::read_dir(&store_dir)
-            .expect("read store directory")
-            .filter_map(Result::ok)
-            .map(|entry| entry.path())
-            .filter(|path| {
-                path.file_name().is_some_and(|name| {
-                    name.to_string_lossy()
-                        .starts_with("coordinator.redb.backup")
-                })
-            })
-            .collect();
+        let backups = backup_files(&store_dir);
         assert_eq!(
             backups.len(),
             1,
@@ -1310,6 +1362,82 @@ mod real_dataflow {
             archived_version,
             u32::MAX,
             "the original incompatible store backup was overwritten"
+        );
+    }
+
+    #[test]
+    fn e2e_up_recreate_store_skips_archive_when_coordinator_running() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+
+        let (up_status, up_stdout, up_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up"]);
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up", "--recreate-store"]);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            up_status.success(),
+            "initial dora up failed; stdout:\n{up_stdout}\nstderr:\n{up_stderr}"
+        );
+        assert!(
+            status.success(),
+            "recreate against a running coordinator failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+        assert!(
+            stdout.contains("--recreate-store skipped"),
+            "skip notice was not printed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let store_dir = home.path().join(".dora");
+        assert!(
+            backup_files(&store_dir).is_empty(),
+            "live store was archived despite a running coordinator"
+        );
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "live coordinator store went missing"
+        );
+    }
+
+    #[test]
+    fn e2e_up_recreate_store_with_no_existing_store_succeeds() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up", "--recreate-store"]);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            status.success(),
+            "dora up --recreate-store failed on an empty home; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+        assert!(
+            stdout.contains("nothing to archive"),
+            "missing-store notice was not printed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let store_dir = home.path().join(".dora");
+        assert!(
+            backup_files(&store_dir).is_empty(),
+            "backup created although no store existed"
+        );
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "fresh coordinator store was not created"
         );
     }
 
