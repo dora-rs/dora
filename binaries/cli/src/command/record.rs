@@ -92,11 +92,28 @@ fn discover_descriptor_outputs(
     let mut outputs = Vec::new();
     for node in nodes {
         let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if let Some(node_outputs) = node.get("outputs").and_then(|v| v.as_sequence()) {
-            for output in node_outputs {
-                if let Some(output_id) = output.as_str() {
-                    outputs.push((node_id.to_string(), output_id.to_string()));
-                }
+        extend_outputs(&mut outputs, node_id, node.get("outputs"));
+        extend_outputs(
+            &mut outputs,
+            node_id,
+            node.get("custom").and_then(|v| v.get("outputs")),
+        );
+        extend_outputs(
+            &mut outputs,
+            node_id,
+            node.get("operator").and_then(|v| v.get("outputs")),
+        );
+        if let Some(operators) = node.get("operators").and_then(|v| v.as_sequence()) {
+            for operator in operators {
+                let Some(operator_id) = operator.get("id").and_then(|v| v.as_str()) else {
+                    continue;
+                };
+                extend_prefixed_outputs(
+                    &mut outputs,
+                    node_id,
+                    operator_id,
+                    operator.get("outputs"),
+                );
             }
         }
     }
@@ -108,6 +125,35 @@ fn discover_descriptor_outputs(
         );
     }
     Ok(outputs)
+}
+
+fn extend_outputs(
+    outputs: &mut Vec<(String, String)>,
+    node_id: &str,
+    value: Option<&serde_yaml::Value>,
+) {
+    if let Some(node_outputs) = value.and_then(|v| v.as_sequence()) {
+        for output in node_outputs {
+            if let Some(output_id) = output.as_str() {
+                outputs.push((node_id.to_string(), output_id.to_string()));
+            }
+        }
+    }
+}
+
+fn extend_prefixed_outputs(
+    outputs: &mut Vec<(String, String)>,
+    node_id: &str,
+    prefix: &str,
+    value: Option<&serde_yaml::Value>,
+) {
+    if let Some(node_outputs) = value.and_then(|v| v.as_sequence()) {
+        for output in node_outputs {
+            if let Some(output_id) = output.as_str() {
+                outputs.push((node_id.to_string(), format!("{prefix}/{output_id}")));
+            }
+        }
+    }
 }
 
 fn run_record(args: Record) -> eyre::Result<()> {
@@ -521,6 +567,52 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    fn discovered_topics(yaml: &str) -> Vec<String> {
+        let descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
+        discover_descriptor_outputs(&descriptor)
+            .unwrap()
+            .into_iter()
+            .map(|(node, output)| format!("{node}/{output}"))
+            .collect()
+    }
+
+    #[test]
+    fn discovers_recordable_outputs_from_all_descriptor_node_kinds() {
+        let topics = discovered_topics(concat!(
+            "nodes:\n",
+            "- id: standard\n",
+            "  path: ./source\n",
+            "  outputs:\n",
+            "    - status\n",
+            "- id: single\n",
+            "  operator:\n",
+            "    python: single.py\n",
+            "    outputs:\n",
+            "      - image\n",
+            "- id: legacy\n",
+            "  custom:\n",
+            "    source: legacy.py\n",
+            "    outputs:\n",
+            "      - buffer\n",
+            "- id: runtime\n",
+            "  operators:\n",
+            "  - id: op\n",
+            "    python: runtime.py\n",
+            "    outputs:\n",
+            "      - status\n",
+        ));
+
+        assert_eq!(
+            topics,
+            vec![
+                "standard/status",
+                "single/image",
+                "legacy/buffer",
+                "runtime/op/status",
+            ]
+        );
     }
 
     #[test]

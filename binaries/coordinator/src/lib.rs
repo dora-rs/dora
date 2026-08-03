@@ -25,7 +25,8 @@ use dora_message::{
         DaemonCoordinatorEvent, RegisterResult, StateCatchUpOperation, Timestamped,
     },
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
-    id::NodeId,
+    descriptor::{CoreNodeKind, RuntimeNode},
+    id::{DataId, NodeId},
 };
 pub use events::{DaemonRequest, DataflowEvent, Event};
 use eyre::{ContextCompat, Result, WrapErr, bail, eyre};
@@ -2837,19 +2838,17 @@ fn topic_outputs_by_daemon(
         .get(&dataflow_id)
         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
 
+    let resolved_nodes = dataflow.descriptor.resolve_aliases_and_set_defaults()?;
+
     let mut outputs_by_daemon: BTreeMap<
         DaemonId,
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     > = BTreeMap::new();
     for (node_id, data_id) in topics {
-        let output_exists = dataflow
-            .descriptor
-            .nodes
-            .iter()
-            .any(|node| node.id == *node_id && node.outputs.contains(data_id));
-        if !output_exists {
+        let Some(node) = resolved_nodes.get(node_id) else {
             eyre::bail!("no output `{node_id}/{data_id}` in dataflow `{dataflow_id}`");
-        }
+        };
+        let resolved_data_id = resolved_topic_output_id(&node.kind, data_id)?;
         let daemon_id = dataflow
             .node_to_daemon
             .get(node_id)
@@ -2857,10 +2856,50 @@ fn topic_outputs_by_daemon(
         outputs_by_daemon
             .entry(daemon_id.clone())
             .or_default()
-            .push((node_id.clone(), data_id.clone()));
+            .push((node_id.clone(), resolved_data_id));
     }
 
     Ok(outputs_by_daemon)
+}
+
+fn resolved_topic_output_id(kind: &CoreNodeKind, data_id: &DataId) -> eyre::Result<DataId> {
+    if resolved_node_outputs(kind).contains(data_id) {
+        return Ok(data_id.clone());
+    }
+
+    match kind {
+        CoreNodeKind::Custom(_) => eyre::bail!("unknown output `{data_id}` for custom node"),
+        CoreNodeKind::Runtime(node) if node.operators.len() == 1 => {
+            let operator = &node.operators[0];
+            if operator.config.outputs.contains(data_id) {
+                return format!("{}/{}", operator.id, data_id)
+                    .parse::<DataId>()
+                    .map_err(|e| eyre::eyre!("failed to resolve topic output id: {e}"));
+            }
+            eyre::bail!("unknown output `{data_id}` for runtime node")
+        }
+        CoreNodeKind::Runtime(_) => eyre::bail!("unknown output `{data_id}` for runtime node"),
+    }
+}
+
+fn resolved_node_outputs(kind: &CoreNodeKind) -> BTreeSet<DataId> {
+    match kind {
+        CoreNodeKind::Custom(node) => node.run_config.outputs.clone(),
+        CoreNodeKind::Runtime(node) => runtime_node_outputs(node),
+    }
+}
+
+fn runtime_node_outputs(node: &RuntimeNode) -> BTreeSet<DataId> {
+    node.operators
+        .iter()
+        .flat_map(|operator| {
+            operator
+                .config
+                .outputs
+                .iter()
+                .map(|output_id| DataId::from(format!("{}/{output_id}", operator.id)))
+        })
+        .collect()
 }
 
 /// Handle the success arm of `Event::DataflowSpawnResult`.
@@ -4765,6 +4804,69 @@ mod tests {
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
         }
+    }
+
+    #[test]
+    fn topic_outputs_by_daemon_normalizes_single_operator_outputs() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+            "nodes": [
+                {
+                    "id": "single",
+                    "operator": {
+                        "python": "single.py",
+                        "outputs": ["image"],
+                    },
+                },
+                {
+                    "id": "legacy",
+                    "custom": {
+                        "path": "legacy.py",
+                        "source": "Local",
+                        "outputs": ["buffer"],
+                    },
+                },
+                {
+                    "id": "runtime",
+                    "operators": [{
+                        "id": "op",
+                        "python": "runtime.py",
+                        "outputs": ["status"],
+                    }],
+                },
+            ],
+        }))
+        .expect("valid test descriptor");
+        let single_node: dora_core::config::NodeId = "single".to_string().into();
+        let legacy_node: dora_core::config::NodeId = "legacy".to_string().into();
+        let runtime_node: dora_core::config::NodeId = "runtime".to_string().into();
+        let mut dataflow =
+            test_running_dataflow(dataflow_id, daemon_id.clone(), single_node.clone());
+        dataflow.descriptor = descriptor;
+        dataflow
+            .node_to_daemon
+            .insert(legacy_node.clone(), daemon_id.clone());
+        dataflow
+            .node_to_daemon
+            .insert(runtime_node.clone(), daemon_id.clone());
+
+        let topics = vec![
+            (single_node, "image".to_string().into()),
+            (legacy_node, "buffer".to_string().into()),
+            (runtime_node, "op/status".to_string().into()),
+        ];
+        let expected_topics = vec![
+            ("single".to_string().into(), "op/image".to_string().into()),
+            ("legacy".to_string().into(), "buffer".to_string().into()),
+            ("runtime".to_string().into(), "op/status".to_string().into()),
+        ];
+        let running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+        let outputs = topic_outputs_by_daemon(&running_dataflows, dataflow_id, &topics)
+            .expect("nested outputs should resolve to their daemon");
+
+        assert_eq!(outputs[&daemon_id], expected_topics);
     }
 
     #[test]
