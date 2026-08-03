@@ -87,7 +87,8 @@ struct CrossPoolInfo {
 node.register_memory_pool(tensor_info, "cpu", machine="B")
   → daemon A（请求带 machine="B"）
   → coordinator.ResolveMachine{"B"}
-     ├─ 未找到/无 coordinator → warn + no-op（node 得到"未创建"结果，不崩溃）
+     ├─ 未找到/无 coordinator → warn + 整个 register 无操作（本地也不建池），
+     │    register 返回 None，调用方检查处理，不崩溃
      └─ 找到 →
          daemon A 发布 RegisterPool 事件（zenoh，带目标 machine_id + 池元数据）
          → daemon B（machine_id 匹配者执行）→ 按元数据创建 CPU DORADMA 池
@@ -133,7 +134,7 @@ node.free_memory_pool → daemon A：释放本地池 + 清 CROSS_POOLS 记录
 
 | 场景 | 行为 |
 |---|---|
-| coordinator 找不到 machine / 无 coordinator | **本地池照常创建**（sender 本机可用），仅跳过远端创建并 warn，不崩溃 |
+| coordinator 找不到 machine / 无 coordinator | **仅 warn，不创建任何池**（本地也不建），register 返回 `None`，调用方检查处理（示例脚本对 None 优雅退出并告警），不崩溃 |
 | B 不可达 / B 建池失败 | **fail loud**（register 返回错误，不静默），**本地池回滚**（不留孤儿） |
 | write 时池缺失（乱序防御） | 按事件元数据惰性建池 |
 | read 时池缺失（不应发生） | 现有 3600s 窗口重试 |
