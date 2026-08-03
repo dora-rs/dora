@@ -346,8 +346,33 @@ dora down [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--force` | false | Tear down even if the coordinator has running dataflows, terminating them immediately first (a plain teardown does not wait for a stop to take effect, so a wedged node would be orphaned) |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
+
+> **This is machine-wide, not project-wide.** `dora down` has no notion of
+> "your" dataflow or checkout: it connects to whatever coordinator owns the
+> port and destroys it, along with its daemons and every dataflow running on
+> it. Two checkouts on one machine share `127.0.0.1:6013` by default, so a
+> `dora down` in one silently kills the other's work — indistinguishable from
+> a coordinator crash on the victim's side.
+>
+> Since [#2924] the command refuses when the target reports running
+> dataflows, listing them. `--force` proceeds, stopping each dataflow
+> first so nothing is left orphaned — including nodes that ignore a
+> cooperative stop.
+>
+> **To run instances side by side, give each its own port** — that is the
+> isolation mechanism, and every lifecycle command (`up`, `down`, `start`,
+> `stop`, `list`, `logs`) follows it:
+>
+> ```bash
+> DORA_COORDINATOR_PORT=6113 dora up
+> DORA_COORDINATOR_PORT=6113 dora start flow.yml
+> DORA_COORDINATOR_PORT=6113 dora down     # touches only this instance
+> ```
+
+[#2924]: https://github.com/dora-rs/dora/issues/2924
 
 #### `dora build`
 
@@ -1260,7 +1285,7 @@ All environment variables serve as fallbacks. CLI flags always take precedence.
 | Variable | Default | Commands | Description |
 |----------|---------|----------|-------------|
 | `DORA_COORDINATOR_ADDR` | `127.0.0.1` | All coordinator commands | Coordinator IP address |
-| `DORA_COORDINATOR_PORT` | `6013` | All coordinator commands | Coordinator WebSocket port |
+| `DORA_COORDINATOR_PORT` | `6013` | All coordinator commands | Coordinator WebSocket port. **This is how you isolate concurrent dora instances on one machine** — commands act on whichever coordinator owns the port, so two checkouts sharing the default will `down`/`stop` each other's dataflows |
 | `DORA_LOG_LEVEL` | `stdout` | `run`, `logs` | Default minimum log level |
 | `DORA_LOG_FORMAT` | `pretty` | `run`, `logs` | Default output format |
 | `DORA_LOG_FILTER` | | `run`, `logs` | Default per-node level overrides |
