@@ -45,10 +45,16 @@ for i in range(MESSAGE_COUNT):
             tensor_info, RECEIVER_DEVICE, machine=os.getenv("cross_machine")
         )
         if memory_pool_id is None:
-            print(
-                "Cross-machine register failed (warned, no pool created) — exiting",
-                flush=True,
-            )
+            if os.getenv("cross_machine"):
+                print(
+                    "Cross-machine register failed (warned, no pool created) — exiting",
+                    flush=True,
+                )
+            else:
+                print(
+                    "Memory pool registration failed (warned, no pool created) — exiting",
+                    flush=True,
+                )
             sys.exit(1)
         # Cross-machine: the register's proxy push can be lost while the
         # remote daemon's subscription is still replicating (observed as

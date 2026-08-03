@@ -51,9 +51,11 @@ for i in range(MESSAGE_COUNT):
         # count window burns through before the next frame lands; on a WAN
         # each read is slow, so a count window is the right bound there.
         # 300s covers the 20s pacing + handshake on the fast path and caps
-        # WAN waits at ~5 minutes.
-        deadline = time.time() + 300
-        while time.time() < deadline:
+        # WAN waits at ~5 minutes. Monotonic clock: an NTP step-back in the
+        # window would otherwise shrink (or stretch) the wall-clock retry
+        # window.
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
             tensor_info = node.read_memory_pool(memory_pool_id)
             torch_tensor = tensor_from_info(tensor_info)
             if int(torch_tensor[0].item()) == i:

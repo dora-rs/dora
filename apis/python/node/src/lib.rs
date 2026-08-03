@@ -3845,11 +3845,11 @@ impl Node {
         let mut shmem = None;
         for name in &names {
             if let Ok(s) = ShmemConf::new().os_id(name).open() {
-                shmem = Some((s, name.clone()));
+                shmem = Some(s);
                 break;
             }
         }
-        let Some((shmem, _shmem_name)) = shmem else {
+        let Some(shmem) = shmem else {
             return Ok(None);
         };
 

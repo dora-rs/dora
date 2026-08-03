@@ -284,19 +284,13 @@ fn create_cross_pool_shmem(
     dtype: &str,
     shape: &[i64],
 ) -> eyre::Result<()> {
-    let (node_id, counter) = shared_memory_id
-        .strip_prefix("pool_")
-        .and_then(|s| s.rsplit_once('_'))
-        .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
     // Machine-qualified OS id: the mirror lives on the target machine's
     // /dev/shm, which on a dual-daemon test host is the SAME namespace as
     // the sender's local pool. An unqualified id would collide with the
     // sender's local segment (create fails with EEXIST) whenever both
     // daemons run on one host.
-    let shmem_name = format!(
-        "dora_pool_{machine_id}_{}_{}_{}",
-        dataflow_id, node_id, counter
-    );
+    let shmem_name = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id)
+        .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
     let json = format!(
         "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"cpu\"}}",
         shape
@@ -336,21 +330,11 @@ fn write_cross_pool_data(
     tensor_data: &[u8],
     size: usize,
 ) {
-    let (node_id, counter) = match shared_memory_id
-        .strip_prefix("pool_")
-        .and_then(|s| s.rsplit_once('_'))
-    {
-        Some(v) => v,
-        None => {
-            tracing::warn!("memory pool: invalid pool id {shared_memory_id}, dropping frame");
-            return;
-        }
-    };
     // Must match the machine-qualified id used by `create_cross_pool_shmem`.
-    let shmem_name = format!(
-        "dora_pool_{machine_id}_{}_{}_{}",
-        dataflow_id, node_id, counter
-    );
+    let Some(shmem_name) = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id) else {
+        tracing::warn!("memory pool: invalid pool id {shared_memory_id}, dropping frame");
+        return;
+    };
     let Ok(shmem) = ShmemConf::new().os_id(&shmem_name).open() else {
         tracing::warn!(
             "memory pool: pool {shared_memory_id} missing at write \
@@ -380,6 +364,25 @@ fn write_cross_pool_data(
         std::ptr::copy_nonoverlapping(tensor_data.as_ptr(), shmem_ptr.add(data_offset), copy_len);
         seqlock_end(gen_ptr, pre, true);
     }
+}
+
+/// Machine-qualified OS id of a cross-machine pool mirror:
+/// `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}`, derived
+/// from a `pool_{node_id}_{counter}` shaped `shared_memory_id`. Returns
+/// `None` when the id does not match that shape. Single source of truth
+/// for the qualified name — create, write, and the free paths must agree
+/// or a mirror leaks under a name nobody unlinks.
+fn cross_pool_shmem_name(
+    machine_id: &str,
+    dataflow_id: &Uuid,
+    shared_memory_id: &str,
+) -> Option<String> {
+    let (node_id, counter) = shared_memory_id
+        .strip_prefix("pool_")
+        .and_then(|s| s.rsplit_once('_'))?;
+    Some(format!(
+        "dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}"
+    ))
 }
 
 /// Remove a mirrored cross-machine pool's shmem segment. Linux keeps
@@ -448,6 +451,40 @@ async fn publish_memory_pool_event(
         .await
         .map_err(|e| eyre!("memory pool: publish to {topic} failed: {e}"))?;
     Ok(())
+}
+
+/// Release a cross-machine pool from the freeing daemon: unlink this
+/// machine's mirror (self-machine-qualified name; on the origin daemon
+/// the unlink is a harmless NotFound no-op) and publish `FreePool` so
+/// the peer drops its tracking entry. The publish is Remote-only — the
+/// initiator never receives its own echo, so it must unlink its own
+/// mirror here. The caller has already removed the CROSS_POOLS entry.
+async fn release_cross_pool(
+    session: &zenoh::Session,
+    clock: &Arc<HLC>,
+    dataflow_id: &Uuid,
+    machine_id: &str,
+    shared_memory_id: &str,
+) {
+    let Some(shmem_name) = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id) else {
+        tracing::warn!("memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror");
+        return;
+    };
+    remove_cross_pool_shmem(&shmem_name);
+    tracing::info!("memory pool: forwarding free of {shared_memory_id} to peer");
+    if let Err(e) = publish_memory_pool_event(
+        session,
+        clock,
+        dataflow_id,
+        &InterDaemonEvent::FreePool {
+            dataflow_id: *dataflow_id,
+            shared_memory_id: shared_memory_id.to_string(),
+        },
+    )
+    .await
+    {
+        tracing::warn!("memory pool: failed to publish FreePool for {shared_memory_id}: {e}");
+    }
 }
 
 /// Pending synchronous register confirmations: pool id -> ack channel.
@@ -3358,23 +3395,17 @@ impl Daemon {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&shared_memory_id);
-                let Some((node_id, counter)) = shared_memory_id
-                    .strip_prefix("pool_")
-                    .and_then(|s| s.rsplit_once('_'))
-                else {
+                // Same machine-qualified id as `create_cross_pool_shmem`.
+                let Some(shmem_name) = cross_pool_shmem_name(
+                    self.machine_id.as_deref().unwrap_or_default(),
+                    &dataflow_id,
+                    &shared_memory_id,
+                ) else {
                     tracing::warn!(
                         "memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror"
                     );
                     return Ok(());
                 };
-                // Same machine-qualified id as `create_cross_pool_shmem`.
-                let shmem_name = format!(
-                    "dora_pool_{}_{}_{}_{}",
-                    self.machine_id.as_deref().unwrap_or_default(),
-                    dataflow_id,
-                    node_id,
-                    counter
-                );
                 remove_cross_pool_shmem(&shmem_name);
                 tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 Ok(())
@@ -4482,6 +4513,30 @@ impl Daemon {
                         ))
                     })();
 
+                    // Same family as FreePinnedMemory: cross-machine
+                    // mirrors never enter the MemoryPoolManager table
+                    // (RegisterPool writes CROSS_POOLS only), so a
+                    // free=true read table-misses on the mirror daemon
+                    // and — on the origin daemon — never releases the
+                    // mirror. Either way the cross-machine cleanup must
+                    // not be gated on the table result.
+                    let was_cross = free
+                        && CROSS_POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&shared_memory_id)
+                            .is_some();
+                    if was_cross {
+                        release_cross_pool(
+                            &self.zenoh_session,
+                            &self.clock,
+                            &dataflow_id,
+                            self.machine_id.as_deref().unwrap_or_default(),
+                            &shared_memory_id,
+                        )
+                        .await;
+                    }
+
                     match result {
                         Ok(metadata) => {
                             let _ =
@@ -4501,10 +4556,28 @@ impl Daemon {
                     dataflow_id: dataflow_id.to_string(),
                     id: shared_memory_id.clone(),
                 };
-                let result: Result<(), String> = match self
-                    .memory_pool
-                    .free_memory_pool(&id, node_id.as_ref())
-                {
+                let table_result = self.memory_pool.free_memory_pool(&id, node_id.as_ref());
+                // Cross-machine mirrors never enter the MemoryPoolManager
+                // table (RegisterPool writes CROSS_POOLS only), so the
+                // table result must not gate the cross-machine cleanup —
+                // a table miss on the mirror daemon still has to unlink
+                // the /dev/shm mirror and notify the peer.
+                let was_cross = CROSS_POOLS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&shared_memory_id)
+                    .is_some();
+                if was_cross {
+                    release_cross_pool(
+                        &self.zenoh_session,
+                        &self.clock,
+                        &dataflow_id,
+                        self.machine_id.as_deref().unwrap_or_default(),
+                        &shared_memory_id,
+                    )
+                    .await;
+                }
+                let result: Result<(), String> = match table_result {
                     Ok((_meta, touched)) => {
                         // Send targeted cleanup to every node that
                         // registered or read this pool — a single
@@ -4530,33 +4603,12 @@ impl Daemon {
                                 }
                             }
                         }
-                        // Cross-machine: forward the free to the peer
-                        // daemon so it releases the mirrored pool.
-                        if CROSS_POOLS
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&shared_memory_id)
-                            .is_some()
-                        {
-                            tracing::info!(
-                                "memory pool: forwarding free of {shared_memory_id} to peer"
-                            );
-                            if let Err(e) = publish_memory_pool_event(
-                                &self.zenoh_session,
-                                &self.clock,
-                                &dataflow_id,
-                                &InterDaemonEvent::FreePool {
-                                    dataflow_id,
-                                    shared_memory_id: shared_memory_id.clone(),
-                                },
-                            )
-                            .await
-                            {
-                                tracing::warn!(
-                                    "memory pool: failed to publish FreePool for {shared_memory_id}: {e}"
-                                );
-                            }
-                        }
+                        Ok(())
+                    }
+                    Err(_) if was_cross => {
+                        // The cross-machine free completed above (mirror
+                        // unlinked, FreePool published); the table miss is
+                        // expected on the mirror daemon — not an error.
                         Ok(())
                     }
                     Err(e) => Err(e),
