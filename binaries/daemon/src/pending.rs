@@ -142,7 +142,7 @@ impl PendingNodes {
         clock: &HLC,
         cascading_errors: &mut CascadingErrorCauses,
         logger: &mut DataflowLogger<'_>,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.remove(node_id) {
             logger
                 .log(
@@ -153,10 +153,19 @@ impl PendingNodes {
                 )
                 .await;
             self.exited_before_subscribe.push(node_id.clone());
-            self.update_dataflow_status(coordinator_sender, clock, cascading_errors, logger)
-                .await?;
+            // Return the barrier status so the caller can drive the same
+            // start-or-teardown transition that `Subscribe` and `RemoveNode`
+            // do. A death can complete the barrier just as a subscribe can;
+            // dropping the status here left a non-cohort survivor (answered
+            // `Ok(())` since #2933) parked on a dataflow that never starts
+            // and never tears down (#2967).
+            return self
+                .update_dataflow_status(coordinator_sender, clock, cascading_errors, logger)
+                .await;
         }
-        Ok(())
+        // The dying node was not a pending cohort member (it had already
+        // subscribed), so the barrier state is unchanged.
+        Ok(DataflowStatus::Pending)
     }
 
     pub async fn handle_dataflow_stop(
@@ -603,6 +612,70 @@ mod tests {
             reply_of(&mut rx),
             Ok(()),
             "the parked non-cohort node inherited a cohort member's death"
+        );
+    }
+
+    /// #2967: when a death is the *final* transition that completes the
+    /// startup barrier, `handle_node_stop` must report `AllNodesReady` — the
+    /// signal the daemon acts on to call `dataflow.start()`. Dropping it left
+    /// a non-cohort survivor parked on a dataflow that never started.
+    #[tokio::test]
+    async fn death_completing_the_barrier_reports_all_nodes_ready() {
+        let (last, survivor) = (node("last"), node("survivor"));
+        let mut p = pending();
+        // `last` is the only cohort member still pending; `survivor` joined
+        // later (not enrolled) and is parked waiting to run.
+        p.insert(last.clone());
+        let mut rx = park(&mut p, &survivor);
+
+        let mut daemon_logger = test_logger();
+        let status = p
+            .handle_node_stop(
+                &last,
+                &mut None,
+                &HLC::default(),
+                &mut CascadingErrorCauses::default(),
+                &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+            )
+            .await
+            .expect("stop should succeed");
+
+        assert!(
+            matches!(status, DataflowStatus::AllNodesReady),
+            "a death that empties the cohort must report the barrier ready so \
+             the dataflow can start"
+        );
+        assert_eq!(
+            reply_of(&mut rx),
+            Ok(()),
+            "the non-cohort survivor should be released, not stranded"
+        );
+    }
+
+    /// A death that does *not* complete the barrier (other members still
+    /// pending) leaves it `Pending`, so the daemon does not start early.
+    #[tokio::test]
+    async fn death_leaving_the_barrier_incomplete_stays_pending() {
+        let (dead, still_pending) = (node("dead"), node("still-pending"));
+        let mut p = pending();
+        p.insert(dead.clone());
+        p.insert(still_pending.clone());
+
+        let mut daemon_logger = test_logger();
+        let status = p
+            .handle_node_stop(
+                &dead,
+                &mut None,
+                &HLC::default(),
+                &mut CascadingErrorCauses::default(),
+                &mut daemon_logger.for_dataflow(uuid::Uuid::nil()),
+            )
+            .await
+            .expect("stop should succeed");
+
+        assert!(
+            matches!(status, DataflowStatus::Pending),
+            "the barrier must stay pending while a cohort member has not resolved"
         );
     }
 
