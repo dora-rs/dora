@@ -196,6 +196,9 @@ fn info(
                         }
                         InterDaemonEvent::OutputClosed { .. } => break,
                         InterDaemonEvent::MemoryPoolWrite { .. } => {}
+                        InterDaemonEvent::RegisterPool { .. }
+                        | InterDaemonEvent::RegisterPoolAck { .. }
+                        | InterDaemonEvent::FreePool { .. } => {}
                     }
                 }
                 Ok(Err(_)) => continue,

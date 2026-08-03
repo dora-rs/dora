@@ -2970,6 +2970,12 @@ impl Daemon {
                     .insert(shared_memory_id, (tensor_data, size, device, dtype, shape));
                 Ok(())
             }
+            InterDaemonEvent::RegisterPool { .. }
+            | InterDaemonEvent::RegisterPoolAck { .. }
+            | InterDaemonEvent::FreePool { .. } => {
+                tracing::warn!("memory pool: cross-machine register/ack/free not yet implemented");
+                Ok(())
+            }
         }
     }
 
@@ -4187,41 +4193,37 @@ impl Daemon {
                         }
                     };
                     let payload_len = serialized.len();
-                            let declared = std::time::Instant::now();
-                            match session
-                                .declare_publisher(topic.clone())
-                                // Block (not Drop): a dropped publish silently
-                                // strands remote readers with a never-ready
-                                // proxy pool — observed when the inter-daemon
-                                // link hiccups mid-transfer on a WAN.
-                                .congestion_control(CongestionControl::Block)
-                                .await
-                            {
-                                Ok(publisher) => {
-                                    tracing::info!(
-                                        "memory pool: declared {topic} in {:?}, starting put \
+                    let declared = std::time::Instant::now();
+                    match session
+                        .declare_publisher(topic.clone())
+                        // Block (not Drop): a dropped publish silently
+                        // strands remote readers with a never-ready
+                        // proxy pool — observed when the inter-daemon
+                        // link hiccups mid-transfer on a WAN.
+                        .congestion_control(CongestionControl::Block)
+                        .await
+                    {
+                        Ok(publisher) => {
+                            tracing::info!(
+                                "memory pool: declared {topic} in {:?}, starting put \
                                          ({payload_len} bytes)",
-                                        declared.elapsed()
-                                    );
-                                    let started = std::time::Instant::now();
-                                    if let Err(e) = publisher.put(serialized).await {
-                                        tracing::error!(
-                                            "memory pool publish to {topic} failed: {e}"
-                                        );
-                                    } else {
-                                        tracing::info!(
-                                            "memory pool: put to {topic} completed in {:?}",
-                                            started.elapsed()
-                                        );
-                                    }
-                                }
-                                Err(e) => {
-                                    tracing::error!(
-                                        "memory pool declare_publisher({topic}) failed: {e}"
-                                    );
-                                }
+                                declared.elapsed()
+                            );
+                            let started = std::time::Instant::now();
+                            if let Err(e) = publisher.put(serialized).await {
+                                tracing::error!("memory pool publish to {topic} failed: {e}");
+                            } else {
+                                tracing::info!(
+                                    "memory pool: put to {topic} completed in {:?}",
+                                    started.elapsed()
+                                );
                             }
-                        });
+                        }
+                        Err(e) => {
+                            tracing::error!("memory pool declare_publisher({topic}) failed: {e}");
+                        }
+                    }
+                });
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }

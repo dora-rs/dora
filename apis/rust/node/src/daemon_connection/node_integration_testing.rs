@@ -136,6 +136,11 @@ impl IntegrationTestingEvents {
             | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. }
             | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
+            DaemonRequest::RegisterCrossMachinePool { .. } => {
+                eyre::bail!(
+                    "cross-machine pool registration is not supported in integration-testing mode"
+                )
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }

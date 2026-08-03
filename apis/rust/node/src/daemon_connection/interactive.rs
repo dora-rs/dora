@@ -83,6 +83,9 @@ impl InteractiveEvents {
             | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. }
             | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
+            DaemonRequest::RegisterCrossMachinePool { .. } => {
+                eyre::bail!("cross-machine pool registration is not supported in interactive mode")
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }

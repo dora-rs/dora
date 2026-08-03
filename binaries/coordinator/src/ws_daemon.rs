@@ -6,7 +6,8 @@ use axum::extract::ws::{Message, WebSocket};
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    coordinator_to_daemon::ResolveMachineReply,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
     ws_protocol::WsResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -206,6 +207,29 @@ async fn handle_daemon_request(
             } else {
                 true
             }
+        }
+        CoordinatorRequest::ResolveMachine { machine_id } => {
+            tracing::warn!("ResolveMachine({machine_id}) not yet implemented");
+            // Stub reply over the same WS envelope the Register flow uses
+            // (`{"id", "method": "daemon_event", "params": <Timestamped<...>>}`),
+            // mirroring `DaemonConnection::send`.
+            let reply = Timestamped {
+                inner: ResolveMachineReply::ResolveMachineResult { found: false },
+                timestamp: clock.new_timestamp(),
+            };
+            let params = match serde_json::to_string(&reply) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::warn!("failed to serialize ResolveMachine reply: {err}");
+                    return true;
+                }
+            };
+            let id = Uuid::new_v4();
+            let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params}}}"#);
+            if cmd_tx.send(json).await.is_err() {
+                return false;
+            }
+            true
         }
     }
 }

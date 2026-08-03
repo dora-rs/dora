@@ -103,6 +103,9 @@ fn main() -> eyre::Result<()> {
                 // Internal cross-machine memory-pool bookkeeping; nothing to
                 // replay.
                 InterDaemonEvent::MemoryPoolWrite { .. } => {}
+                InterDaemonEvent::RegisterPool { .. }
+                | InterDaemonEvent::RegisterPoolAck { .. }
+                | InterDaemonEvent::FreePool { .. } => {}
             }
         }
 

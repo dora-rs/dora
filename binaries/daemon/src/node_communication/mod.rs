@@ -232,6 +232,13 @@ impl Listener {
                     .await
                     .wrap_err("failed to send register reply")?;
             }
+            DaemonRequest::RegisterCrossMachinePool { .. } => {
+                let reply =
+                    DaemonReply::Result(Err("cross-machine register not yet implemented".into()));
+                self.send_reply(reply, connection)
+                    .await
+                    .wrap_err("failed to send register reply")?;
+            }
             DaemonRequest::NodeConfig { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected node config message".into()));
                 self.send_reply(reply, connection)
