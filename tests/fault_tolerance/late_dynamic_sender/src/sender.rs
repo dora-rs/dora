@@ -12,8 +12,10 @@
 //! longer knows about. That is the same event the daemon sees when a
 //! node's queued outputs outlive its exit — the nightly `smoke-suite`
 //! failure in dora-rs/dora#2742 — but reached structurally instead of
-//! by winning a race: the `late-dynamic-anchor` companion exits on send
-//! #0, so every later send is a post-finish one.
+//! by winning a race: the companion `emit-then-exit-source-node` is
+//! wired to this node's `late` output and exits on receiving it, so
+//! send #0 finishes the dataflow and every later send is a post-finish
+//! one. No sleeps to tune.
 //!
 //! Sends are deliberately unchecked: `DaemonRequest::SendMessage`
 //! expects no reply, so a node cannot observe the daemon's verdict. The
@@ -28,9 +30,9 @@ use dora_node_api::{
 };
 use eyre::Context;
 
-/// The anchor exits on send #0, so every later send is a post-finish
-/// one. A handful of them keeps the window open long enough for the
-/// daemon to have processed the finish even on a loaded CI runner.
+/// Only send #1 needs to land after the finish; the rest are margin for
+/// a loaded CI runner, and the test kills this process as soon as it has
+/// seen what it needs.
 const SENDS: u32 = 20;
 const SEND_INTERVAL: Duration = Duration::from_millis(250);
 

@@ -40,9 +40,10 @@ fn ensure_built() {
                 "dora-cli",
                 "-p",
                 "reconnect-survivor-node",
-                // Two bins: `late-dynamic-anchor` + `late-dynamic-sender`.
                 "-p",
                 "late-dynamic-sender",
+                "-p",
+                "emit-then-exit-source-node",
             ])
             .status()
             .expect("failed to run cargo build");
@@ -175,6 +176,7 @@ fn dump_logs(coord_log: &Path, daemon_log: &Path) {
 }
 
 /// Best-effort teardown that always runs, even on panic.
+#[derive(Default)]
 struct Cleanup {
     coordinator: Option<Child>,
     daemon: Option<Child>,
@@ -235,11 +237,7 @@ fn node_survives_coordinator_reconnect() {
     let port = free_port();
     let daemon_listen_port = free_port();
 
-    let mut cleanup = Cleanup {
-        coordinator: None,
-        daemon: None,
-        node: None,
-    };
+    let mut cleanup = Cleanup::default();
 
     // 1. Start coordinator + daemon.
     cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
@@ -431,11 +429,7 @@ fn node_survives_daemon_watchdog_disconnect() {
     let port = free_port();
     let daemon_listen_port = free_port();
 
-    let mut cleanup = Cleanup {
-        coordinator: None,
-        daemon: None,
-        node: None,
-    };
+    let mut cleanup = Cleanup::default();
 
     cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
     wait_until(
@@ -586,7 +580,13 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
     ensure_built();
 
     let dora = bin("dora");
-    let anchor = bin("late-dynamic-anchor");
+    // The dataflow's only non-dynamic node, so its exit is what makes
+    // the daemon finish the dataflow. `emit-then-exit-source-node` exits
+    // on its first `tick`, which is wired below to the dynamic sender's
+    // output rather than to a timer — that is what makes the ordering
+    // structural: the sender is provably attached and mid-send when the
+    // dataflow finishes.
+    let anchor = bin("emit-then-exit-source-node");
     let sender = bin("late-dynamic-sender");
 
     let tmp = tempfile::tempdir().expect("create tempdir");
@@ -602,7 +602,9 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
              - id: anchor\n    \
              path: {anchor}\n    \
              inputs:\n      \
-             late: late-sender/late\n  \
+             tick: late-sender/late\n    \
+             outputs:\n      \
+             - value\n  \
              - id: late-sender\n    \
              path: dynamic\n    \
              outputs:\n      \
@@ -615,11 +617,7 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
     let port = free_port();
     let daemon_listen_port = free_port();
 
-    let mut cleanup = Cleanup {
-        coordinator: None,
-        daemon: None,
-        node: None,
-    };
+    let mut cleanup = Cleanup::default();
 
     cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
     wait_until(
@@ -672,16 +670,19 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
             .expect("failed to spawn late-dynamic-sender"),
     );
 
-    // Wait for either verdict, so a regression fails on the fatal line it
-    // actually logged rather than on a 60s timeout waiting for a warning
-    // the broken build never emits.
+    // Wait for either verdict rather than just the good one, so a
+    // regression fails on the fatal line it actually logged instead of on
+    // a timeout waiting for a warning the broken build never emits. A
+    // timeout here means neither happened, i.e. no post-finish output
+    // reached the daemon at all and the fixture stopped reproducing the
+    // #2742 state.
     wait_until(
         || {
-            log_contains(&daemon_log, LATE_OUTPUT_WARNING)
-                || log_contains(&daemon_log, FATAL_LATE_OUTPUT)
+            let log = std::fs::read_to_string(&daemon_log).unwrap_or_default();
+            log.contains(LATE_OUTPUT_WARNING) || log.contains(FATAL_LATE_OUTPUT)
         },
         Duration::from_secs(60),
-        "the daemon to react to a post-finish output from the dynamic node",
+        "a post-finish output from the dynamic node to reach the daemon",
     );
 
     if log_contains(&daemon_log, FATAL_LATE_OUTPUT) {
@@ -691,14 +692,6 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
              dropped its coordinator connection (dora-rs/dora#2742)"
         );
     }
-
-    // Not implied by the wait above: it also completes on the fatal line,
-    // and this is what pins the test to the state it means to exercise.
-    assert!(
-        log_contains(&daemon_log, LATE_OUTPUT_WARNING),
-        "no post-finish output ever reached the daemon — the fixture stopped \
-         reproducing the #2742 state and the assertions below are vacuous"
-    );
 
     let daemon_pid = cleanup.daemon.as_ref().expect("daemon spawned").id();
     assert!(

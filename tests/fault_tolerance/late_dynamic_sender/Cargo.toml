@@ -8,18 +8,15 @@ documentation.workspace = true
 license.workspace = true
 publish = false
 
-# Test-only pair that puts a still-sending node on the far side of
-# `finish_dataflow`, so a late `SendOut` can be shown to be survivable
-# rather than fatal to the daemon (dora-rs/dora#2742).
+# Test-only dynamic node that keeps sending after the daemon has already
+# finished its dataflow, so a late `SendOut` can be shown to be
+# survivable rather than fatal to the daemon (dora-rs/dora#2742).
 #
-# `anchor` is the dataflow's only non-dynamic node, so its exit is what
-# makes the daemon finish the dataflow; it exits on the sender's first
-# message, which is also proof the sender is attached and producing. No
-# sleeps, so the ordering is structural rather than timing-dependent.
-
-[[bin]]
-name = "late-dynamic-anchor"
-path = "src/anchor.rs"
+# Its companion — the dataflow's only non-dynamic node, whose exit is
+# what makes the daemon finish — is the existing
+# `emit-then-exit-source-node` fixture wired to this node's output, so
+# there is no second binary here. See the test in
+# `tests/daemon-reconnect-e2e.rs`.
 
 [[bin]]
 name = "late-dynamic-sender"
