@@ -1899,14 +1899,38 @@ fn run_killed_by_sigterm_terminates_nodes_and_exits() {
 /// mistaken for a surviving node.
 #[cfg(unix)]
 fn node_is_fixture(pid: u32) -> bool {
-    if !process_alive(&pid.to_string()) {
-        return false;
-    }
-    let out = Command::new("ps")
-        .args(["-o", "comm=", "-p", &pid.to_string()])
+    // `expect`, not a silent false: this feeds the assertions, and the
+    // final one is `!node_is_fixture(..)`. If a failure to RUN `ps` were
+    // folded into "not our process", an unavailable `ps` would satisfy
+    // that assertion and the test would report success having verified
+    // nothing.
+    let args = ps_args(pid).expect("failed to run `ps -o args=`");
+    process_alive(&pid.to_string()) && args.contains(FIXTURE_BIN)
+}
+
+/// Matched with a leading `/` so it hits the spawned binary's path and not
+/// a process that merely *names* it in its arguments — `cargo build -p
+/// sigterm-ignoring-node`, which this test itself runs.
+const FIXTURE_BIN: &str = "/sigterm-ignoring-node";
+
+/// The full command line of `pid`. `None` if `ps` could not be run at all;
+/// `Some("")` if it ran and the pid is gone.
+///
+/// `args=`, NOT `comm=`: on Linux `comm` is `/proc/<pid>/comm`, which the
+/// kernel caps at `TASK_COMM_LEN - 1` = 15 characters. `sigterm-ignoring-node`
+/// is 21, so a `comm` match silently fails there while passing on macOS,
+/// where `comm` carries the full path — which is exactly how this shipped
+/// green from a Mac and turned CI red (dora-rs/dora#2961).
+///
+/// The two states are kept apart so callers can choose: assertions must
+/// fail loudly when the check itself is broken, while `Drop` must not.
+#[cfg(unix)]
+fn ps_args(pid: u32) -> Option<String> {
+    Command::new("ps")
+        .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
         .output()
-        .expect("failed to run `ps -o comm=`");
-    String::from_utf8_lossy(&out.stdout).contains("sigterm-ignoring-node")
+        .ok()
+        .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
 /// Same question, but safe to ask from a `Drop`: never panics.
@@ -1918,12 +1942,5 @@ fn node_is_fixture(pid: u32) -> bool {
 /// a kill rather than risking one against the wrong target.
 #[cfg(unix)]
 fn still_our_fixture(pid: u32) -> bool {
-    Command::new("ps")
-        .args(["-o", "comm=", "-p", &pid.to_string()])
-        .output()
-        .map(|out| {
-            out.status.success()
-                && String::from_utf8_lossy(&out.stdout).contains("sigterm-ignoring-node")
-        })
-        .unwrap_or(false)
+    ps_args(pid).is_some_and(|args| args.contains(FIXTURE_BIN))
 }
