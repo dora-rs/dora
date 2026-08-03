@@ -175,6 +175,9 @@ v1（cpu2cpu_cross）已实现并本地验证：
   （dora_pool_{machine}_{df}_{node}_{counter}，DORA_MACHINE_ID env 注入）；
   memory-pool 发布 Locality::Remote（回声切断）
 - 遗留：release 构建的 WAN 端到端吞吐未实测（本地为 debug 构建）
+- 已知设计边界：镜像写入未串行化（multi-thread runtime 下并发帧可能
+  字节级撕裂，被 zenoh put 延迟与示例 20s pacing 掩盖）；多写者场景
+  需 per-pool 写互斥（后续迭代）
 
 ## 8. 后续迭代（不在 v1）
 

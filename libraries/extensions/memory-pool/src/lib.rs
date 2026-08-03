@@ -228,20 +228,33 @@ impl MemoryPoolManager {
     /// Sweep orphaned shared-memory segments from a previous crash or
     /// SIGKILL of the same dataflow.
     ///
-    /// `dataflow_id` scopes the sweep — only files matching
-    /// `dora_pool_{dataflow_id}_*` are removed.  This is safe even when
-    /// other daemons are running on the same host, because dataflow IDs
-    /// are UUIDs and no two daemons run the same one concurrently.
+    /// `dataflow_id` scopes the sweep.  Segments appear under two naming
+    /// formats:
+    ///
+    /// - local pool:            `dora_pool_{dataflow_id}_{node_id}_{counter}`
+    /// - cross-machine mirror:  `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}`
+    ///
+    /// Both are removed (mirrors are machine-qualified, so the daemon cannot
+    /// know the machine prefix in advance).  This is safe even when other
+    /// daemons are running on the same host, because dataflow IDs are UUIDs
+    /// and no two daemons run the same one concurrently; matching the
+    /// dataflow id only as an underscore-delimited segment (not a bare
+    /// substring) means a foreign dataflow's segments or unrelated /dev/shm
+    /// files can never be swept.
     pub fn cleanup_orphans(dataflow_id: &str) {
         #[cfg(target_os = "linux")]
         {
-            let prefix = format!("dora_pool_{}_", dataflow_id);
+            let unqualified_prefix = format!("dora_pool_{}_", dataflow_id);
+            let qualified_segment = format!("_{}_", dataflow_id);
             match std::fs::read_dir("/dev/shm") {
                 Ok(entries) => {
                     for entry in entries.flatten() {
                         let name = entry.file_name();
                         let name = name.to_string_lossy();
-                        if name.starts_with(&prefix)
+                        let is_this_dataflow = name.starts_with("dora_pool_")
+                            && (name.starts_with(&unqualified_prefix)
+                                || name.contains(&qualified_segment));
+                        if is_this_dataflow
                             && let Err(err) = std::fs::remove_file(entry.path())
                             && err.kind() != std::io::ErrorKind::NotFound
                         {
@@ -514,5 +527,59 @@ mod tests {
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
         MemoryPoolManager::cleanup_orphans("test-dataflow-uuid");
+    }
+
+    /// Regression test: the orphan sweep must remove both the unqualified
+    /// local segment (`dora_pool_{df}_*`) and the machine-qualified
+    /// cross-machine mirror (`dora_pool_{machine}_{df}_*`), while never
+    /// touching another dataflow's segments.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn cleanup_orphans_removes_local_and_machine_qualified_segments() {
+        use std::fs;
+        use std::path::PathBuf;
+
+        let dataflow_id = "cleanup-orphans-test-df";
+        let segments = [
+            // (name, expected to be swept)
+            (
+                format!("dora_pool_{dataflow_id}_node_0"), // local pool
+                true,
+            ),
+            (
+                format!("dora_pool_machine-1_{dataflow_id}_node_1"), // mirror
+                true,
+            ),
+            (format!("dora_pool_other-df_node_0"), false), // foreign
+        ];
+
+        let mut created: Vec<PathBuf> = Vec::new();
+        for (name, _) in &segments {
+            let path = PathBuf::from("/dev/shm").join(name);
+            if fs::write(&path, b"x").is_ok() {
+                created.push(path);
+            }
+        }
+        // Best-effort cleanup even if an assertion fails below.
+        struct RemoveOnDrop(Vec<PathBuf>);
+        impl Drop for RemoveOnDrop {
+            fn drop(&mut self) {
+                for path in &self.0 {
+                    let _ = fs::remove_file(path);
+                }
+            }
+        }
+        let _guard = RemoveOnDrop(created.clone());
+
+        MemoryPoolManager::cleanup_orphans(dataflow_id);
+
+        for (i, (_name, expected_swept)) in segments.iter().enumerate() {
+            assert_eq!(
+                !created[i].exists(),
+                *expected_swept,
+                "segment {i} sweep mismatch (name: {})",
+                segments[i].0,
+            );
+        }
     }
 }
