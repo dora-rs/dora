@@ -1400,9 +1400,23 @@ jobs:
         # Installed into the workspace instead of ~/.cargo/bin so it can
         # be published as an artifact for `cli-tests-python`, which would
         # otherwise repeat this build — ~29 min of the Windows budget.
+        # `github.workspace` rather than `$PWD`: under git-bash on Windows
+        # `$PWD` is `/d/a/dora/dora`, and GITHUB_PATH entries are taken
+        # verbatim, so steps that default to pwsh would resolve that as
+        # drive-relative and not find the binary.
         run: |
           cargo install --path binaries/cli --locked --root ./dist
-          echo "$PWD/dist/bin" >> "$GITHUB_PATH"
+          echo '${{ github.workspace }}/dist/bin' >> "$GITHUB_PATH"
+
+      # Published straight after the build, not at the end of the job:
+      # `cli-tests-python` needs only the binary, so a later native test
+      # failing here must not skip the Python half on every platform.
+      - name: Publish CLI for the Python half
+        uses: actions/upload-artifact@v7
+        with:
+          name: dora-cli-${{ matrix.platform }}
+          path: dist/bin/dora*
+          retention-days: 1
 
       - name: Test Rust template project
         timeout-minutes: 45
@@ -1480,13 +1494,6 @@ jobs:
           cmake --install build
           dora run dataflow.yml --stop-after 10s
 
-      - name: Publish CLI for the Python half
-        uses: actions/upload-artifact@v7
-        with:
-          name: dora-cli-${{ matrix.platform }}
-          path: dist/bin/dora*
-          retention-days: 1
-
   # The Python half of the CLI tests, split out of `cli-tests` in #2742.
   #
   # Combined, the two halves needed ~100 min on Windows — 29 min of CLI
@@ -1539,10 +1546,15 @@ jobs:
         # upload-artifact does not preserve the executable bit; the chmod
         # is a harmless no-op on Windows, where the bit is not what makes
         # dora.exe runnable.
+        #
+        # `github.workspace`, not `$PWD` — see the Build CLI step in
+        # `cli-tests`. And nothing here may *use* the CLI: GITHUB_PATH
+        # takes effect for later steps only, never the one that writes it.
         run: |
           chmod +x ./cli-bin/dora* || true
-          echo "$PWD/cli-bin" >> "$GITHUB_PATH"
-          dora --version
+          echo '${{ github.workspace }}/cli-bin' >> "$GITHUB_PATH"
+      - name: Check the downloaded CLI runs
+        run: dora --version
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
