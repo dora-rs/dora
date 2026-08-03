@@ -6,12 +6,22 @@
 //! actually reaches its final SIGKILL rung: a node that dies to SIGTERM
 //! would be cleaned up either way and cannot distinguish the two
 //! (dora-rs/dora#2920).
+//!
+//! Unix-only in substance — the property it fakes is a signal
+//! disposition, which Windows has no equivalent for, and its only
+//! caller (`run_killed_by_sigterm_terminates_nodes_and_exits` in
+//! `tests/node-lifecycle-e2e.rs`) is `#[cfg(unix)]`. It stays a
+//! workspace member so `cargo check --all` keeps covering it, which
+//! means it must still *compile* on Windows: hence the stub `main`
+//! below rather than a `#![cfg(unix)]` on the crate, which would leave
+//! a bin target with no `main` at all.
 
-use dora_node_api::DoraNode;
-use eyre::ensure;
-use std::{thread, time::Duration};
-
+#[cfg(unix)]
 fn main() -> eyre::Result<()> {
+    use dora_node_api::DoraNode;
+    use eyre::ensure;
+    use std::{thread, time::Duration};
+
     // Installed BEFORE `init_from_env`, which spawns the event-stream
     // threads, the node's tokio runtime and zenoh's threads: `signal` is
     // only well specified in a single-threaded process.
@@ -56,4 +66,18 @@ fn main() -> eyre::Result<()> {
         thread::sleep(Duration::from_millis(500));
     }
     Ok(())
+}
+
+/// Compiles, never runs: nothing spawns this fixture on Windows.
+///
+/// It exits non-zero rather than sleeping like the Unix build, so a
+/// future Windows caller fails loudly instead of silently observing a
+/// node that ignores nothing and calling the stop ladder proven.
+#[cfg(not(unix))]
+fn main() {
+    eprintln!(
+        "sigterm-ignoring-node is a Unix-only test fixture: it fakes a SIGTERM \
+         disposition, which Windows has no equivalent for (dora-rs/dora#2920)"
+    );
+    std::process::exit(1);
 }
