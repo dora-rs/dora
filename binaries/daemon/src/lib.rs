@@ -4219,6 +4219,42 @@ impl Daemon {
         Ok(())
     }
 
+    /// Record an output event that named a dataflow the daemon no longer
+    /// runs, and drop it.
+    ///
+    /// A node's `dataflow_id` is fixed at registration rather than read
+    /// off each message, so an unknown one cannot mean a bogus id — only
+    /// that the dataflow finished while this node still had traffic in
+    /// flight. Two ways in, both normal:
+    ///
+    /// * a node's exit and its already-transmitted outputs reach the
+    ///   daemon's event loop on independent paths, so a burst sent just
+    ///   before exit can be queued behind the `SpawnedNodeResult` that
+    ///   finished the dataflow (the intermittent nightly `smoke-suite`
+    ///   failure in dora-rs/dora#2742);
+    /// * `should_finish` ignores still-running *dynamic* nodes, so a
+    ///   dynamic node is expected to outlive `finish_dataflow` and may
+    ///   keep sending for as long as it likes afterwards.
+    ///
+    /// Fatal here would mean fatal to the daemon: neither `SendOut` nor
+    /// `OutputSent` carries a reply channel, so `handle_node_event`
+    /// cannot report the error back to the node the way every sibling
+    /// arm does — it can only return `Err`, which unwinds the daemon's
+    /// main loop and drops its coordinator connection. Warn instead; the
+    /// message has no live receivers left, so dropping it costs nothing.
+    fn log_late_node_output(
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        output_id: &DataId,
+        what: &'static str,
+    ) {
+        tracing::warn!(
+            %dataflow_id, %node_id, %output_id,
+            "ignoring `{what}` for a dataflow that already finished \
+             (node outlived its dataflow)"
+        );
+    }
+
     async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -4227,9 +4263,10 @@ impl Daemon {
         metadata: dora_message::metadata::Metadata,
         data: Option<DataMessage>,
     ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
+        let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+            Self::log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
+            return Ok(());
+        };
         let output_id_key = OutputId(node_id.clone(), output_id.clone());
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
@@ -4295,9 +4332,10 @@ impl Daemon {
         output_id: DataId,
         _metadata: dora_message::metadata::Metadata,
     ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("output sent failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
+        let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+            Self::log_late_node_output(&dataflow_id, &node_id, &output_id, "output sent");
+            return Ok(());
+        };
         note_output_sent_to_local_receivers(
             node_id,
             output_id,

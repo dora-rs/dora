@@ -34,7 +34,16 @@ static BUILD: Once = Once::new();
 fn ensure_built() {
     BUILD.call_once(|| {
         let status = Command::new("cargo")
-            .args(["build", "-p", "dora-cli", "-p", "reconnect-survivor-node"])
+            .args([
+                "build",
+                "-p",
+                "dora-cli",
+                "-p",
+                "reconnect-survivor-node",
+                // Two bins: `late-dynamic-anchor` + `late-dynamic-sender`.
+                "-p",
+                "late-dynamic-sender",
+            ])
             .status()
             .expect("failed to run cargo build");
         assert!(status.success(), "failed to build test prerequisites");
@@ -169,13 +178,21 @@ fn dump_logs(coord_log: &Path, daemon_log: &Path) {
 struct Cleanup {
     coordinator: Option<Child>,
     daemon: Option<Child>,
+    /// Any node this test drives itself rather than letting the daemon
+    /// spawn it — a dynamic node outlives its dataflow by design, so
+    /// nothing else will reap it.
+    node: Option<Child>,
 }
 
 impl Drop for Cleanup {
     fn drop(&mut self) {
-        for child in [self.daemon.as_mut(), self.coordinator.as_mut()]
-            .into_iter()
-            .flatten()
+        for child in [
+            self.node.as_mut(),
+            self.daemon.as_mut(),
+            self.coordinator.as_mut(),
+        ]
+        .into_iter()
+        .flatten()
         {
             let _ = child.kill();
             let _ = child.wait();
@@ -221,6 +238,7 @@ fn node_survives_coordinator_reconnect() {
     let mut cleanup = Cleanup {
         coordinator: None,
         daemon: None,
+        node: None,
     };
 
     // 1. Start coordinator + daemon.
@@ -416,6 +434,7 @@ fn node_survives_daemon_watchdog_disconnect() {
     let mut cleanup = Cleanup {
         coordinator: None,
         daemon: None,
+        node: None,
     };
 
     cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
@@ -531,4 +550,162 @@ fn node_survives_daemon_watchdog_disconnect() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status();
+}
+
+/// The daemon's warning for an output whose dataflow already finished.
+/// Its presence is what proves this test reached the state under test
+/// rather than passing vacuously.
+const LATE_OUTPUT_WARNING: &str = "node outlived its dataflow";
+
+/// The pre-fix error. It reached the log only via the daemon's
+/// "disconnected from coordinator" path, because `handle_node_event` had
+/// no other way to report it.
+const FATAL_LATE_OUTPUT: &str = "send out failed: no running dataflow";
+
+/// An output that arrives after its dataflow finished must not be fatal
+/// to the daemon. Regression test for dora-rs/dora#2742.
+///
+/// `handle_node_event` returns into the daemon's main loop, which treats
+/// any `Err` as fatal: it unwinds `run()` and drops the coordinator
+/// connection. `SendOut` and `OutputSent` used to hand it one whenever
+/// the dataflow was already gone, which under `dora run` (an in-process
+/// daemon) surfaced as the whole run failing with
+/// `send out failed: no running dataflow with ID ...`.
+///
+/// In CI that was a *race*: a node's exit and its already-transmitted
+/// outputs reach the daemon on independent paths, so a burst sent just
+/// before exit could land behind the `SpawnedNodeResult` that finished
+/// the dataflow. This test reaches the same state structurally instead.
+/// `should_finish` deliberately ignores still-running *dynamic* nodes,
+/// so a dynamic node is expected to outlive `finish_dataflow` and keep
+/// sending; the anchor — the dataflow's only non-dynamic node — exits on
+/// the sender's first message, so every later send is a post-finish one,
+/// with no sleeps to tune.
+#[test]
+fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
+    ensure_built();
+
+    let dora = bin("dora");
+    let anchor = bin("late-dynamic-anchor");
+    let sender = bin("late-dynamic-sender");
+
+    let tmp = tempfile::tempdir().expect("create tempdir");
+    let redb = tmp.path().join("coordinator.redb");
+    let coord_log = tmp.path().join("coordinator.log");
+    let daemon_log = tmp.path().join("daemon.log");
+    let dataflow_yml = tmp.path().join("dataflow.yml");
+
+    std::fs::write(
+        &dataflow_yml,
+        format!(
+            "nodes:\n  \
+             - id: anchor\n    \
+             path: {anchor}\n    \
+             inputs:\n      \
+             late: late-sender/late\n  \
+             - id: late-sender\n    \
+             path: dynamic\n    \
+             outputs:\n      \
+             - late\n",
+            anchor = anchor.display(),
+        ),
+    )
+    .expect("write dataflow yml");
+
+    let port = free_port();
+    let daemon_listen_port = free_port();
+
+    let mut cleanup = Cleanup {
+        coordinator: None,
+        daemon: None,
+        node: None,
+    };
+
+    cleanup.coordinator = Some(spawn_coordinator(&dora, port, &redb, &coord_log));
+    wait_until(
+        || port_open(port),
+        Duration::from_secs(20),
+        "coordinator to accept connections",
+    );
+
+    let daemon_out = std::fs::File::create(&daemon_log).expect("create daemon log");
+    let daemon_err = daemon_out.try_clone().expect("clone daemon log");
+    cleanup.daemon = Some(
+        Command::new(&dora)
+            .arg("daemon")
+            .arg("--coordinator-port")
+            .arg(port.to_string())
+            .arg("--local-listen-port")
+            .arg(daemon_listen_port.to_string())
+            .stdout(Stdio::from(daemon_out))
+            .stderr(Stdio::from(daemon_err))
+            .spawn()
+            .expect("failed to spawn daemon"),
+    );
+
+    let start = Command::new(&dora)
+        .arg("start")
+        .arg(&dataflow_yml)
+        .arg("--detach")
+        .arg("--coordinator-port")
+        .arg(port.to_string())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to run dora start");
+    if !start.success() {
+        dump_logs(&coord_log, &daemon_log);
+        panic!("dora start failed");
+    }
+
+    // A dynamic node finds its daemon by port rather than through the
+    // spawn env a daemon-launched node would inherit.
+    cleanup.node = Some(
+        Command::new(&sender)
+            .env(
+                "DORA_DAEMON_LOCAL_LISTEN_PORT",
+                daemon_listen_port.to_string(),
+            )
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn late-dynamic-sender"),
+    );
+
+    // Wait for either verdict, so a regression fails on the fatal line it
+    // actually logged rather than on a 60s timeout waiting for a warning
+    // the broken build never emits.
+    wait_until(
+        || {
+            log_contains(&daemon_log, LATE_OUTPUT_WARNING)
+                || log_contains(&daemon_log, FATAL_LATE_OUTPUT)
+        },
+        Duration::from_secs(60),
+        "the daemon to react to a post-finish output from the dynamic node",
+    );
+
+    if log_contains(&daemon_log, FATAL_LATE_OUTPUT) {
+        dump_logs(&coord_log, &daemon_log);
+        panic!(
+            "a late output was fatal to the daemon: it logged {FATAL_LATE_OUTPUT:?} and \
+             dropped its coordinator connection (dora-rs/dora#2742)"
+        );
+    }
+
+    // Not implied by the wait above: it also completes on the fatal line,
+    // and this is what pins the test to the state it means to exercise.
+    assert!(
+        log_contains(&daemon_log, LATE_OUTPUT_WARNING),
+        "no post-finish output ever reached the daemon — the fixture stopped \
+         reproducing the #2742 state and the assertions below are vacuous"
+    );
+
+    let daemon_pid = cleanup.daemon.as_ref().expect("daemon spawned").id();
+    assert!(
+        pid_alive(daemon_pid),
+        "daemon pid {daemon_pid} must still be alive after a post-finish output"
+    );
+
+    // Still serving: a dropped coordinator connection fails this.
+    list_active(port).expect("coordinator must still answer after the late outputs");
 }

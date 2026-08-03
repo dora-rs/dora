@@ -1,0 +1,30 @@
+[package]
+name = "late-dynamic-sender"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only pair that puts a still-sending node on the far side of
+# `finish_dataflow`, so a late `SendOut` can be shown to be survivable
+# rather than fatal to the daemon (dora-rs/dora#2742).
+#
+# `anchor` is the dataflow's only non-dynamic node, so its exit is what
+# makes the daemon finish the dataflow; it exits on the sender's first
+# message, which is also proof the sender is attached and producing. No
+# sleeps, so the ordering is structural rather than timing-dependent.
+
+[[bin]]
+name = "late-dynamic-anchor"
+path = "src/anchor.rs"
+
+[[bin]]
+name = "late-dynamic-sender"
+path = "src/sender.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
