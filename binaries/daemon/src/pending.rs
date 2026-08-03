@@ -53,6 +53,27 @@ pub struct PendingNodes {
 
     /// Whether the local init result was already reported to the coordinator.
     reported_init_to_coordinator: bool,
+
+    /// The cross-daemon barrier's release, if it has happened.
+    ///
+    /// `None` until the coordinator broadcasts; then `Some(list)` carrying
+    /// its `exited_before_subscribe`. The LIST matters, not just the fact:
+    /// a barrier can release having failed, and a node subscribing
+    /// afterwards must get the same answer as one parked at release time —
+    /// including "this dataflow died during startup".
+    ///
+    /// The coordinator broadcasts `AllNodesReady` exactly once per
+    /// dataflow, when its last pending daemon reports in. Without a latch,
+    /// only the subscribers parked at that instant are ever answered:
+    /// anything subscribing later — a `dora node add`, a dynamic node
+    /// connecting on its own schedule, or a node being restarted — parks
+    /// in `waiting_subscribers` behind an event that will not fire again,
+    /// and its `init_from_env()` never returns (dora-rs/dora#2938).
+    ///
+    /// Single-daemon dataflows never hit this: `external_nodes` stays
+    /// false and every subscribe is answered inline, which is why the
+    /// local path was the one everyone exercised.
+    external_ready: Option<Vec<NodeId>>,
 }
 
 impl PendingNodes {
@@ -66,6 +87,7 @@ impl PendingNodes {
             cohort: HashSet::new(),
             exited_before_subscribe: Default::default(),
             reported_init_to_coordinator: false,
+            external_ready: None,
         }
     }
 
@@ -191,6 +213,12 @@ impl PendingNodes {
             );
         }
 
+        // Latch before answering: the coordinator fires this once, so
+        // everything that subscribes from here on has to be answered
+        // inline rather than parked (#2938). Record the list, not just a
+        // flag — a later subscriber has to inherit a failed startup too.
+        self.external_ready = Some(exited_before_subscribe.clone());
+
         self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)
             .await;
 
@@ -199,12 +227,12 @@ impl PendingNodes {
 
     /// Re-evaluate the barrier after something changed the pending set.
     ///
-    /// Known limitation, pre-existing and tracked in dora-rs/dora#2938:
-    /// the `external_nodes` branch parks waiters and returns `Pending`
-    /// without answering them, leaving `handle_external_all_nodes_ready`
-    /// — driven by a one-shot coordinator broadcast at dataflow start —
-    /// as the only path that ever does. Anything subscribing after that
-    /// has fired waits forever on a multi-daemon dataflow.
+    /// The `external_nodes` branch parks waiters until the coordinator's
+    /// one-shot broadcast releases the barrier. That broadcast fires once
+    /// per dataflow, so the release is latched in `external_ready` and
+    /// every later subscribe is answered inline from it — otherwise a
+    /// `dora node add`, a dynamic node, or a restarting node would wait
+    /// forever on a multi-daemon dataflow (dora-rs/dora#2938).
     async fn update_dataflow_status(
         &mut self,
         coordinator_sender: &mut Option<CoordinatorSender>,
@@ -214,10 +242,35 @@ impl PendingNodes {
     ) -> eyre::Result<DataflowStatus> {
         if self.local_nodes.is_empty() {
             if self.external_nodes {
+                // Report upward FIRST, unconditionally. The coordinator can
+                // release the barrier before this daemon's local nodes are
+                // ready (see the warn in `handle_external_all_nodes_ready`),
+                // and returning early from the latch below without reporting
+                // would leave this daemon in the coordinator's
+                // `pending_daemons` forever.
                 if !self.reported_init_to_coordinator {
                     self.report_nodes_ready(coordinator_sender, clock.new_timestamp(), logger)
                         .await?;
                     self.reported_init_to_coordinator = true;
+                }
+                if let Some(exited_before_subscribe) = self.external_ready.clone() {
+                    // The barrier is already down; a late subscriber must
+                    // not wait for an event that has been and gone.
+                    let barrier_succeeded = exited_before_subscribe.is_empty();
+                    self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)
+                        .await;
+                    // Only report ready if the barrier actually succeeded.
+                    // `AllNodesReady` is what makes the daemon call
+                    // `dataflow.start()`, and the release path deliberately
+                    // does not start a dataflow whose barrier reported a
+                    // node that died before subscribing. Saying "ready"
+                    // here would let a late subscriber start a dataflow the
+                    // coordinator already declared failed.
+                    return Ok(if barrier_succeeded {
+                        DataflowStatus::AllNodesReady
+                    } else {
+                        DataflowStatus::Pending
+                    });
                 }
                 Ok(DataflowStatus::Pending)
             } else {
@@ -316,6 +369,7 @@ impl PendingNodes {
     }
 }
 
+#[derive(Debug)]
 pub enum DataflowStatus {
     AllNodesReady,
     Pending,
@@ -662,6 +716,154 @@ mod tests {
             reply_of(&mut outsider_rx),
             Ok(()),
             "a non-cohort node must not inherit a remote startup failure either"
+        );
+    }
+
+    // ---- dora-rs/dora#2938: on a multi-daemon dataflow the coordinator
+    //      broadcasts `AllNodesReady` once; anything subscribing after
+    //      that must not park behind an event that will not fire again ----
+
+    /// Build a barrier in the multi-daemon shape: external nodes present,
+    /// no local nodes left to wait for.
+    fn external_barrier() -> PendingNodes {
+        let mut p = pending();
+        p.set_external_nodes(true);
+        // Pretend the upward report already happened: with no coordinator
+        // sender wired up it would error by design (see
+        // `external_dataflows_report_ready_upward_at_most_once`), and the
+        // state under test here is the one *after* this daemon reported —
+        // waiting on the coordinator's broadcast.
+        p.reported_init_to_coordinator = true;
+        p
+    }
+
+    /// Release the barrier with the coordinator's `exited_before_subscribe`.
+    async fn release(p: &mut PendingNodes, exited: Vec<NodeId>) {
+        p.handle_external_all_nodes_ready(exited, &mut CascadingErrorCauses::default())
+            .await
+            .expect("release the barrier");
+    }
+
+    async fn settle(p: &mut PendingNodes) -> DataflowStatus {
+        let mut causes = CascadingErrorCauses::default();
+        let mut daemon_logger = test_logger();
+        let mut logger = daemon_logger.for_dataflow(uuid::Uuid::nil());
+        p.update_dataflow_status(&mut None, &HLC::default(), &mut causes, &mut logger)
+            .await
+            .expect("update_dataflow_status")
+    }
+
+    /// The reported hang: `dora node add`, a dynamic node connecting late,
+    /// or a node being restarted all subscribe after the one-shot has
+    /// fired. Before the latch this returned `Pending` and the reply was
+    /// never sent, so `init_from_env()` never returned.
+    #[tokio::test]
+    async fn late_subscriber_is_answered_after_the_external_barrier_released() {
+        let mut p = external_barrier();
+        p.handle_external_all_nodes_ready(Vec::new(), &mut CascadingErrorCauses::default())
+            .await
+            .expect("release the barrier");
+
+        // A node arrives afterwards — the `dora node add` case.
+        let latecomer = node("added-at-runtime");
+        let mut rx = park(&mut p, &latecomer);
+        let status = settle(&mut p).await;
+
+        assert!(
+            matches!(status, DataflowStatus::AllNodesReady),
+            "a barrier that has already been released must report ready, got {status:?}"
+        );
+        reply_of(&mut rx).expect("late subscriber must be answered, not parked forever");
+    }
+
+    /// The latch must not open the barrier early: before the coordinator
+    /// says every daemon is ready, a subscriber still waits. Otherwise a
+    /// node could start producing before its remote consumers exist.
+    #[tokio::test]
+    async fn subscriber_still_waits_until_the_external_barrier_releases() {
+        let mut p = external_barrier();
+        let early = node("early");
+        let mut rx = park(&mut p, &early);
+
+        let status = settle(&mut p).await;
+
+        assert!(
+            matches!(status, DataflowStatus::Pending),
+            "the cross-daemon barrier must still hold before the coordinator \
+             reports every daemon ready, got {status:?}"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "subscriber must remain parked until the barrier releases"
+        );
+
+        // ...and is released normally.
+        p.handle_external_all_nodes_ready(Vec::new(), &mut CascadingErrorCauses::default())
+            .await
+            .expect("release");
+        reply_of(&mut rx).expect("released subscriber should be answered");
+    }
+
+    /// A single-daemon dataflow has no external barrier to latch, so its
+    /// behavior is unchanged: every subscribe is answered inline.
+    #[tokio::test]
+    async fn local_only_dataflow_answers_inline_as_before() {
+        let mut p = pending();
+        let solo = node("solo");
+        let mut rx = park(&mut p, &solo);
+
+        let status = settle(&mut p).await;
+
+        assert!(matches!(status, DataflowStatus::AllNodesReady));
+        reply_of(&mut rx).expect("local-only subscribe is answered inline");
+    }
+
+    /// A barrier can release having FAILED. A node subscribing afterwards
+    /// must inherit that, and must not report ready — `AllNodesReady` is
+    /// what makes the daemon call `dataflow.start()`, and the release path
+    /// deliberately refuses to start a dataflow whose barrier named a node
+    /// that died before subscribing. Reporting ready here would let a late
+    /// `dora node add` start a dataflow the coordinator declared dead.
+    #[tokio::test]
+    async fn late_subscriber_does_not_start_a_dataflow_whose_barrier_failed() {
+        let member = node("member");
+        let mut p = external_barrier();
+        p.insert(member.clone()); // enrol in the cohort
+        p.local_nodes.remove(&member); // ...and let it already be past
+        release(&mut p, vec![node("died-on-another-daemon")]).await;
+
+        let mut rx = park(&mut p, &member);
+        let status = settle(&mut p).await;
+
+        assert!(
+            !matches!(status, DataflowStatus::AllNodesReady),
+            "a barrier that released with a startup failure must not report \
+             ready, or a late subscriber starts a dead dataflow; got {status:?}"
+        );
+        let err =
+            reply_of(&mut rx).expect_err("a cohort member must inherit the remote startup failure");
+        assert!(
+            err.contains("died-on-another-daemon"),
+            "the failure must name the node that died: {err}"
+        );
+    }
+
+    /// The same failed barrier, but the late subscriber was never in the
+    /// cohort — a runtime `dora node add`. It is not blamed (#2917), yet
+    /// the dataflow still must not be started by its arrival.
+    #[tokio::test]
+    async fn non_cohort_latecomer_is_spared_but_still_does_not_start_it() {
+        let mut p = external_barrier();
+        release(&mut p, vec![node("died-on-another-daemon")]).await;
+
+        let added = node("added-at-runtime");
+        let mut rx = park(&mut p, &added);
+        let status = settle(&mut p).await;
+
+        reply_of(&mut rx).expect("a non-cohort node must not inherit the failure");
+        assert!(
+            !matches!(status, DataflowStatus::AllNodesReady),
+            "adding a node must not start a dataflow whose barrier failed; got {status:?}"
         );
     }
 }
