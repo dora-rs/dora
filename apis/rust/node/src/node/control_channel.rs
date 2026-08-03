@@ -259,4 +259,37 @@ impl ControlChannel {
             other => bail!("unexpected WritePinnedMemory reply: {other:?}"),
         }
     }
+
+    /// Register a pool on a remote machine via the daemon (the daemon
+    /// resolves the machine through the coordinator and mirrors the
+    /// pool there with a synchronous confirmation).
+    pub fn register_cross_machine_pool(
+        &mut self,
+        shared_memory_id: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    ) -> eyre::Result<Result<(), String>> {
+        let request = DaemonRequest::RegisterCrossMachinePool {
+            shared_memory_id,
+            size,
+            dtype,
+            shape,
+            device,
+            machine_id,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send RegisterCrossMachinePool request to dora-daemon")?;
+        match reply {
+            DaemonReply::CrossMachinePoolRegistered(result) => Ok(result),
+            other => bail!("unexpected RegisterCrossMachinePool reply: {other:?}"),
+        }
+    }
 }

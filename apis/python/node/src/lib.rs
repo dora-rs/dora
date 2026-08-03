@@ -1932,11 +1932,12 @@ impl Node {
     /// **not** block the writer from starting a new write while a consumer
     /// holds a zero-copy tensor. Skipping the turn-based discipline risks
     /// torn data at the consumer.
-    #[pyo3(signature = (tensor_info, device))]
+    #[pyo3(signature = (tensor_info, device, machine = None))]
     pub fn register_memory_pool(
         &self,
         tensor_info: &Bound<'_, PyDict>,
         device: String,
+        machine: Option<String>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
         let ptr_val: u64 = tensor_info
@@ -2121,6 +2122,73 @@ impl Node {
                         shmem_ptr.add(data_offset),
                         size,
                     );
+                }
+            }
+        }
+
+        // Cross-machine: mirror the pool on the target machine via the
+        // daemon (coordinator resolves the machine; sync confirm).  The
+        // mirror is independent of the local receiver's device — the
+        // target machine's pool is always CPU-style DORADMA shmem.
+        // Failure (unresolved machine, remote pool creation failure, or
+        // ack timeout) is a warn-and-no-op: the daemon has already logged
+        // a warning; we roll back the local pool and return None rather
+        // than crash.
+        if let Some(target_machine) = machine {
+            let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
+            let reply = self
+                .node
+                .get_mut()
+                .register_cross_machine_pool(
+                    buffer_id.clone(),
+                    size,
+                    dtype.clone(),
+                    shape_list.clone(),
+                    tensor_device.clone(),
+                    target_machine.clone(),
+                )
+                .map_err(|e| eyre::eyre!("register cross-machine pool: {e}"))?;
+            match reply {
+                Ok(()) => {
+                    // Local pool stays; the daemon recorded CROSS_POOLS.
+                }
+                Err(msg) => {
+                    tracing::warn!("{msg}");
+                    // Roll back the local pool: unpin host memory, drop
+                    // any sender-side cache entries, and unlink the shmem
+                    // segment (cleanup mirrors free_memory_pool).
+                    if !receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
+                    }
+                    {
+                        let mut pool = PINNED_POOL.lock().unwrap_or_else(|e| e.into_inner());
+                        if let Some(slot) = pool.remove(&pool_counter) {
+                            // Defensive: the slot is normally stored after
+                            // this point, but if it exists free its GPU-side
+                            // resources too.
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
+                                if slot.transit_ptr != 0 {
+                                    let _ =
+                                        bound.call_method1("_free_transit", (slot.transit_ptr,));
+                                }
+                            }
+                        }
+                    }
+                    TRANSIT_META
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&pool_counter);
+                    FREED_POOL_IDS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(buffer_id);
+                    // Unlink the local shmem segment (drop with owner=true
+                    // removes it).
+                    shmem.set_owner(true);
+                    return Ok(py.None());
                 }
             }
         }

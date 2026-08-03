@@ -2392,6 +2392,31 @@ impl DoraNode {
             shape,
         )
     }
+
+    /// Register a memory pool on a remote machine via the daemon. The
+    /// daemon resolves the machine through the coordinator and mirrors
+    /// the pool there with a synchronous confirmation, returning
+    /// `Ok(Ok(()))` on success or `Ok(Err(msg))` when the mirror failed
+    /// (unresolved machine, remote pool creation failure, or ack
+    /// timeout).
+    pub fn register_cross_machine_pool(
+        &mut self,
+        shared_memory_id: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    ) -> Result<Result<(), String>, eyre::Error> {
+        self.control_channel.register_cross_machine_pool(
+            shared_memory_id,
+            size,
+            dtype,
+            shape,
+            device,
+            machine_id,
+        )
+    }
 }
 
 /// Builder for initializing a node with custom connection parameters.
