@@ -46,6 +46,8 @@ pub struct Info {
     pub dataflow: Option<String>,
 
     /// Output format
+    ///
+    /// `json` emits a single pretty-printed JSON document.
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 

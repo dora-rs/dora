@@ -42,6 +42,8 @@ pub struct Echo {
     selector: TopicSelector,
 
     /// Output format
+    ///
+    /// `json` emits JSON Lines (one object per message).
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 

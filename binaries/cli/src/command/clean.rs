@@ -30,6 +30,9 @@ pub struct CleanArgs {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
     /// Output format
+    ///
+    /// `json` emits JSON Lines (one object per line); failures are
+    /// emitted as JSON Lines on stderr.
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
     /// Only print cleaned dataflow UUIDs, one per line

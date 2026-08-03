@@ -511,7 +511,7 @@ dora list [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format <FMT>`, `-f` | `table` | Output format: `table\|json` |
+| `--format <FMT>`, `-f` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line) |
 | `--status <STATUS>` | | Filter: `running\|finished\|failed` |
 | `--name <PATTERN>` | | Filter by name (case-insensitive substring) |
 | `--sort-by <FIELD>` | | Sort by: `cpu\|memory` |
@@ -531,7 +531,7 @@ dora clean [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--format <FMT>`, `-f` | `table` | Output format: `table\|json` |
+| `--format <FMT>`, `-f` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line); failures go to stderr as JSON Lines |
 | `--quiet`, `-q` | false | Print only cleaned UUIDs |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
@@ -649,7 +649,7 @@ dora topic list [OPTIONS]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
-| `--format <FMT>` | `table` | Output format: `table\|json` |
+| `--format <FMT>` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line) |
 
 #### `dora topic echo`
 
@@ -663,7 +663,7 @@ dora topic echo [OPTIONS] [DATA...]
 |------|---------|-------------|
 | `-d <DATAFLOW>`, `--dataflow` | required | Dataflow UUID or name |
 | `[DATA...]` | all outputs | Topics to echo (e.g., `node1/output`) |
-| `--format <FMT>` | `table` | Output format: `table\|json` |
+| `--format <FMT>` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per message) |
 
 Requires `_unstable_debug.enable_debug_inspection: true` in the descriptor.
 
@@ -716,8 +716,8 @@ Lists nodes in a running dataflow with their status, CPU, memory, and restart co
 | Flag | Default | Description |
 |------|---------|-------------|
 | `-d <DATAFLOW>`, `--dataflow` | all dataflows | Dataflow UUID or name |
-| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line) |
-| `-q`, `--quiet` | | Print only node IDs, one per line |
+| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per line); all fields are formatted strings, and the `dataflow` field is omitted when `-d` is given |
+| `-q`, `--quiet` | | Print only node IDs, one per line (conflicts with `--format`) |
 
 ##### `dora node info`
 
@@ -731,7 +731,7 @@ dora node info <NODE> [OPTIONS]
 |------|---------|-------------|
 | `<NODE>` | required | Node ID to inspect |
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
-| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json` |
+| `-f <FORMAT>`, `--format` | `table` | Output format: `table\|json`. JSON output is a single pretty-printed document |
 
 ##### `dora node restart`
 
@@ -803,7 +803,7 @@ dora param list <NODE> [OPTIONS]
 |------|---------|-------------|
 | `<NODE>` | required | Node ID |
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
-| `--format <FMT>` | `table` | Output format: `table\|json` |
+| `--format <FMT>` | `table` | Output format: `table\|json`. JSON output is a single pretty-printed document |
 
 ##### `dora param get`
 

@@ -184,7 +184,9 @@ pub struct Status {
     /// Path to the dataflow descriptor file (enables additional checks)
     #[clap(long, value_name = "PATH", value_hint = clap::ValueHint::FilePath)]
     dataflow: Option<PathBuf>,
-    /// Output format (table or json)
+    /// Output format
+    ///
+    /// `json` emits a single pretty-printed JSON document.
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     format: OutputFormat,
     #[clap(flatten)]
