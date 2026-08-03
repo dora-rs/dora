@@ -103,6 +103,10 @@ pub enum DaemonReply {
         tensor_data: Vec<u8>,
         size: usize,
         device: String,
+        // Original tensor dtype/shape for proxy pools (see
+        // WritePinnedMemory); empty/absent for local pools.
+        dtype: String,
+        shape: Vec<i64>,
     },
     Empty,
 }

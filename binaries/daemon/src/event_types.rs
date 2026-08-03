@@ -161,6 +161,8 @@ pub enum DaemonNodeEvent {
         tensor_data: Vec<u8>,
         size: usize,
         device: String,
+        dtype: String,
+        shape: Vec<i64>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
 }

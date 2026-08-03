@@ -2370,15 +2370,27 @@ impl DoraNode {
         self.control_channel.free_pinned_memory(shared_memory_id)
     }
 
+    /// Write tensor bytes to a pinned memory pool via the daemon. The
+    /// daemon forwards the payload to remote daemons for cross-machine
+    /// reads; `dtype`/`shape` let the remote receiver rebuild the tensor
+    /// with its original semantics instead of a uint8 byte view.
     pub fn write_pinned_memory(
         &mut self,
         shared_memory_id: String,
         tensor_data: Vec<u8>,
         size: usize,
         device: String,
+        dtype: String,
+        shape: Vec<i64>,
     ) -> Result<(), eyre::Error> {
-        self.control_channel
-            .write_pinned_memory(shared_memory_id, tensor_data, size, device)
+        self.control_channel.write_pinned_memory(
+            shared_memory_id,
+            tensor_data,
+            size,
+            device,
+            dtype,
+            shape,
+        )
     }
 }
 

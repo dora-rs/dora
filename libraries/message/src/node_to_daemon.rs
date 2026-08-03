@@ -44,6 +44,11 @@ pub enum DaemonRequest {
         tensor_data: Vec<u8>,
         size: usize,
         device: String,
+        // Original tensor dtype/shape: the proxy pool hands remote
+        // receivers the raw bytes, and they must be able to rebuild the
+        // tensor with the sender's semantics instead of a uint8 view.
+        dtype: String,
+        shape: Vec<i64>,
     },
 }
 

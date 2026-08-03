@@ -183,6 +183,8 @@ impl ControlChannel {
                 tensor_data,
                 size,
                 device,
+                dtype,
+                shape,
             } => {
                 use dora_message::metadata::Parameter;
                 let data_hex: String = tensor_data.iter().fold(String::new(), |mut s, b| {
@@ -194,6 +196,15 @@ impl ControlChannel {
                 params.insert("proxy_data".into(), Parameter::String(data_hex));
                 params.insert("size".into(), Parameter::Integer(size as i64));
                 params.insert("pinned_type".into(), Parameter::String(device));
+                // Preserve the sender's tensor semantics so remote
+                // receivers rebuild the original dtype/shape, not a
+                // uint8 byte view.
+                if !dtype.is_empty() {
+                    params.insert("dtype".into(), Parameter::String(dtype));
+                }
+                if !shape.is_empty() {
+                    params.insert("shape".into(), Parameter::ListInt(shape));
+                }
                 let ts = self.clock.new_timestamp();
                 Ok(Metadata::from_parameters(ts, params))
             }
@@ -224,12 +235,16 @@ impl ControlChannel {
         tensor_data: Vec<u8>,
         size: usize,
         device: String,
+        dtype: String,
+        shape: Vec<i64>,
     ) -> eyre::Result<()> {
         let request = DaemonRequest::WritePinnedMemory {
             shared_memory_id,
             tensor_data,
             size,
             device,
+            dtype,
+            shape,
         };
         let reply = self
             .channel

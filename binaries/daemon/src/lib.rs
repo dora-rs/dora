@@ -10,9 +10,9 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
-        open_zenoh_session_with_listen, reserve_zenoh_endpoint, validate_zenoh_listen,
-        zenoh_bind_address_for, dataflow_memory_pool_topic,
-        zenoh_daemon_control_topic, zenoh_output_publish_topic,
+        dataflow_memory_pool_topic, open_zenoh_session_with_listen, reserve_zenoh_endpoint,
+        validate_zenoh_listen, zenoh_bind_address_for, zenoh_daemon_control_topic,
+        zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -187,14 +187,18 @@ const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
 /// Proxy pool for cross-machine memory pool tensor data.
+/// One proxy pool entry: the serialised tensor bytes plus the metadata
+/// (size, device, dtype, shape) needed to reconstruct the receiver's view.
+type ProxyPoolEntry = (Vec<u8>, usize, String, String, Vec<i64>);
+
 /// Keyed by `shared_memory_id`, populated by incoming
 /// `InterDaemonEvent::MemoryPoolWrite` and consumed by
 /// `ReadPinnedMemory`.  Stores both the serialised tensor bytes
 /// and the metadata needed to reconstruct the receiver's view.
 static PROXY_POOL_DATA: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, (Vec<u8>, usize, String)>>,
+    std::sync::Mutex<std::collections::HashMap<String, ProxyPoolEntry>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-// (tensor_bytes, size, device)
+// (tensor_bytes, size, device, dtype, shape)
 
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
@@ -2956,12 +2960,14 @@ impl Daemon {
                 tensor_data,
                 size,
                 device,
+                dtype,
+                shape,
                 ..
             } => {
                 PROXY_POOL_DATA
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(shared_memory_id, (tensor_data, size, device));
+                    .insert(shared_memory_id, (tensor_data, size, device, dtype, shape));
                 Ok(())
             }
         }
@@ -4031,7 +4037,7 @@ impl Daemon {
             } => {
                 // Check proxy pool first — cross-machine pools are
                 // populated by remote daemons via Zenoh and cached here.
-                if let Some((tensor_data, size, device)) = PROXY_POOL_DATA
+                if let Some((tensor_data, size, device, dtype, shape)) = PROXY_POOL_DATA
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&shared_memory_id)
@@ -4040,6 +4046,8 @@ impl Daemon {
                         tensor_data,
                         size,
                         device,
+                        dtype,
+                        shape,
                     });
                 } else {
                     let result = (|| -> Result<dora_message::metadata::Metadata, String> {

@@ -30,5 +30,9 @@ pub enum InterDaemonEvent {
         tensor_data: Vec<u8>,
         size: usize,
         device: String,
+        // Original tensor dtype/shape (see WritePinnedMemory): remote
+        // receivers rebuild the tensor from these, not a uint8 view.
+        dtype: String,
+        shape: Vec<i64>,
     },
 }
