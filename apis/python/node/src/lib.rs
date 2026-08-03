@@ -3614,7 +3614,7 @@ impl Node {
             .step_by(2)
             .filter_map(|i| u8::from_str_radix(&hex_data[i..(i + 2).min(hex_data.len())], 16).ok())
             .collect();
-        let size = metadata
+        let mut size = metadata
             .parameters
             .get("size")
             .and_then(|p| {
@@ -3625,6 +3625,20 @@ impl Node {
                 }
             })
             .unwrap_or(tensor_bytes.len() as i64);
+        // Clamp the peer-claimed size to the actual payload: the CPU
+        // tensor path is (ctypes.c_byte * size).from_address(ptr), so an
+        // inflated claim reads past the heap allocation (corruption or
+        // SIGSEGV).  The local DORADMA and GPU paths both validate; this
+        // is the sole unguarded one.
+        if size > tensor_bytes.len() as i64 {
+            tracing::warn!(
+                "[{}] try_daemon_proxy_read: peer claimed size {} > payload {} bytes, clamping",
+                self.node_id,
+                size,
+                tensor_bytes.len()
+            );
+            size = tensor_bytes.len() as i64;
+        }
         let pinned_type = metadata
             .parameters
             .get("pinned_type")
@@ -3663,7 +3677,11 @@ impl Node {
             .unwrap_or_else(|| vec![size]);
         let bytes = PyBytes::new(py, &tensor_bytes);
         let dict = PyDict::new(py);
-        dict.set_item("ptr", bytes.as_ptr() as i64)?;
+        // as_bytes().as_ptr() — NOT as_ptr(): the latter points at the
+        // PyBytesObject header, so tensor_from_info's from_address view
+        // reads refcount/type/len garbage instead of the payload
+        // (observed cross-machine: preview showed the object header).
+        dict.set_item("ptr", bytes.as_bytes().as_ptr() as i64)?;
         dict.set_item("size", size)?;
         dict.set_item("dtype", dtype)?;
         dict.set_item("shape", shape)?;
