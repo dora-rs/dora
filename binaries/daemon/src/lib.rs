@@ -200,6 +200,17 @@ static PROXY_POOL_DATA: std::sync::LazyLock<
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 // (tensor_bytes, size, device, dtype, shape)
 
+/// Cross-machine pools this daemon participates in:
+/// pool id -> peer machine id (write/free tracking).
+static CROSS_POOLS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, String>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
+/// Pending synchronous register confirmations: pool id -> ack channel.
+static CROSS_REGISTER_PENDING: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
@@ -2970,10 +2981,24 @@ impl Daemon {
                     .insert(shared_memory_id, (tensor_data, size, device, dtype, shape));
                 Ok(())
             }
-            InterDaemonEvent::RegisterPool { .. }
-            | InterDaemonEvent::RegisterPoolAck { .. }
-            | InterDaemonEvent::FreePool { .. } => {
-                tracing::warn!("memory pool: cross-machine register/ack/free not yet implemented");
+            InterDaemonEvent::RegisterPoolAck {
+                shared_memory_id,
+                ok,
+                ..
+            } => {
+                // Complete a synchronous cross-machine register: hand the
+                // ack to the spawned register task awaiting it (if any).
+                if let Some(tx) = CROSS_REGISTER_PENDING
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&shared_memory_id)
+                {
+                    let _ = tx.send(ok);
+                }
+                Ok(())
+            }
+            InterDaemonEvent::RegisterPool { .. } | InterDaemonEvent::FreePool { .. } => {
+                tracing::warn!("memory pool: cross-machine pool mirror not yet implemented");
                 Ok(())
             }
         }
@@ -4225,6 +4250,133 @@ impl Daemon {
                     }
                 });
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+            }
+            DaemonNodeEvent::RegisterCrossMachinePool {
+                shared_memory_id,
+                size,
+                dtype,
+                shape,
+                device,
+                machine_id,
+                reply_sender,
+            } => {
+                // Resolve the machine via the coordinator, publish
+                // RegisterPool over the memory-pool topic, and await the
+                // remote RegisterPoolAck before replying (sync register).
+                // The ack is delivered through this daemon's own event
+                // loop (`handle_inter_daemon_event`), so awaiting it on
+                // the loop itself would deadlock — the loop could never
+                // process the ack. Run the whole flow in a spawned task.
+                let topic = dataflow_memory_pool_topic(&dataflow_id);
+                let session = self.zenoh_session.clone();
+                let clock = self.clock.clone();
+                let coordinator_sender = self.coordinator_sender.clone();
+                tokio::spawn(async move {
+                    // Clone for the post-flow cleanup below: the inner
+                    // async block moves `shared_memory_id` into the pool
+                    // map on the success path.
+                    let cleanup_pool_id = shared_memory_id.clone();
+                    let reply = async {
+                        // Resolve the target machine through the
+                        // coordinator. No coordinator connection means
+                        // the machine cannot be resolved either — same
+                        // warn-and-skip.
+                        let Some(coordinator_sender) = coordinator_sender.as_ref() else {
+                            return Err(format!(
+                                r#"machine "{machine_id}" 无法解析：coordinator 无此机器或无 coordinator，未创建跨机内存池"#
+                            ));
+                        };
+                        if !coordinator::resolve_machine(coordinator_sender, &clock, &machine_id)
+                            .await
+                        {
+                            return Err(format!(
+                                r#"machine "{machine_id}" 无法解析：coordinator 无此机器或无 coordinator，未创建跨机内存池"#
+                            ));
+                        }
+                        // Register the ack channel BEFORE publishing: the
+                        // remote acks as soon as it receives RegisterPool,
+                        // so a late registration could race the ack and
+                        // spuriously time out.
+                        let (ack_tx, ack_rx) = oneshot::channel();
+                        CROSS_REGISTER_PENDING
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(shared_memory_id.clone(), ack_tx);
+                        // Publish RegisterPool with the same
+                        // `Timestamped<InterDaemonEvent>` framing and
+                        // Block congestion control the WriteMemoryPool
+                        // path uses (a dropped publish would strand the
+                        // register until the 5s timeout).
+                        let serialized = match bincode::serialize(&Timestamped {
+                            inner: InterDaemonEvent::RegisterPool {
+                                dataflow_id,
+                                machine_id: machine_id.clone(),
+                                shared_memory_id: shared_memory_id.clone(),
+                                size,
+                                dtype: dtype.clone(),
+                                shape: shape.clone(),
+                                device: device.clone(),
+                            },
+                            timestamp: clock.new_timestamp(),
+                        }) {
+                            Ok(serialized) => serialized,
+                            Err(e) => {
+                                tracing::error!(
+                                    "memory pool: bincode serialize RegisterPool failed: {e}"
+                                );
+                                return Err(format!("RegisterPool 序列化失败: {e}"));
+                            }
+                        };
+                        let publisher = match session
+                            .declare_publisher(topic.clone())
+                            .congestion_control(CongestionControl::Block)
+                            .await
+                        {
+                            Ok(publisher) => publisher,
+                            Err(e) => {
+                                tracing::error!(
+                                    "memory pool: declare_publisher({topic}) failed: {e}"
+                                );
+                                return Err(format!("RegisterPool 发布失败（declare_publisher）: {e}"));
+                            }
+                        };
+                        if let Err(e) = publisher.put(serialized).await {
+                            tracing::error!("memory pool: publish RegisterPool to {topic} failed: {e}");
+                            return Err(format!("RegisterPool 发布失败: {e}"));
+                        }
+                        // Await the remote RegisterPoolAck with a timeout.
+                        match tokio::time::timeout(Duration::from_secs(5), ack_rx).await {
+                            Ok(Ok(true)) => {
+                                CROSS_POOLS
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(shared_memory_id, machine_id);
+                                Ok(())
+                            }
+                            Ok(Ok(false)) => Err(format!(
+                                r#"machine "{machine_id}" 已解析但远端建池失败：远端返回 ok=false，未创建跨机内存池"#
+                            )),
+                            Ok(Err(_)) => Err(format!(
+                                r#"machine "{machine_id}" 已解析但远端建池失败：ack 通道关闭（远端 daemon 断开），未创建跨机内存池"#
+                            )),
+                            Err(_) => Err(format!(
+                                r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
+                            )),
+                        }
+                    }
+                    .await;
+                    // Drop the pending ack entry if the ack never arrived
+                    // (publish failure or timeout); on the success path the
+                    // ack delivery already removed it, so this is a no-op.
+                    CROSS_REGISTER_PENDING
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&cleanup_pool_id);
+                    if let Err(err) = &reply {
+                        tracing::warn!("memory pool: cross-machine register failed: {err}");
+                    }
+                    let _ = reply_sender.send(DaemonReply::CrossMachinePoolRegistered(reply));
+                });
             }
         }
         Ok(())

@@ -114,6 +114,9 @@ pub(crate) async fn handle_daemon_ws(
 /// `u128` numbers (used by `uhlc::ID(NonZeroU128)` in uhlc 0.5.x).
 #[derive(serde::Deserialize)]
 struct DaemonWsRequestRaw {
+    /// Request id from the daemon envelope — echoed back in replies so
+    /// the daemon can route the reply to its pending caller.
+    id: Uuid,
     params: dora_message::daemon_to_coordinator::Timestamped<
         dora_message::daemon_to_coordinator::CoordinatorRequest,
     >,
@@ -139,6 +142,7 @@ async fn handle_daemon_request(
         }
     };
     let message = parsed.params;
+    let request_id = parsed.id;
 
     if let Err(err) = clock.update_with_timestamp(&message.timestamp) {
         tracing::warn!("failed to update coordinator clock: {err}");
@@ -237,8 +241,10 @@ async fn handle_daemon_request(
                     return true;
                 }
             };
-            let id = Uuid::new_v4();
-            let json = format!(r#"{{"id":"{id}","method":"daemon_event","params":{params}}}"#);
+            // Echo the request id so the daemon can route this reply to
+            // its pending caller (COORDINATOR_PENDING).
+            let json =
+                format!(r#"{{"id":"{request_id}","method":"daemon_event","params":{params}}}"#);
             if cmd_tx.send(json).await.is_err() {
                 return false;
             }

@@ -89,6 +89,16 @@ impl CoordinatorSender {
     }
 }
 
+/// Pending daemon→coordinator request replies: request id -> reply value.
+/// The coordinator answers daemon requests in the same `daemon_event`
+/// envelope, so the receive loop routes these replies to the pending
+/// caller (see `register`) before dispatching them as commands.
+static COORDINATOR_PENDING: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<Uuid, tokio::sync::oneshot::Sender<serde_json::Value>>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
@@ -225,6 +235,35 @@ pub async fn register(
                         }
                     };
 
+                    // Replies to our own daemon→coordinator requests
+                    // (e.g. ResolveMachine) arrive in the same
+                    // daemon_event envelope as commands, but with a
+                    // different params type (`Timestamped<ResolveMachineReply>`)
+                    // that the typed `CoordinatorCommandRaw` parse below
+                    // would reject. Route them to the pending caller by
+                    // id before the command parse.
+                    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&text) {
+                        let pending = value
+                            .get("id")
+                            .and_then(|v| v.as_str())
+                            .and_then(|id| Uuid::parse_str(id).ok())
+                            .and_then(|id| {
+                                COORDINATOR_PENDING
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .remove(&id)
+                            });
+                        if let Some(tx) = pending {
+                            let _ = tx.send(
+                                value
+                                    .get("params")
+                                    .cloned()
+                                    .unwrap_or(serde_json::Value::Null),
+                            );
+                            continue;
+                        }
+                    }
+
                     // Parse directly from raw text to preserve u128 fidelity
                     // for uhlc::ID inside timestamps.
                     let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
@@ -299,6 +338,72 @@ pub async fn register(
         CoordinatorSender { sender: send_tx },
         ReceiverStream::new(rx),
     ))
+}
+
+/// Resolve a machine id through the coordinator. Returns false when the
+/// machine is unknown or no coordinator is reachable (warn-and-skip).
+///
+/// The coordinator replies over the same `daemon_event` envelope the
+/// request was sent in (params: `Timestamped<ResolveMachineReply>`); the
+/// receive loop in `register` routes the reply here by request id.
+pub(crate) async fn resolve_machine(
+    coordinator_sender: &CoordinatorSender,
+    clock: &Arc<HLC>,
+    machine_id: &str,
+) -> bool {
+    let request_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    COORDINATOR_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(request_id, reply_tx);
+    let params = match serde_json::to_string(&Timestamped {
+        inner: CoordinatorRequest::ResolveMachine {
+            machine_id: machine_id.to_string(),
+        },
+        timestamp: clock.new_timestamp(),
+    }) {
+        Ok(p) => p,
+        Err(_) => {
+            COORDINATOR_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            return false;
+        }
+    };
+    let json = format!(r#"{{"id":"{request_id}","method":"daemon_event","params":{params}}}"#);
+    if coordinator_sender
+        .send_event(json.as_bytes())
+        .await
+        .is_err()
+    {
+        COORDINATOR_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&request_id);
+        return false;
+    }
+    match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
+        Ok(Ok(value)) => value
+            .get("inner")
+            .and_then(|v| v.get("found"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        Ok(Err(_)) => {
+            // Reply channel dropped: the receive loop already removed the
+            // pending entry when it routed the reply.
+            false
+        }
+        Err(_) => {
+            // Timeout: drop the stale pending entry so it cannot leak.
+            COORDINATOR_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            false
+        }
+    }
 }
 
 /// Helper for deserializing register reply directly from raw JSON text,

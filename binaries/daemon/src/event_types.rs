@@ -165,6 +165,19 @@ pub enum DaemonNodeEvent {
         shape: Vec<i64>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    /// Register a memory pool on another machine: resolve the target
+    /// machine through the coordinator, publish `RegisterPool` over the
+    /// memory-pool topic, and await the remote `RegisterPoolAck` before
+    /// replying (synchronous cross-machine register).
+    RegisterCrossMachinePool {
+        shared_memory_id: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
 }
 
 #[derive(Debug)]
