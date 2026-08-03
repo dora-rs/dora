@@ -62,6 +62,8 @@ pub struct Run {
     #[arg(value_parser = parse_log_level_str)]
     pub log_level: LogLevelOrStdout,
     /// Output format for log messages
+    ///
+    /// `json` emits JSON Lines (one object per log message).
     #[clap(long, default_value = "pretty", env = "DORA_LOG_FORMAT")]
     pub log_format: LogFormat,
     /// Per-node log level filter
