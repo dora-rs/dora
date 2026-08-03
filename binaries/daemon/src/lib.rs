@@ -69,6 +69,7 @@ use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::error;
 use uuid::{NoContext, Timestamp, Uuid};
 use zenoh::qos::{CongestionControl, Priority};
+use zenoh::sample::Locality;
 
 pub use flume;
 pub use log::LogDestination;
@@ -267,9 +268,12 @@ unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
 }
 
 /// Create a CPU DORADMA pool mirror on this machine. Mirrors the node
-/// API's register_memory_pool shmem layout; even generation initially.
-/// The segment is deliberately left owner-less (`set_owner(false)`) so
-/// the /dev/shm name survives the handle drop — on Linux a created
+/// API's register_memory_pool shmem layout. The generation is
+/// initialized to an odd (in-progress) value with all-zero data so
+/// receivers do not read the empty segment as a valid frame before the
+/// first direct write lands (the reader retries while the generation is
+/// odd). The segment is deliberately left owner-less (`set_owner(false)`)
+/// so the /dev/shm name survives the handle drop — on Linux a created
 /// (owner) Shmem shm_unlinks on drop, which would remove the name local
 /// receivers open for the zero-copy fast path.
 fn create_cross_pool_shmem(
@@ -299,7 +303,12 @@ fn create_cross_pool_shmem(
         write_header_u64(ptr.add(8), json.len() as u64);
         write_header_u64(ptr.add(16), data_offset as u64);
         std::ptr::copy_nonoverlapping(json.as_ptr(), ptr.add(DORADMA_HEADER_SIZE), json.len());
-        write_header_u64(ptr.add(96), 0); // even generation
+        // Odd generation = write in progress. The mirror starts with
+        // all-zero data; an even (complete) generation would let a
+        // receiver read that as a valid frame before the first direct
+        // write, so begin odd and let the first `seqlock_end` publish
+        // the first even (complete) generation.
+        write_header_u64(ptr.add(96), 1);
     }
     shmem.set_owner(false);
     Ok(())
@@ -307,7 +316,11 @@ fn create_cross_pool_shmem(
 
 /// Write tensor bytes into a mirrored cross-machine pool under the
 /// DORADMA seqlock protocol (odd gen during write, even after).
-async fn write_cross_pool_data(
+///
+/// A 61.44MB mirror write is a 10-30ms synchronous memcpy, so callers
+/// must not run it on the event loop — spawn it (see the MemoryPoolWrite
+/// handler). Not async: there is nothing to await, the work is the copy.
+fn write_cross_pool_data(
     dataflow_id: &Uuid,
     shared_memory_id: &str,
     tensor_data: &[u8],
@@ -331,16 +344,26 @@ async fn write_cross_pool_data(
         );
         return;
     };
+    let shmem_ptr = shmem.as_ptr();
+    // Guard against a corrupt/truncated header before any pointer math.
+    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+    if magic != DORADMA_MAGIC {
+        tracing::warn!("memory pool: {shared_memory_id} header magic mismatch, dropping frame");
+        return;
+    }
+    let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
+    let copy_len = tensor_data.len().min(size);
+    if data_offset + copy_len > shmem.len() {
+        tracing::warn!(
+            "memory pool: {shared_memory_id} data_offset {data_offset} + {copy_len} exceeds shmem size {}, dropping frame",
+            shmem.len()
+        );
+        return;
+    }
     unsafe {
-        let shmem_ptr = shmem.as_ptr();
         let gen_ptr = shmem_ptr.add(96) as *mut u64;
         let pre = seqlock_begin_if_even(gen_ptr);
-        let data_offset = read_header_u64(shmem_ptr.add(16)) as usize;
-        std::ptr::copy_nonoverlapping(
-            tensor_data.as_ptr(),
-            shmem_ptr.add(data_offset),
-            tensor_data.len().min(size),
-        );
+        std::ptr::copy_nonoverlapping(tensor_data.as_ptr(), shmem_ptr.add(data_offset), copy_len);
         seqlock_end(gen_ptr, pre, true);
     }
 }
@@ -399,6 +422,11 @@ async fn publish_memory_pool_event(
     let publisher = session
         .declare_publisher(topic.clone())
         .congestion_control(CongestionControl::Block)
+        // Remote-only: with the default Locality::Any the publisher's own
+        // subscriber receives its own put, and on the RegisterPoolAck path
+        // that local echo would be a self-ack that races (and beats) the
+        // remote ack (see the RegisterPool handler).
+        .allowed_destination(Locality::Remote)
         .await
         .map_err(|e| eyre!("memory pool: declare_publisher({topic}) failed: {e}"))?;
     publisher
@@ -524,6 +552,11 @@ pub struct Daemon {
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
     pub(crate) memory_pool: MemoryPoolManager,
+    /// This machine's id (as registered with the coordinator), if any.
+    /// Used to gate which daemon mirrors a cross-machine pool: the
+    /// RegisterPool event is a dataflow-scope broadcast, so every daemon
+    /// receives it, but only the target machine's daemon may mirror.
+    pub(crate) machine_id: Option<String>,
 }
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -1144,6 +1177,7 @@ impl Daemon {
                                 inter_daemon_peer.clone(),
                                 zenoh_bind,
                                 disable_multicast,
+                                machine_id.clone(),
                             )
                             .await?;
                             daemon = Some(built);
@@ -1468,6 +1502,9 @@ impl Daemon {
             inter_daemon_peer,
             ZenohBind::Derived(LOCALHOST),
             disable_multicast,
+            // Single-shot `dora run` is single-machine by construction and
+            // has no machine id; it never mirrors cross-machine pools.
+            None,
         )
         .await?;
         daemon
@@ -1500,6 +1537,7 @@ impl Daemon {
         inter_daemon_peer: Option<String>,
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
+        machine_id: Option<String>,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
         // Reserve a port and have zenoh listen on it. The endpoint is injected
         // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
@@ -1630,6 +1668,7 @@ impl Daemon {
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
+            machine_id,
         };
 
         Ok((daemon, dora_events_rx))
@@ -3187,8 +3226,17 @@ impl Daemon {
                     .unwrap_or_else(|e| e.into_inner())
                     .contains_key(&shared_memory_id);
                 if is_cross {
-                    write_cross_pool_data(&dataflow_id, &shared_memory_id, &tensor_data, size)
-                        .await;
+                    // The mirror write is a synchronous 61.44MB memcpy
+                    // (10-30ms) — off the event loop or it would stall
+                    // heartbeats, node replies and output delivery. Copy
+                    // the frame into the spawned task (originals stay
+                    // owned here for the proxy fallback below).
+                    let shared_memory_id = shared_memory_id.clone();
+                    let tensor_data = tensor_data.clone();
+                    tokio::spawn(async move {
+                        // `dataflow_id` (Uuid) is Copy; captured by copy.
+                        write_cross_pool_data(&dataflow_id, &shared_memory_id, &tensor_data, size);
+                    });
                     return Ok(());
                 }
                 PROXY_POOL_DATA
@@ -3215,12 +3263,20 @@ impl Daemon {
             }
             InterDaemonEvent::RegisterPool {
                 dataflow_id,
+                machine_id,
                 shared_memory_id,
                 size,
                 dtype,
                 shape,
                 ..
             } => {
+                // Only the target machine's daemon mirrors the pool. The
+                // event is a dataflow-scope broadcast every daemon
+                // receives, so without this gate every daemon would
+                // mirror the pool and ack it.
+                if machine_id != self.machine_id.as_deref().unwrap_or("") {
+                    return Ok(());
+                }
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
                 // 建池在 spawn 内（建池是毫秒级但发布可能 Block）
@@ -3276,13 +3332,17 @@ impl Daemon {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&shared_memory_id);
-                if let Some((node_id, counter)) = shared_memory_id
+                let Some((node_id, counter)) = shared_memory_id
                     .strip_prefix("pool_")
                     .and_then(|s| s.rsplit_once('_'))
-                {
-                    let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
-                    remove_cross_pool_shmem(&shmem_name);
-                }
+                else {
+                    tracing::warn!(
+                        "memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror"
+                    );
+                    return Ok(());
+                };
+                let shmem_name = format!("dora_pool_{}_{}_{}", dataflow_id, node_id, counter);
+                remove_cross_pool_shmem(&shmem_name);
                 tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 Ok(())
             }
@@ -4511,6 +4571,11 @@ impl Daemon {
                         // proxy pool — observed when the inter-daemon
                         // link hiccups mid-transfer on a WAN.
                         .congestion_control(CongestionControl::Block)
+                        // Remote-only: with the default Locality::Any the
+                        // publisher's own subscriber receives this frame
+                        // back and re-writes it into the local pool, a
+                        // duplicate write on the mirrored path.
+                        .allowed_destination(Locality::Remote)
                         .await
                     {
                         Ok(publisher) => {
@@ -4615,6 +4680,13 @@ impl Daemon {
                         let publisher = match session
                             .declare_publisher(topic.clone())
                             .congestion_control(CongestionControl::Block)
+                            // Remote-only: the local echo of RegisterPool
+                            // would fail to mirror (EEXIST — this node
+                            // already created the pool) and publish a
+                            // false ok=false RegisterPoolAck that beats
+                            // the remote's real ack, failing every sync
+                            // register.
+                            .allowed_destination(Locality::Remote)
                             .await
                         {
                             Ok(publisher) => publisher,
