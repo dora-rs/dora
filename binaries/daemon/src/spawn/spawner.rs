@@ -660,6 +660,7 @@ impl Spawner {
             node_working_dir,
             dataflow_id,
             node,
+            generation: crate::running_dataflow::next_node_generation(),
             node_config,
             clock: self.clock,
             daemon_tx: self.daemon_tx,

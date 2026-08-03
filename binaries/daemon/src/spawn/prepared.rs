@@ -152,6 +152,7 @@ pub struct PreparedNode {
     pub(super) node_working_dir: PathBuf,
     pub(super) dataflow_id: DataflowId,
     pub(super) node: ResolvedNode,
+    pub(super) generation: u64,
     pub(super) node_config: NodeConfig,
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
@@ -172,6 +173,7 @@ impl PreparedNode {
     pub async fn spawn(self, mut logger: NodeLogger<'static>) -> eyre::Result<RunningNode> {
         let (op_tx, op_rx) = flume::bounded(2);
         let (finished_tx, finished_rx) = oneshot::channel();
+        let (registered_tx, registered_rx) = oneshot::channel();
         let kind = self
             .clone()
             .spawn_inner(&mut logger, op_rx, finished_tx)
@@ -186,6 +188,8 @@ impl PreparedNode {
                 NodeKind::Dynamic => None,
                 NodeKind::Spawned { .. } => Some(crate::ProcessHandle::new(op_tx)),
             },
+            restart_loop_start: Some(registered_tx),
+            generation: self.generation,
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
@@ -205,7 +209,10 @@ impl PreparedNode {
 
         tokio::spawn(self.restart_loop(
             logger,
-            finished_rx,
+            RestartLoopReceivers {
+                finished: finished_rx,
+                registered: registered_rx,
+            },
             disable_restart,
             force_restart_next,
             pid,
@@ -252,15 +259,51 @@ impl PreparedNode {
         }
     }
 
+    /// Settle the daemon's restart debt when the loop aborts after having
+    /// announced `restart: true`: the daemon's `SpawnedNodeResult` restart
+    /// arm keeps the node's `running_nodes` entry registered awaiting a
+    /// later terminal event, and only that terminal event removes the entry
+    /// and lets the dataflow finish. Every abort path following a
+    /// `restart: true` announcement must call this before returning.
+    async fn send_terminal_exit(
+        &self,
+        generation: u64,
+        exit_status: NodeExitStatus,
+        restart_count: u32,
+        pid: u32,
+    ) {
+        let event = DoraEvent::SpawnedNodeResult {
+            dataflow_id: self.dataflow_id,
+            node_id: self.node.id.clone(),
+            generation,
+            exit_status,
+            dynamic_node: self.node.kind.dynamic(),
+            restart: false,
+            restart_count,
+            pid,
+        }
+        .into();
+        let event = Timestamped {
+            inner: event,
+            timestamp: self.clock.clone().new_timestamp(),
+        };
+        let _ = self.daemon_tx.clone().send(event).await;
+    }
+
     async fn restart_loop(
         mut self,
         mut logger: NodeLogger<'static>,
-        mut finished_rx: oneshot::Receiver<NodeProcessFinished>,
+        receivers: RestartLoopReceivers,
         disable_restart: Arc<AtomicBool>,
         force_restart_next: Arc<AtomicBool>,
         pid: Arc<AtomicU32>,
         shared_restart_count: Arc<AtomicU32>,
     ) {
+        if receivers.registered.await.is_err() {
+            return;
+        }
+        let mut finished_rx = receivers.finished;
+        let mut generation = self.generation;
         let config = self.restart_config();
         let mut restart_count: u32 = 0;
         let mut window_start = tokio::time::Instant::now();
@@ -351,7 +394,8 @@ impl PreparedNode {
             let event = DoraEvent::SpawnedNodeResult {
                 dataflow_id: self.dataflow_id,
                 node_id: self.node.id.clone(),
-                exit_status,
+                generation,
+                exit_status: exit_status.clone(),
                 dynamic_node: self.node.kind.dynamic(),
                 restart,
                 restart_count,
@@ -403,6 +447,11 @@ impl PreparedNode {
                             Some("daemon".into()),
                             "restart cancelled: inputs closed before respawn".to_string(),
                         )
+                        .await;
+                    // The daemon was told `restart: true` above and kept this
+                    // node registered awaiting a successor. Settle that debt
+                    // before aborting, or the dataflow can never finish.
+                    self.send_terminal_exit(generation, exit_status, restart_count, exited_pid)
                         .await;
                     break;
                 }
@@ -461,14 +510,18 @@ impl PreparedNode {
                 match result {
                     Ok(NodeKind::Spawned { pid: new_pid }) => {
                         finished_rx = finished_rx_new;
+                        let new_handle = crate::ProcessHandle::new(op_tx_new);
                         pid.store(new_pid, atomic::Ordering::Release);
+                        let new_generation = crate::running_dataflow::next_node_generation();
                         // Install the new `ProcessHandle` in
                         // `running_nodes` so subsequent stop/kill
                         // operations target this incarnation.
                         let handle_replaced = DoraEvent::ProcessHandleReplaced {
                             dataflow_id: self.dataflow_id,
                             node_id: self.node.id.clone(),
-                            new_handle: crate::ProcessHandle::new(op_tx_new),
+                            previous_generation: generation,
+                            new_generation,
+                            new_handle,
                         }
                         .into();
                         let msg = Timestamped {
@@ -476,6 +529,7 @@ impl PreparedNode {
                             timestamp: self.clock.clone().new_timestamp(),
                         };
                         let _ = self.daemon_tx.clone().send(msg).await;
+                        generation = new_generation;
                     }
                     Ok(NodeKind::Dynamic) => {
                         logger
@@ -494,6 +548,10 @@ impl PreparedNode {
                                 Some("daemon".into()),
                                 format!("failed to restart node: {err:?}"),
                             )
+                            .await;
+                        // Same restart debt as the cancel branches above:
+                        // without a terminal event the node stays registered.
+                        self.send_terminal_exit(generation, exit_status, restart_count, exited_pid)
                             .await;
                         break;
                     }
@@ -1064,9 +1122,181 @@ struct NodeProcessFinished {
     // pair.
 }
 
+struct RestartLoopReceivers {
+    finished: oneshot::Receiver<NodeProcessFinished>,
+    registered: oneshot::Receiver<()>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Deserialize from YAML (mirroring `dora_core::build` tests) to avoid
+    /// coupling this fixture to ResolvedNode's exact field list.
+    fn test_resolved_node(restart_delay_secs: f64) -> dora_core::descriptor::ResolvedNode {
+        serde_yaml::from_str(&format!(
+            "id: test\n\
+             custom:\n  \
+             path: /nonexistent\n  \
+             source: Local\n  \
+             restart_policy: always\n  \
+             restart_delay: {restart_delay_secs}\n"
+        ))
+        .expect("parse test node descriptor")
+    }
+
+    fn test_node_config() -> NodeConfig {
+        NodeConfig {
+            dataflow_id: uuid::Uuid::nil(),
+            node_id: NodeId::from("test".to_string()),
+            run_config: serde_yaml::from_str("inputs: {}\noutputs: []\n")
+                .expect("parse empty run config"),
+            daemon_communication: None,
+            dataflow_descriptor: serde_yaml::Value::Null,
+            dynamic: false,
+            write_events_to: None,
+            restart_count: 0,
+            output_routing: None,
+        }
+    }
+
+    fn test_prepared_node(
+        daemon_tx: tokio::sync::mpsc::Sender<Timestamped<Event>>,
+        generation: u64,
+        restart_delay_secs: f64,
+    ) -> PreparedNode {
+        PreparedNode {
+            command: None,
+            spawn_error_msg: "test node has no spawnable command".into(),
+            node_working_dir: PathBuf::from("."),
+            dataflow_id: uuid::Uuid::nil(),
+            node: test_resolved_node(restart_delay_secs),
+            generation,
+            node_config: test_node_config(),
+            clock: Arc::new(HLC::default()),
+            daemon_tx,
+            node_stderr_most_recent: Arc::new(ArrayQueue::new(4)),
+            last_activity: Arc::new(AtomicU64::new(0)),
+            ft_stats: Arc::new(crate::FaultToleranceStats::default()),
+        }
+    }
+
+    async fn test_logger() -> NodeLogger<'static> {
+        let logger = crate::log::Logger {
+            destination: crate::log::LogDestination::Tracing,
+            daemon_id: dora_message::common::DaemonId::new(None),
+            clock: Arc::new(HLC::default()),
+        };
+        let mut daemon_logger = logger.for_daemon(dora_message::common::DaemonId::new(None));
+        daemon_logger
+            .for_dataflow(uuid::Uuid::nil())
+            .try_clone()
+            .await
+            .expect("clone dataflow logger")
+            .for_node(NodeId::from("test".to_string()))
+    }
+
+    /// The registered-gate abort path: a `RunningNode` dropped without
+    /// `mark_registered` (its dataflow vanished before insertion) must
+    /// cancel the restart loop outright — no events, no respawns.
+    #[tokio::test]
+    async fn restart_loop_aborts_when_registration_never_happens() {
+        let (daemon_tx, mut daemon_rx) = tokio::sync::mpsc::channel(8);
+        let node = test_prepared_node(daemon_tx, 7, 0.0);
+        let (_finished_tx, finished_rx) = oneshot::channel();
+        let (registered_tx, registered_rx) = oneshot::channel::<()>();
+        drop(registered_tx);
+
+        node.restart_loop(
+            test_logger().await,
+            RestartLoopReceivers {
+                finished: finished_rx,
+                registered: registered_rx,
+            },
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+        )
+        .await;
+
+        assert!(
+            daemon_rx.try_recv().is_err(),
+            "an unregistered restart loop must terminate without emitting events"
+        );
+    }
+
+    /// A stop that lands during restart backoff (after `restart: true` was
+    /// announced) must settle the daemon's restart debt with a terminal
+    /// `SpawnedNodeResult` — otherwise the node entry is never removed and
+    /// the dataflow can never finish (dora-rs/dora#2926 review).
+    #[tokio::test]
+    async fn cancelled_restart_settles_terminal_exit() {
+        let (daemon_tx, mut daemon_rx) = tokio::sync::mpsc::channel(8);
+        // Long backoff so the disable flag flips deterministically mid-sleep.
+        let node = test_prepared_node(daemon_tx, 7, 0.5);
+        let (finished_tx, finished_rx) = oneshot::channel();
+        let (registered_tx, registered_rx) = oneshot::channel();
+        let disable_restart = Arc::new(AtomicBool::new(false));
+
+        let loop_task = tokio::spawn(node.restart_loop(
+            test_logger().await,
+            RestartLoopReceivers {
+                finished: finished_rx,
+                registered: registered_rx,
+            },
+            disable_restart.clone(),
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(AtomicU32::new(0)),
+            Arc::new(AtomicU32::new(0)),
+        ));
+
+        registered_tx.send(()).expect("open registration gate");
+        assert!(
+            finished_tx
+                .send(NodeProcessFinished {
+                    exit_status: NodeExitStatus::ExitCode(1),
+                    pid: 42,
+                })
+                .is_ok(),
+            "report node exit"
+        );
+
+        let first = daemon_rx.recv().await.expect("restart announcement");
+        match first.inner {
+            Event::Dora(DoraEvent::SpawnedNodeResult {
+                generation,
+                restart,
+                ..
+            }) => {
+                assert_eq!(generation, 7);
+                assert!(restart, "first event must announce the restart");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        // Stop lands while the loop sleeps out its restart backoff.
+        disable_restart.store(true, atomic::Ordering::Release);
+
+        let second = daemon_rx.recv().await.expect("terminal settlement");
+        match second.inner {
+            Event::Dora(DoraEvent::SpawnedNodeResult {
+                generation,
+                restart,
+                ..
+            }) => {
+                assert_eq!(generation, 7, "terminal event must match the entry");
+                assert!(!restart, "cancelled restart must settle terminally");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        loop_task.await.expect("restart loop must exit");
+        assert!(
+            daemon_rx.try_recv().is_err(),
+            "no further events after the terminal settlement"
+        );
+    }
 
     async fn read_all_lines(input: &[u8]) -> Vec<Vec<u8>> {
         let mut reader = tokio::io::BufReader::new(input).take(MAX_LOG_LINE_BYTES as u64);

@@ -40,6 +40,7 @@ use std::{
 use tokio::sync::{
     broadcast,
     mpsc::{self, Sender},
+    oneshot,
 };
 use tracing::warn;
 
@@ -80,6 +81,15 @@ impl InputDeadline {
 #[derive(Debug)]
 pub struct RunningNode {
     pub(crate) process: Option<ProcessHandle>,
+    /// Gates this node's `restart_loop` until the daemon has inserted the
+    /// entry into `running_nodes` (`mark_registered`), so the loop's first
+    /// events cannot race ahead of registration. Dropping the sender without
+    /// firing it (entry never registered) cancels the loop.
+    pub(crate) restart_loop_start: Option<oneshot::Sender<()>>,
+    /// Monotonic identity of the process incarnation currently registered
+    /// under this node ID. Lifecycle events from older incarnations must not
+    /// mutate this entry or contribute results to it.
+    pub(crate) generation: u64,
     pub(crate) node_config: NodeConfig,
     pub(crate) pid: Option<Arc<AtomicU32>>,
     pub(crate) restart_count: Arc<AtomicU32>,
@@ -101,6 +111,48 @@ pub struct RunningNode {
 }
 
 impl RunningNode {
+    pub(crate) fn mark_registered(&mut self) {
+        if let Some(start) = self.restart_loop_start.take() {
+            let _ = start.send(());
+        }
+    }
+
+    pub(crate) fn matches_generation(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
+    /// Install a respawned incarnation's process handle.
+    ///
+    /// A stale replacement is dropped here, which kills that orphan process.
+    /// A replacement rejected during teardown is returned to the caller so it
+    /// can follow the dataflow's configured stop policy instead of being
+    /// hard-killed by [`ProcessHandle::drop`].
+    pub(crate) fn replace_process_handle(
+        &mut self,
+        previous_generation: u64,
+        new_generation: u64,
+        new_handle: ProcessHandle,
+    ) -> HandleReplacement {
+        if !self.matches_generation(previous_generation) {
+            // A dead incarnation must not replace a live successor's handle
+            // (dora-rs/dora#2926). Dropping `new_handle` kills the orphan.
+            return HandleReplacement::RejectedStale;
+        }
+        if self.restarts_disabled() {
+            // Teardown won the race. Still advance the generation: the restart
+            // loop already speaks `new_generation`, and its terminal
+            // `SpawnedNodeResult` must match this entry or the node would stay
+            // registered forever and the dataflow could never finish. Return
+            // the handle so RunningDataflow can apply the active stop policy.
+            self.generation = new_generation;
+            return HandleReplacement::RejectedTeardown(new_handle);
+        }
+
+        self.process = Some(new_handle);
+        self.generation = new_generation;
+        HandleReplacement::Replaced
+    }
+
     pub fn restarts_disabled(&self) -> bool {
         self.disable_restart.load(atomic::Ordering::Acquire)
     }
@@ -108,6 +160,43 @@ impl RunningNode {
     pub fn disable_restart(&mut self) {
         self.disable_restart.store(true, atomic::Ordering::Release);
     }
+}
+
+/// Outcome of [`RunningNode::replace_process_handle`].
+#[derive(Debug)]
+pub(crate) enum HandleReplacement {
+    /// The handle was installed and the entry advanced to the new generation.
+    Replaced,
+    /// Teardown disabled restarts first. The entry's generation was advanced
+    /// so the restart loop's terminal exit event is accepted, and the handle
+    /// must be stopped according to the active dataflow stop policy.
+    RejectedTeardown(ProcessHandle),
+    /// The event belongs to a dead incarnation (generation mismatch); the
+    /// entry was left untouched.
+    RejectedStale,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StopProcessPolicy {
+    Force,
+    Graceful(Duration),
+}
+
+static NEXT_NODE_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// Generations are unique across the whole daemon process — not per node —
+/// so a re-added node ID (or any freshly built `RunningNode`) can never
+/// reuse a predecessor's generation. Equality against the entry's stored
+/// generation is therefore collision-free proof that an event belongs to
+/// the currently registered incarnation.
+pub(crate) fn next_node_generation() -> u64 {
+    NEXT_NODE_GENERATION
+        .fetch_update(
+            atomic::Ordering::Relaxed,
+            atomic::Ordering::Relaxed,
+            |generation| generation.checked_add(1),
+        )
+        .expect("node generation counter exhausted")
 }
 
 #[derive(Debug)]
@@ -243,9 +332,17 @@ pub struct RunningDataflow {
     /// changes when nodes are told to stop.
     pub(crate) timers_gate_drain: bool,
     pub(crate) stop_sent: bool,
+    /// Resolved process-stop policy for this dataflow. A respawn that races
+    /// after `stop_all` moved the previously-known handles out of
+    /// `running_nodes` must use this same policy.
+    pub(crate) stop_process_policy: Option<StopProcessPolicy>,
     pub(crate) empty_set: BTreeSet<DataId>,
     pub(crate) cascading_error_causes: CascadingErrorCauses,
-    pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<NodeId>>,
+    /// Planned-stop kill markers keyed by `(node id, generation)`: scoped to
+    /// one process incarnation so a re-added successor never inherits its
+    /// predecessor's marker, and cleaning up a stale event cannot clear a
+    /// live incarnation's marker.
+    pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     /// Reverse index from output to the set of CLI subscribers watching it.
@@ -309,6 +406,7 @@ impl RunningDataflow {
             data_inputs: BTreeMap::new(),
             timers_gate_drain: true,
             stop_sent: false,
+            stop_process_policy: None,
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
@@ -473,6 +571,13 @@ impl RunningDataflow {
             node.disable_restart();
         }
 
+        let stop_process_policy = if force {
+            StopProcessPolicy::Force
+        } else {
+            StopProcessPolicy::Graceful(grace_duration.unwrap_or(DEFAULT_STOP_GRACE))
+        };
+        self.stop_process_policy = Some(stop_process_policy);
+
         for (node_id, channel) in self.subscribe_channels.drain() {
             if send_with_timestamp(&channel, NodeEvent::Stop, clock).ok() == Some(true)
                 && let Some(counter) = self.pending_messages.get(&node_id)
@@ -484,55 +589,67 @@ impl RunningDataflow {
         let running_processes: Vec<_> = self
             .running_nodes
             .iter_mut()
-            .map(|(id, n)| (id.clone(), n.process.take()))
+            .map(|(id, n)| (id.clone(), n.generation, n.process.take()))
             .collect();
-        if force {
-            for (node, proc) in &running_processes {
-                if let Some(proc) = proc
-                    && proc.submit(ProcessOperation::Kill)
-                {
-                    // Record the daemon-initiated kill so a node that ignores
-                    // the pre-kill `Stop` and gets SIGKILLed is classified as
-                    // a planned `GraceDuration` stop rather than a genuine node
-                    // failure. Mirrors the graceful branch below; exit
-                    // classification keys "the daemon asked this node to stop"
-                    // off `grace_duration_kills` (see lib.rs exit handling).
-                    self.grace_duration_kills.insert(node.clone());
-                }
+        for (node_id, generation, process) in running_processes {
+            if let Some(process) = process {
+                self.schedule_process_stop(node_id, generation, process, stop_process_policy);
             }
-        } else {
-            let grace_duration_kills = self.grace_duration_kills.clone();
-            tokio::spawn(async move {
-                let duration = grace_duration.unwrap_or(DEFAULT_STOP_GRACE);
-                tokio::time::sleep(duration).await;
-
-                for (node, proc) in &running_processes {
-                    if let Some(proc) = proc
-                        && proc.submit(ProcessOperation::SoftKill)
-                    {
-                        grace_duration_kills.insert(node.clone());
-                    }
-                }
-
-                let kill_duration = duration / 2;
-                tokio::time::sleep(kill_duration).await;
-
-                for (node, proc) in &running_processes {
-                    if let Some(proc) = proc
-                        && proc.submit(ProcessOperation::Kill)
-                    {
-                        grace_duration_kills.insert(node.clone());
-                        warn!(
-                            "{node} was killed due to not stopping within the {:#?} grace period",
-                            duration + kill_duration
-                        );
-                    }
-                }
-            });
         }
         self.stop_sent = true;
 
         Ok(self.should_finish_immediately())
+    }
+
+    fn schedule_process_stop(
+        &self,
+        node_id: NodeId,
+        generation: u64,
+        process: ProcessHandle,
+        policy: StopProcessPolicy,
+    ) {
+        let grace_duration_kills = self.grace_duration_kills.clone();
+        match policy {
+            StopProcessPolicy::Force => {
+                if process.submit(ProcessOperation::Kill) {
+                    grace_duration_kills.insert((node_id, generation));
+                }
+            }
+            StopProcessPolicy::Graceful(duration) => {
+                tokio::spawn(async move {
+                    tokio::time::sleep(duration).await;
+                    if process.submit(ProcessOperation::SoftKill) {
+                        grace_duration_kills.insert((node_id.clone(), generation));
+                    }
+
+                    let kill_duration = duration / 2;
+                    tokio::time::sleep(kill_duration).await;
+                    if process.submit(ProcessOperation::Kill) {
+                        grace_duration_kills.insert((node_id.clone(), generation));
+                        warn!(
+                            "{node_id} was killed due to not stopping within the {:#?} grace period",
+                            duration + kill_duration
+                        );
+                    }
+                });
+            }
+        }
+    }
+
+    pub(crate) fn stop_rejected_replacement(
+        &self,
+        node_id: &NodeId,
+        generation: u64,
+        process: ProcessHandle,
+    ) {
+        if let Some(policy) = self.stop_process_policy {
+            self.schedule_process_stop(node_id.clone(), generation, process, policy);
+        } else {
+            // Restarts can also be disabled by AllInputsClosed. That path has
+            // no operator-supplied grace policy, so retain its existing
+            // immediate orphan-reaping behavior.
+            drop(process);
+        }
     }
 
     fn should_finish_immediately(&self) -> FinishDataflowWhen {
@@ -561,9 +678,11 @@ impl RunningDataflow {
             .get_mut(node_id)
             .ok_or_else(|| eyre!("node `{node_id}` not found in running dataflow"))?;
         node.disable_restart();
+        let generation = node.generation;
         let process = node.process.take();
         self.send_stop_and_schedule_kill(
             node_id,
+            generation,
             process,
             clock,
             grace_duration,
@@ -603,6 +722,7 @@ impl RunningDataflow {
                  already exited terminally)"
             ));
         }
+        let generation = node.generation;
         let process = node.process.take();
         // Clear any prior disable (e.g. from an earlier stop_single_node
         // or a cascading AllInputsClosed) so the restart_loop will pick
@@ -632,6 +752,7 @@ impl RunningDataflow {
         self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
             node_id,
+            generation,
             process,
             clock,
             grace_duration,
@@ -644,6 +765,7 @@ impl RunningDataflow {
     fn send_stop_and_schedule_kill(
         &self,
         node_id: &NodeId,
+        generation: u64,
         process: Option<ProcessHandle>,
         clock: &HLC,
         grace_duration: Option<Duration>,
@@ -671,11 +793,11 @@ impl RunningDataflow {
             tokio::spawn(async move {
                 tokio::time::sleep(duration).await;
                 if proc.submit(ProcessOperation::SoftKill) {
-                    grace_duration_kills.insert(node_id.clone());
+                    grace_duration_kills.insert((node_id.clone(), generation));
                 }
                 tokio::time::sleep(duration / 2).await;
                 if proc.submit(ProcessOperation::Kill) {
-                    grace_duration_kills.insert(node_id);
+                    grace_duration_kills.insert((node_id, generation));
                 }
             });
         }
