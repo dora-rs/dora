@@ -165,6 +165,17 @@ node.free_memory_pool → daemon A：释放本地池 + 清 CROSS_POOLS 记录
 - `binaries/coordinator/src/`：ResolveMachine 处理
 - `examples/memory-pool/sender.py`：register 传 machine 参数（跨机 YAML 场景）
 
+## 实现状态（2026-08-03）
+
+v1（cpu2cpu_cross）已实现并本地验证：
+- 双端真实 DORADMA 池 + machine 参数 + coordinator 解析 + 同步确认
+- write 全量直写（seqlock）+ read 零拷贝快路径 + free 双端
+- E2E 通过：preview 匹配、3 帧、负路径 warn+优雅退出
+- 实现中发现的补充设计（E2E 暴露）：镜像 shmem 命名 machine 限定
+  （dora_pool_{machine}_{df}_{node}_{counter}，DORA_MACHINE_ID env 注入）；
+  memory-pool 发布 Locality::Remote（回声切断）
+- 遗留：release 构建的 WAN 端到端吞吐未实测（本地为 debug 构建）
+
 ## 8. 后续迭代（不在 v1）
 
 - GPU receiver 池（cpu2cuda_cross：B 侧建 GPU buffer + 数据拷贝）
