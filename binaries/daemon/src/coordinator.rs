@@ -387,6 +387,7 @@ pub(crate) async fn resolve_machine(
     match tokio::time::timeout(std::time::Duration::from_secs(5), reply_rx).await {
         Ok(Ok(value)) => value
             .get("inner")
+            .and_then(|v| v.get("ResolveMachineResult"))
             .and_then(|v| v.get("found"))
             .and_then(|v| v.as_bool())
             .unwrap_or(false),
