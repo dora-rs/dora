@@ -3605,52 +3605,40 @@ impl Daemon {
             self.clock.clone(),
         );
 
-        // Subscribe to the dataflow's memory-pool topic so cross-machine
-        // WriteMemoryPool events reach this daemon via Zenoh.
+        // Subscribe to the dataflow memory-pool topic for cross-machine
+        // WriteMemoryPool events arriving through Zenoh. The whole
+        // declare+receive loop runs OFF the event loop: with a degraded
+        // inter-daemon link, declare_subscriber() itself can block, which
+        // would otherwise wedge this spawn handler and stall every
+        // subsequent event (WriteMemoryPool included) — the sender then
+        // hangs on its daemon reply forever.
         {
             let mp_topic = dataflow_memory_pool_topic(&dataflow_id);
             let mp_session = self.zenoh_session.clone();
             let mp_events_tx = self.events_tx.clone();
-            let mp_clock = self.clock.clone();
-            match mp_session
-                .declare_subscriber(&mp_topic)
-                .await
-            {
-                Ok(subscriber) => {
-                    tokio::spawn(async move {
-                        loop {
-                            match subscriber.recv_async().await {
-                                Ok(sample) => {
-                                    let bytes = sample.payload().to_bytes();
-                                    if let Ok(event) =
-                                        Timestamped::<
-                                            InterDaemonEvent,
-                                        >::deserialize_inter_daemon_event(
-                                            &bytes
-                                        )
-                                    {
-                                        let ts = event.timestamp;
-                                        let _ = mp_events_tx
-                                            .send(Timestamped {
-                                                inner: Event::Daemon(
-                                                    event.inner,
-                                                ),
-                                                timestamp: ts,
-                                            })
-                                            .await;
-                                    }
-                                }
-                                Err(_) => break,
-                            }
-                        }
-                    }));
-                }
-                Err(e) => {
+            tokio::spawn(async move {
+                let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
                     tracing::warn!(
-                        "failed to subscribe to memory pool topic {mp_topic}: {e}"
+                        "memory pool: declare_subscriber({mp_topic}) failed; \
+                         cross-machine pool reads will not see remote writes"
                     );
+                    return;
+                };
+                while let Ok(sample) = subscriber.recv_async().await {
+                    let bytes = sample.payload().to_bytes();
+                    if let Ok(event) =
+                        Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
+                    {
+                        tracing::info!("memory pool: received inter-daemon event on {mp_topic}");
+                        let _ = mp_events_tx
+                            .send(Timestamped {
+                                inner: Event::Daemon(event.inner),
+                                timestamp: event.timestamp,
+                            })
+                            .await;
+                    }
                 }
-            }
+            });
         }
 
         Ok(spawn_result)
@@ -4141,33 +4129,96 @@ impl Daemon {
                 tensor_data,
                 size,
                 device,
+                dtype,
+                shape,
                 reply_sender,
             } => {
                 PROXY_POOL_DATA
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .insert(shared_memory_id.clone(), (tensor_data.clone(), size, device));
+                    .insert(
+                        shared_memory_id.clone(),
+                        (
+                            tensor_data.clone(),
+                            size,
+                            device.clone(),
+                            dtype.clone(),
+                            shape.clone(),
+                        ),
+                    );
 
-                // Forward to remote daemons via Zenoh.
-                if let Ok(serialized) = bincode::serialize(
-                    &InterDaemonEvent::MemoryPoolWrite {
-                        dataflow_id: dataflow_id.into(),
+                // Forward to remote daemons via Zenoh. Failures are
+                // logged loudly: a dropped publish strands remote readers
+                // with a never-ready proxy pool.
+                // Must match the subscriber's wire format: a
+                // `Timestamped<InterDaemonEvent>` (the same framing the
+                // regular inter-daemon event path uses). Serializing the
+                // bare enum silently fails the subscriber's
+                // `deserialize_inter_daemon_event` — the bincode
+                // Timestamped header misreads the enum tag — and the
+                // event is dropped without ever reaching PROXY_POOL_DATA.
+                match bincode::serialize(&Timestamped {
+                    inner: InterDaemonEvent::MemoryPoolWrite {
+                        dataflow_id,
                         shared_memory_id,
                         tensor_data,
                         size,
                         device,
+                        dtype,
+                        shape,
                     },
-                ) {
-                    // Publish on the dataflow-global memory pool topic —
-                    // all daemons subscribe to this topic at startup.
-                    let topic = dataflow_memory_pool_topic(&dataflow_id);
-                    if let Ok(publisher) = self
-                        .zenoh_session
-                        .declare_publisher(&topic)
-                        .congestion_control(CongestionControl::Drop)
-                        .await
-                    {
-                        let _ = publisher.put(serialized).await;
+                    timestamp: self.clock.new_timestamp(),
+                }) {
+                    Ok(serialized) => {
+                        let topic = dataflow_memory_pool_topic(&dataflow_id);
+                        // Run the whole declare+put off the event loop:
+                        // with Block congestion control a slow/stalled
+                        // inter-daemon link blocks declare_publisher()
+                        // itself, which would otherwise wedge the daemon
+                        // event loop (heartbeats + node replies included)
+                        // for the whole transfer — observed as the sender
+                        // hanging on WritePinnedMemory forever.
+                        let session = self.zenoh_session.clone();
+                        let payload_len = serialized.len();
+                        tokio::spawn(async move {
+                            let declared = std::time::Instant::now();
+                            match session
+                                .declare_publisher(topic.clone())
+                                // Block (not Drop): a dropped publish silently
+                                // strands remote readers with a never-ready
+                                // proxy pool — observed when the inter-daemon
+                                // link hiccups mid-transfer on a WAN.
+                                .congestion_control(CongestionControl::Block)
+                                .await
+                            {
+                                Ok(publisher) => {
+                                    tracing::info!(
+                                        "memory pool: declared {topic} in {:?}, starting put \
+                                         ({payload_len} bytes)",
+                                        declared.elapsed()
+                                    );
+                                    let started = std::time::Instant::now();
+                                    if let Err(e) = publisher.put(serialized).await {
+                                        tracing::error!(
+                                            "memory pool publish to {topic} failed: {e}"
+                                        );
+                                    } else {
+                                        tracing::info!(
+                                            "memory pool: put to {topic} completed in {:?}",
+                                            started.elapsed()
+                                        );
+                                    }
+                                }
+                                Err(e) => {
+                                    tracing::error!(
+                                        "memory pool declare_publisher({topic}) failed: {e}"
+                                    );
+                                }
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        tracing::error!("memory pool bincode serialize failed: {e}");
                     }
                 }
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
