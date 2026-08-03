@@ -2650,6 +2650,262 @@ impl Daemon {
                 let _ = reply_tx.send(Some(reply));
                 RunStatus::Continue
             }
+            DaemonCoordinatorEvent::ReplaceNode {
+                dataflow_id,
+                node,
+                uv,
+                grace_duration,
+            } => {
+                let node_id = node.id.clone();
+                tracing::info!(%dataflow_id, %node_id, "replacing node in running dataflow");
+
+                let result: eyre::Result<()> = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    // Replace must not swap a node the startup barrier is
+                    // still waiting on: the barrier tracks the original
+                    // incarnation's subscription, and a mid-barrier swap
+                    // would let the replacement inherit or corrupt that
+                    // cohort's state (cf. AddNode's deliberate
+                    // non-enrollment, dora-rs/dora#2917). Deliberately NOT
+                    // gated on `dataflow_started`: that flag is set by the
+                    // all-daemons-ready roundtrip, which can lag seconds
+                    // behind this node being visibly Running — the precise
+                    // hazard is this id gating the barrier, nothing more.
+                    eyre::ensure!(
+                        !dataflow.pending_nodes.is_pending(&node_id),
+                        "node `{node_id}` is still starting (startup barrier); \
+                         retry once the dataflow is ready"
+                    );
+                    eyre::ensure!(
+                        dataflow.running_nodes.contains_key(&node_id),
+                        "no running node `{node_id}` to replace; use `dora node add`"
+                    );
+
+                    // --- same-edges validation -------------------------------
+                    // A replace is a swap, not a topology edit
+                    // (dora-rs/dora#2927): the replacement must keep the
+                    // node's input mappings exactly and still produce every
+                    // output a downstream consumer is mapped to.
+                    let new_inputs = node_inputs(&node);
+                    let current_entry = dataflow
+                        .descriptor
+                        .nodes
+                        .iter()
+                        .find(|n| n.id == node_id)
+                        .ok_or_else(|| {
+                            eyre!("stored descriptor has no entry for node `{node_id}`")
+                        })?;
+                    let mut current_edges: BTreeMap<&DataId, &InputMapping> = current_entry
+                        .inputs
+                        .iter()
+                        .map(|(id, input)| (id, &input.mapping))
+                        .collect();
+                    for (input_id, input) in &new_inputs {
+                        match current_edges.remove(input_id) {
+                            Some(mapping) if *mapping == input.mapping => {}
+                            Some(_) => eyre::bail!(
+                                "replacement remaps input `{input_id}`; `dora node replace` \
+                                 keeps the node's edges — use `dora node remove`/`add` or the \
+                                 mapping commands for topology changes"
+                            ),
+                            None => eyre::bail!(
+                                "replacement adds input `{input_id}`; `dora node replace` \
+                                 keeps the node's edges — use `dora node remove`/`add` or the \
+                                 mapping commands for topology changes"
+                            ),
+                        }
+                    }
+                    if let Some((input_id, _)) = current_edges.into_iter().next() {
+                        eyre::bail!(
+                            "replacement drops input `{input_id}`; `dora node replace` keeps \
+                             the node's edges — use `dora node remove`/`add` or the mapping \
+                             commands for topology changes"
+                        );
+                    }
+                    let new_outputs = node.kind.run_config().outputs;
+                    for output_id in dataflow.mappings.keys().filter(|oid| oid.0 == node_id) {
+                        eyre::ensure!(
+                            new_outputs.contains(&output_id.1),
+                            "replacement does not declare output `{}`, which downstream \
+                             nodes consume",
+                            output_id.1
+                        );
+                    }
+
+                    // --- spawn the replacement (old incarnation untouched) ---
+                    // Any failure up to and including the spawn leaves the
+                    // current incarnation running (dora-rs/dora#2927).
+                    let base_working_dir = self
+                        .working_dir
+                        .get(&dataflow_id)
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let is_dynamic = node.kind.dynamic();
+                    let output_routing = output_routing::added_node_output_routing(
+                        &node_id,
+                        node.kind.run_config().outputs,
+                        &dataflow.mappings,
+                        &dataflow.open_external_mappings,
+                        &dataflow.dynamic_nodes,
+                    );
+                    // Fresh stderr buffer for the new incarnation; installed
+                    // into the map only after the spawn succeeds.
+                    let node_stderr = Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX));
+                    let descriptor = dataflow.descriptor.clone();
+                    let spawner = Spawner {
+                        dataflow_id,
+                        daemon_tx: self.events_tx.clone(),
+                        dataflow_descriptor: descriptor,
+                        clock: self.clock.clone(),
+                        uv,
+                        ft_stats: self.ft_stats.clone(),
+                        shutdown: dataflow.listener_shutdown_rx.clone(),
+                        zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+                        zenoh_peering: dataflow.zenoh_peering.clone(),
+                        disable_multicast: self.disable_multicast,
+                    };
+                    let mut logger = self
+                        .logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .try_clone()
+                        .await
+                        .context("failed to clone logger")?;
+                    let python_env_dir =
+                        dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let task = spawner
+                        .spawn_node(
+                            node.clone(),
+                            base_working_dir,
+                            python_env_dir,
+                            false,
+                            node_stderr.clone(),
+                            None,
+                            output_routing,
+                            &mut logger,
+                        )
+                        .await
+                        .wrap_err("failed to prepare replacement node")?;
+                    let prepared = task.await.wrap_err("failed to build replacement node")?;
+                    let mut running_node = prepared
+                        .spawn(logger)
+                        .await
+                        .wrap_err("failed to spawn replacement node")?;
+
+                    // --- commit: swap entries and stop the outgoing one ------
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("dataflow disappeared during replacement spawn"))?;
+                    // If the entry vanished mid-spawn (concurrent remove),
+                    // dropping `running_node` kills the fresh process via
+                    // its ProcessHandle Drop and cancels its (ungated)
+                    // restart loop — no orphan.
+                    let mut outgoing =
+                        dataflow.running_nodes.remove(&node_id).ok_or_else(|| {
+                            eyre!("node `{node_id}` was removed during the replacement spawn")
+                        })?;
+                    outgoing.disable_restart();
+                    let outgoing_generation = outgoing.generation;
+                    let outgoing_process = outgoing.process.take();
+                    // Stop the outgoing incarnation while its subscribe
+                    // channel is still installed so the graceful `Stop`
+                    // reaches it; its later exit event carries
+                    // `outgoing_generation` and is dropped by the
+                    // generation guard instead of being attributed to the
+                    // replacement (dora-rs/dora#2926).
+                    dataflow.stop_replaced_incarnation(
+                        &node_id,
+                        outgoing_generation,
+                        outgoing_process,
+                        &self.clock,
+                        grace_duration,
+                    );
+
+                    // Per-incarnation state reset. Mappings, timers, and log
+                    // subscriptions are keyed by (node id, input id) and the
+                    // edges are validated identical, so they carry over
+                    // unchanged; everything scoped to the outgoing process
+                    // is dropped or re-registered fresh.
+                    dataflow.subscribe_channels.remove(&node_id);
+                    dataflow.pending_messages.remove(&node_id);
+                    dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.connected_nodes.remove(&node_id);
+                    dataflow.finish_escalated.remove(&node_id);
+                    dataflow.forget_node_bookkeeping(&node_id);
+                    dataflow
+                        .node_stderr_most_recent
+                        .insert(node_id.clone(), node_stderr);
+
+                    let mut open_inputs = BTreeSet::new();
+                    let mut data_inputs = BTreeSet::new();
+                    for (input_id, input) in &new_inputs {
+                        open_inputs.insert(input_id.clone());
+                        if matches!(input.mapping, InputMapping::User(_)) {
+                            data_inputs.insert(input_id.clone());
+                            if let Some(timeout) = input.input_timeout {
+                                dataflow.input_deadlines.insert(
+                                    (node_id.clone(), input_id.clone()),
+                                    InputDeadline {
+                                        timeout: Duration::from_secs_f64(timeout),
+                                        last_received: None,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    dataflow.open_inputs.insert(node_id.clone(), open_inputs);
+                    dataflow.data_inputs.insert(node_id.clone(), data_inputs);
+
+                    if is_dynamic {
+                        dataflow.dynamic_nodes.insert(node_id.clone());
+                    } else {
+                        dataflow.dynamic_nodes.remove(&node_id);
+                    }
+
+                    // Swap the stored descriptor entry for the same minimal
+                    // shape AddNode records — only `id` and `inputs` are
+                    // consulted by the daemon.
+                    if let Some(entry) = dataflow
+                        .descriptor
+                        .nodes
+                        .iter_mut()
+                        .find(|n| n.id == node_id)
+                    {
+                        entry.inputs = new_inputs.into_iter().collect();
+                    }
+
+                    running_node.mark_registered();
+                    dataflow.running_nodes.insert(node_id.clone(), running_node);
+
+                    tracing::info!(
+                        %dataflow_id,
+                        %node_id,
+                        outgoing_generation,
+                        dynamic = is_dynamic,
+                        "node replaced successfully"
+                    );
+                    Ok(())
+                }
+                .await;
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "ReplaceNode failed: {err:?}");
+                }
+                if result.is_ok() {
+                    // The outgoing (or an even earlier) incarnation's stale
+                    // result must not be attributed to the replacement.
+                    clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                }
+                let reply = DaemonCoordinatorReply::ReplaceNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
+                RunStatus::Continue
+            }
             DaemonCoordinatorEvent::AddMapping {
                 dataflow_id,
                 source_node,

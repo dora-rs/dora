@@ -1255,6 +1255,180 @@ fn removing_all_nodes_keeps_dataflow_alive_until_explicit_stop() {
     );
 }
 
+/// The atomic swap from dora-rs/dora#2927: one `dora node replace`
+/// command swaps a running node for a new definition under the same id.
+/// The outgoing incarnation here exits 1 on stop, so the test also pins
+/// that its exit is not attributed to the replacement: `dora node list`
+/// shows the successor Running and `dora stop` reports a clean dataflow.
+#[test]
+#[cfg(unix)]
+fn replace_swaps_running_node_without_blaming_successor() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-replace";
+    // The outgoing incarnation exits 1 the moment it is stopped — a real
+    // failure that must stay attributed to the incarnation, not the id.
+    let outgoing = write_stop_delay_yml("replace-outgoing", 0, 1);
+    let replacement = write_stop_delay_yml("replace-fixed", 0, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let old_pid = add_filter_and_wait(&dora, name, &outgoing.yml, "dora node add filter");
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "replace",
+            "--dataflow",
+            name,
+            "filter",
+            "--from-yaml",
+            replacement.yml.to_str().unwrap(),
+            "--grace",
+            "5s",
+        ]),
+        "dora node replace filter",
+    );
+    assert!(ok, "dora node replace failed.\nstderr:\n{stderr}");
+
+    // The replacement is spawned before the outgoing incarnation is
+    // stopped, so by the time the command returns a new pid exists.
+    let new_pid = wait_for_filter_pid(&dora, name, "dora node replace filter");
+    assert_ne!(
+        new_pid, old_pid,
+        "replace must spawn a new process; the daemon kept pid {old_pid}"
+    );
+
+    // The outgoing incarnation received Stop and exits (with code 1).
+    wait_for_process_exit(&old_pid, Duration::from_secs(30));
+    // Let the daemon account that exit before observing.
+    std::thread::sleep(Duration::from_secs(2));
+
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after replace",
+    );
+    assert!(ok, "dora node list failed.\nstderr:\n{stderr}");
+    let filter_state = parse_node_list(&list_out).get("filter").cloned();
+    assert!(
+        matches!(&filter_state, Some((s, pid, _)) if s == "Running" && pid == &new_pid),
+        "the replacement (pid {new_pid}) must be Running after the outgoing \
+         incarnation's exit; got {filter_state:?}\nlist:\n{list_out}"
+    );
+
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "`dora stop` blames the replacement for the outgoing incarnation's \
+         exit 1.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Failure semantics from dora-rs/dora#2927: a replacement that cannot
+/// spawn (bad path) or that changes the node's edges must be rejected
+/// with the current incarnation left running.
+#[test]
+#[cfg(unix)]
+fn replace_failure_keeps_current_incarnation_running() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-replace-fail";
+    let good = write_stop_delay_yml("replace-good", 5_000, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let pid = add_filter_and_wait(&dora, name, &good.yml, "dora node add filter");
+
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let target = Path::new(manifest_dir).join("target");
+    let run_id = std::process::id();
+
+    // Spawn failure: the binary does not exist.
+    let bad_path_spec = target.join(format!("dora-replace-badpath-{run_id}.yml"));
+    fs::write(
+        &bad_path_spec,
+        format!(
+            "id: filter\npath: {manifest_dir}/target/debug/does-not-exist\noutputs:\n  - value\n"
+        ),
+    )
+    .expect("write bad-path spec");
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "replace",
+            "--dataflow",
+            name,
+            "filter",
+            "--from-yaml",
+            bad_path_spec.to_str().unwrap(),
+        ]),
+        "dora node replace (bad path)",
+    );
+    assert!(
+        !ok,
+        "replace with a nonexistent binary must fail instead of killing the \
+         running node"
+    );
+    assert!(
+        !stderr.is_empty(),
+        "failed replace should explain itself on stderr"
+    );
+
+    // Edge change: the replacement adds an input the current node lacks.
+    let edge_spec = target.join(format!("dora-replace-edges-{run_id}.yml"));
+    fs::write(
+        &edge_spec,
+        format!(
+            "id: filter\npath: {manifest_dir}/target/debug/stop-delay-node\n\
+             inputs:\n  tick: dora/timer/millis/100\noutputs:\n  - value\n"
+        ),
+    )
+    .expect("write edge-change spec");
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "replace",
+            "--dataflow",
+            name,
+            "filter",
+            "--from-yaml",
+            edge_spec.to_str().unwrap(),
+        ]),
+        "dora node replace (edge change)",
+    );
+    assert!(
+        !ok,
+        "replace that changes the node's edges must be rejected"
+    );
+    assert!(
+        stderr.contains("edges") || stderr.contains("input"),
+        "edge-change rejection should name the offending input; stderr:\n{stderr}"
+    );
+
+    // Both failed replaces must have left the current incarnation alone.
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after failed replaces",
+    );
+    assert!(ok, "dora node list failed.\nstderr:\n{stderr}");
+    let filter_state = parse_node_list(&list_out).get("filter").cloned();
+    assert!(
+        matches!(&filter_state, Some((s, p, _)) if s == "Running" && p == &pid),
+        "failed replaces must leave the original incarnation (pid {pid}) \
+         running; got {filter_state:?}\nlist:\n{list_out}"
+    );
+
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "10s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "dora stop failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
 /// A binary that exits non-zero immediately without ever connecting to
 /// the daemon — the "crashed at import" shape from dora-rs/dora#2917.
 ///

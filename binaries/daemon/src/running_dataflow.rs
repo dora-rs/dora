@@ -691,6 +691,30 @@ impl RunningDataflow {
         Ok(())
     }
 
+    /// Stop an already-unregistered (replaced) incarnation
+    /// (dora-rs/dora#2927): send `Stop` on the id's still-installed
+    /// subscribe channel and schedule the grace-kill escalation on the
+    /// taken process handle. Must be called BEFORE the old incarnation's
+    /// subscribe channel is removed from `subscribe_channels`, or the
+    /// `Stop` cannot reach it and only the kill escalation applies.
+    pub(crate) fn stop_replaced_incarnation(
+        &self,
+        node_id: &NodeId,
+        generation: u64,
+        process: Option<ProcessHandle>,
+        clock: &HLC,
+        grace_duration: Option<Duration>,
+    ) {
+        self.send_stop_and_schedule_kill(
+            node_id,
+            generation,
+            process,
+            clock,
+            grace_duration,
+            DEFAULT_STOP_GRACE,
+        );
+    }
+
     /// Restart a single node. Re-enables restart so `restart_loop` picks it up.
     pub(crate) fn restart_single_node(
         &mut self,

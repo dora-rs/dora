@@ -830,6 +830,23 @@ dora node remove <NODE> [OPTIONS]
 | `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
 | `--grace <SECS>` | | Grace period in seconds before force-killing |
 
+##### `dora node replace`
+
+Atomically replace a running node with a new definition under the same id — one command instead of `dora node remove` + `dora node add`, with no caller-side sleep between them.
+
+```
+dora node replace <NODE> --from-yaml <FILE> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<NODE>` | required | Node ID to replace (must match the id in the YAML) |
+| `--from-yaml <FILE>` | required | YAML file with the replacement node definition |
+| `-d <DATAFLOW>`, `--dataflow` | interactive | Dataflow UUID or name |
+| `--grace <DURATION>` | | Grace period before force-killing the outgoing incarnation (e.g. `30s`) |
+
+Semantics (see #2927): the daemon spawns the replacement **first** — if it fails to build or spawn, the current incarnation keeps running and the command errors. On success the entry is swapped and the outgoing incarnation is stopped; its exit is attributed to that incarnation, never to the replacement. The replacement must keep the node's edges: identical input mappings, and outputs covering everything downstream nodes consume — edge changes are rejected (use remove/add or `dora node connect`/`disconnect` for topology edits). Inputs arriving during the brief swap window are dropped, not queued. Requires a fully started dataflow.
+
 ##### `dora node connect`
 
 Add a live mapping between two nodes in a running dataflow.

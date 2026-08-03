@@ -1802,6 +1802,103 @@ async fn start_inner(
                             };
                             let _ = reply_sender.send(result);
                         }
+                        ControlRequest::ReplaceNode {
+                            dataflow_id,
+                            node,
+                            grace_duration,
+                        } => {
+                            let result = async {
+                                // Route to the daemon that OWNS the id — a
+                                // replace targets an existing node, unlike
+                                // AddNode's first-daemon placement.
+                                let (daemon_id, uv, dataflow_env) = {
+                                    let dataflow =
+                                        running_dataflows.get(&dataflow_id).ok_or_else(|| {
+                                            eyre!("no running dataflow with ID {dataflow_id}")
+                                        })?;
+                                    let daemon_id = dataflow
+                                        .node_to_daemon
+                                        .get(&node.id)
+                                        .cloned()
+                                        .ok_or_else(|| {
+                                            eyre!(
+                                                "node '{}' not found in dataflow {dataflow_id}; \
+                                                 use `dora node add` to add a new node",
+                                                node.id
+                                            )
+                                        })?;
+                                    (daemon_id, dataflow.uv, dataflow.descriptor.env.clone())
+                                };
+                                let original_node = node.clone();
+                                // Resolve via a temporary single-node
+                                // descriptor, carrying the dataflow's own
+                                // `env:` exactly as AddNode does
+                                // (dora-rs/dora#2919).
+                                let tmp_desc = dora_message::descriptor::Descriptor {
+                                    nodes: vec![node],
+                                    communication: Default::default(),
+                                    deploy: None,
+                                    debug: Default::default(),
+                                    health_check_interval: None,
+                                    strict_types: None,
+                                    type_rules: Vec::new(),
+                                    env: dataflow_env,
+                                    exit_when_nodes_finish: None,
+                                };
+                                let mut resolved_map = tmp_desc
+                                    .resolve_aliases_and_set_defaults()
+                                    .map_err(|e| eyre!("failed to resolve node: {e}"))?;
+                                let (node_id, resolved_node) =
+                                    resolved_map.pop_first().ok_or_else(|| {
+                                        eyre!("node descriptor resolved to empty map")
+                                    })?;
+                                let msg = serde_json::to_vec(&Timestamped {
+                                    inner: DaemonCoordinatorEvent::ReplaceNode {
+                                        dataflow_id,
+                                        node: resolved_node.clone(),
+                                        uv,
+                                        grace_duration,
+                                    },
+                                    timestamp: clock.new_timestamp(),
+                                })?;
+                                let conn = daemon_connections
+                                    .get_mut(&daemon_id)
+                                    .ok_or_else(|| eyre!("no connection for daemon {daemon_id}"))?;
+                                let reply_raw = conn
+                                    .send_and_receive(&msg)
+                                    .await
+                                    .map_err(|e| eyre!("daemon dispatch failed: {e}"))?;
+                                // Commit coordinator state only after the
+                                // daemon confirms with the specific reply
+                                // variant (#1682 contract).
+                                ensure_replace_node_applied(&reply_raw, &node_id)?;
+                                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                                    if let Some(existing) = dataflow
+                                        .descriptor
+                                        .nodes
+                                        .iter_mut()
+                                        .find(|n| n.id == node_id)
+                                    {
+                                        *existing = original_node;
+                                    } else {
+                                        dataflow.descriptor.nodes.push(original_node);
+                                    }
+                                    dataflow.nodes.insert(node_id.clone(), resolved_node);
+                                    // Clear stale lifecycle markers so the new
+                                    // incarnation's metrics are not suppressed
+                                    // (same set AddNode clears).
+                                    dataflow.node_stopped_at.remove(&node_id);
+                                    dataflow.node_finalized.remove(&node_id);
+                                    dataflow.node_metrics.remove(&node_id);
+                                }
+                                Ok(ControlRequestReply::NodeReplaced {
+                                    dataflow_id,
+                                    node_id,
+                                })
+                            }
+                            .await;
+                            let _ = reply_sender.send(result);
+                        }
                         ControlRequest::AddMapping {
                             dataflow_id,
                             source_node,
@@ -4173,6 +4270,24 @@ fn ensure_add_node_applied(
         }
         other => Err(eyre!(
             "unexpected daemon reply for AddNode on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
+/// Validate that the daemon's reply to `DaemonCoordinatorEvent::ReplaceNode`
+/// is a successful `ReplaceNodeResult` — same specific-reply contract as
+/// `ensure_add_node_applied` (#1682).
+fn ensure_replace_node_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::ReplaceNodeResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::ReplaceNodeResult(Err(err)) => {
+            Err(eyre!("daemon failed to replace node `{node_id}`: {err}"))
+        }
+        other => Err(eyre!(
+            "unexpected daemon reply for ReplaceNode on node `{node_id}`: {other:?}"
         )),
     }
 }

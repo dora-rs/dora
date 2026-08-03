@@ -118,6 +118,14 @@ impl PendingNodes {
         !self.local_nodes.is_empty()
     }
 
+    /// Whether `node_id` is still gating the startup barrier: enrolled in
+    /// the cohort and not yet subscribed. Used by `ReplaceNode` to reject
+    /// swapping a node whose original incarnation the barrier still waits
+    /// on (dora-rs/dora#2927).
+    pub fn is_pending(&self, node_id: &NodeId) -> bool {
+        self.local_nodes.contains(node_id)
+    }
+
     pub async fn handle_node_subscription(
         &mut self,
         node_id: NodeId,
