@@ -28,6 +28,7 @@ torch_tensor = None
 
 for i in range(MESSAGE_COUNT):
     event = node.next()
+    print(f"DBG-EVENT keys={list(event.keys())} vtype={type(event.get('value'))} vlen={len(event.get('value')) if event.get('value') is not None else -1} mkeys={list(event.get('metadata', {}).keys()) if isinstance(event.get('metadata'), dict) else event.get('metadata')}", flush=True)
     t_send = event["metadata"]["t_send"]
 
     if i == 0:
@@ -38,9 +39,22 @@ for i in range(MESSAGE_COUNT):
     else:
         # The zero-copy in-place update only holds for local shmem views.
         # Cross-machine proxy pools deliver fresh bytes per write, so the
-        # tensor must be re-read (and re-built) each iteration.
-        tensor_info = node.read_memory_pool(memory_pool_id)
-        torch_tensor = tensor_from_info(tensor_info)
+        # tensor must be re-read (and re-built) each iteration.  The
+        # memory-pool event trails the latency output on a WAN (separate
+        # topics, no ordering guarantee) — and the registration re-push
+        # keeps old frames in the proxy pool until the sender's next()
+        # returns — so a read can return the *previous* frame.  Retry
+        # until the expected frame arrives; each read consumes one proxy
+        # entry.
+        for _ in range(600):
+            tensor_info = node.read_memory_pool(memory_pool_id)
+            torch_tensor = tensor_from_info(tensor_info)
+            if int(torch_tensor[0].item()) == i:
+                break
+        else:
+            raise AssertionError(
+                f"iteration {i}: expected frame {i} never arrived within the retry window"
+            )
 
     # The tensor is zero-copy — write_memory_pool on the sender overwrites
     # the shmem bytes in place, so the receiver's existing tensor object

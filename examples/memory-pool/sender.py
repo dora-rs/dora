@@ -63,11 +63,13 @@ for i in range(MESSAGE_COUNT):
         node.write_memory_pool(memory_pool_id, tensor_info)
         node.send_output("data", pa.array([]), metadata)
 
-    # Cross-machine: this fork's next() does not gate on next_require, so
-    # the writes race ahead of the receiver's reads and overwrite the pool
-    # before the receiver consumes each frame. Pace the writes well beyond
-    # the receiver's per-iteration read latency (observed ~5s under host
-    # contention) so its re-read always finds the expected frame.
+    # Cross-machine: the writes must not race ahead of the receiver's
+    # reads (the proxy pool is overwritten per frame). Pace the writes
+    # well beyond the receiver's per-iteration read latency (observed ~5s
+    # under host contention) so its re-read always finds the expected
+    # frame.  NOTE: no trailing next() here — it would wait for the next
+    # iteration's next_require, which the receiver only sends after the
+    # next latency output, which this loop hasn't produced yet: a
+    # self-deadlock (observed: sender stuck at the second next() while
+    # the receiver waits for the next latency).
     time.sleep(20.0)
-
-    node.next()

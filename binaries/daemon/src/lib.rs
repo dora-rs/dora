@@ -4146,7 +4146,6 @@ impl Daemon {
                             shape.clone(),
                         ),
                     );
-
                 // Forward to remote daemons via Zenoh. Failures are
                 // logged loudly: a dropped publish strands remote readers
                 // with a never-ready proxy pool.
@@ -4157,30 +4156,37 @@ impl Daemon {
                 // `deserialize_inter_daemon_event` — the bincode
                 // Timestamped header misreads the enum tag — and the
                 // event is dropped without ever reaching PROXY_POOL_DATA.
-                match bincode::serialize(&Timestamped {
-                    inner: InterDaemonEvent::MemoryPoolWrite {
-                        dataflow_id,
-                        shared_memory_id,
-                        tensor_data,
-                        size,
-                        device,
-                        dtype,
-                        shape,
-                    },
-                    timestamp: self.clock.new_timestamp(),
-                }) {
-                    Ok(serialized) => {
-                        let topic = dataflow_memory_pool_topic(&dataflow_id);
-                        // Run the whole declare+put off the event loop:
-                        // with Block congestion control a slow/stalled
-                        // inter-daemon link blocks declare_publisher()
-                        // itself, which would otherwise wedge the daemon
-                        // event loop (heartbeats + node replies included)
-                        // for the whole transfer — observed as the sender
-                        // hanging on WritePinnedMemory forever.
-                        let session = self.zenoh_session.clone();
-                        let payload_len = serialized.len();
-                        tokio::spawn(async move {
+                let topic = dataflow_memory_pool_topic(&dataflow_id);
+                // Run serialize + declare + put all off the event loop:
+                // bincode::serialize of the 61.44MB payload takes hundreds
+                // of ms (3s+ in debug builds), and with Block congestion
+                // control a slow/stalled inter-daemon link blocks
+                // declare_publisher() itself — either one wedges the daemon
+                // event loop (heartbeats + node replies + output delivery
+                // included), backing up the event channels until the
+                // sender's WritePinnedMemory hangs forever.
+                let session = self.zenoh_session.clone();
+                let timestamp = self.clock.new_timestamp();
+                tokio::spawn(async move {
+                    let serialized = match bincode::serialize(&Timestamped {
+                        inner: InterDaemonEvent::MemoryPoolWrite {
+                            dataflow_id,
+                            shared_memory_id,
+                            tensor_data,
+                            size,
+                            device,
+                            dtype,
+                            shape,
+                        },
+                        timestamp,
+                    }) {
+                        Ok(serialized) => serialized,
+                        Err(e) => {
+                            tracing::error!("memory pool bincode serialize failed: {e}");
+                            return;
+                        }
+                    };
+                    let payload_len = serialized.len();
                             let declared = std::time::Instant::now();
                             match session
                                 .declare_publisher(topic.clone())
@@ -4216,11 +4222,6 @@ impl Daemon {
                                 }
                             }
                         });
-                    }
-                    Err(e) => {
-                        tracing::error!("memory pool bincode serialize failed: {e}");
-                    }
-                }
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }
