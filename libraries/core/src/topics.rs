@@ -50,6 +50,18 @@ pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
 /// `--zenoh-no-multicast`, so a single flag covers the whole process tree.
 pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
 
+/// Zenoh's own config-file override, honored by
+/// [`open_zenoh_session_with_listen`].
+///
+/// Takes precedence over every `DORA_ZENOH_*` variable: when it is set the
+/// session is built entirely from the named file, so the connect/listen plan
+/// and the multicast decision are never read. That makes it a full bypass of
+/// the daemon's node wiring, which is why the daemon refuses it from a
+/// descriptor's `env:` (#2944) while still honoring it from its own
+/// environment — the documented way to point a whole deployment at a custom
+/// zenoh config.
+pub const ZENOH_CONFIG_PATH_ENV: &str = zenoh::Config::DEFAULT_CONFIG_PATH_ENV;
+
 /// Whether a session may discover peers by multicast scouting.
 ///
 /// Spelled as an enum rather than a bool because the concept flips polarity at
