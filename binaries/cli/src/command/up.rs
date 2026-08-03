@@ -5,7 +5,10 @@ use crate::{
     common::{connect_to_coordinator, connect_with_retry, send_control_request},
 };
 use dora_core::topics::DORA_COORDINATOR_PORT_WS_DEFAULT;
-use dora_message::{cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply};
+use dora_message::{
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::{ControlRequestReply, DataflowIdAndName},
+};
 use eyre::{Context, ContextCompat, bail};
 use std::io::{Read, Seek};
 use std::path::PathBuf;
@@ -379,9 +382,32 @@ fn available_backup_path(path: &Path) -> eyre::Result<PathBuf> {
     bail!("could not find an available coordinator store backup path")
 }
 
+/// Whether `dora down` may destroy the coordinator it just connected to.
+///
+/// Separate from the command so the rule is testable: the CLI reaches
+/// whatever coordinator owns the port, which may belong to an unrelated
+/// project on the same machine (dora-rs/dora#2924).
+// No `PartialEq`: it would require widening `DataflowIdAndName` in
+// dora-message purely for test convenience. Tests destructure instead.
+#[derive(Debug)]
+pub(crate) enum DownDecision {
+    Proceed,
+    /// Running dataflows would be killed; the operator has not said so.
+    Refuse(Vec<DataflowIdAndName>),
+}
+
+pub(crate) fn down_decision(running: Vec<DataflowIdAndName>, force: bool) -> DownDecision {
+    if running.is_empty() || force {
+        DownDecision::Proceed
+    } else {
+        DownDecision::Refuse(running)
+    }
+}
+
 pub(crate) fn down(
     config_path: Option<&Path>,
     coordinator_addr: SocketAddr,
+    force: bool,
 ) -> Result<(), eyre::ErrReport> {
     let UpConfig {} = parse_dora_config(config_path)?;
     // Retry connection briefly — the coordinator may still be initializing after `dora up`.
@@ -391,6 +417,78 @@ pub(crate) fn down(
              hint: is it running? Start it with `dora up`"
         )
     })?;
+
+    // Look before destroying. Every lifecycle command targets whatever
+    // coordinator owns the port, so this may be an unrelated project's
+    // instance on the same machine (#2924).
+    let running = match send_control_request(&session, &ControlRequest::List) {
+        Ok(ControlRequestReply::DataflowList(list)) => list.get_active(),
+        // An unexpected reply or a transport error must not make `down`
+        // unusable: report what we could not determine and carry on, which
+        // is the pre-#2924 behavior.
+        Ok(other) => {
+            eprintln!(
+                "warning: could not determine running dataflows before destroying \
+                 (unexpected reply {other:?}); proceeding"
+            );
+            Vec::new()
+        }
+        Err(err) => {
+            eprintln!(
+                "warning: could not determine running dataflows before destroying \
+                 ({err}); proceeding"
+            );
+            Vec::new()
+        }
+    };
+
+    // `--force` means "clean up anyway", so it has to actually clean up.
+    // `Destroy` alone does not: the coordinator sends each dataflow a stop
+    // and then tears the daemons down immediately, without waiting for the
+    // stop ladder (grace -> SIGTERM -> SIGKILL) to run. A node that exits
+    // promptly on `Stop` is reaped; a wedged one outlives its daemon and is
+    // orphaned. Stopping first goes through the path that does wait, which
+    // is also the one the refusal message recommends.
+    if force && !running.is_empty() {
+        println!(
+            "Stopping {} running dataflow(s) before teardown...",
+            running.len()
+        );
+        for entry in &running {
+            if let Err(err) = crate::command::stop::stop_dataflow(entry.uuid, None, true, &session)
+            {
+                // Report and continue: a dataflow that cannot be stopped
+                // must not block teardown, which is what `--force` was
+                // asked for.
+                eprintln!("warning: failed to stop {entry}: {err}");
+            }
+        }
+    }
+
+    if let DownDecision::Refuse(running) = down_decision(running, force) {
+        let list = running
+            .iter()
+            .map(|d| format!("  - {d}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        eyre::bail!(
+            "refusing to destroy the coordinator at {coordinator_addr}: \
+             {} dataflow(s) still running\n{list}\n\n  \
+             This tears down the coordinator, its daemons and every dataflow \
+             above. Lifecycle commands target whatever coordinator owns the \
+             port, so this may not be the instance you meant — a different \
+             checkout or another project on this machine shares \
+             {coordinator_addr} by default.\n\n  \
+             hint: stop the dataflows first (`dora stop --all`), or re-run \
+             with `--force` if you do mean to kill them\n  \
+             hint: to keep instances isolated, give each one its own port via \
+             `DORA_COORDINATOR_PORT` (or `--coordinator-port`)",
+            running.len(),
+        );
+    }
+
+    println!("Destroying coordinator at {coordinator_addr}");
+
     // send destroy command to dora-coordinator
     let reply = send_control_request(&session, &ControlRequest::Destroy)?;
     match reply {
@@ -582,5 +680,62 @@ mod tests {
             .expect("second recreation did not acquire the released lock");
         drop(second);
         waiter.join().expect("join lock waiter");
+    }
+}
+
+#[cfg(test)]
+mod destroy_guard_tests {
+    use super::{DownDecision, down_decision};
+    use dora_message::coordinator_to_cli::DataflowIdAndName;
+
+    // ---- dora-rs/dora#2924: `dora down` must not silently destroy an
+    //      unrelated instance's coordinator ----
+
+    fn df(name: &str) -> DataflowIdAndName {
+        DataflowIdAndName {
+            uuid: uuid::Uuid::nil(),
+            name: Some(name.to_string()),
+        }
+    }
+
+    /// The reported case: a coordinator with live work is not torn down
+    /// just because someone ran `dora destroy` in another checkout.
+    #[test]
+    fn down_refuses_when_dataflows_are_running() {
+        match down_decision(vec![df("long-experiment")], false) {
+            DownDecision::Refuse(blocked) => {
+                let names: Vec<_> = blocked.iter().filter_map(|d| d.name.clone()).collect();
+                assert_eq!(
+                    names,
+                    vec!["long-experiment"],
+                    "the refusal must name what it would have killed, so the \
+                     operator can tell whose coordinator they just hit"
+                );
+            }
+            other => panic!(
+                "a destroy that would kill running dataflows must stop and say \
+                 so, got {other:?}"
+            ),
+        }
+    }
+
+    /// An idle coordinator is the normal teardown case and must stay
+    /// frictionless — otherwise every `dora up` / `dora down` loop grows a
+    /// flag and people learn to pass `--force` reflexively.
+    #[test]
+    fn down_proceeds_when_nothing_is_running() {
+        assert!(
+            matches!(down_decision(Vec::new(), false), DownDecision::Proceed),
+            "an idle coordinator must tear down without a flag"
+        );
+    }
+
+    /// `--force` is the documented escape hatch for "yes, kill them".
+    #[test]
+    fn force_destroys_despite_running_dataflows() {
+        assert!(
+            matches!(down_decision(vec![df("busy")], true), DownDecision::Proceed),
+            "`--force` is the documented way to say \"yes, kill them\""
+        );
     }
 }
