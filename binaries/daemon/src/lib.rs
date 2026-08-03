@@ -340,9 +340,10 @@ pub struct Daemon {
 
 /// Cap on `Daemon::warned_late_outputs`, so a daemon that serves many
 /// dataflows cannot accumulate an entry per (dataflow, node) forever.
-/// Past it the dedup stops taking new entries and later offenders log at
-/// `debug` — the safe direction, since the point of the warning is to
-/// make the condition discoverable, not to enumerate every instance.
+/// Reaching it clears the set rather than freezing it: a daemon is meant
+/// to run indefinitely, and simply refusing new entries would silence
+/// the warning permanently after ~1024 dataflows — including for the
+/// stale-node case that is the reason it is a warning at all.
 const MAX_WARNED_LATE_OUTPUT_NODES: usize = 1024;
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
@@ -4255,8 +4256,16 @@ impl Daemon {
     /// reply channel, so `handle_node_event` cannot report the error back
     /// to the node the way every sibling arm does — it can only return
     /// `Err`, which unwinds the daemon's main loop and drops its
-    /// coordinator connection. The message has no live receivers left, so
-    /// dropping it costs nothing.
+    /// coordinator connection — which loses this message *and* every
+    /// other dataflow's connection with it.
+    ///
+    /// Dropping it is not always free, though: `should_finish` only looks
+    /// at this daemon's non-dynamic nodes, so a still-running local
+    /// dynamic consumer, or a consumer on another daemon reached through
+    /// `open_external_mappings`, can still have been waiting for it. That
+    /// is a pre-existing finish-ordering gap, strictly better than taking
+    /// the daemon down for it, and why this is a warning rather than a
+    /// silent drop.
     ///
     /// Warns once per node, then falls to `debug`: the dynamic-node case
     /// above is unbounded, and a node sending at 1 kHz would otherwise
@@ -4268,11 +4277,13 @@ impl Daemon {
         output_id: &DataId,
         what: &'static str,
     ) {
-        let first_for_this_node = self.warned_late_outputs.len() < MAX_WARNED_LATE_OUTPUT_NODES
-            && self
-                .warned_late_outputs
-                .insert((*dataflow_id, node_id.clone()));
-        if first_for_this_node {
+        if self.warned_late_outputs.len() >= MAX_WARNED_LATE_OUTPUT_NODES {
+            self.warned_late_outputs.clear();
+        }
+        if self
+            .warned_late_outputs
+            .insert((*dataflow_id, node_id.clone()))
+        {
             tracing::warn!(
                 %dataflow_id, %node_id, %output_id,
                 "ignoring `{what}` for a dataflow that already finished \

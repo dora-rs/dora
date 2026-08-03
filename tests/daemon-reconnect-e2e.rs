@@ -551,10 +551,18 @@ fn node_survives_daemon_watchdog_disconnect() {
 /// rather than passing vacuously.
 const LATE_OUTPUT_WARNING: &str = "node outlived its dataflow";
 
-/// The pre-fix error. It reached the log only via the daemon's
-/// "disconnected from coordinator" path, because `handle_node_event` had
-/// no other way to report it.
-const FATAL_LATE_OUTPUT: &str = "send out failed: no running dataflow";
+/// The pre-fix error, matched on the substring the two reply-less arms
+/// share: `send out failed: …` from `SendOut` and `output sent failed: …`
+/// from `OutputSent`. Which one a late message takes depends on whether
+/// the node's zenoh startup handshake settled — direct node-to-node
+/// delivery reports via `OutputSent`, the daemon path via `SendOut` — so
+/// matching only one would let a regression time out with a misleading
+/// "the fixture stopped reproducing it" message on half of all hosts.
+///
+/// It reached the log only via the daemon's "disconnected from
+/// coordinator" path, because `handle_node_event` had no other way to
+/// report it.
+const FATAL_LATE_OUTPUT: &str = "failed: no running dataflow";
 
 /// An output that arrives after its dataflow finished must not be fatal
 /// to the daemon. Regression test for dora-rs/dora#2742.
@@ -693,12 +701,22 @@ fn late_output_from_a_finished_dataflow_does_not_kill_the_daemon() {
         );
     }
 
-    let daemon_pid = cleanup.daemon.as_ref().expect("daemon spawned").id();
+    // `try_wait`, not `pid_alive`: the daemon is an unreaped child of this
+    // process, so if it died it is a zombie and `kill -0` still succeeds.
+    let exited = cleanup
+        .daemon
+        .as_mut()
+        .expect("daemon spawned")
+        .try_wait()
+        .expect("failed to poll the daemon process");
     assert!(
-        pid_alive(daemon_pid),
-        "daemon pid {daemon_pid} must still be alive after a post-finish output"
+        exited.is_none(),
+        "the daemon exited ({exited:?}) after a post-finish output; it must survive one \
+         (dora-rs/dora#2742)"
     );
 
-    // Still serving: a dropped coordinator connection fails this.
+    // Weaker than it looks and kept only as a smoke check: `List` is
+    // served from the coordinator's own state, so it passes with no
+    // daemon attached. The `try_wait` above is what proves survival.
     list_active(port).expect("coordinator must still answer after the late outputs");
 }
