@@ -29,7 +29,12 @@ for i in range(MESSAGE_COUNT):
     random_data = data_generation.integers(1000, size=SIZE, dtype=np.int64)
     random_data[0] = i  # monotonic counter lets receiver detect change without collision risk
     torch_tensor = torch.tensor(random_data, dtype=torch.int64, device=SENDER_DEVICE)
-    t_send = time.perf_counter_ns()
+    # Cross-machine: wall clock (time.time_ns), NOT perf_counter —
+    # CLOCK_MONOTONIC's epoch is each machine's boot time, so deltas
+    # across machines are dominated by the boot-time difference (the
+    # receiver measured ~0.00002 MB/s with perf_counter).  The hosts
+    # are NTP-synced, making wall-clock deltas the true transfer time.
+    t_send = time.time_ns()
     metadata = {"t_send": t_send, "scenario": SCENARIO}
 
     if i == 0:

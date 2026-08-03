@@ -69,7 +69,8 @@ for i in range(MESSAGE_COUNT):
             " — pool write may not have propagated"
         )
 
-    t_received = time.perf_counter_ns()
+    # Wall clock for cross-machine deltas (see sender.py note)
+    t_received = time.time_ns()
     delta_t = t_received - t_send
     data_bytes = torch_tensor.nbytes
     velocity = data_bytes / (delta_t * 1e-9 * 1024 * 1024)
