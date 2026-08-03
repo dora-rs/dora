@@ -38,9 +38,11 @@ pub fn current_millis() -> u64 {
         .as_millis() as u64
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
     node_id: &NodeId,
+    generation: Arc<AtomicU64>,
     daemon_tx: &mpsc::Sender<Timestamped<Event>>,
     config: LocalCommunicationConfig,
     clock: Arc<uhlc::HLC>,
@@ -65,7 +67,15 @@ pub async fn spawn_listener_loop(
             let daemon_tx = daemon_tx.clone();
             let shutdown = shutdown.clone();
             tokio::spawn(async move {
-                tcp::listener_loop(socket, daemon_tx, clock, last_activity, shutdown).await;
+                tcp::listener_loop(
+                    socket,
+                    generation,
+                    daemon_tx,
+                    clock,
+                    last_activity,
+                    shutdown,
+                )
+                .await;
                 tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
             });
 
@@ -77,6 +87,10 @@ pub async fn spawn_listener_loop(
 struct Listener {
     dataflow_id: DataflowId,
     node_id: NodeId,
+    /// Incarnation of the spawn this listener was bound for; stamped on
+    /// every `Event::Node` so the daemon can drop control events from a
+    /// superseded process (dora-rs/dora#2927).
+    generation: u64,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
@@ -88,6 +102,7 @@ struct Listener {
 impl Listener {
     pub(crate) async fn run<C: Connection>(
         mut connection: C,
+        generation: Arc<AtomicU64>,
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
         hlc: Arc<uhlc::HLC>,
         last_activity: Arc<AtomicU64>,
@@ -124,9 +139,16 @@ impl Listener {
                 let node_id = register_request.node_id;
                 match (result, send_result) {
                     (Ok(()), Ok(())) => {
+                        // Snapshot the node's CURRENT incarnation at
+                        // register time: the socket is shared across
+                        // respawns, but each connection belongs to exactly
+                        // the incarnation that was current when the process
+                        // connected.
+                        let connection_generation = generation.load(Ordering::Acquire);
                         let mut listener = Listener {
                             dataflow_id,
                             node_id,
+                            generation: connection_generation,
                             daemon_tx,
                             subscribed_events: None,
                             pending_counter: None,
@@ -394,6 +416,7 @@ impl Listener {
         let event = Event::Node {
             dataflow_id: self.dataflow_id,
             node_id: self.node_id.clone(),
+            generation: self.generation,
             event,
         };
         let event = Timestamped {

@@ -1315,6 +1315,27 @@ fn replace_swaps_running_node_without_blaming_successor() {
          incarnation's exit; got {filter_state:?}\nlist:\n{list_out}"
     );
 
+    // Replace the replacement: successive swaps must keep working (each
+    // incarnation gets a fresh generation and clean bookkeeping).
+    let third = write_stop_delay_yml("replace-third", 0, 0);
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "replace",
+            "--dataflow",
+            name,
+            "filter",
+            "--from-yaml",
+            third.yml.to_str().unwrap(),
+        ]),
+        "dora node replace filter (second swap)",
+    );
+    assert!(ok, "second replace failed.\nstderr:\n{stderr}");
+    let third_pid = wait_for_filter_pid(&dora, name, "second replace");
+    assert_ne!(third_pid, new_pid, "second swap must spawn a third process");
+    wait_for_process_exit(&new_pid, Duration::from_secs(30));
+    std::thread::sleep(Duration::from_secs(2));
+
     let (ok, stdout, stderr) = run_capture(
         Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
         "dora stop",
@@ -1323,6 +1344,220 @@ fn replace_swaps_running_node_without_blaming_successor() {
         ok,
         "`dora stop` blames the replacement for the outgoing incarnation's \
          exit 1.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// The core hot-swap promise (dora-rs/dora#2927): replacing a producer
+/// must not disturb its consumers. The outgoing incarnation's graceful
+/// shutdown emits close-outputs/outputs-done under the shared node id;
+/// without generation attribution on node-connection events those would
+/// close the consumer's only input and terminate it (the P1 this test
+/// pins red/green).
+#[test]
+#[cfg(unix)]
+fn replace_does_not_disturb_downstream_consumers() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-replace-consumer";
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let target = Path::new(manifest_dir).join("target");
+    let run_id = std::process::id();
+    let producer = write_stop_delay_yml("replace-producer", 0, 0);
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    let old_pid = add_filter_and_wait(&dora, name, &producer.yml, "dora node add filter");
+
+    // A sink whose ONLY input comes from the node under replacement:
+    // if the swap leaks the outgoing incarnation's close-outputs, the
+    // sink sees AllInputsClosed and exits — the red observable.
+    let sink_spec = target.join(format!("dora-replace-sink-{run_id}.yml"));
+    fs::write(
+        &sink_spec,
+        format!(
+            "id: sink\n\
+             path: {manifest_dir}/target/debug/stop-delay-node\n\
+             inputs:\n  value: filter/value\n"
+        ),
+    )
+    .expect("write sink spec");
+    add_node(&dora, name, &sink_spec, "dora node add sink");
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(10), |m| {
+        m.get("sink").is_some_and(|(s, _, _)| s == "Running")
+    });
+    let sink_pid = parse_node_list(&list_out)
+        .get("sink")
+        .cloned()
+        .expect("sink row")
+        .1;
+
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "replace",
+            "--dataflow",
+            name,
+            "filter",
+            "--from-yaml",
+            producer.yml.to_str().unwrap(),
+            "--grace",
+            "5s",
+        ]),
+        "dora node replace filter (with consumer)",
+    );
+    assert!(ok, "dora node replace failed.\nstderr:\n{stderr}");
+
+    let new_pid = wait_for_filter_pid(&dora, name, "replace with consumer");
+    assert_ne!(new_pid, old_pid);
+    wait_for_process_exit(&old_pid, Duration::from_secs(30));
+    // Settle: let the outgoing incarnation's teardown events (if any
+    // leaked past the generation guard) reach the sink.
+    std::thread::sleep(Duration::from_secs(3));
+
+    let (ok, list_out, stderr) = run_capture(
+        Command::new(&dora).args(["node", "list", "--dataflow", name, "--format", "json"]),
+        "dora node list after consumer-preserving replace",
+    );
+    assert!(ok, "dora node list failed.\nstderr:\n{stderr}");
+    let nodes = parse_node_list(&list_out);
+    assert!(
+        matches!(nodes.get("sink"), Some((s, pid, _)) if s == "Running" && pid == &sink_pid),
+        "the consumer must survive its producer's replacement; got {:?}\nlist:\n{list_out}",
+        nodes.get("sink")
+    );
+    assert!(
+        matches!(nodes.get("filter"), Some((s, pid, _)) if s == "Running" && pid == &new_pid),
+        "replacement must be Running; got {:?}\nlist:\n{list_out}",
+        nodes.get("filter")
+    );
+
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "dora stop failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+}
+
+/// Edge and coverage rejections against live topology
+/// (dora-rs/dora#2927): with a timer input on the node and a wired
+/// consumer, a replacement that drops the input, remaps it, or stops
+/// declaring the consumed output must be rejected with the original
+/// incarnation untouched.
+#[test]
+#[cfg(unix)]
+fn replace_rejects_edge_and_output_changes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let name = "rustlc-replace-edges";
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let target = Path::new(manifest_dir).join("target");
+    let run_id = std::process::id();
+    let dora = start_hot_swap_fixture(name);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    // Original filter: a timer input and a `value` output.
+    let with_input = target.join(format!("dora-replace-edges-orig-{run_id}.yml"));
+    fs::write(
+        &with_input,
+        format!(
+            "id: filter\n\
+             path: {manifest_dir}/target/debug/stop-delay-node\n\
+             inputs:\n  tick: dora/timer/millis/200\n\
+             outputs:\n  - value\n"
+        ),
+    )
+    .expect("write original spec");
+    let pid = add_filter_and_wait(&dora, name, &with_input, "dora node add filter");
+
+    // Wire a consumer so the output-coverage branch is live.
+    let sink_spec = target.join(format!("dora-replace-edges-sink-{run_id}.yml"));
+    fs::write(
+        &sink_spec,
+        format!(
+            "id: sink\n\
+             path: {manifest_dir}/target/debug/stop-delay-node\n\
+             inputs:\n  value: filter/value\n"
+        ),
+    )
+    .expect("write sink spec");
+    add_node(&dora, name, &sink_spec, "dora node add sink");
+
+    let cases: [(&str, String, &str); 3] = [
+        (
+            "drops-input",
+            format!(
+                "id: filter\npath: {manifest_dir}/target/debug/stop-delay-node\noutputs:\n  - value\n"
+            ),
+            "drops input",
+        ),
+        (
+            "remaps-input",
+            format!(
+                "id: filter\npath: {manifest_dir}/target/debug/stop-delay-node\n\
+                 inputs:\n  tick: dora/timer/millis/500\noutputs:\n  - value\n"
+            ),
+            "remaps input",
+        ),
+        (
+            "missing-output",
+            format!(
+                "id: filter\npath: {manifest_dir}/target/debug/stop-delay-node\n\
+                 inputs:\n  tick: dora/timer/millis/200\n"
+            ),
+            "does not declare output",
+        ),
+    ];
+    for (label, spec_yaml, expected) in cases {
+        let spec = target.join(format!("dora-replace-edges-{label}-{run_id}.yml"));
+        fs::write(&spec, spec_yaml).expect("write case spec");
+        let (ok, _, stderr) = run_capture(
+            Command::new(&dora).args([
+                "node",
+                "replace",
+                "--dataflow",
+                name,
+                "filter",
+                "--from-yaml",
+                spec.to_str().unwrap(),
+            ]),
+            "dora node replace (edge case)",
+        );
+        assert!(!ok, "case `{label}` must be rejected");
+        assert!(
+            stderr.contains(expected),
+            "case `{label}` should mention `{expected}`; stderr:\n{stderr}"
+        );
+    }
+
+    // Identical-edges replacement (timer input + output) must succeed —
+    // this also exercises the with-inputs swap path end to end.
+    let (ok, _, stderr) = run_capture(
+        Command::new(&dora).args([
+            "node",
+            "replace",
+            "--dataflow",
+            name,
+            "filter",
+            "--from-yaml",
+            with_input.to_str().unwrap(),
+        ]),
+        "dora node replace (identical edges)",
+    );
+    assert!(ok, "identical-edges replace failed.\nstderr:\n{stderr}");
+    let new_pid = wait_for_filter_pid(&dora, name, "identical-edges replace");
+    assert_ne!(
+        new_pid, pid,
+        "identical-edges replace must swap the process"
+    );
+
+    let (ok, stdout, stderr) = run_capture(
+        Command::new(&dora).args(["stop", "--name", name, "--grace-duration", "5s"]),
+        "dora stop",
+    );
+    assert!(
+        ok,
+        "dora stop failed.\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
 }
 
@@ -1371,8 +1606,9 @@ fn replace_failure_keeps_current_incarnation_running() {
          running node"
     );
     assert!(
-        !stderr.is_empty(),
-        "failed replace should explain itself on stderr"
+        stderr.contains("replacement"),
+        "the failure must name the replacement spawn (anchoring that the \
+         spawn-first path was exercised, not an unrelated error); stderr:\n{stderr}"
     );
 
     // Edge change: the replacement adds an input the current node lacks.

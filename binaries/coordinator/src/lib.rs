@@ -1583,38 +1583,14 @@ async fn start_inner(
                                         // node).
                                         let original_node = node.clone();
 
-                                        // Resolve the Node into a ResolvedNode via a
-                                        // temporary single-node descriptor.
-                                        //
-                                        // Carry the running dataflow's own `env:`
-                                        // into that descriptor so the added node
-                                        // inherits it exactly as its statically
-                                        // declared peers did — `resolve_aliases_and_set_defaults`
-                                        // performs the dataflow-into-node merge
-                                        // (node keys still win). Passing `None`
-                                        // here meant a node added later silently
-                                        // saw none of the dataflow's environment,
-                                        // including anything set via `dora start
-                                        // --env` (dora-rs/dora#2919).
-                                        let tmp_desc = dora_message::descriptor::Descriptor {
-                                            nodes: vec![node],
-                                            communication: Default::default(),
-                                            deploy: None,
-                                            debug: Default::default(),
-                                            health_check_interval: None,
-                                            strict_types: None,
-                                            type_rules: Vec::new(),
-                                            env: dataflow.descriptor.env.clone(),
-                                            exit_when_nodes_finish: None,
-                                        };
-                                        match tmp_desc.resolve_aliases_and_set_defaults() {
-                                            Ok(mut resolved_map) => {
-                                                let (node_id, resolved_node) =
-                                                    resolved_map.pop_first().ok_or_else(|| {
-                                                        eyre!(
-                                                            "node descriptor resolved to empty map"
-                                                        )
-                                                    })?;
+                                        // See `resolve_single_node` for the
+                                        // env carry-through rationale
+                                        // (dora-rs/dora#2919).
+                                        match resolve_single_node(
+                                            node,
+                                            dataflow.descriptor.env.clone(),
+                                        ) {
+                                            Ok((node_id, resolved_node)) => {
                                                 // Pick the first daemon (single-daemon case)
                                                 // TODO: use machine label or load balancing for multi-daemon
                                                 let daemon_id =
@@ -1721,7 +1697,9 @@ async fn start_inner(
                                                     )),
                                                 }
                                             }
-                                            Err(e) => Err(eyre!("failed to resolve node: {e}")),
+                                            // `resolve_single_node` already
+                                            // prefixes the resolve context.
+                                            Err(e) => Err(e),
                                         }
                                     }
                                 }
@@ -1830,28 +1808,8 @@ async fn start_inner(
                                     (daemon_id, dataflow.uv, dataflow.descriptor.env.clone())
                                 };
                                 let original_node = node.clone();
-                                // Resolve via a temporary single-node
-                                // descriptor, carrying the dataflow's own
-                                // `env:` exactly as AddNode does
-                                // (dora-rs/dora#2919).
-                                let tmp_desc = dora_message::descriptor::Descriptor {
-                                    nodes: vec![node],
-                                    communication: Default::default(),
-                                    deploy: None,
-                                    debug: Default::default(),
-                                    health_check_interval: None,
-                                    strict_types: None,
-                                    type_rules: Vec::new(),
-                                    env: dataflow_env,
-                                    exit_when_nodes_finish: None,
-                                };
-                                let mut resolved_map = tmp_desc
-                                    .resolve_aliases_and_set_defaults()
-                                    .map_err(|e| eyre!("failed to resolve node: {e}"))?;
                                 let (node_id, resolved_node) =
-                                    resolved_map.pop_first().ok_or_else(|| {
-                                        eyre!("node descriptor resolved to empty map")
-                                    })?;
+                                    resolve_single_node(node, dataflow_env)?;
                                 let msg = serde_json::to_vec(&Timestamped {
                                     inner: DaemonCoordinatorEvent::ReplaceNode {
                                         dataflow_id,
@@ -4274,6 +4232,37 @@ fn ensure_add_node_applied(
     }
 }
 
+/// Resolve a single dynamically-supplied node definition via a temporary
+/// one-node descriptor, carrying the running dataflow's own `env:` so the
+/// node inherits it exactly as statically declared peers do
+/// (dora-rs/dora#2919). Shared by the AddNode and ReplaceNode arms so the
+/// two commands can never resolve differently.
+fn resolve_single_node(
+    node: dora_message::descriptor::Node,
+    dataflow_env: Option<std::collections::BTreeMap<String, dora_message::descriptor::EnvValue>>,
+) -> eyre::Result<(
+    dora_core::config::NodeId,
+    dora_message::descriptor::ResolvedNode,
+)> {
+    let tmp_desc = dora_message::descriptor::Descriptor {
+        nodes: vec![node],
+        communication: Default::default(),
+        deploy: None,
+        debug: Default::default(),
+        health_check_interval: None,
+        strict_types: None,
+        type_rules: Vec::new(),
+        env: dataflow_env,
+        exit_when_nodes_finish: None,
+    };
+    let mut resolved_map = tmp_desc
+        .resolve_aliases_and_set_defaults()
+        .map_err(|e| eyre!("failed to resolve node: {e}"))?;
+    resolved_map
+        .pop_first()
+        .ok_or_else(|| eyre!("node descriptor resolved to empty map"))
+}
+
 /// Validate that the daemon's reply to `DaemonCoordinatorEvent::ReplaceNode`
 /// is a successful `ReplaceNodeResult` — same specific-reply contract as
 /// `ensure_add_node_applied` (#1682).
@@ -6224,6 +6213,52 @@ mod tests {
             err.to_string().contains("unexpected daemon reply"),
             "error must call out the wrong-reply-type failure mode: {err}"
         );
+    }
+
+    // Same #1682 specific-reply contract for ReplaceNode (dora-rs/dora#2927):
+    // the coordinator must commit its descriptor swap only on a successful
+    // `ReplaceNodeResult`, never on a rejection or a stale unrelated reply.
+
+    #[test]
+    fn replace_node_reply_accepts_daemon_success() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::ReplaceNodeResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        ensure_replace_node_applied(&reply, &node_id)
+            .expect("successful ReplaceNode reply should pass");
+    }
+
+    #[test]
+    fn replace_node_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::ReplaceNodeResult(Err(
+            "failed to spawn replacement node".to_string(),
+        )))
+        .unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        let err = ensure_replace_node_applied(&reply, &node_id)
+            .expect_err("daemon rejection should fail ReplaceNode forwarding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to replace node") && msg.contains("filter"),
+            "error must name the operation and node: {msg}"
+        );
+    }
+
+    #[test]
+    fn replace_node_reply_rejects_wrong_reply_variant() {
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+        for wrong in [
+            serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Ok(()))).unwrap(),
+            serde_json::to_vec(&DaemonCoordinatorReply::RemoveNodeResult(Ok(()))).unwrap(),
+        ] {
+            let err = ensure_replace_node_applied(&wrong, &node_id)
+                .expect_err("unexpected reply variant should fail ReplaceNode forwarding");
+            assert!(
+                err.to_string().contains("unexpected daemon reply"),
+                "error must call out the wrong-reply-type failure mode: {err}"
+            );
+        }
     }
 
     #[test]

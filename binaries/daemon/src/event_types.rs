@@ -34,6 +34,11 @@ pub enum Event {
     Node {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        /// The process incarnation this event's connection belongs to,
+        /// stamped by the per-spawn listener. Events from a superseded
+        /// incarnation (replaced or re-added id) must not mutate the
+        /// current entry's state (dora-rs/dora#2926, #2927).
+        generation: u64,
         event: DaemonNodeEvent,
     },
     Coordinator(CoordinatorEvent),

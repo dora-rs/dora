@@ -153,6 +153,12 @@ pub struct PreparedNode {
     pub(super) dataflow_id: DataflowId,
     pub(super) node: ResolvedNode,
     pub(super) generation: u64,
+    /// Shared with this node's listener: each incoming CONNECTION snapshots
+    /// the value at register time, so events are attributed to the
+    /// incarnation that was current when the process connected. The restart
+    /// loop advances it before each respawn (the listener socket is bound
+    /// once per node and reused across incarnations).
+    pub(super) generation_counter: Arc<AtomicU64>,
     pub(super) node_config: NodeConfig,
     pub(super) clock: Arc<HLC>,
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
@@ -503,6 +509,17 @@ impl PreparedNode {
                 // dora-rs/adora#152.
                 let (op_tx_new, op_rx_new) = flume::bounded(2);
                 let (finished_tx, finished_rx_new) = oneshot::channel();
+                // Mint the successor's generation BEFORE the spawn and
+                // publish it to the listener's shared counter: the new
+                // process can connect (and subscribe) before our
+                // `ProcessHandleReplaced` event is processed, and its
+                // connection must be stamped with its own incarnation, not
+                // its predecessor's. On spawn failure the advanced counter
+                // is harmless — generations are monotonic and unused values
+                // are never compared.
+                let new_generation = crate::running_dataflow::next_node_generation();
+                self.generation_counter
+                    .store(new_generation, atomic::Ordering::Release);
                 let result = self
                     .clone()
                     .spawn_inner(&mut logger, op_rx_new, finished_tx)
@@ -512,7 +529,6 @@ impl PreparedNode {
                         finished_rx = finished_rx_new;
                         let new_handle = crate::ProcessHandle::new(op_tx_new);
                         pid.store(new_pid, atomic::Ordering::Release);
-                        let new_generation = crate::running_dataflow::next_node_generation();
                         // Install the new `ProcessHandle` in
                         // `running_nodes` so subsequent stop/kill
                         // operations target this incarnation.
@@ -1172,6 +1188,7 @@ mod tests {
             dataflow_id: uuid::Uuid::nil(),
             node: test_resolved_node(restart_delay_secs),
             generation,
+            generation_counter: Arc::new(AtomicU64::new(generation)),
             node_config: test_node_config(),
             clock: Arc::new(HLC::default()),
             daemon_tx,

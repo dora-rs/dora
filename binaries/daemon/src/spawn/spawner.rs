@@ -328,9 +328,15 @@ impl Spawner {
             .await;
 
         let last_activity = Arc::new(AtomicU64::new(crate::node_communication::current_millis()));
+        // The incarnation identity for this spawn: assigned before the
+        // listener is bound so every `Event::Node` from this process's
+        // connection carries it (dora-rs/dora#2927).
+        let generation = crate::running_dataflow::next_node_generation();
+        let generation_counter = Arc::new(AtomicU64::new(generation));
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
+            generation_counter.clone(),
             &self.daemon_tx,
             self.dataflow_descriptor.communication.local,
             self.clock.clone(),
@@ -364,6 +370,8 @@ impl Spawner {
                 confined,
                 &mut logger,
                 dataflow_id,
+                generation,
+                generation_counter,
                 node_config,
                 node_stderr_most_recent,
                 last_activity,
@@ -382,6 +390,8 @@ impl Spawner {
         confined: bool,
         logger: &mut NodeLogger<'_>,
         dataflow_id: uuid::Uuid,
+        generation: u64,
+        generation_counter: Arc<AtomicU64>,
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         last_activity: Arc<AtomicU64>,
@@ -660,7 +670,8 @@ impl Spawner {
             node_working_dir,
             dataflow_id,
             node,
-            generation: crate::running_dataflow::next_node_generation(),
+            generation,
+            generation_counter,
             node_config,
             clock: self.clock,
             daemon_tx: self.daemon_tx,

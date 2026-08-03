@@ -21,6 +21,7 @@ use tokio::{
 #[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
 pub async fn listener_loop(
     listener: TcpListener,
+    generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
@@ -34,6 +35,7 @@ pub async fn listener_loop(
                     Ok((connection, _)) => {
                         tokio::spawn(handle_connection_loop(
                             connection,
+                            generation.clone(),
                             daemon_tx.clone(),
                             clock.clone(),
                             last_activity.clone(),
@@ -52,6 +54,7 @@ pub async fn listener_loop(
 #[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
 async fn handle_connection_loop(
     connection: TcpStream,
+    generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
@@ -60,7 +63,14 @@ async fn handle_connection_loop(
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, clock, last_activity).await
+    Listener::run(
+        TcpConnection(connection),
+        generation,
+        daemon_tx,
+        clock,
+        last_activity,
+    )
+    .await
 }
 
 struct TcpConnection(TcpStream);

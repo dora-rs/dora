@@ -39,25 +39,35 @@ pub struct Replace {
     grace: Option<std::time::Duration>,
 }
 
+/// Parse the replacement definition and check it targets the same id the
+/// command names. Runs before any coordinator connection so a mismatch
+/// fails fast and is unit-testable.
+fn parse_replacement_node(
+    yaml_content: &str,
+    expected_id: &str,
+) -> eyre::Result<dora_message::descriptor::Node> {
+    let node: dora_message::descriptor::Node =
+        serde_yaml::from_str(yaml_content).wrap_err("failed to parse node YAML")?;
+    if node.id.to_string() != expected_id {
+        bail!(
+            "node id mismatch: the command names `{expected_id}` but the YAML defines `{}`; \
+             `dora node replace` swaps a node under the SAME id",
+            node.id
+        );
+    }
+    Ok(node)
+}
+
 impl Executable for Replace {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
+        let yaml_content = std::fs::read_to_string(&self.from_yaml)
+            .wrap_err_with(|| format!("failed to read {}", self.from_yaml.display()))?;
+        let node = parse_replacement_node(&yaml_content, &self.node)?;
+
         let session = self.coordinator.connect()?;
         let dataflow_id =
             resolve_dataflow_identifier_interactive(&session, self.dataflow.as_deref())?;
-
-        let yaml_content = std::fs::read_to_string(&self.from_yaml)
-            .wrap_err_with(|| format!("failed to read {}", self.from_yaml.display()))?;
-        let node: dora_message::descriptor::Node =
-            serde_yaml::from_str(&yaml_content).wrap_err("failed to parse node YAML")?;
-        if node.id.to_string() != self.node {
-            bail!(
-                "node id mismatch: the command names `{}` but the YAML defines `{}`; \
-                 `dora node replace` swaps a node under the SAME id",
-                self.node,
-                node.id
-            );
-        }
 
         let reply = send_control_request(
             &session,
@@ -76,5 +86,24 @@ impl Executable for Replace {
             other => bail!("unexpected reply: {other:?}"),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_replacement_node;
+
+    #[test]
+    fn replacement_yaml_must_define_the_named_id() {
+        let yaml = "id: other\npath: /bin/true\noutputs:\n  - value\n";
+        let err = parse_replacement_node(yaml, "filter")
+            .expect_err("an id mismatch must be rejected before contacting the coordinator");
+        assert!(
+            err.to_string().contains("node id mismatch"),
+            "unexpected error: {err:#}"
+        );
+
+        let yaml = "id: filter\npath: /bin/true\noutputs:\n  - value\n";
+        parse_replacement_node(yaml, "filter").expect("matching id must parse");
     }
 }
