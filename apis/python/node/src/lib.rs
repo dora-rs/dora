@@ -2130,13 +2130,21 @@ impl Node {
         // daemon (coordinator resolves the machine; sync confirm).  The
         // mirror is independent of the local receiver's device — the
         // target machine's pool is always CPU-style DORADMA shmem.
-        // Failure (unresolved machine, remote pool creation failure, or
-        // ack timeout) is a warn-and-no-op: the daemon has already logged
-        // a warning; we roll back the local pool and return None rather
-        // than crash.
+        // Failure (unresolved machine, remote pool creation failure, ack
+        // timeout, or a broken daemon channel — including the
+        // interactive / integration-testing mocks, which reject
+        // cross-machine registration) is a warn-and-no-op: the daemon has
+        // already logged a warning; we roll back the local pool and
+        // return None rather than crash.
         if let Some(target_machine) = machine {
             let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
-            let reply = self
+            // register_cross_machine_pool returns `Result<Result<(), String>,
+            // eyre::Error>`: the outer Err is a transport failure (daemon
+            // channel closed, interactive / integration-testing mock mode),
+            // the inner Err the daemon-reported mirror failure.  Map the
+            // transport Err to the same String type so the two failure
+            // channels merge below.
+            let result = self
                 .node
                 .get_mut()
                 .register_cross_machine_pool(
@@ -2145,49 +2153,27 @@ impl Node {
                     dtype.clone(),
                     shape_list.clone(),
                     tensor_device.clone(),
-                    target_machine.clone(),
+                    target_machine,
                 )
-                .map_err(|e| eyre::eyre!("register cross-machine pool: {e}"))?;
-            match reply {
-                Ok(()) => {
+                .map_err(|e| e.to_string());
+            match result {
+                Ok(Ok(())) => {
                     // Local pool stays; the daemon recorded CROSS_POOLS.
                 }
-                Err(msg) => {
-                    tracing::warn!("{msg}");
-                    // Roll back the local pool: unpin host memory, drop
-                    // any sender-side cache entries, and unlink the shmem
-                    // segment (cleanup mirrors free_memory_pool).
-                    if !receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
-                        let bound = helpers.bind(py);
-                        let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
-                    }
-                    {
-                        let mut pool = PINNED_POOL.lock().unwrap_or_else(|e| e.into_inner());
-                        if let Some(slot) = pool.remove(&pool_counter) {
-                            // Defensive: the slot is normally stored after
-                            // this point, but if it exists free its GPU-side
-                            // resources too.
-                            if let Ok(helpers) = get_cuda_helpers(py) {
-                                let bound = helpers.bind(py);
-                                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
-                                if slot.transit_ptr != 0 {
-                                    let _ =
-                                        bound.call_method1("_free_transit", (slot.transit_ptr,));
-                                }
-                            }
-                        }
-                    }
-                    TRANSIT_META
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&pool_counter);
-                    FREED_POOL_IDS
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .insert(buffer_id);
-                    // Unlink the local shmem segment (drop with owner=true
-                    // removes it).
-                    shmem.set_owner(true);
+                Ok(Err(msg)) | Err(msg) => {
+                    tracing::warn!(
+                        "[{}] register_memory_pool: cross-machine mirror failed for {}: {msg}",
+                        self.node_id,
+                        buffer_id
+                    );
+                    rollback_local_pool(
+                        &mut shmem,
+                        shmem_ptr as u64,
+                        receiver_is_cuda,
+                        pool_counter,
+                        buffer_id,
+                        py,
+                    );
                     return Ok(py.None());
                 }
             }
@@ -3488,6 +3474,49 @@ impl Node {
 
         Ok(())
     }
+}
+
+/// Roll back a locally-registered pool whose cross-machine mirror failed:
+/// unpin host memory (when the receiver reads from the shmem), drop any
+/// sender-side cache entries, and unlink the shmem segment (cleanup
+/// mirrors `free_memory_pool`).  Shared by the transport-failure and
+/// daemon-reported-failure paths of `register_memory_pool`.
+fn rollback_local_pool(
+    shmem: &mut shared_memory_extended::Shmem,
+    shmem_ptr: u64,
+    receiver_is_cuda: bool,
+    pool_counter: u64,
+    buffer_id: String,
+    py: Python<'_>,
+) {
+    if !receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+        let bound = helpers.bind(py);
+        let _ = bound.call_method1("_unregister_host", (shmem_ptr,));
+    }
+    {
+        let mut pool = PINNED_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = pool.remove(&pool_counter) {
+            // Defensive: the slot is normally stored after this point, but
+            // if it exists free its GPU-side resources too.
+            if let Ok(helpers) = get_cuda_helpers(py) {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
+                if slot.transit_ptr != 0 {
+                    let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                }
+            }
+        }
+    }
+    TRANSIT_META
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pool_counter);
+    FREED_POOL_IDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(buffer_id);
+    // Unlink the local shmem segment (drop with owner=true removes it).
+    shmem.set_owner(true);
 }
 
 /// Stub for `send_output_raw` on Python < 3.11.
