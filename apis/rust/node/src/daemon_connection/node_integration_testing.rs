@@ -167,7 +167,7 @@ impl IntegrationTestingEvents {
             }
             OutputWriter::Channel(sender) => {
                 sender
-                    .send(output)
+                    .blocking_send(output)
                     .context("failed to send output to channel")?;
             }
         }
@@ -234,7 +234,7 @@ impl IntegrationTestingEvents {
 
 enum OutputWriter {
     Writer(Box<dyn Write + Send>),
-    Channel(flume::Sender<serde_json::Map<String, serde_json::Value>>),
+    Channel(tokio::sync::mpsc::Sender<serde_json::Map<String, serde_json::Value>>),
 }
 
 pub fn convert_output_to_json(

@@ -2314,7 +2314,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2430,7 +2430,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2497,7 +2497,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,

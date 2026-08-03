@@ -3279,7 +3279,7 @@ mod tests {
     fn test_node() -> (
         DoraNode,
         crate::EventStream,
-        flume::Receiver<serde_json::Map<String, serde_json::Value>>,
+        tokio::sync::mpsc::Receiver<serde_json::Map<String, serde_json::Value>>,
     ) {
         let events = vec![TimedIncomingEvent {
             time_offset_secs: 0.1,
@@ -3289,7 +3289,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, rx) = flume::unbounded();
+        let (tx, rx) = tokio::sync::mpsc::channel(16);
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -3300,7 +3300,7 @@ mod tests {
 
     #[test]
     fn send_service_request_returns_valid_id_and_sends_output() {
-        let (mut node, events, rx) = test_node();
+        let (mut node, events, mut rx) = test_node();
 
         let request_id = node
             .send_service_request("request".into(), Default::default(), NullArray::new(0))
@@ -3312,7 +3312,7 @@ mod tests {
         // Output should have been sent to the channel
         drop(node);
         drop(events);
-        let outputs: Vec<_> = rx.try_iter().collect();
+        let outputs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "request");
     }
@@ -3336,7 +3336,7 @@ mod tests {
 
     #[test]
     fn send_service_response_sends_output() {
-        let (mut node, events, rx) = test_node();
+        let (mut node, events, mut rx) = test_node();
 
         // Simulate passing through a request_id from the incoming request
         let mut params = MetadataParameters::default();
@@ -3349,7 +3349,7 @@ mod tests {
 
         drop(node);
         drop(events);
-        let outputs: Vec<_> = rx.try_iter().collect();
+        let outputs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "response");
     }
@@ -3677,7 +3677,7 @@ mod tests {
 
     #[test]
     fn send_stream_chunk_sends_output() {
-        let (mut node, events, rx) = test_node();
+        let (mut node, events, mut rx) = test_node();
         let mut seg = StreamSegment::with_session_id("s1".into());
 
         node.send_stream_chunk("audio".into(), &mut seg, false, NullArray::new(0))
@@ -3685,7 +3685,7 @@ mod tests {
 
         drop(node);
         drop(events);
-        let outputs: Vec<_> = rx.try_iter().collect();
+        let outputs: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "audio");
     }

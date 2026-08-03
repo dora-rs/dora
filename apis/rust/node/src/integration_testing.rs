@@ -49,7 +49,7 @@
 //!    );
 //!
 //!    // send the node's outputs to a channel so we can verify them later
-//!    let (tx, rx) = flume::unbounded();
+//!    let (tx, mut rx) = tokio::sync::mpsc::channel(16);
 //!    let outputs = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
 //!
 //!    // don't include time offsets in the outputs to make them deterministic
@@ -65,7 +65,7 @@
 //!     crate::main()?;
 //!
 //!     // collect the nodes's outputs and compare them
-//!     let outputs = rx.try_iter().collect::<Vec<_>>();
+//!     let outputs = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
 //!     assert_eq!(outputs, expected_outputs);
 //!
 //!     Ok(())
@@ -266,10 +266,10 @@ pub enum TestingOutput {
     ToFile(std::path::PathBuf),
     /// Writes the output as JSONL file to the given writer.
     ToWriter(Box<dyn std::io::Write + Send>),
-    /// Sends each output as a JSON object to the given [`flume::Receiver`].
+    /// Sends each output as a JSON object to the given [`tokio::sync::mpsc::Sender`].
     ///
     /// Note: When using a bounded channel, the node may block when the channel is full.
-    ToChannel(flume::Sender<serde_json::Map<String, serde_json::Value>>),
+    ToChannel(tokio::sync::mpsc::Sender<serde_json::Map<String, serde_json::Value>>),
 }
 
 /// Options for integration testing.
@@ -280,4 +280,16 @@ pub struct TestingOptions {
     /// Skipping time offsets makes the outputs deterministic and easier to compare against
     /// expected outputs.
     pub skip_output_time_offsets: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TestingOutput;
+
+    #[test]
+    fn testing_output_to_channel_accepts_tokio_mpsc_sender() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<serde_json::Map<String, serde_json::Value>>(1);
+
+        let _output = TestingOutput::ToChannel(tx);
+    }
 }
