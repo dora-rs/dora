@@ -1021,6 +1021,28 @@ jobs:
           pkill -CONT -f "dora daemon" 2>/dev/null || true
           pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
 
+  multi-daemon-late-subscriber:
+    # Guards the cross-daemon start barrier (#2938, #2998) end to end: a node
+    # added to a *running* two-daemon dataflow must get past
+    # `init_from_env()`. The test landed in #3010; this is its CI slot, so a
+    # regression is caught rather than sitting unrun. Nightly rather than PR
+    # tier because it needs a real coordinator plus two daemons, and it builds
+    # its own CLI and fixtures (hence no `needs: build-cli`, and a budget like
+    # the other compile-in-job jobs).
+    name: multi-daemon late subscriber end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Run multi-daemon late-subscriber E2E
+        run: cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
+
   state-reconstruction-smoke:
     # Partial regression test for #255. Validates what the current redb
     # backend + recovery path actually delivers on coord restart: store
@@ -1987,6 +2009,7 @@ jobs:
       - redb-backend-smoke
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
+      - multi-daemon-late-subscriber
       - kani-proofs
       - test-cross-platform
       - examples
@@ -2050,6 +2073,9 @@ jobs:
                 ;;
               streaming)
                 echo 'dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s'
+                ;;
+              multi-daemon-late-subscriber)
+                echo 'cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1'
                 ;;
               record-replay)
                 echo 'scripts/qa/ci-nightly-jobs.sh record-replay'
@@ -2131,6 +2157,7 @@ jobs:
               redb-backend-smoke) echo '^redb backend end-to-end$' ;;
               daemon-reconnect-smoke) echo '^daemon auto-reconnect end-to-end \(Linux\)$' ;;
               state-reconstruction-smoke) echo '^state reconstruction end-to-end \(partial\)$' ;;
+              multi-daemon-late-subscriber) echo '^multi-daemon late subscriber end-to-end$' ;;
               kani-proofs) echo '^Kani formal-verification proofs$' ;;
               test-cross-platform) echo '^Test \(.+\) \[nightly\]$' ;;
               examples) echo '^Examples \(.+\)$' ;;
@@ -2412,6 +2439,7 @@ jobs:
       - redb-backend-smoke
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
+      - multi-daemon-late-subscriber
       - kani-proofs
       - test-cross-platform
       - examples

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 23 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 27 test jobs
+# (re-counted in #2999: the previous 23 counted neither hub-smoke nor the two
+# ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new)
 # (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
-# This script covers the other 17, with
+# This script covers 20 of the rest -- memory-pool-smoke and hub-smoke have
+# no entry here, and one local cli-tests run covers both cli-tests halves -- with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
 #
@@ -25,6 +28,8 @@
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
 #   - redb-backend-smoke        coord restart reads daemon records back (#253).
 #   - daemon-reconnect-smoke    Linux-only. SIGSTOP+watchdog+SIGCONT reconnect (#254).
+#   - multi-daemon-late-subscriber  node added after startup on a 2-daemon
+#                                   dataflow is answered, not parked (#2999).
 #   - state-reconstruction-smoke Running -> Recovering on coord restart (#255, partial).
 #
 #   Moved from ci.yml in #1716 (now only run in nightly):
@@ -125,7 +130,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|kani-proofs)
+    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|multi-daemon-late-subscriber|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|kani-proofs)
       return 0
       ;;
     *)
@@ -151,6 +156,7 @@ Supported jobs:
   redb-backend-smoke
   daemon-reconnect-smoke
   state-reconstruction-smoke
+  multi-daemon-late-subscriber
   test-cross-platform
   examples
   cli-tests
@@ -1531,6 +1537,26 @@ job_daemon_reconnect() {
   echo "OK: daemon reconnected and re-registered ($report_count reports)"
 }
 
+# ---------------------------------------------------------------------------
+# Job: multi-daemon-late-subscriber
+#
+# Mirrors the `multi-daemon-late-subscriber` job in nightly.yml. The test
+# spawns its own coordinator and two named daemons on free ports, so nothing
+# needs installing or tearing down here.
+# ---------------------------------------------------------------------------
+job_multi_daemon_late_subscriber() {
+  # Linux-only, mirroring the Ubuntu-only GHA job: a local pass has to predict
+  # the nightly result, not exercise a combination CI never runs.
+  if [ "$OS" != "Linux" ]; then
+    echo "SKIP: multi-daemon-late-subscriber runs on Linux in nightly CI"
+    # Recorded, not just printed: `run_job` prints PASS for a function that
+    # returns 0, so a silent skip would report coverage that never ran.
+    SKIPPED+=("multi-daemon-late-subscriber: non-Linux ($OS)")
+    return 0
+  fi
+  timeout 2400s cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
+}
+
 # -----------------------------------------------------------------------------
 # Job 6: state-reconstruction-smoke
 # -----------------------------------------------------------------------------
@@ -2074,6 +2100,7 @@ run_job "cpu-affinity-smoke"        job_cpu_affinity
 run_job "redb-backend-smoke"        job_redb_backend
 run_job "daemon-reconnect-smoke"    job_daemon_reconnect
 run_job "state-reconstruction-smoke" job_state_reconstruction
+run_job "multi-daemon-late-subscriber" job_multi_daemon_late_subscriber
 run_job "test-cross-platform"       job_test_cross_platform
 run_job "examples"                  job_examples
 run_job "cli-tests"                 job_cli_tests
