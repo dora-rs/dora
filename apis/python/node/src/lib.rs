@@ -1409,6 +1409,13 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+        // Same cleanup contract as `next`/`drain`/`try_recv`: release the
+        // per-process resources of pools that other nodes freed before
+        // yielding the next user-visible event.  Done *before* the await so
+        // that it also runs on the `None` (stream closed) path, and so the
+        // scoped `attach` drops the GIL before the suspend point.
+        Python::attach(|py| self.process_pending_memory_pool_frees(py));
+
         let timeout = timeout_to_duration(timeout)?;
         let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
@@ -3337,6 +3344,71 @@ impl Node {
              which only became part of the stable C API in 3.11. \
              Upgrade Python or use send_output() instead (1 copy)."
         )))
+    }
+}
+
+#[cfg(test)]
+mod memory_pool_free_drain_tests {
+    /// Every user-visible receive path must drain the pending
+    /// memory-pool free set — that drain is the only thing that releases
+    /// this process's GPU IPC handles, transit buffers and shmem mappings
+    /// for pools that *another* node freed
+    /// (see `dora_node_api::event_stream::memory_pool`).
+    ///
+    /// Regression guard for #2958, where `recv_async` was the one path of
+    /// four that skipped it, so `await`-only nodes leaked every pool until
+    /// process exit. The leak is silent: it surfaces later as a CUDA OOM
+    /// somewhere unrelated, which is exactly why it needs a guard.
+    ///
+    /// Asserted on the source rather than on behaviour because `Node` can
+    /// only be constructed against a live daemon connection, so no unit
+    /// test can call these methods.
+    #[test]
+    fn every_receive_path_drains_pending_memory_pool_frees() {
+        const DRAIN: &str = "self.process_pending_memory_pool_frees(py)";
+        let src = include_str!("lib.rs");
+
+        for signature in [
+            "pub fn next(&self, py: Python",
+            "pub fn drain(&self, py: Python",
+            "pub fn try_recv(&mut self, py: Python",
+            "pub async fn recv_async(&self,",
+        ] {
+            assert!(
+                method_body(src, signature).contains(DRAIN),
+                "`{signature}` does not call `{DRAIN}`: pools freed by other \
+                 nodes stay mapped in this process forever (#2958)"
+            );
+        }
+
+        // `__next__` is exempt only for as long as it delegates to `next`.
+        assert!(
+            method_body(src, "pub fn __next__(&self, py: Python").contains("self.next(py,"),
+            "`__next__` no longer delegates to `next`, so it needs its own \
+             `{DRAIN}` call (#2958)"
+        );
+    }
+
+    /// Returns the `{ .. }` block that follows `signature` in `src`.
+    fn method_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("method `{signature}` not found — update this test"));
+        let open = start + src[start..].find('{').expect("method has a body");
+        let mut depth = 0usize;
+        for (offset, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in the body of `{signature}`");
     }
 }
 
