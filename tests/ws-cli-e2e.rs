@@ -2696,4 +2696,262 @@ mod real_dataflow {
 
         cleanup(&dora);
     }
+
+    /// dora-rs/dora#2980: `Destroy` must not outrun the stop it just asked
+    /// for.
+    ///
+    /// `handle_destroy` stops every dataflow and then tears the daemons down
+    /// ~200ms later, but `stop_dataflow` returns once the daemons acknowledge
+    /// the *request* — the grace → SIGTERM → SIGKILL ladder runs afterwards,
+    /// inside the daemon. A node that ignores the cooperative `Stop`
+    /// therefore used to survive the teardown with `ppid 1`, holding whatever
+    /// it held, while the command reported success.
+    ///
+    /// Driven over the raw control protocol rather than `dora down`: the
+    /// #2924 guard makes the CLI stop each dataflow through a path that
+    /// already waits, which masks this. `Destroy` is also reached by
+    /// `dora cluster down`, by Ctrl-C on the coordinator, and by any direct
+    /// control-protocol client — this is that route.
+    ///
+    /// The fixture ignores both the cooperative `Stop` and SIGTERM, so only a
+    /// SIGKILL can end it; a node that died to SIGTERM would be cleaned up
+    /// either way and could not tell a working teardown from a broken one.
+    ///
+    /// Unix-only: it inspects process state.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_destroy_does_not_orphan_a_node_that_ignores_stop() {
+        ensure_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "sigterm-ignoring-node"])
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .expect("failed to build sigterm-ignoring-node");
+        assert!(status.success(), "failed to build sigterm-ignoring-node");
+
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let pid_file = home.path().join("stubborn.pid");
+        let yaml = home.path().join("stubborn.yml");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: stubborn\n    \
+                   path: \"{node}\"\n    \
+                   env:\n      \
+                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n",
+                node = target.join("debug/sigterm-ignoring-node").display(),
+                pid_file = pid_file.display(),
+            ),
+        )
+        .expect("write dataflow yaml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        // Explicit capture name: the default is the joined argv, and this
+        // command's argv holds a path, which cannot be a file name.
+        let (child, out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--detach"],
+            "start",
+        );
+        let (status, stdout, stderr) = wait_for_dora_isolated(child, out_path, err_path);
+        assert!(
+            status.success(),
+            "dora start failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        // The fixture publishes its own pid, so the assertions below are about
+        // THIS process rather than a pattern match on the process table, which
+        // would also catch a leftover from an earlier run.
+        let node_pid = wait_for_pid_file(&pid_file, Duration::from_secs(30));
+
+        // RAII: the fixture ignores SIGTERM and outlives a failed assertion by
+        // design, so every bail-out path must still clear it off the runner.
+        struct Reaper(u32);
+        impl Drop for Reaper {
+            fn drop(&mut self) {
+                if fixture_alive(self.0) {
+                    let _ = Command::new("kill")
+                        .args(["-9", &self.0.to_string()])
+                        .status();
+                }
+            }
+        }
+        let _reaper = Reaper(node_pid);
+        assert!(
+            fixture_alive(node_pid),
+            "fixture {node_pid} was not running before destroy"
+        );
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let session = WsSession::connect(addr).expect("failed to connect WsSession");
+        let reply =
+            super::send_request(&session, &ControlRequest::Destroy).expect("destroy request");
+        assert!(
+            matches!(reply, ControlRequestReply::DestroyOk),
+            "expected DestroyOk, got {reply:?}"
+        );
+
+        // No polling window: the point of the fix is that `Destroy` does not
+        // return until the daemon has dealt with its children, so the node
+        // must already be gone when the reply lands.
+        assert!(
+            !fixture_alive(node_pid),
+            "node {node_pid} outlived the destroy that reported success \
+             — it is now orphaned to ppid 1"
+        );
+    }
+
+    /// A destroy must not make a healthy shutdown slower or dirtier.
+    ///
+    /// The wait added for #2980 cannot be taken inline in the daemon's event
+    /// loop: a node on its way out ends by asking that same loop to close its
+    /// outputs and report them done, so a loop parked in the wait deadlocks
+    /// every well-behaved node against it until the deadline, and they get
+    /// signal-killed instead of exiting. That regression is invisible to the
+    /// orphan test above — its fixture never talks to the daemon — so this
+    /// pins the other side: real nodes, and a destroy that returns in about
+    /// the time it took before the wait existed.
+    #[test]
+    fn e2e_destroy_does_not_delay_healthy_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let yaml = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/node-lifecycle.yml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let (child, out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--detach"],
+            "start",
+        );
+        let (status, stdout, stderr) = wait_for_dora_isolated(child, out_path, err_path);
+        assert!(
+            status.success(),
+            "dora start failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+        // Destroying mid-startup is a different scenario with its own timing:
+        // a node that has not subscribed yet cannot answer the cooperative
+        // stop, so the teardown waits out the startup barrier. This test is
+        // about the steady state, so let the dataflow reach it first.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let reply = super::send_request(&session, &ControlRequest::List).expect("list");
+            if let ControlRequestReply::DataflowList(list) = reply
+                && list.0.iter().any(|entry| {
+                    matches!(
+                        entry.status,
+                        dora_message::coordinator_to_cli::DataflowStatus::Running
+                    )
+                })
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "dataflow never reached Running within 30s"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let reply = super::send_request(&session, &ControlRequest::Destroy).expect("destroy");
+        assert!(
+            matches!(reply, ControlRequestReply::DestroyOk),
+            "expected DestroyOk, got {reply:?}"
+        );
+
+        // The signal, rather than wall-clock timing: the daemon only kills
+        // what is left when its deadline expires, and it says so. A healthy
+        // node reaches that deadline exactly when the loop it needs was
+        // parked in the wait — so this line appearing IS the regression,
+        // whatever the machine's timing.
+        let killed = daemon_log_lines(home.path())
+            .into_iter()
+            .find(|line| line.contains("still running at destroy"));
+        assert!(
+            killed.is_none(),
+            "nodes that answer the cooperative stop must exit on their own, \
+             but the daemon had to kill them: {killed:?}"
+        );
+    }
+
+    /// Everything the daemon logged, across the isolated home's log files.
+    fn daemon_log_lines(home: &Path) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut dirs = vec![home.join(".dora")];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if let Ok(contents) = std::fs::read_to_string(&path) {
+                    lines.extend(contents.lines().map(str::to_owned));
+                }
+            }
+        }
+        lines
+    }
+
+    /// Read the pid the fixture published, waiting for it to appear.
+    #[cfg(unix)]
+    fn wait_for_pid_file(path: &Path, timeout: Duration) -> u32 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(path)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "node never reported its pid at {}",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Whether `pid` is still the fixture.
+    ///
+    /// Matches the binary path, not merely liveness: once the node exits its
+    /// pid is free for reuse, and a bare liveness check would eventually
+    /// report an unrelated process as the surviving node. `args=`, not
+    /// `comm=`, because Linux caps `comm` at 15 characters and the fixture
+    /// name is longer (dora-rs/dora#2961).
+    #[cfg(unix)]
+    fn fixture_alive(pid: u32) -> bool {
+        Command::new("ps")
+            .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .is_some_and(|out| {
+                String::from_utf8_lossy(&out.stdout).contains("/sigterm-ignoring-node")
+            })
+    }
 }
