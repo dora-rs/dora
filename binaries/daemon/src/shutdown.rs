@@ -221,8 +221,16 @@ fn is_live_child(process: &sysinfo::Process, own_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The `#[cfg(unix)]` tests below drive a real process through the Unix
+    // process model: `/bin/sleep`, process groups, `CommandExt::process_group`.
+    // They are compiled out rather than `ignore`d because `ignore` only skips
+    // a test at *runtime* — the body still has to compile, and the Unix-only
+    // APIs it uses do not exist on Windows (dora-rs/dora#2742).
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
 
+    #[cfg(unix)]
     fn spawn_sleeper() -> std::process::Child {
         Command::new("sleep")
             .arg("300")
@@ -234,8 +242,8 @@ mod tests {
 
     /// A node that will not exit is killed once the deadline passes — the
     /// case #2980 is about.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "spawns `sleep`")]
     async fn a_node_that_outlives_the_deadline_is_killed() {
         let mut child = spawn_sleeper();
         let pid = child.id();
@@ -260,8 +268,8 @@ mod tests {
     /// carries on in its process group, the node is not gone. Following only
     /// the leader would end the destroy there and orphan the child, which is
     /// the very leak this module exists to close, one level down.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "process groups are a unix concept")]
     async fn a_wrapper_that_exits_does_not_hide_its_surviving_child() {
         use std::os::unix::process::CommandExt as _;
 
@@ -319,8 +327,8 @@ mod tests {
     /// The common case must stay free: a node that exits on its own is never
     /// killed, and the destroy completes as soon as it is gone rather than
     /// sitting out the deadline.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "spawns `sleep`")]
     async fn a_node_that_exits_on_its_own_is_not_killed() {
         let mut child = spawn_sleeper();
         let pid = child.id();
@@ -340,8 +348,8 @@ mod tests {
 
     /// A pid the OS recycled after the node exited belongs to a stranger.
     /// Killing it would be worse than the leak this module exists to fix.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "spawns `sleep`")]
     async fn a_process_that_is_not_our_child_is_left_alone() {
         let mut child = spawn_sleeper();
         let pid = child.id();
