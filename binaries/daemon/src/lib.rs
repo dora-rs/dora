@@ -5411,7 +5411,7 @@ impl Daemon {
             }
         };
 
-        dataflow
+        let status = dataflow
             .pending_nodes
             .handle_node_stop(
                 node_id,
@@ -5421,6 +5421,25 @@ impl Daemon {
                 &mut logger,
             )
             .await?;
+
+        // If this death completed the startup barrier (the dying node was the
+        // last cohort member yet to subscribe), the barrier resolves to
+        // `AllNodesReady` just as a final subscribe or a `RemoveNode` would —
+        // and both of those callers start the dataflow here. Do the same, so a
+        // non-cohort survivor that was answered `Ok(())` (since #2933) isn't
+        // left parked on a dataflow that never starts and never tears down
+        // (#2967). `start()` is idempotent and guarded by `dataflow_started`.
+        if matches!(status, DataflowStatus::AllNodesReady) && !dataflow.dataflow_started {
+            logger
+                .log(
+                    LogLevel::Info,
+                    None,
+                    Some("daemon".into()),
+                    "startup barrier completed by a node exit, starting dataflow",
+                )
+                .await;
+            dataflow.start(&self.events_tx, &self.clock).await?;
+        }
 
         // node only reaches here if it will not be restarted
         let might_restart = false;
