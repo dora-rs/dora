@@ -723,6 +723,143 @@ fn rust_dynamic_node_readd_same_id_ignores_stale_exit() {
     );
 }
 
+static BUILD_TICK_RECORDER: Once = Once::new();
+
+/// Build the `timer-tick-recorder-node` fixture used by the #2585
+/// regression test. Same rationale as `ensure_rust_filter_built`: `dora
+/// node add` never runs a `build:` field, so the binary has to exist
+/// beforehand.
+fn ensure_tick_recorder_built() {
+    BUILD_TICK_RECORDER.call_once(|| {
+        let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let status = Command::new("cargo")
+            .args(["build", "-p", "timer-tick-recorder-node"])
+            .arg("--target-dir")
+            .arg(dora_root.join("target"))
+            .status()
+            .expect("failed to run cargo build for timer-tick-recorder-node");
+        assert!(status.success(), "failed to build timer-tick-recorder-node");
+    });
+}
+
+/// Regression for dora-rs/dora#2585: a node added to an already-running
+/// dataflow must actually *receive* ticks on a timer input, even when it
+/// is the first subscriber of that interval.
+///
+/// Per-interval tick-emitting tasks are only ever spawned by
+/// `RunningDataflow::start()`, which the daemon calls once, on the
+/// all-nodes-ready transition. `AddNode` registered the new node in
+/// `dataflow.timers` but did not re-invoke `start()`, so an interval no
+/// already-running node subscribed to never got a task and the added
+/// node's timer input was silent forever. The node still spawns and
+/// still reports `Running`, which is why the pre-existing lifecycle
+/// coverage (`lifecycle_rust_dynamic_add_remove` adds a node wired to
+/// the *sender's output*, and asserts only that it reaches `Running`)
+/// could not see this: the only observable is a delivery reported by the
+/// node itself.
+///
+/// The interval is deliberately one the running dataflow does not
+/// already use — reusing an existing interval passes even with the bug,
+/// because the task spawned at start-up keeps firing and the delivery
+/// path re-reads the (now larger) subscriber set on every tick.
+#[test]
+fn rust_dynamic_node_receives_ticks_on_fresh_timer_interval() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");
+
+    // Distinct from every interval `examples/rust-dynamic-add-remove`
+    // already subscribes to (sender 200ms, receiver 500ms), so the added
+    // node is the *first* subscriber of this one and a task genuinely has
+    // to be spawned for it.
+    const FRESH_INTERVAL_MS: u64 = 300;
+    // More than one, so a single stray delivery can't pass for a working
+    // timer; small enough to land well inside the poll deadline at 300ms
+    // apart.
+    const REQUIRED_TICKS: usize = 3;
+
+    // Before writing the spec below: the build both produces the binary
+    // the spec points at and guarantees `<manifest>/target/` exists,
+    // which a `CARGO_TARGET_DIR` override would otherwise leave absent.
+    ensure_tick_recorder_built();
+
+    // Artifacts under `target/` rather than the system temp dir, matching
+    // `write_stop_delay_yml`: gitignored, cleaned by `cargo clean`, and
+    // worth keeping after a failed run.
+    let dir = Path::new(manifest_dir).join("target");
+    let stem = format!("dora-timer-tick-{}", std::process::id());
+    let ticker_yml = dir.join(format!("{stem}.yml"));
+    let marker = dir.join(format!("{stem}.ticks"));
+    // A rerun in the same process would otherwise count the previous
+    // run's ticks.
+    let _ = fs::remove_file(&marker);
+    fs::write(
+        &ticker_yml,
+        format!(
+            "id: ticker\n\
+             path: {manifest_dir}/target/debug/timer-tick-recorder-node\n\
+             env:\n  \
+               DORA_TEST_MARKER_FILE: {marker}\n\
+             inputs:\n  \
+               tick: dora/timer/millis/{FRESH_INTERVAL_MS}\n",
+            marker = marker.display()
+        ),
+    )
+    .expect("failed to write ticker node spec");
+
+    let name = "rustlc-timer";
+    let fixture = LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &ticker_yml,
+        name,
+        sender_path_marker: "rust-dynamic-add-remove-sender",
+        use_uv: false,
+    };
+    let StartedLifecycle { dora, .. } = start_lifecycle(&fixture);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    add_node(&dora, name, &ticker_yml, "dora node add ticker");
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(10), |m| {
+        m.get("ticker").is_some_and(|(s, _, _)| s == "Running")
+    });
+    assert!(
+        matches!(parse_node_list(&list_out).get("ticker"), Some((s, _, _)) if s == "Running"),
+        "ticker did not reach Running within 10s after `dora node add`; list:\n{list_out}"
+    );
+
+    let count_ticks = || {
+        fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.trim() == "tick")
+            .count()
+    };
+    // 15s covers ~50 ticks at 300ms, so this only expires if the timer is
+    // genuinely dead rather than merely slow to start (the node subscribes
+    // a moment after the task begins ticking, and ticks that predate the
+    // subscribe are dropped by the daemon's delivery path).
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut ticks = count_ticks();
+    while ticks < REQUIRED_TICKS && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        ticks = count_ticks();
+    }
+
+    assert!(
+        marker.exists(),
+        "ticker never created its marker file at {}, so it never connected — \
+         this test can't say anything about timer delivery",
+        marker.display()
+    );
+    assert!(
+        ticks >= REQUIRED_TICKS,
+        "dynamically added node got {ticks} ticks on the previously-unused \
+         interval {FRESH_INTERVAL_MS}ms within 15s, expected at least \
+         {REQUIRED_TICKS} (dora-rs/dora#2585: no tick-emitting task was \
+         spawned for an interval registered after the dataflow started)"
+    );
+}
+
 static BUILD_STOP_DELAY: Once = Once::new();
 
 /// Build the `stop-delay-node` fixture used by the #2916 hot-swap

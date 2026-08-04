@@ -7775,6 +7775,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "timer-tick-recorder-node"
+version = "1.0.0-rc.4"
+dependencies = [
+ "dora-node-api",
+ "eyre",
+]
+
+[[package]]
 name = "tiny-keccak"
 version = "2.0.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
