@@ -1,7 +1,10 @@
 use std::{
     fs::File,
     io::Write,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -33,6 +36,9 @@ pub struct IntegrationTestingEvents {
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
     options: TestingOptions,
+    /// Set by `DoraNode::drop` so a mid-replay sleep in [`Self::next_event`]
+    /// can abort and let the testing daemon process CloseOutputs (dora-rs/dora#2855).
+    shutdown: Arc<AtomicBool>,
 }
 
 impl IntegrationTestingEvents {
@@ -40,6 +46,7 @@ impl IntegrationTestingEvents {
         input: TestingInput,
         output: TestingOutput,
         options: TestingOptions,
+        shutdown: Arc<AtomicBool>,
     ) -> eyre::Result<Self> {
         let mut node_info: IntegrationTestInput = match input {
             TestingInput::FromJsonFile(input_file_path) => serde_json::from_slice(
@@ -99,6 +106,7 @@ impl IntegrationTestingEvents {
             start_timestamp,
             start_time,
             options,
+            shutdown,
         })
     }
 
@@ -176,6 +184,10 @@ impl IntegrationTestingEvents {
     }
 
     fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEvent>>> {
+        if self.shutdown.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+
         let Some(event) = self.events.next() else {
             return Ok(None);
         };
@@ -187,7 +199,16 @@ impl IntegrationTestingEvents {
         let time_offset = Duration::from_secs_f64(time_offset_secs);
         let elapsed = self.start_time.elapsed();
         if let Some(wait_time) = time_offset.checked_sub(elapsed) {
-            std::thread::sleep(wait_time);
+            // Sleep in short slices so `DoraNode::drop` can interrupt a
+            // scheduled wait and still get a CloseOutputs reply (#2855).
+            let deadline = Instant::now() + wait_time;
+            while Instant::now() < deadline {
+                if self.shutdown.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
         }
 
         let timestamp = Timestamp::new(

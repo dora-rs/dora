@@ -139,6 +139,9 @@ enum DaemonCommunicationWrapper {
     Testing {
         channel:
             tokio::sync::mpsc::Sender<(Timestamped<DaemonRequest>, oneshot::Sender<DaemonReply>)>,
+        /// Shared with the testing daemon so Drop can interrupt a scheduled
+        /// `next_event` sleep (dora-rs/dora#2855).
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     },
 }
 
