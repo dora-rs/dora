@@ -422,7 +422,10 @@ fn remove_cross_pool_shmem(shmem_name: &str) {
 
 /// Publish an inter-daemon memory-pool event over the dataflow topic.
 /// serialize + declare + put all run off the event loop (Block congestion
-/// control can block declare_publisher on a degraded link).
+/// control can block declare_publisher on a degraded link). Logs the
+/// declare and put timing — bincode::serialize of the 61.44MB
+/// WriteMemoryPool payload takes hundreds of ms (3s+ in debug builds),
+/// so the timing is worth knowing on every publish path.
 async fn publish_memory_pool_event(
     session: &zenoh::Session,
     clock: &Arc<HLC>,
@@ -433,9 +436,11 @@ async fn publish_memory_pool_event(
         inner: event.clone(),
         timestamp: clock.new_timestamp(),
     })?;
+    let payload_len = serialized.len();
     let topic = dataflow_memory_pool_topic(dataflow_id);
     // Zenoh errors are boxed trait objects — eyre's `From` conversion
     // needs a Sized error, so convert explicitly instead of `?`.
+    let declared = std::time::Instant::now();
     let publisher = session
         .declare_publisher(topic.clone())
         .congestion_control(CongestionControl::Block)
@@ -446,24 +451,36 @@ async fn publish_memory_pool_event(
         .allowed_destination(Locality::Remote)
         .await
         .map_err(|e| eyre!("memory pool: declare_publisher({topic}) failed: {e}"))?;
+    tracing::info!(
+        "memory pool: declared {topic} in {:?}, starting put ({payload_len} bytes)",
+        declared.elapsed()
+    );
+    let started = std::time::Instant::now();
     publisher
         .put(serialized)
         .await
         .map_err(|e| eyre!("memory pool: publish to {topic} failed: {e}"))?;
+    tracing::info!(
+        "memory pool: put to {topic} completed in {:?}",
+        started.elapsed()
+    );
     Ok(())
 }
 
 /// Release a cross-machine pool from the freeing daemon: unlink this
 /// machine's mirror (self-machine-qualified name; on the origin daemon
-/// the unlink is a harmless NotFound no-op) and publish `FreePool` so
-/// the peer drops its tracking entry. The publish is Remote-only — the
-/// initiator never receives its own echo, so it must unlink its own
-/// mirror here. The caller has already removed the CROSS_POOLS entry.
+/// the unlink is a harmless NotFound no-op) and publish a targeted
+/// `FreePool` so the peer drops its tracking entry. The publish is
+/// Remote-only — the initiator never receives its own echo, so it must
+/// unlink its own mirror here. The caller has already removed the
+/// CROSS_POOLS entry and passes the recorded peer (the pool's other
+/// machine) as the free target.
 async fn release_cross_pool(
     session: &zenoh::Session,
     clock: &Arc<HLC>,
     dataflow_id: &Uuid,
     machine_id: &str,
+    peer_machine_id: &str,
     shared_memory_id: &str,
 ) {
     let Some(shmem_name) = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id) else {
@@ -471,13 +488,14 @@ async fn release_cross_pool(
         return;
     };
     remove_cross_pool_shmem(&shmem_name);
-    tracing::info!("memory pool: forwarding free of {shared_memory_id} to peer");
+    tracing::info!("memory pool: forwarding free of {shared_memory_id} to peer {peer_machine_id}");
     if let Err(e) = publish_memory_pool_event(
         session,
         clock,
         dataflow_id,
         &InterDaemonEvent::FreePool {
             dataflow_id: *dataflow_id,
+            machine_id: peer_machine_id.to_string(),
             shared_memory_id: shared_memory_id.to_string(),
         },
     )
@@ -3323,6 +3341,7 @@ impl Daemon {
             InterDaemonEvent::RegisterPool {
                 dataflow_id,
                 machine_id,
+                origin_machine_id,
                 shared_memory_id,
                 size,
                 dtype,
@@ -3356,10 +3375,13 @@ impl Daemon {
                         Err(e) => (false, Some(e.to_string())),
                     };
                     if ok {
+                        // Track the pool's other machine (the origin) so
+                        // the targeted free reaches it, mirroring the
+                        // origin's `{pool -> target}` entry.
                         CROSS_POOLS
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .insert(shared_memory_id.clone(), String::new());
+                            .insert(shared_memory_id.clone(), origin_machine_id);
                         tracing::info!(
                             "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
                         );
@@ -3389,8 +3411,18 @@ impl Daemon {
             }
             InterDaemonEvent::FreePool {
                 dataflow_id,
+                machine_id,
                 shared_memory_id,
             } => {
+                // Only the target machine's daemon acts. The event is a
+                // dataflow-scope broadcast (Remote-only, so the freeing
+                // daemon never sees its own echo), so without this gate
+                // every other daemon in the dataflow would remove its
+                // tracking entry and unlink — same pattern as the
+                // RegisterPool gate.
+                if machine_id != self.machine_id.as_deref().unwrap_or("") {
+                    return Ok(());
+                }
                 CROSS_POOLS
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -4562,18 +4594,21 @@ impl Daemon {
                     // and — on the origin daemon — never releases the
                     // mirror. Either way the cross-machine cleanup must
                     // not be gated on the table result.
-                    let was_cross = free
-                        && CROSS_POOLS
+                    let peer = if free {
+                        CROSS_POOLS
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .remove(&shared_memory_id)
-                            .is_some();
-                    if was_cross {
+                    } else {
+                        None
+                    };
+                    if let Some(peer) = &peer {
                         release_cross_pool(
                             &self.zenoh_session,
                             &self.clock,
                             &dataflow_id,
                             self.machine_id.as_deref().unwrap_or_default(),
+                            peer,
                             &shared_memory_id,
                         )
                         .await;
@@ -4604,17 +4639,18 @@ impl Daemon {
                 // table result must not gate the cross-machine cleanup —
                 // a table miss on the mirror daemon still has to unlink
                 // the /dev/shm mirror and notify the peer.
-                let was_cross = CROSS_POOLS
+                let peer = CROSS_POOLS
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .remove(&shared_memory_id)
-                    .is_some();
-                if was_cross {
+                    .remove(&shared_memory_id);
+                let was_cross = peer.is_some();
+                if let Some(peer) = &peer {
                     release_cross_pool(
                         &self.zenoh_session,
                         &self.clock,
                         &dataflow_id,
                         self.machine_id.as_deref().unwrap_or_default(),
+                        peer,
                         &shared_memory_id,
                     )
                     .await;
@@ -4684,12 +4720,8 @@ impl Daemon {
                 // with a never-ready proxy pool.
                 // Must match the subscriber's wire format: a
                 // `Timestamped<InterDaemonEvent>` (the same framing the
-                // regular inter-daemon event path uses). Serializing the
-                // bare enum silently fails the subscriber's
-                // `deserialize_inter_daemon_event` — the bincode
-                // Timestamped header misreads the enum tag — and the
-                // event is dropped without ever reaching PROXY_POOL_DATA.
-                let topic = dataflow_memory_pool_topic(&dataflow_id);
+                // regular inter-daemon event path uses) — the framing and
+                // publish live in `publish_memory_pool_event`.
                 // Run serialize + declare + put all off the event loop:
                 // bincode::serialize of the 61.44MB payload takes hundreds
                 // of ms (3s+ in debug builds), and with Block congestion
@@ -4699,10 +4731,13 @@ impl Daemon {
                 // included), backing up the event channels until the
                 // sender's WritePinnedMemory hangs forever.
                 let session = self.zenoh_session.clone();
-                let timestamp = self.clock.new_timestamp();
+                let clock = self.clock.clone();
                 tokio::spawn(async move {
-                    let serialized = match bincode::serialize(&Timestamped {
-                        inner: InterDaemonEvent::MemoryPoolWrite {
+                    if let Err(e) = publish_memory_pool_event(
+                        &session,
+                        &clock,
+                        &dataflow_id,
+                        &InterDaemonEvent::MemoryPoolWrite {
                             dataflow_id,
                             shared_memory_id,
                             tensor_data,
@@ -4711,49 +4746,10 @@ impl Daemon {
                             dtype,
                             shape,
                         },
-                        timestamp,
-                    }) {
-                        Ok(serialized) => serialized,
-                        Err(e) => {
-                            tracing::error!("memory pool bincode serialize failed: {e}");
-                            return;
-                        }
-                    };
-                    let payload_len = serialized.len();
-                    let declared = std::time::Instant::now();
-                    match session
-                        .declare_publisher(topic.clone())
-                        // Block (not Drop): a dropped publish silently
-                        // strands remote readers with a never-ready
-                        // proxy pool — observed when the inter-daemon
-                        // link hiccups mid-transfer on a WAN.
-                        .congestion_control(CongestionControl::Block)
-                        // Remote-only: with the default Locality::Any the
-                        // publisher's own subscriber receives this frame
-                        // back and re-writes it into the local pool, a
-                        // duplicate write on the mirrored path.
-                        .allowed_destination(Locality::Remote)
-                        .await
+                    )
+                    .await
                     {
-                        Ok(publisher) => {
-                            tracing::info!(
-                                "memory pool: declared {topic} in {:?}, starting put \
-                                         ({payload_len} bytes)",
-                                declared.elapsed()
-                            );
-                            let started = std::time::Instant::now();
-                            if let Err(e) = publisher.put(serialized).await {
-                                tracing::error!("memory pool publish to {topic} failed: {e}");
-                            } else {
-                                tracing::info!(
-                                    "memory pool: put to {topic} completed in {:?}",
-                                    started.elapsed()
-                                );
-                            }
-                        }
-                        Err(e) => {
-                            tracing::error!("memory pool declare_publisher({topic}) failed: {e}");
-                        }
+                        tracing::error!("memory pool: failed to forward WriteMemoryPool: {e}");
                     }
                 });
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
@@ -4778,6 +4774,10 @@ impl Daemon {
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
                 let coordinator_sender = self.coordinator_sender.clone();
+                // The origin machine id for the RegisterPool event: the
+                // mirror records `{pool -> origin}` and later frees
+                // toward it. `self` is not reachable inside the spawn.
+                let origin_machine_id = self.machine_id.clone();
                 tokio::spawn(async move {
                     // Clone for the post-flow cleanup below: the inner
                     // async block moves `shared_memory_id` into the pool
@@ -4818,6 +4818,7 @@ impl Daemon {
                             inner: InterDaemonEvent::RegisterPool {
                                 dataflow_id,
                                 machine_id: machine_id.clone(),
+                                origin_machine_id: origin_machine_id.clone().unwrap_or_default(),
                                 shared_memory_id: shared_memory_id.clone(),
                                 size,
                                 dtype: dtype.clone(),

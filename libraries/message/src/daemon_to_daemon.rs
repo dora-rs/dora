@@ -39,7 +39,12 @@ pub enum InterDaemonEvent {
     /// mirrors the pool locally and replies with `RegisterPoolAck`.
     RegisterPool {
         dataflow_id: DataflowId,
+        /// Target machine id — the daemon whose machine id matches
+        /// mirrors the pool.
         machine_id: String,
+        /// Origin machine id — the machine that created the pool. The
+        /// mirror records `{pool id -> origin}` for the targeted free.
+        origin_machine_id: String,
         shared_memory_id: String,
         size: usize,
         dtype: String,
@@ -53,9 +58,14 @@ pub enum InterDaemonEvent {
         ok: bool,
         error: Option<String>,
     },
-    /// Release a cross-machine pool on the remote machine.
+    /// Release a cross-machine pool on the target machine. The event is
+    /// a dataflow-scope broadcast; the daemon whose machine id matches
+    /// `machine_id` drops its tracking entry and unlinks its mirror
+    /// (same gating pattern as `RegisterPool`).
     FreePool {
         dataflow_id: DataflowId,
+        /// Target machine id — only that machine's daemon acts.
+        machine_id: String,
         shared_memory_id: String,
     },
 }
