@@ -253,6 +253,31 @@ fn run_record(args: Record) -> eyre::Result<()> {
         .execute()
 }
 
+/// What a Ctrl-C on the recording loop should do, given whether one was already
+/// seen. Split out from the signal handler so the escalation state machine is
+/// unit-testable without delivering a real signal (which also exits the process
+/// via `process::exit`, and races the handler-installation window).
+#[derive(Debug, PartialEq, Eq)]
+enum CtrlCAction {
+    /// First Ctrl-C: request a graceful stop (finalize the recording).
+    RequestStop,
+    /// Repeated Ctrl-C: give up and exit immediately, even if a write is wedged.
+    ExitImmediately,
+}
+
+/// Advance the Ctrl-C escalation state: the first call requests a stop, every
+/// later call escalates. Taking `&mut bool` is deliberate — the handler owns
+/// the flag across invocations, so dropping the `mut` there would fail to
+/// compile rather than silently disabling escalation.
+fn record_ctrlc_action(signalled: &mut bool) -> CtrlCAction {
+    if *signalled {
+        CtrlCAction::ExitImmediately
+    } else {
+        *signalled = true;
+        CtrlCAction::RequestStop
+    }
+}
+
 fn run_record_proxy(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -400,13 +425,14 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     // silently.
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let mut signalled = false;
-    ctrlc::set_handler(move || {
-        if signalled {
+    ctrlc::set_handler(move || match record_ctrlc_action(&mut signalled) {
+        CtrlCAction::RequestStop => {
+            let _ = stop_tx.send(());
+        }
+        CtrlCAction::ExitImmediately => {
             eprintln!("received second Ctrl-C -> exiting immediately (recording may be truncated)");
             std::process::exit(130);
         }
-        signalled = true;
-        let _ = stop_tx.send(());
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
@@ -538,6 +564,27 @@ mod tests {
             uuid: Uuid::new_v4(),
             name: name.map(str::to_string),
         }
+    }
+
+    #[test]
+    fn ctrlc_requests_stop_first_then_escalates() {
+        // The recording loop's Ctrl-C handler must ask for a graceful stop on
+        // the first signal and escalate to an immediate exit on every one
+        // after — so a wedged write can't swallow repeated Ctrl-C. Pins the
+        // state machine without a real signal (#2952).
+        let mut signalled = false;
+        assert_eq!(
+            record_ctrlc_action(&mut signalled),
+            CtrlCAction::RequestStop
+        );
+        assert_eq!(
+            record_ctrlc_action(&mut signalled),
+            CtrlCAction::ExitImmediately
+        );
+        assert_eq!(
+            record_ctrlc_action(&mut signalled),
+            CtrlCAction::ExitImmediately
+        );
     }
 
     #[test]
