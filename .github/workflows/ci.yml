@@ -376,6 +376,13 @@ jobs:
         run: >
           cargo test -p dora-examples --test daemon-reconnect-e2e -- --test-threads=1
         timeout-minutes: 15
+      # Regression for #2938: a node added to a running *distributed*
+      # dataflow used to hang forever in `Node()` init. Spawns a real
+      # coordinator + two named daemons. Same `dora-examples` exclusion.
+      - name: Run multi-daemon late-join E2E
+        run: >
+          cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
+        timeout-minutes: 10
       # `dora node` lifecycle E2E (issue #1703). The shared test
       # binary lives under the `dora-examples` package which the bulk
       # `cargo test --all` step excludes, so it needs an explicit
