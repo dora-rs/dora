@@ -632,6 +632,49 @@ async fn collect_and_send_metrics_bg(
     Ok(())
 }
 
+/// Release the memory pools that nothing can reach now that `exited_node`'s
+/// incarnation is gone.
+///
+/// Which pools those are is decided by the rest of the dataflow: see
+/// [`MemoryPoolManager::reclaim_unreachable`] for why an exited node's pools
+/// cannot simply be dropped (dora-rs/dora#2881).
+///
+/// Every path that ends an incarnation calls this: `RemoveNode`,
+/// `ReplaceNode` (whose outgoing exit event the generation guard drops), and
+/// `SpawnedNodeResult` for a crash, a clean exit or a restart. `exited_node`
+/// is excluded from the live set explicitly, because the last of those runs
+/// before the node leaves `running_nodes` — and because a replacement or
+/// restart under the same id never touched its predecessor's pools.
+///
+/// Takes its two fields separately rather than `&self` so callers can hold a
+/// logger (which borrows `self.logger`) across it.
+fn reclaim_memory_pools_after_exit(
+    memory_pool: &MemoryPoolManager,
+    running: &HashMap<DataflowId, RunningDataflow>,
+    dataflow_id: Uuid,
+    exited_node: &NodeId,
+) {
+    // No dataflow left means `finish_dataflow` already released its pools
+    // unconditionally.
+    let Some(dataflow) = running.get(&dataflow_id) else {
+        return;
+    };
+    let released = memory_pool.reclaim_unreachable(&dataflow_id.to_string(), |node| {
+        dataflow
+            .running_nodes
+            .keys()
+            .any(|id| id != exited_node && id.as_ref() == node)
+    });
+    if !released.is_empty() {
+        tracing::info!(
+            %dataflow_id,
+            node_id = %exited_node,
+            "released {} memory pool(s) that no live node can reach any more",
+            released.len(),
+        );
+    }
+}
+
 /// Convert MemoryPoolMetadata into daemon-protocol MetadataParameters.
 fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
     use dora_message::metadata::Parameter;
@@ -2812,6 +2855,17 @@ impl Daemon {
                     Ok(())
                 })();
 
+                // Without this, repeated add/remove cycles walk the daemon
+                // into its pool cap (dora-rs/dora#2881).
+                if result.is_ok() {
+                    reclaim_memory_pools_after_exit(
+                        &self.memory_pool,
+                        &self.running,
+                        dataflow_id,
+                        &node_id,
+                    );
+                }
+
                 // Outside the closure because it is async. Why removal
                 // has to drive the barrier at all: see
                 // `PendingNodes::handle_node_removal`.
@@ -3194,6 +3248,15 @@ impl Daemon {
                     // The outgoing (or an even earlier) incarnation's stale
                     // result must not be attributed to the replacement.
                     clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                    // The outgoing incarnation's exit event is dropped by
+                    // the generation guard, so this is the only place its
+                    // pools can be reclaimed (dora-rs/dora#2881).
+                    reclaim_memory_pools_after_exit(
+                        &self.memory_pool,
+                        &self.running,
+                        dataflow_id,
+                        &node_id,
+                    );
                 }
                 let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
@@ -4672,6 +4735,16 @@ impl Daemon {
                         ));
                     }
 
+                    // Snapshot who may still ask for this pool without
+                    // having opened it yet, so that reclaiming the pools of
+                    // an exited node cannot cut off a transfer that is still
+                    // on its way (dora-rs/dora#2881).
+                    let potential_readers = self
+                        .running
+                        .get(&dataflow_id)
+                        .map(|dataflow| dataflow.downstream_closure(&node_id))
+                        .unwrap_or_default();
+
                     self.memory_pool.register_memory_pool(
                         MemoryPoolId {
                             dataflow_id: dataflow_id.to_string(),
@@ -4679,6 +4752,7 @@ impl Daemon {
                         },
                         pool_metadata,
                         node_id.to_string(),
+                        potential_readers,
                     )
                 })();
                 let _ = reply_sender.send(DaemonReply::Result(result));
@@ -5384,6 +5458,23 @@ impl Daemon {
         }
         self.running.remove(&dataflow_id);
 
+        // Release the dataflow's memory pools. A daemon that outlives the
+        // dataflow (`dora up`) would otherwise carry every unfreed pool —
+        // table entry and /dev/shm segment alike — until it exits
+        // (dora-rs/dora#2881). The orphan sweep additionally catches
+        // segments a node created but crashed before registering, which no
+        // table entry covers.
+        //
+        // Unconditional, deliberately: a dynamic node can outlive the
+        // finish (`should_finish` ignores them), but the remove above just
+        // discarded its routing, channels and listeners, so it can no
+        // longer send or receive anything a pool would serve. Keeping the
+        // pools would strand them until daemon exit with no path left to
+        // reclaim them — this dataflow will never reach `reclaim_unreachable`
+        // again.
+        self.memory_pool.cleanup_dataflow(&dataflow_id.to_string());
+        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+
         Ok(())
     }
 
@@ -5804,6 +5895,15 @@ impl Daemon {
                     // mid-startup (dora-rs/dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                 }
+
+                // This incarnation is gone — crash, clean exit, or a restart
+                // about to spawn a fresh one (dora-rs/dora#2881).
+                reclaim_memory_pools_after_exit(
+                    &self.memory_pool,
+                    &self.running,
+                    dataflow_id,
+                    &node_id,
+                );
 
                 logger
                     .log(
@@ -8982,6 +9082,105 @@ mod fault_tolerance_tests {
             &mut deadline,
             window
         ));
+    }
+
+    // -- dora#2881: memory pools must be reclaimed once nothing can reach them --
+
+    /// A dataflow whose `sender` registered one pool, with `edges` wired up
+    /// and every node of `running` marked as running.
+    fn dataflow_with_pool(
+        edges: &[(&str, &str)],
+        running: &[&str],
+    ) -> (HashMap<DataflowId, RunningDataflow>, MemoryPoolManager) {
+        let mut df = test_dataflow();
+        for (from, to) in edges {
+            df.add_mapping(
+                NodeId::from(from.to_string()),
+                DataId::from("out".to_string()),
+                NodeId::from(to.to_string()),
+                DataId::from("in".to_string()),
+            );
+        }
+        for node in running {
+            df.running_nodes
+                .insert(NodeId::from(node.to_string()), test_running_node());
+        }
+
+        let memory_pool = MemoryPoolManager::new();
+        let sender = NodeId::from("sender".to_string());
+        memory_pool
+            .register_memory_pool(
+                MemoryPoolId {
+                    dataflow_id: Uuid::nil().to_string(),
+                    id: "pool-1".to_string(),
+                },
+                MemoryPoolMetadata::default(),
+                sender.to_string(),
+                df.downstream_closure(&sender),
+            )
+            .unwrap();
+
+        (HashMap::from([(Uuid::nil(), df)]), memory_pool)
+    }
+
+    #[test]
+    fn a_pool_is_reclaimed_on_node_exit_exactly_when_nothing_can_reach_it() {
+        // (case, edges, still-running nodes, exiting node, pools left)
+        let cases = [
+            // The receiver has not read the pool yet — it only learns the id
+            // from the message the sender put in flight before exiting.
+            // Freeing here would break that transfer, which is why
+            // reclamation is reachability-based rather than eager.
+            (
+                "consumer still running",
+                &[("sender", "recv")][..],
+                &["recv"][..],
+                "sender",
+                1,
+            ),
+            // ...and once that consumer is gone too, nothing can reach it.
+            (
+                "last consumer gone",
+                &[("sender", "recv")][..],
+                &[][..],
+                "recv",
+                0,
+            ),
+            // Callers run before the node leaves `running_nodes`, so its own
+            // stale entry must not count as a live reference — otherwise a
+            // sender with no consumers could never be reclaimed.
+            (
+                "exiting node is not itself live",
+                &[][..],
+                &["sender"][..],
+                "sender",
+                0,
+            ),
+            // Liveness is checked against the pool's own reference set, not
+            // the dataflow as a whole: a node that is neither downstream of
+            // the sender nor has ever opened the pool cannot reach it, so a
+            // long-lived unrelated node must not pin it (the leak this fixes).
+            (
+                "unrelated node running",
+                &[("other_source", "other_sink")][..],
+                &["other_sink"][..],
+                "sender",
+                0,
+            ),
+        ];
+
+        for (case, edges, running_nodes, exiting, expected) in cases {
+            let (running, memory_pool) = dataflow_with_pool(edges, running_nodes);
+
+            reclaim_memory_pools_after_exit(
+                &memory_pool,
+                &running,
+                Uuid::nil(),
+                &NodeId::from(exiting.to_string()),
+            );
+
+            assert_eq!(memory_pool.table_size(), expected, "case: {case}");
+        }
     }
 }
 
