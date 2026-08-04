@@ -37,16 +37,24 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-/// Environment variable names that must never be passed to spawned nodes.
+/// Environment variable names that must never be passed to spawned nodes:
+/// loader-injection vectors and daemon-level secrets. Refused from a
+/// descriptor *and* scrubbed from the environment nodes inherit.
 const ENV_DENYLIST: &[&str] = &[
     "LD_PRELOAD",
     "LD_AUDIT",
     "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "LD_LIBRARY_PATH",
     "DORA_AUTH_TOKEN",
     "DORA_ALLOW_SHELL_NODES",
 ];
+
+/// Library *search* paths. Refused from a descriptor like the hijack variables
+/// above, but deliberately still inherited: a daemon started from a sourced
+/// ROS or CUDA environment must keep passing these on, or a dynamically linked
+/// node fails to start before it can report anything. A node that needs a
+/// custom search path gets it from the environment the daemon runs in
+/// (#2991 review).
+const SEARCH_PATH_ENV: &[&str] = &["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"];
 
 /// Control-plane variables the daemon injects into every node it spawns.
 /// Descriptor `env:` / `envs:` entries must not override them: they configure
@@ -84,6 +92,12 @@ fn is_denied_env(key: &str) -> bool {
     if ENV_DENYLIST.iter().any(|d| env_key_matches(key, d)) {
         tracing::warn!(
             "skipping denied environment variable {key:?} (security: could inject shared libraries)"
+        );
+        true
+    } else if SEARCH_PATH_ENV.iter().any(|d| env_key_matches(key, d)) {
+        tracing::warn!(
+            "skipping {key:?} from the descriptor env: library search paths are \
+             inherited from the environment the daemon runs in"
         );
         true
     } else if CONTROL_PLANE_ENV
@@ -143,9 +157,10 @@ fn apply_descriptor_env(
 /// that started the daemon cannot wrongly wire nodes the daemon deliberately
 /// left unwired.
 ///
-/// [`ZENOH_CONFIG_PATH_ENV`] is deliberately absent: refused from a
-/// descriptor, but inheriting it is how a deployment points every process at a
-/// custom zenoh config.
+/// [`ZENOH_CONFIG_PATH_ENV`] and [`SEARCH_PATH_ENV`] are deliberately absent:
+/// refused from a descriptor, but inheriting them is how a deployment points
+/// every process at a custom zenoh config, and how a node linked against a
+/// sourced ROS or CUDA install finds its libraries.
 ///
 /// Inserts the `None` removal sentinel directly rather than calling
 /// `Command::env_remove`, which `clonable_command` implements as a map
@@ -1024,6 +1039,35 @@ mod tests {
             None,
             "a daemon-level zenoh config must still reach its nodes by inheritance"
         );
+    }
+
+    /// The scrub must not strand a dynamically linked node: a daemon started
+    /// from a sourced ROS or CUDA environment is the only source of these, and
+    /// a descriptor cannot supply them, so scrubbing them means the node's
+    /// loader fails before the node can report anything (#2991 review).
+    #[test]
+    fn library_search_paths_survive_the_scrub() {
+        let spawner = spawner_for(None, false);
+        let command = spawner.compose_node_env(
+            Command::new("true"),
+            &node("sink"),
+            &[None],
+            "DORA_NODE_CONFIG",
+            "real-config".into(),
+        );
+
+        for key in SEARCH_PATH_ENV {
+            assert_eq!(
+                env_of(&command, key),
+                None,
+                "`{key}` must keep being inherited — a node linked against a \
+                 sourced install has no other way to find its libraries"
+            );
+            assert!(
+                is_denied_env(key),
+                "`{key}` is still not something a descriptor gets to set"
+            );
+        }
     }
 
     /// Since zenoh 1.9 peers don't relay, a consumer that never dials its

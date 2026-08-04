@@ -84,6 +84,19 @@ fn multicast_disabled_by_env() -> bool {
     multicast_disabled_by_value(std::env::var(DORA_ZENOH_MULTICAST_ENV).ok().as_deref())
 }
 
+/// The effective decision for a process that also has its own request.
+///
+/// [`open_zenoh_session_with_listen`] ORs the caller's request with
+/// [`DORA_ZENOH_MULTICAST_ENV`], so a process that has to *forward* its
+/// decision — the daemon, to the nodes it spawns — must OR them the same way.
+/// Forwarding only its own flag drops the environment half, leaving nodes
+/// scouting by multicast in exactly the environments where the variable was
+/// set to stop them.
+#[cfg(feature = "zenoh")]
+pub fn multicast_disabled(requested_off: bool) -> bool {
+    requested_off || multicast_disabled_by_env()
+}
+
 /// Parse a [`DORA_ZENOH_MULTICAST_ENV`] value (`None` when the var is unset).
 ///
 /// Split from [`multicast_disabled_by_env`] so it is testable without mutating
@@ -354,7 +367,7 @@ pub async fn open_zenoh_session_with_listen(
             // multicast scouting only" and mean it. Treating the request as
             // absolute would disarm that recovery and strand the daemon.
             let requested_off =
-                matches!(multicast, MulticastScouting::Disabled) || multicast_disabled_by_env();
+                multicast_disabled(matches!(multicast, MulticastScouting::Disabled));
             if (connect_inserted || (requested_off && listen_configured))
                 && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
             {
@@ -738,6 +751,16 @@ mod tests {
                 "{value:?} must not disable multicast scouting"
             );
         }
+    }
+
+    /// A caller's own request must survive the fold, whatever the environment
+    /// says. The environment half is covered by the value tests above; this
+    /// pins that [`multicast_disabled`] never *weakens* an explicit request —
+    /// the daemon forwards its result to every node it spawns.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_explicit_multicast_disable_is_never_lost() {
+        assert!(multicast_disabled(true));
     }
 
     #[test]
