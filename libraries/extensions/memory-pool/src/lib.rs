@@ -54,6 +54,22 @@ pub struct MemoryPoolEntry {
     /// All nodes that have accessed this pool (registered or read).
     /// Used to send targeted cleanup notifications on free.
     pub touched_by: HashSet<String>,
+    /// Nodes that have not opened this pool (yet) but could still learn its
+    /// id from a message in flight — the registering node's downstream
+    /// consumers as of registration time. Together with `touched_by` this is
+    /// the set of nodes that may still reference the pool; see
+    /// [`MemoryPoolManager::reclaim_unreachable`].
+    pub potential_readers: HashSet<String>,
+}
+
+impl MemoryPoolEntry {
+    /// Whether any node that could still reference this pool is alive.
+    fn reachable(&self, is_live: &impl Fn(&str) -> bool) -> bool {
+        self.touched_by
+            .iter()
+            .chain(&self.potential_readers)
+            .any(|node| is_live(node))
+    }
 }
 
 /// Result summary for daemon shutdown cleanup.
@@ -89,11 +105,17 @@ impl MemoryPoolManager {
     }
 
     /// Register a memory pool with the given ID and metadata.
+    ///
+    /// `potential_readers` lists the nodes that may still ask for this pool
+    /// without having opened it yet (the registrar's downstream consumers).
+    /// It keeps the pool alive until none of them can use it any more — see
+    /// [`Self::reclaim_unreachable`].
     pub fn register_memory_pool(
         &self,
         id: MemoryPoolId,
         metadata: MemoryPoolMetadata,
         registered_by: String,
+        potential_readers: HashSet<String>,
     ) -> Result<(), String> {
         let mut table = self.lock_table();
 
@@ -109,6 +131,7 @@ impl MemoryPoolManager {
                 metadata,
                 registered_by,
                 touched_by: touched,
+                potential_readers,
             },
         );
 
@@ -179,13 +202,17 @@ impl MemoryPoolManager {
             );
         }
 
-        if let Some(shm_name) = &entry.metadata.shared_memory_name
-            && !shm_name.is_empty()
-        {
-            self.free_shared_memory(shm_name)?;
-        }
+        self.release_segment(&entry.metadata)?;
 
         Ok((entry.metadata, entry.touched_by))
+    }
+
+    /// Unlink an entry's backing segment, if it has one.
+    fn release_segment(&self, metadata: &MemoryPoolMetadata) -> Result<(), String> {
+        match &metadata.shared_memory_name {
+            Some(name) if !name.is_empty() => self.free_shared_memory(name),
+            _ => Ok(()),
+        }
     }
 
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
@@ -223,6 +250,87 @@ impl MemoryPoolManager {
                 shm_name
             ))
         }
+    }
+
+    /// Release every pool of `dataflow_id` that no live node can reach any
+    /// more, and return the released ids.
+    ///
+    /// A pool deliberately outlives the node that registered it: the normal
+    /// lifecycle is that a sender registers a pool and a *receiver* reads
+    /// and frees it, possibly well after the sender exited. Dropping a
+    /// node's pools the moment it goes away would therefore break in-flight
+    /// transfers. Instead every entry records who can still reach it — the
+    /// nodes that already opened it (`touched_by`) plus the registrar's
+    /// downstream consumers (`potential_readers`), which can still learn the
+    /// pool id from a message that is already on its way. The pool is
+    /// released once none of those nodes is running any more, which for a
+    /// removed or crashed node happens as soon as the last of its consumers
+    /// is gone instead of only at dataflow teardown (dora-rs/dora#2881).
+    ///
+    /// Because a released pool has no live node in `touched_by`, there is
+    /// nobody left to send a `FreeMemoryPool` notification to — unlike
+    /// `free_memory_pool`, which must tell the other holders to drop their
+    /// per-process buffers.
+    ///
+    /// `is_live` reports whether a node is still running **on this daemon**.
+    /// Nodes on other daemons never qualify, and must not: pools are
+    /// host-local shared memory and every daemon keeps its own table, so a
+    /// remote consumer can never open this one's segments. It is called
+    /// with the pool table locked, so it must stay cheap and must not
+    /// re-enter the manager.
+    pub fn reclaim_unreachable(
+        &self,
+        dataflow_id: &str,
+        is_live: impl Fn(&str) -> bool,
+    ) -> Vec<MemoryPoolId> {
+        self.release_matching(dataflow_id, |entry| !entry.reachable(&is_live))
+    }
+
+    /// Release every pool of a finished dataflow, and return the released
+    /// ids.
+    ///
+    /// Unlike [`Self::reclaim_unreachable`] this needs no liveness check:
+    /// the dataflow is over, so none of its nodes can ask for a pool any
+    /// more. Without it a daemon that outlives the dataflow (`dora up`)
+    /// would hold every unfreed pool until it exits (dora-rs/dora#2881).
+    pub fn cleanup_dataflow(&self, dataflow_id: &str) -> Vec<MemoryPoolId> {
+        let released = self.release_matching(dataflow_id, |_| true);
+        if !released.is_empty() {
+            tracing::info!(
+                "Detected {} unreleased memory pool of finished dataflow {dataflow_id}, releasing...",
+                released.len(),
+            );
+        }
+        released
+    }
+
+    /// Drop the entries of `dataflow_id` that `should_release` accepts and
+    /// unlink their segments, returning the released ids.
+    ///
+    /// The table lock is released before the unlinks, matching
+    /// `free_memory_pool`: the `remove_file` syscalls must not serialize
+    /// unrelated pool operations.
+    fn release_matching(
+        &self,
+        dataflow_id: &str,
+        mut should_release: impl FnMut(&MemoryPoolEntry) -> bool,
+    ) -> Vec<MemoryPoolId> {
+        let released: Vec<(MemoryPoolId, MemoryPoolEntry)> = {
+            let mut table = self.lock_table();
+            table
+                .extract_if(|id, entry| id.dataflow_id == dataflow_id && should_release(entry))
+                .collect()
+        };
+
+        released
+            .into_iter()
+            .map(|(id, entry)| {
+                if let Err(err) = self.release_segment(&entry.metadata) {
+                    tracing::warn!("failed to release memory pool {}: {err}", id.id);
+                }
+                id
+            })
+            .collect()
     }
 
     /// Sweep orphaned shared-memory segments from a previous crash or
@@ -268,12 +376,10 @@ impl MemoryPoolManager {
 
     /// Cleanup all memory pools on shutdown.
     pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
-        let mut table = self.lock_table();
         // Drain the table in one move instead of cloning every key into a
-        // `Vec` only to look each one back up and remove it. The guard is held
-        // for the rest of the function (matching the previous locking window);
-        // `free_shared_memory` does not re-enter the table.
-        let drained = std::mem::take(&mut *table);
+        // `Vec` only to look each one back up and remove it, and release the
+        // guard before the unlinks below (see `release_matching`).
+        let drained = std::mem::take(&mut *self.lock_table());
         let unreleased_count = drained.len();
         let mut errors = Vec::new();
 
@@ -285,10 +391,7 @@ impl MemoryPoolManager {
         }
 
         for (_id, entry) in drained {
-            if let Some(shm_name) = &entry.metadata.shared_memory_name
-                && !shm_name.is_empty()
-                && let Err(err) = self.free_shared_memory(shm_name)
-            {
+            if let Err(err) = self.release_segment(&entry.metadata) {
                 errors.push(err);
             }
         }
@@ -349,13 +452,18 @@ mod tests {
         }
     }
 
+    /// The registrar's downstream consumers at registration time.
+    fn readers(nodes: &[&str]) -> HashSet<String> {
+        nodes.iter().map(|n| n.to_string()).collect()
+    }
+
     #[test]
     fn register_and_read() {
         let mgr = MemoryPoolManager::new();
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into())
+        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into(), readers(&[]))
             .unwrap();
         let read = mgr
             .read_memory_pool(&id, "node_a")
@@ -373,10 +481,10 @@ mod tests {
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into())
+        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into(), readers(&[]))
             .unwrap();
         let err = mgr
-            .register_memory_pool(id, meta, "node_a".into())
+            .register_memory_pool(id, meta, "node_a".into(), readers(&[]))
             .unwrap_err();
 
         assert!(err.contains("already registered"));
@@ -390,7 +498,7 @@ mod tests {
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta, "node_a".into())
+        mgr.register_memory_pool(id.clone(), meta, "node_a".into(), readers(&[]))
             .unwrap();
         // A different node frees the pool — this must succeed.
         mgr.free_memory_pool(&id, "node_b").unwrap();
@@ -405,7 +513,7 @@ mod tests {
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta, "node_a".into())
+        mgr.register_memory_pool(id.clone(), meta, "node_a".into(), readers(&[]))
             .unwrap();
         mgr.free_memory_pool(&id, "node_a").unwrap();
 
@@ -426,6 +534,7 @@ mod tests {
                 make_id(&format!("pool-{i}")),
                 make_metadata(),
                 "node_a".into(),
+                readers(&[]),
             )
             .unwrap();
         }
@@ -453,6 +562,7 @@ mod tests {
                 make_id(&format!("pool-{}", i)),
                 make_metadata(),
                 "node_a".into(),
+                readers(&[]),
             )
             .unwrap();
         }
@@ -468,13 +578,18 @@ mod tests {
         let mgr = MemoryPoolManager::new();
 
         // One entry frees cleanly (no backing shmem name)...
-        mgr.register_memory_pool(make_id("ok"), make_metadata(), "node_a".into())
-            .unwrap();
+        mgr.register_memory_pool(
+            make_id("ok"),
+            make_metadata(),
+            "node_a".into(),
+            readers(&[]),
+        )
+        .unwrap();
         // ...and one whose shared_memory_name fails the `dora_pool_` validation
         // in `free_shared_memory`, so its release errors.
         let mut bad_meta = make_metadata();
         bad_meta.shared_memory_name = Some("invalid_name".to_string());
-        mgr.register_memory_pool(make_id("bad"), bad_meta, "node_a".into())
+        mgr.register_memory_pool(make_id("bad"), bad_meta, "node_a".into(), readers(&[]))
             .unwrap();
 
         // cleanup_all must surface the failure (rather than silently claiming
@@ -490,7 +605,7 @@ mod tests {
         assert_eq!(mgr.table_size(), 0);
 
         let id = make_id("pool-1");
-        mgr.register_memory_pool(id.clone(), make_metadata(), "node_a".into())
+        mgr.register_memory_pool(id.clone(), make_metadata(), "node_a".into(), readers(&[]))
             .unwrap();
         assert_eq!(mgr.table_size(), 1);
 
@@ -514,5 +629,126 @@ mod tests {
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
         MemoryPoolManager::cleanup_orphans("test-dataflow-uuid");
+    }
+
+    // -- dora#2881: pools must be reclaimed once nothing can reach them --
+
+    #[test]
+    fn registrar_exit_keeps_a_pool_a_live_reader_can_still_reach() {
+        // The normal lifecycle: the sender registers a pool, sends its id
+        // downstream and exits. The receiver has not opened the pool yet,
+        // so `touched_by` is still just the sender — freeing here would
+        // break the in-flight transfer.
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        mgr.register_memory_pool(
+            id.clone(),
+            make_metadata(),
+            "sender".into(),
+            readers(&["recv"]),
+        )
+        .unwrap();
+
+        let released = mgr.reclaim_unreachable("test_df", |node| node == "recv");
+
+        assert!(
+            released.is_empty(),
+            "pool must survive: `recv` can still read it"
+        );
+        assert!(mgr.read_memory_pool(&id, "recv").is_some());
+    }
+
+    #[test]
+    fn pool_is_released_once_no_live_node_can_reach_it() {
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        mgr.register_memory_pool(
+            id.clone(),
+            make_metadata(),
+            "sender".into(),
+            readers(&["recv"]),
+        )
+        .unwrap();
+
+        // Both the sender and its only downstream consumer are gone.
+        let released = mgr.reclaim_unreachable("test_df", |_| false);
+
+        assert_eq!(released, vec![id.clone()]);
+        assert_eq!(mgr.table_size(), 0);
+    }
+
+    #[test]
+    fn a_live_reader_that_never_was_a_potential_reader_keeps_the_pool() {
+        // `potential_readers` is a snapshot of the topology at registration
+        // time; a node that actually opened the pool must keep it alive on
+        // its own, even if it is not in that snapshot.
+        let mgr = MemoryPoolManager::new();
+        let id = make_id("pool-1");
+        mgr.register_memory_pool(id.clone(), make_metadata(), "sender".into(), readers(&[]))
+            .unwrap();
+        mgr.read_memory_pool(&id, "late_reader").unwrap();
+
+        let released = mgr.reclaim_unreachable("test_df", |node| node == "late_reader");
+
+        assert!(released.is_empty());
+        assert_eq!(mgr.table_size(), 1);
+    }
+
+    #[test]
+    fn reclaim_is_scoped_to_one_dataflow() {
+        let mgr = MemoryPoolManager::new();
+        let mine = make_id("pool-1");
+        let other = MemoryPoolId {
+            dataflow_id: "other_df".to_string(),
+            id: "pool-1".to_string(),
+        };
+        mgr.register_memory_pool(mine.clone(), make_metadata(), "sender".into(), readers(&[]))
+            .unwrap();
+        mgr.register_memory_pool(
+            other.clone(),
+            make_metadata(),
+            "sender".into(),
+            readers(&[]),
+        )
+        .unwrap();
+
+        let released = mgr.reclaim_unreachable("test_df", |_| false);
+
+        assert_eq!(released, vec![mine]);
+        assert!(
+            mgr.read_memory_pool(&other, "sender").is_some(),
+            "a same-named pool of another dataflow must not be touched"
+        );
+    }
+
+    #[test]
+    fn cleanup_dataflow_releases_every_pool_of_that_dataflow() {
+        let mgr = MemoryPoolManager::new();
+        for i in 0..3 {
+            mgr.register_memory_pool(
+                make_id(&format!("pool-{i}")),
+                make_metadata(),
+                "sender".into(),
+                readers(&["recv"]),
+            )
+            .unwrap();
+        }
+        let other = MemoryPoolId {
+            dataflow_id: "other_df".to_string(),
+            id: "pool-1".to_string(),
+        };
+        mgr.register_memory_pool(
+            other.clone(),
+            make_metadata(),
+            "sender".into(),
+            readers(&[]),
+        )
+        .unwrap();
+
+        // A finished dataflow has no nodes left, so liveness plays no role.
+        let released = mgr.cleanup_dataflow("test_df");
+
+        assert_eq!(released.len(), 3);
+        assert_eq!(mgr.table_size(), 1, "the other dataflow's pool must remain");
     }
 }

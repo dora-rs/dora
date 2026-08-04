@@ -30,7 +30,7 @@ use crossbeam::queue::ArrayQueue;
 use eyre::eyre;
 use futures::FutureExt;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::{
         Arc,
         atomic::{self, AtomicBool, AtomicU32, AtomicU64},
@@ -1007,6 +1007,36 @@ impl RunningDataflow {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
 
+    /// Every node reachable from `source` by following output→input edges,
+    /// transitively, plus `source` itself.
+    ///
+    /// Used to snapshot who may still learn a memory-pool id registered by
+    /// `source`: the id travels the dataflow as ordinary message data, so any
+    /// node downstream of the registrar may still receive it — including
+    /// nodes further along that a direct consumer forwards it to. The daemon
+    /// cannot see pool ids inside payloads, so the whole downstream closure
+    /// counts as a potential reader (dora-rs/dora#2881).
+    ///
+    /// Returns node ids as `String` because that is how the pool table keys
+    /// them.
+    pub(crate) fn downstream_closure(&self, source: &NodeId) -> HashSet<String> {
+        let mut reachable = HashSet::from([source.to_string()]);
+        let mut queue = vec![source.clone()];
+        while let Some(node) = queue.pop() {
+            for (output_id, receivers) in &self.mappings {
+                if output_id.0 != node {
+                    continue;
+                }
+                for (receiver, _input) in receivers {
+                    if reachable.insert(receiver.to_string()) {
+                        queue.push(receiver.clone());
+                    }
+                }
+            }
+        }
+        reachable
+    }
+
     /// Nodes blocking an otherwise-finished dataflow (dora-rs/dora#2152).
     ///
     /// Returns nodes that should be force-stopped because the dataflow is
@@ -1622,6 +1652,46 @@ mod tests {
             type_rules: vec![],
             env: None,
         }
+    }
+
+    // ---- dora-rs/dora#2881: downstream closure for memory-pool reachability ----
+
+    /// Wire `from/out -> to/in`.
+    fn edge(df: &mut RunningDataflow, from: &str, to: &str) {
+        df.add_mapping(node_id(from), data_id("out"), node_id(to), data_id("in"));
+    }
+
+    #[test]
+    fn downstream_closure_follows_edges_transitively() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        edge(&mut df, "sender", "middle");
+        edge(&mut df, "middle", "sink");
+        edge(&mut df, "unrelated", "other");
+
+        // A direct consumer may forward a pool id further down, so the whole
+        // downstream chain counts — and nothing outside it does.
+        assert_eq!(
+            df.downstream_closure(&node_id("sender")),
+            HashSet::from([
+                "sender".to_string(),
+                "middle".to_string(),
+                "sink".to_string(),
+            ]),
+        );
+    }
+
+    #[test]
+    fn downstream_closure_terminates_on_a_cycle() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        edge(&mut df, "sender", "peer");
+        edge(&mut df, "peer", "sender");
+
+        assert_eq!(
+            df.downstream_closure(&node_id("sender")),
+            HashSet::from(["sender".to_string(), "peer".to_string()]),
+        );
     }
 
     #[test]
