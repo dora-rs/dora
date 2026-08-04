@@ -721,6 +721,91 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
     }
 }
 
+/// Release a memory pool and tell every other node that touched it to drop
+/// its per-process view of that pool.
+///
+/// Both daemon entry points that release a pool must go through here: the
+/// explicit `FreePinnedMemory` request and `ReadPinnedMemory { free: true }`.
+/// The read-with-free path used to free the pool without notifying anyone,
+/// so every other node kept its GPU buffer, pinned host buffer, IPC handle
+/// and shmem mapping for the rest of its life (#2935).
+fn free_pool_and_notify(
+    memory_pool: &MemoryPoolManager,
+    dataflow: Option<&RunningDataflow>,
+    id: &MemoryPoolId,
+    initiator: &str,
+    clock: &HLC,
+) -> Result<(), String> {
+    let (_metadata, touched) = memory_pool.free_memory_pool(id, initiator)?;
+
+    // Without a running dataflow there are no subscribe channels to notify;
+    // the pool table entry and its shmem segment are released either way.
+    let Some(dataflow) = dataflow else {
+        return Ok(());
+    };
+
+    let undelivered = notify_memory_pool_freed(dataflow, &id.id, &touched, initiator, clock);
+    if !undelivered.is_empty() {
+        tracing::error!(
+            pool = %id.id,
+            nodes = ?undelivered,
+            "FreeMemoryPool notification dropped (event channel full); these \
+             nodes hold their GPU/host/IPC/shmem resources for the pool until \
+             they exit"
+        );
+    }
+    Ok(())
+}
+
+/// Send `NodeEvent::FreeMemoryPool` to every node that registered or read
+/// the pool, except the node that initiated the free — it releases its own
+/// resources synchronously.
+///
+/// Returns the nodes whose notification could not be enqueued because their
+/// event channel was full. Those nodes leak the pool's per-process
+/// resources, so the caller surfaces them. Delivery is not retried: this
+/// runs on the daemon main loop with the freeing node blocked on its reply,
+/// so awaiting a backed-up receiver would stall every dataflow on the daemon.
+fn notify_memory_pool_freed(
+    dataflow: &RunningDataflow,
+    shared_memory_id: &str,
+    touched: &HashSet<String>,
+    initiator: &str,
+    clock: &HLC,
+) -> BTreeSet<NodeId> {
+    let mut undelivered = BTreeSet::new();
+    for (node, channel) in &dataflow.subscribe_channels {
+        if !touched.contains(node.as_ref()) || node.as_ref() == initiator {
+            continue;
+        }
+        let event = NodeEvent::FreeMemoryPool {
+            shared_memory_id: shared_memory_id.to_owned(),
+        };
+        match send_with_timestamp(channel, event, clock) {
+            Ok(true) => {
+                // The listener decrements `pending_messages` for every event
+                // it drains, so an enqueue without the matching increment
+                // underflows the reported count to `u64::MAX` (#2827).
+                dataflow.inc_pending(node);
+            }
+            // A full channel is reported as `Ok(false)`, not `Err` — the
+            // original loop inspected only `Err` and dropped this case
+            // silently (#2935).
+            Ok(false) => {
+                undelivered.insert(node.clone());
+            }
+            // Channel closed: the node is gone, so the OS already reclaimed
+            // the resources the notification would have released.
+            Err(_) => tracing::debug!(
+                node_id = %node,
+                pool = %shared_memory_id,
+                "skipping FreeMemoryPool notification: node disconnected"
+            ),
+        }
+    }
+    undelivered
+}
+
 #[cfg(test)]
 mod metadata_roundtrip_tests {
     use super::*;
@@ -4720,7 +4805,13 @@ impl Daemon {
                         })?;
 
                     if free
-                        && let Err(err) = self.memory_pool.free_memory_pool(&id, node_id.as_ref())
+                        && let Err(err) = free_pool_and_notify(
+                            &self.memory_pool,
+                            self.running.get(&dataflow_id),
+                            &id,
+                            node_id.as_ref(),
+                            &self.clock,
+                        )
                     {
                         tracing::warn!(
                             "Failed to free memory pool {} after reading: {}",
@@ -4757,39 +4848,15 @@ impl Daemon {
             } => {
                 let id = MemoryPoolId {
                     dataflow_id: dataflow_id.to_string(),
-                    id: shared_memory_id.clone(),
+                    id: shared_memory_id,
                 };
-                let result: Result<(), String> =
-                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
-                        Ok((_meta, touched)) => {
-                            // Send targeted cleanup to every node that
-                            // registered or read this pool — a single
-                            // free_memory_pool call by any node releases
-                            // per-process resources in all relevant nodes.
-                            // The initiator already released synchronously;
-                            // exclude it to avoid redundant work.
-                            if let Some(dataflow) = self.running.get(&dataflow_id) {
-                                let event = NodeEvent::FreeMemoryPool {
-                                    shared_memory_id: shared_memory_id.clone(),
-                                };
-                                for (node, channel) in &dataflow.subscribe_channels {
-                                    if touched.contains(node.as_ref())
-                                        && node.as_ref() != node_id.as_ref()
-                                        && let Err(e) =
-                                            send_with_timestamp(channel, event.clone(), &self.clock)
-                                    {
-                                        tracing::warn!(
-                                            node_id = %node,
-                                            pool = %shared_memory_id,
-                                            "failed to deliver FreeMemoryPool: {e}"
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    };
+                let result = free_pool_and_notify(
+                    &self.memory_pool,
+                    self.running.get(&dataflow_id),
+                    &id,
+                    node_id.as_ref(),
+                    &self.clock,
+                );
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
@@ -7756,6 +7823,226 @@ mod fault_tolerance_tests {
             (NodeEvent::Input { .. }, "Input") => true,
             _ => false,
         }
+    }
+
+    // ---- cross-process memory-pool cleanup (#2935) ----
+
+    /// Subscribe `node` to `df` with a channel of `capacity` slots and a
+    /// pending-message counter, mirroring what `DaemonNodeEvent::Subscribe`
+    /// installs for a live node.
+    fn subscribe_test_node(
+        df: &mut RunningDataflow,
+        node: &NodeId,
+        capacity: usize,
+    ) -> (
+        mpsc::Receiver<Timestamped<NodeEvent>>,
+        Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        let (tx, rx) = mpsc::channel(capacity);
+        df.subscribe_channels.insert(node.clone(), tx);
+        let counter = Arc::new(AtomicU64::new(0));
+        df.pending_messages.insert(node.clone(), counter.clone());
+        (rx, counter)
+    }
+
+    fn test_pool_id(name: &str) -> MemoryPoolId {
+        MemoryPoolId {
+            dataflow_id: Uuid::nil().to_string(),
+            id: name.to_string(),
+        }
+    }
+
+    /// Metadata without a backing segment, so `free_memory_pool` skips the
+    /// Linux-only `/dev/shm` unlink and the tests stay cross-platform.
+    fn test_pool_metadata() -> MemoryPoolMetadata {
+        MemoryPoolMetadata {
+            size: 1024,
+            dtype: "float32".into(),
+            shape: vec![256],
+            ..Default::default()
+        }
+    }
+
+    fn freed_pool_ids(events: &[NodeEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                NodeEvent::FreeMemoryPool { shared_memory_id } => Some(shared_memory_id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The cleanup broadcast must reach every node that registered or read
+    /// the pool, and nobody else: not the node that initiated the free (it
+    /// released synchronously) and not a subscriber that never touched the
+    /// pool.
+    ///
+    /// `free_pool_and_notify` is the single entry point behind both
+    /// `FreePinnedMemory` and `ReadPinnedMemory { free: true }` — before
+    /// #2935 the read-with-free path freed the pool without notifying
+    /// anyone, so every other node kept its GPU/host/IPC/shmem resources.
+    #[test]
+    fn free_pool_notifies_touched_nodes_only() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+        let pools = MemoryPoolManager::new();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let reader: NodeId = "reader".to_string().into();
+        let bystander: NodeId = "bystander".to_string().into();
+        let (mut registrar_rx, registrar_pending) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+        let (mut reader_rx, _) = subscribe_test_node(&mut df, &reader, NODE_EVENT_CHANNEL_CAPACITY);
+        let (mut bystander_rx, _) =
+            subscribe_test_node(&mut df, &bystander, NODE_EVENT_CHANNEL_CAPACITY);
+
+        let id = test_pool_id("pool-1");
+        pools
+            .register_memory_pool(id.clone(), test_pool_metadata(), registrar.to_string())
+            .unwrap();
+        pools
+            .read_memory_pool(&id, reader.as_ref())
+            .expect("pool should exist");
+
+        // The reader frees the pool it just read — the normal lifecycle.
+        free_pool_and_notify(&pools, Some(&df), &id, reader.as_ref(), &clock)
+            .expect("free should succeed");
+
+        assert_eq!(
+            freed_pool_ids(&drain_events(&mut registrar_rx)),
+            vec!["pool-1"],
+            "the registering node must be told to release its pool resources"
+        );
+        assert!(
+            drain_events(&mut reader_rx).is_empty(),
+            "the initiator released synchronously and must not be notified"
+        );
+        assert!(
+            drain_events(&mut bystander_rx).is_empty(),
+            "a node that never touched the pool must not be notified"
+        );
+
+        // Every delivery site pairs an enqueue with `inc_pending`; the
+        // listener decrements unconditionally, so a missing increment
+        // underflows the reported count to `u64::MAX` (#2827).
+        assert_eq!(registrar_pending.load(atomic::Ordering::Relaxed), 1);
+    }
+
+    /// `send_with_timestamp` reports a full channel as `Ok(false)`, not
+    /// `Err`. The original broadcast matched only on `Err`, so a full
+    /// channel silently skipped the cleanup (#2935). The undelivered node
+    /// must be reported so the leak is visible.
+    #[test]
+    fn notify_pool_freed_reports_nodes_with_full_channels() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let backed_up: NodeId = "backed-up".to_string().into();
+        let (mut registrar_rx, registrar_pending) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+        // A one-slot channel, already full: the next send is dropped.
+        let (_backed_up_rx, backed_up_pending) = subscribe_test_node(&mut df, &backed_up, 1);
+        assert!(
+            send_with_timestamp(&df.subscribe_channels[&backed_up], NodeEvent::Stop, &clock)
+                .expect("channel is open")
+        );
+
+        let touched = HashSet::from([
+            registrar.to_string(),
+            backed_up.to_string(),
+            "initiator".to_string(),
+        ]);
+        let undelivered = notify_memory_pool_freed(&df, "pool-1", &touched, "initiator", &clock);
+
+        assert_eq!(
+            undelivered,
+            BTreeSet::from([backed_up.clone()]),
+            "a node whose channel is full must be reported as undelivered"
+        );
+        assert_eq!(
+            backed_up_pending.load(atomic::Ordering::Relaxed),
+            0,
+            "a dropped event must not increment the pending counter"
+        );
+        assert_eq!(
+            freed_pool_ids(&drain_events(&mut registrar_rx)),
+            vec!["pool-1"],
+            "one full channel must not stop the broadcast to the other nodes"
+        );
+        assert_eq!(registrar_pending.load(atomic::Ordering::Relaxed), 1);
+    }
+
+    /// A closed channel means the node is gone and the OS reclaimed its
+    /// resources — benign, and it must not abort the rest of the broadcast
+    /// or be reported as a leak.
+    #[test]
+    fn notify_pool_freed_skips_disconnected_nodes() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let gone: NodeId = "gone".to_string().into();
+        let (mut registrar_rx, _) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+        let (gone_rx, _) = subscribe_test_node(&mut df, &gone, NODE_EVENT_CHANNEL_CAPACITY);
+        drop(gone_rx);
+
+        let touched = HashSet::from([registrar.to_string(), gone.to_string()]);
+        let undelivered = notify_memory_pool_freed(&df, "pool-1", &touched, "third-party", &clock);
+
+        assert!(
+            undelivered.is_empty(),
+            "a closed channel is benign, not an undelivered notification"
+        );
+        assert_eq!(
+            freed_pool_ids(&drain_events(&mut registrar_rx)),
+            vec!["pool-1"],
+            "a disconnected peer must not abort the rest of the broadcast"
+        );
+    }
+
+    /// Freeing an unknown pool must surface the manager's error to the
+    /// requesting node and broadcast nothing.
+    #[test]
+    fn free_pool_propagates_unknown_pool_error_without_notifying() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+        let pools = MemoryPoolManager::new();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let (mut registrar_rx, _) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+
+        let err = free_pool_and_notify(
+            &pools,
+            Some(&df),
+            &test_pool_id("never-registered"),
+            registrar.as_ref(),
+            &clock,
+        )
+        .expect_err("freeing an unknown pool must fail");
+        assert!(
+            err.contains("memory pool not found"),
+            "unexpected error: {err}"
+        );
+        assert!(drain_events(&mut registrar_rx).is_empty());
+    }
+
+    /// A dataflow that is no longer running has no subscribe channels; the
+    /// pool must still be released rather than the free failing.
+    #[test]
+    fn free_pool_without_running_dataflow_still_releases_the_entry() {
+        let clock = test_clock();
+        let pools = MemoryPoolManager::new();
+        let id = test_pool_id("pool-1");
+        pools
+            .register_memory_pool(id.clone(), test_pool_metadata(), "registrar".into())
+            .unwrap();
+
+        free_pool_and_notify(&pools, None, &id, "registrar", &clock).expect("free should succeed");
+        assert_eq!(pools.table_size(), 0);
     }
 
     // -- Test 1: close_input removes input, sends InputClosed, no AllInputsClosed with remaining inputs --
