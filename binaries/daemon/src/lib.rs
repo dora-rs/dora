@@ -3516,22 +3516,28 @@ impl Daemon {
                     continue;
                 };
                 let last = node.last_activity.load(atomic::Ordering::Acquire);
-                if last == 0 {
-                    continue; // not yet connected
+                // The health-check watchdog only monitors *post-connection*
+                // liveness. `last_activity` is seeded to the spawn timestamp
+                // (not 0), so a node that has not yet sent its first
+                // `DaemonRequest` would be measured as silent from spawn and
+                // SIGKILLed mid-startup — e.g. a node whose cold start (Python
+                // imports + model-weight load) legitimately exceeds
+                // `health_check_timeout`. Gate the kill on the node having
+                // connected, mirroring the finish-straggler watchdog (#2937).
+                let connected = dataflow.connected_nodes.contains(node_id);
+                if !health_check_should_kill(connected, last, now_millis, timeout) {
+                    continue;
                 }
                 let elapsed_ms = now_millis.saturating_sub(last);
-                let timeout_ms = timeout.as_millis() as u64;
-                if elapsed_ms > timeout_ms {
-                    tracing::warn!(
-                        "node `{node_id}` unresponsive for {}ms (timeout: {timeout:?}), killing",
-                        elapsed_ms,
-                    );
-                    self.ft_stats
-                        .health_check_kills
-                        .fetch_add(1, atomic::Ordering::Relaxed);
-                    if let Some(process) = &node.process {
-                        process.submit(ProcessOperation::Kill);
-                    }
+                tracing::warn!(
+                    "node `{node_id}` unresponsive for {}ms (timeout: {timeout:?}), killing",
+                    elapsed_ms,
+                );
+                self.ft_stats
+                    .health_check_kills
+                    .fetch_add(1, atomic::Ordering::Relaxed);
+                if let Some(process) = &node.process {
+                    process.submit(ProcessOperation::Kill);
                 }
             }
         }
@@ -6827,6 +6833,31 @@ fn is_sigterm_like_exit(exit_status: &NodeExitStatus) -> bool {
     )
 }
 
+/// Decide whether the health-check watchdog should kill a node.
+///
+/// Returns `true` only once the node has **connected** at least once (sent its
+/// first `DaemonRequest`) and has then been silent for longer than `timeout`.
+///
+/// A node that has not yet connected is still starting up and must never be
+/// killed by this watchdog: `last_activity` is seeded to the spawn timestamp
+/// (see `spawner.rs` / `prepared.rs`), so without the `connected` gate the
+/// timeout clock would start ticking at spawn — before the node has had any
+/// chance to communicate — and a node whose legitimate cold start exceeds
+/// `health_check_timeout` would be SIGKILLed mid-startup, mirroring the trap
+/// the finish-straggler watchdog was explicitly fixed for (#2937).
+fn health_check_should_kill(
+    connected: bool,
+    last_activity_millis: u64,
+    now_millis: u64,
+    timeout: Duration,
+) -> bool {
+    if !connected {
+        return false;
+    }
+    let elapsed_ms = now_millis.saturating_sub(last_activity_millis);
+    elapsed_ms > timeout.as_millis() as u64
+}
+
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
 /// `None` if the watchdog has been explicitly **disabled**.
 ///
@@ -9481,5 +9512,57 @@ mod announce_zenoh_bind_tests {
             sock(REMOTE_COORDINATOR),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod health_check_tests {
+    use super::health_check_should_kill;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn not_connected_is_never_killed_even_when_long_silent() {
+        // Regression for #2937: `last_activity` is seeded to the spawn
+        // timestamp, so a node in a slow cold start (imports + model-weight
+        // load) reads as long-silent well before it ever connects. The
+        // watchdog must not kill it while it is still starting up — even if
+        // the elapsed time since spawn already exceeds the timeout.
+        let spawn = 1_000u64;
+        let now = spawn + 10_000; // 10s after spawn, timeout is 5s
+        assert!(!health_check_should_kill(false, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_and_silent_past_timeout_is_killed() {
+        let last = 1_000u64;
+        let now = last + 6_000; // 6s of post-connection silence, timeout 5s
+        assert!(health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_and_recently_active_is_not_killed() {
+        let last = 1_000u64;
+        let now = last + 4_000; // 4s < 5s timeout
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn exactly_at_timeout_is_not_killed() {
+        // The comparison is strictly greater-than, so a node silent for
+        // exactly the timeout is given the benefit of the doubt.
+        let last = 1_000u64;
+        let now = last + 5_000;
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn clock_skew_does_not_underflow() {
+        // `now` before `last` (clock went backwards) must not panic via
+        // subtraction underflow, and must not be treated as elapsed time.
+        let last = 10_000u64;
+        let now = 1_000u64;
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
     }
 }
