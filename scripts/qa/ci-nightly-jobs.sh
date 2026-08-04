@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 21 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 23 test jobs
 # (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
