@@ -3616,6 +3616,47 @@ impl Daemon {
         // daemon setups).
         MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
 
+        // Subscribe to the dataflow memory-pool topic for cross-machine
+        // WriteMemoryPool events arriving through Zenoh. Declared FIRST,
+        // before the node build: the sender's sync register fires from
+        // its node startup, and the node build (pip install etc.) can
+        // take tens of seconds — a subscription declared after the build
+        // makes the register's retries land before any subscriber exists
+        // (observed: RegisterPool published into the void, ack timeout).
+        // The whole declare+receive loop runs OFF the event loop: with a
+        // degraded inter-daemon link, declare_subscriber() itself can
+        // block, which would otherwise wedge this spawn handler and
+        // stall every subsequent event (WriteMemoryPool included) — the
+        // sender then hangs on its daemon reply forever.
+        {
+            let mp_topic = dataflow_memory_pool_topic(&dataflow_id);
+            let mp_session = self.zenoh_session.clone();
+            let mp_events_tx = self.events_tx.clone();
+            tokio::spawn(async move {
+                let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
+                    tracing::warn!(
+                        "memory pool: declare_subscriber({mp_topic}) failed; \
+                         cross-machine pool reads will not see remote writes"
+                    );
+                    return;
+                };
+                while let Ok(sample) = subscriber.recv_async().await {
+                    let bytes = sample.payload().to_bytes();
+                    if let Ok(event) =
+                        Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
+                    {
+                        tracing::info!("memory pool: received inter-daemon event on {mp_topic}");
+                        let _ = mp_events_tx
+                            .send(Timestamped {
+                                inner: Event::Daemon(event.inner),
+                                timestamp: event.timestamp,
+                            })
+                            .await;
+                    }
+                }
+            });
+        }
+
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)
@@ -4119,42 +4160,6 @@ impl Daemon {
             self.events_tx.clone(),
             self.clock.clone(),
         );
-
-        // Subscribe to the dataflow memory-pool topic for cross-machine
-        // WriteMemoryPool events arriving through Zenoh. The whole
-        // declare+receive loop runs OFF the event loop: with a degraded
-        // inter-daemon link, declare_subscriber() itself can block, which
-        // would otherwise wedge this spawn handler and stall every
-        // subsequent event (WriteMemoryPool included) — the sender then
-        // hangs on its daemon reply forever.
-        {
-            let mp_topic = dataflow_memory_pool_topic(&dataflow_id);
-            let mp_session = self.zenoh_session.clone();
-            let mp_events_tx = self.events_tx.clone();
-            tokio::spawn(async move {
-                let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
-                    tracing::warn!(
-                        "memory pool: declare_subscriber({mp_topic}) failed; \
-                         cross-machine pool reads will not see remote writes"
-                    );
-                    return;
-                };
-                while let Ok(sample) = subscriber.recv_async().await {
-                    let bytes = sample.payload().to_bytes();
-                    if let Ok(event) =
-                        Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
-                    {
-                        tracing::info!("memory pool: received inter-daemon event on {mp_topic}");
-                        let _ = mp_events_tx
-                            .send(Timestamped {
-                                inner: Event::Daemon(event.inner),
-                                timestamp: event.timestamp,
-                            })
-                            .await;
-                    }
-                }
-            });
-        }
 
         Ok(spawn_result)
     }
