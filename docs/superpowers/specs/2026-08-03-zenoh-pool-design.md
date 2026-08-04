@@ -177,7 +177,14 @@ v1（cpu2cpu_cross）已实现并本地验证：
 - WAN + release 端到端实测（2026-08-04，5090↔A100）：3 帧完整跑通，
   preview 全部匹配，吞吐 **32.80 MB/s**（旧代理路径 12.94 MB/s，2.5× 提升）；
   镜像池创建与 free 双端清理验证通过（两端 /dev/shm 零残留）
-- 遗留：代理路径移除（§8）、GPU 跨机（§8）、镜像写串行化（已知边界）
+- **代理路径完全移除（2026-08-04，§8 完成）**：PROXY_POOL_DATA 缓存、
+  hex proxy_data 往返、PinnedMemoryData 回复与 device/dtype/shape 线上字段
+  全部删除；本地双 daemon E2E 复测通过（preview 匹配、3 帧、/dev/shm
+  零残留）。语义变更：非镜像机 daemon 不再缓存广播写（3+ 机器场景的
+  跨机读不再受支持，v1 契约 = A 写 B 读）
+- 遗留：GPU 跨机（§8）、镜像写串行化（已知边界）、跨机写转发无 origin
+  侧 gate（本地池写也全量广播，预存行为）、daemon 运行中重启后跨机池
+  无重注册机制（CROSS_POOLS 清空，写被 debug 级丢弃，receiver 读旧帧）
 - 已知设计边界：镜像写入未串行化（multi-thread runtime 下并发帧可能
   字节级撕裂，被 zenoh put 延迟与示例 20s pacing 掩盖）；多写者场景
   需 per-pool 写互斥（后续迭代）
@@ -187,4 +194,5 @@ v1（cpu2cpu_cross）已实现并本地验证：
 - GPU receiver 池（cpu2cuda_cross：B 侧建 GPU buffer + 数据拷贝）
 - cuda2cpu / cuda2cuda 跨机
 - A 侧序列化缓冲走 zenoh SHM provider（零拷贝）
-- 代理池路径（PROXY_POOL_DATA + hex）的完全移除与清理
+- ~~代理池路径（PROXY_POOL_DATA + hex）的完全移除与清理~~（2026-08-04 已完成）
+- 3+ 机器数据流：多 reader 跨机读（当前仅镜像机可读）

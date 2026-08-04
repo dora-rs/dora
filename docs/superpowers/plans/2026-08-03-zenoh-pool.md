@@ -572,9 +572,9 @@ fn create_cross_pool_shmem(
                     .await;
                     return Ok(());
                 }
-                // Legacy proxy path (machine-less registers) unchanged:
-                // 原 PROXY_POOL_DATA 插入逻辑保留在下面
-                PROXY_POOL_DATA ...
+                // 代理路径已整体移除（2026-08-04，spec §8 完成）：
+                // 非 CROSS_POOLS 的写帧在 daemon 侧 debug 级 drop，
+                // 不再有 PROXY_POOL_DATA 缓存
 ```
 
 并加直写辅助（seqlock 协议复制节点 API 的实现）：

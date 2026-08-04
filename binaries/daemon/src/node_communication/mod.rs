@@ -408,9 +408,6 @@ impl Listener {
                 shared_memory_id,
                 tensor_data,
                 size,
-                device,
-                dtype,
-                shape,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
@@ -418,9 +415,6 @@ impl Listener {
                         shared_memory_id,
                         tensor_data,
                         size,
-                        device,
-                        dtype,
-                        shape,
                         reply_sender,
                     },
                     Some(reply),

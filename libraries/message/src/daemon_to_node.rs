@@ -97,17 +97,6 @@ pub enum DaemonReply {
     PinnedMemoryMetadata {
         metadata: Metadata,
     },
-    /// Cross-machine: the daemon returns serialised tensor bytes from
-    /// its proxy pool when the local pool is on a different host.
-    PinnedMemoryData {
-        tensor_data: Vec<u8>,
-        size: usize,
-        device: String,
-        // Original tensor dtype/shape for proxy pools (see
-        // WritePinnedMemory); empty/absent for local pools.
-        dtype: String,
-        shape: Vec<i64>,
-    },
     /// Result of a cross-machine pool registration. `Err` carries the
     /// warning message (resolution failure or remote creation failure) —
     /// the register is a warn-and-no-op in both cases.

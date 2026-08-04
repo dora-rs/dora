@@ -179,35 +179,6 @@ impl ControlChannel {
             .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
         match reply {
             DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
-            DaemonReply::PinnedMemoryData {
-                tensor_data,
-                size,
-                device,
-                dtype,
-                shape,
-            } => {
-                use dora_message::metadata::Parameter;
-                let data_hex: String = tensor_data.iter().fold(String::new(), |mut s, b| {
-                    use std::fmt::Write;
-                    let _ = write!(s, "{b:02x}");
-                    s
-                });
-                let mut params = dora_message::metadata::MetadataParameters::new();
-                params.insert("proxy_data".into(), Parameter::String(data_hex));
-                params.insert("size".into(), Parameter::Integer(size as i64));
-                params.insert("pinned_type".into(), Parameter::String(device));
-                // Preserve the sender's tensor semantics so remote
-                // receivers rebuild the original dtype/shape, not a
-                // uint8 byte view.
-                if !dtype.is_empty() {
-                    params.insert("dtype".into(), Parameter::String(dtype));
-                }
-                if !shape.is_empty() {
-                    params.insert("shape".into(), Parameter::ListInt(shape));
-                }
-                let ts = self.clock.new_timestamp();
-                Ok(Metadata::from_parameters(ts, params))
-            }
             DaemonReply::Result(Err(e)) => bail!("{e}"),
             other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
         }
@@ -234,17 +205,11 @@ impl ControlChannel {
         shared_memory_id: String,
         tensor_data: Vec<u8>,
         size: usize,
-        device: String,
-        dtype: String,
-        shape: Vec<i64>,
     ) -> eyre::Result<()> {
         let request = DaemonRequest::WritePinnedMemory {
             shared_memory_id,
             tensor_data,
             size,
-            device,
-            dtype,
-            shape,
         };
         let reply = self
             .channel

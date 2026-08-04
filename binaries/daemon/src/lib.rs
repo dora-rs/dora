@@ -188,20 +188,6 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
-/// Proxy pool for cross-machine memory pool tensor data.
-/// One proxy pool entry: the serialised tensor bytes plus the metadata
-/// (size, device, dtype, shape) needed to reconstruct the receiver's view.
-type ProxyPoolEntry = (Vec<u8>, usize, String, String, Vec<i64>);
-
-/// Keyed by `shared_memory_id`, populated by incoming
-/// `InterDaemonEvent::MemoryPoolWrite` and consumed by
-/// `ReadPinnedMemory`.  Stores both the serialised tensor bytes
-/// and the metadata needed to reconstruct the receiver's view.
-static PROXY_POOL_DATA: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, ProxyPoolEntry>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-// (tensor_bytes, size, device, dtype, shape)
-
 /// Cross-machine pools this daemon participates in:
 /// pool id -> peer machine id (write/free tracking).
 static CROSS_POOLS: std::sync::LazyLock<
@@ -3282,44 +3268,41 @@ impl Daemon {
                 shared_memory_id,
                 tensor_data,
                 size,
-                device,
-                dtype,
-                shape,
             } => {
-                // New cross-machine path: pool mirrored here — write the
-                // data straight into the DORADMA data region under the
-                // seqlock protocol (receiver reads its local pool
-                // zero-copy). Missing pool = should-not-happen defensive
-                // case: warn + drop (no creation, avoids leaks).
+                // Cross-machine path: pool mirrored here — write the data
+                // straight into the DORADMA data region under the seqlock
+                // protocol (receiver reads its local pool zero-copy).
+                // Pools without a cross-machine entry (local pools, or a
+                // daemon that is not this pool's mirror) drop the frame at
+                // debug level: the write path publishes unconditionally, so
+                // a non-mirror daemon sees every frame of every pool. A
+                // genuinely missing mirror still warns inside
+                // `write_cross_pool_data`.
                 let is_cross = CROSS_POOLS
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .contains_key(&shared_memory_id);
-                if is_cross {
-                    // The mirror write is a synchronous 61.44MB memcpy
-                    // (10-30ms) — off the event loop or it would stall
-                    // heartbeats, node replies and output delivery. Copy
-                    // the frame into the spawned task (originals stay
-                    // owned here for the proxy fallback below).
-                    let shared_memory_id = shared_memory_id.clone();
-                    let tensor_data = tensor_data.clone();
-                    let local_machine_id = self.machine_id.clone().unwrap_or_default();
-                    tokio::spawn(async move {
-                        // `dataflow_id` (Uuid) is Copy; captured by copy.
-                        write_cross_pool_data(
-                            &dataflow_id,
-                            &local_machine_id,
-                            &shared_memory_id,
-                            &tensor_data,
-                            size,
-                        );
-                    });
+                if !is_cross {
+                    tracing::debug!(
+                        pool = %shared_memory_id,
+                        "memory pool: dropping write for a pool without a cross-machine entry"
+                    );
                     return Ok(());
                 }
-                PROXY_POOL_DATA
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(shared_memory_id, (tensor_data, size, device, dtype, shape));
+                // The mirror write is a synchronous 61.44MB memcpy
+                // (10-30ms) — off the event loop or it would stall
+                // heartbeats, node replies and output delivery.
+                let local_machine_id = self.machine_id.clone().unwrap_or_default();
+                tokio::spawn(async move {
+                    // `dataflow_id` (Uuid) is Copy; captured by copy.
+                    write_cross_pool_data(
+                        &dataflow_id,
+                        &local_machine_id,
+                        &shared_memory_id,
+                        &tensor_data,
+                        size,
+                    );
+                });
                 Ok(())
             }
             InterDaemonEvent::RegisterPoolAck {
@@ -4543,90 +4526,72 @@ impl Daemon {
                 free,
                 reply_sender,
             } => {
-                // Check proxy pool first — cross-machine pools are
-                // populated by remote daemons via Zenoh and cached here.
-                if let Some((tensor_data, size, device, dtype, shape)) = PROXY_POOL_DATA
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&shared_memory_id)
-                {
-                    let _ = reply_sender.send(DaemonReply::PinnedMemoryData {
-                        tensor_data,
-                        size,
-                        device,
-                        dtype,
-                        shape,
-                    });
-                } else {
-                    let result = (|| -> Result<dora_message::metadata::Metadata, String> {
-                        let id = MemoryPoolId {
-                            dataflow_id: dataflow_id.to_string(),
-                            id: shared_memory_id.clone(),
-                        };
-                        let metadata = self
-                            .memory_pool
-                            .read_memory_pool(&id, node_id.as_ref())
-                            .ok_or_else(|| {
-                                format!("memory pool with ID {} not found", shared_memory_id)
-                            })?;
-
-                        if free
-                            && let Err(err) =
-                                self.memory_pool.free_memory_pool(&id, node_id.as_ref())
-                        {
-                            tracing::warn!(
-                                "Failed to free memory pool {} after reading: {}",
-                                shared_memory_id,
-                                err
-                            );
-                        }
-
-                        let mut parameters = pool_metadata_to_params(&metadata);
-                        if free {
-                            parameters.remove("shared_memory_name");
-                        }
-
-                        let timestamp = self.clock.new_timestamp();
-                        Ok(dora_message::metadata::Metadata::from_parameters(
-                            timestamp, parameters,
-                        ))
-                    })();
-
-                    // Same family as FreePinnedMemory: cross-machine
-                    // mirrors never enter the MemoryPoolManager table
-                    // (RegisterPool writes CROSS_POOLS only), so a
-                    // free=true read table-misses on the mirror daemon
-                    // and — on the origin daemon — never releases the
-                    // mirror. Either way the cross-machine cleanup must
-                    // not be gated on the table result.
-                    let peer = if free {
-                        CROSS_POOLS
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&shared_memory_id)
-                    } else {
-                        None
+                let result = (|| -> Result<dora_message::metadata::Metadata, String> {
+                    let id = MemoryPoolId {
+                        dataflow_id: dataflow_id.to_string(),
+                        id: shared_memory_id.clone(),
                     };
-                    if let Some(peer) = &peer {
-                        release_cross_pool(
-                            &self.zenoh_session,
-                            &self.clock,
-                            &dataflow_id,
-                            self.machine_id.as_deref().unwrap_or_default(),
-                            peer,
-                            &shared_memory_id,
-                        )
-                        .await;
+                    let metadata = self
+                        .memory_pool
+                        .read_memory_pool(&id, node_id.as_ref())
+                        .ok_or_else(|| {
+                            format!("memory pool with ID {} not found", shared_memory_id)
+                        })?;
+
+                    if free
+                        && let Err(err) = self.memory_pool.free_memory_pool(&id, node_id.as_ref())
+                    {
+                        tracing::warn!(
+                            "Failed to free memory pool {} after reading: {}",
+                            shared_memory_id,
+                            err
+                        );
                     }
 
-                    match result {
-                        Ok(metadata) => {
-                            let _ =
-                                reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
-                        }
-                        Err(err) => {
-                            let _ = reply_sender.send(DaemonReply::Result(Err(err)));
-                        }
+                    let mut parameters = pool_metadata_to_params(&metadata);
+                    if free {
+                        parameters.remove("shared_memory_name");
+                    }
+
+                    let timestamp = self.clock.new_timestamp();
+                    Ok(dora_message::metadata::Metadata::from_parameters(
+                        timestamp, parameters,
+                    ))
+                })();
+
+                // Same family as FreePinnedMemory: cross-machine
+                // mirrors never enter the MemoryPoolManager table
+                // (RegisterPool writes CROSS_POOLS only), so a
+                // free=true read table-misses on the mirror daemon
+                // and — on the origin daemon — never releases the
+                // mirror. Either way the cross-machine cleanup must
+                // not be gated on the table result.
+                let peer = if free {
+                    CROSS_POOLS
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&shared_memory_id)
+                } else {
+                    None
+                };
+                if let Some(peer) = &peer {
+                    release_cross_pool(
+                        &self.zenoh_session,
+                        &self.clock,
+                        &dataflow_id,
+                        self.machine_id.as_deref().unwrap_or_default(),
+                        peer,
+                        &shared_memory_id,
+                    )
+                    .await;
+                }
+
+                match result {
+                    Ok(metadata) => {
+                        let _ = reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
+                    }
+                    Err(err) => {
+                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
                     }
                 }
             }
@@ -4702,27 +4667,11 @@ impl Daemon {
                 shared_memory_id,
                 tensor_data,
                 size,
-                device,
-                dtype,
-                shape,
                 reply_sender,
             } => {
-                PROXY_POOL_DATA
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(
-                        shared_memory_id.clone(),
-                        (
-                            tensor_data.clone(),
-                            size,
-                            device.clone(),
-                            dtype.clone(),
-                            shape.clone(),
-                        ),
-                    );
                 // Forward to remote daemons via Zenoh. Failures are
                 // logged loudly: a dropped publish strands remote readers
-                // with a never-ready proxy pool.
+                // with a never-ready mirror pool.
                 // Must match the subscriber's wire format: a
                 // `Timestamped<InterDaemonEvent>` (the same framing the
                 // regular inter-daemon event path uses) — the framing and
@@ -4747,9 +4696,6 @@ impl Daemon {
                             shared_memory_id,
                             tensor_data,
                             size,
-                            device,
-                            dtype,
-                            shape,
                         },
                     )
                     .await

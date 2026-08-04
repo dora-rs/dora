@@ -56,7 +56,7 @@ for i in range(MESSAGE_COUNT):
                     flush=True,
                 )
             sys.exit(1)
-        # Cross-machine: the register's proxy push can be lost while the
+        # Cross-machine: the registration push can be lost while the
         # remote daemon's subscription is still replicating (observed as
         # the receiver reading the *next* write's data at iteration 0).
         # Keep re-pushing the registration data until the receiver has
@@ -84,10 +84,12 @@ for i in range(MESSAGE_COUNT):
         node.send_output("data", pa.array([]), metadata)
 
     # Cross-machine: the writes must not race ahead of the receiver's
-    # reads (the proxy pool is overwritten per frame). Pace the writes
-    # well beyond the receiver's per-iteration read latency (observed ~5s
-    # under host contention) so its re-read always finds the expected
-    # frame.  NOTE: no trailing next() here — it would wait for the next
+    # reads (the mirror is updated in place per frame under the seqlock
+    # protocol — a new write overwrites the frame the receiver may still
+    # be iterating). Pace the writes well beyond the receiver's
+    # per-iteration read latency (observed ~5s under host contention) so
+    # its re-read always finds the expected frame.  NOTE: no trailing
+    # next() here — it would wait for the next
     # iteration's next_require, which the receiver only sends after the
     # next latency output, which this loop hasn't produced yet: a
     # self-deadlock (observed: sender stuck at the second next() while

@@ -155,14 +155,11 @@ pub enum DaemonNodeEvent {
     },
     /// Write tensor data to a memory pool, with cross-machine forwarding.
     /// The daemon serialises the payload and pushes it to remote daemons
-    /// via Zenoh when any subscriber is on a different host.
+    /// via Zenoh so the mirror pool can be updated in place.
     WriteMemoryPool {
         shared_memory_id: String,
         tensor_data: Vec<u8>,
         size: usize,
-        device: String,
-        dtype: String,
-        shape: Vec<i64>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     /// Register a memory pool on another machine: resolve the target

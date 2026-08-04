@@ -38,14 +38,14 @@ for i in range(MESSAGE_COUNT):
         print(f"Receiver preview: {torch_tensor[:5]}")
     else:
         # The zero-copy in-place update only holds for local shmem views.
-        # Cross-machine proxy pools deliver fresh bytes per write, so the
-        # tensor must be re-read (and re-built) each iteration.  The
-        # memory-pool event trails the latency output on a WAN (separate
-        # topics, no ordering guarantee) — and the registration re-push
-        # keeps old frames in the proxy pool until the sender's next()
-        # returns — so a read can return the *previous* frame.  Retry
-        # until the expected frame arrives; each read consumes one proxy
-        # entry.
+        # Cross-machine reads go through the daemon-mirrored pool on this
+        # host, so the tensor must be re-read (and re-built) each
+        # iteration.  The memory-pool event trails the latency output on a
+        # WAN (separate topics, no ordering guarantee) — and the sender's
+        # registration re-push may overwrite the mirror with the previous
+        # frame — so a read can return the *previous* frame.  Retry until
+        # the expected frame arrives; each read reflects the mirror's
+        # current generation.
         # Time-boxed, not count-boxed: a mirrored cross-machine pool reads
         # in ~40ms locally (sender paces writes with a 20s sleep), so a
         # count window burns through before the next frame lands; on a WAN

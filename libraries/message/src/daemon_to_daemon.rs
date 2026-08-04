@@ -22,18 +22,14 @@ pub enum InterDaemonEvent {
         output_id: DataId,
     },
     /// Cross-machine memory pool write — the sender daemon forwards
-    /// serialised tensor data to the remote daemon, which stores it
-    /// in a proxy pool until the receiver calls `read_memory_pool`.
+    /// serialised tensor data to the remote daemon, which writes it
+    /// directly into the mirrored pool's DORADMA data region under the
+    /// seqlock protocol (the receiver reads its local pool zero-copy).
     MemoryPoolWrite {
         dataflow_id: DataflowId,
         shared_memory_id: String,
         tensor_data: Vec<u8>,
         size: usize,
-        device: String,
-        // Original tensor dtype/shape (see WritePinnedMemory): remote
-        // receivers rebuild the tensor from these, not a uint8 view.
-        dtype: String,
-        shape: Vec<i64>,
     },
     /// Cross-machine pool registration — the matching machine's daemon
     /// mirrors the pool locally and replies with `RegisterPoolAck`.
