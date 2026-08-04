@@ -243,6 +243,10 @@ name = "cxx-arrow-dataflow"
 path = "examples/c++-arrow-dataflow/run.rs"
 
 [[example]]
+name = "cxx-service-action"
+path = "examples/c++-service-action/run.rs"
+
+[[example]]
 name = "mavlink2-bridge-cxx"
 path = "examples/mavlink2-bridge/run-cxx.rs"
 

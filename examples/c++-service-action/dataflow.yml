@@ -1,0 +1,36 @@
+nodes:
+  # --- Service: request / reply -------------------------------------
+  - id: cxx-service-client
+    path: build/service_client
+    inputs:
+      tick: dora/timer/millis/300
+      # The blocking `recv_service_response` normally consumes responses,
+      # but the input must still be declared for them to be routed here.
+      response: cxx-service-server/response
+    outputs:
+      - request
+
+  - id: cxx-service-server
+    path: build/service_server
+    inputs:
+      request: cxx-service-client/request
+    outputs:
+      - response
+
+  # --- Action: goal / feedback / result ------------------------------
+  - id: cxx-action-client
+    path: build/action_client
+    inputs:
+      tick: dora/timer/millis/500
+      feedback: cxx-action-server/feedback
+      result: cxx-action-server/result
+    outputs:
+      - goal
+
+  - id: cxx-action-server
+    path: build/action_server
+    inputs:
+      goal: cxx-action-client/goal
+    outputs:
+      - feedback
+      - result
