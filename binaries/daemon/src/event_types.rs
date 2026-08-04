@@ -46,6 +46,8 @@ pub enum Event {
     Dora(DoraEvent),
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
+    /// Re-check whether a pending `Destroy`'s nodes have exited (#2980).
+    DestroyTick,
     MetricsInterval,
     NodeHealthCheckInterval,
     CtrlC,
@@ -102,6 +104,7 @@ impl Event {
             Event::Dora(_) => "Dora",
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
+            Event::DestroyTick => "DestroyTick",
             Event::MetricsInterval => "MetricsInterval",
             Event::NodeHealthCheckInterval => "NodeHealthCheckInterval",
             Event::CtrlC => "CtrlC",

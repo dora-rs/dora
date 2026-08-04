@@ -348,7 +348,7 @@ dora down [OPTIONS]
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--force` | false | Tear down even if the coordinator has running dataflows, terminating them immediately first (a plain teardown does not wait for a stop to take effect, so a wedged node would be orphaned) |
+| `--force` | false | Tear down even if the coordinator has running dataflows, terminating them immediately first |
 | `--coordinator-addr <IP>` | `127.0.0.1` | Coordinator address |
 | `--coordinator-port <PORT>` | `6013` | Coordinator port |
 
@@ -361,8 +361,14 @@ dora down [OPTIONS]
 >
 > Since [#2924] the command refuses when the target reports running
 > dataflows, listing them. `--force` proceeds, stopping each dataflow
-> first so nothing is left orphaned — including nodes that ignore a
-> cooperative stop.
+> first.
+>
+> Teardown does not leave nodes behind. Each daemon waits out the stop
+> grace period and kills whatever is still running before it exits, so a
+> node that ignores the cooperative stop is terminated rather than
+> orphaned ([#2980]). A wedged node therefore makes `dora down` take up
+> to the grace period; well-behaved ones exit immediately and cost
+> nothing.
 >
 > **To run instances side by side, give each its own port** — that is the
 > isolation mechanism, and every lifecycle command (`up`, `down`, `start`,
@@ -375,6 +381,7 @@ dora down [OPTIONS]
 > ```
 
 [#2924]: https://github.com/dora-rs/dora/issues/2924
+[#2980]: https://github.com/dora-rs/dora/issues/2980
 
 #### `dora build`
 

@@ -168,6 +168,7 @@ mod node_communication;
 mod output_routing;
 mod pending;
 pub(crate) mod running_dataflow;
+mod shutdown;
 mod socket_stream_utils;
 mod spawn;
 
@@ -301,6 +302,15 @@ impl RunDataflowOptions {
     }
 }
 
+/// A destroy waiting for the daemon's nodes to exit before it replies.
+///
+/// Holding the reply is what gives the coordinator — and therefore
+/// `dora down` — its synchronization: `destroy_daemons` awaits it.
+pub(crate) struct PendingDestroy {
+    reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
+    wait: shutdown::DestroyWait,
+}
+
 pub struct Daemon {
     pub(crate) running: HashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
@@ -323,6 +333,9 @@ pub struct Daemon {
     /// scouting. Forwarded to spawned nodes so they discover the same way the
     /// daemon does (see `DORA_ZENOH_MULTICAST`).
     pub(crate) disable_multicast: bool,
+    /// A `Destroy` that is holding its reply until this daemon's node
+    /// processes are gone (#2980).
+    pub(crate) pending_destroy: Option<PendingDestroy>,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -1543,6 +1556,7 @@ impl Daemon {
             zenoh_session,
             zenoh_listen_endpoint,
             disable_multicast,
+            pending_destroy: None,
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
@@ -1711,6 +1725,11 @@ impl Daemon {
                 }
                 Event::Dora(event) => self.handle_dora_event(event).await?,
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
+                Event::DestroyTick => {
+                    if self.handle_destroy_tick().await {
+                        break;
+                    }
+                }
                 Event::HeartbeatInterval => {
                     if let Some(sender) = &self.coordinator_sender {
                         let msg = serde_json::to_vec(&Timestamped {
@@ -1923,6 +1942,120 @@ impl Daemon {
         // `run_inner` borrows `&mut self`, so move the accumulated results out
         // (the daemon may be reused for a reconnect, where these are ignored).
         Ok(std::mem::take(&mut self.dataflow_node_results))
+    }
+
+    /// Hold a destroy until this daemon's nodes are gone, or hand the reply
+    /// channel back when there is nothing to wait for.
+    ///
+    /// Returning the channel means "reply and exit now"; keeping it means the
+    /// event loop stays alive, serving the shutdown handshakes of nodes that
+    /// are on their way out, until [`Self::handle_destroy_tick`] decides.
+    fn begin_pending_destroy(
+        &mut self,
+        reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
+    ) -> Option<oneshot::Sender<Option<DaemonCoordinatorReply>>> {
+        if self.pending_destroy.is_some() {
+            // A second destroy while the first is still waiting: answer it,
+            // but let the original wait finish rather than exiting on top of
+            // it and orphaning the nodes it is still watching.
+            tokio::spawn(Self::finish_destroy(reply_tx));
+            return None;
+        }
+        if self.running_node_pids().is_empty() {
+            return Some(reply_tx);
+        }
+
+        self.pending_destroy = Some(PendingDestroy {
+            reply_tx,
+            wait: shutdown::DestroyWait::new(),
+        });
+        // Nothing else wakes the loop once the dataflows are stopping, so the
+        // wait needs its own tick. The task ends with the daemon, when the
+        // event channel closes.
+        let events_tx = self.events_tx.clone();
+        let clock = self.clock.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(shutdown::POLL_INTERVAL).await;
+                let tick = Timestamped {
+                    inner: Event::DestroyTick,
+                    timestamp: clock.new_timestamp(),
+                };
+                if events_tx.send(tick).await.is_err() {
+                    break;
+                }
+            }
+        });
+        None
+    }
+
+    /// Re-check a pending destroy. Returns true when the daemon may exit.
+    async fn handle_destroy_tick(&mut self) -> bool {
+        if self.pending_destroy.is_none() {
+            return false;
+        }
+        let pids = self.running_node_pids();
+        let progress = self
+            .pending_destroy
+            .as_mut()
+            .expect("checked above")
+            .wait
+            .poll(&pids);
+
+        let survivors = match progress {
+            shutdown::DestroyProgress::Waiting => return false,
+            shutdown::DestroyProgress::Done => Vec::new(),
+            shutdown::DestroyProgress::Abandoned(survivors) => survivors,
+        };
+
+        let pending = self.pending_destroy.take().expect("checked above");
+        if !pending.wait.killed_pids.is_empty() {
+            tracing::warn!(
+                "killed {} node process(es) that were still running at destroy: {:?}",
+                pending.wait.killed_pids.len(),
+                pending.wait.killed_pids
+            );
+        }
+        if !survivors.is_empty() {
+            tracing::error!(
+                "{} node process(es) survived the destroy kill and are now orphaned: {survivors:?}",
+                survivors.len(),
+            );
+        }
+        Self::finish_destroy(pending.reply_tx).await;
+        true
+    }
+
+    /// Pids of every node process this daemon currently has running.
+    ///
+    /// Dynamic nodes have none: the daemon did not spawn them, so they are
+    /// not its children and it cannot reap them.
+    fn running_node_pids(&self) -> Vec<u32> {
+        self.running
+            .values()
+            .flat_map(|dataflow| dataflow.running_nodes.values())
+            .filter_map(|node| node.pid.as_ref())
+            // Zero means the entry exists but its process has not reported a
+            // pid yet (`prepared.rs` stores it right after spawn).
+            .map(|pid| pid.load(atomic::Ordering::Acquire))
+            .filter(|pid| *pid != 0)
+            .collect()
+    }
+
+    /// Send the destroy reply and wait for it to go out.
+    async fn finish_destroy(reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>) {
+        let (notify_tx, notify_rx) = oneshot::channel();
+        let reply = DaemonCoordinatorReply::DestroyResult {
+            result: Ok(()),
+            notify: Some(notify_tx),
+        };
+        let _ = reply_tx
+            .send(Some(reply))
+            .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
+        // wait until the reply is sent out
+        if notify_rx.await.is_err() {
+            tracing::warn!("no confirmation received for DestroyReply");
+        }
     }
 
     async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {
@@ -2314,19 +2447,25 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
-                let (notify_tx, notify_rx) = oneshot::channel();
-                let reply = DaemonCoordinatorReply::DestroyResult {
-                    result: Ok(()),
-                    notify: Some(notify_tx),
-                };
-                let _ = reply_tx
-                    .send(Some(reply))
-                    .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
-                // wait until the reply is sent out
-                if notify_rx.await.is_err() {
-                    tracing::warn!("no confirmation received for DestroyReply");
+                // Anything still running when this process ends is orphaned
+                // to `ppid 1`: the per-node supervision tasks that would
+                // deliver a kill are never polled again. So hold the reply
+                // until the nodes are gone (#2980) — the coordinator's
+                // destroy completes when it lands, which is what makes
+                // `dora down` mean what it documents.
+                //
+                // Deferred rather than awaited here: a node shutting down
+                // cooperatively ends by asking this very event loop to close
+                // its outputs, so blocking the loop would deadlock every
+                // well-behaved node against the wait and turn its clean exit
+                // into a signal kill.
+                match self.begin_pending_destroy(reply_tx) {
+                    Some(reply_tx) => {
+                        Self::finish_destroy(reply_tx).await;
+                        RunStatus::Exit
+                    }
+                    None => RunStatus::Continue,
                 }
-                RunStatus::Exit
             }
             DaemonCoordinatorEvent::Heartbeat => {
                 self.last_coordinator_heartbeat = Instant::now();
