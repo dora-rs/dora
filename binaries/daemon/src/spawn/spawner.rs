@@ -14,8 +14,8 @@ use dora_core::{
     },
     get_python_path,
     topics::{
-        DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV,
-        ZENOH_CONFIG_PATH_ENV,
+        DORA_LOCAL_RUN_PID_ENV, DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV,
+        DORA_ZENOH_MULTICAST_ENV, ZENOH_CONFIG_PATH_ENV,
     },
     uhlc::HLC,
 };
@@ -70,6 +70,10 @@ const CONTROL_PLANE_ENV: &[&str] = &[
     DORA_ZENOH_LISTEN_ENV,
     DORA_ZENOH_CONNECT_ENV,
     DORA_ZENOH_MULTICAST_ENV,
+    // A descriptor-forged pid would make every node exit as soon as that
+    // arbitrary process does; an inherited stale value would contain
+    // coordinator-attached nodes to an unrelated process. Both denied.
+    DORA_LOCAL_RUN_PID_ENV,
 ];
 
 /// Whether `key` names the reserved variable `reserved`.
@@ -379,6 +383,11 @@ pub struct Spawner {
     /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
     /// node scouting for a daemon that no longer answers.
     pub disable_multicast: bool,
+    /// Pid of the `dora run` process when this daemon is the in-process
+    /// local-run daemon, `None` for a coordinator-attached daemon. Injected
+    /// into spawned nodes as [`DORA_LOCAL_RUN_PID_ENV`] so they exit when the
+    /// run dies out from under them (dora-rs/dora#2856).
+    pub local_run_pid: Option<u32>,
 }
 
 impl Spawner {
@@ -433,6 +442,11 @@ impl Spawner {
             command = apply_descriptor_env(command, *envs);
         }
         command = command.env(config_key, config_yaml);
+        // Injected with the control-plane wiring (i.e. after the descriptor
+        // env) so a descriptor entry cannot override it, per the #2944 order.
+        if let Some(pid) = self.local_run_pid {
+            command = command.env(DORA_LOCAL_RUN_PID_ENV, pid.to_string());
+        }
         self.maybe_inject_zenoh_connect(command, node_id)
     }
 
@@ -818,6 +832,7 @@ mod tests {
             // one a node without its own peering plan takes.
             zenoh_peering: Arc::new(BTreeMap::new()),
             disable_multicast,
+            local_run_pid: None,
         }
     }
 
@@ -828,6 +843,48 @@ mod tests {
             .get(&OsString::from(DORA_ZENOH_MULTICAST_ENV))
             .cloned()
             .flatten()
+    }
+
+    /// #2856: a local-run daemon marks every node it spawns with the `dora
+    /// run` pid so the node exits when the run dies; a coordinator-attached
+    /// daemon must not — there, nodes outliving a daemon restart is
+    /// load-bearing (#2029), and a wrongly-injected pid would cut every node's
+    /// lifetime to the daemon's.
+    #[test]
+    fn the_local_run_pid_reaches_nodes_only_in_run_mode() {
+        let composed = |local_run_pid: Option<u32>| {
+            let mut spawner = spawner_for(None, false);
+            spawner.local_run_pid = local_run_pid;
+            let command = spawner.compose_node_env(
+                Command::new("true"),
+                &node("sink"),
+                // A descriptor that tries to forge the pid: it must be the
+                // daemon's decision that lands, never this entry.
+                &[Some(&BTreeMap::from([(
+                    DORA_LOCAL_RUN_PID_ENV.to_string(),
+                    EnvValue::String("4242".into()),
+                )]))],
+                "DORA_NODE_CONFIG",
+                "{}".into(),
+            );
+            command
+                .environment
+                .get(&OsString::from(DORA_LOCAL_RUN_PID_ENV))
+                .cloned()
+                .flatten()
+        };
+        assert_eq!(
+            composed(Some(7)).as_deref(),
+            Some(OsStr::new("7")),
+            "run mode: the daemon's pid must reach the node, and the \
+             descriptor's forged value must not replace it"
+        );
+        assert_eq!(
+            composed(None),
+            None,
+            "coordinator-attached mode: no containment pid, not even a \
+             descriptor-forged one (scrubbed as control-plane wiring)"
+        );
     }
 
     /// A node must discover the same way the daemon does: a node left scouting

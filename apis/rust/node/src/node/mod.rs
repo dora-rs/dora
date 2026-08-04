@@ -653,6 +653,99 @@ fn wait_for_grace(ack_states: &[Arc<AckState>], grace: Duration) {
     }
 }
 
+/// Exit this process when the `dora run` that spawned it dies (dora-rs/dora#2856).
+///
+/// `dora run` hosts the whole runtime — coordinator, daemon, node parent —
+/// in one process, so a SIGKILL of the CLI (supervisor hard-timeout, OOM
+/// kill, `kill -9`) removes everything a node could ever hear from again,
+/// without a line of teardown running. Nodes are spawned as process-group
+/// leaders by design, so no signal reaches them from the CLI's death; and a
+/// node that is not polling its event stream never observes the daemon-socket
+/// EOF either — its event thread may be parked in `blocking_send` on a full
+/// channel, upstream of the read that would see it. Watching the run pid is
+/// the containment that covers every node state, because it does not depend
+/// on the node making progress.
+///
+/// Behavior on death of the watched pid: a cooperative `SIGTERM` to self
+/// first (a handler or the default disposition ends the process normally),
+/// then a bounded grace, then a hard exit for nodes that ignore SIGTERM.
+///
+/// Spawned at most once per process, only when the daemon injected
+/// [`DORA_LOCAL_RUN_PID_ENV`] — which the coordinator-attached spawn path
+/// never does, because there nodes outliving a daemon restart is load-bearing
+/// (dora-rs/dora#2029). The variable is control-plane-denylisted, so a
+/// descriptor cannot forge it and a stale shell export cannot leak it.
+fn maybe_spawn_local_run_watchdog() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let Ok(value) = std::env::var(dora_core::topics::DORA_LOCAL_RUN_PID_ENV) else {
+            return;
+        };
+        let Ok(pid) = value.parse::<u32>() else {
+            tracing::warn!(
+                "ignoring malformed {}={value:?}",
+                dora_core::topics::DORA_LOCAL_RUN_PID_ENV
+            );
+            return;
+        };
+        #[cfg(unix)]
+        {
+            let spawned = std::thread::Builder::new()
+                .name("dora-local-run-watchdog".into())
+                .spawn(move || local_run_watchdog(pid));
+            if let Err(err) = spawned {
+                tracing::warn!("failed to spawn `dora run` containment watchdog: {err}");
+            }
+        }
+        // Windows: nothing to spawn. The daemon wraps every node in a Job
+        // Object at spawn, which is the platform's own parent-death
+        // containment; `kill(pid, 0)` and `raise(SIGTERM)` have no
+        // equivalent worth faking here.
+        #[cfg(not(unix))]
+        let _ = pid;
+    });
+}
+
+/// The watch loop behind [`maybe_spawn_local_run_watchdog`]. Never returns.
+#[cfg(unix)]
+fn local_run_watchdog(pid: u32) -> ! {
+    loop {
+        // Signal 0: existence probe, nothing is delivered. `EPERM` means
+        // "alive but not signalable", which still counts as alive; only
+        // `ESRCH` means the pid is gone.
+        let alive = unsafe { libc::kill(pid as libc::pid_t, 0) } == 0
+            || std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM);
+        if !alive {
+            break;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    // Logging is best-effort and MUST NOT be able to stop the exit. This
+    // process's stderr is a pipe whose reader — the daemon — just died, so
+    // a write fails with EPIPE, and `eprintln!` PANICS on a failed write:
+    // the panic unwinds this thread before it reaches `process::exit`, and
+    // the node is orphaned by its own obituary (caught by the #2856 e2e).
+    // Hence raw `write_all` with the error dropped, and `catch_unwind`
+    // around the whole block in case a tracing subscriber panics too.
+    let _ = std::panic::catch_unwind(|| {
+        let msg = format!(
+            "dora run process {pid} is gone; exiting so this node is not \
+             orphaned (dora-rs/dora#2856)\n"
+        );
+        tracing::error!("{}", msg.trim_end());
+        let _ = std::io::Write::write_all(&mut std::io::stderr(), msg.as_bytes());
+    });
+    // Cooperative first: a SIGTERM handler (or the default disposition,
+    // which terminates) gets to run. `raise` targets the calling thread,
+    // which is enough — process-directed disposition is per-process.
+    unsafe { libc::raise(libc::SIGTERM) };
+    // Grace for handlers that trigger orderly shutdown, mirroring the stop
+    // ladder's SIGTERM→SIGKILL escalation, then the rung SIGKILL cannot
+    // reach from a dead parent: exiting ourselves.
+    std::thread::sleep(Duration::from_secs(5));
+    std::process::exit(1);
+}
+
 /// The per-output routing the daemon computed for this node, or the safe
 /// all-daemon-path fallback when it provided none.
 ///
@@ -1130,6 +1223,10 @@ impl DoraNode {
         node_config: NodeConfig,
         testing_communication: Option<TestingCommunication>,
     ) -> NodeResult<(Self, EventStream)> {
+        // Every init path funnels through here — custom nodes, the operator
+        // runtime, and the C/C++/Python bindings — so this is the one place
+        // the `dora run` containment watchdog can cover them all.
+        maybe_spawn_local_run_watchdog();
         let NodeConfig {
             dataflow_id,
             node_id,

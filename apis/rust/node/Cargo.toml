@@ -49,6 +49,12 @@ is-terminal = "0.4.17"
 thiserror = { workspace = true }
 uuid = { workspace = true }
 
+# Unix-only: the `dora run` parent-death watchdog checks liveness with
+# `kill(pid, 0)` and self-signals SIGTERM (dora-rs/dora#2856). Windows
+# containment comes from the daemon's Job Object wrap at spawn instead.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 

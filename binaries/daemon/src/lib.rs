@@ -320,6 +320,11 @@ pub struct Daemon {
     pub(crate) daemon_id: DaemonId,
     pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     pub(crate) exit_when_all_finished: bool,
+    /// Pid injected into spawned nodes as `DORA_LOCAL_RUN_PID` so they exit
+    /// when the `dora run` process dies (dora-rs/dora#2856). `Some` only for
+    /// the single-shot in-process daemon; a coordinator-attached daemon must
+    /// leave its nodes decoupled from its own lifetime (#2029).
+    pub(crate) local_run_pid: Option<u32>,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
@@ -1645,6 +1650,14 @@ impl Daemon {
             coordinator_sender,
             last_coordinator_heartbeat: Instant::now(),
             daemon_id,
+            // `exit_when_done` is passed only by `run_dataflow_with`, the
+            // single-shot `dora run` path where this daemon lives inside the
+            // CLI process. In that mode — and only that mode — nodes must not
+            // outlive the process, so the containment pid is derived from the
+            // same marker rather than threaded as a twelfth parameter. For
+            // any other single-shot in-process embedder the derivation stays
+            // correct: the pid is the process hosting the daemon.
+            local_run_pid: exit_when_done.is_some().then(std::process::id),
             exit_when_done,
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
@@ -2643,6 +2656,7 @@ impl Daemon {
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
+                        local_run_pid: self.local_run_pid,
                     };
                     let mut logger = self
                         .logger
@@ -3154,6 +3168,7 @@ impl Daemon {
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
+                        local_run_pid: self.local_run_pid,
                     };
                     let mut logger = self
                         .logger
@@ -4205,6 +4220,7 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
             disable_multicast: self.disable_multicast,
+            local_run_pid: self.local_run_pid,
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):

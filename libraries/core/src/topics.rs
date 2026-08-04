@@ -21,6 +21,25 @@ pub const DORA_COORDINATOR_PORT_WS_DEFAULT: u16 = 6013;
 /// rather than leaving them to gossip's best-effort autoconnect.
 pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
 
+/// Pid of the `dora run` process, injected by the daemon into every node it
+/// spawns in local-run mode — and ONLY there. The node API watches this pid
+/// and exits when it dies.
+///
+/// `dora run` hosts the coordinator and daemon in-process, so a SIGKILL of
+/// the CLI (supervisor hard-timeout, OOM kill, `kill -9`) vanishes the whole
+/// runtime without a line of teardown. Nodes are spawned as process-group
+/// leaders by design (Ctrl-C isolation + per-node group kills in the stop
+/// ladder), so no inherited signal reaches them; a node that is not polling
+/// its event stream never observes the TCP EOF either, and is orphaned
+/// forever (dora-rs/dora#2856). The pid watch is the containment that covers
+/// every node state, because it does not depend on the node making progress.
+///
+/// Deliberately absent from the coordinator-attached daemon's spawn path:
+/// there, nodes surviving a daemon restart is load-bearing (#2029), which is
+/// why this is scoped to `dora run` instead of being a general parent-death
+/// signal.
+pub const DORA_LOCAL_RUN_PID_ENV: &str = "DORA_LOCAL_RUN_PID";
+
 /// Loopback zenoh endpoint a spawned node should listen on, injected by the
 /// daemon so this node's consumers can dial it directly (they receive it via
 /// their [`DORA_ZENOH_CONNECT_ENV`]).

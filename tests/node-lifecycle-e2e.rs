@@ -2305,6 +2305,181 @@ fn run_killed_by_sigterm_terminates_nodes_and_exits() {
     );
 }
 
+/// SIGKILL of `dora run` must not strand node processes (dora-rs/dora#2856).
+///
+/// SIGKILL is the case the stop ladder structurally cannot cover: the CLI
+/// (which hosts the daemon in-process) vanishes without running a single
+/// line of teardown, and nodes are process-group leaders by design, so
+/// neither inherited signal delivery nor a group-kill of the CLI reaches
+/// them. Containment must come from the node side: the daemon marks
+/// `dora run`-spawned nodes with the run process's pid, and the node API
+/// watches that pid and exits when it dies.
+///
+/// The fixture both ignores SIGTERM and never polls its event stream, so
+/// this test proves the watchdog's *hard-exit* rung: the TCP-EOF path
+/// cannot save it (never polls), and the watchdog's cooperative SIGTERM
+/// is ignored — only the final `process::exit` can end it.
+#[cfg(unix)]
+#[test]
+fn run_killed_by_sigkill_does_not_orphan_nodes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    ensure_cli_built();
+    let dora = dora_bin();
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let status = Command::new("cargo")
+        .args(["build", "-p", "sigterm-ignoring-node"])
+        .arg("--target-dir")
+        .arg(&target)
+        .status()
+        .expect("failed to run cargo build for sigterm-ignoring-node");
+    assert!(status.success(), "failed to build sigterm-ignoring-node");
+
+    // Sweep artifacts from earlier runs, as the sibling tests do.
+    if let Ok(entries) = fs::read_dir(&target) {
+        for entry in entries.flatten() {
+            if entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with("dora-2856-orphan-")
+            {
+                let _ = fs::remove_file(entry.path());
+            }
+        }
+    }
+    let pid_file = target.join(format!("dora-2856-orphan-{}.pid", std::process::id()));
+    let yaml = target.join(format!("dora-2856-orphan-{}.yml", std::process::id()));
+    fs::write(
+        &yaml,
+        format!(
+            "nodes:\n  \
+             - id: stubborn\n    \
+               path: \"{node}\"\n    \
+               env:\n      \
+                 DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+               inputs:\n      \
+                 tick: dora/timer/millis/100\n",
+            node = target.join("debug/sigterm-ignoring-node").display(),
+            pid_file = pid_file.display(),
+        ),
+    )
+    .expect("failed to write dataflow yaml");
+
+    let log = target.join(format!("dora-2856-orphan-{}.log", std::process::id()));
+    let log_file = fs::File::create(&log).expect("failed to create log file");
+    let mut run = Command::new(&dora)
+        .args(["run", yaml.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log_file))
+        .spawn()
+        .expect("failed to spawn dora run");
+
+    // RAII teardown, mirroring the SIGTERM sibling: every panic path must
+    // reap both the CLI and the node, because the node outliving the test
+    // is exactly the defect under test.
+    struct Teardown {
+        cli_pid: u32,
+        cli_reaped: bool,
+        node_pid: Option<u32>,
+        files: Vec<std::path::PathBuf>,
+    }
+    impl Drop for Teardown {
+        fn drop(&mut self) {
+            if !self.cli_reaped {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &self.cli_pid.to_string()])
+                    .status();
+            }
+            if let Some(pid) = self.node_pid
+                && still_our_fixture(pid)
+            {
+                let _ = Command::new("kill")
+                    .args(["-KILL", &format!("-{pid}")])
+                    .status();
+            }
+            for f in &self.files {
+                let _ = fs::remove_file(f);
+            }
+        }
+    }
+    let mut teardown = Teardown {
+        cli_pid: run.id(),
+        cli_reaped: false,
+        node_pid: None,
+        files: vec![yaml.clone(), pid_file.clone(), log.clone()],
+    };
+
+    let tail = |path: &std::path::Path| -> String {
+        fs::read_to_string(path)
+            .map(|s| s.lines().rev().take(20).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()))
+    };
+
+    // Wait for the node to be up before killing, or the test proves nothing.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let node_pid = loop {
+        if let Some(status) = run.try_wait().expect("try_wait failed") {
+            teardown.cli_reaped = true;
+            panic!(
+                "`dora run` exited early with {status} before the node reported \
+                 its pid.\nstderr tail:\n{}",
+                tail(&log)
+            );
+        }
+        if let Ok(contents) = fs::read_to_string(&pid_file)
+            && let Ok(pid) = contents.trim().parse::<u32>()
+        {
+            break pid;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node never reported its pid to {}\nstderr tail:\n{}",
+            pid_file.display(),
+            tail(&log)
+        );
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    teardown.node_pid = Some(node_pid);
+    assert!(
+        node_is_fixture(node_pid),
+        "precondition: node {node_pid} should be running our fixture before we kill"
+    );
+
+    // SIGKILL: no handler runs, no teardown, no stop ladder. The CLI is
+    // simply gone, exactly like a supervisor hard-timeout or an OOM kill.
+    let signalled = Command::new("kill")
+        .args(["-KILL", &run.id().to_string()])
+        .status()
+        .expect("failed to run `kill`");
+    assert!(signalled.success(), "failed to SIGKILL `dora run`");
+    let status = run.wait().expect("failed to reap SIGKILLed dora run");
+    teardown.cli_reaped = true;
+    assert!(
+        !status.success(),
+        "SIGKILLed CLI cannot have exited cleanly"
+    );
+
+    // The node-side watchdog polls the run pid at 1 Hz, sends itself a
+    // cooperative SIGTERM (which this fixture ignores), waits its 5s
+    // grace, then hard-exits: ~7s end to end. 30s bounds it with headroom
+    // for a loaded runner while still failing fast when containment is
+    // absent entirely.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    loop {
+        if !node_is_fixture(node_pid) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node {node_pid} is still alive 30s after `dora run` was SIGKILLed: \
+             nodes spawned by `dora run` must not outlive it (#2856)\n\
+             stderr tail:\n{}",
+            tail(&log)
+        );
+        std::thread::sleep(Duration::from_millis(500));
+    }
+}
+
 /// Whether `pid` is alive AND is our fixture, so a recycled pid is not
 /// mistaken for a surviving node.
 #[cfg(unix)]
