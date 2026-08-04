@@ -83,6 +83,8 @@ fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, n
         daemon_ids: Vec::new(),
         node_to_daemon: BTreeMap::new(),
         uv: false,
+        ready_barrier_released: false,
+        barrier_exited_before_subscribe: Vec::new(),
         generation: 1,
         created_at: 0,
         updated_at: 0,

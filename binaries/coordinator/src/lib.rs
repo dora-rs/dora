@@ -3256,7 +3256,10 @@ fn reestablish_running_dataflow(
         "re-established running dataflow {} in live coordinator state after daemon {daemon_id} reconnect",
         record.uuid
     );
-    false
+    // The rebuilt entry carries the persisted release, so this path owes the
+    // replay exactly as the relink path does. Returning a flat `false` here is
+    // what left orphan-reclaim and coordinator-restart reconnects hanging.
+    record.ready_barrier_released
 }
 
 /// Tell a single daemon to stop a dataflow the coordinator has terminally given
@@ -4605,6 +4608,20 @@ async fn broadcast_all_nodes_ready(
     tracing::debug!("sending all nodes ready message to daemons");
     let message = release_barrier_message(uuid, dataflow, clock)?;
 
+    // Persist the release. The in-memory entry is destroyed by orphan reclaim
+    // and by coordinator restart; without a durable record of it, a daemon that
+    // missed this broadcast and reconnects afterwards is never replayed it and
+    // hangs for the life of the dataflow (#2998). Only on a *successful*
+    // barrier: a failed one is persisted by the failure path with its verdict,
+    // and must not be promoted to `Running` here.
+    if dataflow.exited_before_subscribe.is_empty()
+        && let Err(e) = dataflow
+            .make_record(StoreDataflowStatus::Running)
+            .and_then(|r| store.put_dataflow(&r))
+    {
+        tracing::warn!(dataflow = %uuid, "failed to persist ready-barrier release: {e}");
+    }
+
     // notify all machines that run parts of the dataflow
     for daemon_id in &dataflow.daemons {
         let Some(connection) = daemon_connections.get_mut(daemon_id) else {
@@ -5008,6 +5025,8 @@ mod tests {
             daemon_ids: vec![daemon_id.clone()],
             node_to_daemon: BTreeMap::new(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
             generation: 3,
             created_at: 7,
             updated_at: 7,
@@ -5075,6 +5094,8 @@ mod tests {
             daemon_ids: vec![daemon_id.clone()],
             node_to_daemon: BTreeMap::new(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
             generation: 3,
             created_at: 7,
             updated_at: 7,
@@ -5111,6 +5132,176 @@ mod tests {
             "a daemon reconnecting after the barrier released must be replayed \
              it, or its nodes hang in `init_from_env()` forever (#2998)"
         );
+    }
+
+    #[test]
+    fn the_release_survives_a_persist_and_rebuild_round_trip() {
+        // The whole fix rests on this: the release is written by `make_record`
+        // and read back by `recovered`. If either half drops it, a daemon that
+        // reconnects after orphan reclaim or a coordinator restart is never
+        // replayed the barrier — and it cannot ask for one, because
+        // `reported_init_to_coordinator` is never reset (#2998).
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        // The helper's descriptor has no `path`, so it would not survive
+        // `resolve_aliases_and_set_defaults` on the rebuild side.
+        df.descriptor = serde_json::from_value(serde_json::json!({
+            "nodes": [{ "id": "sender", "path": "sleep", "outputs": ["message"] }]
+        }))
+        .expect("valid test descriptor");
+        df.ready_barrier_released = true;
+        df.exited_before_subscribe = vec![node_id.clone()];
+
+        let record = df
+            .make_record(StoreDataflowStatus::Running)
+            .expect("snapshotting the dataflow");
+        assert!(
+            record.ready_barrier_released,
+            "the persisted snapshot must carry the release"
+        );
+        assert_eq!(
+            record.barrier_exited_before_subscribe,
+            vec![node_id.to_string()],
+            "the persisted snapshot must carry the verdict too, or a replay \
+             after restart would report a bare success"
+        );
+
+        // Rebuild from that record, as a reconnect after reclaim/restart does.
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        let owed = reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+        assert!(owed, "the rebuilt dataflow still owes the replay");
+
+        let rebuilt = running_dataflows.get(&dataflow_id).expect("rebuilt");
+        assert!(
+            rebuilt.ready_barrier_released,
+            "the rebuilt entry must remember the release, or the next persist \
+             writes `false` and the following reconnect hangs again"
+        );
+        assert_eq!(
+            rebuilt.exited_before_subscribe,
+            vec![node_id],
+            "and must remember the verdict"
+        );
+    }
+
+    #[test]
+    fn a_reconstructed_dataflow_still_owes_the_replay() {
+        // The live entry does not survive orphan reclaim or a coordinator
+        // restart, so the reconnecting daemon arrives to a dataflow rebuilt
+        // from the store. If the release were dropped in that rebuild, the
+        // daemon would never be replayed the barrier and would hang exactly as
+        // it did before the fix — and it cannot prompt a fresh broadcast,
+        // because `reported_init_to_coordinator` is never reset (#2998).
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+
+        let mut record = dora_coordinator_store::DataflowRecord {
+            uuid: dataflow_id,
+            name: Some("df".to_string()),
+            descriptor_json: serde_json::json!({
+                "nodes": [{ "id": "sender", "path": "sleep", "outputs": ["message"] }]
+            })
+            .to_string(),
+            status: StoreDataflowStatus::Recovering,
+            daemon_ids: vec![daemon_id.clone()],
+            node_to_daemon: BTreeMap::new(),
+            uv: false,
+            ready_barrier_released: true,
+            barrier_exited_before_subscribe: Vec::new(),
+            generation: 3,
+            created_at: 7,
+            updated_at: 7,
+        };
+
+        // Empty map: no live entry, so this takes the reconstruct path.
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        let owed = reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+        assert!(
+            owed,
+            "a dataflow rebuilt from a record whose barrier had released still \
+             owes the reconnecting daemon a replay (#2998)"
+        );
+
+        // ...and a record whose barrier had not released owes nothing.
+        record.ready_barrier_released = false;
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        let owed = reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+        assert!(
+            !owed,
+            "replaying a barrier that never fired would release it early"
+        );
+    }
+
+    #[test]
+    fn a_reconstructed_dataflow_keeps_the_failed_barrier_verdict() {
+        // Restoring the release but blanking its verdict would replay a bare
+        // success and start a dataflow the coordinator had already given up on.
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let clock = Arc::new(HLC::default());
+
+        let record = dora_coordinator_store::DataflowRecord {
+            uuid: dataflow_id,
+            name: Some("df".to_string()),
+            descriptor_json: serde_json::json!({
+                "nodes": [{ "id": "sender", "path": "sleep", "outputs": ["message"] }]
+            })
+            .to_string(),
+            status: StoreDataflowStatus::Recovering,
+            daemon_ids: vec![daemon_id.clone()],
+            node_to_daemon: BTreeMap::new(),
+            uv: false,
+            ready_barrier_released: true,
+            barrier_exited_before_subscribe: vec![node_id.to_string()],
+            generation: 3,
+            created_at: 7,
+            updated_at: 7,
+        };
+
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        let _ = reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+
+        let df = running_dataflows.get(&dataflow_id).expect("rebuilt");
+        let message = all_nodes_ready_message(dataflow_id, df, &clock).expect("serializing");
+        let decoded: Timestamped<DaemonCoordinatorEvent> =
+            serde_json::from_slice(&message).expect("decoding");
+        match decoded.inner {
+            DaemonCoordinatorEvent::AllNodesReady {
+                exited_before_subscribe,
+                ..
+            } => assert_eq!(
+                exited_before_subscribe,
+                vec![node_id],
+                "a replay after reconstruction must repeat the failure verdict, \
+                 not a blank success"
+            ),
+            other => panic!("expected AllNodesReady, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -5476,6 +5667,8 @@ mod tests {
             daemon_ids: Vec::new(),
             node_to_daemon: BTreeMap::new(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
             generation: 1,
             created_at: 0,
             updated_at: 0,

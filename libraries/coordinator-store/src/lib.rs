@@ -77,6 +77,24 @@ pub struct DataflowRecord {
     /// Whether the dataflow was started with Python UV support.
     #[serde(default)]
     pub uv: bool,
+    /// Whether the start barrier (`AllNodesReady`) has already been broadcast.
+    ///
+    /// Persisted because the in-memory `RunningDataflow` is destroyed whenever
+    /// every daemon running the dataflow disconnects (orphan reclaim) or the
+    /// coordinator restarts. A daemon that missed the broadcast and reconnects
+    /// after that point would otherwise never be replayed it -- and it cannot
+    /// prompt a fresh one, because daemon-side `reported_init_to_coordinator`
+    /// is never reset (dora-rs/dora#2998).
+    #[serde(default)]
+    pub ready_barrier_released: bool,
+    /// The verdict the barrier carried: nodes that exited before subscribing.
+    ///
+    /// Persisted alongside the flag so a replay after reconstruction repeats
+    /// the *outcome*, not a blank success. Replaying an empty list for a
+    /// barrier that actually failed would start a dataflow the coordinator had
+    /// already given up on.
+    #[serde(default)]
+    pub barrier_exited_before_subscribe: Vec<String>,
     /// Monotonically increasing version; bumped on every persist.
     pub generation: u64,
     /// Unix epoch milliseconds.
