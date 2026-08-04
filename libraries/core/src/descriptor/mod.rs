@@ -32,55 +32,24 @@ pub use expand::{
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
-    /// Number of subscriber input-links for the output `source_node/source_output`
-    /// across the whole (resolved) dataflow — i.e. how many `(node, input)` pairs
-    /// map to it, counting each operator input of a runtime node separately.
-    ///
-    /// This is the count of zenoh data-plane subscribers a producer must see wired
-    /// up before it is safe to switch that output from the reliable daemon path to
-    /// the direct zenoh path without dropping startup messages (see
-    /// [`crate::topics::zenoh_input_ready_liveliness_topic`]). It is a global
-    /// topology count, so it correctly includes subscribers on other daemons.
-    ///
-    /// Provided in terms of [`resolve_aliases_and_set_defaults`](Self::resolve_aliases_and_set_defaults).
-    fn output_subscriber_count(
-        &self,
-        source_node: &NodeId,
-        source_output: &DataId,
-    ) -> eyre::Result<usize> {
-        let resolved = self.resolve_aliases_and_set_defaults()?;
-        let mut count = 0;
-        for node in resolved.values() {
-            // Dynamic nodes connect at arbitrary times (or never), so the startup
-            // barrier must not wait for them: they receive over zenoh via normal
-            // publisher/subscriber matching once they connect, and excluding them
-            // cannot lose a message to an already-connected static subscriber.
-            if node_is_dynamic(node) {
-                continue;
-            }
-            let inputs: Vec<&Input> = match &node.kind {
-                CoreNodeKind::Custom(n) => n.run_config.inputs.values().collect(),
-                CoreNodeKind::Runtime(n) => n
-                    .operators
-                    .iter()
-                    .flat_map(|op| op.config.inputs.values())
-                    .collect(),
-            };
-            for input in inputs {
-                if let InputMapping::User(m) = &input.mapping
-                    && &m.source == source_node
-                    && &m.output == source_output
-                {
-                    count += 1;
-                }
-            }
-        }
-        Ok(count)
-    }
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
     ) -> eyre::Result<String>;
+    /// Apply a command-line override to the dataflow's completion policy.
+    ///
+    /// `None` leaves the descriptor's own `exit_when_nodes_finish`
+    /// alone, so a setting written in the YAML stands; `Some(v)`
+    /// overrides it in either direction, so `--exit-when-nodes-finish`
+    /// can force the policy on and `=false` can force it off for a
+    /// descriptor that asks for it (dora-rs/dora#2920).
+    ///
+    /// Shared rather than spelled out at each call site: `dora run`,
+    /// `dora start` and the daemon all have to agree, and three copies
+    /// of the same three lines is how one of them ends up not being
+    /// updated.
+    fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>);
+
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
@@ -118,13 +87,6 @@ fn prefix_output_with_operator_id(op_name: &OperatorId, output: &DataId) -> eyre
                 "operator id `{op_name}` produces an invalid output id `{op_name}/{output}`: {e}"
             )
         })
-}
-
-/// Whether a resolved node is a dynamic node (spawned/connected at runtime rather
-/// than at dataflow launch). Mirrors the daemon's classification.
-fn node_is_dynamic(node: &ResolvedNode) -> bool {
-    matches!(&node.kind, CoreNodeKind::Custom(n)
-        if matches!(n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE)
 }
 
 impl DescriptorExt for Descriptor {
@@ -298,6 +260,12 @@ impl DescriptorExt for Descriptor {
         Ok(flowchart)
     }
 
+    fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>) {
+        if let Some(over) = over {
+            self.exit_when_nodes_finish = Some(over);
+        }
+    }
+
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor> {
         let buf = std::fs::read(path).context("failed to open given file")?;
         Descriptor::parse(buf)
@@ -448,9 +416,10 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         path.to_owned()
     };
 
-    // Search path within current working directory
-    if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
-        Ok(abs_path)
+    // Search path within current working directory.
+    let joined = working_dir.join(&path);
+    if joined.exists() {
+        absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
     } else if which::which("uv").is_ok() {
@@ -526,13 +495,37 @@ fn confine(candidate: &Path, root: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Make an existing executable path absolute WITHOUT following symlinks.
+///
+/// Deliberately not `canonicalize()`: that resolves symlinks, and a
+/// virtualenv's `bin/python` is a symlink whose *location* is what
+/// CPython uses to discover `pyvenv.cfg`. Resolving it before exec runs
+/// the base interpreter with no venv, so imports that work in a shell
+/// fail under dora (dora-rs/dora#2918). `path::absolute` only prepends
+/// the cwd and drops `.` components; symlinks and `..` are left for the
+/// kernel to resolve at exec time, which matches shell behavior.
+///
+/// Errors if the path does not exist (`exists()` traverses symlinks, so
+/// a dangling link counts as missing — same outcome canonicalize gave).
+/// Shared by every [`resolve_path`] branch so the no-symlink-resolution
+/// contract cannot regress in one branch while the tests exercise
+/// another.
+fn absolutize_preserving_symlinks(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("path {} does not exist", path.display());
+    }
+    std::path::absolute(path)
+        .with_context(|| format!("failed to make path {} absolute", path.display()))
+}
+
 /// Resolve `path` against the `uv`-managed environment by running
 /// `uv run which <path>`, returning an absolute path.
 ///
 /// Unlike a fire-and-forget spawn, this waits for the child, checks its
-/// exit status (so a missing binary surfaces as an error), and canonicalizes
-/// the captured location so the result matches the absolute-path contract of
-/// the other [`resolve_path`] branches.
+/// exit status (so a missing binary surfaces as an error), and verifies
+/// the captured location exists — without resolving symlinks, which
+/// would reintroduce the venv bypass fixed for the working-dir branch
+/// (dora-rs/dora#2918).
 fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
     let which = if cfg!(windows) { "where" } else { "which" };
     let output = Command::new("uv")
@@ -552,9 +545,8 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| eyre::eyre!("`uv run {which} {}` produced no output", path.display()))?;
-    PathBuf::from(resolved)
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize uv-resolved path {resolved}"))
+    absolutize_preserving_symlinks(Path::new(resolved))
+        .with_context(|| format!("uv-resolved path {resolved} is not usable"))
 }
 
 pub trait NodeExt {
@@ -634,6 +626,51 @@ enum NodeKindMut<'a> {
 
 #[cfg(test)]
 mod tests {
+    /// dora-rs/dora#2920: the command-line flag beats the descriptor in
+    /// BOTH directions, and its absence beats neither.
+    ///
+    /// The third state matters: if "flag omitted" meant `false`, a YAML
+    /// `exit_when_nodes_finish: true` would be overridden on every
+    /// invocation, and since `dora run` and `dora start` are the only
+    /// ways to start a dataflow, the descriptor field could never take
+    /// effect at all.
+    #[test]
+    fn exit_when_nodes_finish_override_semantics() {
+        use super::DescriptorExt;
+
+        let parse = |yaml: &str| -> Descriptor { serde_yaml::from_str(yaml).expect("parse") };
+        let with_setting = "exit_when_nodes_finish: true\nnodes:\n  - id: a\n    path: ./a\n";
+        let without = "nodes:\n  - id: a\n    path: ./a\n";
+
+        // Omitted: the descriptor decides, either way.
+        let mut d = parse(with_setting);
+        d.apply_exit_when_nodes_finish(None);
+        assert_eq!(
+            d.exit_when_nodes_finish,
+            Some(true),
+            "omitting the flag must not silently disable a policy the \
+             dataflow file asked for"
+        );
+
+        let mut d = parse(without);
+        d.apply_exit_when_nodes_finish(None);
+        assert_eq!(d.exit_when_nodes_finish, None, "and must not invent one");
+
+        // Given: it wins, including against an opposite descriptor value.
+        let mut d = parse(with_setting);
+        d.apply_exit_when_nodes_finish(Some(false));
+        assert_eq!(
+            d.exit_when_nodes_finish,
+            Some(false),
+            "`--exit-when-nodes-finish=false` must be able to turn OFF a \
+             policy the dataflow file turned on"
+        );
+
+        let mut d = parse(without);
+        d.apply_exit_when_nodes_finish(Some(true));
+        assert_eq!(d.exit_when_nodes_finish, Some(true));
+    }
+
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
@@ -670,81 +707,6 @@ mod tests {
         assert_eq!(merged.get("A"), Some(&EnvValue::String("node".into())));
         assert_eq!(merged.get("B"), Some(&EnvValue::String("global".into())));
         assert_eq!(merged.get("C"), Some(&EnvValue::String("node".into())));
-    }
-
-    #[test]
-    fn output_subscriber_count_counts_fanout_and_ignores_non_subscribers() {
-        // `source/value` fans out to `transform` and `recorder` (2); the
-        // `transform/doubled` output feeds only `sink` (1). Timer inputs and
-        // subscriptions to other outputs must not be counted. This count is what
-        // a producer waits for before switching an output to the direct zenoh
-        // data plane, so an undercount here would drop startup messages.
-        let yaml = r#"
-nodes:
-  - id: source
-    path: source
-    inputs:
-      tick: dora/timer/millis/50
-    outputs:
-      - value
-  - id: transform
-    path: transform
-    inputs:
-      value: source/value
-    outputs:
-      - doubled
-  - id: recorder
-    path: recorder
-    inputs:
-      rec_in: source/value
-  - id: sink
-    path: sink
-    inputs:
-      doubled: transform/doubled
-"#;
-        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
-        let source = NodeId::from("source".to_string());
-        let transform = NodeId::from("transform".to_string());
-        let sink = NodeId::from("sink".to_string());
-        let value = DataId::from("value".to_string());
-        let doubled = DataId::from("doubled".to_string());
-        let missing = DataId::from("nonexistent".to_string());
-
-        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 2);
-        assert_eq!(
-            desc.output_subscriber_count(&transform, &doubled).unwrap(),
-            1
-        );
-        // Output nobody subscribes to.
-        assert_eq!(desc.output_subscriber_count(&source, &missing).unwrap(), 0);
-        // `sink` produces nothing.
-        assert_eq!(desc.output_subscriber_count(&sink, &value).unwrap(), 0);
-    }
-
-    #[test]
-    fn output_subscriber_count_excludes_dynamic_subscribers() {
-        // A dynamic subscriber connects at runtime, so it must not be counted in
-        // the startup barrier — otherwise the producer would stall on the daemon
-        // path waiting for a node that may connect late or never.
-        let yaml = r#"
-nodes:
-  - id: source
-    path: source
-    outputs:
-      - value
-  - id: static_sub
-    path: static_sub
-    inputs:
-      v: source/value
-  - id: dyn_sub
-    path: dynamic
-    inputs:
-      v: source/value
-"#;
-        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
-        let source = NodeId::from("source".to_string());
-        let value = DataId::from("value".to_string());
-        assert_eq!(desc.output_subscriber_count(&source, &value).unwrap(), 1);
     }
 
     #[test]
@@ -829,6 +791,77 @@ nodes:
         assert!(
             result.is_err(),
             "expected Err for a binary that exists nowhere, got {result:?}"
+        );
+    }
+
+    /// dora-rs/dora#2918: resolving a node path must NOT follow symlinks.
+    ///
+    /// A virtualenv's `bin/python` is a symlink to the base interpreter,
+    /// and CPython's venv discovery hinges on that: it looks for
+    /// `pyvenv.cfg` relative to the path it was *invoked* as, not the
+    /// symlink's target. Canonicalizing before exec therefore runs the
+    /// base interpreter with no venv — imports that work in a shell
+    /// (`.venv/bin/python -c "import numpy"`) fail under dora with
+    /// `ModuleNotFoundError`.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_preserves_symlinks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("base-interpreter.bin");
+        std::fs::write(&target, b"x").unwrap();
+        let link = tmp.path().join("venv-python.bin");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // relative source resolved against the working dir
+        let resolved = resolve_path("venv-python.bin", tmp.path()).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "resolve_path followed the symlink: {} — venv discovery \
+             (pyvenv.cfg) is keyed off the symlink location, so execing \
+             the target bypasses the venv",
+            resolved.display()
+        );
+
+        // absolute source (the shape from the issue: `path: /…/.venv/bin/python`)
+        let resolved = resolve_path(link.to_str().unwrap(), Path::new("/")).unwrap();
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "absolute symlink path was canonicalized: {}",
+            resolved.display()
+        );
+
+        // `..` components survive too: they are resolved by the kernel at
+        // exec time, AFTER any symlinked directories — which is the
+        // shell-matching semantic. A lexical "cleanup" that collapses
+        // them would resolve differently through symlinked dirs.
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let resolved = resolve_path("sub/../venv-python.bin", tmp.path()).unwrap();
+        assert!(
+            resolved.ends_with("sub/../venv-python.bin"),
+            "`..` was normalized away: {}",
+            resolved.display()
+        );
+    }
+
+    /// A dangling symlink is "missing": `exists()` traverses the link, so
+    /// resolution falls through to the uv/$PATH branches and ultimately
+    /// errors — the same outcome the old `canonicalize()` failure gave.
+    /// Pins the branch boundary so a switch to `symlink_metadata()`
+    /// (which would treat the dangling link as present and exec a
+    /// guaranteed-ENOENT path) doesn't slip in silently.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_treats_dangling_symlink_as_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let link = tmp.path().join("dangling-2918-regression.bin");
+        std::os::unix::fs::symlink(tmp.path().join("no-such-target"), &link).unwrap();
+
+        let result = resolve_path("dangling-2918-regression.bin", tmp.path());
+        assert!(
+            result.is_err(),
+            "a dangling symlink must not resolve (nothing on uv/$PATH matches \
+             this name either), got {result:?}"
         );
     }
 

@@ -1,0 +1,27 @@
+[package]
+name = "stop-delay-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node with a configurable shutdown: it honors the
+# cooperative `Event::Stop`, then sleeps `DORA_TEST_STOP_DELAY_MS`
+# before exiting with `DORA_TEST_STOP_EXIT_CODE`. Both knobs exist to
+# place a removed incarnation's exit deterministically on either side
+# of a same-id `dora node add` (dora-rs/dora#2916), which decides
+# whether the daemon's stale-exit guard sees a re-added node or an
+# absent one. Lives here alongside the other test-only node crates
+# (`fire-and-forget-source-node` is likewise shared with
+# tests/node-lifecycle-e2e.rs).
+
+[[bin]]
+name = "stop-delay-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

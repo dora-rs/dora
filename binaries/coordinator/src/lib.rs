@@ -1583,26 +1583,14 @@ async fn start_inner(
                                         // node).
                                         let original_node = node.clone();
 
-                                        // Resolve the Node into a ResolvedNode via a
-                                        // temporary single-node descriptor.
-                                        let tmp_desc = dora_message::descriptor::Descriptor {
-                                            nodes: vec![node],
-                                            communication: Default::default(),
-                                            deploy: None,
-                                            debug: Default::default(),
-                                            health_check_interval: None,
-                                            strict_types: None,
-                                            type_rules: Vec::new(),
-                                            env: None,
-                                        };
-                                        match tmp_desc.resolve_aliases_and_set_defaults() {
-                                            Ok(mut resolved_map) => {
-                                                let (node_id, resolved_node) =
-                                                    resolved_map.pop_first().ok_or_else(|| {
-                                                        eyre!(
-                                                            "node descriptor resolved to empty map"
-                                                        )
-                                                    })?;
+                                        // See `resolve_single_node` for the
+                                        // env carry-through rationale
+                                        // (dora-rs/dora#2919).
+                                        match resolve_single_node(
+                                            node,
+                                            dataflow.descriptor.env.clone(),
+                                        ) {
+                                            Ok((node_id, resolved_node)) => {
                                                 // Pick the first daemon (single-daemon case)
                                                 // TODO: use machine label or load balancing for multi-daemon
                                                 let daemon_id =
@@ -1709,7 +1697,9 @@ async fn start_inner(
                                                     )),
                                                 }
                                             }
-                                            Err(e) => Err(eyre!("failed to resolve node: {e}")),
+                                            // `resolve_single_node` already
+                                            // prefixes the resolve context.
+                                            Err(e) => Err(e),
                                         }
                                     }
                                 }
@@ -1788,6 +1778,83 @@ async fn start_inner(
                                 }
                                 None => Err(eyre!("no running dataflow with ID {dataflow_id}")),
                             };
+                            let _ = reply_sender.send(result);
+                        }
+                        ControlRequest::ReplaceNode {
+                            dataflow_id,
+                            node,
+                            grace_duration,
+                        } => {
+                            let result = async {
+                                // Route to the daemon that OWNS the id — a
+                                // replace targets an existing node, unlike
+                                // AddNode's first-daemon placement.
+                                let (daemon_id, uv, dataflow_env) = {
+                                    let dataflow =
+                                        running_dataflows.get(&dataflow_id).ok_or_else(|| {
+                                            eyre!("no running dataflow with ID {dataflow_id}")
+                                        })?;
+                                    let daemon_id = dataflow
+                                        .node_to_daemon
+                                        .get(&node.id)
+                                        .cloned()
+                                        .ok_or_else(|| {
+                                            eyre!(
+                                                "node '{}' not found in dataflow {dataflow_id}; \
+                                                 use `dora node add` to add a new node",
+                                                node.id
+                                            )
+                                        })?;
+                                    (daemon_id, dataflow.uv, dataflow.descriptor.env.clone())
+                                };
+                                let original_node = node.clone();
+                                let (node_id, resolved_node) =
+                                    resolve_single_node(node, dataflow_env)?;
+                                let msg = serde_json::to_vec(&Timestamped {
+                                    inner: DaemonCoordinatorEvent::ReplaceNode {
+                                        dataflow_id,
+                                        node: resolved_node.clone(),
+                                        uv,
+                                        grace_duration,
+                                    },
+                                    timestamp: clock.new_timestamp(),
+                                })?;
+                                let conn = daemon_connections
+                                    .get_mut(&daemon_id)
+                                    .ok_or_else(|| eyre!("no connection for daemon {daemon_id}"))?;
+                                let reply_raw = conn
+                                    .send_and_receive(&msg)
+                                    .await
+                                    .map_err(|e| eyre!("daemon dispatch failed: {e}"))?;
+                                // Commit coordinator state only after the
+                                // daemon confirms with the specific reply
+                                // variant (#1682 contract).
+                                ensure_replace_node_applied(&reply_raw, &node_id)?;
+                                if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
+                                    if let Some(existing) = dataflow
+                                        .descriptor
+                                        .nodes
+                                        .iter_mut()
+                                        .find(|n| n.id == node_id)
+                                    {
+                                        *existing = original_node;
+                                    } else {
+                                        dataflow.descriptor.nodes.push(original_node);
+                                    }
+                                    dataflow.nodes.insert(node_id.clone(), resolved_node);
+                                    // Clear stale lifecycle markers so the new
+                                    // incarnation's metrics are not suppressed
+                                    // (same set AddNode clears).
+                                    dataflow.node_stopped_at.remove(&node_id);
+                                    dataflow.node_finalized.remove(&node_id);
+                                    dataflow.node_metrics.remove(&node_id);
+                                }
+                                Ok(ControlRequestReply::NodeReplaced {
+                                    dataflow_id,
+                                    node_id,
+                                })
+                            }
+                            .await;
                             let _ = reply_sender.send(result);
                         }
                         ControlRequest::AddMapping {
@@ -4165,6 +4232,55 @@ fn ensure_add_node_applied(
     }
 }
 
+/// Resolve a single dynamically-supplied node definition via a temporary
+/// one-node descriptor, carrying the running dataflow's own `env:` so the
+/// node inherits it exactly as statically declared peers do
+/// (dora-rs/dora#2919). Shared by the AddNode and ReplaceNode arms so the
+/// two commands can never resolve differently.
+fn resolve_single_node(
+    node: dora_message::descriptor::Node,
+    dataflow_env: Option<std::collections::BTreeMap<String, dora_message::descriptor::EnvValue>>,
+) -> eyre::Result<(
+    dora_core::config::NodeId,
+    dora_message::descriptor::ResolvedNode,
+)> {
+    let tmp_desc = dora_message::descriptor::Descriptor {
+        nodes: vec![node],
+        communication: Default::default(),
+        deploy: None,
+        debug: Default::default(),
+        health_check_interval: None,
+        strict_types: None,
+        type_rules: Vec::new(),
+        env: dataflow_env,
+        exit_when_nodes_finish: None,
+    };
+    let mut resolved_map = tmp_desc
+        .resolve_aliases_and_set_defaults()
+        .map_err(|e| eyre!("failed to resolve node: {e}"))?;
+    resolved_map
+        .pop_first()
+        .ok_or_else(|| eyre!("node descriptor resolved to empty map"))
+}
+
+/// Validate that the daemon's reply to `DaemonCoordinatorEvent::ReplaceNode`
+/// is a successful `ReplaceNodeResult` — same specific-reply contract as
+/// `ensure_add_node_applied` (#1682).
+fn ensure_replace_node_applied(
+    reply_raw: &[u8],
+    node_id: &dora_core::config::NodeId,
+) -> eyre::Result<()> {
+    match serde_json::from_slice(reply_raw)? {
+        DaemonCoordinatorReply::ReplaceNodeResult(Ok(())) => Ok(()),
+        DaemonCoordinatorReply::ReplaceNodeResult(Err(err)) => {
+            Err(eyre!("daemon failed to replace node `{node_id}`: {err}"))
+        }
+        other => Err(eyre!(
+            "unexpected daemon reply for ReplaceNode on node `{node_id}`: {other:?}"
+        )),
+    }
+}
+
 fn ensure_set_param_forward_applied(
     reply_raw: &[u8],
     node_id: &dora_core::config::NodeId,
@@ -6097,6 +6213,52 @@ mod tests {
             err.to_string().contains("unexpected daemon reply"),
             "error must call out the wrong-reply-type failure mode: {err}"
         );
+    }
+
+    // Same #1682 specific-reply contract for ReplaceNode (dora-rs/dora#2927):
+    // the coordinator must commit its descriptor swap only on a successful
+    // `ReplaceNodeResult`, never on a rejection or a stale unrelated reply.
+
+    #[test]
+    fn replace_node_reply_accepts_daemon_success() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::ReplaceNodeResult(Ok(()))).unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        ensure_replace_node_applied(&reply, &node_id)
+            .expect("successful ReplaceNode reply should pass");
+    }
+
+    #[test]
+    fn replace_node_reply_reports_daemon_rejection() {
+        let reply = serde_json::to_vec(&DaemonCoordinatorReply::ReplaceNodeResult(Err(
+            "failed to spawn replacement node".to_string(),
+        )))
+        .unwrap();
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+
+        let err = ensure_replace_node_applied(&reply, &node_id)
+            .expect_err("daemon rejection should fail ReplaceNode forwarding");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("failed to replace node") && msg.contains("filter"),
+            "error must name the operation and node: {msg}"
+        );
+    }
+
+    #[test]
+    fn replace_node_reply_rejects_wrong_reply_variant() {
+        let node_id: dora_core::config::NodeId = "filter".to_string().into();
+        for wrong in [
+            serde_json::to_vec(&DaemonCoordinatorReply::AddNodeResult(Ok(()))).unwrap(),
+            serde_json::to_vec(&DaemonCoordinatorReply::RemoveNodeResult(Ok(()))).unwrap(),
+        ] {
+            let err = ensure_replace_node_applied(&wrong, &node_id)
+                .expect_err("unexpected reply variant should fail ReplaceNode forwarding");
+            assert!(
+                err.to_string().contains("unexpected daemon reply"),
+                "error must call out the wrong-reply-type failure mode: {err}"
+            );
+        }
     }
 
     #[test]

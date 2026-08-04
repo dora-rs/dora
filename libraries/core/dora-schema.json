@@ -14,6 +14,13 @@
         "$ref": "#/$defs/EnvValue"
       }
     },
+    "exit_when_nodes_finish": {
+      "description": "Finish the dataflow once every node has, treating\n`dora/timer/...` inputs as a clock rather than as work.\n\nA timer input has no upstream node, so it never closes. By default\na node consuming one is therefore never told its inputs are done\nand the graph cannot end on its own, even after every node doing\nreal work has exited (dora-rs/dora#2920).\n\nOff by default: for a long-lived dataflow the timer is precisely\nwhat keeps it alive. Nodes with no data inputs at all (timer-only\nsources, or no inputs) are unaffected either way -- they have no\ndependency that could finish, so they are treated as sources.\n\nSet by `dora run --exit-when-nodes-finish` and `dora start\n--exit-when-nodes-finish`, and settable directly in YAML. It lives\non the descriptor rather than on the wire so that it survives the\nevents a dataflow outlives: auto-recovery re-spawn, coordinator\nrestart with state reconstruction, and `dora restart`.\n\n## Example\n\n```yaml\nexit_when_nodes_finish: true\nnodes:\n  - id: worker\n    path: ./worker\n    inputs:\n      tick: dora/timer/millis/100\n```",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "health_check_interval": {
       "description": "How often the daemon checks node health (in seconds).\n\nDefaults to 5.0 seconds if not specified. Lower values detect hung nodes\nfaster but add more overhead.",
       "type": [
@@ -326,6 +333,7 @@
       ]
     },
     "Input": {
+      "description": "A single input subscription of a node, as declared under `inputs:` in a\ndataflow descriptor.\n\nIn YAML an input is written either as a bare mapping string\n(`source_node/output`) or as a mapping plus per-input options; both forms\ndeserialize into this struct (see [`InputDef`]).",
       "anyOf": [
         {
           "$ref": "#/$defs/InputMapping"
@@ -369,14 +377,17 @@
       ]
     },
     "InputMapping": {
+      "description": "The source an [`Input`] subscribes to.\n\nThe wire form is a `/`-separated string; [`FromStr`] parses it and\n[`fmt::Display`] renders it back, so the two round-trip:\n\n```\nuse dora_message::config::InputMapping;\n\nlet mapping: InputMapping = \"camera/image\".parse().unwrap();\nassert!(matches!(mapping, InputMapping::User(_)));\nassert_eq!(mapping.to_string(), \"camera/image\");\n\n// Built-in timer source.\nlet timer: InputMapping = \"dora/timer/millis/100\".parse().unwrap();\nassert_eq!(timer.to_string(), \"dora/timer/millis/100\");\n\n// A mapping without a `/` separator is rejected.\nassert!(\"no-slash\".parse::<InputMapping>().is_err());\n```",
       "oneOf": [
         {
+          "description": "A built-in timer that fires at a fixed `interval`.\n\nSyntax: `dora/timer/{unit}/{value}`, e.g. `dora/timer/millis/100`.",
           "type": "object",
           "properties": {
             "Timer": {
               "type": "object",
               "properties": {
                 "interval": {
+                  "description": "How often the timer fires.",
                   "$ref": "#/$defs/Duration"
                 }
               },
@@ -404,6 +415,7 @@
           ]
         },
         {
+          "description": "Subscribe to another node's output — the common case.",
           "type": "object",
           "properties": {
             "User": {
@@ -1513,12 +1525,15 @@
       ]
     },
     "UserInputMapping": {
+      "description": "A subscription to another node's output, written as `source/output` in YAML.",
       "type": "object",
       "properties": {
         "output": {
+          "description": "The id of that node's output to subscribe to.",
           "$ref": "#/$defs/DataId"
         },
         "source": {
+          "description": "The id of the node that produces the output.",
           "$ref": "#/$defs/NodeId"
         }
       },

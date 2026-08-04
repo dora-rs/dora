@@ -31,6 +31,8 @@ pub struct ListArgs {
     #[clap(flatten)]
     coordinator: CoordinatorOptions,
     /// Output format
+    ///
+    /// `json` emits JSON Lines (one object per line).
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
     /// Filter by status (running, finished, failed)

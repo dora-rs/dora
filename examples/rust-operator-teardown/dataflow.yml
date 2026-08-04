@@ -1,0 +1,20 @@
+# Regression fixture for a shared-library operator teardown SIGSEGV: a source
+# operator floods large outputs into a sink, so a burst is in flight when
+# `--stop-after` stops the dataflow. Both nodes load the same operator library.
+nodes:
+  - id: source
+    operators:
+      - id: op
+        build: cargo build -p rust-operator-teardown-example-operator
+        shared-library: ../../target/debug/rust_operator_teardown_example_operator
+        inputs:
+          tick: dora/timer/millis/5
+        outputs:
+          - data
+  - id: sink
+    operators:
+      - id: op
+        build: cargo build -p rust-operator-teardown-example-operator
+        shared-library: ../../target/debug/rust_operator_teardown_example_operator
+        inputs:
+          data: source/op/data

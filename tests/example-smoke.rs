@@ -371,6 +371,23 @@ fn smoke_rust_dataflow_url() {
     );
 }
 
+/// Regression test for a shared-library operator teardown SIGSEGV: the runtime
+/// used to unload the operator's `.so` as soon as its `on_event` loop returned,
+/// while the main loop (another thread) still held in-flight Arrow arrays whose
+/// FFI `release` callbacks live in that `.so`. Freeing them after `dlclose`
+/// jumped into unmapped code (`Signal(11)`). The fixture floods large outputs so
+/// a burst is in flight at `--stop-after`; `run_smoke_test_local` asserts `dora
+/// run` exits zero, which a crashing operator node breaks. Builds the operator
+/// via the dataflow's `build:` field.
+#[test]
+fn local_rust_operator_teardown_no_segfault() {
+    run_smoke_test_local(
+        "rust-operator-teardown",
+        "examples/rust-operator-teardown/dataflow.yml",
+        3,
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Benchmark example (release build)
 // ---------------------------------------------------------------------------
@@ -1386,6 +1403,20 @@ fn contract_action_example_feedback_precedes_success_result() {
     );
     let combined = format!("{stdout}\n{stderr}");
 
+    // The zenoh fast path must actually engage on a healthy local dataflow:
+    // if the startup handshake silently froze an output on the daemon path,
+    // the producer logs this warning at its 10s ack deadline — which fires
+    // inside this test's 20s window because the client and server run for
+    // the whole `--stop-after` span. Guards against an "everything works but
+    // every message secretly rides the daemon path" regression that liveness
+    // and count assertions cannot see.
+    let freeze_marker = "startup handshake incomplete";
+    assert!(
+        !combined.contains(freeze_marker),
+        "a startup handshake froze an output on the daemon path in a healthy \
+         local dataflow.\n---- stdout ----\n{stdout}\n---- stderr ----\n{stderr}"
+    );
+
     // Lines from `dora run` are log-forwarded with a timestamp + stream
     // prefix: e.g. `09:48:50 stdout  action-server:  [server] result <gid>: succeeded`.
     // `GOAL_STATUS_SUCCEEDED` is the lowercase literal `"succeeded"` from
@@ -1956,6 +1987,31 @@ fn smoke_local_memory_pool_write_after_free() {
         "local-memory-pool-write-after-free",
         "examples/memory-pool/write_after_free.yml",
         10,
+    );
+}
+
+// GPU memory-pool tests: require CUDA-capable GPU(s).
+// cuda_inner needs at least 1 GPU; cuda2cuda needs ≥2 distinct GPUs.
+// Both are `#[ignore]`-gated because standard CI runners lack GPUs.
+// Run locally:
+//   cargo test --test example-smoke -- --ignored cuda
+#[test]
+#[ignore = "requires CUDA GPU(s)"]
+fn smoke_memory_pool_cuda_inner() {
+    run_smoke_test(
+        "memory-pool-cuda-inner",
+        "examples/memory-pool/cuda_inner.yml",
+        Duration::from_secs(60),
+    );
+}
+
+#[test]
+#[ignore = "requires CUDA GPU(s) — ≥2 GPUs"]
+fn smoke_memory_pool_cuda2cuda() {
+    run_smoke_test(
+        "memory-pool-cuda2cuda",
+        "examples/memory-pool/cuda2cuda.yml",
+        Duration::from_secs(60),
     );
 }
 

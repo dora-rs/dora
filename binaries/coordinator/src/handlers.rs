@@ -188,6 +188,15 @@ pub(crate) async fn handle_destroy(
         }
     }
 
+    // `stop_dataflow` returns once the daemons have acknowledged the
+    // *request*; the grace → SIGTERM → SIGKILL ladder then runs inside each
+    // daemon, long after this returns. Destroying them here used to race that
+    // ladder and orphan any node that ignored the cooperative `Stop`
+    // (dora-rs/dora#2980). The wait now lives in the daemon's `Destroy`
+    // handler, which reaps its own children before it replies — so this await
+    // is what makes `dora down` return only after the nodes are gone, for
+    // every route that reaches `Destroy` (`dora cluster down`, Ctrl-C, and
+    // any direct control-protocol client).
     destroy_daemons(daemon_connections, clock.new_timestamp()).await?;
     // Brief grace period so daemons have time to flush final messages and
     // close their WS connections before the coordinator shuts down the

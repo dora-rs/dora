@@ -11,24 +11,51 @@ use tokio::io::AsyncWriteExt;
 /// `attachment; filename="model.bin"; size=1000`, and both quoted and unquoted
 /// forms. Per RFC 6266 / RFC 2616 the parameter name is case-insensitive, so
 /// `Filename`, `FILENAME`, etc. are matched too. Returns `None` when no
-/// non-empty `filename=` value is present (the RFC 5987 extended `filename*=`
-/// form is not decoded and falls through — searching for the literal
-/// `filename=` skips it, since `filename*=` does not contain that substring).
+/// non-empty `filename` value is present.
+///
+/// The `filename` parameter is matched on a real parameter boundary — the
+/// name before its `=`, compared case-insensitively to exactly `filename` —
+/// not by a substring search. That distinguishes it from the RFC 5987 extended
+/// `filename*=` form (which this does not decode) and from an unrelated longer
+/// token such as `xfilename=` that merely ends in `filename`.
 fn parse_content_disposition_filename(header: &str) -> Option<String> {
-    // RFC 6266: parameter names are case-insensitive. Lower-casing only maps
-    // ASCII bytes 1:1, so byte offsets stay valid indices into `header`.
-    let lower = header.to_ascii_lowercase();
-    let start = lower.find("filename=")? + "filename=".len();
-    let rest = header[start..].trim_start();
-    let name = if let Some(after_quote) = rest.strip_prefix('"') {
-        // Quoted form: the value runs up to the closing quote, so a trailing
-        // `; param=...` (or a `;` inside the quotes) is handled correctly.
-        after_quote.split('"').next().unwrap_or(after_quote)
-    } else {
-        // Token form: the value ends at the next parameter separator.
-        rest.split(';').next().unwrap_or(rest).trim()
-    };
-    (!name.is_empty()).then(|| name.to_string())
+    split_disposition_params(header).find_map(|param| {
+        let (name, value) = param.split_once('=')?;
+        // RFC 6266: parameter names are case-insensitive. `filename*` (extended
+        // form) and tokens like `xfilename` do not compare equal to `filename`.
+        if !name.trim().eq_ignore_ascii_case("filename") {
+            return None;
+        }
+        let value = value.trim();
+        let name = if let Some(after_quote) = value.strip_prefix('"') {
+            // Quoted form: the value runs up to the closing quote.
+            after_quote.split('"').next().unwrap_or(after_quote)
+        } else {
+            value
+        };
+        (!name.is_empty()).then(|| name.to_string())
+    })
+}
+
+/// Split a `Content-Disposition` header value into its `;`-separated
+/// parameters, treating a `;` inside a double-quoted value as literal so that
+/// `filename="a;b.bin"` stays a single parameter.
+fn split_disposition_params(header: &str) -> impl Iterator<Item = &str> {
+    let mut params = Vec::new();
+    let mut start = 0;
+    let mut in_quotes = false;
+    for (i, c) in header.char_indices() {
+        match c {
+            '"' => in_quotes = !in_quotes,
+            ';' if !in_quotes => {
+                params.push(&header[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    params.push(&header[start..]);
+    params.into_iter()
 }
 
 /// Derive a candidate filename from the *last path segment* of a URL.
@@ -87,6 +114,12 @@ where
     let response = reqwest::get(url)
         .await
         .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
+
+    // Reject 4xx/5xx before reading the body: otherwise the error page is
+    // written out as if it were the requested artifact.
+    let response = response
+        .error_for_status()
+        .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
 
     let filename = get_filename(&response).context("Could not find a filename")?;
     let bytes = response
@@ -160,6 +193,16 @@ mod tests {
         assert_eq!(
             name_from("https://example.com/path/model.bin#section"),
             Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_normalises_traversal() {
+        // The URL parser resolves `..` segments before we ever see them, so a
+        // traversal attempt cannot escape via the fallback path.
+        assert_eq!(
+            name_from("https://example.com/a/../../etc/passwd"),
+            Some("passwd".to_string())
         );
     }
 
@@ -244,6 +287,24 @@ mod tests {
                 "attachment; filename*=UTF-8''extended.bin; filename=\"plain.bin\""
             ),
             Some("plain.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn longer_token_ending_in_filename_is_not_matched() {
+        // Regression: a substring search for `filename=` would false-match the
+        // `xfilename=` parameter and return `evil`. The real `filename`
+        // parameter must be the one that is used.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; xfilename=\"evil\"; filename=\"good.bin\""
+            ),
+            Some("good.bin".to_string())
+        );
+        // With no genuine `filename` parameter, a look-alike token yields None.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; xfilename=\"evil\""),
+            None
         );
     }
 

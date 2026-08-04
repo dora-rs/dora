@@ -113,6 +113,15 @@ pub(crate) struct DaemonConnection {
     pub(crate) connection_id: Uuid,
 }
 
+/// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
+/// daemon replies with a WS-level `error` instead of a result. `deny_unknown_fields`
+/// keeps it from ever matching a real `DaemonCoordinatorReply` payload.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsErrorEnvelope {
+    ws_error: String,
+}
+
 impl DaemonConnection {
     pub(crate) fn new(
         sender: mpsc::Sender<String>,
@@ -179,6 +188,18 @@ impl DaemonConnection {
                     return Err(eyre!("timeout waiting for daemon WS reply"));
                 }
             };
+
+        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
+        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
+        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
+        // make every caller fail with an opaque "failed to deserialize ... reply"
+        // and drop the daemon's real error text (it would survive only in a log
+        // line). Surface it as an `Err` carrying that text instead.
+        if let Ok(WsErrorEnvelope { ws_error }) =
+            serde_json::from_str::<WsErrorEnvelope>(&response_json)
+        {
+            return Err(eyre!("daemon returned error: {ws_error}"));
+        }
 
         Ok(response_json.into_bytes())
     }
@@ -658,6 +679,46 @@ mod send_and_receive_tests {
         assert!(
             pending.lock().await.is_empty(),
             "pending reply leaked after send failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_error_envelope_surfaces_as_err() {
+        // The daemon-side WS error path delivers a `{"ws_error": ...}` string to
+        // the pending reply (see `handle_daemon_response` in `ws_daemon.rs`).
+        // `send_and_receive` must turn that into an `Err` carrying the daemon's
+        // text — not return an envelope its callers cannot deserialize, which
+        // would surface as an opaque "failed to deserialize ... reply".
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        let pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let conn = DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+
+        let pending_bg = pending.clone();
+        tokio::spawn(async move {
+            let outgoing = rx.recv().await.expect("request should be sent");
+            let value: serde_json::Value =
+                serde_json::from_str(&outgoing).expect("outgoing request is JSON");
+            let id: Uuid = value["id"]
+                .as_str()
+                .expect("request carries an id")
+                .parse()
+                .expect("id is a UUID");
+            let sender = pending_bg
+                .lock()
+                .await
+                .remove(&id)
+                .expect("pending reply is registered before the send");
+            let _ = sender.send(r#"{"ws_error":"daemon blew up"}"#.to_string());
+        });
+
+        let err = conn
+            .send_and_receive(b"{}")
+            .await
+            .expect_err("ws_error envelope must be surfaced as an error");
+        assert!(
+            err.to_string().contains("daemon blew up"),
+            "error should carry the daemon's message, got: {err}"
         );
     }
 }

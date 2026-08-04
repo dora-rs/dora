@@ -29,7 +29,7 @@ pub fn run(
     events_tx: Sender<OperatorEvent>,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
-) -> eyre::Result<()> {
+) -> eyre::Result<libloading::Library> {
     let path = if source_is_url(source) {
         let target_path = &Path::new("build");
         // try to download the shared library
@@ -82,7 +82,19 @@ pub fn run(
         }
     }
 
-    Ok(())
+    // Hand the loaded library back to the caller instead of dropping (unloading)
+    // it here. Arrow arrays produced by this operator are exported over the C
+    // data interface with a `release` callback that points *into* this `.so`
+    // (`arrow::ffi::from_ffi` imports them in `send_output_closure`). The runtime's
+    // main event loop runs on another thread and may still hold in-flight arrays
+    // when we return — the `OperatorEvent::Finished` above only guarantees the
+    // channel slot was taken, not that every prior output has been sent and
+    // dropped. Unloading the library now (dlclose on drop) would dangle those
+    // release callbacks, so freeing the arrays afterwards jumps into unmapped
+    // code (SIGSEGV, reproducible under a high output rate at shutdown). The
+    // caller keeps this alive until after the main loop has joined, by which
+    // point every exported array has been released.
+    Ok(library)
 }
 
 struct SharedLibraryOperator<'lib> {
@@ -150,6 +162,14 @@ impl SharedLibraryOperator<'_> {
                 Err(_) => DoraResult::from_error("runtime process closed unexpectedly".into()),
             }
         });
+
+        // `send_output_closure` is invariant across events, so build the FFI
+        // `SendOutput` wrapper once and reuse it by reference each iteration
+        // rather than cloning the `Arc` and reconstructing an `ArcDynFn1` per
+        // event.
+        let send_output = SendOutput {
+            send_output: ArcDynFn1::new(send_output_closure),
+        };
 
         let reason = loop {
             #[allow(unused_mut)]
@@ -240,9 +260,6 @@ impl SharedLibraryOperator<'_> {
                 }
             };
 
-            let send_output = SendOutput {
-                send_output: ArcDynFn1::new(send_output_closure.clone()),
-            };
             let OnEventResult {
                 result: DoraResult { error },
                 status,
