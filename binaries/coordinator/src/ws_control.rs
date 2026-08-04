@@ -45,8 +45,9 @@ async fn send_ws_response(
 
 /// Format a `WsResponse`-shaped JSON envelope using `serde_json::to_string`.
 ///
-/// This is needed (instead of `send_ws_response`) for replies that contain u128
-/// values (e.g. uhlc::ID) which lose fidelity through `serde_json::Value`.
+/// Used instead of `send_ws_response` where the reply is already a concrete
+/// type: it serializes straight into the envelope rather than materializing an
+/// intermediate `serde_json::Value` for the `WsResponse::result` field.
 fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
     match serde_json::to_string(reply) {
         Ok(result_json) => {
@@ -370,8 +371,6 @@ pub(crate) async fn handle_control_ws(
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
-                // Serialize reply via to_string (not to_value) to preserve u128
-                // fidelity for uhlc::ID inside DataflowResult timestamps.
                 let resp_json = format_response_json(req.id, &reply);
                 if ws_tx.send(Message::Text(resp_json.into())).await.is_err() || stop {
                     break;
