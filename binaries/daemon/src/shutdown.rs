@@ -49,6 +49,12 @@ pub(crate) struct DestroyWait {
     killed: bool,
     /// Pids that had to be killed, for the caller to report.
     pub killed_pids: Vec<u32>,
+    /// Pids confirmed to be this daemon's children at least once.
+    ///
+    /// Nodes are spawned as process-group leaders, so a confirmed pid is
+    /// also its group's id — which is what lets the group outlive the pid
+    /// and still be recognized as ours (#3004 review).
+    confirmed: std::collections::HashSet<u32>,
     system: System,
     own_pid: u32,
 }
@@ -71,6 +77,7 @@ impl DestroyWait {
             deadline: Instant::now() + DESTROY_WAIT,
             killed: false,
             killed_pids: Vec::new(),
+            confirmed: std::collections::HashSet::new(),
             system: System::new(),
             own_pid: std::process::id(),
         }
@@ -103,10 +110,20 @@ impl DestroyWait {
         DestroyProgress::Waiting
     }
 
-    /// The subset of `pids` that are still running children of this process.
+    /// The subset of `pids` whose process — or whose process *group* — is
+    /// still running.
     ///
-    /// Parentage, not mere existence: once a node exits its pid is free for
-    /// reuse, and killing blind would eventually hit an unrelated process.
+    /// Parentage, not mere existence, is what makes a pid ours: once a node
+    /// exits its pid is free for reuse, and killing blind would eventually
+    /// hit an unrelated process.
+    ///
+    /// The group half matters because the tracked pid is often a wrapper.
+    /// `uv run python node.py` dies to the ladder's SIGTERM while the
+    /// interpreter it spawned ignores it; watching only the leader would call
+    /// that node gone and let the destroy finish, leaving exactly the orphan
+    /// one level down that this module exists to prevent (#3004 review). A
+    /// group is only ever consulted for a pid confirmed to be ours while it
+    /// was alive, so a recycled pid cannot drag in a stranger's group.
     fn live_children(&mut self, pids: &[u32]) -> Vec<u32> {
         if pids.is_empty() {
             return Vec::new();
@@ -117,16 +134,41 @@ impl DestroyWait {
             true,
             ProcessRefreshKind::nothing(),
         );
-        let own_pid = self.own_pid;
-        let system = &self.system;
-        pids.iter()
-            .copied()
-            .filter(|pid| {
-                system
-                    .process(Pid::from_u32(*pid))
-                    .is_some_and(|process| is_live_child(process, own_pid))
-            })
-            .collect()
+
+        let mut alive = Vec::new();
+        for pid in pids.iter().copied() {
+            let leader_alive = self
+                .system
+                .process(Pid::from_u32(pid))
+                .is_some_and(|process| is_live_child(process, self.own_pid));
+            if leader_alive {
+                self.confirmed.insert(pid);
+                alive.push(pid);
+            } else if self.confirmed.contains(&pid) && process_group_has_members(pid) {
+                alive.push(pid);
+            }
+        }
+        alive
+    }
+}
+
+/// Whether any process is still in the group led by `pid`.
+///
+/// Signal 0 performs the permission and existence checks without delivering
+/// anything, so this asks the kernel the question directly rather than
+/// enumerating every process on the machine.
+fn process_group_has_members(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: signal 0 delivers nothing; this is a pure existence check.
+        unsafe { libc::kill(-(pid as i32), 0) == 0 }
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows has no process groups in this sense; the job object the
+        // node was spawned into ties its children to the leader's lifetime.
+        let _ = pid;
+        false
     }
 }
 
@@ -211,6 +253,67 @@ mod tests {
 
         let status = child.wait().expect("failed to wait for killed child");
         assert!(!status.success(), "killed process must not exit cleanly");
+    }
+
+    /// #3004 review: the tracked pid is often a wrapper. When it exits — to
+    /// the ladder's SIGTERM, or on its own — while something it spawned
+    /// carries on in its process group, the node is not gone. Following only
+    /// the leader would end the destroy there and orphan the child, which is
+    /// the very leak this module exists to close, one level down.
+    #[tokio::test(start_paused = true)]
+    #[cfg_attr(not(unix), ignore = "process groups are a unix concept")]
+    async fn a_wrapper_that_exits_does_not_hide_its_surviving_child() {
+        use std::os::unix::process::CommandExt as _;
+
+        // A group leader that spawns a child into its group and exits, like
+        // a wrapper dying while the interpreter it launched keeps running.
+        let mut wrapper = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 300 & exit 0")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("failed to spawn wrapper");
+        let pid = wrapper.id();
+
+        let mut wait = DestroyWait::new();
+        assert_eq!(
+            wait.poll(&[pid]),
+            DestroyProgress::Waiting,
+            "the wrapper is alive, so this is an ordinary wait"
+        );
+
+        // The wrapper exits and is reaped; its child lives on.
+        wrapper.wait().expect("failed to wait for wrapper");
+        assert_eq!(
+            wait.poll(&[pid]),
+            DestroyProgress::Waiting,
+            "the leader is gone but its group is not — the node is still running"
+        );
+
+        tokio::time::advance(DESTROY_WAIT + Duration::from_secs(1)).await;
+        assert_eq!(wait.poll(&[pid]), DestroyProgress::Waiting);
+        assert_eq!(
+            wait.killed_pids,
+            vec![pid],
+            "the surviving group must be killed"
+        );
+        // The kill lands on the group, so the child goes with it — once the
+        // OS has torn it down and its (re-parented) reaper has collected it,
+        // which is what `KILL_SETTLE` covers in production. Real sleeps: the
+        // test clock is paused, and this waits on the kernel, not on tokio.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match wait.poll(&[pid]) {
+                DestroyProgress::Done => break,
+                other => assert!(
+                    std::time::Instant::now() < deadline,
+                    "the killed group never went away: {other:?}"
+                ),
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
     }
 
     /// The common case must stay free: a node that exits on its own is never

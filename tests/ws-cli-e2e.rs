@@ -2814,6 +2814,102 @@ mod real_dataflow {
         );
     }
 
+    /// #3004 review: the same orphan, one level down.
+    ///
+    /// A node's tracked process is often a wrapper — `uv run python node.py`,
+    /// a shell launcher — and the ladder's SIGTERM kills the wrapper while
+    /// the process it spawned ignores the signal and carries on in its
+    /// process group. Watching only the tracked pid calls the node gone and
+    /// lets the destroy finish, orphaning the real one.
+    ///
+    /// Unix-only: it uses process groups and inspects process state.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_destroy_does_not_orphan_a_node_behind_an_exiting_wrapper() {
+        ensure_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "sigterm-ignoring-node"])
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .expect("failed to build sigterm-ignoring-node");
+        assert!(status.success(), "failed to build sigterm-ignoring-node");
+
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let pid_file = home.path().join("stubborn.pid");
+        let yaml = home.path().join("wrapped.yml");
+        // `sh` waits, so the daemon's entry stays while the real node runs.
+        // On SIGTERM `sh` dies and the fixture — which ignores it — does not.
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: wrapped\n    \
+                   path: /bin/sh\n    \
+                   args: \"-c '{node} & wait'\"\n    \
+                   env:\n      \
+                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n",
+                node = target.join("debug/sigterm-ignoring-node").display(),
+                pid_file = pid_file.display(),
+            ),
+        )
+        .expect("write dataflow yaml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let (child, out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--detach"],
+            "start",
+        );
+        let (status, stdout, stderr) = wait_for_dora_isolated(child, out_path, err_path);
+        assert!(
+            status.success(),
+            "dora start failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        let node_pid = wait_for_pid_file(&pid_file, Duration::from_secs(30));
+        struct Reaper(u32);
+        impl Drop for Reaper {
+            fn drop(&mut self) {
+                if fixture_alive(self.0) {
+                    let _ = Command::new("kill")
+                        .args(["-9", &self.0.to_string()])
+                        .status();
+                }
+            }
+        }
+        let _reaper = Reaper(node_pid);
+        assert!(
+            fixture_alive(node_pid),
+            "fixture {node_pid} was not running before destroy"
+        );
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let session = WsSession::connect(addr).expect("failed to connect WsSession");
+        let reply = super::send_request(&session, &ControlRequest::Destroy).expect("destroy");
+        assert!(
+            matches!(reply, ControlRequestReply::DestroyOk),
+            "expected DestroyOk, got {reply:?}"
+        );
+
+        assert!(
+            !fixture_alive(node_pid),
+            "node {node_pid} outlived the destroy behind its wrapper — the \
+             wrapper's exit must not be mistaken for the node's"
+        );
+    }
+
     /// A destroy must not make a healthy shutdown slower or dirtier.
     ///
     /// The wait added for #2980 cannot be taken inline in the daemon's event
