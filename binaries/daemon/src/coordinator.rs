@@ -62,8 +62,8 @@ impl CoordinatorSender {
 
     /// Send a serialized event message to the coordinator (fire-and-forget).
     ///
-    /// Embeds the raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub async fn send_event(&self, message: &[u8]) -> eyre::Result<()> {
         let json = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
         self.sender
@@ -149,9 +149,8 @@ pub async fn register(
     // The coordinator sender writes to this, and the spawned task reads and forwards to WS.
     let (send_tx, mut send_rx) = mpsc::channel::<String>(64);
 
-    // Send Register request.
-    // Serialize params via to_string (not to_value) to preserve u128 fidelity
-    // for uhlc::ID(NonZeroU128) inside the timestamp.
+    // Send Register request. The params are serialized straight into the
+    // envelope, so they never round-trip through a `serde_json::Value`.
     let register_params_json = serde_json::to_string(&Timestamped {
         inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, labels)),
         timestamp: clock.new_timestamp(),
@@ -180,7 +179,7 @@ pub async fn register(
                 continue;
             };
 
-            // Parse directly from raw text to preserve u128 fidelity.
+            // Parse the frame straight into its typed form.
             let raw: RegisterReplyRaw = match serde_json::from_str(&text) {
                 Ok(r) => r,
                 Err(_) => continue,
@@ -225,8 +224,7 @@ pub async fn register(
                         }
                     };
 
-                    // Parse directly from raw text to preserve u128 fidelity
-                    // for uhlc::ID inside timestamps.
+                    // Parse the frame straight into its typed form.
                     let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
                         Ok(r) => r,
                         Err(e) => {
@@ -301,15 +299,15 @@ pub async fn register(
     ))
 }
 
-/// Helper for deserializing register reply directly from raw JSON text,
-/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+/// Helper for deserializing the register reply directly from the raw JSON text,
+/// so the payload is parsed once into its real type.
 #[derive(serde::Deserialize)]
 struct RegisterReplyRaw {
     params: Timestamped<RegisterResult>,
 }
 
-/// Helper for deserializing coordinator commands directly from raw JSON text,
-/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+/// Helper for deserializing coordinator commands directly from the raw JSON
+/// text, so the payload is parsed once into its real type.
 #[derive(serde::Deserialize)]
 struct CoordinatorCommandRaw {
     id: Uuid,
