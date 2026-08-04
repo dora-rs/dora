@@ -3366,7 +3366,7 @@ mod tests {
             "drop-hang-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = flume::unbounded();
+        let (tx, _rx) = crate::integration_testing::unbounded_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let (node, event_stream) =
             DoraNode::init_testing(inputs, outputs, TestingOptions::default()).unwrap();
