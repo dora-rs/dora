@@ -280,6 +280,7 @@ Some names are reserved and are dropped (with a warning in the daemon log) when 
 |----------|-----|
 | `DORA_NODE_CONFIG`, `DORA_RUNTIME_CONFIG` | The daemon's own handle to the node — dataflow id, node id, and how to reach the daemon |
 | `DORA_ZENOH_LISTEN`, `DORA_ZENOH_CONNECT`, `DORA_ZENOH_MULTICAST`, `ZENOH_CONFIG` | Node-to-node wiring. Overriding these produces a dataflow that starts cleanly and then exchanges nothing. Set `ZENOH_CONFIG` in the daemon's own environment instead — nodes inherit it |
+| `DORA_RUN_PARENT_PID` | Names the process whose death ends the node. `dora run` sets it so a hard-killed CLI cannot strand nodes; a descriptor-supplied value would be an arbitrary self-destruct trigger |
 | `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` | Loader hijacking |
 | `DORA_AUTH_TOKEN`, `DORA_ALLOW_SHELL_NODES` | Daemon-level security settings |
 

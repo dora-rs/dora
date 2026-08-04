@@ -333,6 +333,13 @@ pub struct Daemon {
     /// scouting. Forwarded to spawned nodes so they discover the same way the
     /// daemon does (see `DORA_ZENOH_MULTICAST`).
     pub(crate) disable_multicast: bool,
+    /// Whether this daemon runs in-process with whoever started it (the
+    /// `run_dataflow` shape), making that process's death the end of the
+    /// dataflow. Forwarded to spawned nodes via `DORA_RUN_PARENT_PID` so a
+    /// `SIGKILL`ed parent does not strand them (dora-rs/dora#2856). False for
+    /// the `dora up` daemon, whose nodes are deliberately decoupled from it
+    /// (#2029).
+    pub(crate) bind_nodes_to_parent: bool,
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
@@ -1017,6 +1024,10 @@ impl Daemon {
                                 inter_daemon_peer.clone(),
                                 zenoh_bind,
                                 disable_multicast,
+                                // A standalone daemon outlives nothing its
+                                // nodes depend on: they survive coordinator
+                                // drops and reconnects on purpose (#2029).
+                                false,
                             )
                             .await?;
                             daemon = Some(built);
@@ -1382,6 +1393,11 @@ impl Daemon {
         // `dora run` is single-machine by construction: the daemon, its nodes
         // and the in-process coordinator all live on this host, so loopback is
         // both sufficient and the least exposed choice.
+        //
+        // Being that single process is also why the nodes are bound to it: it
+        // is their parent, and its death — `SIGKILL` included, which no
+        // teardown code of ours survives — is the end of the dataflow (#2856).
+        let bind_nodes_to_parent = true;
         let (mut daemon, mut dora_events_rx) = Self::build_daemon(
             coordinator_sender,
             daemon_id,
@@ -1393,6 +1409,7 @@ impl Daemon {
             inter_daemon_peer,
             ZenohBind::Derived(LOCALHOST),
             disable_multicast,
+            bind_nodes_to_parent,
         )
         .await?;
         daemon
@@ -1425,6 +1442,7 @@ impl Daemon {
         inter_daemon_peer: Option<String>,
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
+        bind_nodes_to_parent: bool,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
         // Fold in `DORA_ZENOH_MULTICAST` so this is the daemon's *effective*
         // decision, not just its flag. The zenoh session honors the variable on
@@ -1556,6 +1574,7 @@ impl Daemon {
             zenoh_session,
             zenoh_listen_endpoint,
             disable_multicast,
+            bind_nodes_to_parent,
             pending_destroy: None,
             zenoh_publish_tx,
             remote_daemon_events_tx,
@@ -2539,6 +2558,7 @@ impl Daemon {
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
+                        bind_nodes_to_parent: self.bind_nodes_to_parent,
                     };
                     let mut logger = self
                         .logger
@@ -3050,6 +3070,7 @@ impl Daemon {
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
+                        bind_nodes_to_parent: self.bind_nodes_to_parent,
                     };
                     let mut logger = self
                         .logger
@@ -4095,6 +4116,7 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
             disable_multicast: self.disable_multicast,
+            bind_nodes_to_parent: self.bind_nodes_to_parent,
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):
