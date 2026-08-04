@@ -17,7 +17,7 @@ pub struct Package {
 }
 
 impl Package {
-    pub fn new(name: String) -> Self {
+    pub const fn new(name: String) -> Self {
         Self {
             name,
             path: PathBuf::new(),

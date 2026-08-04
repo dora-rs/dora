@@ -2,7 +2,7 @@ use std::path::Path;
 
 use dora_message::common::DaemonId;
 use eyre::{Result, WrapErr, eyre};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use uuid::Uuid;
 
 use dora_message::id::NodeId;
@@ -62,8 +62,27 @@ impl RedbStore {
     /// table. On subsequent opens, validates that the stored version matches
     /// the compiled-in version and returns an error if they differ.
     pub fn open(path: &Path) -> Result<Self> {
-        let db = with_restrictive_umask(|| Database::create(path))
-            .wrap_err("failed to open redb database")?;
+        let db = match with_restrictive_umask(|| Database::create(path)) {
+            Ok(db) => db,
+            // redb 3 dropped the v2 on-disk format, so a store written by a
+            // dora built against redb 2.x cannot be read at all (#2449). redb
+            // reports this as a bare "Manual upgrade required", which tells the
+            // user nothing about how to recover, so translate it into the same
+            // marked error a schema bump produces -- `dora up` matches the
+            // marker to suggest `--recreate-store`, which archives the old file
+            // rather than deleting it.
+            Err(redb::DatabaseError::UpgradeRequired(version)) => {
+                return Err(eyre!(
+                    "{marker}: database at `{path}` uses the redb v{version} file format, \
+                     which this binary cannot read. \
+                     Move the file aside and restart to create a fresh database, \
+                     or use `--store memory` to bypass persistence.",
+                    marker = crate::SCHEMA_MISMATCH_MARKER,
+                    path = path.display()
+                ));
+            }
+            Err(err) => return Err(err).wrap_err("failed to open redb database"),
+        };
 
         // Restrict file permissions to owner-only on Unix.
         // NOTE: On Windows, file permissions are governed by ACLs and not
@@ -809,6 +828,53 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// redb 3 dropped support for the v2 on-disk format, so a store written by
+    /// an older dora (redb 2.x) is unreadable after the redb 4 upgrade (#2449).
+    /// That failure must carry [`crate::SCHEMA_MISMATCH_MARKER`] like a bincode
+    /// schema bump does, so `dora up` offers the same `--recreate-store`
+    /// recovery instead of surfacing a bare redb error the user cannot act on.
+    #[test]
+    fn redb_v2_file_format_is_reported_as_a_store_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2-format.redb");
+
+        // Create a healthy store, then downgrade its header to the v2 file
+        // format. redb's super-header holds two 128-byte commit slots at
+        // offsets 64 and 192, each starting with a one-byte format version;
+        // it checks that byte before the slot checksum, so stamping both is
+        // enough to make redb reject the file as `UpgradeRequired`.
+        const SLOT_OFFSETS: [u64; 2] = [64, 192];
+        const FILE_FORMAT_VERSION2: u8 = 2;
+        RedbStore::open(&path).unwrap();
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            for offset in SLOT_OFFSETS {
+                file.seek(SeekFrom::Start(offset)).unwrap();
+                file.write_all(&[FILE_FORMAT_VERSION2]).unwrap();
+            }
+            file.sync_all().unwrap();
+        }
+
+        let Err(err) = RedbStore::open(&path) else {
+            panic!("a v2-format store must be rejected");
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(crate::SCHEMA_MISMATCH_MARKER),
+            "a v2-format store must be reported with the `{}` marker so `dora up` \
+             can offer `--recreate-store`, got: {msg}",
+            crate::SCHEMA_MISMATCH_MARKER
+        );
+        // Guards the hand-stamped header above: if redb's slot layout ever
+        // moves, the patch stops producing an upgrade error and this fails
+        // rather than silently passing on some unrelated open failure.
+        assert!(
+            msg.contains("file format"),
+            "expected a file-format diagnostic naming the incompatible format, got: {msg}"
+        );
     }
 
     // --- Focused tests for redb_store edge cases (added 2026-04-08) ---

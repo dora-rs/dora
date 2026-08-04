@@ -92,7 +92,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.88.0"
+rust-version = "1.95.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
 version = "1.0.0-rc.4"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
@@ -167,7 +167,7 @@ tracing = "0.1.44"
 uuid = { version = "1.23", features = ["serde", "v7"] }
 futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
 fs2 = "0.4.3"
-redb = "2"
+redb = "4.1"
 bincode = "1.3.3"
 flume = "0.12.0"
 tempfile = "3.27.0"

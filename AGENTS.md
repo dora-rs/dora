@@ -28,7 +28,7 @@ Key communication paths:
 ## Workspace Facts
 
 - Rust edition: 2024
-- MSRV: 1.88.0
+- MSRV: 1.95.0
 - Shared workspace versioning
 - Python packages are built with `maturin`, not normal `cargo` flows
 - The repository is in an `adora` -> `dora` consolidation transition. Prefer `dora` names for new code, but preserve documented compatibility paths unless the change is explicitly a breaking cleanup.

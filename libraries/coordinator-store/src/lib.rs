@@ -5,10 +5,13 @@ mod redb_store;
 
 pub use in_memory::InMemoryStore;
 
-/// Marker prefix of the error produced by `RedbStore::open` on a schema
-/// version mismatch. The CLI (`dora up`) matches coordinator stderr against
-/// this exact string to decide whether to suggest `--recreate-store`, so any
-/// rewording must update both sites together (covered end-to-end by
+/// Marker prefix of the error produced by `RedbStore::open` when the store on
+/// disk is unusable by this binary: either the record schema version differs,
+/// or the file predates the redb v3 on-disk format (#2449). Both are recovered
+/// the same way -- archive the old file and start fresh -- so they share one
+/// marker. The CLI (`dora up`) matches coordinator stderr against this exact
+/// string to decide whether to suggest `--recreate-store`, so any rewording
+/// must update both sites together (covered end-to-end by
 /// `tests/ws-cli-e2e.rs::e2e_up_reports_incompatible_coordinator_store`).
 pub const SCHEMA_MISMATCH_MARKER: &str = "redb schema version mismatch";
 
