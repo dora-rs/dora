@@ -382,7 +382,7 @@ jobs:
           # #1674 for record). (Historically the workspace root also had
           # a types/ dir that replay wrongly loaded as user types; it moved
           # to libraries/core/types/ but the placement rule stands.)
-          timeout 300s dora record examples/rust-dataflow/dataflow.yml \
+          timeout -k 30s 300s dora record examples/rust-dataflow/dataflow.yml \
             -o examples/rust-dataflow/run.drec
           test -f examples/rust-dataflow/run.drec || { echo "record did not produce run.drec"; exit 1; }
           echo "recording size: $(wc -c < examples/rust-dataflow/run.drec) bytes"
@@ -656,7 +656,7 @@ jobs:
         # update is available. Catches regressions in CLI flag parsing,
         # the self_update crate integration, and the API-response contract.
         run: |
-          out=$(timeout 30 dora self update --check-only 2>&1) || exit_code=$?
+          out=$(timeout -k 30s 30 dora self update --check-only 2>&1) || exit_code=$?
           echo "$out"
           # Must always print the entry banner — if this is missing, the
           # command didn't even start the check path.
@@ -715,7 +715,7 @@ jobs:
           # Tests the CLI-side WebSocket subscription path end-to-end (#238).
           # Fixture emits at 10 Hz, so 5 frames arrive in ~500ms — generous
           # 15s timeout protects against daemon startup delay.
-          timeout 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json \
+          timeout -k 30s 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json \
             2>&1 | tee echo.out
           lines=$(grep -c '"name":"ticker/count"' echo.out || echo 0)
           if [ "$lines" -lt 5 ]; then
