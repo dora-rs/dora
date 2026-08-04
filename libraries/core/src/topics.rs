@@ -60,6 +60,7 @@ pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
 /// descriptor's `env:` (#2944) while still honoring it from its own
 /// environment — the documented way to point a whole deployment at a custom
 /// zenoh config.
+#[cfg(feature = "zenoh")]
 pub const ZENOH_CONFIG_PATH_ENV: &str = zenoh::Config::DEFAULT_CONFIG_PATH_ENV;
 
 /// Whether a session may discover peers by multicast scouting.
