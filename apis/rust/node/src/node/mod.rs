@@ -3275,24 +3275,10 @@ mod tests {
         drop(events);
     }
 
-    /// Drain everything currently queued on a testing output channel.
-    /// Replaces flume's `rx.try_iter().collect()` for the tokio mpsc receiver.
-    fn drain_channel(
-        rx: &mut tokio::sync::mpsc::Receiver<serde_json::Map<String, serde_json::Value>>,
-    ) -> Vec<serde_json::Map<String, serde_json::Value>> {
-        let mut outputs = Vec::new();
-        while let Ok(output) = rx.try_recv() {
-            outputs.push(output);
-        }
-        outputs
-    }
+    use crate::integration_testing::{OutputJson, UnboundedReceiver, drain_outputs};
 
     /// Helper: create a minimal test node with a channel output.
-    fn test_node() -> (
-        DoraNode,
-        crate::EventStream,
-        tokio::sync::mpsc::Receiver<serde_json::Map<String, serde_json::Value>>,
-    ) {
+    fn test_node() -> (DoraNode, crate::EventStream, UnboundedReceiver<OutputJson>) {
         let events = vec![TimedIncomingEvent {
             time_offset_secs: 0.1,
             event: IncomingEvent::Stop,
@@ -3301,10 +3287,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        // Bounded (the enum requires a bounded `Sender`); large enough that no
-        // test fills it before draining, so the simulation thread's
-        // `blocking_send` never stalls.
-        let (tx, rx) = tokio::sync::mpsc::channel(1024);
+        let (tx, rx) = crate::integration_testing::unbounded_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -3327,7 +3310,7 @@ mod tests {
         // Output should have been sent to the channel
         drop(node);
         drop(events);
-        let outputs = drain_channel(&mut rx);
+        let outputs = drain_outputs(&mut rx);
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "request");
     }
@@ -3364,7 +3347,7 @@ mod tests {
 
         drop(node);
         drop(events);
-        let outputs = drain_channel(&mut rx);
+        let outputs = drain_outputs(&mut rx);
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "response");
     }
@@ -3700,7 +3683,7 @@ mod tests {
 
         drop(node);
         drop(events);
-        let outputs = drain_channel(&mut rx);
+        let outputs = drain_outputs(&mut rx);
         assert_eq!(outputs.len(), 1);
         assert_eq!(outputs[0]["id"], "audio");
     }

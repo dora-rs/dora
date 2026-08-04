@@ -2314,7 +2314,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2322,14 +2322,16 @@ mod tests {
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
     }
 
-    /// #2956: an output sent through `TestingOutput::ToChannel` must actually
-    /// arrive on the receiver. This is the end-to-end path that the flume →
-    /// `tokio::sync::mpsc` migration touched (`handle_output`'s
-    /// `blocking_send`). Plain `#[test]` on purpose: the testing daemon
-    /// bridge uses `blocking_send`/`blocking_recv`, which panic inside a tokio
-    /// runtime.
+    /// #2956: outputs sent through `TestingOutput::ToChannel` must reach the
+    /// receiver, in order, when drained after the node has finished — the
+    /// documented usage pattern, and previously untested (every other
+    /// `ToChannel` test here drops the receiver).
+    ///
+    /// Plain `#[test]` on purpose: the testing bridge uses
+    /// `blocking_send`/`blocking_recv` on the request channel, which panic
+    /// inside a tokio runtime.
     #[test]
-    fn to_channel_delivers_outputs() {
+    fn to_channel_delivers_outputs_in_order() {
         use arrow::array::Int32Array;
 
         let events = vec![TimedIncomingEvent {
@@ -2340,28 +2342,33 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let (tx, mut rx) = crate::integration_testing::unbounded_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
         };
         let (mut node, _events) = crate::DoraNode::init_testing(inputs, outputs, options).unwrap();
 
-        node.send_output(
-            "out".parse().unwrap(),
-            Default::default(),
-            Int32Array::from(vec![1, 2, 3]),
-        )
-        .unwrap();
+        for i in 0..3 {
+            node.send_output(
+                "out".parse().unwrap(),
+                Default::default(),
+                Int32Array::from(vec![i]),
+            )
+            .unwrap();
+        }
 
-        let received = rx
-            .try_recv()
-            .expect("output should have been delivered to the tokio mpsc channel");
-        assert_eq!(
-            received.get("id").and_then(|v| v.as_str()),
-            Some("out"),
-            "delivered output should carry the sent output id"
-        );
+        let received = crate::integration_testing::drain_outputs(&mut rx);
+
+        assert_eq!(received.len(), 3, "every sent output should be delivered");
+        for (i, output) in received.iter().enumerate() {
+            assert_eq!(output.get("id").and_then(|v| v.as_str()), Some("out"));
+            assert_eq!(
+                output.get("data"),
+                Some(&serde_json::json!([i as i32])),
+                "outputs should arrive in send order"
+            );
+        }
     }
 
     #[test]
@@ -2472,7 +2479,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2539,7 +2546,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = tokio::sync::mpsc::channel(16);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
