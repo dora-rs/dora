@@ -182,12 +182,14 @@ v1（cpu2cpu_cross）已实现并本地验证：
   全部删除；本地双 daemon E2E 复测通过（preview 匹配、3 帧、/dev/shm
   零残留）。语义变更：非镜像机 daemon 不再缓存广播写（3+ 机器场景的
   跨机读不再受支持，v1 契约 = A 写 B 读）
-- 遗留：GPU 跨机（§8）、镜像写串行化（已知边界）、跨机写转发无 origin
-  侧 gate（本地池写也全量广播，预存行为）、daemon 运行中重启后跨机池
-  无重注册机制（CROSS_POOLS 清空，写被 debug 级丢弃，receiver 读旧帧）
-- 已知设计边界：镜像写入未串行化（multi-thread runtime 下并发帧可能
-  字节级撕裂，被 zenoh put 延迟与示例 20s pacing 掩盖）；多写者场景
-  需 per-pool 写互斥（后续迭代）
+- **镜像写串行化 + origin 转发 gate（2026-08-04，提交 32ea4cdd）**：
+  每池写锁（CROSS_POOL_WRITE_LOCKS，锁 map 惰性增长不回收）串行化
+  并发 memcpy，消除 seqlock 无法检测的字节撕裂；WriteMemoryPool 仅在
+  CROSS_POOLS 有条目时转发（register ack 先于 node 回复，无合法写被
+  gate 掉），本地池帧不再 61MB 全量广播。并发写单元测试（无锁时
+  round 1 必失败）+ 本地 E2E 复测通过
+- 遗留：GPU 跨机（§8）、daemon 运行中重启后跨机池无重注册机制
+  （CROSS_POOLS 清空，写被 gate/丢弃，receiver 读旧帧——需重注册）
 
 ## 8. 后续迭代（不在 v1）
 
