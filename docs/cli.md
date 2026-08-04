@@ -462,6 +462,8 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 
 Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `enable_debug_inspection: true`.
 
+**Ctrl-C in `--proxy` mode:** the first press stops the recording and finalizes the file. A second press exits immediately with status `130`, for the case where finalizing is itself stuck (a full disk or a stalled network mount). The recording is flushed before finalizing, so an escalated exit costs only the file's footer — `dora replay` still reads it, as a recording that ends early.
+
 #### `dora replay`
 
 Replay a recorded `.drec` file by replacing source nodes with replay nodes. See [Debugging Guide](debugging.md#replaying-a-recording) for full workflows.

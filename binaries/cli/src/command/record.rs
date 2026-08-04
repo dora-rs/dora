@@ -414,15 +414,26 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     // Set up Ctrl-C handler.
     //
     // The first Ctrl-C requests a graceful stop (finalize the recording and
-    // exit). Escalate on a repeated signal — mirroring the daemon, coordinator,
-    // and `dora start` attach handlers — so an operator is never stuck: the
+    // exit). Escalate on a repeated signal — as the daemon, coordinator, and
+    // `dora start` attach handlers all do — so an operator is never stuck: the
     // recording loop does blocking file I/O between poll ticks, and a write that
     // wedges (full disk, stalled network mount, a large flush) would otherwise
     // swallow every subsequent Ctrl-C with no way out but SIGKILL from another
     // terminal. The second signal exits immediately with the conventional SIGINT
     // status; the partial file is left in place, but the message warns that it
-    // may be truncated so `dora replay` is not handed a half-written file
-    // silently.
+    // may be truncated so the operator knows `dora replay` will get a short
+    // recording (a missing footer is tolerated by `RecordingReader`, and the
+    // flush before `finish()` below bounds the loss to the footer).
+    //
+    // Two deliberate departures from those siblings, both because what wedges
+    // here is our own teardown rather than a child process:
+    //   * `process::exit` rather than the daemon's unwinding `bail!` — the
+    //     thing being escaped IS `writer.finish()`, so unwinding through it
+    //     would re-enter the wedge. Nothing here owns child processes to
+    //     orphan.
+    //   * exit 130 (128 + SIGINT) rather than the attach handler's 1, so a
+    //     supervisor can tell an operator abort from a recording error. This
+    //     is the only place in the CLI that returns it; see docs/cli.md.
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
     let mut signalled = false;
     ctrlc::set_handler(move || match record_ctrlc_action(&mut signalled) {
@@ -482,6 +493,17 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+
+    // Flush before the blocking finalize, not as part of it. `finish()` writes
+    // the buffered tail AND the footer, and it is the call most likely to wedge
+    // (full disk, stalled network mount) — which is exactly when an operator
+    // reaches for the second Ctrl-C. Escalating out of an unflushed `finish()`
+    // discards every entry since the last 100-message flush: with fewer than
+    // 100 messages recorded that is the whole file, and `dora replay` then
+    // fails with "failed to read recording header" rather than replaying a
+    // short recording. Flushing here bounds what escalation can cost to the
+    // 24-byte footer, which readers already tolerate.
+    writer.flush()?;
 
     let footer = writer.finish()?;
     eprintln!(
