@@ -6739,6 +6739,16 @@ fn close_input(
         .remove(&(receiver_id.clone(), input_id.clone()))
         .is_some();
 
+    // Drop any armed deadline for this input. A closed input can never
+    // meaningfully time out, and leaving the entry behind lets
+    // `check_input_timeouts` fire on it later, insert a `broken_inputs`
+    // record, and then no-op in `break_input` (the input is already gone from
+    // `open_inputs`) — orphaning that record so `has_broken_input` stays true
+    // forever and the drained node is never sent `AllInputsClosed` (#2968).
+    dataflow
+        .input_deadlines
+        .remove(&(receiver_id.clone(), input_id.clone()));
+
     let was_open = dataflow
         .open_inputs
         .get_mut(receiver_id)
@@ -6814,6 +6824,14 @@ fn break_input(
     if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id)
         && !open_inputs.remove(input_id)
     {
+        // The input already left `open_inputs` (e.g. it was closed before this
+        // timeout fired). The caller inserted a `broken_inputs` record before
+        // calling us; a no-op break would orphan it, permanently pinning
+        // `has_broken_input` true. Roll that insert back so we don't leave the
+        // node undrainable (#2968).
+        dataflow
+            .broken_inputs
+            .remove(&(receiver_id.clone(), input_id.clone()));
         return;
     }
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
@@ -8668,6 +8686,100 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- #2968: a closed input's armed deadline must not orphan a broken record --
+
+    #[test]
+    fn close_input_drops_armed_deadline() {
+        // Regression (#2968): `close_input` must drop the input's
+        // `input_deadlines` entry. Otherwise the stale, still-armed deadline
+        // keeps counting after the input has closed; `check_input_timeouts`
+        // then fires on the already-closed input, inserting a `broken_inputs`
+        // record that `break_input` can never clear.
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+        // Armed (a message was received), so it would time out if left behind.
+        df.input_deadlines.insert(
+            (node_a.clone(), input_x.clone()),
+            InputDeadline {
+                timeout: Duration::from_millis(1),
+                last_received: Some(Instant::now() - Duration::from_secs(10)),
+            },
+        );
+
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        assert!(
+            !df.input_deadlines
+                .contains_key(&(node_a.clone(), input_x.clone())),
+            "close_input must drop the input's deadline so it can't time out later"
+        );
+    }
+
+    #[test]
+    fn drained_node_finishes_despite_stale_deadline_timeout() {
+        // End-to-end of #2968: a node with two inputs, one carrying an
+        // `input_timeout`. The timed input's producer exits first, then the
+        // stale deadline "fires" (as `check_input_timeouts` would), then the
+        // second producer exits. The node must still be told `AllInputsClosed`
+        // — not left with an orphaned `broken_inputs` record that pins
+        // `has_broken_input` true forever and gets it SIGKILLed as a straggler.
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_c: NodeId = "node_c".to_string().into();
+        let input_a: DataId = "input_a".to_string().into();
+        let input_b: DataId = "input_b".to_string().into();
+
+        df.open_inputs
+            .entry(node_c.clone())
+            .or_default()
+            .extend([input_a.clone(), input_b.clone()]);
+        // input_a has an armed deadline (producer sent messages before exiting).
+        df.input_deadlines.insert(
+            (node_c.clone(), input_a.clone()),
+            InputDeadline {
+                timeout: Duration::from_millis(1),
+                last_received: Some(Instant::now() - Duration::from_secs(10)),
+            },
+        );
+
+        let running = test_running_node();
+        df.running_nodes.insert(node_c.clone(), running);
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_c.clone(), tx);
+
+        // 1. Producer of input_a exits.
+        close_input(&mut df, &node_c, &input_a, &clock);
+
+        // 2. Simulate the stale-deadline timeout firing as `check_input_timeouts`
+        //    would: it inserts a broken record then calls break_input. With the
+        //    fix, close_input already dropped the deadline, so this loop finds
+        //    nothing; we force the worst case anyway to prove break_input does
+        //    not leave an orphan even if it is reached on a closed input.
+        df.broken_inputs
+            .insert((node_c.clone(), input_a.clone()), Duration::from_millis(1));
+        break_input(&mut df, &node_c, &input_a, &clock);
+        assert!(
+            !df.has_broken_input(&node_c),
+            "break_input on an already-closed input must not orphan a broken record"
+        );
+
+        // 3. Producer of input_b exits — node is now fully drained.
+        close_input(&mut df, &node_c, &input_b, &clock);
+
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches_event(e, "AllInputsClosed")),
+            "a cleanly-drained node must be told AllInputsClosed, got {events:?}"
+        );
     }
 
     // -- Circuit-breaker recovery must be gated on receiver backpressure (#2627) --
