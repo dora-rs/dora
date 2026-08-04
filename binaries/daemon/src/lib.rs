@@ -194,6 +194,19 @@ static CROSS_POOLS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, String>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Per-pool write locks: serialise concurrent mirror writes so two
+/// overlapping memcpys cannot interleave bytes in the data region. The
+/// seqlock only detects an in-flight write (odd generation); it cannot
+/// prevent two writers from each completing a valid even generation on
+/// top of a mixed frame. Locks are created lazily per `shared_memory_id`
+/// and never removed — the map grows with the number of distinct pool
+/// ids ever written on this daemon (each entry is one ~100B Arc; mirrors
+/// do not enter the MemoryPoolManager table, so MAX_POOLS does not bound
+/// this).
+static CROSS_POOL_WRITE_LOCKS: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+
 // DORADMA shmem layout — must match the node API exactly
 // (apis/python/node/src/lib.rs): [magic:8][json_len:8][data_offset:8]
 // [ipc_present:8][ipc_handle:64][write_gen:8 @96][reserved:152][json:256]
@@ -316,6 +329,25 @@ fn write_cross_pool_data(
     tensor_data: &[u8],
     size: usize,
 ) {
+    // Serialise concurrent writes to the same pool: two overlapping
+    // memcpys would interleave bytes and leave a mixed frame that the
+    // seqlock (odd = in-progress) cannot detect once both writers have
+    // completed an even generation. Per-pool lock, held across the whole
+    // write (open + seqlock begin + copy + end).
+    let write_lock = {
+        let mut locks = CROSS_POOL_WRITE_LOCKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        match locks.get(shared_memory_id) {
+            Some(lock) => lock.clone(),
+            None => {
+                let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
+                locks.insert(shared_memory_id.to_string(), lock.clone());
+                lock
+            }
+        }
+    };
+    let _guard = write_lock.lock().unwrap_or_else(|e| e.into_inner());
     // Must match the machine-qualified id used by `create_cross_pool_shmem`.
     let Some(shmem_name) = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id) else {
         tracing::warn!("memory pool: invalid pool id {shared_memory_id}, dropping frame");
@@ -4669,9 +4701,16 @@ impl Daemon {
                 size,
                 reply_sender,
             } => {
-                // Forward to remote daemons via Zenoh. Failures are
-                // logged loudly: a dropped publish strands remote readers
-                // with a never-ready mirror pool.
+                // Only cross-machine pools need forwarding: the origin
+                // records the pool in CROSS_POOLS when the register ack
+                // arrives (before replying to the node), so a pool without
+                // an entry is local-only — every remote daemon would drop
+                // its frames at debug level anyway. Gate the 61.44MB
+                // serialize + WAN put on the entry; local pools just get
+                // the Ok reply.
+                //
+                // Failures are logged loudly: a dropped publish strands
+                // remote readers with a never-ready mirror pool.
                 // Must match the subscriber's wire format: a
                 // `Timestamped<InterDaemonEvent>` (the same framing the
                 // regular inter-daemon event path uses) — the framing and
@@ -4684,6 +4723,18 @@ impl Daemon {
                 // event loop (heartbeats + node replies + output delivery
                 // included), backing up the event channels until the
                 // sender's WritePinnedMemory hangs forever.
+                if !CROSS_POOLS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .contains_key(&shared_memory_id)
+                {
+                    // Reply must stay byte-identical to the forwarded
+                    // path below (Result(Ok(()))) — the node cannot
+                    // distinguish a gated local write from a forwarded
+                    // cross-machine one.
+                    let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+                    return Ok(());
+                }
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
                 tokio::spawn(async move {
@@ -8693,5 +8744,69 @@ mod announce_zenoh_bind_tests {
             sock(REMOTE_COORDINATOR),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cross_pool_write_tests {
+    use super::*;
+
+    /// Concurrent writers to the same mirror must not interleave bytes:
+    /// after every round the data region holds one writer's complete
+    /// pattern, never a mixture. Without the per-pool lock, overlapping
+    /// memcpys of distinct fill bytes interleave and the final frame
+    /// passes the seqlock (even generation) with mixed bytes.
+    /// Panic-safe cleanup: unlink the test mirror from /dev/shm even when
+    /// an assertion fails mid-test (a leaked segment would pollute the
+    /// bench host's zero-residue checks).
+    struct ShmemCleanup(String);
+
+    impl Drop for ShmemCleanup {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(format!("/dev/shm/{}", self.0));
+        }
+    }
+
+    #[test]
+    fn concurrent_mirror_writes_never_interleave_bytes() {
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 4 * 1024 * 1024;
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192]).unwrap();
+        let shmem_name = cross_pool_shmem_name("B", &dataflow_id, pool_id).unwrap();
+        let _cleanup = ShmemCleanup(shmem_name.clone());
+        let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+        // data_offset comes from the header (json_len varies), not a constant.
+        let data_offset = unsafe { read_header_u64(shmem.as_ptr().add(16)) as usize };
+
+        // Writers with distinct fill bytes race the same mirror.
+        // Patterns are allocated once and reused across rounds.
+        const WRITERS: u8 = 8;
+        let patterns: Vec<Vec<u8>> = (0..WRITERS).map(|w| vec![w; SIZE]).collect();
+        for round in 0..200 {
+            std::thread::scope(|scope| {
+                for (w, pattern) in patterns.iter().enumerate() {
+                    let pattern = pattern.as_slice();
+                    scope.spawn(move || {
+                        write_cross_pool_data(&dataflow_id, "B", pool_id, pattern, SIZE);
+                    });
+                }
+            });
+            // The data region must hold exactly one writer's full pattern.
+            let first = unsafe { *shmem.as_ptr().add(data_offset) };
+            let data = unsafe { std::slice::from_raw_parts(shmem.as_ptr().add(data_offset), SIZE) };
+            assert!(
+                data.iter().all(|b| *b == first),
+                "round {round}: interleaved bytes in mirror data"
+            );
+            // Seqlock: generation is even (complete) after the round.
+            let generation =
+                unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+            assert_eq!(
+                generation % 2,
+                0,
+                "round {round}: odd generation after write"
+            );
+        }
     }
 }
