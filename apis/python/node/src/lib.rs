@@ -1050,12 +1050,14 @@ unsafe fn seqlock_begin_write(gen_ptr: *mut u64) -> u64 {
 /// `seqlock_end`'s `pre + 2` always produces an even generation,
 /// avoiding a permanent parity inversion.
 unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
-    let cur = std::ptr::read_volatile(gen_ptr);
-    if cur % 2 == 0 {
-        std::ptr::write_volatile(gen_ptr, cur + 1);
-        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+    unsafe {
+        let cur = std::ptr::read_volatile(gen_ptr);
+        if cur.is_multiple_of(2) {
+            std::ptr::write_volatile(gen_ptr, cur + 1);
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+        }
+        cur & !1 // always return the even baseline
     }
-    cur & !1 // always return the even baseline
 }
 
 /// Closes a memory-pool seqlock write (header offset 96).
@@ -1068,12 +1070,14 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 /// contract but is dead code in production — see the leave-gen-odd blocks
 /// in `write_memory_pool`.
 unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
-    if copy_ok {
-        std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
-    } else {
-        std::ptr::write_volatile(gen_ptr, pre_write_gen);
+    unsafe {
+        if copy_ok {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
+        } else {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen);
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
-    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
@@ -1286,11 +1290,11 @@ impl Node {
                             let bound = helpers.bind(py);
                             let _ = bound.call_method1("_ipc_close", (slot.gpu_buf,));
                         }
-                    } else if slot.gpu_va != 0 {
-                        if let Ok(helpers) = get_cuda_helpers(py) {
-                            let bound = helpers.bind(py);
-                            let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
-                        }
+                    } else if slot.gpu_va != 0
+                        && let Ok(helpers) = get_cuda_helpers(py)
+                    {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
                     }
                     // Drop slot → munmap
                 }
@@ -2013,11 +2017,9 @@ impl Node {
         // (CPU receivers).  GPU receivers never touch the shmem data
         // region, and the header-only shmem is too small (< 1 page) to
         // benefit from pinning.
-        if !receiver_is_cuda {
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
-            }
+        if !receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+            let bound = helpers.bind(py);
+            let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
         }
 
         shmem.set_owner(false);
@@ -2074,11 +2076,9 @@ impl Node {
                     dtoh_copy_ok = false;
                 }
                 if !dtoh_copy_ok {
-                    if !is_pinned {
-                        if let Ok(helpers) = get_cuda_helpers(py) {
-                            let bound = helpers.bind(py);
-                            let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
-                        }
+                    if !is_pinned && let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
                     }
                     shmem.set_owner(true);
                     eyre::bail!(
@@ -3031,19 +3031,18 @@ impl Node {
                     .node
                     .get_mut()
                     .read_pinned_memory(buffer_id.clone(), false)
-                {
-                    if let Some(size) = metadata.parameters.get("size").and_then(|p| {
+                    && let Some(size) = metadata.parameters.get("size").and_then(|p| {
                         if let Parameter::Integer(v) = p {
                             Some(*v)
                         } else {
                             None
                         }
-                    }) {
-                        GPU_BUF_SIZES
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(buffer_id.clone(), size as u64);
-                    }
+                    })
+                {
+                    GPU_BUF_SIZES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(buffer_id.clone(), size as u64);
                 }
             }
         }
