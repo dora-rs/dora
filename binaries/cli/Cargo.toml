@@ -68,7 +68,7 @@ colored = { workspace = true }
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 itertools = "0.15"
-sysinfo = "0.38.4"
+sysinfo = "0.39"
 
 env_logger = "0.11.11"
 # self_update 0.44 made the HTTP backend an explicit feature; without
