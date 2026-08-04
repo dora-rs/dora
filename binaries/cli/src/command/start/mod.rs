@@ -170,11 +170,6 @@ fn start_dataflow(
         })?
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
-    // Fold the flag into the descriptor, which is what the daemon reads
-    // and the one copy that survives auto-recovery, coordinator restart
-    // and `dora restart` (#2920). Given, it overrides the descriptor in
-    // either direction; omitted, the descriptor's own setting stands.
-    dataflow_descriptor.apply_exit_when_nodes_finish(exit_when_nodes_finish);
     let mut dataflow_session =
         DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
     // `hub:` references are desugared by `dora build`, which stores the
@@ -240,6 +235,21 @@ fn start_dataflow(
     // earlier would reject hub dataflows as "changed since build" and
     // invalidate the cached build id on every `--env` change.
     crate::env_overrides::apply_env_overrides(&mut dataflow_descriptor, env_overrides);
+
+    // Fold the `--exit-when-nodes-finish` flag into the descriptor LAST, for
+    // the same reason `--env` is merged last (see above): it is a spawn-time
+    // override, not a build input, so it must not be part of the hub
+    // `fingerprint_source` comparison. Applied before the hub block, a value
+    // differing from the on-disk YAML changed the serialized
+    // descriptor and its fingerprint, making a `hub:` dataflow bail with a
+    // misleading "changed since the last `dora build`" error — and the hub
+    // block's `dataflow_descriptor = resolved` then discarded the flag anyway
+    // (#2996). Folding it in here targets the final (hub-resolved) descriptor,
+    // which is what the daemon reads and the one copy that survives
+    // auto-recovery, coordinator restart and `dora restart` (#2920). Given, it
+    // overrides the descriptor in either direction; omitted, the descriptor's
+    // own setting stands.
+    dataflow_descriptor.apply_exit_when_nodes_finish(exit_when_nodes_finish);
 
     let session = connect_to_coordinator(coordinator_socket)?;
 
