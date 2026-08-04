@@ -174,7 +174,10 @@ v1（cpu2cpu_cross）已实现并本地验证：
 - 实现中发现的补充设计（E2E 暴露）：镜像 shmem 命名 machine 限定
   （dora_pool_{machine}_{df}_{node}_{counter}，DORA_MACHINE_ID env 注入）；
   memory-pool 发布 Locality::Remote（回声切断）
-- 遗留：release 构建的 WAN 端到端吞吐未实测（本地为 debug 构建）
+- WAN + release 端到端实测（2026-08-04，5090↔A100）：3 帧完整跑通，
+  preview 全部匹配，吞吐 **32.80 MB/s**（旧代理路径 12.94 MB/s，2.5× 提升）；
+  镜像池创建与 free 双端清理验证通过（两端 /dev/shm 零残留）
+- 遗留：代理路径移除（§8）、GPU 跨机（§8）、镜像写串行化（已知边界）
 - 已知设计边界：镜像写入未串行化（multi-thread runtime 下并发帧可能
   字节级撕裂，被 zenoh put 延迟与示例 20s pacing 掩盖）；多写者场景
   需 per-pool 写互斥（后续迭代）
