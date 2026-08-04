@@ -13,18 +13,21 @@
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). After the #1716 rebalance,
-#                                        nightly.yml has 22 test jobs: example-smoke
+#                                        nightly.yml has 27 test jobs (re-counted
+#                                        in #2999): example-smoke
 #                                        covers 4 (smoke-suite/log-sinks/service-action/
 #                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
-#                                        the 17 remaining with platform-aware dispatch
+#                                        20 more with platform-aware dispatch
 #                                        (record-replay, cluster-smoke, cluster-e2e [Linux],
 #                                        cluster-record-replay [Linux],
 #                                        topic-and-top, cpu-affinity [Linux], redb-backend,
 #                                        daemon-reconnect [Linux], state-reconstruction,
+#                                        multi-daemon-late-subscriber [Linux],
 #                                        test-cross-platform, examples, cli-tests,
 #                                        bench-example, cross-check, ros2-bridge [Linux+ROS2],
-#                                        msrv, kani-proofs [skipped if Kani absent]). The
-#                                        22nd, memory-pool-smoke (torch-gated #[ignore]
+#                                        ros2-zenoh-humble, ros2-zenoh-kilted,
+#                                        msrv, kani-proofs [skipped if Kani absent]). Of
+#                                        the rest, memory-pool-smoke (torch-gated #[ignore]
 #                                        memory-pool tests), is covered locally by
 #                                        `make qa-examples` / smoke-all.sh, not the
 #                                        qa-nightly example-smoke step (which skips
