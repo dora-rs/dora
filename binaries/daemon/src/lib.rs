@@ -5092,9 +5092,24 @@ impl Daemon {
                 );
                 return Ok(());
             }
-            None => eyre::bail!(
-                "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
-            ),
+            None => {
+                // The dataflow finished before this non-dynamic node's stop
+                // event was processed. A node's exit and its `SpawnNodeResult`
+                // arrive on independent paths, so `should_finish` can conclude
+                // the dataflow is done (every remaining `running_nodes` entry is
+                // dynamic) and `finish_dataflow` can run before this stop lands
+                // — the same "two independent paths" ordering that produced the
+                // late-output race fixed in #2742, just narrower. Bailing here
+                // returns `Err` up through the daemon's main loop, unwinding
+                // `run()` and tearing down the coordinator connection (or
+                // failing the whole `dora run`). Treat the missing dataflow as
+                // benign — matching the `dynamic_node` arm above and the
+                // late-output handling in `send_out`/`output_sent`. Kept at
+                // `warn` rather than `debug` because a non-dynamic node arriving
+                // late is less expected than a dynamic one (#2986).
+                tracing::warn!("node {dataflow_id}/{node_id} stopped after dataflow was done");
+                return Ok(());
+            }
         };
 
         dataflow
