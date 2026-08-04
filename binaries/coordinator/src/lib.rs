@@ -2569,6 +2569,7 @@ async fn start_inner(
                                         df,
                                         &daemon_id,
                                         &mut daemon_connections,
+                                        &store,
                                         &clock,
                                     )
                                     .await
@@ -2605,6 +2606,7 @@ async fn start_inner(
                                         df,
                                         &daemon_id,
                                         &mut daemon_connections,
+                                        &store,
                                         &clock,
                                     )
                                     .await
@@ -4576,6 +4578,7 @@ async fn replay_all_nodes_ready(
     dataflow: &RunningDataflow,
     daemon_id: &DaemonId,
     daemon_connections: &mut DaemonConnections,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
 ) -> eyre::Result<()> {
     let message = all_nodes_ready_message(uuid, dataflow, clock)?;
@@ -4587,10 +4590,31 @@ async fn replay_all_nodes_ready(
         "replaying AllNodesReady({uuid}) to reconnected daemon `{daemon_id}` \
          (barrier released while it was disconnected)"
     );
-    connection
-        .send(&message)
-        .await
-        .wrap_err_with(|| format!("failed to replay AllNodesReady({uuid}) to machine {daemon_id}"))
+    let connection_for_params = connection.clone();
+    connection.send(&message).await.wrap_err_with(|| {
+        format!("failed to replay AllNodesReady({uuid}) to machine {daemon_id}")
+    })?;
+
+    // The original broadcast pairs the barrier with a persisted-parameter
+    // replay (`schedule_param_replay_for_ready_dataflow`). This daemon missed
+    // both halves, so replaying only the barrier would release its nodes with
+    // default state instead of the parameters the operator set.
+    let node_ids_on_daemon = nodes_on_daemon(dataflow, daemon_id);
+    let store = store.clone();
+    let clock = clock.clone();
+    let daemon_id = daemon_id.clone();
+    tokio::spawn(async move {
+        replay_persisted_params_for_daemon(
+            uuid,
+            daemon_id,
+            node_ids_on_daemon,
+            store,
+            connection_for_params,
+            clock,
+        )
+        .await;
+    });
+    Ok(())
 }
 
 /// Broadcast `AllNodesReady` to every daemon running part of `dataflow` and
@@ -4611,12 +4635,29 @@ async fn broadcast_all_nodes_ready(
     // Persist the release. The in-memory entry is destroyed by orphan reclaim
     // and by coordinator restart; without a durable record of it, a daemon that
     // missed this broadcast and reconnects afterwards is never replayed it and
-    // hangs for the life of the dataflow (#2998). Only on a *successful*
-    // barrier: a failed one is persisted by the failure path with its verdict,
-    // and must not be promoted to `Running` here.
-    if dataflow.exited_before_subscribe.is_empty()
+    // hangs for the life of the dataflow (#2998).
+    //
+    // This must happen on a *failed* barrier too. The failure verdict is just
+    // as load-bearing as a success -- a daemon that reconnects still has to be
+    // told the barrier is down and why -- and deferring the write to whatever
+    // failure path runs next leaves a restart window that reproduces #2998.
+    // Only the status is conditional: a failed barrier keeps whatever status
+    // the record already has rather than being promoted to `Running`.
+    let persist_status = if dataflow.exited_before_subscribe.is_empty() {
+        Some(StoreDataflowStatus::Running)
+    } else {
+        match store.get_dataflow(&uuid) {
+            Ok(Some(existing)) => Some(existing.status),
+            Ok(None) => None,
+            Err(e) => {
+                tracing::warn!(dataflow = %uuid, "cannot read status to persist failed barrier: {e}");
+                None
+            }
+        }
+    };
+    if let Some(status) = persist_status
         && let Err(e) = dataflow
-            .make_record(StoreDataflowStatus::Running)
+            .make_record(status)
             .and_then(|r| store.put_dataflow(&r))
     {
         tracing::warn!(dataflow = %uuid, "failed to persist ready-barrier release: {e}");
@@ -4643,6 +4684,23 @@ async fn broadcast_all_nodes_ready(
     Ok(())
 }
 
+/// The nodes of `dataflow` assigned to `daemon_id`.
+///
+/// Shared by the initial param replay and the reconnect replay so both select
+/// the same set: a daemon replayed the barrier must be replayed exactly the
+/// parameters the broadcast would have sent it (#2998).
+fn nodes_on_daemon(
+    dataflow: &RunningDataflow,
+    daemon_id: &DaemonId,
+) -> Vec<dora_core::config::NodeId> {
+    dataflow
+        .node_to_daemon
+        .iter()
+        .filter(|(_, assigned)| *assigned == daemon_id)
+        .map(|(node_id, _)| node_id.clone())
+        .collect()
+}
+
 fn schedule_param_replay_for_ready_dataflow(
     dataflow_id: DataflowId,
     dataflow: &RunningDataflow,
@@ -4660,12 +4718,7 @@ fn schedule_param_replay_for_ready_dataflow(
             );
             continue;
         };
-        let node_ids_on_daemon: Vec<_> = dataflow
-            .node_to_daemon
-            .iter()
-            .filter(|(_, node_daemon_id)| *node_daemon_id == &daemon_id)
-            .map(|(node_id, _)| node_id.clone())
-            .collect();
+        let node_ids_on_daemon = nodes_on_daemon(dataflow, &daemon_id);
         let store = store.clone();
         let clock = clock.clone();
         tokio::spawn(async move {
@@ -5302,6 +5355,178 @@ mod tests {
             ),
             other => panic!("expected AllNodesReady, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn replaying_the_barrier_sends_it_and_the_params_to_that_daemon() {
+        // End-to-end over a fake daemon connection: the reconnecting daemon
+        // must receive BOTH halves of the release it missed -- the barrier and
+        // the persisted-parameter replay. Sending only the barrier releases its
+        // nodes with default state instead of the operator's parameters.
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            id: String,
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+        let value_bytes = serde_json::to_vec(&serde_json::json!(123)).unwrap();
+        store
+            .put_node_param(&dataflow_id, &node_id, "gain", &value_bytes)
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let connection =
+            crate::state::DaemonConnection::new(tx, pending_replies.clone(), BTreeMap::new());
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone());
+        dataflow.ready_barrier_released = true;
+
+        let expect_node = node_id.clone();
+        let daemon_task = tokio::spawn(async move {
+            // 1. the barrier itself (fire-and-forget `send`)
+            let first = rx.recv().await.expect("daemon should receive the barrier");
+            let raw: OutboundRaw = serde_json::from_str(&first).unwrap();
+            match raw.params.inner {
+                DaemonCoordinatorEvent::AllNodesReady {
+                    dataflow_id: id, ..
+                } => {
+                    assert_eq!(id, dataflow_id)
+                }
+                other => panic!("expected AllNodesReady first, got {other:?}"),
+            }
+
+            // 2. the persisted-parameter replay (`send_and_receive`, needs a reply)
+            let second = rx
+                .recv()
+                .await
+                .expect("a replayed daemon must also get its persisted params");
+            let raw: OutboundRaw = serde_json::from_str(&second).unwrap();
+            match raw.params.inner {
+                DaemonCoordinatorEvent::SetParam {
+                    node_id: n,
+                    key,
+                    value,
+                    ..
+                } => {
+                    assert_eq!(n, expect_node);
+                    assert_eq!(key, "gain");
+                    assert_eq!(value, serde_json::json!(123));
+                }
+                other => panic!("expected SetParam second, got {other:?}"),
+            }
+            let request_id = Uuid::parse_str(&raw.id).expect("valid request id");
+            let reply =
+                serde_json::to_string(&DaemonCoordinatorReply::SetParamResult(Ok(()))).unwrap();
+            if let Some(reply_tx) = pending_replies.lock().await.remove(&request_id) {
+                let _ = reply_tx.send(reply);
+            }
+        });
+
+        replay_all_nodes_ready(
+            dataflow_id,
+            &dataflow,
+            &daemon_id,
+            &mut daemon_connections,
+            &store,
+            &Arc::new(HLC::default()),
+        )
+        .await
+        .expect("replay");
+
+        // Bounded: a regression that stops sending must fail here, not wedge CI.
+        tokio::time::timeout(Duration::from_secs(10), daemon_task)
+            .await
+            .expect("daemon did not receive both halves of the release")
+            .unwrap();
+    }
+
+    #[test]
+    fn a_replayed_daemon_gets_its_own_nodes_params_and_no_one_elses() {
+        // The barrier and the persisted-parameter replay are two halves of the
+        // same release. A daemon that missed the broadcast missed both, so
+        // replaying only the barrier releases its nodes with default state
+        // instead of the parameters the operator set. Selecting the wrong
+        // nodes here would replay another daemon's parameters, or none.
+        let dataflow_id = Uuid::new_v4();
+        let daemon_a = DaemonId::new(Some("machine-a".to_string()));
+        let daemon_b = DaemonId::new(Some("machine-b".to_string()));
+        let node_a: dora_core::config::NodeId = "sender".to_string().into();
+        let node_b: dora_core::config::NodeId = "receiver".to_string().into();
+
+        let mut df = test_running_dataflow(dataflow_id, daemon_a.clone(), node_a.clone());
+        df.node_to_daemon.insert(node_b.clone(), daemon_b.clone());
+
+        assert_eq!(
+            nodes_on_daemon(&df, &daemon_a),
+            vec![node_a],
+            "only the reconnecting daemon's own nodes"
+        );
+        assert_eq!(nodes_on_daemon(&df, &daemon_b), vec![node_b]);
+        assert!(
+            nodes_on_daemon(&df, &DaemonId::new(Some("machine-c".to_string()))).is_empty(),
+            "a daemon with no nodes here gets nothing replayed"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_barrier_is_persisted_as_durably_as_a_successful_one() {
+        // A failed barrier still has to reach a daemon that reconnects later --
+        // it must learn the barrier is down and why. Leaving the write to
+        // whatever failure path runs next opens a restart window in which the
+        // record still says "not released", which is #2998 all over again.
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let clock = Arc::new(HLC::default());
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let mut daemon_connections = DaemonConnections::default();
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        // Seed with a status that is NOT `Running`, so "keeps its status" is
+        // distinguishable from "promoted to Running".
+        let seeded = dataflow
+            .make_record(StoreDataflowStatus::Pending)
+            .expect("seed record");
+        store.put_dataflow(&seeded).expect("seed");
+
+        // The barrier fires with a failure verdict.
+        dataflow.exited_before_subscribe = vec![node_id.clone()];
+        broadcast_all_nodes_ready(
+            dataflow_id,
+            &mut dataflow,
+            &mut daemon_connections,
+            &store,
+            &clock,
+        )
+        .await
+        .expect("broadcast");
+
+        let persisted = store
+            .get_dataflow(&dataflow_id)
+            .expect("read back")
+            .expect("record present");
+        assert!(
+            persisted.ready_barrier_released,
+            "a failed barrier must be persisted at release, or a coordinator \
+             restart in the window leaves the reconnecting daemon hanging (#2998)"
+        );
+        assert_eq!(
+            persisted.barrier_exited_before_subscribe,
+            vec![node_id.to_string()],
+            "and must persist the failure verdict, not a bare release"
+        );
+        assert_eq!(
+            persisted.status,
+            StoreDataflowStatus::Pending,
+            "a failed barrier keeps the status it had; it must not be promoted"
+        );
     }
 
     #[tokio::test]
