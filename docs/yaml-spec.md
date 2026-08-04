@@ -274,6 +274,17 @@ env:
 
 Environment variables apply to both `build` commands and node execution. Values support `$VAR` expansion syntax.
 
+Some names are reserved and are dropped (with a warning in the daemon log) when set on a node:
+
+| Reserved | Why |
+|----------|-----|
+| `DORA_NODE_CONFIG`, `DORA_RUNTIME_CONFIG` | The daemon's own handle to the node — dataflow id, node id, and how to reach the daemon |
+| `DORA_ZENOH_LISTEN`, `DORA_ZENOH_CONNECT`, `DORA_ZENOH_MULTICAST`, `ZENOH_CONFIG` | Node-to-node wiring. Overriding these produces a dataflow that starts cleanly and then exchanges nothing. Set `ZENOH_CONFIG` in the daemon's own environment instead — nodes inherit it |
+| `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` | Loader hijacking |
+| `DORA_AUTH_TOKEN`, `DORA_ALLOW_SHELL_NODES` | Daemon-level security settings |
+
+Names that are empty or contain `=`, whitespace, or NUL are rejected as well.
+
 ### Logging
 
 | Field | Type | Default | Description |

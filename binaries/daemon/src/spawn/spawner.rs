@@ -13,7 +13,10 @@ use dora_core::{
         CoreNodeKind, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode,
     },
     get_python_path,
-    topics::{DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV},
+    topics::{
+        DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV,
+        ZENOH_CONFIG_PATH_ENV,
+    },
     uhlc::HLC,
 };
 use dora_message::{
@@ -34,22 +37,83 @@ use std::{
 };
 use tokio::sync::mpsc;
 
-/// Environment variable names that must never be passed to spawned nodes.
+/// Environment variable names that must never be passed to spawned nodes:
+/// loader-injection vectors and daemon-level secrets. Refused from a
+/// descriptor *and* scrubbed from the environment nodes inherit.
 const ENV_DENYLIST: &[&str] = &[
     "LD_PRELOAD",
     "LD_AUDIT",
     "DYLD_INSERT_LIBRARIES",
-    "DYLD_LIBRARY_PATH",
-    "LD_LIBRARY_PATH",
     "DORA_AUTH_TOKEN",
     "DORA_ALLOW_SHELL_NODES",
 ];
 
+/// Library *search* paths. Refused from a descriptor like the hijack variables
+/// above, but deliberately still inherited: a daemon started from a sourced
+/// ROS or CUDA environment must keep passing these on, or a dynamically linked
+/// node fails to start before it can report anything. A node that needs a
+/// custom search path gets it from the environment the daemon runs in
+/// (#2991 review).
+const SEARCH_PATH_ENV: &[&str] = &["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"];
+
+/// Control-plane variables the daemon injects into every node it spawns.
+/// Descriptor `env:` / `envs:` entries must not override them: they configure
+/// how the node reaches its daemon and peers, and a forged value produces a
+/// dataflow that starts cleanly but silently exchanges nothing (#2944).
+///
+/// `DORA_NODE_CONFIG` was previously safe only because `spawn_inner`
+/// re-serializes it after the command is built (a restart-count fix, not a
+/// security measure); listing it here makes that safety intentional.
+const CONTROL_PLANE_ENV: &[&str] = &[
+    "DORA_NODE_CONFIG",
+    "DORA_RUNTIME_CONFIG",
+    DORA_ZENOH_LISTEN_ENV,
+    DORA_ZENOH_CONNECT_ENV,
+    DORA_ZENOH_MULTICAST_ENV,
+];
+
+/// Whether `key` names the reserved variable `reserved`.
+///
+/// Exact on Unix, where `ld_preload` and `LD_PRELOAD` are genuinely different
+/// variables and folding case would silently drop a legitimate descriptor
+/// entry. On Windows the OS folds env keys with its uppercase mapping before
+/// the child sees them, so a case (or Unicode) variant of a reserved name
+/// collides with the real one and must be denied.
+fn env_key_matches(key: &str, reserved: &str) -> bool {
+    if cfg!(windows) {
+        key.to_uppercase() == reserved.to_uppercase()
+    } else {
+        key == reserved
+    }
+}
+
 /// Returns true if the env var key is denied, logging a warning if so.
 fn is_denied_env(key: &str) -> bool {
-    if ENV_DENYLIST.contains(&key) {
+    if ENV_DENYLIST.iter().any(|d| env_key_matches(key, d)) {
         tracing::warn!(
-            "skipping denied environment variable '{key}' (security: could inject shared libraries)"
+            "skipping denied environment variable {key:?} (security: could inject shared libraries)"
+        );
+        true
+    } else if SEARCH_PATH_ENV.iter().any(|d| env_key_matches(key, d)) {
+        tracing::warn!(
+            "skipping {key:?} from the descriptor env: library search paths are \
+             inherited from the environment the daemon runs in"
+        );
+        true
+    } else if CONTROL_PLANE_ENV
+        .iter()
+        .chain(std::iter::once(&ZENOH_CONFIG_PATH_ENV))
+        .any(|d| env_key_matches(key, d))
+    {
+        tracing::warn!(
+            "ignoring {key:?} from the descriptor env: it is control-plane wiring \
+             set by the daemon and cannot be overridden"
+        );
+        true
+    } else if is_malformed_env_key(key) {
+        tracing::warn!(
+            "skipping malformed environment variable name {key:?}: names cannot be \
+             empty or contain `=`, whitespace, or NUL"
         );
         true
     } else {
@@ -57,12 +121,55 @@ fn is_denied_env(key: &str) -> bool {
     }
 }
 
-/// Strip all denied env vars from the inherited process environment.
-/// This prevents the daemon's own env (e.g. `DORA_AUTH_TOKEN`) from leaking
-/// to child nodes via `/proc/<pid>/environ`.
-fn strip_denied_env(mut command: Command) -> Command {
-    for key in ENV_DENYLIST {
-        command = command.env_remove(key);
+/// Whether the OS would refuse to treat `key` as one variable name.
+///
+/// A key containing `=` is handed to `execve` verbatim, so the entry
+/// `LD_PRELOAD=/tmp/evil.so ` (denylist miss: the whole string is the *key*)
+/// reaches the child as a real `LD_PRELOAD` assignment, since the loader
+/// splits its value on whitespace. Rejecting the shape closes that off for
+/// every reserved name at once.
+fn is_malformed_env_key(key: &str) -> bool {
+    key.is_empty()
+        || key.contains('=')
+        || key.contains('\0')
+        || key.chars().any(char::is_whitespace)
+}
+
+/// Apply descriptor-provided env (`env:` / `envs:`) to the command, dropping
+/// denied keys with a warning.
+fn apply_descriptor_env(
+    mut command: Command,
+    envs: Option<&BTreeMap<String, EnvValue>>,
+) -> Command {
+    if let Some(envs) = envs {
+        for (key, value) in envs {
+            if !is_denied_env(key) {
+                command = command.env(key, value.to_string());
+            }
+        }
+    }
+    command
+}
+
+/// Keep the daemon's own environment from reaching child nodes: loader-hijack
+/// variables and `DORA_AUTH_TOKEN` (via `/proc/<pid>/environ`), plus the
+/// control-plane wiring, so a stale `DORA_ZENOH_CONNECT` exported in the shell
+/// that started the daemon cannot wrongly wire nodes the daemon deliberately
+/// left unwired.
+///
+/// [`ZENOH_CONFIG_PATH_ENV`] and [`SEARCH_PATH_ENV`] are deliberately absent:
+/// refused from a descriptor, but inheriting them is how a deployment points
+/// every process at a custom zenoh config, and how a node linked against a
+/// sourced ROS or CUDA install finds its libraries.
+///
+/// Inserts the `None` removal sentinel directly rather than calling
+/// `Command::env_remove`, which `clonable_command` implements as a map
+/// *removal* — that erases any explicit entry but leaves inheritance untouched,
+/// so the whole scrub was a no-op (only `None` values become
+/// `std::process::Command::env_remove` calls when the command is converted).
+fn deny_inherited_env(mut command: Command) -> Command {
+    for key in ENV_DENYLIST.iter().chain(CONTROL_PLANE_ENV) {
+        command.environment.insert(OsString::from(*key), None);
     }
     command
 }
@@ -305,6 +412,30 @@ impl Spawner {
         }
     }
 
+    /// Compose a spawned node's environment: scrub what must not be inherited,
+    /// apply the descriptor's `env:` (and a custom node's inner `envs:`), then
+    /// inject the daemon's control-plane wiring LAST.
+    ///
+    /// The order is the protection (#2944). A later `.env()` overwrites an
+    /// earlier one, so injecting last means a descriptor entry cannot override
+    /// the daemon's wiring even for a control-plane key [`is_denied_env`]
+    /// misses. Both spawn paths compose through here so the two cannot drift.
+    fn compose_node_env(
+        &self,
+        mut command: Command,
+        node_id: &NodeId,
+        descriptor_envs: &[Option<&BTreeMap<String, EnvValue>>],
+        config_key: &str,
+        config_yaml: String,
+    ) -> Command {
+        command = deny_inherited_env(command);
+        for envs in descriptor_envs {
+            command = apply_descriptor_env(command, *envs);
+        }
+        command = command.env(config_key, config_yaml);
+        self.maybe_inject_zenoh_connect(command, node_id)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub async fn spawn_node(
         self,
@@ -422,31 +553,14 @@ impl Spawner {
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
                     command = command.stdin(Stdio::Null);
-                    command = strip_denied_env(command);
-
-                    command = command.env(
+                    command = self.compose_node_env(
+                        command,
+                        &node.id,
+                        &[node.env.as_ref(), n.envs.as_ref()],
                         "DORA_NODE_CONFIG",
-                        serde_yaml::to_string(&node_config.clone())
+                        serde_yaml::to_string(&node_config)
                             .wrap_err("failed to serialize node config")?,
                     );
-                    command = self.maybe_inject_zenoh_connect(command, &node.id);
-                    // Injecting the env variable defined in the `yaml` into
-                    // the node runtime.
-                    if let Some(envs) = &node.env {
-                        for (key, value) in envs {
-                            if !is_denied_env(key) {
-                                command = command.env(key, value.to_string());
-                            }
-                        }
-                    }
-                    if let Some(envs) = &n.envs {
-                        // node has some inner env variables -> add them too
-                        for (key, value) in envs {
-                            if !is_denied_env(key) {
-                                command = command.env(key, value.to_string());
-                            }
-                        }
-                    }
 
                     // For managed Python custom nodes, also set VIRTUAL_ENV and
                     // prepend the env's bin dir to PATH so subprocesses, console
@@ -629,23 +743,14 @@ impl Spawner {
 
                 let command = if let Some(mut command) = command {
                     command = command.current_dir(&node_working_dir);
-                    command = strip_denied_env(command);
-
-                    command = command.env(
+                    command = self.compose_node_env(
+                        command,
+                        &node.id,
+                        &[node.env.as_ref()],
                         "DORA_RUNTIME_CONFIG",
                         serde_yaml::to_string(&runtime_config)
                             .wrap_err("failed to serialize runtime config")?,
                     );
-                    command = self.maybe_inject_zenoh_connect(command, &node.id);
-                    // Injecting the env variable defined in the `yaml` into
-                    // the node runtime.
-                    if let Some(envs) = &node.env {
-                        for (key, value) in envs {
-                            if !is_denied_env(key) {
-                                command = command.env(key, value.to_string());
-                            }
-                        }
-                    }
 
                     // For managed Python runtime nodes (Python operator + uv on),
                     // set VIRTUAL_ENV and prepend the env's bin dir to PATH so
@@ -769,6 +874,200 @@ mod tests {
 
     fn node(id: &str) -> NodeId {
         NodeId::from(id.to_string())
+    }
+
+    /// #2944: the daemon's own wiring variables must be rejected from
+    /// descriptor `env:` entries — they configure how the node reaches its
+    /// daemon and peers, and a descriptor that sets them produces a dataflow
+    /// that starts cleanly but silently exchanges nothing.
+    #[test]
+    fn reserved_control_plane_keys_are_denied() {
+        for key in CONTROL_PLANE_ENV {
+            assert!(
+                is_denied_env(key),
+                "`{key}` is daemon-managed control-plane wiring and must be denied"
+            );
+        }
+        assert!(
+            is_denied_env(ZENOH_CONFIG_PATH_ENV),
+            "`{ZENOH_CONFIG_PATH_ENV}` builds the whole zenoh session from a file, \
+             skipping every DORA_ZENOH_* variable — denying those and not this one \
+             leaves the bypass open"
+        );
+        assert!(
+            !is_denied_env("MY_APP_SETTING"),
+            "ordinary variables must still pass through"
+        );
+        // Unix env vars are case-sensitive, so `ld_preload` is a different
+        // (harmless) variable and must not be dropped. Windows folds keys, so
+        // there the variant IS the reserved name.
+        assert_eq!(
+            is_denied_env("dora_zenoh_connect"),
+            cfg!(windows),
+            "case variants are only a bypass where the OS folds env keys"
+        );
+        assert_eq!(is_denied_env("ld_preload"), cfg!(windows));
+    }
+
+    /// A descriptor key the OS would not read as one variable name is a
+    /// denylist bypass: `env: { "LD_PRELOAD=/tmp/evil.so ": "" }` reaches
+    /// `execve` verbatim and the loader reads it as a real `LD_PRELOAD`.
+    #[test]
+    fn malformed_env_names_are_rejected() {
+        for key in [
+            "LD_PRELOAD=/tmp/evil.so ",
+            "DORA_NODE_CONFIG=forged",
+            "HAS SPACE",
+            "",
+        ] {
+            assert!(is_denied_env(key), "{key:?} is not a usable variable name");
+        }
+    }
+
+    fn env_of(command: &Command, key: &str) -> Option<Option<OsString>> {
+        command.environment.get(&OsString::from(key)).cloned()
+    }
+
+    /// #2944 regression, driven through the same helper both spawn paths use.
+    /// Pins the ordering defense independently of the denylist: a
+    /// control-plane value already on the command (as if the denylist had
+    /// missed it) must still lose to the daemon's inject-last wiring.
+    #[test]
+    fn descriptor_env_cannot_override_the_daemons_wiring() {
+        let spawner = spawner_for(Some("tcp/127.0.0.1:7447"), true);
+        let forged: BTreeMap<String, EnvValue> = CONTROL_PLANE_ENV
+            .iter()
+            .chain(std::iter::once(&ZENOH_CONFIG_PATH_ENV))
+            .map(|key| (key.to_string(), EnvValue::String("FORGED".into())))
+            .collect();
+        let ordinary: BTreeMap<String, EnvValue> = [(
+            "MY_APP_SETTING".to_string(),
+            EnvValue::String("kept".into()),
+        )]
+        .into();
+
+        let command = spawner.compose_node_env(
+            // Pre-seeded as if the denylist had missed the key.
+            Command::new("true").env("DORA_NODE_CONFIG", "FORGED"),
+            &node("sink"),
+            &[Some(&forged), Some(&ordinary)],
+            "DORA_NODE_CONFIG",
+            "real-config".into(),
+        );
+
+        let env = |key: &str| env_of(&command, key).flatten();
+        assert_eq!(
+            env("DORA_NODE_CONFIG").as_deref(),
+            Some(OsStr::new("real-config")),
+            "the node must receive the daemon's config, not the descriptor's"
+        );
+        assert_eq!(
+            env(DORA_ZENOH_CONNECT_ENV).as_deref(),
+            Some(OsStr::new("tcp/127.0.0.1:7447")),
+            "the node must dial the daemon's endpoint, not the descriptor's"
+        );
+        assert_eq!(
+            env(DORA_ZENOH_MULTICAST_ENV).as_deref(),
+            Some(OsStr::new("off")),
+            "the daemon's multicast decision must win"
+        );
+        assert_eq!(
+            env(ZENOH_CONFIG_PATH_ENV),
+            None,
+            "a descriptor must not hand the node its own zenoh config file"
+        );
+        assert_eq!(
+            env("MY_APP_SETTING").as_deref(),
+            Some(OsStr::new("kept")),
+            "ordinary descriptor env must still reach the node"
+        );
+    }
+
+    /// The operator runtime composes its env through the same helper. It has
+    /// no accidental backstop (`spawn_inner` re-serializes `DORA_NODE_CONFIG`
+    /// only), so a forged `DORA_RUNTIME_CONFIG` would hand the runtime the
+    /// wrong operator set.
+    #[test]
+    fn the_runtime_config_is_composed_like_a_node_config() {
+        let spawner = spawner_for(Some("tcp/127.0.0.1:7447"), false);
+        let forged: BTreeMap<String, EnvValue> = [(
+            "DORA_RUNTIME_CONFIG".to_string(),
+            EnvValue::String("FORGED".into()),
+        )]
+        .into();
+
+        let command = spawner.compose_node_env(
+            Command::new("true").env("DORA_RUNTIME_CONFIG", "FORGED"),
+            &node("op"),
+            &[Some(&forged)],
+            "DORA_RUNTIME_CONFIG",
+            "real-runtime-config".into(),
+        );
+
+        assert_eq!(
+            env_of(&command, "DORA_RUNTIME_CONFIG").flatten().as_deref(),
+            Some(OsStr::new("real-runtime-config")),
+            "the runtime must receive the daemon's operator set"
+        );
+    }
+
+    /// Nodes inherit the daemon's environment, so the scrub is the only thing
+    /// keeping `DORA_AUTH_TOKEN` out of `/proc/<pid>/environ` and a stale
+    /// `DORA_ZENOH_CONNECT` from the daemon's shell out of a node the daemon
+    /// deliberately left unwired. Only a `None` entry becomes a real
+    /// `Command::env_remove`; an absent key inherits.
+    #[test]
+    fn the_daemons_own_environment_does_not_leak_into_nodes() {
+        let spawner = spawner_for(None, false);
+        let command = spawner.compose_node_env(
+            Command::new("true"),
+            &node("sink"),
+            &[None],
+            "DORA_NODE_CONFIG",
+            "real-config".into(),
+        );
+
+        for key in ["DORA_AUTH_TOKEN", "LD_PRELOAD", DORA_ZENOH_LISTEN_ENV] {
+            assert_eq!(
+                env_of(&command, key),
+                Some(None),
+                "`{key}` must be removed from the inherited environment, not merely unset"
+            );
+        }
+        assert_eq!(
+            env_of(&command, ZENOH_CONFIG_PATH_ENV),
+            None,
+            "a daemon-level zenoh config must still reach its nodes by inheritance"
+        );
+    }
+
+    /// The scrub must not strand a dynamically linked node: a daemon started
+    /// from a sourced ROS or CUDA environment is the only source of these, and
+    /// a descriptor cannot supply them, so scrubbing them means the node's
+    /// loader fails before the node can report anything (#2991 review).
+    #[test]
+    fn library_search_paths_survive_the_scrub() {
+        let spawner = spawner_for(None, false);
+        let command = spawner.compose_node_env(
+            Command::new("true"),
+            &node("sink"),
+            &[None],
+            "DORA_NODE_CONFIG",
+            "real-config".into(),
+        );
+
+        for key in SEARCH_PATH_ENV {
+            assert_eq!(
+                env_of(&command, key),
+                None,
+                "`{key}` must keep being inherited — a node linked against a \
+                 sourced install has no other way to find its libraries"
+            );
+            assert!(
+                is_denied_env(key),
+                "`{key}` is still not something a descriptor gets to set"
+            );
+        }
     }
 
     /// Since zenoh 1.9 peers don't relay, a consumer that never dials its

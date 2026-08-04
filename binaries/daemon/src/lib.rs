@@ -1413,6 +1413,14 @@ impl Daemon {
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
+        // Fold in `DORA_ZENOH_MULTICAST` so this is the daemon's *effective*
+        // decision, not just its flag. The zenoh session honors the variable on
+        // its own, but the spawner forwards this field to nodes — and nodes no
+        // longer inherit the variable — so a daemon started with the variable
+        // instead of `--zenoh-no-multicast` would otherwise leave its nodes
+        // scouting by multicast (#2991 review).
+        let disable_multicast = dora_core::topics::multicast_disabled(disable_multicast);
+
         // Reserve a port and have zenoh listen on it. The endpoint is injected
         // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
         // without multicast (#1778).

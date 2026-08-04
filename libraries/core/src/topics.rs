@@ -50,6 +50,18 @@ pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
 /// `--zenoh-no-multicast`, so a single flag covers the whole process tree.
 pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
 
+/// Zenoh's own config-file override, honored by
+/// [`open_zenoh_session_with_listen`].
+///
+/// Takes precedence over every `DORA_ZENOH_*` variable: when it is set the
+/// session is built entirely from the named file, so the connect/listen plan
+/// and the multicast decision are never read. That makes it a full bypass of
+/// the daemon's node wiring, which is why the daemon refuses it from a
+/// descriptor's `env:` (#2944) while still honoring it from its own
+/// environment — the documented way to point a whole deployment at a custom
+/// zenoh config.
+pub const ZENOH_CONFIG_PATH_ENV: &str = zenoh::Config::DEFAULT_CONFIG_PATH_ENV;
+
 /// Whether a session may discover peers by multicast scouting.
 ///
 /// Spelled as an enum rather than a bool because the concept flips polarity at
@@ -70,6 +82,19 @@ pub enum MulticastScouting {
 #[cfg(feature = "zenoh")]
 fn multicast_disabled_by_env() -> bool {
     multicast_disabled_by_value(std::env::var(DORA_ZENOH_MULTICAST_ENV).ok().as_deref())
+}
+
+/// The effective decision for a process that also has its own request.
+///
+/// [`open_zenoh_session_with_listen`] ORs the caller's request with
+/// [`DORA_ZENOH_MULTICAST_ENV`], so a process that has to *forward* its
+/// decision — the daemon, to the nodes it spawns — must OR them the same way.
+/// Forwarding only its own flag drops the environment half, leaving nodes
+/// scouting by multicast in exactly the environments where the variable was
+/// set to stop them.
+#[cfg(feature = "zenoh")]
+pub fn multicast_disabled(requested_off: bool) -> bool {
+    requested_off || multicast_disabled_by_env()
 }
 
 /// Parse a [`DORA_ZENOH_MULTICAST_ENV`] value (`None` when the var is unset).
@@ -342,7 +367,7 @@ pub async fn open_zenoh_session_with_listen(
             // multicast scouting only" and mean it. Treating the request as
             // absolute would disarm that recovery and strand the daemon.
             let requested_off =
-                matches!(multicast, MulticastScouting::Disabled) || multicast_disabled_by_env();
+                multicast_disabled(matches!(multicast, MulticastScouting::Disabled));
             if (connect_inserted || (requested_off && listen_configured))
                 && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
             {
@@ -726,6 +751,16 @@ mod tests {
                 "{value:?} must not disable multicast scouting"
             );
         }
+    }
+
+    /// A caller's own request must survive the fold, whatever the environment
+    /// says. The environment half is covered by the value tests above; this
+    /// pins that [`multicast_disabled`] never *weakens* an explicit request —
+    /// the daemon forwards its result to every node it spawns.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_explicit_multicast_disable_is_never_lost() {
+        assert!(multicast_disabled(true));
     }
 
     #[test]
