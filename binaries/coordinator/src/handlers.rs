@@ -665,6 +665,7 @@ pub(crate) async fn start_dataflow(
             BTreeSet::new()
         },
         exited_before_subscribe: Default::default(),
+        ready_barrier_released: false,
         daemons: daemons.clone(),
         nodes,
         node_to_daemon,

@@ -249,6 +249,22 @@ pub(crate) struct RunningDataflow {
     /// IDs of daemons that are waiting until all nodes are started.
     pub(crate) pending_daemons: BTreeSet<DaemonId>,
     pub(crate) exited_before_subscribe: Vec<NodeId>,
+    /// Whether the ready barrier has already been broadcast for this
+    /// dataflow.
+    ///
+    /// The broadcast goes to `daemons` at the moment it fires, so a daemon
+    /// that is disconnected then never receives it — and nothing replays it
+    /// on reconnect, leaving every node it owns parked in `init_from_env()`
+    /// forever (dora-rs/dora#2998). Remembering the release lets the
+    /// reconnect path re-send it to just that daemon.
+    ///
+    /// Mirrored into the persisted record (`make_record`) and restored by
+    /// [`RunningDataflow::recovered`], because this entry does not survive
+    /// orphan reclaim or a coordinator restart. It cannot be left in memory
+    /// only and reconstructed later from a fresh `ReadyOnDaemon`: the daemon
+    /// never sends one, since `PendingNodes::reported_init_to_coordinator` is
+    /// set once and never reset.
+    pub(crate) ready_barrier_released: bool,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
@@ -478,7 +494,17 @@ impl RunningDataflow {
             descriptor,
             daemons: daemons.clone(),
             pending_daemons: BTreeSet::new(),
-            exited_before_subscribe: Vec::new(),
+            // Restored, not reset: the live entry is destroyed by orphan
+            // reclaim and by coordinator restart, and the daemon cannot prompt
+            // a fresh broadcast because its `reported_init_to_coordinator` is
+            // never reset. Dropping the verdict here is what left a
+            // reconnecting daemon hanging forever (dora-rs/dora#2998).
+            exited_before_subscribe: record
+                .barrier_exited_before_subscribe
+                .iter()
+                .map(|n| NodeId::from(n.clone()))
+                .collect(),
+            ready_barrier_released: record.ready_barrier_released,
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
@@ -530,6 +556,12 @@ impl RunningDataflow {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             uv: self.uv,
+            ready_barrier_released: self.ready_barrier_released,
+            barrier_exited_before_subscribe: self
+                .exited_before_subscribe
+                .iter()
+                .map(|n| n.to_string())
+                .collect(),
             generation: self.store_generation,
             created_at: self.created_at,
             updated_at: now_millis(),

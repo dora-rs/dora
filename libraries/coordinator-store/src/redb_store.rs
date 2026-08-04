@@ -27,7 +27,7 @@ const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_par
 /// this constant, so `open()` rejects old-format databases up front instead
 /// of decoding old rows into errors that get silently dropped by the
 /// `list_*` methods below.
-const SCHEMA_VERSION: u32 = 3; // v3: added `terminal` to DataflowStatus::Failed
+const SCHEMA_VERSION: u32 = 4; // v4: added ready-barrier release + verdict (#2998)
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
@@ -502,6 +502,8 @@ mod tests {
             updated_at: 1000,
             node_to_daemon: Default::default(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
         };
 
         store.put_dataflow(&record).unwrap();
@@ -557,6 +559,8 @@ mod tests {
                 updated_at: 1,
                 node_to_daemon: Default::default(),
                 uv: false,
+                ready_barrier_released: false,
+                barrier_exited_before_subscribe: Vec::new(),
             })
             .unwrap();
 
@@ -692,6 +696,8 @@ mod tests {
             updated_at: 1000,
             node_to_daemon: Default::default(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
         };
 
         store.put_dataflow(&record).unwrap();
@@ -725,6 +731,8 @@ mod tests {
                 updated_at: 2000,
                 node_to_daemon: Default::default(),
                 uv: false,
+                ready_barrier_released: false,
+                barrier_exited_before_subscribe: Vec::new(),
             };
             store.put_dataflow(&record).unwrap();
         }
@@ -1204,6 +1212,8 @@ mod tests {
             daemon_ids: vec![],
             node_to_daemon: Default::default(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
             generation: 1,
             created_at: 1,
             updated_at: 1,
