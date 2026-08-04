@@ -41,7 +41,7 @@ use local_listener::DynamicNodeEventWrapper;
 use log::{CoordinatorLogTarget, DaemonLogger, DataflowLogger, Logger};
 use spawn::Spawner;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     env::current_dir,
     future::Future,
     io,
@@ -345,7 +345,19 @@ pub struct Daemon {
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
     pub(crate) memory_pool: MemoryPoolManager,
+    /// Nodes already warned about for sending after their dataflow
+    /// finished, so `log_late_node_output` warns once each instead of
+    /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
+    pub(crate) warned_late_outputs: HashSet<(DataflowId, NodeId)>,
 }
+
+/// Cap on `Daemon::warned_late_outputs`, so a daemon that serves many
+/// dataflows cannot accumulate an entry per (dataflow, node) forever.
+/// Reaching it clears the set rather than freezing it: a daemon is meant
+/// to run indefinitely, and simply refusing new entries would silence
+/// the warning permanently after ~1024 dataflows — including for the
+/// stale-node case that is the reason it is a warning at all.
+const MAX_WARNED_LATE_OUTPUT_NODES: usize = 1024;
 
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
@@ -1551,6 +1563,7 @@ impl Daemon {
             exit_when_done,
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
+            warned_late_outputs: HashSet::new(),
             clock,
             ft_stats: Default::default(),
             zenoh_session,
@@ -4800,6 +4813,72 @@ impl Daemon {
         Ok(())
     }
 
+    /// Record an output event that named a dataflow the daemon no longer
+    /// runs, and drop it.
+    ///
+    /// Usually this means the dataflow finished while the node still had
+    /// traffic in flight. Two ways in, both normal:
+    ///
+    /// * a node's exit and its already-transmitted outputs reach the
+    ///   daemon's event loop on independent paths, so a burst sent just
+    ///   before exit can be queued behind the `SpawnedNodeResult` that
+    ///   finished the dataflow (the intermittent nightly `smoke-suite`
+    ///   failure in dora-rs/dora#2742);
+    /// * `should_finish` ignores still-running *dynamic* nodes, so a
+    ///   dynamic node is expected to outlive `finish_dataflow` and may
+    ///   keep sending for as long as it likes afterwards.
+    ///
+    /// It can also mean a stale or misconfigured node: registration takes
+    /// `dataflow_id` from the node's own `Register` request and only
+    /// version-checks it, so an id the daemon never ran reaches here too.
+    /// That is why this warns rather than logging at `debug`.
+    ///
+    /// Fatal it must not be: neither `SendOut` nor `OutputSent` carries a
+    /// reply channel, so `handle_node_event` cannot report the error back
+    /// to the node the way every sibling arm does — it can only return
+    /// `Err`, which unwinds the daemon's main loop and drops its
+    /// coordinator connection — which loses this message *and* every
+    /// other dataflow's connection with it.
+    ///
+    /// Dropping it is not always free, though: `should_finish` only looks
+    /// at this daemon's non-dynamic nodes, so a still-running local
+    /// dynamic consumer, or a consumer on another daemon reached through
+    /// `open_external_mappings`, can still have been waiting for it. That
+    /// is a pre-existing finish-ordering gap, strictly better than taking
+    /// the daemon down for it, and why this is a warning rather than a
+    /// silent drop.
+    ///
+    /// Warns once per node, then falls to `debug`: the dynamic-node case
+    /// above is unbounded, and a node sending at 1 kHz would otherwise
+    /// emit 1000 warn lines a second for as long as it stayed alive.
+    fn log_late_node_output(
+        &mut self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        output_id: &DataId,
+        what: &'static str,
+    ) {
+        if self.warned_late_outputs.len() >= MAX_WARNED_LATE_OUTPUT_NODES {
+            self.warned_late_outputs.clear();
+        }
+        if self
+            .warned_late_outputs
+            .insert((*dataflow_id, node_id.clone()))
+        {
+            tracing::warn!(
+                %dataflow_id, %node_id, %output_id,
+                "ignoring `{what}` for a dataflow that already finished \
+                 (node outlived its dataflow); further such messages from \
+                 this node are logged at debug level"
+            );
+        } else {
+            tracing::debug!(
+                %dataflow_id, %node_id, %output_id,
+                "ignoring `{what}` for a dataflow that already finished"
+            );
+        }
+    }
+
     async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -4808,9 +4887,10 @@ impl Daemon {
         metadata: dora_message::metadata::Metadata,
         data: Option<DataMessage>,
     ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
+        let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+            self.log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
+            return Ok(());
+        };
         let output_id_key = OutputId(node_id.clone(), output_id.clone());
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
@@ -4876,9 +4956,10 @@ impl Daemon {
         output_id: DataId,
         _metadata: dora_message::metadata::Metadata,
     ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("output sent failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
+        let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+            self.log_late_node_output(&dataflow_id, &node_id, &output_id, "output sent");
+            return Ok(());
+        };
         note_output_sent_to_local_receivers(
             node_id,
             output_id,

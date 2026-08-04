@@ -1,0 +1,27 @@
+[package]
+name = "late-dynamic-sender"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only dynamic node that keeps sending after the daemon has already
+# finished its dataflow, so a late `SendOut` can be shown to be
+# survivable rather than fatal to the daemon (dora-rs/dora#2742).
+#
+# Its companion — the dataflow's only non-dynamic node, whose exit is
+# what makes the daemon finish — is the existing
+# `emit-then-exit-source-node` fixture wired to this node's output, so
+# there is no second binary here. See the test in
+# `tests/daemon-reconnect-e2e.rs`.
+
+[[bin]]
+name = "late-dynamic-sender"
+path = "src/sender.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }
