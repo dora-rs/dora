@@ -2550,24 +2550,72 @@ async fn start_inner(
                                 // surviving nodes are visible + manageable again
                                 // (#2029 P1) — store status alone doesn't drive
                                 // `dora list` / `stop` / `logs`.
-                                reestablish_running_dataflow(
+                                if reestablish_running_dataflow(
                                     &mut running_dataflows,
                                     &record,
                                     &daemon_id,
                                     &entry.running_nodes,
-                                );
+                                ) && let Some(df) = running_dataflows.get(&record.uuid)
+                                {
+                                    // Barrier released while this daemon was
+                                    // gone; nothing else will tell it (#2998).
+                                    // Best-effort, like every other step in
+                                    // this reconciliation: a failed send here
+                                    // means one daemon's nodes stay parked,
+                                    // which must not take down the coordinator
+                                    // and every other dataflow with it.
+                                    if let Err(e) = replay_all_nodes_ready(
+                                        record.uuid,
+                                        df,
+                                        &daemon_id,
+                                        &mut daemon_connections,
+                                        &clock,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            "failed to replay ready barrier to daemon \
+                                             `{daemon_id}` for dataflow {}: {e:#}",
+                                            record.uuid
+                                        );
+                                    }
+                                }
                             }
                             StoreDataflowStatus::Running => {
                                 // Already `Running` in the store but possibly
                                 // missing from the live map (e.g. a later report,
                                 // or a coordinator restart that loaded the record
                                 // but not the in-memory entry). Idempotent.
-                                reestablish_running_dataflow(
+                                if reestablish_running_dataflow(
                                     &mut running_dataflows,
                                     &record,
                                     &daemon_id,
                                     &entry.running_nodes,
-                                );
+                                ) && let Some(df) = running_dataflows.get(&record.uuid)
+                                {
+                                    // Barrier released while this daemon was
+                                    // gone; nothing else will tell it (#2998).
+                                    // Best-effort, like every other step in
+                                    // this reconciliation: a failed send here
+                                    // means one daemon's nodes stay parked,
+                                    // which must not take down the coordinator
+                                    // and every other dataflow with it.
+                                    if let Err(e) = replay_all_nodes_ready(
+                                        record.uuid,
+                                        df,
+                                        &daemon_id,
+                                        &mut daemon_connections,
+                                        &clock,
+                                    )
+                                    .await
+                                    {
+                                        tracing::warn!(
+                                            "failed to replay ready barrier to daemon \
+                                             `{daemon_id}` for dataflow {}: {e:#}",
+                                            record.uuid
+                                        );
+                                    }
+                                }
                             }
                             StoreDataflowStatus::Failed { terminal: true, .. } => {
                                 // Terminal failure (watchdog or equivalent
@@ -3156,12 +3204,15 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
 /// store says `Running`. If the entry is still present (a multi-daemon dataflow
 /// whose other daemons are live), just relink this daemon's share; otherwise
 /// reconstruct it from the persisted record + the daemon's report.
+/// Returns `true` if the ready barrier already released for this dataflow,
+/// meaning the caller owes this daemon a replay (dora-rs/dora#2998).
+#[must_use]
 fn reestablish_running_dataflow(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     record: &dora_coordinator_store::DataflowRecord,
     daemon_id: &DaemonId,
     reported_nodes: &[dora_core::config::NodeId],
-) {
+) -> bool {
     if let Some(df) = running_dataflows.get_mut(&record.uuid) {
         df.daemons.insert(daemon_id.clone());
         df.pending_daemons.remove(daemon_id);
@@ -3169,7 +3220,11 @@ fn reestablish_running_dataflow(
         for node in reported_nodes {
             df.node_to_daemon.insert(node.clone(), daemon_id.clone());
         }
-        return;
+        // The barrier may have released while this daemon was gone. The
+        // broadcast only reaches `daemons` as it stands at that moment, and
+        // a disconnected daemon has been removed from it, so nothing else
+        // will ever tell this one (dora-rs/dora#2998).
+        return df.ready_barrier_released;
     }
 
     let descriptor: dora_message::descriptor::Descriptor =
@@ -3180,7 +3235,7 @@ fn reestablish_running_dataflow(
                     "cannot re-establish running dataflow {}: failed to parse descriptor: {e}",
                     record.uuid
                 );
-                return;
+                return false;
             }
         };
     let nodes = match descriptor.resolve_aliases_and_set_defaults() {
@@ -3190,7 +3245,7 @@ fn reestablish_running_dataflow(
                 "cannot re-establish running dataflow {}: failed to resolve nodes: {e}",
                 record.uuid
             );
-            return;
+            return false;
         }
     };
     running_dataflows.insert(
@@ -3201,6 +3256,7 @@ fn reestablish_running_dataflow(
         "re-established running dataflow {} in live coordinator state after daemon {daemon_id} reconnect",
         record.uuid
     );
+    false
 }
 
 /// Tell a single daemon to stop a dataflow the coordinator has terminally given
@@ -3343,7 +3399,7 @@ async fn apply_disconnect_actions(
     for action in actions {
         match action {
             DisconnectAction::ReleaseReadyBarrier(uuid) => {
-                if let Some(df) = running_dataflows.get(&uuid) {
+                if let Some(df) = running_dataflows.get_mut(&uuid) {
                     broadcast_all_nodes_ready(uuid, df, daemon_connections, store, clock).await?;
                 }
             }
@@ -4471,6 +4527,69 @@ fn synthesize_failed_dataflow_results(
     }
 }
 
+/// The `AllNodesReady` frame for a dataflow, as sent to a daemon.
+///
+/// Shared by the initial broadcast and the reconnect replay so the two
+/// cannot drift — in particular so a replayed barrier carries the same
+/// `exited_before_subscribe` the broadcast did (dora-rs/dora#2998).
+fn all_nodes_ready_message(
+    uuid: DataflowId,
+    dataflow: &RunningDataflow,
+    clock: &Arc<HLC>,
+) -> eyre::Result<Vec<u8>> {
+    serde_json::to_vec(&Timestamped {
+        inner: DaemonCoordinatorEvent::AllNodesReady {
+            dataflow_id: uuid,
+            exited_before_subscribe: dataflow.exited_before_subscribe.clone(),
+        },
+        timestamp: clock.new_timestamp(),
+    })
+    .wrap_err("failed to serialize AllNodesReady message")
+}
+
+/// Build the `AllNodesReady` frame for the *initial* release and record on the
+/// dataflow that the barrier has fired.
+///
+/// The mark and the message are produced together so they cannot drift: a
+/// broadcast that forgot to record itself would leave a daemon reconnecting
+/// later unaware the barrier is down, which is the whole of #2998.
+fn release_barrier_message(
+    uuid: DataflowId,
+    dataflow: &mut RunningDataflow,
+    clock: &Arc<HLC>,
+) -> eyre::Result<Vec<u8>> {
+    dataflow.ready_barrier_released = true;
+    all_nodes_ready_message(uuid, dataflow, clock)
+}
+
+/// Re-send a barrier release that a daemon missed because it was
+/// disconnected when the broadcast fired.
+///
+/// The daemon latches the release and answers every later subscribe from it
+/// (dora-rs/dora#2938); without this it never learns the barrier is down and
+/// each of its nodes parks in `init_from_env()` for the life of the dataflow.
+async fn replay_all_nodes_ready(
+    uuid: DataflowId,
+    dataflow: &RunningDataflow,
+    daemon_id: &DaemonId,
+    daemon_connections: &mut DaemonConnections,
+    clock: &Arc<HLC>,
+) -> eyre::Result<()> {
+    let message = all_nodes_ready_message(uuid, dataflow, clock)?;
+    let Some(connection) = daemon_connections.get_mut(daemon_id) else {
+        tracing::warn!("no daemon connection found for machine `{daemon_id}` to replay barrier");
+        return Ok(());
+    };
+    tracing::info!(
+        "replaying AllNodesReady({uuid}) to reconnected daemon `{daemon_id}` \
+         (barrier released while it was disconnected)"
+    );
+    connection
+        .send(&message)
+        .await
+        .wrap_err_with(|| format!("failed to replay AllNodesReady({uuid}) to machine {daemon_id}"))
+}
+
 /// Broadcast `AllNodesReady` to every daemon running part of `dataflow` and
 /// schedule the persisted-parameter replay. Extracted from the `ReadyOnDaemon`
 /// handler so the disconnect/cleanup path can also release the start barrier
@@ -4478,20 +4597,13 @@ fn synthesize_failed_dataflow_results(
 /// `ReadyOnDaemon` (see issue #2028).
 async fn broadcast_all_nodes_ready(
     uuid: DataflowId,
-    dataflow: &RunningDataflow,
+    dataflow: &mut RunningDataflow,
     daemon_connections: &mut DaemonConnections,
     store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
     clock: &Arc<HLC>,
 ) -> eyre::Result<()> {
     tracing::debug!("sending all nodes ready message to daemons");
-    let message = serde_json::to_vec(&Timestamped {
-        inner: DaemonCoordinatorEvent::AllNodesReady {
-            dataflow_id: uuid,
-            exited_before_subscribe: dataflow.exited_before_subscribe.clone(),
-        },
-        timestamp: clock.new_timestamp(),
-    })
-    .wrap_err("failed to serialize AllNodesReady message")?;
+    let message = release_barrier_message(uuid, dataflow, clock)?;
 
     // notify all machines that run parts of the dataflow
     for daemon_id in &dataflow.daemons {
@@ -4848,6 +4960,7 @@ mod tests {
             daemons,
             pending_daemons: BTreeSet::new(),
             exited_before_subscribe: vec![],
+            ready_barrier_released: false,
             nodes: BTreeMap::new(),
             node_to_daemon,
             node_metrics: BTreeMap::new(),
@@ -4902,7 +5015,8 @@ mod tests {
 
         // Absent (reclaimed away / restart) -> reconstruct from the record.
         let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
-        reestablish_running_dataflow(
+        // These cover the relinking, not the barrier replay.
+        let _ = reestablish_running_dataflow(
             &mut running_dataflows,
             &record,
             &daemon_id,
@@ -4921,7 +5035,8 @@ mod tests {
         // Present (multi-daemon partial reconnect) -> relink, not duplicate.
         let daemon2 = DaemonId::new(Some("d2".to_string()));
         let node2: dora_core::config::NodeId = "receiver".to_string().into();
-        reestablish_running_dataflow(
+        // These cover the relinking, not the barrier replay.
+        let _ = reestablish_running_dataflow(
             &mut running_dataflows,
             &record,
             &daemon2,
@@ -4931,6 +5046,168 @@ mod tests {
         assert!(df.daemons.contains(&daemon_id) && df.daemons.contains(&daemon2));
         assert_eq!(df.node_to_daemon.get(&node2), Some(&daemon2));
         assert_eq!(running_dataflows.len(), 1, "must relink, not duplicate");
+    }
+
+    /// dora-rs/dora#2998: the ready barrier is broadcast once, to the daemons
+    /// connected at that moment. A daemon that was disconnected then is not in
+    /// that set and nothing else ever tells it — so every node it owns parks in
+    /// `init_from_env()` for the life of the dataflow. `reestablish_running_dataflow`
+    /// reports the obligation so the reconnect path can replay it.
+    #[test]
+    fn reconnecting_daemon_is_owed_a_barrier_replay_only_after_release() {
+        let dataflow_id = uuid::Uuid::from_u128(0x2998);
+        let daemon_id = DaemonId::new(Some("reconnector".to_string()));
+        let node_id: dora_core::config::NodeId = "worker".to_string().into();
+
+        let mut running_dataflows: HashMap<DataflowId, RunningDataflow> = HashMap::new();
+        running_dataflows.insert(
+            dataflow_id,
+            test_running_dataflow(dataflow_id, daemon_id.clone(), node_id.clone()),
+        );
+        let record = dora_coordinator_store::DataflowRecord {
+            uuid: dataflow_id,
+            name: Some("df".to_string()),
+            descriptor_json: serde_json::json!({
+                "nodes": [{ "id": "sender", "path": "sleep", "outputs": ["message"] }]
+            })
+            .to_string(),
+            status: StoreDataflowStatus::Running,
+            daemon_ids: vec![daemon_id.clone()],
+            node_to_daemon: BTreeMap::new(),
+            uv: false,
+            generation: 3,
+            created_at: 7,
+            updated_at: 7,
+        };
+
+        // Barrier has NOT released yet: the daemon will be told by the
+        // ordinary broadcast when it does, so no replay is owed.
+        let owed = reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+        assert!(
+            !owed,
+            "before release there is nothing to replay — replaying here would \
+             release the barrier early for this daemon"
+        );
+
+        // Barrier releases while this daemon is away.
+        running_dataflows
+            .get_mut(&dataflow_id)
+            .expect("present")
+            .ready_barrier_released = true;
+
+        let owed = reestablish_running_dataflow(
+            &mut running_dataflows,
+            &record,
+            &daemon_id,
+            std::slice::from_ref(&node_id),
+        );
+        assert!(
+            owed,
+            "a daemon reconnecting after the barrier released must be replayed \
+             it, or its nodes hang in `init_from_env()` forever (#2998)"
+        );
+    }
+
+    #[tokio::test]
+    async fn broadcasting_the_barrier_records_it_even_with_no_daemon_reachable() {
+        // Goes through the real broadcast, with no daemon connections: every
+        // send is skipped, yet the release must still be recorded. This is the
+        // #2998 shape exactly — the daemon that missed the broadcast is the one
+        // that later reconnects and must be replayed it.
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let clock = Arc::new(HLC::default());
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let mut daemon_connections = DaemonConnections::default();
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+        assert!(!dataflow.ready_barrier_released);
+
+        broadcast_all_nodes_ready(
+            dataflow_id,
+            &mut dataflow,
+            &mut daemon_connections,
+            &store,
+            &clock,
+        )
+        .await
+        .expect("broadcast with no reachable daemon should not fail");
+
+        assert!(
+            dataflow.ready_barrier_released,
+            "the barrier is down regardless of who received it; a daemon that \
+             reconnects later must still be replayed it (#2998)"
+        );
+    }
+
+    #[test]
+    fn releasing_the_barrier_records_it_on_the_dataflow() {
+        // Producing the release frame is what marks the dataflow. If the two
+        // ever come apart, the broadcast still goes out and everything looks
+        // healthy — but a daemon reconnecting afterwards is never replayed the
+        // barrier and its nodes hang for the life of the dataflow (#2998).
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let clock = Arc::new(HLC::default());
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+        assert!(
+            !dataflow.ready_barrier_released,
+            "precondition: barrier has not fired yet"
+        );
+
+        release_barrier_message(dataflow_id, &mut dataflow, &clock).expect("building the release");
+
+        assert!(
+            dataflow.ready_barrier_released,
+            "releasing the barrier must record it, or the reconnect path has \
+             nothing to replay from (#2998)"
+        );
+    }
+
+    #[test]
+    fn replayed_barrier_carries_the_same_failure_verdict_as_the_broadcast() {
+        // The replay must reproduce the *outcome* the broadcast carried, not a
+        // blank success. A daemon that latches an empty `exited_before_subscribe`
+        // treats the barrier as satisfied and starts a dataflow the coordinator
+        // already declared failed (`let ready = exited_before_subscribe
+        // .is_empty()` gates `dataflow.start()`), which is exactly the trap the
+        // #2938 latch had to avoid on the daemon side.
+        let dataflow_id = Uuid::new_v4();
+        let daemon_id = DaemonId::new(Some("machine-a".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let clock = Arc::new(HLC::default());
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        dataflow.exited_before_subscribe = vec![node_id.clone()];
+
+        let message = all_nodes_ready_message(dataflow_id, &dataflow, &clock)
+            .expect("serializing AllNodesReady");
+        let decoded: Timestamped<DaemonCoordinatorEvent> =
+            serde_json::from_slice(&message).expect("decoding AllNodesReady");
+
+        match decoded.inner {
+            DaemonCoordinatorEvent::AllNodesReady {
+                dataflow_id: got_id,
+                exited_before_subscribe,
+            } => {
+                assert_eq!(got_id, dataflow_id);
+                assert_eq!(
+                    exited_before_subscribe,
+                    vec![node_id],
+                    "the replay must carry the failed-barrier verdict, or the \
+                     reconnected daemon starts a dataflow that must not start"
+                );
+            }
+            other => panic!("expected AllNodesReady, got {other:?}"),
+        }
     }
 
     #[tokio::test]

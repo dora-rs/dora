@@ -249,6 +249,19 @@ pub(crate) struct RunningDataflow {
     /// IDs of daemons that are waiting until all nodes are started.
     pub(crate) pending_daemons: BTreeSet<DaemonId>,
     pub(crate) exited_before_subscribe: Vec<NodeId>,
+    /// Whether the ready barrier has already been broadcast for this
+    /// dataflow.
+    ///
+    /// The broadcast goes to `daemons` at the moment it fires, so a daemon
+    /// that is disconnected then never receives it — and nothing replays it
+    /// on reconnect, leaving every node it owns parked in `init_from_env()`
+    /// forever (dora-rs/dora#2998). Remembering the release lets the
+    /// reconnect path re-send it to just that daemon.
+    ///
+    /// In-memory only: after a coordinator restart `RunningDataflow::recovered`
+    /// rebuilds with an empty `pending_daemons`, so the next `ReadyOnDaemon`
+    /// broadcasts to every daemon anyway.
+    pub(crate) ready_barrier_released: bool,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
@@ -479,6 +492,7 @@ impl RunningDataflow {
             daemons: daemons.clone(),
             pending_daemons: BTreeSet::new(),
             exited_before_subscribe: Vec::new(),
+            ready_barrier_released: false,
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
