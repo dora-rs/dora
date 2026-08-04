@@ -4800,86 +4800,114 @@ impl Daemon {
                                 r#"machine "{machine_id}" 无法解析：coordinator 无此机器或无 coordinator，未创建跨机内存池"#
                             ));
                         }
-                        // Register the ack channel BEFORE publishing: the
-                        // remote acks as soon as it receives RegisterPool,
-                        // so a late registration could race the ack and
-                        // spuriously time out.
-                        let (ack_tx, ack_rx) = oneshot::channel();
-                        CROSS_REGISTER_PENDING
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(shared_memory_id.clone(), ack_tx);
-                        // Publish RegisterPool with the same
-                        // `Timestamped<InterDaemonEvent>` framing and
-                        // Block congestion control the WriteMemoryPool
-                        // path uses (a dropped publish would strand the
-                        // register until the 5s timeout).
-                        let serialized = match bincode::serialize(&Timestamped {
-                            inner: InterDaemonEvent::RegisterPool {
-                                dataflow_id,
-                                machine_id: machine_id.clone(),
-                                origin_machine_id: origin_machine_id.clone().unwrap_or_default(),
-                                shared_memory_id: shared_memory_id.clone(),
-                                size,
-                                dtype: dtype.clone(),
-                                shape: shape.clone(),
-                                device: device.clone(),
-                            },
-                            timestamp: clock.new_timestamp(),
-                        }) {
-                            Ok(serialized) => serialized,
-                            Err(e) => {
+                        // Publish RegisterPool and await the ack, retrying on
+                        // timeout: the remote daemon's memory-pool
+                        // subscription is established in parallel during
+                        // dataflow startup, so the first RegisterPool can
+                        // be published before the subscription exists and
+                        // be lost (no subscriber yet) — observed as the
+                        // register timing out while the remote never
+                        // received the event. An explicit ok=false reply
+                        // is not retried (the remote was reached and
+                        // reported a creation failure).
+                        let mut reply = Err(format!(
+                            r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
+                        ));
+                        for attempt in 0..3 {
+                            // Register the ack channel BEFORE publishing:
+                            // the remote acks as soon as it receives
+                            // RegisterPool, so a late registration could
+                            // race the ack and spuriously time out.
+                            let (ack_tx, ack_rx) = oneshot::channel();
+                            CROSS_REGISTER_PENDING
+                                .lock()
+                                .unwrap_or_else(|e| e.into_inner())
+                                .insert(shared_memory_id.clone(), ack_tx);
+                            let serialized = match bincode::serialize(&Timestamped {
+                                inner: InterDaemonEvent::RegisterPool {
+                                    dataflow_id,
+                                    machine_id: machine_id.clone(),
+                                    origin_machine_id: origin_machine_id.clone().unwrap_or_default(),
+                                    shared_memory_id: shared_memory_id.clone(),
+                                    size,
+                                    dtype: dtype.clone(),
+                                    shape: shape.clone(),
+                                    device: device.clone(),
+                                },
+                                timestamp: clock.new_timestamp(),
+                            }) {
+                                Ok(serialized) => serialized,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "memory pool: bincode serialize RegisterPool failed: {e}"
+                                    );
+                                    return Err(format!("RegisterPool 序列化失败: {e}"));
+                                }
+                            };
+                            let publisher = match session
+                                .declare_publisher(topic.clone())
+                                .congestion_control(CongestionControl::Block)
+                                // Remote-only: the local echo of RegisterPool
+                                // would fail to mirror (EEXIST — this node
+                                // already created the pool) and publish a
+                                // false ok=false RegisterPoolAck that beats
+                                // the remote's real ack, failing every sync
+                                // register.
+                                .allowed_destination(Locality::Remote)
+                                .await
+                            {
+                                Ok(publisher) => publisher,
+                                Err(e) => {
+                                    tracing::error!(
+                                        "memory pool: declare_publisher({topic}) failed: {e}"
+                                    );
+                                    return Err(format!("RegisterPool 发布失败（declare_publisher）: {e}"));
+                                }
+                            };
+                            if let Err(e) = publisher.put(serialized).await {
                                 tracing::error!(
-                                    "memory pool: bincode serialize RegisterPool failed: {e}"
+                                    "memory pool: publish RegisterPool to {topic} failed: {e}"
                                 );
-                                return Err(format!("RegisterPool 序列化失败: {e}"));
+                                return Err(format!("RegisterPool 发布失败: {e}"));
                             }
-                        };
-                        let publisher = match session
-                            .declare_publisher(topic.clone())
-                            .congestion_control(CongestionControl::Block)
-                            // Remote-only: the local echo of RegisterPool
-                            // would fail to mirror (EEXIST — this node
-                            // already created the pool) and publish a
-                            // false ok=false RegisterPoolAck that beats
-                            // the remote's real ack, failing every sync
-                            // register.
-                            .allowed_destination(Locality::Remote)
-                            .await
-                        {
-                            Ok(publisher) => publisher,
-                            Err(e) => {
-                                tracing::error!(
-                                    "memory pool: declare_publisher({topic}) failed: {e}"
-                                );
-                                return Err(format!("RegisterPool 发布失败（declare_publisher）: {e}"));
+                            match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
+                                .await
+                            {
+                                Ok(Ok(true)) => {
+                                    CROSS_POOLS
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(shared_memory_id, machine_id);
+                                    reply = Ok(());
+                                    break;
+                                }
+                                Ok(Ok(false)) => {
+                                    reply = Err(format!(
+                                        r#"machine "{machine_id}" 已解析但远端建池失败：远端返回 ok=false，未创建跨机内存池"#
+                                    ));
+                                    break;
+                                }
+                                Ok(Err(_)) => {
+                                    reply = Err(format!(
+                                        r#"machine "{machine_id}" 已解析但远端建池失败：ack 通道关闭（远端 daemon 断开），未创建跨机内存池"#
+                                    ));
+                                    break;
+                                }
+                                Err(_) => {
+                                    reply = Err(format!(
+                                        r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
+                                    ));
+                                    if attempt < 2 {
+                                        tracing::warn!(
+                                            "memory pool: RegisterPool attempt {} for {shared_memory_id} timed out — remote subscription may not be ready yet, retrying",
+                                            attempt + 1
+                                        );
+                                        continue;
+                                    }
+                                }
                             }
-                        };
-                        if let Err(e) = publisher.put(serialized).await {
-                            tracing::error!("memory pool: publish RegisterPool to {topic} failed: {e}");
-                            return Err(format!("RegisterPool 发布失败: {e}"));
                         }
-                        // Await the remote RegisterPoolAck with a timeout.
-                        match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
-                            .await
-                        {
-                            Ok(Ok(true)) => {
-                                CROSS_POOLS
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .insert(shared_memory_id, machine_id);
-                                Ok(())
-                            }
-                            Ok(Ok(false)) => Err(format!(
-                                r#"machine "{machine_id}" 已解析但远端建池失败：远端返回 ok=false，未创建跨机内存池"#
-                            )),
-                            Ok(Err(_)) => Err(format!(
-                                r#"machine "{machine_id}" 已解析但远端建池失败：ack 通道关闭（远端 daemon 断开），未创建跨机内存池"#
-                            )),
-                            Err(_) => Err(format!(
-                                r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
-                            )),
-                        }
+                        reply
                     }
                     .await;
                     // Drop the pending ack entry if the ack never arrived
