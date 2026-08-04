@@ -6018,7 +6018,12 @@ mod tests {
         assert_eq!(summary.attempted, 1);
         assert_eq!(summary.failed, 0);
 
-        daemon_task.await.unwrap();
+        // Bounded: if the coordinator stops sending, this must fail fast
+        // rather than block forever and burn the CI job timeout.
+        tokio::time::timeout(Duration::from_secs(10), daemon_task)
+            .await
+            .expect("daemon task did not receive the expected message")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -6106,7 +6111,12 @@ mod tests {
         assert_eq!(summary.attempted, 1);
         assert_eq!(summary.failed, 1);
         assert!(summary.failed > 0);
-        daemon_task.await.unwrap();
+        // Bounded: if the coordinator stops sending, this must fail fast
+        // rather than block forever and burn the CI job timeout.
+        tokio::time::timeout(Duration::from_secs(10), daemon_task)
+            .await
+            .expect("daemon task did not receive the expected message")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -6241,7 +6251,12 @@ mod tests {
             Arc::new(HLC::default()),
         );
 
-        daemon_task.await.unwrap();
+        // Bounded: if the coordinator stops sending, this must fail fast
+        // rather than block forever and burn the CI job timeout.
+        tokio::time::timeout(Duration::from_secs(10), daemon_task)
+            .await
+            .expect("daemon task did not receive the expected message")
+            .unwrap();
     }
 
     #[tokio::test]
@@ -6319,7 +6334,12 @@ mod tests {
         .await
         .expect("subscription should succeed");
 
-        daemon_task.await.unwrap();
+        // Bounded: if the coordinator stops sending, this must fail fast
+        // rather than block forever and burn the CI job timeout.
+        tokio::time::timeout(Duration::from_secs(10), daemon_task)
+            .await
+            .expect("daemon task did not receive the expected message")
+            .unwrap();
         assert_eq!(Some(subscription_id), *seen_subscription.lock().await);
         assert_eq!(
             running_dataflows[&dataflow_id]
@@ -6524,7 +6544,12 @@ mod tests {
         )
         .await;
 
-        daemon_task.await.unwrap();
+        // Bounded: if the coordinator stops sending, this must fail fast
+        // rather than block forever and burn the CI job timeout.
+        tokio::time::timeout(Duration::from_secs(10), daemon_task)
+            .await
+            .expect("daemon task did not receive the expected message")
+            .unwrap();
         assert_eq!(
             *seen.lock().await,
             Some((subscription_id, dataflow_id)),
