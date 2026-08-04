@@ -1512,6 +1512,18 @@ jobs:
     name: 'CLI Tests: Python (${{ matrix.platform }})'
     runs-on: ${{ matrix.platform }}
     needs: cli-tests
+    # `needs` on its own implies `if: success()`, and `cli-tests` is a
+    # `fail-fast: false` matrix whose *aggregate* result is `failure` when
+    # any single leg fails — so one red platform would skip the Python half
+    # on ALL of them. That is precisely the coverage loss this split exists
+    # to avoid, and publishing the artifact early does not help: the binary
+    # being available is moot if the job is gated out before it runs.
+    #
+    # The artifact is published straight after `Build CLI`, so it exists
+    # whenever the build itself succeeded. If the *build* is what failed,
+    # this job's download step fails on that platform — redundant with the
+    # `cli-tests` failure, but honest, and the other two platforms still run.
+    if: ${{ !cancelled() }}
     strategy:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
