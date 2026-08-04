@@ -291,14 +291,14 @@ fn test_main_function() -> eyre::Result<()> {
     let inputs = TestingInput::Input(
         IntegrationTestInput::new("node_id".parse().unwrap(), events),
     );
-    let (tx, rx) = flume::unbounded();
+    let (tx, mut rx) = integration_testing::unbounded_channel();
     let outputs = TestingOutput::ToChannel(tx);
     let options = TestingOptions { skip_output_time_offsets: true };
 
     integration_testing::setup_integration_testing(inputs, outputs, options);
     crate::main()?;
 
-    let outputs = rx.try_iter().collect::<Vec<_>>();
+    let outputs = integration_testing::drain_outputs(&mut rx);
     assert_eq!(outputs, expected_outputs);
     Ok(())
 }
