@@ -14,8 +14,8 @@ use dora_core::{
     },
     get_python_path,
     topics::{
-        DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV,
-        ZENOH_CONFIG_PATH_ENV,
+        DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV,
+        DORA_ZENOH_MULTICAST_ENV, ZENOH_CONFIG_PATH_ENV,
     },
     uhlc::HLC,
 };
@@ -70,6 +70,12 @@ const CONTROL_PLANE_ENV: &[&str] = &[
     DORA_ZENOH_LISTEN_ENV,
     DORA_ZENOH_CONNECT_ENV,
     DORA_ZENOH_MULTICAST_ENV,
+    // Names a pid the node will SIGKILL its own process group over once that
+    // pid is gone. A descriptor-supplied value would be an arbitrary
+    // self-destruct trigger, and an inherited one (from an outer `dora run`,
+    // or a shell that happened to export it) would arm the guard against the
+    // wrong process — so it is refused from both and set only here.
+    DORA_RUN_PARENT_PID_ENV,
 ];
 
 /// Whether `key` names the reserved variable `reserved`.
@@ -379,6 +385,14 @@ pub struct Spawner {
     /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
     /// node scouting for a daemon that no longer answers.
     pub disable_multicast: bool,
+    /// Whether this daemon runs *inside* the process that invoked it — the
+    /// `Daemon::run_dataflow` case, where caller, coordinator and daemon are
+    /// one process and the nodes are its children.
+    ///
+    /// Only then may a node treat its parent's death as the end of the
+    /// dataflow; see [`DORA_RUN_PARENT_PID_ENV`] for why the `dora up` +
+    /// `dora start` path must not.
+    pub bind_nodes_to_parent: bool,
 }
 
 impl Spawner {
@@ -433,6 +447,9 @@ impl Spawner {
             command = apply_descriptor_env(command, *envs);
         }
         command = command.env(config_key, config_yaml);
+        if self.bind_nodes_to_parent {
+            command = command.env(DORA_RUN_PARENT_PID_ENV, std::process::id().to_string());
+        }
         self.maybe_inject_zenoh_connect(command, node_id)
     }
 
@@ -818,6 +835,9 @@ mod tests {
             // one a node without its own peering plan takes.
             zenoh_peering: Arc::new(BTreeMap::new()),
             disable_multicast,
+            // The `dora up` shape: a long-lived daemon whose nodes outlive it.
+            // The `dora run` shape is covered by its own test below.
+            bind_nodes_to_parent: false,
         }
     }
 
@@ -1038,6 +1058,52 @@ mod tests {
             env_of(&command, ZENOH_CONFIG_PATH_ENV),
             None,
             "a daemon-level zenoh config must still reach its nodes by inheritance"
+        );
+    }
+
+    /// dora-rs/dora#2856: under `dora run` the daemon *is* the CLI process, so
+    /// its death ends the dataflow — and `SIGKILL` leaves no code of ours to
+    /// notice. The node is told which pid to watch so it can end itself.
+    #[test]
+    fn dora_run_tells_its_nodes_which_parent_to_outlive() {
+        let mut spawner = spawner_for(None, false);
+        spawner.bind_nodes_to_parent = true;
+        let command = spawner.compose_node_env(
+            Command::new("true"),
+            &node("sink"),
+            &[None],
+            "DORA_NODE_CONFIG",
+            "real-config".into(),
+        );
+
+        assert_eq!(
+            env_of(&command, DORA_RUN_PARENT_PID_ENV).flatten(),
+            Some(OsString::from(std::process::id().to_string())),
+            "a `dora run` node must be pointed at the process it may not outlive"
+        );
+    }
+
+    /// The `dora up` half of the same rule. A daemon-spawned node deliberately
+    /// outlives coordinator drops, reconnects and watchdog disconnects while
+    /// keeping its pid (#2029) — arming the guard there would kill nodes that
+    /// are supposed to survive. The variable must be *removed*, never merely
+    /// left unset, because nodes inherit the daemon's environment and a stale
+    /// value from the shell that started it would arm them against a stranger.
+    #[test]
+    fn a_daemon_spawned_node_is_not_bound_to_the_daemons_lifetime() {
+        let spawner = spawner_for(None, false);
+        let command = spawner.compose_node_env(
+            Command::new("true"),
+            &node("sink"),
+            &[None],
+            "DORA_NODE_CONFIG",
+            "real-config".into(),
+        );
+
+        assert_eq!(
+            env_of(&command, DORA_RUN_PARENT_PID_ENV),
+            Some(None),
+            "`dora up` nodes must not be armed, by injection or by inheritance"
         );
     }
 

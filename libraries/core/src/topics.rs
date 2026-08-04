@@ -50,6 +50,29 @@ pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
 /// `--zenoh-no-multicast`, so a single flag covers the whole process tree.
 pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
 
+/// Pid of the process whose death must end this node, injected **only** by a
+/// daemon that runs in-process with whoever started it: `Daemon::run_dataflow`
+/// and its callers — `dora run`, `dora daemon --run-dataflow`, and embedders
+/// that drive one dataflow to completion.
+///
+/// There, the one process is coordinator, daemon and node-parent at once, so
+/// its death is the end of the dataflow by definition. Every teardown path
+/// dora has is cooperative and so cannot survive `SIGKILL`, which is neither
+/// catchable nor blockable: no CLI- or daemon-side code runs after it. Nodes
+/// are deliberately spawned as process-group leaders (so a terminal `Ctrl-C`
+/// cannot kill them out from under the daemon), which also means an orphan
+/// keeps running with `ppid 1` in a group of its own — unreachable by both
+/// inherited signal delivery and a group-kill of the parent. Handing the node
+/// the pid lets it notice on its own (dora-rs/dora#2856).
+///
+/// Deliberately NOT set on the `dora up` + `dora start` path: there the parent
+/// is a long-lived daemon whose lifetime is decoupled from its nodes on
+/// purpose — a node survives a coordinator drop, a reconnect, and a watchdog
+/// disconnect while keeping its pid (dora-rs/dora#2029). Tying node lifetime
+/// to that parent would break exactly the property `daemon-reconnect-e2e`
+/// asserts.
+pub const DORA_RUN_PARENT_PID_ENV: &str = "DORA_RUN_PARENT_PID";
+
 /// Zenoh's own config-file override, honored by
 /// [`open_zenoh_session_with_listen`].
 ///

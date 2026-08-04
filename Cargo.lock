@@ -2292,6 +2292,7 @@ dependencies = [
  "futures-timer",
  "inquire",
  "is-terminal",
+ "libc",
  "opentelemetry",
  "serde_json",
  "serde_yaml",

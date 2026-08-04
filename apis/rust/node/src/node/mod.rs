@@ -1130,6 +1130,11 @@ impl DoraNode {
         node_config: NodeConfig,
         testing_communication: Option<TestingCommunication>,
     ) -> NodeResult<(Self, EventStream)> {
+        // Before anything that can fail or block: a node spawned by `dora run`
+        // must not outlive the CLI even if the rest of this initialization
+        // stalls (dora-rs/dora#2856). A no-op on every other spawn path.
+        crate::orphan_guard::arm_if_run_child();
+
         let NodeConfig {
             dataflow_id,
             node_id,
