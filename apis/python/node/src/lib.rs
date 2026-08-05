@@ -1932,12 +1932,13 @@ impl Node {
     /// **not** block the writer from starting a new write while a consumer
     /// holds a zero-copy tensor. Skipping the turn-based discipline risks
     /// torn data at the consumer.
-    #[pyo3(signature = (tensor_info, device, machine = None))]
+    #[pyo3(signature = (tensor_info, device, machine = None, name = None))]
     pub fn register_memory_pool(
         &self,
         tensor_info: &Bound<'_, PyDict>,
         device: String,
         machine: Option<String>,
+        name: Option<String>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
         let ptr_val: u64 = tensor_info
@@ -1989,10 +1990,39 @@ impl Node {
             *c += 1;
             *c
         };
-        let shmem_name = format!(
-            "dora_pool_{}_{}_{}",
-            self.dataflow_id, self.node_id, pool_counter
-        );
+        // Segment name: an explicit `name` is used verbatim (after the
+        // path-traversal checks below); otherwise the name is generated
+        // with the machine id when known, so multi-dataflow / multi-node
+        // deployments cannot collide and leftover segments are attributable.
+        let shmem_name = match &name {
+            Some(name) => {
+                if name.is_empty()
+                    || name.contains('/')
+                    || name.contains("..")
+                    || name.len() > 128
+                    || name.starts_with("dora_pool_")
+                {
+                    eyre::bail!(
+                        "invalid memory pool name `{name}`: must be non-empty, without '/' or '..',                          at most 128 chars, and must not start with `dora_pool_` (reserved for                          auto-generated names)"
+                    );
+                }
+                name.clone()
+            }
+            None => {
+                let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
+                if machine.is_empty() {
+                    format!(
+                        "dora_pool_{}_{}_{}",
+                        self.dataflow_id, self.node_id, pool_counter
+                    )
+                } else {
+                    format!(
+                        "dora_pool_{}_{}_{}_{}",
+                        machine, self.dataflow_id, self.node_id, pool_counter
+                    )
+                }
+            }
+        };
 
         let header_meta = PyDict::new(py);
         header_meta.set_item("size", size)?;
@@ -2036,7 +2066,12 @@ impl Node {
             Ok(s) => s,
             Err(e) => {
                 let shm_path = format!("/dev/shm/{shmem_name}");
-                if std::path::Path::new(&shm_path).exists() {
+                // Auto-generated names only collide with a leftover of a
+                // dead dataflow (machine + df + node + counter are unique
+                // among live pools) — replacing is safe. An explicit name
+                // may legitimately belong to a live peer (two nodes
+                // agreeing on one segment): never replace it.
+                if name.is_none() && std::path::Path::new(&shm_path).exists() {
                     tracing::warn!(
                         "[{}] register_memory_pool: leftover segment {shmem_name} exists, replacing",
                         self.node_id
@@ -2613,10 +2648,20 @@ impl Node {
                     } else {
                         // Cache miss: open via ShmemConf, wrap immediately
                         // so the mapping stays alive until post-write re-insert.
-                        let shmem_name = format!(
-                            "dora_pool_{}_{}_{}",
-                            self.dataflow_id, self.node_id, counter
-                        );
+                        let shmem_name = {
+                            let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
+                            if machine.is_empty() {
+                                format!(
+                                    "dora_pool_{}_{}_{}",
+                                    self.dataflow_id, self.node_id, counter
+                                )
+                            } else {
+                                format!(
+                                    "dora_pool_{}_{}_{}_{}",
+                                    machine, self.dataflow_id, self.node_id, counter
+                                )
+                            }
+                        };
                         match ShmemConf::new().os_id(&shmem_name).open() {
                             Ok(shmem) => {
                                 let cap = shmem.len();
@@ -3191,6 +3236,24 @@ impl Node {
 
         // Fast path: DORADMA header read with daemon-trusted size validation.
         if buffer_id.starts_with("pool_") {
+            // Explicit (`name=`) segments cannot be guessed from the buffer
+            // id. Resolve the registered segment name from the daemon once
+            // (cheap control-plane round trip) and read by name; without
+            // this, every read would burn the whole retry window guessing.
+            let known_name = self
+                .node
+                .get_mut()
+                .read_pinned_memory(buffer_id.clone(), false)
+                .ok()
+                .and_then(|m| {
+                    m.parameters.get("shared_memory_name").and_then(|p| {
+                        if let Parameter::String(name) = p {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
             // Retry on transient failures (odd seqlock, shmem not yet
             // mapped) so a concurrent writer doesn't cause a hard error.
             // Cross-machine writes arrive via the daemon over the network
@@ -3206,6 +3269,14 @@ impl Node {
                 match self.try_doradma_read(&buffer_id, py) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) if std::time::Instant::now() < deadline => {
+                        // Explicit-name segments: retry by the registered
+                        // name directly (the guess above can never hit).
+                        if let Some(name) = &known_name
+                            && let Some(result) =
+                                self.try_doradma_read_by_name(name, &buffer_id, py)?
+                        {
+                            return Ok(result);
+                        }
                         // WAN propagation delay — yield the GIL and sleep
                         // so the writer can complete its copy+sync.
                         py.detach(|| {
@@ -3675,7 +3746,10 @@ impl Node {
     /// the shmem header, bypassing the daemon for zero-copy metadata retrieval.
     ///
     /// Buffer ID format: `"pool_{node_id}_{counter}"` →
-    /// shmem name: `"dora_pool_{dataflow_id}_{node_id}_{counter}"`.
+    /// shmem name: machine-qualified when `DORA_MACHINE_ID` is set
+    /// (`"dora_pool_{machine}_{dataflow_id}_{node_id}_{counter}"`), legacy
+    /// unqualified otherwise; explicit `register_memory_pool(name=...)`
+    /// segments use the given name verbatim.
     ///
     /// # Synchronization model
     ///
@@ -3743,15 +3817,27 @@ impl Node {
             self.dataflow_id, pool_node_id, counter
         ));
 
-        // Open shared memory
-        let mut shmem = None;
+        // Try each candidate name in order; the first readable segment wins.
         for name in &names {
-            if let Ok(s) = ShmemConf::new().os_id(name).open() {
-                shmem = Some(s);
-                break;
+            if let Some(result) = self.try_doradma_read_by_name(name, buffer_id, py)? {
+                return Ok(Some(result));
             }
         }
-        let Some(shmem) = shmem else {
+        Ok(None)
+    }
+
+    /// Read a DORADMA pool by explicit shmem name — used for machine-
+    /// qualified names and for explicit `register_memory_pool(name=...)`
+    /// segments, which cannot be derived from the buffer id. Returns
+    /// `Ok(None)` when the segment is absent or not yet readable.
+    fn try_doradma_read_by_name(
+        &self,
+        shmem_name: &str,
+        buffer_id: &str,
+        py: Python<'_>,
+    ) -> eyre::Result<Option<Py<PyAny>>> {
+        // Open shared memory
+        let Ok(shmem) = ShmemConf::new().os_id(shmem_name).open() else {
             return Ok(None);
         };
 

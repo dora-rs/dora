@@ -269,13 +269,15 @@ unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
 /// so the /dev/shm name survives the handle drop — on Linux a created
 /// (owner) Shmem shm_unlinks on drop, which would remove the name local
 /// receivers open for the zero-copy fast path.
-/// Remove stale mirror segments left on this machine by dataflows whose
-/// daemon was killed without running shutdown cleanup. Only segments
-/// carrying THIS machine's id prefix (`dora_pool_{machine_id}_...`) are
-/// touched: a daemon restart implies its own dataflows died (nodes are
-/// daemon children), and sibling daemons on the same host use their own
-/// prefixes — so nothing live is ever unlinked. Local (un-prefixed) pool
-/// segments cannot be attributed safely and are left alone.
+/// Remove stale segments left on this machine by dataflows whose daemon
+/// was killed without running shutdown cleanup. Only segments carrying
+/// THIS machine's id prefix (`dora_pool_{machine_id}_...`) are touched: a
+/// daemon restart implies its own dataflows died (nodes are daemon
+/// children), and sibling daemons on the same host use their own prefixes
+/// — so nothing live is ever unlinked. Machine-qualified LOCAL pool
+/// segments (the python side now qualifies auto names with
+/// `DORA_MACHINE_ID`) are swept here too — they are attributable to this
+/// machine and can only be leftovers of this daemon's own dead dataflows.
 #[cfg(target_os = "linux")]
 fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
     let prefix = format!("dora_pool_{machine_id}_");
@@ -4576,11 +4578,11 @@ impl Daemon {
                         .as_ref()
                         .filter(|n| !n.is_empty())
                         .ok_or_else(|| "missing shared_memory_name".to_string())?;
-                    // Validate prefix in the same way free_shared_memory does.
-                    if !shm_name.starts_with("dora_pool_")
-                        || shm_name.contains('/')
-                        || shm_name.contains("..")
-                    {
+                    // Path-traversal guard only: explicit names (the python
+                    // `register_memory_pool(name=...)` option) are not
+                    // required to carry the `dora_pool_` prefix, but must
+                    // stay within /dev/shm (no '/', no '..').
+                    if shm_name.contains('/') || shm_name.contains("..") {
                         return Err(format!("shared_memory_name `{}` is invalid", shm_name));
                     }
 

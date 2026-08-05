@@ -253,12 +253,13 @@ impl MemoryPoolManager {
 
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
         // Sanity-checks to avoid path traversal: an attacker-supplied
-        // shared_memory_name must stay within the expected /dev/shm name space.
-        if !shm_name.starts_with("dora_pool_") || shm_name.contains('/') || shm_name.contains("..")
-        {
+        // shared_memory_name must stay within the expected /dev/shm name
+        // space. No `dora_pool_` prefix requirement — explicit names via
+        // `register_memory_pool(name=...)` may be arbitrary (checked at
+        // registration), only '/' and '..' are rejected here.
+        if shm_name.contains('/') || shm_name.contains("..") {
             return Err(format!(
-                "shared_memory_name `{}` does not match expected dora_pool_ prefix",
-                shm_name,
+                "shared_memory_name `{shm_name}` is invalid: must not contain '/' or '..'",
             ));
         }
 
@@ -588,10 +589,10 @@ mod tests {
         // One entry frees cleanly (no backing shmem name)...
         mgr.register_memory_pool(make_id("ok"), make_metadata(), "node_a".into())
             .unwrap();
-        // ...and one whose shared_memory_name fails the `dora_pool_` validation
-        // in `free_shared_memory`, so its release errors.
+        // ...and one whose shared_memory_name fails the path-traversal
+        // validation in `free_shared_memory`, so its release errors.
         let mut bad_meta = make_metadata();
-        bad_meta.shared_memory_name = Some("invalid_name".to_string());
+        bad_meta.shared_memory_name = Some("invalid/name".to_string());
         mgr.register_memory_pool(make_id("bad"), bad_meta, "node_a".into())
             .unwrap();
 
