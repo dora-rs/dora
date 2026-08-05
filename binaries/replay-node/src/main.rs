@@ -3,11 +3,26 @@ use std::{fs::File, thread, time::Duration};
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use dora_node_api::{
     DoraNode,
-    arrow::array::{NullArray, make_array},
+    arrow::array::{ArrayData, NullArray, make_array},
     arrow_utils::decode_arrow_ipc,
 };
 use dora_recording::RecordingReader;
 use eyre::Context;
+
+/// Decode a recorded output payload back into Arrow [`ArrayData`].
+///
+/// The recorded payload is a self-describing Arrow IPC stream, or `None` for
+/// a metadata-only message (which replays as an empty null array). A decode
+/// failure is returned as an `Err` so the caller can skip that single record
+/// rather than aborting the whole replay.
+fn decode_recorded_payload(data: Option<&[u8]>) -> eyre::Result<ArrayData> {
+    match data {
+        Some(bytes) => {
+            decode_arrow_ipc(bytes).wrap_err("failed to decode recorded Arrow IPC payload")
+        }
+        None => Ok(NullArray::new(0).into()),
+    }
+}
 
 /// Nanoseconds to sleep before emitting an entry, given the previous entry's
 /// recording offset, this entry's offset, and the replay `speed`.
@@ -88,10 +103,20 @@ fn main() -> eyre::Result<()> {
                     // stream (or absent for metadata-only messages). Decode it
                     // back to an array and re-send; `send_output` re-encodes it
                     // into a fresh IPC stream on the wire.
-                    let array = match &data {
-                        Some(bytes) => decode_arrow_ipc(bytes)
-                            .wrap_err("failed to decode recorded Arrow IPC payload")?,
-                        None => NullArray::new(0).into(),
+                    let array = match decode_recorded_payload(data.as_deref()) {
+                        Ok(array) => array,
+                        Err(e) => {
+                            // A single corrupt-but-complete payload must not
+                            // abort the whole replay. Skip it, matching the
+                            // bincode branch above and the recording layer's
+                            // torn-record resilience (dropping a bad record
+                            // rather than failing the run).
+                            eprintln!(
+                                "warning: skipping undecodable payload for {}/{output_id}: {e:#}",
+                                entry.node_id
+                            );
+                            continue;
+                        }
                     };
                     node.send_output(output_id, metadata.parameters, make_array(array))
                         .wrap_err("failed to send replay output")?;
@@ -116,7 +141,9 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::pacing_sleep_nanos;
+    use super::{decode_recorded_payload, pacing_sleep_nanos};
+    use dora_node_api::arrow::array::{Array, Int32Array};
+    use dora_node_api::arrow_utils::encode_arrow_ipc;
 
     #[test]
     fn first_entry_honors_its_initial_offset() {
@@ -146,5 +173,32 @@ mod tests {
     fn non_monotonic_offset_saturates_to_zero() {
         // A later entry with a smaller offset must not underflow into a huge sleep.
         assert_eq!(pacing_sleep_nanos(1_000_000_000, 500_000_000, 1.0), 0);
+    }
+
+    #[test]
+    fn metadata_only_payload_decodes_to_empty_null_array() {
+        // A `None` payload (metadata-only message) replays as an empty array,
+        // never an error.
+        let array = decode_recorded_payload(None).expect("None must decode");
+        assert_eq!(array.len(), 0);
+    }
+
+    #[test]
+    fn valid_ipc_payload_round_trips() {
+        // A well-formed recorded IPC stream decodes back to its data.
+        let original = Int32Array::from(vec![1, 2, 3]);
+        let bytes = encode_arrow_ipc(&original.to_data()).expect("encode");
+        let decoded = decode_recorded_payload(Some(&bytes)).expect("valid IPC must decode");
+        assert_eq!(decoded.len(), 3);
+        assert_eq!(&decoded, &original.to_data());
+    }
+
+    #[test]
+    fn corrupt_payload_is_an_error_not_a_panic() {
+        // A corrupt-but-present payload returns `Err` so the caller can skip
+        // that single record instead of aborting the whole replay. This is the
+        // behavior the `main` loop relies on to stay resilient.
+        let garbage = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
+        assert!(decode_recorded_payload(Some(&garbage)).is_err());
     }
 }
