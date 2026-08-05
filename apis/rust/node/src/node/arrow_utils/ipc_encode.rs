@@ -461,10 +461,18 @@ pub fn encode_ipc_to_vec(array: &ArrayData) -> eyre::Result<Vec<u8>> {
     super::encode_arrow_ipc(array).context("Arrow IPC fallback encode")
 }
 
-/// IPC layout of a `UInt8` array of `data_len` elements (no nulls): the byte
+/// IPC layout of a no-null `UInt8` array of `data_len` elements: the byte
 /// offsets and message blocks, computed directly without materializing the
 /// data buffer (so it is cheap for a large image/tensor).
-struct Uint8Layout {
+///
+/// Building it constructs the schema and record-batch flatbuffer messages, so
+/// callers that need both the stream length (to size a buffer) and to write
+/// the header into that buffer should build it **once** via [`uint8_layout`]
+/// and reuse it -- see [`Uint8Layout::total`] and [`Uint8Layout::write_header`]
+/// -- rather than calling [`uint8_ipc_len`] and [`encode_uint8_ipc_header`],
+/// which each rebuild the layout from scratch.
+pub struct Uint8Layout {
+    data_len: usize,
     schema_message: Vec<u8>,
     record_batch_message: Vec<u8>,
     validity_len: usize,
@@ -474,7 +482,59 @@ struct Uint8Layout {
     data_offset: usize,
 }
 
-fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
+impl Uint8Layout {
+    /// Total length of the emitted IPC stream, i.e. the exact size the
+    /// destination buffer passed to [`write_header`](Self::write_header) must
+    /// have.
+    pub fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Write the complete no-null `UInt8` IPC stream into `dst` **except the
+    /// data region**, and return the byte offset at which the caller must write
+    /// the data bytes.
+    ///
+    /// `dst.len()` must equal [`total`](Self::total). After the caller fills
+    /// `dst[offset..offset + data_len]`, `dst` is a valid IPC stream that
+    /// decodes to the user's bytes as a `UInt8Array` -- with zero payload
+    /// copies.
+    pub fn write_header(&self, dst: &mut [u8]) -> eyre::Result<usize> {
+        if dst.len() != self.total {
+            bail!(
+                "destination size {} does not match required UInt8 IPC length {}",
+                dst.len(),
+                self.total
+            );
+        }
+        let mut at = 0;
+        at += write_framed_message(dst, at, &self.schema_message);
+        at += write_framed_message(dst, at, &self.record_batch_message);
+        let body_start = at;
+
+        // Validity: all-ones bitmap, then padding to the data buffer.
+        dst[body_start..body_start + self.validity_len].fill(0xff);
+        dst[body_start + self.validity_len..body_start + self.validity_padded].fill(0);
+
+        // The data region [data_offset .. data_offset + data_len] is left for
+        // the caller. Zero only its trailing alignment padding.
+        let data_end = self.data_offset + self.data_len;
+        let body_end = body_start + self.body_len;
+        dst[data_end..body_end].fill(0);
+
+        // End-of-stream marker.
+        dst[body_end..body_end + 4].copy_from_slice(&CONTINUATION_MARKER);
+        dst[body_end + 4..body_end + 8].copy_from_slice(&0i32.to_le_bytes());
+        debug_assert_eq!(body_end + PREFIX_LEN, self.total);
+
+        Ok(self.data_offset)
+    }
+}
+
+/// Build the [`Uint8Layout`] for a no-null `UInt8` array of `data_len`
+/// elements. Constructs the schema and record-batch flatbuffer messages, so
+/// prefer building this once and reusing it over the separate
+/// [`uint8_ipc_len`] / [`encode_uint8_ipc_header`] entry points.
+pub fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
     // Cheap pre-filter: the emitted stream is always >= `data_len`, so anything
     // over the limit is rejected below regardless, and bounding `data_len` here
     // keeps the round_up/add arithmetic that computes `total` well within
@@ -515,6 +575,7 @@ fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
     }
     let data_offset = schema_block + record_batch_block + validity_padded;
     Ok(Uint8Layout {
+        data_len,
         schema_message,
         record_batch_message,
         validity_len,
@@ -528,6 +589,10 @@ fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
 /// Total IPC stream length for a no-null `UInt8` array of `data_len` elements.
 /// Lets a caller size the sample before constructing the message in place via
 /// [`encode_uint8_ipc_header`].
+///
+/// A caller that also writes the header should instead build the layout once
+/// with [`uint8_layout`] and reuse it via [`Uint8Layout::total`] +
+/// [`Uint8Layout::write_header`]; this convenience wrapper rebuilds it.
 pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
     Ok(uint8_layout(data_len)?.total)
 }
@@ -540,36 +605,13 @@ pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
 /// caller fills `dst[offset..offset + data_len]`, `dst` is a valid IPC stream
 /// that decodes to the user's bytes as a `UInt8Array` — with zero payload
 /// copies.
+///
+/// This rebuilds the layout; a caller that already sized the buffer via
+/// [`uint8_layout`] should reuse that layout's
+/// [`write_header`](Uint8Layout::write_header) to avoid recomputing the
+/// flatbuffer messages.
 pub fn encode_uint8_ipc_header(dst: &mut [u8], data_len: usize) -> eyre::Result<usize> {
-    let layout = uint8_layout(data_len)?;
-    if dst.len() != layout.total {
-        bail!(
-            "destination size {} does not match required UInt8 IPC length {}",
-            dst.len(),
-            layout.total
-        );
-    }
-    let mut at = 0;
-    at += write_framed_message(dst, at, &layout.schema_message);
-    at += write_framed_message(dst, at, &layout.record_batch_message);
-    let body_start = at;
-
-    // Validity: all-ones bitmap, then padding to the data buffer.
-    dst[body_start..body_start + layout.validity_len].fill(0xff);
-    dst[body_start + layout.validity_len..body_start + layout.validity_padded].fill(0);
-
-    // The data region [data_offset .. data_offset + data_len] is left for the
-    // caller. Zero only its trailing alignment padding.
-    let data_end = layout.data_offset + data_len;
-    let body_end = body_start + layout.body_len;
-    dst[data_end..body_end].fill(0);
-
-    // End-of-stream marker.
-    dst[body_end..body_end + 4].copy_from_slice(&CONTINUATION_MARKER);
-    dst[body_end + 4..body_end + 8].copy_from_slice(&0i32.to_le_bytes());
-    debug_assert_eq!(body_end + PREFIX_LEN, layout.total);
-
-    Ok(layout.data_offset)
+    uint8_layout(data_len)?.write_header(dst)
 }
 
 /// Length of the leading schema-message block of a full IPC stream produced by
@@ -1282,6 +1324,32 @@ mod tests {
             // Byte-identical to encoding the equivalent array directly.
             let array = UInt8Array::from(bytes).into_data();
             assert_eq!(dst, fast_encode(&array), "len {data_len}");
+        }
+    }
+
+    /// Building the layout once and reusing it (`uint8_layout(..).total()` +
+    /// `write_header`) must produce the exact same stream as the separate
+    /// `uint8_ipc_len` + `encode_uint8_ipc_header` calls -- the compute-once
+    /// path taken by `send_output_raw` and the Python raw send avoids
+    /// rebuilding the schema/record-batch flatbuffers twice per send.
+    #[test]
+    fn uint8_layout_reused_matches_two_call_path() {
+        for data_len in [0usize, 1, 7, 8, 9, 1000] {
+            let bytes: Vec<u8> = (0..data_len).map(|i| (i % 251) as u8).collect();
+
+            // Two-call path (rebuilds the layout twice).
+            let mut two_call = vec![0u8; uint8_ipc_len(data_len).unwrap()];
+            let off_a = encode_uint8_ipc_header(&mut two_call, data_len).unwrap();
+            two_call[off_a..off_a + data_len].copy_from_slice(&bytes);
+
+            // Compute-once path.
+            let layout = uint8_layout(data_len).unwrap();
+            let mut once = vec![0u8; layout.total()];
+            let off_b = layout.write_header(&mut once).unwrap();
+            once[off_b..off_b + data_len].copy_from_slice(&bytes);
+
+            assert_eq!(off_a, off_b, "len {data_len}");
+            assert_eq!(two_call, once, "len {data_len}");
         }
     }
 
