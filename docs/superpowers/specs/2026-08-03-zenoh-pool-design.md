@@ -194,6 +194,12 @@ v1（cpu2cpu_cross）已实现并本地验证：
   本机镜像段（每 daemon 只删自己机器的段）；段名推导函数迁入库。
   剩余：daemon 异常退出（kill -9）后镜像残留 → create 时 EEXIST
   兜底（unlink + recreate）尚未实现
+- **name 参数 + machine 段名（2026-08-05，提交 8a69944e）**：
+  register_memory_pool(name=None) 显式段名（校验：无 / 无 .. 无
+  dora_pool_ 前缀、≤128）；自动名带 DORA_MACHINE_ID（防撞+孤儿可归属）；
+  显式名 EEXIST 不自动替换（防覆盖活段）；读方经 daemon metadata 段名
+  直读（try_doradma_read_by_name）。已知边界：同机跨 daemon 无注册读
+  本地池的 fallback 不再匹配（机器限定名）——out-of-contract
 - 遗留：GPU 跨机（§8）
 
 ## 8. 后续迭代（不在 v1）
