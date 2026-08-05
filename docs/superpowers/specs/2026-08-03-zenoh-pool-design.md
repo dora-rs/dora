@@ -208,6 +208,12 @@ v1（cpu2cpu_cross）已实现并本地验证：
   使 push 纯浪费）。实测：A 方法 6.3→81.8 MB/s（13×），E2E 4.6→9.4。
   已知边界：ack 丢失回滚后 B 侧 remote 引用留至 daemon 重启（预存
   泄漏模式延伸）；同机跨 daemon 无注册读本地池（out-of-contract）
+- **同机直读判定 + 跳过数据 push（2026-08-05，提交 2134e3f9）**：
+  RegisterPool 处理时 B 侧尝试打开发送方段（同机成功）→ ack 带
+  direct 标志 → python 对 direct 池跳过每帧 push（数据直读，镜像
+  死代码）；真 WAN 时 open 失败 → direct=false → 保留全量 push 路径。
+  实测（61.44MB 帧握手）：跨 daemon 稳态 1802-1885 MB/s（与本地同级，
+  差 6738 的部分是帧序保证的握手开销，非 daemon 边界）；E2E 4.6→1658
 - 遗留：GPU 跨机（§8）
 
 ## 8. 后续迭代（不在 v1）
