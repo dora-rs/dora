@@ -243,23 +243,49 @@ pub(crate) async fn stop_dataflow<'a>(
         timestamp,
     })?;
 
+    // Best-effort: attempt the stop on every daemon even if some fail, so one
+    // unreachable/erroring daemon does not orphan the nodes running on the
+    // remaining healthy daemons. Errors are aggregated and reported after all
+    // daemons have been attempted (mirrors `run::rollback_spawned_daemons`).
+    let mut errors: Vec<(DaemonId, eyre::Report)> = Vec::new();
     for daemon_id in &dataflow.daemons {
-        let daemon_connection = daemon_connections
-            .get_mut(daemon_id)
-            .wrap_err("no daemon connection")?;
+        let result: eyre::Result<()> = async {
+            let daemon_connection = daemon_connections
+                .get_mut(daemon_id)
+                .wrap_err("no daemon connection")?;
 
-        let reply_raw = daemon_connection
-            .send_and_receive(&message)
-            .await
-            .wrap_err("failed to send/receive stop message")?;
-        match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize stop reply from daemon")?
-        {
-            DaemonCoordinatorReply::StopResult(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to stop dataflow")?,
-            other => bail!("unexpected reply after sending stop: {other:?}"),
+            let reply_raw = daemon_connection
+                .send_and_receive(&message)
+                .await
+                .wrap_err("failed to send/receive stop message")?;
+            match serde_json::from_slice(&reply_raw)
+                .wrap_err("failed to deserialize stop reply from daemon")?
+            {
+                DaemonCoordinatorReply::StopResult(result) => result
+                    .map_err(|e| eyre!(e))
+                    .wrap_err("failed to stop dataflow")?,
+                other => bail!("unexpected reply after sending stop: {other:?}"),
+            }
+            Ok(())
         }
+        .await;
+
+        if let Err(err) = result {
+            errors.push((daemon_id.clone(), err));
+        }
+    }
+
+    if !errors.is_empty() {
+        let daemon_list = errors
+            .iter()
+            .map(|(id, err)| format!("{id}: {err:#}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(eyre!(
+            "failed to stop dataflow `{dataflow_uuid}` on {} of {} daemon(s): {daemon_list}",
+            errors.len(),
+            dataflow.daemons.len(),
+        ));
     }
 
     tracing::info!("successfully send stop dataflow `{dataflow_uuid}` to all daemons");
