@@ -269,6 +269,39 @@ unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
 /// so the /dev/shm name survives the handle drop — on Linux a created
 /// (owner) Shmem shm_unlinks on drop, which would remove the name local
 /// receivers open for the zero-copy fast path.
+/// Remove stale mirror segments left on this machine by dataflows whose
+/// daemon was killed without running shutdown cleanup. Only segments
+/// carrying THIS machine's id prefix (`dora_pool_{machine_id}_...`) are
+/// touched: a daemon restart implies its own dataflows died (nodes are
+/// daemon children), and sibling daemons on the same host use their own
+/// prefixes — so nothing live is ever unlinked. Local (un-prefixed) pool
+/// segments cannot be attributed safely and are left alone.
+#[cfg(target_os = "linux")]
+fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
+    let prefix = format!("dora_pool_{machine_id}_");
+    let Ok(entries) = std::fs::read_dir("/dev/shm") else {
+        return 0;
+    };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(&prefix) {
+            match std::fs::remove_file(entry.path()) {
+                Ok(()) => {
+                    tracing::info!("memory pool: removed orphan mirror segment {name}");
+                    removed += 1;
+                }
+                Err(e) => tracing::warn!("memory pool: failed to remove orphan mirror {name}: {e}"),
+            }
+        }
+    }
+    if removed > 0 {
+        tracing::info!("memory pool: cleaned {removed} orphan mirror segment(s)");
+    }
+    removed
+}
+
 fn create_cross_pool_shmem(
     dataflow_id: &Uuid,
     machine_id: &str,
@@ -293,10 +326,28 @@ fn create_cross_pool_shmem(
         shape
     );
     let data_offset = DORADMA_HEADER_SIZE + json.len();
-    let conf = ShmemConf::new().os_id(&shmem_name).size(size + data_offset);
-    let mut shmem = conf
-        .create()
-        .map_err(|e| eyre::eyre!("create shmem: {e}"))?;
+    let make_conf = || ShmemConf::new().os_id(&shmem_name).size(size + data_offset);
+    let mut shmem = match make_conf().create() {
+        Ok(s) => s,
+        Err(e) => {
+            // EEXIST: a stale mirror left by a daemon that was killed
+            // without running shutdown cleanup (the mirror handle is
+            // owner-less, so nothing unlinks it on process death). The
+            // old dataflow is dead — its nodes were daemon children — so
+            // replacing the segment is safe: unlink and retry once.
+            let shm_path = format!("/dev/shm/{shmem_name}");
+            if std::path::Path::new(&shm_path).exists() {
+                tracing::warn!("memory pool: stale mirror {shmem_name} exists, replacing");
+                std::fs::remove_file(&shm_path)
+                    .map_err(|ue| eyre::eyre!("remove stale mirror {shmem_name}: {ue}"))?;
+                make_conf()
+                    .create()
+                    .map_err(|re| eyre::eyre!("recreate mirror {shmem_name} after unlink: {re}"))?
+            } else {
+                return Err(eyre::eyre!("create shmem: {e}"));
+            }
+        }
+    };
     unsafe {
         let ptr = shmem.as_ptr();
         std::ptr::copy_nonoverlapping(DORADMA_MAGIC.as_ptr(), ptr, 8);
@@ -1770,6 +1821,18 @@ impl Daemon {
         // connection. The borrow ends when this function returns, so the
         // caller can re-borrow it on the next reconnect iteration.
         let dora_events = stream::poll_fn(|cx| dora_events_rx.poll_recv(cx));
+
+        // A previous incarnation of this daemon may have been killed
+        // without running shutdown cleanup, leaving stale mirror segments
+        // under this machine's id prefix. Nothing live can own them (this
+        // daemon's own dataflows died with it; sibling daemons use other
+        // prefixes), so sweep them at startup.
+        #[cfg(target_os = "linux")]
+        if let Some(machine_id) = self.machine_id.as_deref()
+            && !machine_id.is_empty()
+        {
+            cleanup_orphan_mirrors(machine_id);
+        }
 
         let watchdog_clock = self.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
@@ -8735,6 +8798,57 @@ mod announce_zenoh_bind_tests {
 #[cfg(test)]
 mod cross_pool_write_tests {
     use super::*;
+
+    /// Orphan sweep removes only segments under this machine's id prefix;
+    /// segments of other machines (sibling daemons on the same host) and
+    /// local (un-prefixed) pool segments survive.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn orphan_sweep_only_touches_own_machine_prefix() {
+        let dir = "/dev/shm";
+        // "orphanB" prefix isolates this test from the other cross-pool
+        // tests, which run in parallel and use segments under dora_pool_B_.
+        let own = "dora_pool_orphanB_orphantest_node_0";
+        let sibling = "dora_pool_orphanC_orphantest_node_0";
+        let local = "dora_pool_orphantest_node_0";
+        std::fs::write(format!("{dir}/{own}"), vec![0u8; 64]).unwrap();
+        std::fs::write(format!("{dir}/{sibling}"), vec![0u8; 64]).unwrap();
+        std::fs::write(format!("{dir}/{local}"), vec![0u8; 64]).unwrap();
+
+        let removed = cleanup_orphan_mirrors("orphanB");
+
+        assert_eq!(removed, 1);
+        assert!(!std::path::Path::new(&format!("{dir}/{own}")).exists());
+        assert!(std::path::Path::new(&format!("{dir}/{sibling}")).exists());
+        assert!(std::path::Path::new(&format!("{dir}/{local}")).exists());
+        // test hygiene
+        let _ = std::fs::remove_file(format!("{dir}/{sibling}"));
+        let _ = std::fs::remove_file(format!("{dir}/{local}"));
+    }
+
+    /// A stale mirror segment (leftover from a killed daemon that never
+    /// ran shutdown cleanup) must be replaced on re-register instead of
+    /// failing with EEXIST.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn stale_mirror_is_replaced_on_register() {
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 4096;
+        let shmem_name =
+            MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                .unwrap();
+        // Simulate the leftover: a plain file under the mirror's name.
+        std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 512]).unwrap();
+        let _cleanup = ShmemCleanup(shmem_name.clone());
+
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512]).unwrap();
+
+        // The recreated segment must be a valid DORADMA mirror.
+        let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+        let magic = unsafe { std::slice::from_raw_parts(shmem.as_ptr(), 8) };
+        assert_eq!(magic, DORADMA_MAGIC);
+    }
 
     /// Concurrent writers to the same mirror must not interleave bytes:
     /// after every round the data region holds one writer's complete

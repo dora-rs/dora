@@ -2022,18 +2022,43 @@ impl Node {
             data_offset + size
         };
 
-        // Create shared memory
-        let mut shmem = ShmemConf::new()
+        // Create shared memory. A name collision means a leftover segment
+        // from a previous dataflow whose daemon was killed without running
+        // shutdown cleanup (local pool segments are owner-less too). The
+        // old process is dead — its nodes were daemon children — so
+        // unlink and retry once.
+        let mut shmem = match ShmemConf::new()
             .os_id(&shmem_name)
             .size(total_size)
             .writable(true)
             .create()
-            .wrap_err_with(|| {
-                format!(
-                    "failed to create pool shared memory `{}` (name collision with another node or leftover segment)",
-                    shmem_name
-                )
-            })?;
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let shm_path = format!("/dev/shm/{shmem_name}");
+                if std::path::Path::new(&shm_path).exists() {
+                    tracing::warn!(
+                        "[{}] register_memory_pool: leftover segment {shmem_name} exists, replacing",
+                        self.node_id
+                    );
+                    std::fs::remove_file(&shm_path).wrap_err_with(|| {
+                        format!("failed to remove leftover segment `{shmem_name}`")
+                    })?;
+                    ShmemConf::new()
+                        .os_id(&shmem_name)
+                        .size(total_size)
+                        .writable(true)
+                        .create()
+                        .wrap_err_with(|| {
+                            format!("failed to recreate pool shared memory `{shmem_name}`")
+                        })?
+                } else {
+                    return Err(eyre::eyre!(
+                        "failed to create pool shared memory `{shmem_name}`: {e}"
+                    ));
+                }
+            }
+        };
         let shmem_ptr = unsafe { shmem.as_slice_mut().as_mut_ptr() };
 
         // Pin the shmem for DMA only when the receiver reads from it
