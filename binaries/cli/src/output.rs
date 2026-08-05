@@ -60,6 +60,23 @@ pub fn print_log_message(log_message: LogMessage, config: &LogOutputConfig) {
 }
 
 fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
+    let is_system = log_message.node_id.is_none();
+    let is_lifecycle = is_system && is_lifecycle_message(&log_message.message);
+    let line = format_pretty_line(&log_message, config);
+
+    if is_lifecycle {
+        println!();
+    }
+    println!("{line}");
+    if is_lifecycle {
+        println!();
+    }
+}
+
+/// Render a single log message as a colored one-line string for the `pretty`
+/// format. Kept separate from [`print_pretty`] so the exact column spacing is
+/// unit-testable without capturing stdout.
+fn format_pretty_line(log_message: &LogMessage, config: &LogOutputConfig) -> String {
     let LogMessage {
         build_id: _,
         dataflow_id,
@@ -75,9 +92,7 @@ fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
         fields: _,
     } = log_message;
 
-    let is_system = node_id.is_none();
-
-    let level_str = match &level {
+    let level_str = match level {
         LogLevelOrStdout::LogLevel(level) => match level {
             log::Level::Error => "ERROR ".red(),
             log::Level::Warn => "WARN  ".yellow(),
@@ -106,7 +121,7 @@ fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
     let time = format!("{}", timestamp.with_timezone(&Local).format("%H:%M:%S"));
     let colon = ":".bright_black().bold();
     let node = match node_id {
-        Some(ref node_id) => {
+        Some(node_id) => {
             let colored_id = node_id
                 .to_string()
                 .bold()
@@ -128,13 +143,12 @@ fn print_pretty(log_message: LogMessage, config: &LogOutputConfig) {
         None => "".normal(),
     };
 
-    if is_system && is_lifecycle_message(&message) {
-        println!();
-    }
-    println!("{time} {level_str} {dataflow} {node}{target} {message}");
-    if is_system && is_lifecycle_message(&message) {
-        println!();
-    }
+    // `dataflow` and `target` already carry their own trailing space when
+    // present and are empty strings otherwise, so they must abut the next
+    // field directly — inserting a literal space around them here produced a
+    // spurious double space on every line where they were empty (the default,
+    // i.e. almost all output).
+    format!("{time} {level_str} {dataflow}{node}{target}{message}")
 }
 
 fn is_lifecycle_message(message: &str) -> bool {
@@ -347,6 +361,69 @@ fn calculate_char_sum(s: &str) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- format_pretty_line spacing ---
+
+    fn pretty_message(node: Option<&str>, target: Option<&str>, message: &str) -> LogMessage {
+        LogMessage {
+            build_id: None,
+            dataflow_id: None,
+            node_id: node.map(|n| dora_message::id::NodeId::from(n.to_string())),
+            daemon_id: None,
+            level: LogLevelOrStdout::LogLevel(log::Level::Info),
+            target: target.map(|t| t.to_string()),
+            module_path: None,
+            file: None,
+            line: None,
+            message: message.to_string(),
+            timestamp: chrono::Utc::now(),
+            fields: None,
+        }
+    }
+
+    /// The rendered line is `"<time> <rest>"`; the time has no spaces, so this
+    /// returns everything after the first space for a timezone-independent
+    /// assertion.
+    fn rendered_rest(msg: LogMessage, config: &LogOutputConfig) -> String {
+        colored::control::set_override(false);
+        let line = format_pretty_line(&msg, config);
+        line.splitn(2, ' ').nth(1).unwrap().to_string()
+    }
+
+    #[test]
+    fn pretty_line_default_has_no_double_space() {
+        // The common case: no dataflow id, no daemon name, no target. The
+        // `dataflow`/`target` fields are empty here, so they must not each
+        // contribute a stray separator space (regression: `node:  message`).
+        let config = LogOutputConfig::default();
+        let rest = rendered_rest(pretty_message(Some("sensor"), None, "hello"), &config);
+        assert_eq!(rest, "INFO   sensor: hello");
+        assert!(
+            !rest.contains("sensor:  hello"),
+            "double space before message: {rest:?}"
+        );
+    }
+
+    #[test]
+    fn pretty_line_with_target_single_space() {
+        let config = LogOutputConfig::default();
+        let rest = rendered_rest(
+            pretty_message(Some("sensor"), Some("mymod"), "hello"),
+            &config,
+        );
+        assert_eq!(rest, "INFO   sensor: mymod hello");
+        assert!(
+            !rest.contains("mymod  hello"),
+            "double space before message: {rest:?}"
+        );
+    }
+
+    #[test]
+    fn pretty_line_system_message_no_double_space() {
+        let config = LogOutputConfig::default();
+        let rest = rendered_rest(pretty_message(None, None, "coordinator ready"), &config);
+        assert_eq!(rest, "INFO   [dora]: coordinator ready");
+    }
 
     // --- parse_log_level_str ---
 
