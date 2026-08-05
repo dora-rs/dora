@@ -67,8 +67,22 @@ Expected warnings/info:
 - write after free:
   - `Attempt to write memory pool [memory_pool_id] failed - reason: pool does not exist. Operation aborted.`
 - auto cleanup:
-  - `Detected xx unreleased memory pool, releasing...`
-  - `Successfully released xx unreleased memory pools!`
+  - `Detected xx unreleased memory pool of finished dataflow <id>, releasing...`
+
+## Pool lifetime
+
+A pool outlives the node that registered it. The normal lifecycle is that a
+sender registers a pool and a *receiver* reads it — and possibly frees it —
+which may happen after the sender has already exited. The daemon therefore
+never drops a node's pools just because that node went away.
+
+Instead each pool records who can still reach it: the nodes that have opened
+it, plus the registering node's downstream consumers, which can still learn
+the pool id from a message that is already in flight. A pool is released as
+soon as none of those nodes is running any more, and unconditionally when the
+dataflow finishes — so a node that crashes or is removed with `dora node
+remove` no longer strands its pools for the rest of the dataflow
+([#2881](https://github.com/dora-rs/dora/issues/2881)).
 
 ## Notes
 
