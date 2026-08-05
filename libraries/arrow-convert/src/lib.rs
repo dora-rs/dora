@@ -48,6 +48,41 @@ pub trait IntoArrow {
 }
 
 /// Wrapper type for an Arrow [`ArrayRef`](arrow::array::ArrayRef).
+///
+/// Dora nodes receive their inputs as `ArrowData`. The `TryFrom<&ArrowData>`
+/// implementations are the reading counterpart to [`IntoArrow`]: they convert
+/// received Arrow data back into plain Rust values. Every conversion checks the
+/// array type, rejects nulls, and (for scalars) requires exactly one element,
+/// returning an [`eyre::Report`] instead of panicking when the data does not
+/// match.
+///
+/// # Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use arrow::array::ArrayRef;
+/// use dora_arrow_convert::{ArrowData, IntoArrow};
+///
+/// // A producer turns a `Vec<f32>` into Arrow data (see `IntoArrow`) ...
+/// let array: ArrayRef = Arc::new(vec![1.0_f32, 2.0, 3.0].into_arrow());
+/// let data = ArrowData(array);
+///
+/// // ... and the receiving node reads it back as a `Vec` or a borrowed slice.
+/// let values: Vec<f32> = (&data).try_into()?;
+/// assert_eq!(values, vec![1.0, 2.0, 3.0]);
+/// let slice: &[f32] = (&data).try_into()?;
+/// assert_eq!(slice, &[1.0, 2.0, 3.0]);
+///
+/// // A single-element array converts to a scalar.
+/// let scalar = ArrowData(Arc::new(42_u8.into_arrow()) as ArrayRef);
+/// let n: u8 = (&scalar).try_into()?;
+/// assert_eq!(n, 42);
+///
+/// // A type mismatch is a recoverable error, not a panic.
+/// let wrong: Result<Vec<i64>, _> = (&data).try_into();
+/// assert!(wrong.is_err());
+/// # Ok::<(), eyre::Report>(())
+/// ```
 #[derive(Debug)]
 pub struct ArrowData(pub arrow::array::ArrayRef);
 
