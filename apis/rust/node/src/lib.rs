@@ -103,7 +103,7 @@ use dora_message::{
     node_to_daemon::DaemonRequest,
 };
 pub use event_stream::{
-    Event, EventScheduler, EventStream, StopCause, TryRecvError,
+    Event, EventScheduler, EventStream, ExpectedServers, StopCause, TryRecvError,
     input_tracker::{InputState, InputTracker},
     merged,
 };

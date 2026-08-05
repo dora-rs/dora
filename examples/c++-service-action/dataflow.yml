@@ -10,10 +10,22 @@ nodes:
     outputs:
       - request
 
+  # A second client for the same server, this one non-blocking: several
+  # requests in flight at a time, polled without blocking (dora-rs/dora#3046).
+  - id: cxx-polling-client
+    path: build/polling_client
+    inputs:
+      # No tick: this node runs on its own wall clock and lets the
+      # correlated polls own the event stream entirely.
+      response: cxx-service-server/response
+    outputs:
+      - request
+
   - id: cxx-service-server
     path: build/service_server
     inputs:
       request: cxx-service-client/request
+      polling_request: cxx-polling-client/request
     outputs:
       - response
 

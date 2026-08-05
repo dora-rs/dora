@@ -2233,13 +2233,48 @@ impl DoraNode {
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
-        mut parameters: MetadataParameters,
+        parameters: MetadataParameters,
         data: impl Array,
     ) -> NodeResult<String> {
         if parameters.contains_key(dora_message::metadata::REQUEST_ID) {
-            tracing::warn!("send_service_request: caller-provided request_id will be overwritten");
+            tracing::warn!(
+                "send_service_request: caller-provided request_id will be overwritten; \
+                 use send_service_request_with_id to keep it"
+            );
         }
         let request_id = Self::new_request_id();
+        self.send_service_request_with_id(output_id, parameters, data, request_id)
+    }
+
+    /// Send a service request under a caller-supplied `request_id`.
+    ///
+    /// [`send_service_request`](Self::send_service_request) mints a fresh
+    /// id per call, which makes it unusable for a request fanned out to
+    /// several nodes: each publish would carry a different correlation
+    /// and no single receive could await "whichever answers first". This
+    /// variant sends every copy under one id instead.
+    ///
+    /// The id is returned unchanged, so callers can use the two
+    /// interchangeably.
+    ///
+    /// ```ignore
+    /// let request_id = DoraNode::new_request_id();
+    /// for server in &servers {
+    ///     node.send_service_request_with_id(
+    ///         server.output.clone(), params.clone(), data.clone(), request_id.clone(),
+    ///     )?;
+    /// }
+    /// let reply = events
+    ///     .recv_service_response_from(&request_id, ExpectedServers::AnyOf(&servers), timeout)
+    ///     .await?;
+    /// ```
+    pub fn send_service_request_with_id(
+        &mut self,
+        output_id: DataId,
+        mut parameters: MetadataParameters,
+        data: impl Array,
+        request_id: String,
+    ) -> NodeResult<String> {
         parameters.insert(
             dora_message::metadata::REQUEST_ID.to_string(),
             dora_message::metadata::Parameter::String(request_id.clone()),

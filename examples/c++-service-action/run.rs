@@ -5,6 +5,7 @@ use std::{env::consts::EXE_SUFFIX, path::Path, time::Duration};
 /// Nodes to compile: (source file stem, output binary name).
 const NODES: &[(&str, &str)] = &[
     ("service-client", "service_client"),
+    ("polling-client", "polling_client"),
     ("service-server", "service_server"),
     ("action-client", "action_client"),
     ("action-server", "action_server"),
