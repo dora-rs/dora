@@ -261,7 +261,8 @@ detection and correlation are unchanged; only the waiting is gone.
 
 ```c++
 // per loop iteration, for each outstanding request
-auto poll = try_recv_service_response(dora_node.events, request_id, "server-node-id");
+auto poll = try_recv_service_response(
+    dora_node.events, request_id, "server-node-id", /* timeout_ms */ 5000);
 switch (poll.status)
 {
 case DoraPatternStatus::Matched:
@@ -269,13 +270,21 @@ case DoraPatternStatus::Matched:
     break;
 case DoraPatternStatus::NotReady:
     break; // nothing to do, and no time spent
+case DoraPatternStatus::Timeout:
+    give_up(); // the registered deadline lapsed; reported once
+    break;
 default:
     std::cerr << std::string(poll.error) << std::endl;
 }
 ```
 
-There is no deadline, so `Timeout` never comes back from a poll — keeping
-deadlines is the caller's job.
+The framework owns the deadline: the first poll carrying a `timeout_ms`
+registers it against that `request_id`, and a later poll past it returns
+`Timeout` exactly once. A caller passes the same `timeout_ms` every
+iteration and reacts to `Timeout` like any other status — no deadline
+bookkeeping of its own. Pass `0` for no deadline. The clock starts at
+that first poll rather than at send time, and the first deadline
+registered for an id wins.
 
 > **Ordering matters.** The polls and your own `next_event` read the same
 > event stream, so whichever runs first consumes what is there. A poll
