@@ -200,6 +200,14 @@ v1（cpu2cpu_cross）已实现并本地验证：
   显式名 EEXIST 不自动替换（防覆盖活段）；读方经 daemon metadata 段名
   直读（try_doradma_read_by_name）。已知边界：同机跨 daemon 无注册读
   本地池的 fallback 不再匹配（机器限定名）——out-of-contract
+- **同机跨 daemon 直读 + 跳过无镜像 push（2026-08-05，提交 2d3dbef0）**：
+  RegisterPool 带发送方段名 → B 侧登记远端引用（full metadata，
+  remote 标记：free/cleanup 不 unlink 远端段，表容量上限 512）；
+  读方 metadata 段名优先直读（同机最新数据），跨机回退镜像；
+  machine=None（无镜像）池跳过每帧 push（gate 本就丢弃 + 同机直读
+  使 push 纯浪费）。实测：A 方法 6.3→81.8 MB/s（13×），E2E 4.6→9.4。
+  已知边界：ack 丢失回滚后 B 侧 remote 引用留至 daemon 重启（预存
+  泄漏模式延伸）；同机跨 daemon 无注册读本地池（out-of-contract）
 - 遗留：GPU 跨机（§8）
 
 ## 8. 后续迭代（不在 v1）
