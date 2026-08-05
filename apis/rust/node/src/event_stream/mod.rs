@@ -107,6 +107,19 @@ pub struct EventStream {
     /// the caller's main event loop never loses intermediate events
     /// (dora-rs/adora#148).
     pending_passthrough: std::collections::VecDeque<Event>,
+    /// Deadlines for outstanding correlations polled via
+    /// `try_recv_service_response` / `try_recv_action_result`
+    /// (dora-rs/dora#3046).
+    ///
+    /// The blocking receives own their deadline inside a single call;
+    /// a poll returns immediately, so the deadline has to survive
+    /// between calls. Keyed by correlation id (`request_id` /
+    /// `goal_id`), which is exactly what the caller already passes.
+    ///
+    /// An entry is created by the first deadline-carrying poll for an
+    /// id and removed as soon as that poll reaches a terminal outcome —
+    /// a match, an error, or the deadline itself.
+    correlation_deadlines: HashMap<String, std::time::Instant>,
     /// Set to true after an `Event::Stop` has been delivered. Zenoh
     /// subscriber threads hold clones of the event channel sender, so
     /// the daemon thread's sender drop alone is not enough to close
@@ -749,6 +762,7 @@ impl EventStream {
             use_scheduler,
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
+            correlation_deadlines: HashMap::new(),
             stop_received: false,
         })
     }
@@ -1209,25 +1223,39 @@ impl EventStream {
     /// events are buffered for the caller's own `recv()` exactly as in
     /// the blocking form, and correlation state survives across calls.
     ///
-    /// Because there is no deadline, this never reports
-    /// [`PatternError::Timeout`] — deadlines are the caller's to keep.
+    /// `timeout` is owned by the framework, not the caller: the first
+    /// poll carrying one registers a deadline for `request_id`, and a
+    /// later poll past it returns [`PatternError::Timeout`] exactly
+    /// once. A caller therefore does not sweep deadlines itself — it
+    /// passes the same timeout each iteration and reacts to `Timeout`
+    /// like any other outcome. Pass `None` to poll without a deadline.
+    ///
+    /// The clock starts at that first poll rather than at send time
+    /// (see [`correlation_expired`](Self::correlation_expired)), and the
+    /// first registered deadline wins if later polls pass a different
+    /// one. Use [`cancel_correlation`](Self::cancel_correlation) to drop
+    /// a request that will never be polled again.
     ///
     /// # Example
     ///
     /// ```ignore
     /// // once per event-loop iteration, for each outstanding request
-    /// match events.try_recv_service_response(&request_id, ExpectedServers::One(&server))? {
-    ///     Some(Event::Input { data, .. }) => complete(data),
-    ///     Some(_) => unreachable!(),
-    ///     None => {} // not ready — carry on with the rest of the tick
+    /// let timeout = Some(Duration::from_secs(5));
+    /// match events.try_recv_service_response(&request_id, ExpectedServers::One(&server), timeout) {
+    ///     Ok(Some(Event::Input { data, .. })) => complete(data),
+    ///     Ok(None) => {} // not ready — carry on with the rest of the tick
+    ///     Err(PatternError::Timeout) => give_up(),
+    ///     Err(e) => return Err(e.into()),
+    ///     _ => unreachable!(),
     /// }
     /// ```
     pub fn try_recv_service_response(
         &mut self,
         request_id: &str,
         expected: ExpectedServers<'_>,
+        timeout: Option<Duration>,
     ) -> Result<Option<Event>, PatternError> {
-        self.try_correlation(expected, matches_request_id, request_id)
+        self.try_correlation(expected, matches_request_id, request_id, timeout)
     }
 
     /// Waits for a terminal action result (`goal_status` ∈
@@ -1266,12 +1294,20 @@ impl EventStream {
     /// events keep being buffered for the caller's own `recv()`, so a
     /// polling client observes progress through its normal event loop
     /// and learns about completion here.
+    ///
+    /// `timeout` works exactly as in
+    /// [`try_recv_service_response`](Self::try_recv_service_response):
+    /// the framework registers the deadline on the first poll carrying
+    /// one and reports `Timeout` once. Note it bounds the *whole goal*,
+    /// not the gap between feedback messages — a long-running goal that
+    /// is making visible progress will still expire.
     pub fn try_recv_action_result(
         &mut self,
         goal_id: &str,
         expected: ExpectedServers<'_>,
+        timeout: Option<Duration>,
     ) -> Result<Option<Event>, PatternError> {
-        self.try_correlation(expected, matches_terminal_action_result, goal_id)
+        self.try_correlation(expected, matches_terminal_action_result, goal_id, timeout)
     }
 
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
@@ -1369,19 +1405,27 @@ impl EventStream {
         expected: ExpectedServers<'_>,
         is_match: F,
         needle: &str,
+        timeout: Option<Duration>,
     ) -> Result<Option<Event>, PatternError>
     where
         F: Fn(&Event, &str) -> bool,
     {
         // Same rationale as the blocking form: an earlier wait may have
-        // already buffered the reply we are now looking for.
+        // already buffered the reply we are now looking for. Checked
+        // before the deadline so a reply that did arrive in time is
+        // never discarded by an expiry noticed late.
         if let Some(pos) = self
             .pending_passthrough
             .iter()
             .position(|event| is_match(event, needle))
             && let Some(event) = self.pending_passthrough.remove(pos)
         {
+            self.correlation_deadlines.remove(needle);
             return Ok(Some(event));
+        }
+
+        if timeout.is_some() && self.correlation_expired(needle, timeout) {
+            return Err(PatternError::Timeout);
         }
 
         loop {
@@ -1396,17 +1440,23 @@ impl EventStream {
             };
 
             match classify_correlation_event(&event, expected, |e| is_match(e, needle)) {
-                CorrelationOutcome::Match => return Ok(Some(event)),
+                CorrelationOutcome::Match => {
+                    self.correlation_deadlines.remove(needle);
+                    return Ok(Some(event));
+                }
                 CorrelationOutcome::ServerRestarted => {
                     let restarted = restarted_node_id(&event);
+                    self.correlation_deadlines.remove(needle);
                     self.pending_passthrough.push_back(event);
                     return Err(PatternError::ServerRestarted(restarted));
                 }
                 CorrelationOutcome::StreamEnded => {
+                    self.correlation_deadlines.remove(needle);
                     self.pending_passthrough.push_back(event);
                     return Err(PatternError::StreamEnded);
                 }
                 CorrelationOutcome::StreamError => {
+                    self.correlation_deadlines.remove(needle);
                     if let Event::Error(err) = event {
                         return Err(PatternError::StreamError(err));
                     }
@@ -1417,6 +1467,52 @@ impl EventStream {
                 }
             }
         }
+    }
+
+    /// Whether `needle`'s deadline has passed, registering it on first
+    /// sight.
+    ///
+    /// The clock starts at the **first deadline-carrying poll** for an
+    /// id, not at send time: `EventStream` does not see the send, and
+    /// threading registration through `DoraNode` would couple the two
+    /// for no practical gain — a client polls in the same iteration it
+    /// sends, so the difference is one iteration.
+    ///
+    /// A later poll passing a different `timeout` does not move an
+    /// existing deadline; the first one registered wins. Otherwise a
+    /// caller that recomputed a relative timeout each iteration would
+    /// push its own deadline forward forever and never time out.
+    ///
+    /// Returns `true` exactly once per registration: the entry is
+    /// removed as it expires, so the caller sees one `Timeout` rather
+    /// than a `Timeout` on every subsequent poll.
+    fn correlation_expired(&mut self, needle: &str, timeout: Option<Duration>) -> bool {
+        let Some(timeout) = timeout else {
+            return false;
+        };
+        let now = std::time::Instant::now();
+        let deadline = *self
+            .correlation_deadlines
+            .entry(needle.to_owned())
+            // Saturating: `timeout` crosses the C++ boundary as an
+            // unbounded value, and `Instant + Duration` panics on
+            // overflow.
+            .or_insert_with(|| now.checked_add(timeout).unwrap_or(now));
+        if now >= deadline {
+            self.correlation_deadlines.remove(needle);
+            return true;
+        }
+        false
+    }
+
+    /// Forget an outstanding correlation's deadline.
+    ///
+    /// A poll drops its own entry on a match, an error or expiry, so
+    /// this is only needed when a caller abandons a request it will
+    /// never poll again — otherwise that one entry lives until the
+    /// `EventStream` is dropped.
+    pub fn cancel_correlation(&mut self, correlation_id: &str) {
+        self.correlation_deadlines.remove(correlation_id);
     }
 }
 
@@ -2927,7 +3023,7 @@ mod tests {
 
         let server = NodeId::from("calc".to_string());
         let got = events
-            .try_recv_service_response("req-2", ExpectedServers::One(&server))
+            .try_recv_service_response("req-2", ExpectedServers::One(&server), None)
             .expect("poll must not error");
         match got {
             Some(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
@@ -2946,7 +3042,7 @@ mod tests {
         ));
 
         let server = NodeId::from("calc".to_string());
-        let result = events.try_recv_service_response("req-1", ExpectedServers::One(&server));
+        let result = events.try_recv_service_response("req-1", ExpectedServers::One(&server), None);
 
         // Deliberately not asserting `Ok(None)`: whether the scripted
         // `Stop` has been delivered yet is a race, and a `Stop` in the
@@ -2976,8 +3072,9 @@ mod tests {
         ]);
 
         let server = NodeId::from("calc".to_string());
-        let matched =
-            poll_until(|| events.try_recv_service_response("req-1", ExpectedServers::One(&server)));
+        let matched = poll_until(|| {
+            events.try_recv_service_response("req-1", ExpectedServers::One(&server), None)
+        });
         match matched {
             Event::Input { id, .. } => assert_eq!(id.as_str(), "response"),
             other => panic!("expected the correlated response, got {other:?}"),
@@ -3004,8 +3101,9 @@ mod tests {
         ]);
 
         let server = NodeId::from("nav".to_string());
-        let matched =
-            poll_until(|| events.try_recv_action_result("goal-1", ExpectedServers::One(&server)));
+        let matched = poll_until(|| {
+            events.try_recv_action_result("goal-1", ExpectedServers::One(&server), None)
+        });
         match matched {
             Event::Input { id, .. } => assert_eq!(id.as_str(), "result"),
             other => panic!("expected the terminal result, got {other:?}"),
@@ -3021,6 +3119,142 @@ mod tests {
     }
 
     #[test]
+    fn poll_without_a_timeout_never_expires() {
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+        let server = NodeId::from("calc".to_string());
+
+        // `None` is the pre-deadline behaviour: whatever happens, it is
+        // never a Timeout.
+        for _ in 0..3 {
+            let result =
+                events.try_recv_service_response("req-1", ExpectedServers::One(&server), None);
+            assert!(
+                !matches!(result, Err(PatternError::Timeout)),
+                "a poll without a deadline must never time out, got {result:?}"
+            );
+        }
+        assert!(events.correlation_deadlines.is_empty());
+    }
+
+    #[test]
+    fn expired_correlation_reports_timeout_exactly_once() {
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+
+        // A zero timeout is already expired when registered, so this is
+        // deterministic without sleeping.
+        let expired = Some(Duration::ZERO);
+        assert!(
+            events.correlation_expired("req-1", expired),
+            "a zero timeout must be expired on the first poll"
+        );
+
+        // The entry is dropped as it expires, so the caller is not told
+        // the same request timed out on every subsequent poll. The next
+        // call re-registers instead.
+        assert!(
+            !events.correlation_deadlines.contains_key("req-1"),
+            "an expired registration must not linger"
+        );
+    }
+
+    #[test]
+    fn first_registered_deadline_wins() {
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+
+        // Register a long deadline, then poll again with a short one. If
+        // the later value replaced the earlier, a caller recomputing a
+        // relative timeout every iteration would push its own deadline
+        // forward forever and never expire.
+        assert!(!events.correlation_expired("req-1", Some(Duration::from_secs(3600))));
+        let registered = events.correlation_deadlines["req-1"];
+
+        assert!(!events.correlation_expired("req-1", Some(Duration::ZERO)));
+        assert_eq!(
+            events.correlation_deadlines["req-1"], registered,
+            "a later poll must not move an already-registered deadline"
+        );
+    }
+
+    #[test]
+    fn a_matched_reply_clears_its_deadline() {
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+        events
+            .push_passthrough_for_testing(make_input_event("response", request_id_params("req-1")));
+
+        let server = NodeId::from("calc".to_string());
+        // Register a deadline, then let the buffered reply satisfy it.
+        assert!(!events.correlation_expired("req-1", Some(Duration::from_secs(60))));
+        assert!(events.correlation_deadlines.contains_key("req-1"));
+
+        let got = events
+            .try_recv_service_response(
+                "req-1",
+                ExpectedServers::One(&server),
+                Some(Duration::from_secs(60)),
+            )
+            .expect("the buffered reply must satisfy the poll");
+        assert!(got.is_some());
+        assert!(
+            !events.correlation_deadlines.contains_key("req-1"),
+            "a completed correlation must not leave a deadline behind"
+        );
+    }
+
+    #[test]
+    fn a_buffered_reply_beats_an_expired_deadline() {
+        // The reply did arrive in time; the caller simply polled late.
+        // Reporting Timeout here would discard a reply the framework
+        // already holds.
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+        events
+            .push_passthrough_for_testing(make_input_event("response", request_id_params("req-1")));
+
+        let server = NodeId::from("calc".to_string());
+        let got = events
+            .try_recv_service_response("req-1", ExpectedServers::One(&server), Some(Duration::ZERO))
+            .expect("a buffered reply must win over an expired deadline");
+        match got {
+            Some(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
+            other => panic!("expected the buffered reply, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cancel_correlation_drops_an_abandoned_registration() {
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+
+        assert!(!events.correlation_expired("req-1", Some(Duration::from_secs(60))));
+        assert!(events.correlation_deadlines.contains_key("req-1"));
+
+        events.cancel_correlation("req-1");
+        assert!(
+            !events.correlation_deadlines.contains_key("req-1"),
+            "cancel_correlation must drop the registration"
+        );
+    }
+
+    #[test]
+    fn deadlines_are_tracked_per_correlation_id() {
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+
+        assert!(!events.correlation_expired("req-1", Some(Duration::from_secs(3600))));
+        // A different id expiring must not disturb the first.
+        assert!(events.correlation_expired("req-2", Some(Duration::ZERO)));
+        assert!(
+            events.correlation_deadlines.contains_key("req-1"),
+            "one request's expiry must not clear another's deadline"
+        );
+    }
+
+    #[test]
+    fn an_absurd_timeout_does_not_panic() {
+        // `timeout_ms` crosses the C++ boundary unbounded, and
+        // `Instant + Duration` panics on overflow.
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+        let _ = events.correlation_expired("req-1", Some(Duration::from_secs(u64::MAX)));
+    }
+
+    #[test]
     fn try_recv_service_response_correlates_fan_out_reply_from_any_of() {
         // One request id, several possible responders: whichever answers
         // first satisfies the poll.
@@ -3033,7 +3267,7 @@ mod tests {
         let ir = NodeId::from("cam-ir".to_string());
         let candidates = [eo, ir];
         let matched = poll_until(|| {
-            events.try_recv_service_response("req-1", ExpectedServers::AnyOf(&candidates))
+            events.try_recv_service_response("req-1", ExpectedServers::AnyOf(&candidates), None)
         });
         assert!(matches!(matched, Event::Input { .. }));
     }

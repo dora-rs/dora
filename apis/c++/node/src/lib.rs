@@ -366,25 +366,40 @@ mod ffi {
         /// state carries across calls — so polling in a loop is
         /// equivalent to waiting, minus the blocking.
         ///
-        /// There is no deadline, so `Timeout` is never returned; keeping
-        /// deadlines is the caller's job. Pass an empty
-        /// `server_node_id` to accept a reply from any node and skip
-        /// restart correlation.
+        /// `timeout_ms` is owned by the framework: the first poll
+        /// carrying one registers a deadline for `request_id`, and a
+        /// later poll past it returns `Timeout` exactly once. So a
+        /// caller does not sweep deadlines itself — it passes the same
+        /// `timeout_ms` every iteration and reacts to `Timeout` like
+        /// any other status. Pass `0` for no deadline.
+        ///
+        /// The clock starts at that first poll rather than at send
+        /// time, and the first deadline registered for an id wins.
+        ///
+        /// Pass an empty `server_node_id` to accept a reply from any
+        /// node and skip restart correlation.
         fn try_recv_service_response(
             events: &mut Box<Events>,
             request_id: &str,
             server_node_id: &str,
+            timeout_ms: u64,
         ) -> DoraPatternResult;
 
         /// Non-blocking poll for a *terminal* result for `goal_id`.
         ///
         /// Returns `NotReady` while the goal is still running. Feedback
-        /// messages stay buffered for the caller's own event loop. Pass
-        /// an empty `server_node_id` to accept any responder.
+        /// messages stay buffered for the caller's own event loop.
+        ///
+        /// `timeout_ms` behaves as in `try_recv_service_response`, but
+        /// bounds the *whole goal* rather than the gap between feedback
+        /// messages: a long goal that is making visible progress will
+        /// still expire. Pass `0` for no deadline, and an empty
+        /// `server_node_id` to accept any responder.
         fn try_recv_action_result(
             events: &mut Box<Events>,
             goal_id: &str,
             server_node_id: &str,
+            timeout_ms: u64,
         ) -> DoraPatternResult;
 
         /// `recv_service_response` over a set of acceptable responders,
@@ -418,6 +433,7 @@ mod ffi {
             events: &mut Box<Events>,
             request_id: &str,
             server_node_ids: &Vec<String>,
+            timeout_ms: u64,
         ) -> DoraPatternResult;
 
         /// Non-blocking `recv_action_result_from`.
@@ -425,6 +441,7 @@ mod ffi {
             events: &mut Box<Events>,
             goal_id: &str,
             server_node_ids: &Vec<String>,
+            timeout_ms: u64,
         ) -> DoraPatternResult;
 
         /// Send a service request under a caller-supplied `request_id`.
@@ -1361,28 +1378,34 @@ fn try_recv_service_response(
     events: &mut Box<Events>,
     request_id: &str,
     server_node_id: &str,
+    timeout_ms: u64,
 ) -> ffi::DoraPatternResult {
     let servers = match parse_server_list(std::slice::from_ref(&server_node_id)) {
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(
-        events
-            .0
-            .try_recv_service_response(request_id, servers.as_ref()),
-    )
+    try_pattern_result(events.0.try_recv_service_response(
+        request_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
 }
 
 fn try_recv_action_result(
     events: &mut Box<Events>,
     goal_id: &str,
     server_node_id: &str,
+    timeout_ms: u64,
 ) -> ffi::DoraPatternResult {
     let servers = match parse_server_list(std::slice::from_ref(&server_node_id)) {
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(events.0.try_recv_action_result(goal_id, servers.as_ref()))
+    try_pattern_result(events.0.try_recv_action_result(
+        goal_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
 }
 
 /// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
@@ -1442,16 +1465,17 @@ fn try_recv_service_response_from(
     events: &mut Box<Events>,
     request_id: &str,
     server_node_ids: &Vec<String>,
+    timeout_ms: u64,
 ) -> ffi::DoraPatternResult {
     let servers = match parse_server_strings(server_node_ids) {
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(
-        events
-            .0
-            .try_recv_service_response(request_id, servers.as_ref()),
-    )
+    try_pattern_result(events.0.try_recv_service_response(
+        request_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
 }
 
 /// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
@@ -1463,12 +1487,17 @@ fn try_recv_action_result_from(
     events: &mut Box<Events>,
     goal_id: &str,
     server_node_ids: &Vec<String>,
+    timeout_ms: u64,
 ) -> ffi::DoraPatternResult {
     let servers = match parse_server_strings(server_node_ids) {
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(events.0.try_recv_action_result(goal_id, servers.as_ref()))
+    try_pattern_result(events.0.try_recv_action_result(
+        goal_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
 }
 
 /// Owned form of [`ExpectedServers`], which borrows.
@@ -1512,6 +1541,21 @@ fn parse_server_list(ids: &[&str]) -> Result<OwnedServers, ffi::DoraPatternResul
         parsed.push(parse_server_node_id(id)?);
     }
     Ok(OwnedServers::Some(parsed))
+}
+
+/// Map a C++ `timeout_ms` onto the Rust poll's optional deadline.
+///
+/// `0` means "no deadline" — the poll then behaves exactly as it did
+/// before deadlines existed. Any other value is clamped the same way
+/// `clamp_pattern_timeout` clamps the blocking waits, because it
+/// crosses the bridge as an unbounded `u64` and ends up in an
+/// `Instant + Duration`.
+fn poll_timeout(timeout_ms: u64) -> Option<Duration> {
+    if timeout_ms == 0 {
+        None
+    } else {
+        Some(clamp_pattern_timeout(timeout_ms))
+    }
 }
 
 /// Map a non-blocking correlated receive onto the C++ result struct.
@@ -1996,6 +2040,22 @@ mod tests {
             pinned.get(dora_node_api::REQUEST_ID),
             Some(&DoraParameter::String("req-fixed".into()))
         );
+    }
+
+    #[test]
+    fn zero_timeout_means_no_deadline() {
+        // `0` has to keep meaning "poll forever", or a caller that
+        // never wanted a deadline would start getting Timeout.
+        assert!(poll_timeout(0).is_none());
+    }
+
+    #[test]
+    fn nonzero_timeout_is_clamped_like_the_blocking_waits() {
+        let clamped = poll_timeout(u64::MAX).expect("a non-zero timeout is a deadline");
+        assert_eq!(clamped, clamp_pattern_timeout(u64::MAX));
+
+        let ordinary = poll_timeout(5_000).expect("a non-zero timeout is a deadline");
+        assert_eq!(ordinary, Duration::from_millis(5_000));
     }
 
     #[test]

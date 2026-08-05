@@ -17,6 +17,11 @@
 // iteration polls each entry exactly once, so the loop is bounded no
 // matter how slow or wedged a server is.
 //
+// Note what is *not* here: no deadline arithmetic. The timeout passed to
+// each poll is registered by the framework against the request id, which
+// then reports `Timeout` once when it lapses. The table holds only what
+// this node needs to print a result.
+//
 // ---------------------------------------------------------------------
 // ONE RULE WORTH KNOWING
 //
@@ -50,10 +55,10 @@ constexpr const char *SERVER = "cxx-service-server";
 // How many requests this demo completes before exiting.
 constexpr int REQUEST_BUDGET = 6;
 
-// How long a request may stay outstanding. The framework applies no
-// deadline to a poll — that is the trade for not blocking — so the
-// client keeps its own, per request.
-constexpr auto REQUEST_DEADLINE = std::chrono::seconds(5);
+// How long a request may stay outstanding. Passed to every poll; the
+// framework registers it once per request_id and reports Timeout when
+// it lapses, so this node keeps no deadline bookkeeping of its own.
+constexpr std::uint64_t REQUEST_TIMEOUT_MS = 5000;
 
 // How many requests may be outstanding at once. This is the property
 // under test: a blocking client is structurally limited to one.
@@ -63,14 +68,11 @@ constexpr std::size_t MAX_IN_FLIGHT = 3;
 // point — nothing here is dictated by how fast a server replies.
 constexpr auto POLL_INTERVAL = std::chrono::milliseconds(10);
 
-using Clock = std::chrono::steady_clock;
-
 struct Pending
 {
     std::string request_id;
     std::uint8_t a;
     std::uint8_t b;
-    Clock::time_point sent_at;
 };
 
 /// Fire one request without waiting for it, returning its correlation id.
@@ -116,11 +118,11 @@ SweepResult sweep(DoraNode &node, std::vector<Pending> &pending)
     SweepResult out;
     std::vector<Pending> still_waiting;
     still_waiting.reserve(pending.size());
-    const auto now = Clock::now();
 
     for (auto &entry : pending)
     {
-        auto result = try_recv_service_response(node.events, entry.request_id, SERVER);
+        auto result = try_recv_service_response(
+            node.events, entry.request_id, SERVER, REQUEST_TIMEOUT_MS);
 
         switch (result.status)
         {
@@ -136,15 +138,16 @@ SweepResult sweep(DoraNode &node, std::vector<Pending> &pending)
         }
 
         case DoraPatternStatus::NotReady:
-            if (now - entry.sent_at > REQUEST_DEADLINE)
-            {
-                std::cerr << "[polling-client] deadline passed for " << entry.request_id
-                          << std::endl;
-            }
-            else
-            {
-                still_waiting.push_back(entry);
-            }
+            // Still outstanding, and still within its deadline — the
+            // framework would have said Timeout otherwise. No clock
+            // arithmetic here on purpose.
+            still_waiting.push_back(entry);
+            break;
+
+        case DoraPatternStatus::Timeout:
+            // The deadline registered on the first poll has lapsed.
+            // Reported once, then the registration is gone.
+            std::cerr << "[polling-client] timed out: " << entry.request_id << std::endl;
             break;
 
         case DoraPatternStatus::StreamEnded:
@@ -204,7 +207,7 @@ int main()
             {
                 break;
             }
-            pending.push_back(Pending{request_id, a, b, Clock::now()});
+            pending.push_back(Pending{request_id, a, b});
             std::cout << "[polling-client] sent " << request_id << ": "
                       << static_cast<unsigned>(a) << " + " << static_cast<unsigned>(b) << " ("
                       << pending.size() << " in flight)" << std::endl;

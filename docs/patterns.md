@@ -105,18 +105,31 @@ afford that: the wait stalls everything else, and on a wedged server it
 stalls for the whole timeout.
 
 `try_recv_service_response` polls instead, returning `Ok(None)` when the
-reply has not arrived (dora-rs/dora#3046). Buffering, restart detection
-and correlation are identical; only the waiting is gone. Deadlines
-become the caller's responsibility, since there is none to enforce.
+reply has not arrived (dora-rs/dora#3046). Buffering, restart detection,
+correlation *and the deadline* are all handled as in the blocking form;
+only the waiting is gone.
+
+The framework owns the timeout: the first poll carrying one registers a
+deadline for that `request_id`, and a later poll past it returns
+`PatternError::Timeout` once. A caller passes the same timeout every
+iteration and reacts to `Timeout` like any other outcome — it does not
+sweep deadlines itself. Pass `None` to poll without one.
 
 ```rust
 // once per loop iteration, for each outstanding request
-match events.try_recv_service_response(&rid, ExpectedServers::One(&server))? {
-    Some(Event::Input { data, .. }) => complete(data),
-    None => {} // not ready — get on with the rest of the iteration
+let timeout = Some(Duration::from_secs(5));
+match events.try_recv_service_response(&rid, ExpectedServers::One(&server), timeout) {
+    Ok(Some(Event::Input { data, .. })) => complete(data),
+    Ok(None) => {}                        // not ready — get on with the iteration
+    Err(PatternError::Timeout) => give_up(),
+    Err(e) => return Err(e.into()),
     _ => unreachable!(),
 }
 ```
+
+The clock starts at that first poll rather than at send time, and the
+first deadline registered for an id wins. `cancel_correlation` drops a
+request that will never be polled again.
 
 > **Ordering matters.** The polls and your own `recv()` read the same
 > stream, so whichever runs first consumes what is there. A poll
@@ -451,19 +464,24 @@ convention `try_next_event` already uses for plain events:
 
 ```cpp
 // per loop iteration, for each outstanding request
-auto poll = try_recv_service_response(node.events, request_id, "server");
+auto poll = try_recv_service_response(node.events, request_id, "server", 5000);
 switch (poll.status) {
 case DoraPatternStatus::Matched:
     complete(event_as_input(std::move(poll.event)));
     break;
 case DoraPatternStatus::NotReady:
     break; // nothing to do, and no time spent
+case DoraPatternStatus::Timeout:
+    give_up(); // the registered deadline lapsed; reported once
+    break;
 default:
     std::cerr << std::string(poll.error) << std::endl;
 }
 ```
 
-The same ordering rule as in Rust applies: poll before consuming events
+`timeout_ms` works as in Rust — registered once per `request_id` by the
+framework, reported as `Timeout` when it lapses; pass `0` for no
+deadline. The same ordering rule applies: poll before consuming events
 yourself, or a reply your own `next_event` picked up is lost. Passing an
 empty `server_node_id` accepts a reply from any node.
 
