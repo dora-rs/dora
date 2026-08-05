@@ -183,7 +183,11 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts = v.get("ts")?.as_str()?;
     let timestamp = chrono::DateTime::parse_from_rfc3339(ts).ok()?.to_utc();
-    let level_str = v.get("level")?.as_str().unwrap_or("stdout");
+    // A missing `level` key defaults to stdout-level rather than dropping the
+    // line. The previous `v.get("level")?` short-circuited the whole function
+    // to `None` when the key was absent, which both discarded the line and made
+    // the trailing `.unwrap_or("stdout")` dead code.
+    let level_str = v.get("level").and_then(|l| l.as_str()).unwrap_or("stdout");
     let level = match level_str {
         "error" => LogLevelOrStdout::LogLevel(log::Level::Error),
         "warn" => LogLevelOrStdout::LogLevel(log::Level::Warn),
@@ -450,6 +454,17 @@ mod tests {
             LogLevelOrStdout::LogLevel(log::Level::Info)
         ));
         assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_compact_without_level_defaults_to_stdout() {
+        // A compact line missing the `level` key must still be parsed and
+        // default to stdout-level, not be silently dropped (the `?` on
+        // `v.get("level")` previously discarded the whole line).
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","node":"sensor","msg":"plain line"}"#;
+        let msg = parse_jsonl_line(line).expect("line without `level` must not be dropped");
+        assert_eq!(msg.message, "plain line");
+        assert!(matches!(msg.level, LogLevelOrStdout::Stdout));
     }
 
     #[test]
