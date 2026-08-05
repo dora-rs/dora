@@ -68,12 +68,23 @@ pub struct CleanupSummary {
 pub struct MemoryPoolManager {
     /// Table mapping memory pool IDs to their entries.
     memory_pool_table: Arc<Mutex<HashMap<MemoryPoolId, MemoryPoolEntry>>>,
+    /// Cross-machine pools this daemon participates in:
+    /// pool id -> (peer machine id, dataflow id).
+    ///
+    /// Unlike the main table these entries describe *mirrors* (pools that
+    /// live on another machine's /dev/shm), so they never carry a
+    /// `MemoryPoolEntry` and are tracked separately. Written on register
+    /// ack (origin side) and on mirror creation (mirror side); read on
+    /// every write (is_cross / forward gate) and on free (peer routing);
+    /// drained by `cleanup_all` on daemon exit.
+    cross_pools: Arc<Mutex<HashMap<String, (String, String)>>>,
 }
 
 impl MemoryPoolManager {
     pub fn new() -> Self {
         Self {
             memory_pool_table: Arc::new(Mutex::new(HashMap::new())),
+            cross_pools: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -119,6 +130,58 @@ impl MemoryPoolManager {
     pub fn table_size(&self) -> usize {
         let table = self.lock_table();
         table.len()
+    }
+
+    fn lock_cross_pools(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, String)>> {
+        self.cross_pools
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    /// Record a cross-machine pool: `pool_id` mirrors to/from `peer_machine`.
+    ///
+    /// Called on both sides: the origin records `{pool -> target}` when the
+    /// register ack arrives, the mirror records `{pool -> origin}` after
+    /// creating the mirror segment.
+    pub fn register_cross_pool(&self, pool_id: String, peer_machine: String, dataflow_id: String) {
+        self.lock_cross_pools()
+            .insert(pool_id, (peer_machine, dataflow_id));
+    }
+
+    /// Forget a cross-machine pool (called on free).
+    pub fn unregister_cross_pool(&self, pool_id: &str) -> Option<(String, String)> {
+        self.lock_cross_pools().remove(pool_id)
+    }
+
+    /// The pool's peer machine (the machine it mirrors to/from), if any.
+    pub fn cross_peer(&self, pool_id: &str) -> Option<String> {
+        self.lock_cross_pools()
+            .get(pool_id)
+            .map(|(peer, _)| peer.clone())
+    }
+
+    /// Whether `pool_id` is a cross-machine pool this daemon participates in.
+    pub fn is_cross(&self, pool_id: &str) -> bool {
+        self.lock_cross_pools().contains_key(pool_id)
+    }
+
+    /// Machine-qualified OS id of a cross-machine pool mirror:
+    /// `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}`, derived
+    /// from a `pool_{node_id}_{counter}` shaped `shared_memory_id`. Returns
+    /// `None` when the id does not match that shape. Single source of truth
+    /// for the qualified name — create, write, and the free paths must agree
+    /// or a mirror leaks under a name nobody unlinks.
+    pub fn cross_pool_shmem_name(
+        machine_id: &str,
+        dataflow_id: &str,
+        shared_memory_id: &str,
+    ) -> Option<String> {
+        let (node_id, counter) = shared_memory_id
+            .strip_prefix("pool_")
+            .and_then(|s| s.rsplit_once('_'))?;
+        Some(format!(
+            "dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}"
+        ))
     }
 
     /// Read memory pool metadata by ID.
@@ -280,7 +343,12 @@ impl MemoryPoolManager {
     }
 
     /// Cleanup all memory pools on shutdown.
-    pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
+    ///
+    /// `machine_id` is this daemon's own machine id: cross-machine mirror
+    /// segments are derived from it, so each daemon only ever unlinks
+    /// segments that live on its own machine (entries pointing at another
+    /// machine resolve to a name that does not exist locally — a no-op).
+    pub fn cleanup_all(&self, machine_id: &str) -> Result<CleanupSummary, Vec<String>> {
         let mut table = self.lock_table();
         // Drain the table in one move instead of cloning every key into a
         // `Vec` only to look each one back up and remove it. The guard is held
@@ -304,6 +372,43 @@ impl MemoryPoolManager {
             {
                 errors.push(err);
             }
+        }
+
+        // Cross-machine mirrors: drain the cross table and unlink every
+        // segment whose name resolves on this machine. Linux keeps pools in
+        // /dev/shm; the mirror handle is dropped owner-less
+        // (`set_owner(false)`), so the name is only removable by file unlink.
+        // Non-Linux platforms have no such segments — skip (the drain above
+        // still clears the table, and cross_peer callers see the freed state).
+        #[cfg(target_os = "linux")]
+        {
+            let cross = std::mem::take(&mut *self.lock_cross_pools());
+            if !cross.is_empty() {
+                tracing::info!(
+                    "Releasing {} cross-machine mirror segment(s) on shutdown",
+                    cross.len()
+                );
+            }
+            for (pool_id, (_peer, dataflow_id)) in &cross {
+                let Some(shm_name) = Self::cross_pool_shmem_name(machine_id, dataflow_id, pool_id)
+                else {
+                    continue;
+                };
+                // Absent locally (the mirror lives on another machine's
+                // /dev/shm) is the normal case for origin-side entries — not
+                // an error.
+                match std::fs::remove_file(format!("/dev/shm/{shm_name}")) {
+                    Ok(()) => tracing::debug!("released cross-machine mirror {shm_name}"),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => {
+                        tracing::warn!("failed to remove mirror {shm_name} on shutdown: {e}");
+                    }
+                }
+            }
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            self.lock_cross_pools().clear();
         }
 
         let released_count = unreleased_count - errors.len();
@@ -470,7 +575,7 @@ mod tests {
             .unwrap();
         }
 
-        let summary = mgr.cleanup_all().unwrap();
+        let summary = mgr.cleanup_all("").unwrap();
         assert_eq!(summary.unreleased_count, 3);
         assert_eq!(summary.released_count, 3);
         assert_eq!(mgr.table_size(), 0);
@@ -492,7 +597,7 @@ mod tests {
 
         // cleanup_all must surface the failure (rather than silently claiming
         // "Successfully released") and still drain every entry from the table.
-        let errors = mgr.cleanup_all().unwrap_err();
+        let errors = mgr.cleanup_all("").unwrap_err();
         assert_eq!(errors.len(), 1, "exactly one free should have failed");
         assert_eq!(mgr.table_size(), 0, "all entries must be removed");
     }
@@ -581,5 +686,61 @@ mod tests {
                 segments[i].0,
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod cross_pool_tests {
+    use super::*;
+
+    /// `cleanup_all` must unlink mirror segments that resolve on this
+    /// machine (via this daemon's own machine id) and leave segments
+    /// belonging to other machines untouched.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn cleanup_all_removes_only_own_machine_mirrors() {
+        let mgr = MemoryPoolManager::new();
+        let df = "11111111-2222-3333-4444-555555555555";
+
+        // a mirror segment that lives on this machine ("B")
+        let own = MemoryPoolManager::cross_pool_shmem_name("B", df, "pool_node_0").unwrap();
+        std::fs::write(format!("/dev/shm/{own}"), vec![0u8; 1024]).unwrap();
+        mgr.register_cross_pool("pool_node_0".into(), "A".into(), df.into());
+
+        // a mirror segment that lives on another machine ("C") — the
+        // origin-side entry for it must NOT cause a local unlink
+        let foreign = MemoryPoolManager::cross_pool_shmem_name("C", df, "pool_node_1").unwrap();
+        std::fs::write(format!("/dev/shm/{foreign}"), vec![0u8; 1024]).unwrap();
+        mgr.register_cross_pool("pool_node_1".into(), "C".into(), df.into());
+
+        let _ = mgr.cleanup_all("B");
+
+        assert!(
+            !std::path::Path::new(&format!("/dev/shm/{own}")).exists(),
+            "own-machine mirror should be unlinked"
+        );
+        assert!(
+            std::path::Path::new(&format!("/dev/shm/{foreign}")).exists(),
+            "foreign-machine mirror must survive"
+        );
+
+        // test hygiene
+        let _ = std::fs::remove_file(format!("/dev/shm/{foreign}"));
+    }
+
+    /// Register / query / unregister lifecycle of the cross table.
+    #[test]
+    fn cross_pool_lifecycle() {
+        let mgr = MemoryPoolManager::new();
+        assert!(!mgr.is_cross("pool_node_0"));
+        assert_eq!(mgr.cross_peer("pool_node_0"), None);
+
+        mgr.register_cross_pool("pool_node_0".into(), "B".into(), "df".into());
+        assert!(mgr.is_cross("pool_node_0"));
+        assert_eq!(mgr.cross_peer("pool_node_0").as_deref(), Some("B"));
+
+        let removed = mgr.unregister_cross_pool("pool_node_0");
+        assert_eq!(removed.as_ref().map(|(peer, _)| peer.as_str()), Some("B"));
+        assert!(!mgr.is_cross("pool_node_0"));
     }
 }

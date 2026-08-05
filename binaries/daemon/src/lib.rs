@@ -188,12 +188,6 @@ use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowS
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
-/// Cross-machine pools this daemon participates in:
-/// pool id -> peer machine id (write/free tracking).
-static CROSS_POOLS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, String>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
-
 /// Per-pool write locks: serialise concurrent mirror writes so two
 /// overlapping memcpys cannot interleave bytes in the data region. The
 /// seqlock only detects an in-flight write (odd generation); it cannot
@@ -288,8 +282,12 @@ fn create_cross_pool_shmem(
     // the sender's local pool. An unqualified id would collide with the
     // sender's local segment (create fails with EEXIST) whenever both
     // daemons run on one host.
-    let shmem_name = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id)
-        .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
+    let shmem_name = MemoryPoolManager::cross_pool_shmem_name(
+        machine_id,
+        &dataflow_id.to_string(),
+        shared_memory_id,
+    )
+    .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
     let json = format!(
         "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"cpu\"}}",
         shape
@@ -349,7 +347,11 @@ fn write_cross_pool_data(
     };
     let _guard = write_lock.lock().unwrap_or_else(|e| e.into_inner());
     // Must match the machine-qualified id used by `create_cross_pool_shmem`.
-    let Some(shmem_name) = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id) else {
+    let Some(shmem_name) = MemoryPoolManager::cross_pool_shmem_name(
+        machine_id,
+        &dataflow_id.to_string(),
+        shared_memory_id,
+    ) else {
         tracing::warn!("memory pool: invalid pool id {shared_memory_id}, dropping frame");
         return;
     };
@@ -382,25 +384,6 @@ fn write_cross_pool_data(
         std::ptr::copy_nonoverlapping(tensor_data.as_ptr(), shmem_ptr.add(data_offset), copy_len);
         seqlock_end(gen_ptr, pre, true);
     }
-}
-
-/// Machine-qualified OS id of a cross-machine pool mirror:
-/// `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}`, derived
-/// from a `pool_{node_id}_{counter}` shaped `shared_memory_id`. Returns
-/// `None` when the id does not match that shape. Single source of truth
-/// for the qualified name — create, write, and the free paths must agree
-/// or a mirror leaks under a name nobody unlinks.
-fn cross_pool_shmem_name(
-    machine_id: &str,
-    dataflow_id: &Uuid,
-    shared_memory_id: &str,
-) -> Option<String> {
-    let (node_id, counter) = shared_memory_id
-        .strip_prefix("pool_")
-        .and_then(|s| s.rsplit_once('_'))?;
-    Some(format!(
-        "dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}"
-    ))
 }
 
 /// Remove a mirrored cross-machine pool's shmem segment. Linux keeps
@@ -491,7 +474,7 @@ async fn publish_memory_pool_event(
 /// `FreePool` so the peer drops its tracking entry. The publish is
 /// Remote-only — the initiator never receives its own echo, so it must
 /// unlink its own mirror here. The caller has already removed the
-/// CROSS_POOLS entry and passes the recorded peer (the pool's other
+/// cross_pools entry and passes the recorded peer (the pool's other
 /// machine) as the free target.
 async fn release_cross_pool(
     session: &zenoh::Session,
@@ -501,7 +484,11 @@ async fn release_cross_pool(
     peer_machine_id: &str,
     shared_memory_id: &str,
 ) {
-    let Some(shmem_name) = cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id) else {
+    let Some(shmem_name) = MemoryPoolManager::cross_pool_shmem_name(
+        machine_id,
+        &dataflow_id.to_string(),
+        shared_memory_id,
+    ) else {
         tracing::warn!("memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror");
         return;
     };
@@ -2083,7 +2070,12 @@ impl Daemon {
         }
 
         // Clean up any unfreed memory pool entries on daemon exit
-        if let Err(errors) = self.memory_pool.cleanup_all() {
+        // (local pools from the main table + cross-machine mirror
+        // segments, resolved via this daemon's own machine id).
+        if let Err(errors) = self
+            .memory_pool
+            .cleanup_all(self.machine_id.as_deref().unwrap_or_default())
+        {
             for error in errors {
                 tracing::warn!("{error}");
             }
@@ -3310,10 +3302,7 @@ impl Daemon {
                 // a non-mirror daemon sees every frame of every pool. A
                 // genuinely missing mirror still warns inside
                 // `write_cross_pool_data`.
-                let is_cross = CROSS_POOLS
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains_key(&shared_memory_id);
+                let is_cross = self.memory_pool.is_cross(&shared_memory_id);
                 if !is_cross {
                     tracing::debug!(
                         pool = %shared_memory_id,
@@ -3376,6 +3365,7 @@ impl Daemon {
                 // machine, so its machine id is the mirror's namespace.
                 let local_machine_id = self.machine_id.clone();
                 // 建池在 spawn 内（建池是毫秒级但发布可能 Block）
+                let memory_pool = self.memory_pool.clone();
                 tokio::spawn(async move {
                     let result = create_cross_pool_shmem(
                         &dataflow_id,
@@ -3393,10 +3383,11 @@ impl Daemon {
                         // Track the pool's other machine (the origin) so
                         // the targeted free reaches it, mirroring the
                         // origin's `{pool -> target}` entry.
-                        CROSS_POOLS
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(shared_memory_id.clone(), origin_machine_id);
+                        memory_pool.register_cross_pool(
+                            shared_memory_id.clone(),
+                            origin_machine_id,
+                            dataflow_id.to_string(),
+                        );
                         tracing::info!(
                             "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
                         );
@@ -3438,10 +3429,7 @@ impl Daemon {
                 if machine_id != self.machine_id.as_deref().unwrap_or("") {
                     return Ok(());
                 }
-                CROSS_POOLS
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&shared_memory_id);
+                self.memory_pool.unregister_cross_pool(&shared_memory_id);
                 // The origin daemon's local pool lives in the
                 // MemoryPoolManager table; the cross-machine free must
                 // release it too, or its /dev/shm segment leaks until
@@ -3485,9 +3473,9 @@ impl Daemon {
                     }
                 }
                 // Same machine-qualified id as `create_cross_pool_shmem`.
-                let Some(shmem_name) = cross_pool_shmem_name(
+                let Some(shmem_name) = MemoryPoolManager::cross_pool_shmem_name(
                     self.machine_id.as_deref().unwrap_or_default(),
-                    &dataflow_id,
+                    &dataflow_id.to_string(),
                     &shared_memory_id,
                 ) else {
                     tracing::warn!(
@@ -4593,16 +4581,15 @@ impl Daemon {
 
                 // Same family as FreePinnedMemory: cross-machine
                 // mirrors never enter the MemoryPoolManager table
-                // (RegisterPool writes CROSS_POOLS only), so a
+                // (RegisterPool writes the cross_pools table only), so a
                 // free=true read table-misses on the mirror daemon
                 // and — on the origin daemon — never releases the
                 // mirror. Either way the cross-machine cleanup must
                 // not be gated on the table result.
                 let peer = if free {
-                    CROSS_POOLS
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&shared_memory_id)
+                    self.memory_pool
+                        .unregister_cross_pool(&shared_memory_id)
+                        .map(|(peer, _)| peer)
                 } else {
                     None
                 };
@@ -4637,14 +4624,14 @@ impl Daemon {
                 };
                 let table_result = self.memory_pool.free_memory_pool(&id, node_id.as_ref());
                 // Cross-machine mirrors never enter the MemoryPoolManager
-                // table (RegisterPool writes CROSS_POOLS only), so the
+                // table (RegisterPool writes the cross_pools table only), so the
                 // table result must not gate the cross-machine cleanup —
                 // a table miss on the mirror daemon still has to unlink
                 // the /dev/shm mirror and notify the peer.
-                let peer = CROSS_POOLS
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&shared_memory_id);
+                let peer = self
+                    .memory_pool
+                    .unregister_cross_pool(&shared_memory_id)
+                    .map(|(peer, _)| peer);
                 let was_cross = peer.is_some();
                 if let Some(peer) = &peer {
                     release_cross_pool(
@@ -4702,7 +4689,7 @@ impl Daemon {
                 reply_sender,
             } => {
                 // Only cross-machine pools need forwarding: the origin
-                // records the pool in CROSS_POOLS when the register ack
+                // records the pool in the cross_pools table when the register ack
                 // arrives (before replying to the node), so a pool without
                 // an entry is local-only — every remote daemon would drop
                 // its frames at debug level anyway. Gate the 61.44MB
@@ -4723,11 +4710,7 @@ impl Daemon {
                 // event loop (heartbeats + node replies + output delivery
                 // included), backing up the event channels until the
                 // sender's WritePinnedMemory hangs forever.
-                if !CROSS_POOLS
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .contains_key(&shared_memory_id)
-                {
+                if !self.memory_pool.is_cross(&shared_memory_id) {
                     // Reply must stay byte-identical to the forwarded
                     // path below (Result(Ok(()))) — the node cannot
                     // distinguish a gated local write from a forwarded
@@ -4780,6 +4763,7 @@ impl Daemon {
                 // mirror records `{pool -> origin}` and later frees
                 // toward it. `self` is not reachable inside the spawn.
                 let origin_machine_id = self.machine_id.clone();
+                let memory_pool = self.memory_pool.clone();
                 tokio::spawn(async move {
                     // Clone for the post-flow cleanup below: the inner
                     // async block moves `shared_memory_id` into the pool
@@ -4876,10 +4860,11 @@ impl Daemon {
                                 .await
                             {
                                 Ok(Ok(true)) => {
-                                    CROSS_POOLS
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .insert(shared_memory_id, machine_id);
+                                    memory_pool.register_cross_pool(
+                                        shared_memory_id,
+                                        machine_id,
+                                        dataflow_id.to_string(),
+                                    );
                                     reply = Ok(());
                                     break;
                                 }
@@ -8773,7 +8758,9 @@ mod cross_pool_write_tests {
         let pool_id = "pool_node_0";
         const SIZE: usize = 4 * 1024 * 1024;
         create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192]).unwrap();
-        let shmem_name = cross_pool_shmem_name("B", &dataflow_id, pool_id).unwrap();
+        let shmem_name =
+            MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                .unwrap();
         let _cleanup = ShmemCleanup(shmem_name.clone());
         let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
         // data_offset comes from the header (json_len varies), not a constant.
