@@ -7,10 +7,30 @@ use dora_message::{
     config::{DEFAULT_QUEUE_SIZE, QueuePolicy},
     daemon_to_node::NodeEvent,
     id::DataId,
-    metadata::{GOAL_ID, GOAL_STATUS, REQUEST_ID, carries_pattern_correlation, get_string_param},
+    metadata::{
+        GOAL_ID, GOAL_STATUS, MetadataParameters, REQUEST_ID, carries_pattern_correlation,
+        get_string_param,
+    },
 };
 
 use super::thread::EventItem;
+
+/// The metadata parameters carried by an input-bearing event, or `None` for
+/// events with no metadata (Stop, reload, input-closed, ...).
+///
+/// This is the single place that decides which `EventItem` variants carry
+/// parameters, so the eviction guard (`is_correlated`) and its diagnostics
+/// (`log_correlation_drop`) can never disagree on that classification.
+fn event_parameters(event: &EventItem) -> Option<&MetadataParameters> {
+    match event {
+        EventItem::NodeEvent {
+            event: NodeEvent::Input { metadata, .. },
+            ..
+        } => Some(&metadata.parameters),
+        EventItem::ZenohInput { metadata, .. } => Some(&metadata.parameters),
+        _ => None,
+    }
+}
 
 /// Returns `true` if the event carries request/response or action correlation
 /// metadata (`request_id`, `goal_id`, or `goal_status`).
@@ -20,21 +40,13 @@ use super::thread::EventItem;
 /// client waits forever for a response or result that never arrives
 /// (dora-rs/adora#145).
 fn is_correlated(event: &EventItem) -> bool {
-    let params = match event {
-        EventItem::NodeEvent {
-            event: NodeEvent::Input { metadata, .. },
-            ..
-        } => &metadata.parameters,
-        EventItem::ZenohInput { metadata, .. } => &metadata.parameters,
-        _ => return false,
-    };
     // Delegate to the canonical definition in `dora_message` so the scheduler's
     // eviction guard can never disagree with the send-side / receive-side /
     // daemon-debug layers about which keys mark a message as pattern-correlated
     // (see `carries_pattern_correlation`). Duplicating the key list here risked
     // silently dropping service/action messages if a new correlation key were
     // added to only one copy.
-    carries_pattern_correlation(params)
+    event_parameters(event).is_some_and(carries_pattern_correlation)
 }
 
 /// Outcome of `select_eviction`.
@@ -68,13 +80,8 @@ fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Evictio
 /// everything in the queue is also correlated. Identifies the correlation
 /// keys so operators can trace the affected request/goal.
 fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
-    let params = match dropped {
-        EventItem::NodeEvent {
-            event: NodeEvent::Input { metadata, .. },
-            ..
-        } => &metadata.parameters,
-        EventItem::ZenohInput { metadata, .. } => &metadata.parameters,
-        _ => return,
+    let Some(params) = event_parameters(dropped) else {
+        return;
     };
     let request_id = get_string_param(params, REQUEST_ID);
     let goal_id = get_string_param(params, GOAL_ID);
