@@ -137,12 +137,114 @@ static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
 /// Counter to make pinned memory buffer IDs unique across registrations.
 static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
 
+/// Maximum number of freed pool buffer IDs to remember at once. Only
+/// recently-freed buffers are useful for read-after-free detection, so
+/// once the cap is exceeded the oldest entries are evicted rather than
+/// keeping every ID for the life of the process.
+const FREED_POOL_IDS_CAP: usize = 4096;
+
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
-/// read-after-free. Entries are inserted on free_memory_pool and never
-/// pruned — bounded in practice by the total number of registrations
-/// over the process lifetime.
-static FREED_POOL_IDS: LazyLock<std::sync::Mutex<HashSet<String>>> =
-    LazyLock::new(|| std::sync::Mutex::new(HashSet::new()));
+/// read-after-free. Bounded to `FREED_POOL_IDS_CAP` entries (oldest evicted
+/// first) so long-running nodes doing register->write->free every frame
+/// don't leak memory indefinitely.
+static FREED_POOL_IDS: LazyLock<std::sync::Mutex<FreedPoolIds>> =
+    LazyLock::new(|| std::sync::Mutex::new(FreedPoolIds::default()));
+
+/// Bounded, insertion-ordered set of freed pool buffer IDs. `set` gives
+/// O(1) membership checks; `order` tracks insertion order so the oldest
+/// entry can be evicted once `FREED_POOL_IDS_CAP` is exceeded.
+#[derive(Default)]
+struct FreedPoolIds {
+    set: HashSet<String>,
+    order: std::collections::VecDeque<String>,
+}
+
+impl FreedPoolIds {
+    fn insert(&mut self, id: String) {
+        if self.set.insert(id.clone()) {
+            self.order.push_back(id);
+            while self.order.len() > FREED_POOL_IDS_CAP {
+                if let Some(oldest) = self.order.pop_front() {
+                    self.set.remove(&oldest);
+                }
+            }
+        }
+    }
+
+    fn contains(&self, id: &str) -> bool {
+        self.set.contains(id)
+    }
+
+    fn remove(&mut self, id: &str) {
+        if self.set.remove(id) {
+            self.order.retain(|x| x != id);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.set.len()
+    }
+}
+
+#[cfg(test)]
+mod freed_pool_ids_tests {
+    use super::{FREED_POOL_IDS_CAP, FreedPoolIds};
+
+    /// Regression test: without a cap, inserting one ID per frame in a
+    /// long-running node grows `FREED_POOL_IDS` forever. Inserting well
+    /// past the cap must keep the set bounded instead of leaking.
+    #[test]
+    fn insert_past_cap_does_not_grow_unbounded() {
+        let mut freed = FreedPoolIds::default();
+        for i in 0..(FREED_POOL_IDS_CAP * 4) {
+            freed.insert(format!("pool_node_{i}"));
+        }
+        assert_eq!(freed.len(), FREED_POOL_IDS_CAP);
+    }
+
+    /// Once past the cap, the oldest entries must be evicted first so the
+    /// most recently freed buffers (the ones a read-after-free check would
+    /// actually care about) stay tracked.
+    #[test]
+    fn insert_past_cap_evicts_oldest_first() {
+        let mut freed = FreedPoolIds::default();
+        for i in 0..(FREED_POOL_IDS_CAP * 2) {
+            freed.insert(format!("pool_node_{i}"));
+        }
+        assert!(
+            !freed.contains("pool_node_0"),
+            "oldest entry should have been evicted"
+        );
+        let newest = format!("pool_node_{}", FREED_POOL_IDS_CAP * 2 - 1);
+        assert!(
+            freed.contains(&newest),
+            "most recently freed entry should still be tracked"
+        );
+    }
+
+    /// Duplicate inserts of an already-tracked ID must not double-count
+    /// against the cap or push a second copy into the eviction order.
+    #[test]
+    fn duplicate_insert_is_idempotent() {
+        let mut freed = FreedPoolIds::default();
+        freed.insert("pool_node_0".to_string());
+        freed.insert("pool_node_0".to_string());
+        assert_eq!(freed.len(), 1);
+    }
+
+    #[test]
+    fn remove_drops_membership_and_order_entry() {
+        let mut freed = FreedPoolIds::default();
+        freed.insert("pool_node_0".to_string());
+        freed.remove("pool_node_0");
+        assert!(!freed.contains("pool_node_0"));
+        assert_eq!(freed.len(), 0);
+        // Re-inserting after a remove must not be blocked by a stale
+        // order-queue entry left behind by `remove`.
+        freed.insert("pool_node_0".to_string());
+        assert_eq!(freed.len(), 1);
+    }
+}
 
 /// Per-pool persistent state.
 /// Keeping Shmem alive prevents munmap, preserving stable mmap addresses
