@@ -50,7 +50,7 @@ impl From<LogMessageHelper> for LogMessage {
         LogMessage {
             build_id: helper.build_id.or(fields
                 .and_then(|f| f.get("build_id").cloned())
-                .and_then(|id| Uuid::parse_str(&id).ok().map(BuildId))),
+                .and_then(|id| BuildId::from_display_str(&id))),
             dataflow_id: helper.dataflow_id.or(fields
                 .and_then(|f| f.get("dataflow_id").cloned())
                 .and_then(|id| Uuid::parse_str(&id).ok())),
@@ -480,6 +480,48 @@ mod tests {
         // silently wrapped into an unvalidated NodeId.
         assert_eq!(LogMessage::from(make("a/b")).node_id, None);
         assert_eq!(LogMessage::from(make("../evil")).node_id, None);
+    }
+
+    /// A `build_id` back-filled from the `fields` map must survive a
+    /// `Display` round trip. `BuildId`'s `Display` wraps the UUID as
+    /// `BuildId(<uuid>)` -- the exact string emitted by the idiomatic
+    /// `tracing::info!(build_id = %build_id, ...)` (e.g. the coordinator's
+    /// build warnings). Recovery previously used `Uuid::parse_str`, which
+    /// rejects that wrapper and silently dropped the id; it now goes through
+    /// `BuildId::from_display_str`, matching how `daemon_id` is recovered.
+    #[test]
+    fn build_id_recovered_from_fields_survives_display_round_trip() {
+        let build_id = BuildId(Uuid::new_v4());
+        let make = |value: &str| LogMessageHelper {
+            build_id: None,
+            dataflow_id: None,
+            node_id: None,
+            daemon_id: None,
+            level: LogLevelOrStdout::Stdout,
+            target: None,
+            module_path: None,
+            file: None,
+            line: None,
+            message: Some("m".to_string()),
+            timestamp: Utc::now(),
+            fields: Some(BTreeMap::from([(
+                "build_id".to_string(),
+                value.to_string(),
+            )])),
+        };
+
+        // The `Display` form (`BuildId(<uuid>)`) is recovered...
+        assert_eq!(
+            LogMessage::from(make(&build_id.to_string())).build_id,
+            Some(build_id)
+        );
+        // ...and a bare UUID still works, for backward compatibility.
+        assert_eq!(
+            LogMessage::from(make(&build_id.uuid().to_string())).build_id,
+            Some(build_id)
+        );
+        // Garbage is rejected rather than wrapped into a bogus id.
+        assert_eq!(LogMessage::from(make("not-a-build-id")).build_id, None);
     }
 
     /// #2027: `DaemonId` must survive a `Display` -> `from_display_str` round
