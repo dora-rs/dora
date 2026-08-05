@@ -323,9 +323,12 @@ impl SampleHandler {
         // the data region, and expose only that region to Python — so the user
         // writes their bytes straight into the wire payload with zero copies.
         use dora_node_api::arrow_utils::ipc_encode;
-        let total = ipc_encode::uint8_ipc_len(data_length)?;
-        let mut sample = node.get_mut().allocate_data_sample(total)?;
-        let data_offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_length)?;
+        // Build the UInt8 IPC layout once and reuse it to both size the sample
+        // and write the header, avoiding a second rebuild of the schema and
+        // record-batch flatbuffer messages on this per-send path.
+        let layout = ipc_encode::uint8_layout(data_length)?;
+        let mut sample = node.get_mut().allocate_data_sample(layout.total())?;
+        let data_offset = layout.write_header(&mut sample)?;
         Ok(Self {
             node,
             meta: Some(SampleMeta {

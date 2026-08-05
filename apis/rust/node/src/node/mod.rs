@@ -1481,10 +1481,15 @@ impl DoraNode {
         // place: pre-write the UInt8 IPC header into the (shared-memory) sample,
         // then let the caller write their bytes straight into the data region —
         // zero payload copies (and the SHM sample is moved into zenoh's `put`).
-        let total = ipc_encode::uint8_ipc_len(data_len)
+        // Build the UInt8 IPC layout once: it constructs the schema and
+        // record-batch flatbuffer messages, so sizing the sample and writing
+        // the header from a single layout avoids rebuilding them twice on this
+        // per-raw-send hot path.
+        let layout = ipc_encode::uint8_layout(data_len)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-        let mut sample = self.allocate_data_sample(total)?;
-        let offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_len)
+        let mut sample = self.allocate_data_sample(layout.total())?;
+        let offset = layout
+            .write_header(&mut sample)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
         data(&mut sample[offset..offset + data_len]);
 
