@@ -129,6 +129,18 @@ dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
 dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
 dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
+# Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
+# apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
+# `rmw_dds_common` graph discovery (see `ros2-client`'s `src/gid.rs`), matching
+# the distro our ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection
+# became an explicit Cargo feature in 0.10; 0.8 only had a `pre-iron-gid`
+# opt-out. Changing this changes graph-discovery wire compatibility.
+ros2-client = { version = "0.10.0", default-features = false, features = [
+    "humble",
+] }
+# Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
+# workspace resolves a single copy.
+cdr-encoding = "0.11"
 arrow = { version = "59", default-features = false }
 arrow-schema = { version = "59" }
 arrow-data = { version = "59" }
