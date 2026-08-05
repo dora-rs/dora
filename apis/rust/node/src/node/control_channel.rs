@@ -231,6 +231,7 @@ impl ControlChannel {
     pub fn register_cross_machine_pool(
         &mut self,
         shared_memory_id: String,
+        shmem_name: String,
         size: usize,
         dtype: String,
         shape: Vec<i64>,
@@ -239,6 +240,7 @@ impl ControlChannel {
     ) -> eyre::Result<Result<(), String>> {
         let request = DaemonRequest::RegisterCrossMachinePool {
             shared_memory_id,
+            shmem_name,
             size,
             dtype,
             shape,

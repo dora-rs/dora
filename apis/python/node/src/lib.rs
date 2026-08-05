@@ -137,6 +137,14 @@ static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
 /// Counter to make pinned memory buffer IDs unique across registrations.
 static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
 
+/// Buffer ids of pools registered WITHOUT a mirror (`machine=None`). The
+/// daemon's forward gate drops their write pushes anyway (no cross-pool
+/// entry), so skipping the push saves the per-frame to_vec + daemon
+/// round trip — on a same-host deployment the reader reads the sender's
+/// segment directly and the push would be pure waste.
+static NO_MIRROR_POOLS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
 /// read-after-free. Entries are inserted on free_memory_pool and never
 /// pruned — bounded in practice by the total number of registrations
@@ -2196,6 +2204,13 @@ impl Node {
         // cross-machine registration) is a warn-and-no-op: the daemon has
         // already logged a warning; we roll back the local pool and
         // return None rather than crash.
+        let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
+        if machine.is_none() {
+            NO_MIRROR_POOLS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(buffer_id.clone());
+        }
         if let Some(target_machine) = machine {
             let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
             // register_cross_machine_pool returns `Result<Result<(), String>,
@@ -2209,6 +2224,7 @@ impl Node {
                 .get_mut()
                 .register_cross_machine_pool(
                     buffer_id.clone(),
+                    shmem_name.clone(),
                     size,
                     dtype.clone(),
                     shape_list.clone(),
@@ -2930,8 +2946,19 @@ impl Node {
                         // so the mirror pool is updated in place. GPU pools
                         // (ipc_present == 1) hold their data in the IPC
                         // buffer, not the shmem data region — skip (GPU
-                        // cross-machine is out of scope).
+                        // cross-machine is out of scope). Pools without a
+                        // mirror (machine=None) skip too — the daemon's
+                        // forward gate drops them anyway, and on a
+                        // same-host deployment the reader opens the
+                        // sender's segment directly.
                         if ipc_present == 1 {
+                            return Ok(());
+                        }
+                        let no_mirror = NO_MIRROR_POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .contains(&buffer_id);
+                        if no_mirror {
                             return Ok(());
                         }
                         self.push_mirror_update(
@@ -3266,17 +3293,19 @@ impl Node {
                 .checked_add(std::time::Duration::from_millis(3_600_000))
                 .unwrap_or(std::time::Instant::now());
             loop {
+                // Same-host direct read first: the sender's segment (via
+                // the remote reference / explicit name) always holds the
+                // freshest data — the mirror lags behind the zenoh
+                // transfer. Falls back to the guessed mirror name when
+                // the segment is not openable (cross-machine).
+                if let Some(name) = &known_name
+                    && let Some(result) = self.try_doradma_read_by_name(name, &buffer_id, py)?
+                {
+                    return Ok(result);
+                }
                 match self.try_doradma_read(&buffer_id, py) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) if std::time::Instant::now() < deadline => {
-                        // Explicit-name segments: retry by the registered
-                        // name directly (the guess above can never hit).
-                        if let Some(name) = &known_name
-                            && let Some(result) =
-                                self.try_doradma_read_by_name(name, &buffer_id, py)?
-                        {
-                            return Ok(result);
-                        }
                         // WAN propagation delay — yield the GIL and sleep
                         // so the writer can complete its copy+sync.
                         py.detach(|| {

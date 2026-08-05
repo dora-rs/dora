@@ -2392,6 +2392,7 @@ impl DoraNode {
     pub fn register_cross_machine_pool(
         &mut self,
         shared_memory_id: String,
+        shmem_name: String,
         size: usize,
         dtype: String,
         shape: Vec<i64>,
@@ -2400,6 +2401,7 @@ impl DoraNode {
     ) -> Result<Result<(), String>, eyre::Error> {
         self.control_channel.register_cross_machine_pool(
             shared_memory_id,
+            shmem_name,
             size,
             dtype,
             shape,

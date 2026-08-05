@@ -234,6 +234,7 @@ impl Listener {
             }
             DaemonRequest::RegisterCrossMachinePool {
                 shared_memory_id,
+                shmem_name,
                 size,
                 dtype,
                 shape,
@@ -244,6 +245,7 @@ impl Listener {
                 self.process_daemon_event(
                     DaemonNodeEvent::RegisterCrossMachinePool {
                         shared_memory_id,
+                        shmem_name,
                         size,
                         dtype,
                         shape,

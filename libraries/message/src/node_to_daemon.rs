@@ -48,6 +48,10 @@ pub enum DaemonRequest {
     /// target machine via the coordinator and mirrors the pool there.
     RegisterCrossMachinePool {
         shared_memory_id: String,
+        /// The local /dev/shm segment name (explicit `name=` or
+        /// machine-qualified auto name) — forwarded to the mirror daemon
+        /// as a remote reference for same-host direct reads.
+        shmem_name: String,
         size: usize,
         dtype: String,
         shape: Vec<i64>,

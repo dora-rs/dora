@@ -168,6 +168,9 @@ pub enum DaemonNodeEvent {
     /// replying (synchronous cross-machine register).
     RegisterCrossMachinePool {
         shared_memory_id: String,
+        /// The sender's local segment name — forwarded to the mirror
+        /// daemon so same-host readers can open it directly.
+        shmem_name: String,
         size: usize,
         dtype: String,
         shape: Vec<i64>,

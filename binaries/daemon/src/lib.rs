@@ -3412,9 +3412,11 @@ impl Daemon {
                 machine_id,
                 origin_machine_id,
                 shared_memory_id,
+                shmem_name,
                 size,
                 dtype,
                 shape,
+                device,
                 ..
             } => {
                 // Only the target machine's daemon mirrors the pool. The
@@ -3453,6 +3455,27 @@ impl Daemon {
                             origin_machine_id,
                             dataflow_id.to_string(),
                         );
+                        // Remote reference: same-host readers resolve the
+                        // sender's segment name through this daemon's table
+                        // and open it directly (zero-copy, no transfer).
+                        let mut remote_metadata = dora_memory_pool::MemoryPoolMetadata::default();
+                        remote_metadata.shared_memory_name = Some(shmem_name);
+                        remote_metadata.size = size;
+                        remote_metadata.dtype = dtype.clone();
+                        remote_metadata.shape = shape.iter().map(|s| *s as usize).collect();
+                        remote_metadata.pinned_type = Some(device.clone());
+                        if let Err(e) = memory_pool.register_remote_pool(
+                            MemoryPoolId {
+                                dataflow_id: dataflow_id.to_string(),
+                                id: shared_memory_id.clone(),
+                            },
+                            remote_metadata,
+                            "daemon".to_string(),
+                        ) {
+                            tracing::warn!(
+                                "memory pool: failed to record remote reference for {shared_memory_id}: {e}"
+                            );
+                        }
                         tracing::info!(
                             "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
                         );
@@ -4806,6 +4829,7 @@ impl Daemon {
             }
             DaemonNodeEvent::RegisterCrossMachinePool {
                 shared_memory_id,
+                shmem_name,
                 size,
                 dtype,
                 shape,
@@ -4880,6 +4904,7 @@ impl Daemon {
                                     machine_id: machine_id.clone(),
                                     origin_machine_id: origin_machine_id.clone().unwrap_or_default(),
                                     shared_memory_id: shared_memory_id.clone(),
+                                    shmem_name: shmem_name.clone(),
                                     size,
                                     dtype: dtype.clone(),
                                     shape: shape.clone(),

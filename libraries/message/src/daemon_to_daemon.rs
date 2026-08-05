@@ -42,6 +42,10 @@ pub enum InterDaemonEvent {
         /// mirror records `{pool id -> origin}` for the targeted free.
         origin_machine_id: String,
         shared_memory_id: String,
+        /// The sender's local /dev/shm segment name — the receiver daemon
+        /// records it as a remote reference so same-host readers can open
+        /// the sender's segment directly (zero-copy, no transfer).
+        shmem_name: String,
         size: usize,
         dtype: String,
         shape: Vec<i64>,

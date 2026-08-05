@@ -54,6 +54,11 @@ pub struct MemoryPoolEntry {
     /// All nodes that have accessed this pool (registered or read).
     /// Used to send targeted cleanup notifications on free.
     pub touched_by: HashSet<String>,
+    /// True for remote references: entries whose `shared_memory_name`
+    /// points at ANOTHER machine's segment (same-host direct reads).
+    /// Free and shutdown cleanup must NOT unlink such segments — they
+    /// live on the origin machine and are removed by the origin daemon.
+    pub remote: bool,
 }
 
 /// Result summary for daemon shutdown cleanup.
@@ -120,9 +125,54 @@ impl MemoryPoolManager {
                 metadata,
                 registered_by,
                 touched_by: touched,
+                remote: false,
             },
         );
 
+        Ok(())
+    }
+
+    /// Register a remote reference: a pool whose segment lives on another
+    /// machine's /dev/shm. The mirror daemon records the sender's segment
+    /// name so same-host readers can open it directly (zero-copy, no
+    /// transfer). The segment is NOT unlinked on free/cleanup here — the
+    /// origin daemon owns it.
+    ///
+    /// `metadata` carries the sender's tensor info (size/dtype/shape) so
+    /// daemon-metadata consumers on this side see real values, not zeros.
+    /// Per-daemon pool table cap, shared with the daemon's admission
+    /// check for local registrations (mirrors/remote references never
+    /// enter the daemon's own cap accounting, so this library-level guard
+    /// keeps the table bounded for them too).
+    pub const MAX_POOL_TABLE_SIZE: usize = 512;
+
+    pub fn register_remote_pool(
+        &self,
+        id: MemoryPoolId,
+        metadata: MemoryPoolMetadata,
+        registered_by: String,
+    ) -> Result<(), String> {
+        let mut table = self.lock_table();
+        if table.contains_key(&id) {
+            return Err(format!("Memory pool with ID {} already registered", id.id));
+        }
+        if table.len() >= Self::MAX_POOL_TABLE_SIZE {
+            return Err(format!(
+                "memory pool table full ({} entries); cannot register remote reference",
+                table.len()
+            ));
+        }
+        let mut touched = HashSet::new();
+        touched.insert(registered_by.clone());
+        table.insert(
+            id,
+            MemoryPoolEntry {
+                metadata,
+                registered_by,
+                touched_by: touched,
+                remote: true,
+            },
+        );
         Ok(())
     }
 
@@ -242,7 +292,10 @@ impl MemoryPoolManager {
             );
         }
 
-        if let Some(shm_name) = &entry.metadata.shared_memory_name
+        // Remote references point at another machine's segment — only the
+        // origin daemon unlinks it.
+        if !entry.remote
+            && let Some(shm_name) = &entry.metadata.shared_memory_name
             && !shm_name.is_empty()
         {
             self.free_shared_memory(shm_name)?;
@@ -367,7 +420,10 @@ impl MemoryPoolManager {
         }
 
         for (_id, entry) in drained {
-            if let Some(shm_name) = &entry.metadata.shared_memory_name
+            // Remote references point at another machine's segment — the
+            // origin daemon unlinks it; only the table entry is drained.
+            if !entry.remote
+                && let Some(shm_name) = &entry.metadata.shared_memory_name
                 && !shm_name.is_empty()
                 && let Err(err) = self.free_shared_memory(shm_name)
             {
