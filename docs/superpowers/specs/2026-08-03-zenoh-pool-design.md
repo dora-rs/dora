@@ -188,8 +188,13 @@ v1（cpu2cpu_cross）已实现并本地验证：
   CROSS_POOLS 有条目时转发（register ack 先于 node 回复，无合法写被
   gate 掉），本地池帧不再 61MB 全量广播。并发写单元测试（无锁时
   round 1 必失败）+ 本地 E2E 复测通过
-- 遗留：GPU 跨机（§8）、daemon 运行中重启后跨机池无重注册机制
-  （CROSS_POOLS 清空，写被 gate/丢弃，receiver 读旧帧——需重注册）
+- **cross 表合入 MemoryPoolManager（2026-08-05，提交 33b38761）**：
+  CROSS_POOLS 静态表迁入 memory-pool crate 成为 cross_pools 子表
+  （pool → (peer, dataflow)），cleanup_all(machine_id) 统一释放本地池 +
+  本机镜像段（每 daemon 只删自己机器的段）；段名推导函数迁入库。
+  剩余：daemon 异常退出（kill -9）后镜像残留 → create 时 EEXIST
+  兜底（unlink + recreate）尚未实现
+- 遗留：GPU 跨机（§8）
 
 ## 8. 后续迭代（不在 v1）
 
