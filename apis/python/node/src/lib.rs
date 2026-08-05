@@ -145,6 +145,13 @@ static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::s
 static NO_MIRROR_POOLS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
     LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
 
+/// Buffer ids of pools whose remote daemon confirmed same-host direct
+/// access (register ack `direct`). Their per-frame push is skipped — the
+/// reader opens this segment directly; the push would only feed a mirror
+/// nobody reads.
+static DIRECT_POOLS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
 /// read-after-free. Entries are inserted on free_memory_pool and never
 /// pruned — bounded in practice by the total number of registrations
@@ -2233,7 +2240,13 @@ impl Node {
                 )
                 .map_err(|e| e.to_string());
             match result {
-                Ok(Ok(())) => {
+                Ok((Ok(()), direct)) => {
+                    if direct {
+                        DIRECT_POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(buffer_id.clone());
+                    }
                     // Local pool stays; the daemon recorded CROSS_POOLS.
                     // Push the registered tensor through the daemon so the
                     // mirror pool is populated before the first explicit
@@ -2255,7 +2268,7 @@ impl Node {
                         );
                     }
                 }
-                Ok(Err(msg)) | Err(msg) => {
+                Ok((Err(msg), _)) | Err(msg) => {
                     tracing::warn!(
                         "[{}] register_memory_pool: cross-machine mirror failed for {}: {msg}",
                         self.node_id,
@@ -2954,11 +2967,19 @@ impl Node {
                         if ipc_present == 1 {
                             return Ok(());
                         }
-                        let no_mirror = NO_MIRROR_POOLS
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .contains(&buffer_id);
-                        if no_mirror {
+                        // Pools whose reader confirmed same-host direct
+                        // access (or that have no mirror at all) skip the
+                        // push — the reader opens this segment directly;
+                        // the push would only feed a mirror nobody reads.
+                        let skip_push = {
+                            let pools = NO_MIRROR_POOLS.lock().unwrap_or_else(|e| e.into_inner());
+                            pools.contains(&buffer_id)
+                                || DIRECT_POOLS
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .contains(&buffer_id)
+                        };
+                        if skip_push {
                             return Ok(());
                         }
                         self.push_mirror_update(

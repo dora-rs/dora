@@ -56,6 +56,10 @@ pub enum InterDaemonEvent {
         dataflow_id: DataflowId,
         shared_memory_id: String,
         ok: bool,
+        /// Whether this daemon could open the sender's segment directly
+        /// (same host). When true, the origin skips the per-frame data
+        /// push — readers open the sender's segment, no transfer needed.
+        direct: bool,
         error: Option<String>,
     },
     /// Release a cross-machine pool on the target machine. The event is

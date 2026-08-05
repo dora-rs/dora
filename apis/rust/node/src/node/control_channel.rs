@@ -237,7 +237,7 @@ impl ControlChannel {
         shape: Vec<i64>,
         device: String,
         machine_id: String,
-    ) -> eyre::Result<Result<(), String>> {
+    ) -> eyre::Result<(Result<(), String>, bool)> {
         let request = DaemonRequest::RegisterCrossMachinePool {
             shared_memory_id,
             shmem_name,
@@ -255,7 +255,7 @@ impl ControlChannel {
             })
             .wrap_err("failed to send RegisterCrossMachinePool request to dora-daemon")?;
         match reply {
-            DaemonReply::CrossMachinePoolRegistered(result) => Ok(result),
+            DaemonReply::CrossMachinePoolRegistered { result, direct } => Ok((result, direct)),
             other => bail!("unexpected RegisterCrossMachinePool reply: {other:?}"),
         }
     }

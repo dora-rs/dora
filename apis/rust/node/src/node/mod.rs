@@ -2398,7 +2398,7 @@ impl DoraNode {
         shape: Vec<i64>,
         device: String,
         machine_id: String,
-    ) -> Result<Result<(), String>, eyre::Error> {
+    ) -> Result<(Result<(), String>, bool), eyre::Error> {
         self.control_channel.register_cross_machine_pool(
             shared_memory_id,
             shmem_name,

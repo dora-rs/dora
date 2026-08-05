@@ -565,7 +565,7 @@ async fn release_cross_pool(
 
 /// Pending synchronous register confirmations: pool id -> ack channel.
 static CROSS_REGISTER_PENDING: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<bool>>>,
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<(bool, bool)>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
@@ -3394,6 +3394,7 @@ impl Daemon {
             InterDaemonEvent::RegisterPoolAck {
                 shared_memory_id,
                 ok,
+                direct,
                 ..
             } => {
                 // Complete a synchronous cross-machine register: hand the
@@ -3403,7 +3404,7 @@ impl Daemon {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&shared_memory_id)
                 {
-                    let _ = tx.send(ok);
+                    let _ = tx.send((ok, direct));
                 }
                 Ok(())
             }
@@ -3446,6 +3447,10 @@ impl Daemon {
                         Ok(()) => (true, None),
                         Err(e) => (false, Some(e.to_string())),
                     };
+                    // Same-host detection: if this daemon can open the
+                    // sender's segment (shared /dev/shm), readers can read
+                    // it directly and the origin can skip the data push.
+                    let direct = ok && ShmemConf::new().os_id(&shmem_name).open().is_ok();
                     if ok {
                         // Track the pool's other machine (the origin) so
                         // the targeted free reaches it, mirroring the
@@ -3493,6 +3498,7 @@ impl Daemon {
                             dataflow_id,
                             shared_memory_id,
                             ok,
+                            direct,
                             error,
                         },
                     )
@@ -4858,6 +4864,9 @@ impl Daemon {
                     // async block moves `shared_memory_id` into the pool
                     // map on the success path.
                     let cleanup_pool_id = shared_memory_id.clone();
+                    // Same-host flag: set true when the remote ack
+                    // confirmed it can open our segment directly.
+                    let mut direct = false;
                     let reply = async {
                         // Resolve the target machine through the
                         // coordinator. No coordinator connection means
@@ -4888,6 +4897,7 @@ impl Daemon {
                         let mut reply = Err(format!(
                             r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
                         ));
+
                         for attempt in 0..3 {
                             // Register the ack channel BEFORE publishing:
                             // the remote acks as soon as it receives
@@ -4949,16 +4959,17 @@ impl Daemon {
                             match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
                                 .await
                             {
-                                Ok(Ok(true)) => {
+                                Ok(Ok((true, ack_direct))) => {
                                     memory_pool.register_cross_pool(
                                         shared_memory_id,
                                         machine_id,
                                         dataflow_id.to_string(),
                                     );
                                     reply = Ok(());
+                                    direct = ack_direct;
                                     break;
                                 }
-                                Ok(Ok(false)) => {
+                                Ok(Ok((false, _))) => {
                                     reply = Err(format!(
                                         r#"machine "{machine_id}" 已解析但远端建池失败：远端返回 ok=false，未创建跨机内存池"#
                                     ));
@@ -4997,7 +5008,10 @@ impl Daemon {
                     if let Err(err) = &reply {
                         tracing::warn!("memory pool: cross-machine register failed: {err}");
                     }
-                    let _ = reply_sender.send(DaemonReply::CrossMachinePoolRegistered(reply));
+                    let _ = reply_sender.send(DaemonReply::CrossMachinePoolRegistered {
+                        result: reply,
+                        direct,
+                    });
                 });
             }
         }
