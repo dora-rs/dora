@@ -1,0 +1,8 @@
+# invalid-custom-git: Custom 节点不应有 node 级 git（在 custom 内定义）
+# 预期: dora validate 报错，包含 "not supported" 和 "git"
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    git: https://github.com/example/repo.git

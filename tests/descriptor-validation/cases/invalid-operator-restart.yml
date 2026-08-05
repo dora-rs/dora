@@ -1,0 +1,7 @@
+# invalid-operator-restart: Operator 节点不应有 restart_policy
+# 预期: dora validate 报错，包含 "not supported" 和 "restart_policy"
+nodes:
+  - id: op
+    operator:
+      shared-library: lib.so
+    restart_policy: on-failure

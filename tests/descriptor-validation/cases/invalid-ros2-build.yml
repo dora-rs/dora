@@ -1,0 +1,9 @@
+# invalid-ros2-build: ROS2 节点不应有 build
+# 预期: dora validate 报错，包含 "ros2" 和 "build"
+nodes:
+  - id: bridge
+    ros2:
+      topic: /odom
+      message_type: nav_msgs/Odometry
+      direction: subscribe
+    build: pip install x

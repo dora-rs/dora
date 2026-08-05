@@ -1,6 +1,6 @@
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{Descriptor, EnvValue, Node},
+    descriptor::{Descriptor, EnvValue, Node, RestartPolicy},
     id::{DataId, NodeId},
 };
 use eyre::{Context, bail};
@@ -377,6 +377,136 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     refs
 }
 
+/// Reject fields on a module node that are silently ignored during expansion.
+///
+/// Module nodes act as placeholders — they are replaced by their inner nodes
+/// during expansion. Only `inputs` (wiring), `params` (substitution), `deploy`
+/// (propagation), `module` (the reference itself), and metadata fields (`id`,
+/// `name`, `description`) are consumed. Any other field is silently dropped
+/// and therefore invalid.
+fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
+    let mut conflicts = Vec::new();
+
+    // Source/kind fields (the module reference itself provides the source)
+    if node.path.is_some() {
+        conflicts.push("path");
+    }
+    if node.path_sha256.is_some() {
+        conflicts.push("path_sha256");
+    }
+    if node.git.is_some() {
+        conflicts.push("git");
+    }
+    if node.hub.is_some() {
+        conflicts.push("hub");
+    }
+    if node.branch.is_some() {
+        conflicts.push("branch");
+    }
+    if node.tag.is_some() {
+        conflicts.push("tag");
+    }
+    if node.rev.is_some() {
+        conflicts.push("rev");
+    }
+    if node.operators.is_some() {
+        conflicts.push("operators");
+    }
+    if node.operator.is_some() {
+        conflicts.push("operator");
+    }
+    if node.custom.is_some() {
+        conflicts.push("custom");
+    }
+    if node.ros2.is_some() {
+        conflicts.push("ros2");
+    }
+
+    // Build/execution fields (module nodes don't launch a process)
+    if node.build.is_some() {
+        conflicts.push("build");
+    }
+    if node.args.is_some() {
+        conflicts.push("args");
+    }
+
+    // Configuration fields that are silently dropped during expansion
+    if node.env.is_some() {
+        conflicts.push("env");
+    }
+    if !node.outputs.is_empty() {
+        conflicts.push("outputs");
+    }
+    if !node.output_types.is_empty() {
+        conflicts.push("output_types");
+    }
+    if !node.output_framing.is_empty() {
+        conflicts.push("output_framing");
+    }
+    if !node.input_types.is_empty() {
+        conflicts.push("input_types");
+    }
+    if !node.output_metadata.is_empty() {
+        conflicts.push("output_metadata");
+    }
+    if node.pattern.is_some() {
+        conflicts.push("pattern");
+    }
+    if node.send_stdout_as.is_some() {
+        conflicts.push("send_stdout_as");
+    }
+    if node.send_logs_as.is_some() {
+        conflicts.push("send_logs_as");
+    }
+    if node.min_log_level.is_some() {
+        conflicts.push("min_log_level");
+    }
+    if node.max_log_size.is_some() {
+        conflicts.push("max_log_size");
+    }
+    if node.max_rotated_files.is_some() {
+        conflicts.push("max_rotated_files");
+    }
+    if !matches!(node.restart_policy, RestartPolicy::Never) {
+        conflicts.push("restart_policy");
+    }
+    if node.max_restarts != 0 {
+        conflicts.push("max_restarts");
+    }
+    if node.restart_delay.is_some() {
+        conflicts.push("restart_delay");
+    }
+    if node.max_restart_delay.is_some() {
+        conflicts.push("max_restart_delay");
+    }
+    if node.restart_window.is_some() {
+        conflicts.push("restart_window");
+    }
+    if node.health_check_timeout.is_some() {
+        conflicts.push("health_check_timeout");
+    }
+    if node.finish_grace_secs.is_some() {
+        conflicts.push("finish_grace_secs");
+    }
+    if node.shared_memory_pool_size.is_some() {
+        conflicts.push("shared_memory_pool_size");
+    }
+    if node.cpu_affinity.is_some() {
+        conflicts.push("cpu_affinity");
+    }
+
+    if !conflicts.is_empty() {
+        bail!(
+            "module node `{}` has fields that are not supported on module nodes: {}\n\
+             hint: module nodes are expanded from their module file; only `inputs`, \
+             `params`, `deploy`, and metadata fields are allowed",
+            node.id,
+            conflicts.join(", ")
+        );
+    }
+    Ok(())
+}
+
 /// Expand a single module node into its constituent flat nodes.
 ///
 /// Returns `(expanded_nodes, output_map)`; see [`ModuleOutputMap`].
@@ -394,6 +524,8 @@ fn expand_module_node(
             node.id
         );
     }
+
+    validate_module_node_fields(node)?;
 
     let module_path_str = node
         .module
@@ -551,8 +683,12 @@ fn expand_module_node(
             substitute_params_in_node(&mut inner_node, params);
         }
 
-        // Prepend module-level build command to inner node builds
-        if let Some(ref module_build) = module_file.build {
+        // Prepend module-level build command to concrete inner node builds.
+        // Nested module nodes are handled after recursive expansion so `build`
+        // can remain invalid as a user-provided module-node field.
+        if inner_node.module.is_none()
+            && let Some(ref module_build) = module_file.build
+        {
             let inner_build = inner_node.build.take();
             inner_node.build = Some(match inner_build {
                 Some(existing) => format!("{module_build}\n{existing}"),
@@ -571,12 +707,11 @@ fn expand_module_node(
     for inner_node in prefixed_nodes {
         if inner_node.module.is_some() {
             let nested_id = inner_node.id.to_string();
-            let accumulated_build = inner_node.build.clone();
             let (mut nested, nested_omap) =
                 expand_module_node(&inner_node, module_dir, canonical_base, depth + 1, seen)?;
-            // Propagate the outer module's accumulated build to each nested leaf node,
-            // mirroring how `deploy` is propagated through recursion.
-            if let Some(ref outer_build) = accumulated_build {
+            // Propagate this module's build to each nested leaf node, mirroring
+            // how `deploy` is propagated through recursion.
+            if let Some(ref outer_build) = module_file.build {
                 for nested_node in &mut nested {
                     let inner_build = nested_node.build.take();
                     nested_node.build = Some(match inner_build {
@@ -635,7 +770,6 @@ fn expand_module_node(
 /// Substitute `${_param.name}` references in a node's args and inject params
 /// into the node's env map as `EnvValue::String` entries.
 fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
-    // Substitute in args
     if let Some(ref mut args) = node.args {
         *args = substitute_params_in_str(args, params);
     }
@@ -1995,6 +2129,59 @@ nodes:
             msg.contains("resolves outside the project directory"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn reject_module_node_with_other_source_fields() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "simple_module.yml",
+            r#"
+module:
+  name: simple
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        for (field, snippet) in [
+            ("path", "    path: unexpected.py\n"),
+            ("path_sha256", "    path_sha256: abc123\n"),
+            ("build", "    build: cargo build\n"),
+            ("git", "    git: https://github.com/example/repo.git\n"),
+            ("hub", "    hub: dora-yolo@^0.5\n"),
+            ("branch", "    branch: main\n"),
+            ("tag", "    tag: v1.0.0\n"),
+            ("rev", "    rev: abc123\n"),
+            ("operator", "    operator:\n      python: op.py\n"),
+        ] {
+            let desc = parse_descriptor(&format!(
+                r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: simple_module.yml
+{snippet}    inputs:
+      x: src/v
+"#,
+            ));
+            let err = expand_modules(&desc, base).unwrap_err().to_string();
+            assert!(err.contains("not supported on module nodes"), "got: {err}");
+            assert!(err.contains(field), "got: {err}");
+        }
     }
 
     #[test]

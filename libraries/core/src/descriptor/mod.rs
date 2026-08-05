@@ -14,9 +14,9 @@ use std::{
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig,
-    Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, ResolvedNode, RestartPolicy, RmwZenohCompatibility,
+    Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig,
+    RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
@@ -125,10 +125,190 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         })
         .collect();
 
+    /// Check node-level fields that are silently dropped during resolution
+    /// for a given node kind. Rejects fields that do not belong to the kind
+    /// determined by `Node::kind()`.
+    fn validate_node_fields_for_kind(node: &Node) -> eyre::Result<()> {
+        let kind = node.kind()?;
+        let mut conflicts = Vec::new();
+
+        match kind {
+            NodeKind::Standard(_) => {
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+            }
+            NodeKind::Operator(_) | NodeKind::Runtime(_) => {
+                if node.path.is_some() {
+                    conflicts.push("path");
+                }
+                if node.path_sha256.is_some() {
+                    conflicts.push("path_sha256");
+                }
+                if node.git.is_some() {
+                    conflicts.push("git");
+                }
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+                if node.branch.is_some() {
+                    conflicts.push("branch");
+                }
+                if node.tag.is_some() {
+                    conflicts.push("tag");
+                }
+                if node.rev.is_some() {
+                    conflicts.push("rev");
+                }
+                if node.build.is_some() {
+                    conflicts.push("build");
+                }
+                if node.args.is_some() {
+                    conflicts.push("args");
+                }
+                if node.send_stdout_as.is_some() {
+                    conflicts.push("send_stdout_as");
+                }
+                if node.send_logs_as.is_some() {
+                    conflicts.push("send_logs_as");
+                }
+                if node.min_log_level.is_some() {
+                    conflicts.push("min_log_level");
+                }
+                if node.max_log_size.is_some() {
+                    conflicts.push("max_log_size");
+                }
+                if node.max_rotated_files.is_some() {
+                    conflicts.push("max_rotated_files");
+                }
+                if !node.outputs.is_empty() {
+                    conflicts.push("outputs");
+                }
+                if !node.output_types.is_empty() {
+                    conflicts.push("output_types");
+                }
+                if !node.input_types.is_empty() {
+                    conflicts.push("input_types");
+                }
+                if !node.output_framing.is_empty() {
+                    conflicts.push("output_framing");
+                }
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+                if !matches!(node.restart_policy, RestartPolicy::Never) {
+                    conflicts.push("restart_policy");
+                }
+                if node.max_restarts != 0 {
+                    conflicts.push("max_restarts");
+                }
+                if node.restart_delay.is_some() {
+                    conflicts.push("restart_delay");
+                }
+                if node.max_restart_delay.is_some() {
+                    conflicts.push("max_restart_delay");
+                }
+                if node.restart_window.is_some() {
+                    conflicts.push("restart_window");
+                }
+                if node.health_check_timeout.is_some() {
+                    conflicts.push("health_check_timeout");
+                }
+                if node.finish_grace_secs.is_some() {
+                    conflicts.push("finish_grace_secs");
+                }
+                if node.shared_memory_pool_size.is_some() {
+                    conflicts.push("shared_memory_pool_size");
+                }
+            }
+            NodeKind::Custom(_) => {
+                if node.path_sha256.is_some() {
+                    conflicts.push("path_sha256");
+                }
+                if node.build.is_some() {
+                    conflicts.push("build");
+                }
+                if node.git.is_some() {
+                    conflicts.push("git");
+                }
+                if node.branch.is_some() {
+                    conflicts.push("branch");
+                }
+                if node.tag.is_some() {
+                    conflicts.push("tag");
+                }
+                if node.rev.is_some() {
+                    conflicts.push("rev");
+                }
+                if node.args.is_some() {
+                    conflicts.push("args");
+                }
+                if node.send_stdout_as.is_some() {
+                    conflicts.push("send_stdout_as");
+                }
+                if node.send_logs_as.is_some() {
+                    conflicts.push("send_logs_as");
+                }
+                if node.min_log_level.is_some() {
+                    conflicts.push("min_log_level");
+                }
+                if node.max_log_size.is_some() {
+                    conflicts.push("max_log_size");
+                }
+                if node.max_rotated_files.is_some() {
+                    conflicts.push("max_rotated_files");
+                }
+            }
+            NodeKind::Module(_) => {
+                eyre::bail!(
+                    "module node `{}` must be expanded before resolution — call expand_modules() first",
+                    node.id
+                );
+            }
+            NodeKind::Ros2Bridge(_) => {}
+        }
+
+        if !conflicts.is_empty() {
+            eyre::bail!(
+                "node `{}` has fields that are not supported on its node kind: {}\n\
+                 hint: these fields are silently dropped during resolution; \
+                 move them into the appropriate sub-configuration",
+                node.id,
+                conflicts.join(", ")
+            );
+        }
+        Ok(())
+    }
+
     let mut resolved = BTreeMap::new();
     for mut node in desc.nodes.clone() {
         // adjust ROS2 bridge input mappings early (before node_kind borrows node)
         if node.ros2.is_some() {
+            let mut ros2_conflicts = Vec::new();
+            if node.build.is_some() {
+                ros2_conflicts.push("build");
+            }
+            if node.path_sha256.is_some() {
+                ros2_conflicts.push("path_sha256");
+            }
+            if !ros2_conflicts.is_empty() {
+                eyre::bail!(
+                    "node `{}` has `ros2` together with {}: these fields are not \
+                     supported on ROS2 bridge nodes — the bridge binary is pre-built",
+                    node.id,
+                    ros2_conflicts.join(", ")
+                );
+            }
+
             for input in node.inputs.values_mut() {
                 if let InputMapping::User(m) = &mut input.mapping
                     && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
@@ -139,6 +319,8 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         }
 
         // adjust input mappings
+        validate_node_fields_for_kind(&node)?;
+
         let mut node_kind = node_kind_mut(&mut node)?;
         let input_mappings: Vec<_> = match &mut node_kind {
             NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),

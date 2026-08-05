@@ -1,0 +1,15 @@
+# valid-standard: Standard 节点合法配置
+# 预期: dora validate 通过
+nodes:
+  - id: n
+    path: ./my_node
+    build: cargo build
+    args: --verbose
+    env:
+      DEBUG: "true"
+    inputs:
+      data: source/out
+    outputs:
+      - result
+    send_stdout_as: stdout
+    restart_policy: on-failure

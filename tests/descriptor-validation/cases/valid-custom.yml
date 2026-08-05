@@ -1,0 +1,10 @@
+# valid-custom: Custom 节点合法配置
+# 预期: dora validate 通过
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    outputs:
+      - result
+    restart_policy: always

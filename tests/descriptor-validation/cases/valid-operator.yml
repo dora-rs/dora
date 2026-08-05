@@ -1,0 +1,6 @@
+# valid-operator: Operator 节点合法配置
+# 预期: dora validate 通过
+nodes:
+  - id: op
+    operator:
+      shared-library: lib.so
