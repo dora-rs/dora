@@ -486,7 +486,9 @@ impl RunningDataflow {
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {
-                result: Ok(ControlRequestReply::DataflowSpawned { uuid: record.uuid }),
+                result: Box::new(Ok(ControlRequestReply::DataflowSpawned {
+                    uuid: record.uuid,
+                })),
             },
             stop_reply_senders: Vec::new(),
             buffered_log_messages: Vec::new(),
@@ -542,7 +544,7 @@ pub(crate) enum CachedResult {
         result_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
     },
     Cached {
-        result: eyre::Result<ControlRequestReply>,
+        result: Box<eyre::Result<ControlRequestReply>>,
     },
 }
 
@@ -573,7 +575,9 @@ impl CachedResult {
                 for sender in result_senders.drain(..) {
                     Self::send_result_to(&result, sender);
                 }
-                *self = CachedResult::Cached { result };
+                *self = CachedResult::Cached {
+                    result: Box::new(result),
+                };
             }
             CachedResult::Cached { .. } => {}
         }
@@ -592,7 +596,7 @@ impl CachedResult {
     /// the spawn-timeout watchdog (or any other terminal-failure path)
     /// has already marked as failed.
     pub(crate) fn is_terminal_error(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Err(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_err())
     }
 
     /// Returns `true` if a successful result has been cached, i.e. the dataflow
@@ -601,7 +605,7 @@ impl CachedResult {
     /// that are past spawn — spawn-pending ones remain the spawn-timeout
     /// watchdog's domain. See #2028.
     pub(crate) fn is_cached_ok(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Ok(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_ok())
     }
 
     fn send_result_to(
