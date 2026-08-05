@@ -44,6 +44,15 @@ on:
     paths:
       - ".github/workflows/nightly.yml"
 
+# A newer nightly makes older ones obsolete, so don't let them pile up.
+# Scheduled runs share `github.ref` (refs/heads/main), so a fresh run
+# cancels a still-queued/running earlier one instead of competing with it
+# (and with the merge queue) for the runner pool. Nightly is not a
+# merge-queue required status, so cancelling a run cannot wedge the queue.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
   actions: read
