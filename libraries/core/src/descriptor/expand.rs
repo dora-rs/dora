@@ -178,6 +178,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         .canonicalize()
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
     let module_file = load_module_file(&canonical)?;
+    validate_module_header(&module_file.module)?;
     let module_dir = canonical
         .parent()
         .expect("module file must have a parent directory");
@@ -247,6 +248,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
             //
             // Load nested module to collect its declared outputs.
             let nested_module = load_module_file(&nested_canonical)?;
+            validate_module_header(&nested_module.module)?;
             for output in &nested_module.module.outputs {
                 inner_outputs.insert(output.to_string());
             }
@@ -264,6 +266,22 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_module_header(module: &ModuleHeader) -> eyre::Result<()> {
+    let required: BTreeSet<_> = module.inputs.iter().collect();
+    if let Some(overlap) = module
+        .inputs_optional
+        .iter()
+        .find(|input| required.contains(input))
+    {
+        bail!(
+            "module `{}` input `{}` is declared as both required and optional",
+            module.name,
+            overlap
+        );
+    }
     Ok(())
 }
 
@@ -433,6 +451,7 @@ fn expand_module_node(
     }
 
     let module_file = load_module_file(&canonical)?;
+    validate_module_header(&module_file.module)?;
     let module_id = node.id.to_string();
     let module_dir = canonical
         .parent()
@@ -1240,6 +1259,51 @@ nodes:
     }
 
     #[test]
+    fn expand_rejects_module_input_declared_required_and_optional() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "bad_header_module.yml",
+            r#"
+module:
+  name: bad_header
+  inputs: [data]
+  inputs_optional: [data]
+  outputs: [out]
+
+nodes:
+  - id: inner
+    path: inner.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: bad_header_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("required and optional"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+    }
+
+    #[test]
     fn expand_undefined_output_port() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -1842,6 +1906,85 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_input_declared_required_and_optional() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "bad_header_module.yml",
+            r#"
+module:
+  name: bad_header
+  inputs: [data]
+  inputs_optional: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("required and optional"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_nested_module_conflicting_input_declarations() {
+        let tmp = TempDir::new().unwrap();
+
+        write_file(
+            tmp.path(),
+            "inner_bad.yml",
+            r#"
+module:
+  name: inner_bad
+  inputs: [data]
+  inputs_optional: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let path = write_file(
+            tmp.path(),
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: nested
+    module: inner_bad.yml
+    inputs:
+      x: _mod/data
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("inner_bad"), "got: {msg}");
+        assert!(msg.contains("required and optional"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
     }
 
     #[test]
