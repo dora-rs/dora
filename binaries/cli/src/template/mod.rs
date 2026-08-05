@@ -17,23 +17,29 @@ fn workspace_dir() -> eyre::Result<String> {
         .context("Could not get manifest grandparent folder")?
         .to_str()
         .context("dora workspace path is not valid UTF-8")?;
-    // CMake treats `\` as a string escape character, so a raw Windows path
-    // (e.g. `C:\Users\...`) substituted into CMakeLists.txt fails to parse.
-    // Both CMake and Windows accept `/`, so normalize before substitution.
-    Ok(dir.replace('\\', "/"))
+    Ok(normalize_for_cmake(dir))
+}
+
+// CMake treats `\` as a string escape character, so a raw Windows path
+// (e.g. `C:\Users\...`) substituted into CMakeLists.txt fails to parse.
+// Both CMake and Windows accept `/`, so normalize before substitution.
+fn normalize_for_cmake(path: &str) -> String {
+    path.replace('\\', "/")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    // Uses a hardcoded Windows-style sample path rather than the live
+    // `workspace_dir()` output, since on Linux/macOS CI runners the real
+    // path never contains a backslash and the assertion would pass
+    // trivially without exercising the normalization at all.
     #[test]
-    fn workspace_dir_has_no_backslashes() {
-        let dir = workspace_dir().unwrap();
-        assert!(
-            !dir.contains('\\'),
-            "workspace_dir() must use forward slashes for CMake compatibility, got: {dir}"
-        );
+    fn normalize_for_cmake_replaces_backslashes() {
+        let normalized = normalize_for_cmake(r"C:\Users\example\dora");
+        assert_eq!(normalized, "C:/Users/example/dora");
+        assert!(!normalized.contains('\\'));
     }
 }
 
