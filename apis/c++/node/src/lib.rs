@@ -151,6 +151,27 @@ mod ffi {
         source_node_id: String,
     }
 
+    /// Everything needed to register a memory pool.
+    ///
+    /// `transport` is `"auto"` (or empty), `"shmem"` or `"unified"`. `"auto"`
+    /// resolves to `"unified"` when `receiver_is_cuda`, otherwise `"shmem"`;
+    /// the `DORA_MEMORY_POOL_TRANSPORT` environment variable overrides
+    /// `"auto"` and nothing else. `"ipc"` is rejected — exporting a CUDA IPC
+    /// handle would require CUDA inside this binding, and it does not work on
+    /// integrated GPUs anyway.
+    ///
+    /// `dtype` and `shape` must both be non-empty: the daemon rejects a
+    /// registration without them, and `shape` multiplied out by `dtype`'s
+    /// element size must fit in `size`.
+    struct DoraMemoryPoolSpec {
+        id: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<usize>,
+        transport: String,
+        receiver_is_cuda: bool,
+    }
+
     struct ArrowInputInfo {
         id: String,
         metadata: Box<Metadata>,
@@ -348,6 +369,94 @@ mod ffi {
             server_node_id: &str,
             timeout_ms: u64,
         ) -> DoraPatternResult;
+
+        // -------------------------------------------------------------
+        // Memory-pool transport (producer side)
+        // -------------------------------------------------------------
+
+        type DoraMemoryPool;
+
+        /// Create a pool segment and register it with the daemon. The
+        /// segment is unlinked again if the daemon refuses it, so a failed
+        /// registration leaves nothing behind in `/dev/shm`.
+        fn register_memory_pool(
+            output_sender: &mut Box<OutputSender>,
+            spec: DoraMemoryPoolSpec,
+        ) -> Result<Box<DoraMemoryPool>>;
+
+        /// Page-aligned mapping base and total mapped bytes — this pair, and
+        /// only this pair, is what `cudaHostRegister` takes. The payload start
+        /// is not page-aligned, so it must never be registered directly.
+        fn pool_shm_base(pool: &Box<DoraMemoryPool>) -> u64;
+        fn pool_segment_bytes(pool: &Box<DoraMemoryPool>) -> usize;
+
+        /// Payload pointer and length, as an out-param predicate. Returns
+        /// false — leaving both outputs untouched — for an `ipc` pool, whose
+        /// payload is in device memory and is NOT in this mapping. A struct
+        /// with a nullable pointer would invite dereferencing without the
+        /// check; this shape does not.
+        fn pool_payload(pool: &Box<DoraMemoryPool>, out_ptr: &mut u64, out_len: &mut usize)
+        -> bool;
+        /// Offset of the payload within the mapping, for callers that hold a
+        /// *device* base from `cudaHostGetDevicePointer` and need to reach the
+        /// payload through it. Returns false for an `ipc` pool.
+        fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bool;
+        /// Bytes of payload actually present in this mapping; 0 for `ipc`.
+        /// THIS is the bound for any copy — never `pool_declared_size`, and
+        /// never a product computed from `pool_shape`.
+        fn pool_payload_len(pool: &Box<DoraMemoryPool>) -> usize;
+        /// The size the producer declared in the segment metadata. Advisory:
+        /// for an `ipc` pool it describes a device buffer that is not here, so
+        /// it can exceed `pool_segment_bytes` by megabytes.
+        fn pool_declared_size(pool: &Box<DoraMemoryPool>) -> usize;
+
+        fn pool_id(pool: &Box<DoraMemoryPool>) -> String;
+        fn pool_shm_name(pool: &Box<DoraMemoryPool>) -> String;
+        /// The resolved transport: `"shmem"` or `"unified"` for a pool this
+        /// node created.
+        fn pool_transport(pool: &Box<DoraMemoryPool>) -> String;
+        /// Advisory metadata for interpreting the buffer — NOT a bound. An
+        /// unrecognized dtype is assumed to be 1 byte per element, so a
+        /// product computed from these under-estimates. Size a view with
+        /// `pool_payload_len`.
+        fn pool_dtype(pool: &Box<DoraMemoryPool>) -> String;
+        /// Advisory metadata, as `pool_dtype`. Not a bound.
+        fn pool_shape(pool: &Box<DoraMemoryPool>) -> Vec<usize>;
+        fn pool_ipc_present(pool: &Box<DoraMemoryPool>) -> bool;
+
+        /// Open a write cycle. Fails on an `ipc` pool, or if a cycle is
+        /// already open on this handle. **Prefer the `dora::PoolWriteGuard`
+        /// RAII wrapper** (`dora/memory_pool.hpp`) over calling this directly:
+        /// an early return or a thrown exception between begin and end leaves
+        /// the generation odd permanently, which kills the pool for every
+        /// reader until some later successful write, and nothing on the Rust
+        /// side recovers it.
+        fn pool_begin_write(pool: &mut Box<DoraMemoryPool>) -> DoraResult;
+        /// Close a write cycle; a no-op when none is open. `ok = false` leaves
+        /// the pool marked incomplete — every reader rejects it until the next
+        /// successful write — because an in-place write has already destroyed
+        /// the previous frame and there is nothing to roll back to.
+        fn pool_end_write(pool: &mut Box<DoraMemoryPool>, ok: bool);
+        /// True when a cycle is open on this handle — the leak detector for a
+        /// caller that suspects it missed an end.
+        fn pool_write_in_progress(pool: &Box<DoraMemoryPool>) -> bool;
+        /// Copy `data` into the pool under the seqlock. `data.len()` must
+        /// equal `pool_payload_len` exactly: a short write would leave the
+        /// previous frame's bytes in the tail and publish them as complete.
+        ///
+        /// This opens and closes its own write cycle, so it must not be
+        /// called while a `dora::PoolWriteGuard` is alive on the same pool —
+        /// the second cycle is refused. Fill in place through the guard, or
+        /// copy through this; not both.
+        fn write_memory_pool(pool: &mut Box<DoraMemoryPool>, data: &[u8]) -> DoraResult;
+
+        /// Ask the daemon to release the pool. The daemon unlinks the segment
+        /// and notifies every node that touched it; this binding deliberately
+        /// does not unlink locally.
+        fn free_memory_pool(
+            output_sender: &mut Box<OutputSender>,
+            pool: Box<DoraMemoryPool>,
+        ) -> DoraResult;
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
@@ -1139,6 +1248,328 @@ fn send_output_internal(
 }
 
 // ---------------------------------------------------------------------
+// Memory-pool transport (producer side)
+// ---------------------------------------------------------------------
+
+use dora_memory_pool::{
+    naming,
+    segment::{PoolSegment, Transport},
+};
+
+/// A pool this node owns: the mapped segment plus the id the daemon knows it
+/// by. Dropping it unmaps the segment; only `free_memory_pool` releases it.
+pub struct DoraMemoryPool {
+    segment: PoolSegment,
+    id: String,
+}
+
+const TRANSPORT_ENV: &str = "DORA_MEMORY_POOL_TRANSPORT";
+
+/// Resolve a requested transport into a concrete mode, given the value of
+/// [`TRANSPORT_ENV`] (`None` when it is unset).
+///
+/// `auto` never resolves to a mode that would fail at registration: `unified`
+/// works everywhere (on a discrete GPU it is merely slower than IPC), and on
+/// an integrated GPU it is the only thing that works at all.
+///
+/// The environment value is a parameter rather than a read, so the decision is
+/// a pure function. The alternative — tests that set and unset a process-global
+/// variable other threads are reading — is what Rust 2024 made `unsafe`, and
+/// it makes the test outcome depend on the harness's thread count.
+fn resolve_transport_with(
+    requested: &str,
+    receiver_is_cuda: bool,
+    env_override: Option<&str>,
+) -> EyreResult<Transport> {
+    // An unset field on the C++ side arrives as an empty string, which means
+    // "no preference", not "unknown transport".
+    let requested = if requested.is_empty() {
+        "auto"
+    } else {
+        requested
+    };
+    let resolved = match requested {
+        // The override applies to `auto` only: an explicit request is the node
+        // author's decision about its own buffer layout, and an operator's
+        // environment must not silently rewrite it.
+        "auto" => match env_override {
+            None if receiver_is_cuda => Transport::Unified,
+            None => Transport::Shmem,
+            Some("shmem") => Transport::Shmem,
+            Some("unified") => Transport::Unified,
+            Some(other) => bail!(
+                "{TRANSPORT_ENV}=`{other}` is not valid; expected `shmem` or `unified`. \
+                 Ignoring it would hand back the transport the variable was set to change."
+            ),
+        },
+        "shmem" => Transport::Shmem,
+        "unified" => Transport::Unified,
+        "ipc" => bail!(
+            "transport `ipc` is not supported by the C++ binding: exporting a CUDA IPC handle \
+             would require CUDA inside the binding, and cudaIpcGetMemHandle is unsupported on \
+             integrated GPUs. Use `unified`."
+        ),
+        other => bail!("unknown transport `{other}`; expected `auto`, `shmem` or `unified`"),
+    };
+    Ok(resolved)
+}
+
+fn resolve_transport(requested: &str, receiver_is_cuda: bool) -> EyreResult<Transport> {
+    let env_override = match std::env::var(TRANSPORT_ENV) {
+        Ok(value) => Some(value),
+        Err(std::env::VarError::NotPresent) => None,
+        // Reported rather than swallowed, for the same reason an unrecognized
+        // value is: a variable that was set and had no effect is worse than a
+        // failure that names it.
+        Err(std::env::VarError::NotUnicode(value)) => bail!(
+            "{TRANSPORT_ENV} is not valid UTF-8 (`{}`); expected `shmem` or `unified`",
+            value.to_string_lossy()
+        ),
+    };
+    resolve_transport_with(requested, receiver_is_cuda, env_override.as_deref())
+}
+
+/// Reject a spec the daemon will refuse, before a segment exists for it.
+///
+/// `RegisterPinnedMemory` (`binaries/daemon/src/lib.rs`) rejects an empty
+/// `dtype` or `shape`. Every other field it validates is already guaranteed by
+/// the time we get there — `PoolSegment::create` bounds the size, `segment_name`
+/// builds a name that passes the daemon's namespace check — so these two are
+/// the only ones that would otherwise cost a create-and-unlink round trip to
+/// discover, and come back as a bare "missing shape".
+fn validate_daemon_required_fields(dtype: &str, shape: &[usize]) -> EyreResult<()> {
+    if dtype.is_empty() {
+        bail!("dtype must not be empty: the daemon rejects a pool registration without one");
+    }
+    if shape.is_empty() {
+        bail!("shape must not be empty: the daemon rejects a pool registration without one");
+    }
+    Ok(())
+}
+
+/// Fill the daemon's pool parameters, mirroring `apis/python/node/src/lib.rs` —
+/// the daemon validates these keys and the Python binding is the reference for
+/// what it expects.
+fn register_with_daemon(
+    output_sender: &mut Box<OutputSender>,
+    segment: &PoolSegment,
+    spec: &ffi::DoraMemoryPoolSpec,
+    name: &str,
+    transport: Transport,
+) -> EyreResult<()> {
+    // The daemon rejects `ptr == 0`. This is always `Some` here — `create`
+    // refuses the one transport that has no payload in its mapping — but going
+    // through the accessor keeps the one-past-the-end address of an `ipc`
+    // segment unreachable from this file too.
+    let (payload_ptr, _) = segment
+        .payload()
+        .ok_or_else(|| eyre!("pool `{}` has no payload to register", spec.id))?;
+
+    let mut params = DoraMetadataParameters::new();
+    // Valid only in this process; a consumer reaches the payload through
+    // `shared_memory_name`, never through this.
+    params.insert(
+        "ptr".to_string(),
+        DoraParameter::Integer(payload_ptr as i64),
+    );
+    params.insert("size".to_string(), DoraParameter::Integer(spec.size as i64));
+    params.insert(
+        "dtype".to_string(),
+        DoraParameter::String(spec.dtype.clone()),
+    );
+    params.insert(
+        "shape".to_string(),
+        DoraParameter::ListInt(spec.shape.iter().map(|&dim| dim as i64).collect()),
+    );
+    params.insert(
+        "shared_memory_name".to_string(),
+        DoraParameter::String(name.to_string()),
+    );
+    // The binding never calls `cudaHostRegister` itself — that is the C++
+    // side's job via `dora/cuda_pool.hpp` — so the pool is not pinned as far
+    // as the daemon's bookkeeping is concerned.
+    params.insert("is_pinned".to_string(), DoraParameter::Bool(false));
+    params.insert(
+        "pinned_type".to_string(),
+        DoraParameter::String(transport.pinned_type().to_string()),
+    );
+    // No IPC handle is ever written to a segment this binding creates, so the
+    // data region really is the payload.
+    params.insert("ipc_present".to_string(), DoraParameter::Bool(false));
+    params.insert(
+        "buffer_id".to_string(),
+        DoraParameter::String(spec.id.clone()),
+    );
+
+    let timestamp = dora_node_api::uhlc::HLC::default().new_timestamp();
+    let metadata = DoraMetadata::from_parameters(timestamp, params);
+    output_sender
+        .0
+        .register_pinned_memory(spec.id.clone(), metadata)
+}
+
+fn register_memory_pool(
+    output_sender: &mut Box<OutputSender>,
+    spec: ffi::DoraMemoryPoolSpec,
+) -> EyreResult<Box<DoraMemoryPool>> {
+    let transport = resolve_transport(&spec.transport, spec.receiver_is_cuda)?;
+    validate_daemon_required_fields(&spec.dtype, &spec.shape)?;
+
+    let dataflow_id = output_sender.0.dataflow_id().to_string();
+    let node_id = output_sender.0.id().to_string();
+    let name = naming::segment_name(&dataflow_id, &node_id, &spec.id).map_err(|e| eyre!("{e}"))?;
+
+    let segment = PoolSegment::create(&name, spec.size, &spec.dtype, &spec.shape, transport)
+        .map_err(|e| eyre!("{e}"))?;
+
+    match register_with_daemon(output_sender, &segment, &spec, &name, transport) {
+        Ok(()) => Ok(Box::new(DoraMemoryPool {
+            segment,
+            id: spec.id,
+        })),
+        Err(err) => {
+            // The daemon has no record of this pool, so nothing will ever
+            // unlink the segment: not `free_memory_pool`, which goes through
+            // the daemon's table, and not the daemon's sweeps, which walk it.
+            // The name is created `O_EXCL`, so leaking it would also make this
+            // pool id permanently unusable. Unmap first, then unlink, so no
+            // mapping outlives the name it was made from.
+            drop(segment);
+            let cleanup = match naming::unlink_segment(&name) {
+                Ok(()) => String::new(),
+                Err(cleanup) => {
+                    format!("; additionally failed to remove the orphaned segment: {cleanup}")
+                }
+            };
+            // Flattened with `{:#}` because cxx converts an error to the C++
+            // exception message through `Display`, which prints only the
+            // outermost line of a `Report` chain.
+            Err(eyre!(
+                "failed to register memory pool `{}` with the daemon: {err:#}{cleanup}",
+                spec.id
+            ))
+        }
+    }
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_shm_base(pool: &Box<DoraMemoryPool>) -> u64 {
+    pool.segment.shm_base()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_segment_bytes(pool: &Box<DoraMemoryPool>) -> usize {
+    pool.segment.segment_bytes()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_payload(pool: &Box<DoraMemoryPool>, out_ptr: &mut u64, out_len: &mut usize) -> bool {
+    match pool.segment.payload() {
+        Some((ptr, len)) => {
+            *out_ptr = ptr;
+            *out_len = len;
+            true
+        }
+        None => false,
+    }
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bool {
+    match pool.segment.payload_offset() {
+        Some(offset) => {
+            *out_offset = offset;
+            true
+        }
+        None => false,
+    }
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_payload_len(pool: &Box<DoraMemoryPool>) -> usize {
+    pool.segment.payload_len()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_declared_size(pool: &Box<DoraMemoryPool>) -> usize {
+    pool.segment.declared_size()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_id(pool: &Box<DoraMemoryPool>) -> String {
+    pool.id.clone()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_shm_name(pool: &Box<DoraMemoryPool>) -> String {
+    pool.segment.name().to_string()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_transport(pool: &Box<DoraMemoryPool>) -> String {
+    pool.segment.transport().as_str().to_string()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_dtype(pool: &Box<DoraMemoryPool>) -> String {
+    pool.segment.dtype().to_string()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_shape(pool: &Box<DoraMemoryPool>) -> Vec<usize> {
+    pool.segment.shape().to_vec()
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_ipc_present(pool: &Box<DoraMemoryPool>) -> bool {
+    pool.segment.ipc_present()
+}
+
+fn pool_begin_write(pool: &mut Box<DoraMemoryPool>) -> ffi::DoraResult {
+    match pool.segment.begin_write() {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(error) => ffi::DoraResult { error },
+    }
+}
+
+fn pool_end_write(pool: &mut Box<DoraMemoryPool>, ok: bool) {
+    pool.segment.end_write(ok)
+}
+
+#[allow(clippy::borrowed_box)]
+fn pool_write_in_progress(pool: &Box<DoraMemoryPool>) -> bool {
+    pool.segment.write_in_progress()
+}
+
+fn write_memory_pool(pool: &mut Box<DoraMemoryPool>, data: &[u8]) -> ffi::DoraResult {
+    match pool.segment.write(data) {
+        Ok(()) => ffi::DoraResult {
+            error: String::new(),
+        },
+        Err(error) => ffi::DoraResult { error },
+    }
+}
+
+#[allow(clippy::boxed_local)]
+fn free_memory_pool(
+    output_sender: &mut Box<OutputSender>,
+    pool: Box<DoraMemoryPool>,
+) -> ffi::DoraResult {
+    // Daemon only, deliberately. `free_pinned_memory` unlinks the segment and
+    // notifies every node that touched the pool; unlinking here as well would
+    // bypass that table, and — when the daemon call fails — would remove a
+    // segment the daemon still believes exists and will hand to a consumer.
+    // The mapping is released when `pool` drops at the end of this call.
+    let error = match output_sender.0.free_pinned_memory(pool.id.clone()) {
+        Ok(()) => String::new(),
+        Err(err) => format!("failed to free memory pool `{}`: {err:#}", pool.id),
+    };
+    ffi::DoraResult { error }
+}
+
+// ---------------------------------------------------------------------
 // Service (request/reply) and Action (goal/feedback/result)
 // ---------------------------------------------------------------------
 
@@ -1831,5 +2262,150 @@ mod tests {
                 .unwrap_or_else(|e| panic!("get_timestamp after set({value}) failed: {e}"));
             assert_eq!(got, value, "timestamp {value} did not round-trip");
         }
+    }
+
+    // -----------------------------------------------------------------
+    // Memory-pool transport
+    // -----------------------------------------------------------------
+
+    /// `auto` must never resolve to a mode whose registration would fail:
+    /// `unified` works everywhere a CUDA receiver exists, `shmem` everywhere
+    /// else.
+    #[test]
+    fn auto_transport_follows_the_receiver() {
+        assert_eq!(
+            resolve_transport_with("auto", true, None).unwrap(),
+            Transport::Unified
+        );
+        assert_eq!(
+            resolve_transport_with("auto", false, None).unwrap(),
+            Transport::Shmem
+        );
+    }
+
+    /// An empty string is what a C++ caller that left the field default sends,
+    /// and it must mean `auto` rather than "unknown transport".
+    #[test]
+    fn an_empty_transport_string_means_auto() {
+        assert_eq!(
+            resolve_transport_with("", true, None).unwrap(),
+            Transport::Unified
+        );
+        assert_eq!(
+            resolve_transport_with("", false, None).unwrap(),
+            Transport::Shmem
+        );
+    }
+
+    #[test]
+    fn explicit_transport_wins_over_the_receiver_hint() {
+        assert_eq!(
+            resolve_transport_with("shmem", true, None).unwrap(),
+            Transport::Shmem
+        );
+        assert_eq!(
+            resolve_transport_with("unified", false, None).unwrap(),
+            Transport::Unified
+        );
+    }
+
+    /// The environment variable is an operator's escape hatch for `auto` only.
+    #[test]
+    fn the_environment_overrides_auto_in_both_directions() {
+        assert_eq!(
+            resolve_transport_with("auto", true, Some("shmem")).unwrap(),
+            Transport::Shmem,
+            "the environment must be able to veto the receiver hint"
+        );
+        assert_eq!(
+            resolve_transport_with("auto", false, Some("unified")).unwrap(),
+            Transport::Unified
+        );
+        assert_eq!(
+            resolve_transport_with("", true, Some("shmem")).unwrap(),
+            Transport::Shmem,
+            "an empty request is `auto`, so the environment applies to it too"
+        );
+    }
+
+    /// An explicit request is the node author's decision about its own buffer
+    /// layout; an operator's environment variable must not silently rewrite it.
+    #[test]
+    fn the_environment_does_not_override_an_explicit_request() {
+        assert_eq!(
+            resolve_transport_with("unified", false, Some("shmem")).unwrap(),
+            Transport::Unified
+        );
+        assert_eq!(
+            resolve_transport_with("shmem", true, Some("unified")).unwrap(),
+            Transport::Shmem
+        );
+    }
+
+    /// A misspelled override must fail loudly. Silently falling back to the
+    /// receiver hint would hand back the very transport the operator was
+    /// trying to change, with no sign that the variable did nothing.
+    #[test]
+    fn an_unrecognized_environment_value_is_rejected_by_name() {
+        for value in ["shmemm", "", "ipc"] {
+            let err = resolve_transport_with("auto", true, Some(value))
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("DORA_MEMORY_POOL_TRANSPORT"),
+                "the error must name the variable that has to change: {err}"
+            );
+        }
+    }
+
+    /// `ipc` must fail with a message about IPC specifically: a caller asking
+    /// for it has assumptions about device memory that this binding cannot
+    /// meet, and needs to be told why, not merely that the word was not
+    /// recognized.
+    #[test]
+    fn ipc_transport_is_rejected_with_an_ipc_specific_message() {
+        let err = resolve_transport("ipc", true).unwrap_err().to_string();
+        assert!(
+            err.contains("cudaIpcGetMemHandle"),
+            "the error must explain why ipc cannot work here: {err}"
+        );
+        assert!(
+            !err.contains("unknown transport"),
+            "ipc must not fall through to the catch-all arm, whose message \
+             also mentions `unified`: {err}"
+        );
+    }
+
+    #[test]
+    fn unknown_transport_is_rejected() {
+        let err = resolve_transport("cuda-magic", false)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cuda-magic"), "unexpected error: {err}");
+    }
+
+    /// The daemon rejects a registration with an empty `dtype` or an empty
+    /// `shape`, and the segment is already created by then. Checking first
+    /// turns a round trip that leaves a segment to clean up into a local
+    /// error that names the field.
+    #[test]
+    fn an_empty_dtype_is_rejected_before_anything_is_allocated() {
+        let err = validate_daemon_required_fields("", &[4]).unwrap_err();
+        assert!(err.to_string().contains("dtype"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn an_empty_shape_is_rejected_before_anything_is_allocated() {
+        let err = validate_daemon_required_fields("uint8", &[]).unwrap_err();
+        assert!(err.to_string().contains("shape"), "unexpected error: {err}");
+        assert!(
+            !err.to_string().contains("dtype"),
+            "the shape error must not be reported as a dtype error: {err}"
+        );
+    }
+
+    #[test]
+    fn a_complete_spec_passes_the_precheck() {
+        validate_daemon_required_fields("uint8", &[640, 512, 4]).expect("a complete spec");
     }
 }

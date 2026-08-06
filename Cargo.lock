@@ -2324,6 +2324,7 @@ dependencies = [
  "chrono",
  "cxx",
  "cxx-build",
+ "dora-memory-pool",
  "dora-node-api",
  "dora-ros2-bridge",
  "dora-ros2-bridge-msg-gen",

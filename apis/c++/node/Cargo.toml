@@ -30,6 +30,7 @@ rmw-zenoh = ["dora-ros2-bridge/rmw-zenoh"]
 [dependencies]
 cxx = "1.0.194"
 dora-node-api = { workspace = true }
+dora-memory-pool = { workspace = true }
 eyre = { workspace = true }
 dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.6" }

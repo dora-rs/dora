@@ -60,6 +60,8 @@ fn main() {
 
     std::fs::copy(src_dir.join("../../rust/cxx.h"), install_dir.join("cxx.h")).unwrap();
 
+    copy_extra_headers(&install_dir);
+
     #[cfg(feature = "ros2-bridge")]
     ros2::generate_ros2_message_header(&install_dir);
 
@@ -86,6 +88,9 @@ fn main() {
     generate_config_version_cmake(&cmake_dir, version);
     copy_cxx_header(&src_dir, &include_dir);
     copy_cxx_source(&src_dir, &src_cmake_dir);
+    // Also into the `find_package` include dir, so a cmake consumer and a
+    // hand-rolled `-I<install>` consumer see the same set of headers.
+    copy_extra_headers(&include_dir);
 
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
@@ -118,6 +123,27 @@ fn generate_config_version_cmake(cmake_dir: &Path, version: &str) {
         content,
     )
     .expect("failed to write ConfigVersion.cmake");
+}
+
+/// Hand-written headers that ship next to the generated bridge header, listed
+/// by their path relative to `include/`. They are checked into the crate
+/// rather than generated, so the subdirectory has to be recreated and the
+/// rerun trigger declared by hand — without both, an edit to one of these
+/// silently never reaches an installed tree.
+const EXTRA_HEADERS: &[&str] = &["dora/memory_pool.hpp"];
+
+fn copy_extra_headers(dest_dir: &Path) {
+    let include_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
+    for header in EXTRA_HEADERS {
+        let src = include_src.join(header);
+        let dst = dest_dir.join(header);
+        if let Some(parent) = dst.parent() {
+            std::fs::create_dir_all(parent).expect("failed to create header directory");
+        }
+        std::fs::copy(&src, &dst)
+            .unwrap_or_else(|e| panic!("failed to copy {}: {e}", src.display()));
+        println!("cargo:rerun-if-changed=include/{header}");
+    }
 }
 
 fn copy_cxx_header(src_dir: &Path, include_dir: &Path) {
