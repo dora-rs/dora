@@ -128,8 +128,16 @@ match events.try_recv_service_response(&rid, ExpectedServers::One(&server), time
 ```
 
 The clock starts at that first poll rather than at send time, and the
-first deadline registered for an id wins. `cancel_correlation` drops a
-request that will never be polled again.
+first deadline registered for an id wins.
+
+A poll drops its own registration on a match, an error or expiry.
+`cancel_correlation` releases one the node abandons and will never poll
+again; without it that entry lives until the stream is dropped. It is
+available in both Rust and C++ and is a no-op for an unknown id.
+
+In C++ the timeout is `timeout_ms`, where `0` means *no deadline* rather
+than "return immediately" — a poll never blocks, so there is nothing to
+time out. That inverts the usual convention for a timeout argument.
 
 > **Ordering matters.** The polls and your own `recv()` read the same
 > stream, so whichever runs first consumes what is there. A poll

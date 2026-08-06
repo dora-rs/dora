@@ -282,9 +282,25 @@ The framework owns the deadline: the first poll carrying a `timeout_ms`
 registers it against that `request_id`, and a later poll past it returns
 `Timeout` exactly once. A caller passes the same `timeout_ms` every
 iteration and reacts to `Timeout` like any other status — no deadline
-bookkeeping of its own. Pass `0` for no deadline. The clock starts at
-that first poll rather than at send time, and the first deadline
-registered for an id wins.
+bookkeeping of its own. The clock starts at that first poll rather than
+at send time, and the first deadline registered for an id wins.
+
+`timeout_ms == 0` means **no deadline**, not "return immediately" — a
+poll never blocks anyway, so there is nothing to time out. This inverts
+the usual convention for a `timeout` argument, so it is worth a second
+look when reading calling code.
+
+A poll drops its own registration on a match, an error or expiry. If the
+node abandons a request it will never poll again — the peer died, the
+operator cancelled, the reply stopped mattering — release it explicitly,
+or that one entry lives until the event stream is dropped:
+
+```c++
+cancel_correlation(dora_node.events, request_id);
+```
+
+Safe to call for an id that was never registered, so a cancel racing a
+reply is harmless.
 
 > **Ordering matters.** The polls and your own `next_event` read the same
 > event stream, so whichever runs first consumes what is there. A poll

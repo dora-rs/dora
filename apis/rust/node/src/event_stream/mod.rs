@@ -3234,6 +3234,17 @@ mod tests {
     }
 
     #[test]
+    fn cancel_correlation_is_safe_for_an_unknown_id() {
+        // Callers cancel on paths where the request may already have
+        // completed — a double cancel, or one racing a reply — so an
+        // unknown id has to be a no-op rather than a panic.
+        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+        events.cancel_correlation("never-registered");
+        events.cancel_correlation("never-registered");
+        assert!(events.correlation_deadlines.is_empty());
+    }
+
+    #[test]
     fn deadlines_are_tracked_per_correlation_id() {
         let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
 
