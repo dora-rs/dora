@@ -71,12 +71,43 @@ pub(crate) async fn send_log_message(
     log_subscribers: &mut Vec<LogSubscriber>,
     message: &LogMessage,
 ) {
+    // Tolerate transient slowness the same way `send_topic_frames` does: a
+    // single 100 ms timeout — which happens whenever a `dora logs -f` reader
+    // stalls long enough to keep its bounded channel full during a log burst —
+    // must not permanently drop the subscription. Only close after the channel
+    // is actually gone, or after a sustained streak of timeouts.
+    const MAX_CONSECUTIVE_LOG_SEND_TIMEOUTS: usize = 100;
     for subscriber in log_subscribers.iter_mut() {
         let send_result =
-            tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message));
-
-        if send_result.await.is_err() {
-            subscriber.close();
+            tokio::time::timeout(Duration::from_millis(100), subscriber.send_message(message))
+                .await;
+        match send_result {
+            // Actually enqueued — the subscriber is keeping up, clear the streak.
+            Ok(Ok(true)) => {
+                subscriber.reset_timeout_streak();
+            }
+            // Dropped by the level filter — not a delivery attempt, so leave the
+            // streak untouched (resetting here would let below-filter traffic
+            // keep a stuck subscriber alive forever).
+            Ok(Ok(false)) => {}
+            Ok(Err(_)) => {
+                subscriber.close();
+            }
+            Err(_) => {
+                let timeouts = subscriber.record_timeout();
+                if timeouts >= MAX_CONSECUTIVE_LOG_SEND_TIMEOUTS {
+                    tracing::warn!(
+                        timeouts,
+                        "closing slow log subscriber after repeated send timeouts"
+                    );
+                    subscriber.close();
+                } else {
+                    tracing::warn!(
+                        timeouts,
+                        "timed out sending log message to CLI subscriber; keeping subscription active"
+                    );
+                }
+            }
         }
     }
     log_subscribers.retain(|s| !s.is_closed());
@@ -872,6 +903,101 @@ mod tests {
         assert!(
             !subscribers.contains_key(&subscription_id),
             "subscriber should be evicted after 100 consecutive timeouts"
+        );
+    }
+
+    fn test_log_message() -> LogMessage {
+        LogMessage {
+            build_id: None,
+            dataflow_id: None,
+            node_id: None,
+            daemon_id: None,
+            // Warn passes an Info-level subscriber, so `send_message` actually
+            // enqueues rather than dropping it at the level filter.
+            level: dora_message::common::LogLevel::Warn.into(),
+            target: None,
+            module_path: None,
+            file: None,
+            line: None,
+            message: "hello".to_string(),
+            timestamp: std::time::SystemTime::UNIX_EPOCH.into(),
+            fields: None,
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn send_log_message_resets_timeout_streak_on_successful_send() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut subscriber = LogSubscriber::new(log::LevelFilter::Info, tx);
+        // Prime the counter: simulate 3 prior timeouts.
+        assert_eq!(subscriber.record_timeout(), 1);
+        assert_eq!(subscriber.record_timeout(), 2);
+        assert_eq!(subscriber.record_timeout(), 3);
+
+        let mut subscribers = vec![subscriber];
+        // A real send should succeed (channel has capacity) and reset the streak.
+        send_log_message(&mut subscribers, &test_log_message()).await;
+
+        assert!(
+            rx.try_recv().is_ok(),
+            "subscriber should receive the log message"
+        );
+        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
+        assert_eq!(
+            subscribers[0].record_timeout(),
+            1,
+            "streak must be back to 0 after a successful send"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn send_log_message_closes_subscriber_after_100_consecutive_timeouts() {
+        // Capacity 1 + pre-filled + rx never drained = every send times out.
+        // `start_paused = true` makes tokio auto-advance through the 100 × 100ms
+        // timeouts without real wall-clock delay.
+        let (tx, _rx_never_drained) = tokio::sync::mpsc::channel(1);
+        tx.send("prefill".to_string()).await.unwrap();
+
+        let mut subscribers = vec![LogSubscriber::new(log::LevelFilter::Info, tx)];
+
+        for i in 1..=99 {
+            send_log_message(&mut subscribers, &test_log_message()).await;
+            assert_eq!(
+                subscribers.len(),
+                1,
+                "subscriber evicted prematurely at iteration {i}"
+            );
+        }
+        // 100th consecutive timeout triggers the close + retain eviction.
+        send_log_message(&mut subscribers, &test_log_message()).await;
+        assert!(
+            subscribers.is_empty(),
+            "subscriber should be evicted after 100 consecutive timeouts"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn send_log_message_filtered_message_does_not_reset_streak() {
+        // A message dropped by the level filter is not a delivery attempt, so
+        // it must leave the timeout streak untouched — otherwise below-filter
+        // traffic could keep a stuck subscriber alive forever.
+        let (tx, _rx) = tokio::sync::mpsc::channel(4);
+        let mut subscriber = LogSubscriber::new(log::LevelFilter::Info, tx);
+        assert_eq!(subscriber.record_timeout(), 1);
+        assert_eq!(subscriber.record_timeout(), 2);
+        let mut subscribers = vec![subscriber];
+
+        // Debug is below the Info filter, so this is not delivered.
+        let mut msg = test_log_message();
+        msg.level = dora_message::common::LogLevel::Debug.into();
+        send_log_message(&mut subscribers, &msg).await;
+
+        assert_eq!(subscribers.len(), 1, "subscriber must not be evicted");
+        // Streak preserved at 2, so the next timeout yields 3 (not reset to 1).
+        assert_eq!(
+            subscribers[0].record_timeout(),
+            3,
+            "a filtered message must not reset the timeout streak"
         );
     }
 }

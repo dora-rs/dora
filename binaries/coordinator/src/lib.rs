@@ -130,6 +130,7 @@ mod log_subscriber;
 mod otel_metrics;
 mod run;
 mod state;
+mod timeout_streak;
 mod topic_subscriber;
 mod ws_control;
 mod ws_daemon;
