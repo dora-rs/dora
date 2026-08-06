@@ -1,4 +1,5 @@
 pub mod doradma;
+pub mod naming;
 pub mod seqlock;
 
 use std::collections::{HashMap, HashSet};
