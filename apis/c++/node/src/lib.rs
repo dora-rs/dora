@@ -402,13 +402,17 @@ mod ffi {
         /// payload through it. Returns false for an `ipc` pool.
         fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bool;
         /// Bytes of payload actually present in this mapping; 0 for `ipc`.
-        /// THIS is the bound for any copy — never `pool_declared_size`, and
-        /// never a product computed from `pool_shape`.
+        /// THIS is the bound for any copy — never a product computed from
+        /// `pool_shape`.
+        ///
+        /// The size the producer declared in the segment metadata is
+        /// deliberately not exposed. It would carry no information here —
+        /// `PoolSegment::create` allocates exactly the declared size, so on
+        /// the producer side it equals this — while on a pool created
+        /// elsewhere it describes device memory outside the mapping, which
+        /// would make it and `pool_shm_base` a pointer/length pair that does
+        /// not bound itself.
         fn pool_payload_len(pool: &Box<DoraMemoryPool>) -> usize;
-        /// The size the producer declared in the segment metadata. Advisory:
-        /// for an `ipc` pool it describes a device buffer that is not here, so
-        /// it can exceed `pool_segment_bytes` by megabytes.
-        fn pool_declared_size(pool: &Box<DoraMemoryPool>) -> usize;
 
         fn pool_id(pool: &Box<DoraMemoryPool>) -> String;
         fn pool_shm_name(pool: &Box<DoraMemoryPool>) -> String;
@@ -436,6 +440,12 @@ mod ffi {
         /// the pool marked incomplete — every reader rejects it until the next
         /// successful write — because an in-place write has already destroyed
         /// the previous frame and there is nothing to roll back to.
+        ///
+        /// **Prefer `dora::PoolWriteGuard`** here too: the generation is stuck
+        /// odd precisely when a path out of the cycle skipped this call, so a
+        /// caller arriving from a stuck pool is looking at the wrong end of
+        /// the problem. The guard calls this from a destructor, which no early
+        /// return or throw can skip.
         fn pool_end_write(pool: &mut Box<DoraMemoryPool>, ok: bool);
         /// True when a cycle is open on this handle — the leak detector for a
         /// caller that suspects it missed an end.
@@ -1205,7 +1215,7 @@ fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::
     send_output_internal(sender, id, data, Default::default())
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ffi::DoraResult {
     sender.0.log(&level, &message, None);
     ffi::DoraResult {
@@ -1350,21 +1360,17 @@ fn validate_daemon_required_fields(dtype: &str, shape: &[usize]) -> EyreResult<(
 /// Fill the daemon's pool parameters, mirroring `apis/python/node/src/lib.rs` —
 /// the daemon validates these keys and the Python binding is the reference for
 /// what it expects.
-fn register_with_daemon(
-    output_sender: &mut Box<OutputSender>,
-    segment: &PoolSegment,
+///
+/// Pure, and separate from the send, so the key names and parameter variants
+/// can be pinned by a test: every one of them is a string the daemon looks up
+/// by hand, and a typo in any of them fails only at runtime, as a bare
+/// "missing shared_memory_name".
+fn pool_daemon_params(
+    payload_ptr: u64,
     spec: &ffi::DoraMemoryPoolSpec,
     name: &str,
     transport: Transport,
-) -> EyreResult<()> {
-    // The daemon rejects `ptr == 0`. This is always `Some` here — `create`
-    // refuses the one transport that has no payload in its mapping — but going
-    // through the accessor keeps the one-past-the-end address of an `ipc`
-    // segment unreachable from this file too.
-    let (payload_ptr, _) = segment
-        .payload()
-        .ok_or_else(|| eyre!("pool `{}` has no payload to register", spec.id))?;
-
+) -> DoraMetadataParameters {
     let mut params = DoraMetadataParameters::new();
     // Valid only in this process; a consumer reaches the payload through
     // `shared_memory_name`, never through this.
@@ -1400,7 +1406,25 @@ fn register_with_daemon(
         "buffer_id".to_string(),
         DoraParameter::String(spec.id.clone()),
     );
+    params
+}
 
+fn register_with_daemon(
+    output_sender: &mut Box<OutputSender>,
+    segment: &PoolSegment,
+    spec: &ffi::DoraMemoryPoolSpec,
+    name: &str,
+    transport: Transport,
+) -> EyreResult<()> {
+    // The daemon rejects `ptr == 0`. This is always `Some` here — `create`
+    // refuses the one transport that has no payload in its mapping — but going
+    // through the accessor keeps the one-past-the-end address of an `ipc`
+    // segment unreachable from this file too.
+    let (payload_ptr, _) = segment
+        .payload()
+        .ok_or_else(|| eyre!("pool `{}` has no payload to register", spec.id))?;
+
+    let params = pool_daemon_params(payload_ptr, spec, name, transport);
     let timestamp = dora_node_api::uhlc::HLC::default().new_timestamp();
     let metadata = DoraMetadata::from_parameters(timestamp, params);
     output_sender
@@ -1408,6 +1432,35 @@ fn register_with_daemon(
         .register_pinned_memory(spec.id.clone(), metadata)
 }
 
+/// True where [`naming::unlink_segment`] can actually remove a segment. Off
+/// Linux it fails for every name with the same "unavailable on this platform"
+/// message, which says nothing about the segment that was just created.
+const UNLINK_SUPPORTED: bool = cfg!(target_os = "linux");
+
+/// The clause appended to a failed registration describing what happened to the
+/// segment it created. `unlink_supported` is a parameter so both branches are
+/// reachable from a test on any host.
+fn cleanup_clause(unlink: Result<(), String>, unlink_supported: bool) -> String {
+    match unlink {
+        Ok(()) => String::new(),
+        // Reporting "additionally failed to remove the orphaned segment" where
+        // unlinking was never applicable blames the cleanup for a platform
+        // limitation and pushes the registration error — the one the caller
+        // has to act on — behind noise.
+        Err(_) if !unlink_supported => String::new(),
+        Err(err) => format!("; additionally failed to remove the orphaned segment: {err}"),
+    }
+}
+
+/// Create a pool segment and hand it to the daemon.
+///
+/// Every error on this path must be returned, never panicked: cxx wraps each
+/// `extern "Rust"` shim in `prevent_unwind`, which calls `std::abort` rather
+/// than converting a panic into a C++ exception. A panic between
+/// `PoolSegment::create` and a successful registration therefore skips the
+/// unlink below and strands the segment in `/dev/shm` — reclaimed only by the
+/// daemon's orphan sweep at the next start of the same dataflow. Nothing here
+/// can panic today; the constraint is on what may be added.
 fn register_memory_pool(
     output_sender: &mut Box<OutputSender>,
     spec: ffi::DoraMemoryPoolSpec,
@@ -1435,12 +1488,7 @@ fn register_memory_pool(
             // pool id permanently unusable. Unmap first, then unlink, so no
             // mapping outlives the name it was made from.
             drop(segment);
-            let cleanup = match naming::unlink_segment(&name) {
-                Ok(()) => String::new(),
-                Err(cleanup) => {
-                    format!("; additionally failed to remove the orphaned segment: {cleanup}")
-                }
-            };
+            let cleanup = cleanup_clause(naming::unlink_segment(&name), UNLINK_SUPPORTED);
             // Flattened with `{:#}` because cxx converts an error to the C++
             // exception message through `Display`, which prints only the
             // outermost line of a `Report` chain.
@@ -1452,17 +1500,17 @@ fn register_memory_pool(
     }
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_shm_base(pool: &Box<DoraMemoryPool>) -> u64 {
     pool.segment.shm_base()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_segment_bytes(pool: &Box<DoraMemoryPool>) -> usize {
     pool.segment.segment_bytes()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_payload(pool: &Box<DoraMemoryPool>, out_ptr: &mut u64, out_len: &mut usize) -> bool {
     match pool.segment.payload() {
         Some((ptr, len)) => {
@@ -1474,7 +1522,7 @@ fn pool_payload(pool: &Box<DoraMemoryPool>, out_ptr: &mut u64, out_len: &mut usi
     }
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bool {
     match pool.segment.payload_offset() {
         Some(offset) => {
@@ -1485,42 +1533,37 @@ fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bo
     }
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_payload_len(pool: &Box<DoraMemoryPool>) -> usize {
     pool.segment.payload_len()
 }
 
-#[allow(clippy::borrowed_box)]
-fn pool_declared_size(pool: &Box<DoraMemoryPool>) -> usize {
-    pool.segment.declared_size()
-}
-
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_id(pool: &Box<DoraMemoryPool>) -> String {
     pool.id.clone()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_shm_name(pool: &Box<DoraMemoryPool>) -> String {
     pool.segment.name().to_string()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_transport(pool: &Box<DoraMemoryPool>) -> String {
     pool.segment.transport().as_str().to_string()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_dtype(pool: &Box<DoraMemoryPool>) -> String {
     pool.segment.dtype().to_string()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_shape(pool: &Box<DoraMemoryPool>) -> Vec<usize> {
     pool.segment.shape().to_vec()
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_ipc_present(pool: &Box<DoraMemoryPool>) -> bool {
     pool.segment.ipc_present()
 }
@@ -1538,7 +1581,7 @@ fn pool_end_write(pool: &mut Box<DoraMemoryPool>, ok: bool) {
     pool.segment.end_write(ok)
 }
 
-#[allow(clippy::borrowed_box)]
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn pool_write_in_progress(pool: &Box<DoraMemoryPool>) -> bool {
     pool.segment.write_in_progress()
 }
@@ -2407,5 +2450,274 @@ mod tests {
     #[test]
     fn a_complete_spec_passes_the_precheck() {
         validate_daemon_required_fields("uint8", &[640, 512, 4]).expect("a complete spec");
+    }
+
+    /// Off Linux `unlink_segment` fails for every name with the same
+    /// "unavailable on this platform" text, which describes the platform and
+    /// not the segment. Appending it would read as a second, independent
+    /// failure and push the registration error the caller has to act on behind
+    /// noise.
+    #[test]
+    fn an_inapplicable_unlink_adds_no_clause() {
+        let clause = cleanup_clause(
+            Err("memory-pool transport is unavailable on this platform".to_string()),
+            false,
+        );
+        assert_eq!(clause, "", "unexpected clause: {clause}");
+    }
+
+    /// Where unlinking does apply, a failure means a real segment was left in
+    /// `/dev/shm` under a name `O_EXCL` will never hand out again, so it has to
+    /// be reported.
+    #[test]
+    fn a_real_unlink_failure_is_reported_with_its_cause() {
+        let clause = cleanup_clause(Err("permission denied".to_string()), true);
+        assert!(
+            clause.contains("orphaned segment"),
+            "a leaked segment must be named as such: {clause}"
+        );
+        assert!(
+            clause.contains("permission denied"),
+            "the clause must carry the unlink error, not just announce one: {clause}"
+        );
+    }
+
+    #[test]
+    fn a_successful_unlink_adds_no_clause() {
+        assert_eq!(cleanup_clause(Ok(()), true), "");
+    }
+
+    /// The one platform where the memory-pool transport works must take the
+    /// reporting branch; a `cfg` that silently flipped would make every leaked
+    /// segment invisible.
+    #[test]
+    fn unlinking_is_supported_exactly_on_linux() {
+        assert_eq!(UNLINK_SUPPORTED, cfg!(target_os = "linux"));
+    }
+
+    // -----------------------------------------------------------------
+    // Daemon parameter contract
+    // -----------------------------------------------------------------
+
+    /// Every key the daemon's `RegisterPinnedMemory` arm reads, paired with the
+    /// accessor it reads that key through. Transcribed from
+    /// `pool_metadata_from_params` and the validation immediately after it in
+    /// `binaries/daemon/src/lib.rs`.
+    ///
+    /// That function is private to the `dora-daemon` crate, so this is a
+    /// transcription rather than a call. It still catches the failure it is
+    /// here for — a typo or a wrong variant on the producer side, which is
+    /// otherwise a runtime-only "missing shared_memory_name". It cannot catch
+    /// the daemon renaming a key; only a shared function could.
+    const DAEMON_POOL_KEYS: &[(&str, &str)] = &[
+        ("ptr", "get_int"),
+        ("size", "get_int"),
+        ("dtype", "get_str"),
+        ("shape", "ListInt"),
+        ("is_pinned", "get_bool"),
+        ("pinned_type", "get_str"),
+        ("shared_memory_name", "get_str"),
+        ("ipc_present", "get_bool"),
+        ("buffer_id", "get_str"),
+    ];
+
+    /// Which of the daemon's variant-typed accessors will return a value for
+    /// this parameter. Each one returns `None` on a variant mismatch, and the
+    /// daemon then substitutes a default — so a wrong variant is exactly as
+    /// silent as a misspelled key.
+    fn daemon_accessor(parameter: &DoraParameter) -> &'static str {
+        match parameter {
+            DoraParameter::Integer(_) => "get_int",
+            DoraParameter::String(_) => "get_str",
+            DoraParameter::Bool(_) => "get_bool",
+            DoraParameter::ListInt(_) => "ListInt",
+            _ => "unread by the daemon",
+        }
+    }
+
+    fn sample_pool_params() -> (String, DoraMetadataParameters) {
+        let spec = ffi::DoraMemoryPoolSpec {
+            id: "eo_frames".to_string(),
+            size: 640 * 512 * 4,
+            dtype: "uint8".to_string(),
+            shape: vec![512, 640, 4],
+            transport: "shmem".to_string(),
+            receiver_is_cuda: false,
+        };
+        // The real name builder, so the daemon's prefix and traversal checks
+        // are exercised against what registration actually sends.
+        let name = naming::segment_name("df-uuid", "eo_media", &spec.id).expect("a valid name");
+        let params = pool_daemon_params(0x7f00_0000_1000, &spec, &name, Transport::Shmem);
+        (name, params)
+    }
+
+    /// The daemon looks every one of these up by string and by variant; a
+    /// mismatch in either is silently a default, and the registration comes
+    /// back naming whichever check happened to trip first.
+    #[test]
+    fn the_daemon_parameter_map_has_exactly_the_keys_the_daemon_reads() {
+        let (_, params) = sample_pool_params();
+        let mut expected: Vec<&str> = DAEMON_POOL_KEYS.iter().map(|(key, _)| *key).collect();
+        expected.sort_unstable();
+        let mut actual: Vec<&str> = params.keys().map(String::as_str).collect();
+        actual.sort_unstable();
+        assert_eq!(actual, expected, "daemon parameter key set drifted");
+
+        for (key, accessor) in DAEMON_POOL_KEYS {
+            let parameter = params
+                .get(*key)
+                .unwrap_or_else(|| panic!("`{key}` missing from the daemon parameter map"));
+            assert_eq!(
+                daemon_accessor(parameter),
+                *accessor,
+                "`{key}` has the wrong parameter variant; the daemon reads it with `{accessor}`, \
+                 which would return None and leave a default in its place"
+            );
+        }
+    }
+
+    /// The daemon rejects the registration outright if any of these fails, and
+    /// the segment already exists by then. Values, not just keys: `ptr == 0`
+    /// and a name without the `dora_pool_` prefix are both rejections that a
+    /// well-formed key set would sail past.
+    #[test]
+    fn the_daemon_parameter_map_passes_the_daemon_validation_checks() {
+        let (name, params) = sample_pool_params();
+
+        let ptr = match params.get("ptr") {
+            Some(DoraParameter::Integer(value)) => *value,
+            other => panic!("ptr is not an integer: {other:?}"),
+        };
+        assert_ne!(ptr, 0, "the daemon rejects `ptr == 0`");
+
+        let size = match params.get("size") {
+            Some(DoraParameter::Integer(value)) => *value,
+            other => panic!("size is not an integer: {other:?}"),
+        };
+        assert_ne!(size, 0, "the daemon rejects `size == 0`");
+        assert!(
+            size <= 1024 * 1024 * 1024,
+            "the daemon caps a pool at 1 GiB, got {size}"
+        );
+
+        match params.get("dtype") {
+            Some(DoraParameter::String(dtype)) => {
+                assert!(!dtype.is_empty(), "the daemon rejects an empty dtype")
+            }
+            other => panic!("dtype is not a string: {other:?}"),
+        }
+
+        match params.get("shape") {
+            Some(DoraParameter::ListInt(shape)) => {
+                assert!(!shape.is_empty(), "the daemon rejects an empty shape")
+            }
+            other => panic!("shape is not a list<int>: {other:?}"),
+        }
+
+        // Exactly the daemon's `shared_memory_name` checks, which are also what
+        // decides whether it will ever unlink the segment again.
+        match params.get("shared_memory_name") {
+            Some(DoraParameter::String(shm_name)) => {
+                assert_eq!(shm_name, &name);
+                assert!(
+                    shm_name.starts_with("dora_pool_"),
+                    "the daemon only unlinks names under its own prefix: {shm_name}"
+                );
+                assert!(
+                    !shm_name.contains('/'),
+                    "rejected by the daemon: {shm_name}"
+                );
+                assert!(
+                    !shm_name.contains(".."),
+                    "rejected by the daemon: {shm_name}"
+                );
+            }
+            other => panic!("shared_memory_name is not a string: {other:?}"),
+        }
+    }
+
+    /// `pinned_type` decides how the daemon describes the pool to a consumer,
+    /// and it is the one value here that varies with the resolved transport.
+    #[test]
+    fn pinned_type_follows_the_resolved_transport() {
+        let spec = ffi::DoraMemoryPoolSpec {
+            id: "p".to_string(),
+            size: 8,
+            dtype: "uint8".to_string(),
+            shape: vec![8],
+            transport: String::new(),
+            receiver_is_cuda: false,
+        };
+        for (transport, expected) in [(Transport::Shmem, "cpu"), (Transport::Unified, "cuda")] {
+            let params = pool_daemon_params(0x1000, &spec, "dora_pool_a_b_p", transport);
+            match params.get("pinned_type") {
+                Some(DoraParameter::String(value)) => assert_eq!(value, expected, "{transport:?}"),
+                other => panic!("pinned_type is not a string: {other:?}"),
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // C++ header
+    // -----------------------------------------------------------------
+
+    /// `build.rs` compiles consumers with `-std=c++20`; GCC before 10 spells
+    /// the same standard `-std=c++2a`. Probed on an empty translation unit so
+    /// that a rejected flag is never confused with a broken header.
+    #[cfg(unix)]
+    fn cxx20_flag(compiler: &str) -> &'static str {
+        for flag in ["-std=c++20", "-std=c++2a"] {
+            let probe = std::process::Command::new(compiler)
+                .args([flag, "-fsyntax-only", "-x", "c++", "/dev/null"])
+                .output();
+            if matches!(&probe, Ok(output) if output.status.success()) {
+                return flag;
+            }
+        }
+        panic!("`{compiler}` accepts neither `-std=c++20` nor `-std=c++2a`");
+    }
+
+    /// `dora/memory_pool.hpp` is shipped for a consumer to compile: `build.rs`
+    /// runs `cxx_build::bridges` for its codegen only and never invokes a
+    /// compiler, so nothing else in this workspace would notice the header
+    /// breaking. Compiling one translation unit against the headers `build.rs`
+    /// just installed is the cheapest thing that does.
+    ///
+    /// Unix only — it drives a `c++`-style command line, and the memory-pool
+    /// transport is POSIX shared memory to begin with. The header is not
+    /// covered on Windows.
+    #[cfg(unix)]
+    #[test]
+    fn memory_pool_header_compiles() {
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("memory_pool_compile.cpp");
+        let include_dir = env!("DORA_NODE_API_CXX_INCLUDE_DIR");
+        let compiler = std::env::var("CXX").unwrap_or_else(|_| "c++".to_string());
+        let std_flag = cxx20_flag(&compiler);
+
+        let output = std::process::Command::new(&compiler)
+            .arg(std_flag)
+            // Full semantic analysis, so every `static_assert` and every body
+            // in the translation unit is checked, without producing an object
+            // nobody links.
+            .arg("-fsyntax-only")
+            .arg("-I")
+            .arg(include_dir)
+            .arg(&source)
+            .output()
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to run the C++ compiler `{compiler}` on {}: {err}",
+                    source.display()
+                )
+            });
+
+        assert!(
+            output.status.success(),
+            "`{compiler}` rejected {} (headers from {include_dir}):\n{}",
+            source.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 }

@@ -92,6 +92,15 @@ fn main() {
     // hand-rolled `-I<install>` consumer see the same set of headers.
     copy_extra_headers(&include_dir);
 
+    // Lets `memory_pool_header_compiles` find the headers it just wrote. This
+    // is the only include directory that holds both the generated bridge
+    // header and the hand-written ones, and unlike `install_dir` it is not
+    // relocatable by DORA_NODE_API_CXX_INSTALL.
+    println!(
+        "cargo:rustc-env=DORA_NODE_API_CXX_INCLUDE_DIR={}",
+        include_dir.display()
+    );
+
     // to avoid unnecessary `mut` warning
     bridge_files.clear();
 }

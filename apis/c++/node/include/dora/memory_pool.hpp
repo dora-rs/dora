@@ -50,7 +50,14 @@ namespace dora {
 ///
 /// Not copyable and not movable: two objects closing one cycle would publish
 /// the frame twice, and the second `pool_end_write` would bump the generation
-/// over whatever the producer wrote next.
+/// over whatever the producer wrote next. `operator new` is deleted for the
+/// same reason a stack guard is the point — a heap guard outlives the scope
+/// that owns the pool as easily as it outlives nothing at all.
+///
+/// Do not move or free the pool while a guard is alive. The guard holds a
+/// reference to the caller's `rust::Box`, so moving the box out from under it
+/// or calling `free_memory_pool` leaves the destructor closing a cycle on a
+/// null box.
 class PoolWriteGuard {
   public:
     /// Opens a write cycle on `pool`.
@@ -72,41 +79,36 @@ class PoolWriteGuard {
             throw ::std::runtime_error("dora::PoolWriteGuard: " + ::std::string(result.error));
         }
         open_ = true;
-        // Only assigned once the cycle is open, so a thrown constructor leaves
-        // no object behind whose data() could be reached.
         data_ = reinterpret_cast<::std::uint8_t *>(static_cast<::std::uintptr_t>(payload_ptr));
         size_ = payload_len;
     }
 
     /// Closes the cycle if `commit()` did not. The frame is marked incomplete,
     /// so readers reject it until the next successful write.
-    ~PoolWriteGuard() {
-        if (open_) {
-            open_ = false;
-            ::pool_end_write(pool_, false);
-        }
-    }
+    ~PoolWriteGuard() { close(false); }
 
     PoolWriteGuard(const PoolWriteGuard &) = delete;
     PoolWriteGuard &operator=(const PoolWriteGuard &) = delete;
     PoolWriteGuard(PoolWriteGuard &&) = delete;
     PoolWriteGuard &operator=(PoolWriteGuard &&) = delete;
 
-    /// Publishes the frame and closes the cycle. Idempotent; after it returns,
-    /// the destructor does nothing and `data()` must not be written through.
-    void commit() noexcept {
-        if (open_) {
-            open_ = false;
-            ::pool_end_write(pool_, true);
-        }
-    }
+    /// A guard is only ever a scope-bound stack object; see the class note.
+    static void *operator new(::std::size_t) = delete;
 
-    /// Start of the payload. Valid until `commit()` or destruction.
+    /// Publishes the frame and closes the cycle. Idempotent; after it returns,
+    /// the destructor does nothing and `data()` is null.
+    void commit() noexcept { close(true); }
+
+    /// Start of the payload while the cycle is open, and null once `commit()`
+    /// or destruction has closed it. Null rather than stale on purpose: a write
+    /// through a pointer kept past the cycle lands in the payload with no
+    /// generation bump around it, so every reader publishes it as a complete
+    /// frame. A null dereference stops there instead.
     ::std::uint8_t *data() const noexcept { return data_; }
 
     /// Bytes of payload in the mapping — the only bound for a write through
-    /// `data()`. Never size a copy from the pool's declared size or from its
-    /// shape: both are advisory, and an unrecognized dtype makes a
+    /// `data()`, and zero once the cycle is closed. Never size a copy from the
+    /// pool's shape: it is advisory, and an unrecognized dtype makes a
     /// shape-derived product an under-estimate.
     ::std::size_t size() const noexcept { return size_; }
 
@@ -114,6 +116,15 @@ class PoolWriteGuard {
     bool open() const noexcept { return open_; }
 
   private:
+    void close(bool ok) noexcept {
+        if (open_) {
+            open_ = false;
+            data_ = nullptr;
+            size_ = 0;
+            ::pool_end_write(pool_, ok);
+        }
+    }
+
     ::rust::Box<::DoraMemoryPool> &pool_;
     ::std::uint8_t *data_ = nullptr;
     ::std::size_t size_ = 0;
