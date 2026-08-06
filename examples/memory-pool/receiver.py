@@ -46,12 +46,11 @@ for i in range(MESSAGE_COUNT):
         # frame — so a read can return the *previous* frame.  Retry until
         # the expected frame arrives; each read reflects the mirror's
         # current generation.
-        # Time-boxed, not count-boxed: a mirrored cross-machine pool reads
-        # in ~40ms locally (sender paces writes with a 20s sleep), so a
-        # count window burns through before the next frame lands; on a WAN
-        # each read is slow, so a count window is the right bound there.
-        # 300s covers the 20s pacing + handshake on the fast path and caps
-        # WAN waits at ~5 minutes. Monotonic clock: an NTP step-back in the
+        # Time-boxed, not count-boxed: on a WAN the mirror write lags the
+        # notification, so a count window can burn through before the data
+        # lands; 300s covers a slow WAN round trip and caps waits at ~5
+        # minutes. Same-host direct reads ack in ~ms, so the retry exits on
+        # the first pass there. Monotonic clock: an NTP step-back in the
         # window would otherwise shrink (or stretch) the wall-clock retry
         # window.
         deadline = time.monotonic() + 300

@@ -82,16 +82,13 @@ for i in range(MESSAGE_COUNT):
             node.free_memory_pool(memory_pool_id)
         node.write_memory_pool(memory_pool_id, tensor_info)
         node.send_output("data", pa.array([]), metadata)
+        # Turn-based handshake: wait for the receiver's ack (it sends
+        # next_require after consuming this frame) before writing the
+        # next one. The frame-order guarantee comes from the ack, not
+        # from pacing — no sleep needed. The receiver acks every frame
+        # after reading, so this cannot deadlock (same-host direct reads
+        # ack in ~ms; cross-machine the ack rides the same zenoh path).
+        node.next()
 
-    # Cross-machine: the writes must not race ahead of the receiver's
-    # reads (the mirror is updated in place per frame under the seqlock
-    # protocol — a new write overwrites the frame the receiver may still
-    # be iterating). Pace the writes well beyond the receiver's
-    # per-iteration read latency (observed ~5s under host contention) so
-    # its re-read always finds the expected frame.  NOTE: no trailing
-    # next() here — it would wait for the next
-    # iteration's next_require, which the receiver only sends after the
-    # next latency output, which this loop hasn't produced yet: a
-    # self-deadlock (observed: sender stuck at the second next() while
-    # the receiver waits for the next latency).
-    time.sleep(20.0)
+    # NOTE: the first iteration's next() (registration handshake) is
+    # above; every subsequent frame handshakes in the else branch.

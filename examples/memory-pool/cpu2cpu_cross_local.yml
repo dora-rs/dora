@@ -1,0 +1,29 @@
+# CPU-to-CPU cross-machine throughput test.
+# Sender on machine A, receiver on machine B — data travels via Zenoh TCP.
+env:
+  sender_device: cpu
+  receiver_device: cpu
+  message_num: 100
+  memory_pool_scenario: throughput
+  cross_machine: "B"
+nodes:
+  - id: sender_node
+    _unstable_deploy:
+      machine: A
+      working_dir: /home/tcr/PyCharmMiscProject/dora/examples/memory-pool
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    _unstable_deploy:
+      machine: B
+      working_dir: /home/tcr/PyCharmMiscProject/dora/examples/memory-pool
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy tqdm
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require
