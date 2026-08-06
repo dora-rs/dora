@@ -243,12 +243,125 @@ fn comprehensive_standard_all_fields() {
 
 #[test]
 fn comprehensive_runtime_all_fields() {
-    descriptor_should_pass("comprehensive-runtime.yml");
+    let desc = load_descriptor("comprehensive-runtime.yml");
+    let resolved = desc
+        .resolve_aliases_and_set_defaults()
+        .expect("comprehensive runtime should resolve");
+    let node = resolved.values().next().expect("should have one node");
+
+    // Runtime 节点的 operator config 字段在解析后的 RuntimeNode 中
+    let runtime = match &node.kind {
+        dora_message::descriptor::CoreNodeKind::Runtime(rt) => rt,
+        other => panic!("expected Runtime, got {other:?}"),
+    };
+
+    assert_eq!(runtime.operators.len(), 1, "should have one operator");
+    let op = &runtime.operators[0];
+    let cfg = &op.config;
+
+    // operator source
+    assert!(
+        matches!(
+            cfg.source,
+            dora_message::descriptor::OperatorSource::SharedLibrary(_)
+        ),
+        "operator source should be shared-library"
+    );
+
+    // run config
+    assert!(!cfg.inputs.is_empty(), "inputs should be set");
+    assert!(!cfg.outputs.is_empty(), "outputs should be set");
+    assert!(!cfg.output_types.is_empty(), "output_types should be set");
+    assert!(
+        !cfg.output_framing.is_empty(),
+        "output_framing should be set"
+    );
+    assert!(!cfg.input_types.is_empty(), "input_types should be set");
+    assert!(
+        !cfg.output_metadata.is_empty(),
+        "output_metadata should be set"
+    );
+    assert!(cfg.pattern.is_some(), "pattern should be set");
+
+    // build/logging
+    assert!(cfg.build.is_some(), "build should be set");
+    assert!(cfg.send_stdout_as.is_some(), "send_stdout_as should be set");
+    assert!(cfg.send_logs_as.is_some(), "send_logs_as should be set");
+    assert!(cfg.min_log_level.is_some(), "min_log_level should be set");
+    assert!(cfg.max_log_size.is_some(), "max_log_size should be set");
+    assert!(
+        cfg.max_rotated_files.is_some(),
+        "max_rotated_files should be set"
+    );
+
+    // Node-level metadata
+    assert!(node.name.is_some(), "name should be preserved");
+    assert!(
+        node.description.is_some(),
+        "description should be preserved"
+    );
+    assert!(node.env.is_some(), "env should be preserved");
+    assert!(
+        node.cpu_affinity.is_some(),
+        "cpu_affinity should be preserved"
+    );
 }
 
 #[test]
 fn comprehensive_operator_all_fields() {
-    descriptor_should_pass("comprehensive-operator.yml");
+    let desc = load_descriptor("comprehensive-operator.yml");
+    let resolved = desc
+        .resolve_aliases_and_set_defaults()
+        .expect("comprehensive operator should resolve");
+    let node = resolved.values().next().expect("should have one node");
+
+    // Operator 节点解析为 Runtime（单算子）
+    let runtime = match &node.kind {
+        dora_message::descriptor::CoreNodeKind::Runtime(rt) => rt,
+        other => panic!("expected Runtime, got {other:?}"),
+    };
+
+    assert_eq!(runtime.operators.len(), 1, "should have one operator");
+    let op = &runtime.operators[0];
+    let cfg = &op.config;
+
+    assert!(
+        matches!(
+            cfg.source,
+            dora_message::descriptor::OperatorSource::SharedLibrary(_)
+        ),
+        "operator source should be shared-library"
+    );
+
+    assert!(!cfg.inputs.is_empty(), "inputs should be set");
+    assert!(!cfg.outputs.is_empty(), "outputs should be set");
+    assert!(!cfg.output_types.is_empty(), "output_types should be set");
+    assert!(
+        !cfg.output_framing.is_empty(),
+        "output_framing should be set"
+    );
+    assert!(!cfg.input_types.is_empty(), "input_types should be set");
+    assert!(
+        !cfg.output_metadata.is_empty(),
+        "output_metadata should be set"
+    );
+    assert!(cfg.pattern.is_some(), "pattern should be set");
+    assert!(cfg.build.is_some(), "build should be set");
+    assert!(cfg.send_stdout_as.is_some(), "send_stdout_as should be set");
+    assert!(cfg.send_logs_as.is_some(), "send_logs_as should be set");
+    assert!(cfg.min_log_level.is_some(), "min_log_level should be set");
+    assert!(cfg.max_log_size.is_some(), "max_log_size should be set");
+    assert!(
+        cfg.max_rotated_files.is_some(),
+        "max_rotated_files should be set"
+    );
+
+    assert!(node.name.is_some(), "name should be preserved");
+    assert!(
+        node.description.is_some(),
+        "description should be preserved"
+    );
+    assert!(node.env.is_some(), "env should be preserved");
 }
 
 #[test]
