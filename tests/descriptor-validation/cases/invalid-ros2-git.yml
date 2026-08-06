@@ -1,0 +1,9 @@
+# invalid-ros2-git: ROS2 bridge 节点不应带 git 等源字段
+# 预期: validate 报错，包含 "not supported" 和字段名
+nodes:
+  - id: bridge
+    ros2:
+      topic: /odom
+      message_type: nav_msgs/Odometry
+      direction: subscribe
+    git: https://github.com/example/repo.git

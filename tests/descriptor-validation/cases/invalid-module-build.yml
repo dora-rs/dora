@@ -1,0 +1,11 @@
+# invalid-module-build: 模块节点不应有 build 字段
+# 预期: dora run/expand 报错，包含 "not supported" 和 "build"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: simple_module.yml
+    inputs:
+      x: src/v
+    build: cargo build

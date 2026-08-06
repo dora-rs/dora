@@ -1,0 +1,10 @@
+# valid-custom: Custom 节点合法配置
+# Node 级字段会被 merge_node_level_fields_into_custom 合并到 CustomNode
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    outputs:
+      - result
+    restart_policy: always

@@ -1,0 +1,12 @@
+# invalid-ros2-metadata: ROS2 bridge 节点不支持 output_metadata/pattern
+# 预期: validate 报错，包含 "not supported"
+nodes:
+  - id: bridge
+    ros2:
+      topic: /odom
+      message_type: nav_msgs/Odometry
+      direction: subscribe
+    output_metadata:
+      odom:
+        - request_id
+    pattern: service-server

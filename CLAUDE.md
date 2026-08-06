@@ -216,6 +216,35 @@ All new features and bug fixes must follow the RED-GREEN-IMPROVE cycle:
 | New dataflow feature | Smoke test (both modes) | `tests/example-smoke.rs` using both `run_smoke_test()` and `run_smoke_test_local()` |
 | Bug fix | Regression test | Whichever tier reproduces the bug |
 | New example dataflow | Smoke test entry | Add to `tests/example-smoke.rs` and `scripts/smoke-all.sh` |
+| **Descriptor field validation** | **Cross-kind test first** | **`tests/descriptor-validation.rs` — see rule below** |
+
+### Descriptor field validation: cross-kind rule
+
+When adding a deny-list check that rejects field X on node kind K, the RED phase MUST include two tests:
+
+1. **Rejection test**: Field X on kind K → fails with "not supported"
+2. **Acceptance test**: Field X on every OTHER kind where it IS legal → passes
+
+Example (BUG-005 lesson):
+
+```rust
+// ❌ WRONG — only tested rejection, missed the regression
+#[test]
+fn invalid_standard_rejects_pattern() {
+    descriptor_should_fail("...", &["pattern", "not supported"]);
+}
+
+// ✅ RIGHT — also verify Standard accepts it
+#[test]
+fn valid_standard_accepts_pattern() {
+    descriptor_should_pass("standard-with-pattern.yml");
+}
+```
+
+Before adding a field to any deny-list, trace its consumers in the codebase
+(e.g. `grep -r 'node\.pattern\|\.output_metadata' libraries/core/src/`)
+to confirm it is genuinely unused by that node kind. A field that appears
+only in sub-struct validation is NOT safe to deny-list at the Node level.
 
 ### Workflow
 
@@ -233,6 +262,20 @@ cargo fmt --all -- --check
 
 # 4. Run smoke tests if the change touches CLI/coordinator/daemon
 cargo test --test example-smoke -- --test-threads=1
+```
+
+### After each bug fix: record progress + clean up
+
+```bash
+# 1. Write progress to memory (required)
+#    Create / update  .claude/projects/<repo>/memory/<bug-slug>.md
+#    with: status, root cause, fix approach, affected files, PR link.
+#    Then add an entry to MEMORY.md.
+
+# 2. Clean build artifacts (required)
+#    target/  grows rapidly during feature work — clean it before
+#    moving to the next task to free disk space.
+cargo clean
 ```
 
 ### Smoke test patterns

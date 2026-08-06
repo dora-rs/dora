@@ -1,0 +1,6 @@
+# invalid-hub-path: hub 和 path 不能同时存在
+# 预期: dora validate 报错，包含 "hub" 和 "mutually exclusive"
+nodes:
+  - id: n
+    hub: some-pkg@^1.0
+    path: ./local_node

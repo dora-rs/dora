@@ -10,13 +10,14 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use tracing::warn;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig,
-    Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, ResolvedNode, RestartPolicy, RmwZenohCompatibility,
+    Ros2BridgeConfig, Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig,
+    RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
@@ -125,10 +126,358 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         })
         .collect();
 
+    /// Check node-level fields that are silently dropped during resolution
+    /// for a given node kind. Rejects fields that do not belong to the kind
+    /// determined by `Node::kind()`.
+    fn validate_node_fields_for_kind(node: &Node) -> eyre::Result<()> {
+        let kind = node.kind()?;
+        let mut conflicts = Vec::new();
+
+        match kind {
+            NodeKind::Standard(_) => {
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+            }
+            NodeKind::Operator(_) | NodeKind::Runtime(_) => {
+                if node.path.is_some() {
+                    conflicts.push("path");
+                }
+                if node.path_sha256.is_some() {
+                    conflicts.push("path_sha256");
+                }
+                if node.git.is_some() {
+                    conflicts.push("git");
+                }
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+                if node.branch.is_some() {
+                    conflicts.push("branch");
+                }
+                if node.tag.is_some() {
+                    conflicts.push("tag");
+                }
+                if node.rev.is_some() {
+                    conflicts.push("rev");
+                }
+                if node.build.is_some() {
+                    conflicts.push("build");
+                }
+                if node.args.is_some() {
+                    conflicts.push("args");
+                }
+                if node.send_stdout_as.is_some() {
+                    conflicts.push("send_stdout_as");
+                }
+                if node.send_logs_as.is_some() {
+                    conflicts.push("send_logs_as");
+                }
+                if node.min_log_level.is_some() {
+                    conflicts.push("min_log_level");
+                }
+                if node.max_log_size.is_some() {
+                    conflicts.push("max_log_size");
+                }
+                if node.max_rotated_files.is_some() {
+                    conflicts.push("max_rotated_files");
+                }
+                if !node.outputs.is_empty() {
+                    conflicts.push("outputs");
+                }
+                if !node.output_types.is_empty() {
+                    conflicts.push("output_types");
+                }
+                if !node.input_types.is_empty() {
+                    conflicts.push("input_types");
+                }
+                if !node.output_framing.is_empty() {
+                    conflicts.push("output_framing");
+                }
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+                if !matches!(node.restart_policy, RestartPolicy::Never) {
+                    conflicts.push("restart_policy");
+                }
+                if node.max_restarts != 0 {
+                    conflicts.push("max_restarts");
+                }
+                if node.restart_delay.is_some() {
+                    conflicts.push("restart_delay");
+                }
+                if node.max_restart_delay.is_some() {
+                    conflicts.push("max_restart_delay");
+                }
+                if node.restart_window.is_some() {
+                    conflicts.push("restart_window");
+                }
+                if node.health_check_timeout.is_some() {
+                    conflicts.push("health_check_timeout");
+                }
+                if node.finish_grace_secs.is_some() {
+                    conflicts.push("finish_grace_secs");
+                }
+                if node.shared_memory_pool_size.is_some() {
+                    conflicts.push("shared_memory_pool_size");
+                }
+            }
+            NodeKind::Custom(_) => {
+                // Source-definition fields are mutually exclusive with
+                // `custom.source`. The rest are merged by
+                // `merge_node_level_fields_into_custom` and already reset.
+                if node.git.is_some() {
+                    conflicts.push("git");
+                }
+                if node.branch.is_some() {
+                    conflicts.push("branch");
+                }
+                if node.tag.is_some() {
+                    conflicts.push("tag");
+                }
+                if node.rev.is_some() {
+                    conflicts.push("rev");
+                }
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+                // `pattern` and `output_metadata` have no counterpart in
+                // `CustomNode` / `NodeRunConfig` — they must stay inside
+                // `operator.config` or be used on a Standard node.
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+            }
+            NodeKind::Module(_) => {
+                eyre::bail!(
+                    "module node `{}` must be expanded before resolution — call expand_modules() first",
+                    node.id
+                );
+            }
+            NodeKind::Ros2Bridge(_) => {
+                // Source-definition fields — ROS2 bridge is pre-built,
+                // these are silently dropped during resolution.
+                if node.git.is_some() {
+                    conflicts.push("git");
+                }
+                if node.branch.is_some() {
+                    conflicts.push("branch");
+                }
+                if node.tag.is_some() {
+                    conflicts.push("tag");
+                }
+                if node.rev.is_some() {
+                    conflicts.push("rev");
+                }
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+                // No corresponding fields in the resolved CustomNode.
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+            }
+        }
+
+        if !conflicts.is_empty() {
+            eyre::bail!(
+                "node `{}` has fields that are not supported on its node kind: {}\n\
+                 hint: these fields are silently dropped during resolution; \
+                 move them into the appropriate sub-configuration",
+                node.id,
+                conflicts.join(", ")
+            );
+        }
+        Ok(())
+    }
+
+    /// Merge Node-level fields into `CustomNode` for Custom-kind nodes.
+    ///
+    /// Standard nodes copy Node-level fields into their resolved `CustomNode`
+    /// during resolution (see the `NodeKindMut::Standard` arm). Custom nodes
+    /// previously skipped this step — when a user wrote fields like `outputs`
+    /// or `restart_policy` outside the `custom:` block they landed in `Node.*`
+    /// and were silently dropped (BUG-005).
+    ///
+    /// This function fills empty sub-structure fields from Node-level values,
+    /// with sub-structure values winning on conflict (they're more specific).
+    /// After the merge the Node-level fields are reset to their defaults so
+    /// downstream validation can still flag truly incompatible fields (`git`,
+    /// `hub`, etc.) without false-positives on now-merged fields.
+    fn merge_node_level_fields_into_custom(node: &mut Node) {
+        if let Some(ref mut custom) = node.custom {
+            let rc = &mut custom.run_config;
+            // Fields whose Node-level value was ignored because the
+            // sub-structure already had a (non-default) value set.
+            let mut shadowed = Vec::new();
+
+            // ── run_config fields ──
+            if rc.outputs.is_empty() && !node.outputs.is_empty() {
+                rc.outputs = std::mem::take(&mut node.outputs);
+            } else if !rc.outputs.is_empty() && !node.outputs.is_empty() {
+                shadowed.push("outputs");
+            }
+            if rc.inputs.is_empty() && !node.inputs.is_empty() {
+                rc.inputs = std::mem::take(&mut node.inputs);
+            } else if !rc.inputs.is_empty() && !node.inputs.is_empty() {
+                shadowed.push("inputs");
+            }
+            if rc.output_types.is_empty() && !node.output_types.is_empty() {
+                rc.output_types = std::mem::take(&mut node.output_types);
+            } else if !rc.output_types.is_empty() && !node.output_types.is_empty() {
+                shadowed.push("output_types");
+            }
+            if rc.output_framing.is_empty() && !node.output_framing.is_empty() {
+                rc.output_framing = std::mem::take(&mut node.output_framing);
+            } else if !rc.output_framing.is_empty() && !node.output_framing.is_empty() {
+                shadowed.push("output_framing");
+            }
+            if rc.input_types.is_empty() && !node.input_types.is_empty() {
+                rc.input_types = std::mem::take(&mut node.input_types);
+            } else if !rc.input_types.is_empty() && !node.input_types.is_empty() {
+                shadowed.push("input_types");
+            }
+            if rc.shared_memory_pool_size.is_none() && node.shared_memory_pool_size.is_some() {
+                rc.shared_memory_pool_size = node.shared_memory_pool_size.take();
+            } else if rc.shared_memory_pool_size.is_some() && node.shared_memory_pool_size.is_some()
+            {
+                shadowed.push("shared_memory_pool_size");
+            }
+
+            // ── restart fields ──
+            //
+            // Note: `restart_policy` and `max_restarts` are non-Option types
+            // whose defaults (Never / 0) are indistinguishable from
+            // "explicitly set to default". If custom already has a non-default
+            // value we keep it; if both are set to the same non-default we
+            // silently skip the merge (the Node-level value is dropped).
+            // This is the same trade-off Standard nodes make when they always
+            // copy Node-level fields.
+            if matches!(custom.restart_policy, RestartPolicy::Never)
+                && !matches!(node.restart_policy, RestartPolicy::Never)
+            {
+                custom.restart_policy =
+                    std::mem::replace(&mut node.restart_policy, RestartPolicy::Never);
+            }
+            if custom.max_restarts == 0 && node.max_restarts != 0 {
+                custom.max_restarts = std::mem::replace(&mut node.max_restarts, 0);
+            }
+            if custom.restart_delay.is_none() && node.restart_delay.is_some() {
+                custom.restart_delay = node.restart_delay.take();
+            } else if custom.restart_delay.is_some() && node.restart_delay.is_some() {
+                shadowed.push("restart_delay");
+            }
+            if custom.max_restart_delay.is_none() && node.max_restart_delay.is_some() {
+                custom.max_restart_delay = node.max_restart_delay.take();
+            } else if custom.max_restart_delay.is_some() && node.max_restart_delay.is_some() {
+                shadowed.push("max_restart_delay");
+            }
+            if custom.restart_window.is_none() && node.restart_window.is_some() {
+                custom.restart_window = node.restart_window.take();
+            } else if custom.restart_window.is_some() && node.restart_window.is_some() {
+                shadowed.push("restart_window");
+            }
+
+            // ── runtime fields ──
+            if custom.health_check_timeout.is_none() && node.health_check_timeout.is_some() {
+                custom.health_check_timeout = node.health_check_timeout.take();
+            } else if custom.health_check_timeout.is_some() && node.health_check_timeout.is_some() {
+                shadowed.push("health_check_timeout");
+            }
+            if custom.finish_grace_secs.is_none() && node.finish_grace_secs.is_some() {
+                custom.finish_grace_secs = node.finish_grace_secs.take();
+            } else if custom.finish_grace_secs.is_some() && node.finish_grace_secs.is_some() {
+                shadowed.push("finish_grace_secs");
+            }
+
+            // ── build / execution fields ──
+            if custom.args.is_none() && node.args.is_some() {
+                custom.args = node.args.take();
+            } else if custom.args.is_some() && node.args.is_some() {
+                shadowed.push("args");
+            }
+            if custom.build.is_none() && node.build.is_some() {
+                custom.build = node.build.take();
+            } else if custom.build.is_some() && node.build.is_some() {
+                shadowed.push("build");
+            }
+            if custom.path_sha256.is_none() && node.path_sha256.is_some() {
+                custom.path_sha256 = node.path_sha256.take();
+            } else if custom.path_sha256.is_some() && node.path_sha256.is_some() {
+                shadowed.push("path_sha256");
+            }
+
+            // ── logging fields ──
+            if custom.send_stdout_as.is_none() && node.send_stdout_as.is_some() {
+                custom.send_stdout_as = node.send_stdout_as.take();
+            } else if custom.send_stdout_as.is_some() && node.send_stdout_as.is_some() {
+                shadowed.push("send_stdout_as");
+            }
+            if custom.send_logs_as.is_none() && node.send_logs_as.is_some() {
+                custom.send_logs_as = node.send_logs_as.take();
+            } else if custom.send_logs_as.is_some() && node.send_logs_as.is_some() {
+                shadowed.push("send_logs_as");
+            }
+            if custom.min_log_level.is_none() && node.min_log_level.is_some() {
+                custom.min_log_level = node.min_log_level.take();
+            } else if custom.min_log_level.is_some() && node.min_log_level.is_some() {
+                shadowed.push("min_log_level");
+            }
+            if custom.max_log_size.is_none() && node.max_log_size.is_some() {
+                custom.max_log_size = node.max_log_size.take();
+            } else if custom.max_log_size.is_some() && node.max_log_size.is_some() {
+                shadowed.push("max_log_size");
+            }
+            if custom.max_rotated_files.is_none() && node.max_rotated_files.is_some() {
+                custom.max_rotated_files = node.max_rotated_files.take();
+            } else if custom.max_rotated_files.is_some() && node.max_rotated_files.is_some() {
+                shadowed.push("max_rotated_files");
+            }
+
+            if !shadowed.is_empty() {
+                warn!(
+                    "node `{}`: the following fields are set at both the node level \
+                     and inside `custom:` — the `custom:` values take precedence: {}",
+                    node.id,
+                    shadowed.join(", ")
+                );
+            }
+        }
+    }
+
     let mut resolved = BTreeMap::new();
     for mut node in desc.nodes.clone() {
+        // Merge Node-level fields into CustomNode. Standard nodes do this
+        // during their →Custom conversion; Custom nodes previously skipped
+        // it, causing these fields to be silently dropped (BUG-005).
+        merge_node_level_fields_into_custom(&mut node);
         // adjust ROS2 bridge input mappings early (before node_kind borrows node)
         if node.ros2.is_some() {
+            let mut ros2_conflicts = Vec::new();
+            if node.build.is_some() {
+                ros2_conflicts.push("build");
+            }
+            if node.path_sha256.is_some() {
+                ros2_conflicts.push("path_sha256");
+            }
+            if !ros2_conflicts.is_empty() {
+                eyre::bail!(
+                    "node `{}` has `ros2` together with {}: these fields are not \
+                     supported on ROS2 bridge nodes — the bridge binary is pre-built",
+                    node.id,
+                    ros2_conflicts.join(", ")
+                );
+            }
+
             for input in node.inputs.values_mut() {
                 if let InputMapping::User(m) = &mut input.mapping
                     && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
@@ -139,6 +488,8 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         }
 
         // adjust input mappings
+        validate_node_fields_for_kind(&node)?;
+
         let mut node_kind = node_kind_mut(&mut node)?;
         let input_mappings: Vec<_> = match &mut node_kind {
             NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),

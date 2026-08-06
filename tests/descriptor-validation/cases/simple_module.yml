@@ -1,0 +1,13 @@
+# simple_module: 测试用的合法模块文件
+module:
+  name: simple
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y

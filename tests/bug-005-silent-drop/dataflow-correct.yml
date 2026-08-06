@@ -1,0 +1,27 @@
+# 正确版本: outputs 写在 custom: 块内部
+# 预期: checker 能收到数据
+
+nodes:
+  - id: ticker
+    custom:
+      path: ./ticker.py
+      source: Local
+      outputs:
+        - tick
+
+  - id: buggy_custom
+    custom:
+      path: ./passthrough.py
+      source: Local
+      inputs:
+        tick_in: ticker/tick
+      # ↓ 正确位置：在 custom: 块内部
+      outputs:
+        - data_out
+
+  - id: checker
+    custom:
+      path: ./checker.py
+      source: Local
+      inputs:
+        data_in: buggy_custom/data_out

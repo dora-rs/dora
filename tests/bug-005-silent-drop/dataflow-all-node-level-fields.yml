@@ -1,0 +1,59 @@
+# BUG-005 全字段静默丢弃测试
+# 所有以下 node 级字段都写在 custom: 外部，预期应被检测到冲突或被合并
+# 但实际全部静默丢弃（除非 validate_node_fields_for_kind 拦截）
+
+nodes:
+  - id: test_node
+    custom:
+      path: ./passthrough.py
+      source: Local
+      # custom: 内部只设置 path 和 source
+      # 其他字段故意不写在 custom 内部，而是写在 node 级
+
+    # ── run_config 类字段 ──
+    outputs:
+      - dropped_output
+    inputs:
+      tick_in: ticker/tick
+    output_types:
+      dropped_output: test/Type
+    output_framing:
+      dropped_output: raw
+    input_types:
+      tick_in: int32
+
+    # ── metadata / pattern 类字段（只在 Node 级存在） ──
+    output_metadata:
+      dropped_output:
+        - request_id
+    pattern: service-server
+
+    # ── restart 类字段 ──
+    restart_policy: always
+    max_restarts: 5
+    restart_delay: 1.0
+    max_restart_delay: 30.0
+    restart_window: 300.0
+
+    # ── 运行时类字段 ──
+    health_check_timeout: 5.0
+    finish_grace_secs: 600.0
+    shared_memory_pool_size: 256MB
+
+    # ── env / hub 类字段 ──
+    env:
+      DEBUG: true
+      LOG_LEVEL: debug
+    # hub: dora-yolo@^0.5   # 单独测试，hub 有独立解析路径
+
+    # ── 已校验字段（会被拒绝，仅作对照） ──
+    # build: echo test
+    # git: https://github.com/test.git
+    # branch: main
+
+  - id: ticker
+    custom:
+      path: ./ticker.py
+      source: Local
+      outputs:
+        - tick

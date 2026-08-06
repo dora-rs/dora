@@ -1,0 +1,9 @@
+# valid-standard-output-metadata: Standard node with output_metadata at Node level
+# output_metadata and pattern are legal for Standard nodes (consumed by
+# check_metadata_annotations in validate.rs)
+nodes:
+  - id: s
+    path: node.py
+    output_metadata:
+      response:
+        - request_id

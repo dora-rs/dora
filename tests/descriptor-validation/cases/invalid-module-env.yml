@@ -1,0 +1,13 @@
+# invalid-module-env: 模块节点不应有 env 字段
+# 预期: dora run/expand 报错，包含 "not supported" 和 "env"
+# 注: 此测试需要 expand_modules 处理，dora validate 可能不展开模块
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: simple_module.yml
+    inputs:
+      x: src/v
+    env:
+      DEBUG: "true"

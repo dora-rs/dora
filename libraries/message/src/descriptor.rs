@@ -817,15 +817,9 @@ pub struct Node {
 
     /// Health check timeout in seconds.
     ///
-    /// When set, the daemon monitors this node for activity **once it has
-    /// connected** (i.e. subscribed to events during `Node::init`). If the
-    /// connected node then does not communicate with the daemon within this
-    /// timeout, it is killed and the restart policy is evaluated.
-    ///
-    /// This bounds post-connection liveness only, not startup time: a node
-    /// still in a slow cold start has not connected yet and is never killed by
-    /// this watchdog. A node that hangs before it ever subscribes is therefore
-    /// not reaped here either.
+    /// When set, the daemon monitors this node for activity. If the node does not
+    /// communicate with the daemon within this timeout, it is killed and the restart
+    /// policy is evaluated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
@@ -1155,15 +1149,9 @@ pub struct CustomNode {
 
     /// Health check timeout in seconds.
     ///
-    /// When set, the daemon monitors this node for activity **once it has
-    /// connected** (i.e. subscribed to events during `Node::init`). If the
-    /// connected node then does not communicate with the daemon within this
-    /// timeout, it is killed and the restart policy is evaluated.
-    ///
-    /// This bounds post-connection liveness only, not startup time: a node
-    /// still in a slow cold start has not connected yet and is never killed by
-    /// this watchdog. A node that hangs before it ever subscribes is therefore
-    /// not reaped here either.
+    /// When set, the daemon monitors this node for activity. If the node does not
+    /// communicate with the daemon within this timeout, it is killed and the restart
+    /// policy is evaluated.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 

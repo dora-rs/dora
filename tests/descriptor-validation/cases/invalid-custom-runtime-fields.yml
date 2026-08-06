@@ -1,0 +1,10 @@
+# invalid-custom-runtime-fields: Custom 节点的运行时字段应在 custom: 内部定义
+# 预期: validate 报错，包含 "not supported"
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    health_check_timeout: 5.0
+    finish_grace_secs: 600.0
+    shared_memory_pool_size: 256MB

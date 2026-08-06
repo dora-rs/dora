@@ -1,0 +1,6 @@
+# invalid-standard-pattern: Standard 节点不应有 pattern 字段
+# 预期: dora validate 报错，包含 "not supported" 和 "pattern"
+nodes:
+  - id: s
+    path: ./node
+    pattern: my_pattern

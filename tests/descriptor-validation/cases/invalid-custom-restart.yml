@@ -1,0 +1,12 @@
+# invalid-custom-restart: Custom 节点的 restart 字段应在 custom: 内部定义
+# 预期: validate 报错，包含 "not supported"
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    restart_policy: always
+    max_restarts: 5
+    restart_delay: 1.0
+    max_restart_delay: 30.0
+    restart_window: 300.0

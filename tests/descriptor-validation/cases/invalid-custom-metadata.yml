@@ -1,0 +1,11 @@
+# invalid-custom-metadata: Custom 节点的 metadata/pattern 字段不应在 node 级设置
+# 预期: validate 报错，包含 "not supported"
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    output_metadata:
+      response:
+        - request_id
+    pattern: service-server

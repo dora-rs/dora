@@ -1,0 +1,8 @@
+# invalid-runtime-restart: Runtime 节点不应有 restart_policy
+# 预期: dora validate 报错，包含 "not supported" 和 "restart_policy"
+nodes:
+  - id: rt
+    operators:
+      - id: op
+        shared-library: lib.so
+    restart_policy: on-failure

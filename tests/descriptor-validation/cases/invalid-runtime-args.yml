@@ -1,0 +1,8 @@
+# invalid-runtime-args: Runtime 节点不应有 args 字段
+# 预期: dora validate 报错，包含 "not supported" 和 "args"
+nodes:
+  - id: rt
+    operators:
+      - id: op
+        shared-library: lib.so
+    args: --verbose

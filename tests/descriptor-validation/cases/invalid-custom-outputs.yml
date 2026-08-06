@@ -1,0 +1,9 @@
+# invalid-custom-outputs: Custom 节点的 outputs 应写在 custom: 内部
+# 预期: validate 报错，包含 "not supported" 和 "outputs"
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    outputs:
+      - result

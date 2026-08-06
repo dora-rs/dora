@@ -1,0 +1,38 @@
+# comprehensive-operator: Operator 节点全字段测试
+# 单算子简写形式，字段在 operator 下
+nodes:
+  - id: full_op
+    name: "Comprehensive Single Operator"
+    description: "Tests all single-operator fields"
+    env:
+      DEBUG_MODE: "true"
+
+    operator:
+      id: my_op
+      name: "My Operator"
+      description: "Single operator with all config fields"
+      shared-library: libmyop.so
+
+      inputs:
+        data_in: source/out
+      outputs:
+        - result
+        - meta
+      output_types:
+        result: std/array/v1/Int32
+        meta: std/string/v1/String
+      output_framing:
+        result: raw
+      input_types:
+        data_in: std/array/v1/Float64
+      output_metadata:
+        result:
+          - request_id
+      pattern: service-client
+
+      build: cargo build -p my_op
+      send_stdout_as: op_out
+      send_logs_as: op_log
+      min_log_level: debug
+      max_log_size: 25MB
+      max_rotated_files: 3

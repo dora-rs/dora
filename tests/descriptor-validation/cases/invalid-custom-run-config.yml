@@ -1,0 +1,13 @@
+# invalid-custom-run-config: Custom 节点的 run_config 字段应在 custom: 内部定义
+# 预期: validate 报错，包含 "not supported" 和字段名
+nodes:
+  - id: c
+    custom:
+      path: node.py
+      source: Local
+    output_types:
+      data: test/Type
+    input_types:
+      raw: int32
+    output_framing:
+      data: raw

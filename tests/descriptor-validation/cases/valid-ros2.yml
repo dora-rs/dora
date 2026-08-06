@@ -1,0 +1,12 @@
+# valid-ros2: ROS2 Bridge 节点合法配置
+# 预期: dora validate 通过
+nodes:
+  - id: bridge
+    ros2:
+      topic: /odom
+      message_type: nav_msgs/Odometry
+      direction: subscribe
+    outputs:
+      - odom
+    send_stdout_as: stdout
+    restart_policy: on-failure

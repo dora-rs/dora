@@ -1,0 +1,9 @@
+# invalid-runtime-outputs: Runtime 节点不应有 node 级 outputs（output 在 operator config 内）
+# 预期: dora validate 报错，包含 "not supported" 和 "outputs"
+nodes:
+  - id: rt
+    operators:
+      - id: op
+        shared-library: lib.so
+    outputs:
+      - fake

@@ -1,0 +1,58 @@
+# comprehensive-custom: Custom 节点全字段测试
+# 验证所有字段都能被正确解析、合并
+# Node 级字段应被 merge_node_level_fields_into_custom 合并到 CustomNode
+#
+# 测试场景:
+#   - 仅在 Node 级的字段: outputs, run-config, restart, runtime, build/logging
+#   - 仅在 custom 内部的字段: source
+#   - 两级都有: restart_policy (custom 内部值优先)
+
+nodes:
+  - id: full_custom
+    name: "Comprehensive Custom Node"
+    description: "Tests all Custom node fields including merge behavior"
+    env:
+      GLOBAL_VAR: "1"
+      RUST_LOG: debug
+    cpu_affinity: [0, 1, 2]
+
+    custom:
+      path: ./my_node.py
+      source: Local
+      # restart_policy 在 custom 内部也设置了，应优先于 Node 级
+      restart_policy: always
+
+    # ── run_config 字段 (Node 级 → 合并) ──
+    outputs:
+      - data
+      - status
+    output_types:
+      data: std/array/v1/Int32
+      status: std/string/v1/String
+    output_framing:
+      data: raw
+    input_types:
+      sensor_in: std/array/v1/Float64
+
+    # ── restart 字段 (Node 级 → 合并) ──
+    max_restarts: 10
+    restart_delay: 2.0
+    max_restart_delay: 60.0
+    restart_window: 300.0
+
+    # ── 运行时字段 (Node 级 → 合并) ──
+    health_check_timeout: 30.0
+    finish_grace_secs: 120.0
+    shared_memory_pool_size: 256MB
+
+    # ── 构建/执行字段 (Node 级 → 合并) ──
+    args: --verbose --profile release
+    build: cargo build --release
+    path_sha256: "abc123def456"
+
+    # ── 日志字段 (Node 级 → 合并) ──
+    send_stdout_as: stdout_out
+    send_logs_as: logs_out
+    min_log_level: info
+    max_log_size: 50MB
+    max_rotated_files: 10
