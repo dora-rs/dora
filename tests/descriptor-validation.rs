@@ -126,13 +126,74 @@ fn invalid_operator_rejects_restart_policy() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Custom — invalid combos
+// Custom — fields now merged (no longer rejected)
 // ═══════════════════════════════════════════════════════════
 
 #[test]
-fn invalid_custom_rejects_build() {
-    descriptor_should_fail("invalid-custom-build.yml", &["build", "not supported"]);
+fn custom_merges_node_level_outputs() {
+    descriptor_should_pass("invalid-custom-outputs.yml");
 }
+
+#[test]
+fn custom_merges_node_level_inputs() {
+    descriptor_should_pass("invalid-custom-inputs.yml");
+}
+
+#[test]
+fn custom_merges_node_level_build() {
+    descriptor_should_pass("invalid-custom-build.yml");
+}
+
+#[test]
+fn custom_merges_node_level_run_config() {
+    descriptor_should_pass("invalid-custom-run-config.yml");
+}
+
+#[test]
+fn custom_merges_node_level_restart() {
+    descriptor_should_pass("invalid-custom-restart.yml");
+}
+
+#[test]
+fn custom_merges_node_level_runtime_fields() {
+    descriptor_should_pass("invalid-custom-runtime-fields.yml");
+}
+
+/// Verify Node-level fields are actually merged into the resolved
+/// CustomNode, not just silently accepted.
+#[test]
+fn custom_node_level_fields_merged_into_resolved() {
+    let desc = load_descriptor("valid-custom.yml");
+    let resolved = desc
+        .resolve_aliases_and_set_defaults()
+        .expect("valid-custom should resolve");
+    let node = resolved
+        .values()
+        .next()
+        .expect("should have at least one resolved node");
+    let custom = node
+        .kind
+        .as_custom()
+        .expect("valid-custom should resolve to Custom");
+
+    // outputs and restart_policy were written at Node-level in the YAML
+    // and should have been merged into the CustomNode sub-structure.
+    assert!(
+        !custom.run_config.outputs.is_empty(),
+        "node-level outputs should be merged into run_config"
+    );
+    assert!(
+        !matches!(
+            custom.restart_policy,
+            dora_message::descriptor::RestartPolicy::Never
+        ),
+        "node-level restart_policy should be merged into CustomNode"
+    );
+}
+
+// ═══════════════════════════════════════════════════════════
+// Custom — truly incompatible fields (still rejected)
+// ═══════════════════════════════════════════════════════════
 
 #[test]
 fn invalid_custom_rejects_git() {
@@ -140,49 +201,10 @@ fn invalid_custom_rejects_git() {
 }
 
 #[test]
-fn invalid_custom_rejects_inputs() {
-    descriptor_should_fail("invalid-custom-inputs.yml", &["inputs", "not supported"]);
-}
-
-#[test]
-fn invalid_custom_rejects_outputs() {
-    descriptor_should_fail("invalid-custom-outputs.yml", &["outputs", "not supported"]);
-}
-
-#[test]
-fn invalid_custom_rejects_run_config() {
-    descriptor_should_fail(
-        "invalid-custom-run-config.yml",
-        &[
-            "output_types",
-            "input_types",
-            "output_framing",
-            "not supported",
-        ],
-    );
-}
-
-#[test]
 fn invalid_custom_rejects_metadata() {
     descriptor_should_fail(
         "invalid-custom-metadata.yml",
         &["output_metadata", "pattern", "not supported"],
-    );
-}
-
-#[test]
-fn invalid_custom_rejects_restart() {
-    descriptor_should_fail(
-        "invalid-custom-restart.yml",
-        &["restart_policy", "not supported"],
-    );
-}
-
-#[test]
-fn invalid_custom_rejects_runtime_fields() {
-    descriptor_should_fail(
-        "invalid-custom-runtime-fields.yml",
-        &["health_check_timeout", "not supported"],
     );
 }
 
@@ -205,15 +227,17 @@ fn invalid_hub_path_mutually_exclusive() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// Standard — invalid combos
+// Standard — valid combos (pattern / output_metadata are legal)
 // ═══════════════════════════════════════════════════════════
 
 #[test]
-fn invalid_standard_rejects_pattern() {
-    descriptor_should_fail(
-        "invalid-standard-pattern.yml",
-        &["pattern", "not supported"],
-    );
+fn valid_standard_accepts_pattern() {
+    descriptor_should_pass("invalid-standard-pattern.yml");
+}
+
+#[test]
+fn valid_standard_accepts_output_metadata() {
+    descriptor_should_pass("valid-standard-output-metadata.yml");
 }
 
 // ═══════════════════════════════════════════════════════════

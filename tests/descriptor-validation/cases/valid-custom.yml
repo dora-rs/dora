@@ -1,11 +1,10 @@
 # valid-custom: Custom 节点合法配置
-# 预期: dora validate 通过
-# 注意: outputs/restart 等字段应写在 custom: 内部，node 级会被拒绝
+# Node 级字段会被 merge_node_level_fields_into_custom 合并到 CustomNode
 nodes:
   - id: c
     custom:
       path: node.py
       source: Local
-      outputs:
-        - result
-      restart_policy: always
+    outputs:
+      - result
+    restart_policy: always
