@@ -134,8 +134,32 @@ def basicConfig(*pargs, **kwargs):
 static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
 
+/// A random `u64` seed derived from the standard library's `RandomState`,
+/// which is seeded from the OS once per process. Used to make process-local
+/// counters unique across process restarts without pulling in a new
+/// dependency (dora-rs/dora#3015).
+fn random_u64_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    // `RandomState::new()` picks fresh random keys from the OS; hashing no
+    // input and finishing yields a value derived from those keys, so the
+    // result differs from process to process.
+    std::hash::RandomState::new().build_hasher().finish()
+}
+
 /// Counter to make pinned memory buffer IDs unique across registrations.
-static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
+///
+/// Seeded with a random value per process rather than `0` (dora-rs/dora#3015).
+/// The counter is combined with the `(dataflow_id, node_id)` pair — both of
+/// which are stable across a crash-restart — into the pool's shared-memory
+/// name, so a deterministic `0` seed makes a restarted node re-derive the
+/// exact name its previous incarnation used. If the old segment is still live
+/// (its receiver is still reading it, so #2881's reclaim deliberately kept it),
+/// `ShmemConf::create()` collides and the restarted node can never register its
+/// pool — a crash-restart loop that never recovers. A random per-incarnation
+/// seed keeps the id unique across restarts while the component stays a plain
+/// `u64`, so both existing name parsers keep working unchanged.
+static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> =
+    LazyLock::new(|| std::sync::Mutex::new(random_u64_seed()));
 
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
 /// read-after-free. Entries are inserted on free_memory_pool and never
@@ -298,6 +322,40 @@ mod pin_tests {
     fn pin_zero_size_cpu() {
         // Zero-size CPU tensor → below threshold, don't pin
         assert!(!should_pin(false, 0));
+    }
+}
+
+#[cfg(test)]
+mod pool_id_tests {
+    use super::*;
+
+    /// dora-rs/dora#3015: the per-process pool counter is now seeded from
+    /// `random_u64_seed()` so a restarted node does not re-derive its previous
+    /// incarnation's shared-memory name and collide on a still-live segment.
+    /// The seed must vary from call to call (a proxy for varying from process
+    /// to process — `RandomState` reseeds on each `new()`).
+    #[test]
+    fn random_seed_is_not_constant() {
+        let seeds: std::collections::HashSet<u64> = (0..8).map(|_| random_u64_seed()).collect();
+        assert!(
+            seeds.len() > 1,
+            "random_u64_seed() must not return a constant value"
+        );
+    }
+
+    /// A pool name built from a large, random-seeded counter must still be
+    /// recovered by the reader fast path, which takes the last `_`-separated
+    /// component as a `u64`. This is what lets #3015's random seed keep the
+    /// on-wire id format unchanged — including for a `node_id` that itself
+    /// contains underscores.
+    #[test]
+    fn large_counter_round_trips_through_the_name_parser() {
+        let counter = u64::MAX - 3;
+        let shmem_name = format!("dora_pool_{}_{}_{}", "dataflow-uuid", "my_node", counter);
+        let parsed = shmem_name
+            .rsplit_once('_')
+            .and_then(|(_, c)| c.parse::<u64>().ok());
+        assert_eq!(parsed, Some(counter));
     }
 }
 
@@ -1969,10 +2027,12 @@ impl Node {
             );
         }
 
-        // Generate unique pool counter for this registration
+        // Generate unique pool counter for this registration. `wrapping_add`
+        // guards the (astronomically unlikely) overflow now that the counter
+        // starts from a random seed rather than 0 (dora-rs/dora#3015).
         let pool_counter = {
             let mut c = PINNED_COUNTER.lock().unwrap_or_else(|e| e.into_inner());
-            *c += 1;
+            *c = c.wrapping_add(1);
             *c
         };
         let shmem_name = format!(
