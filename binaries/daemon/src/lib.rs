@@ -5451,7 +5451,13 @@ impl Daemon {
         // non-cohort survivor that was answered `Ok(())` (since #2933) isn't
         // left parked on a dataflow that never starts and never tears down
         // (#2967). `start()` is idempotent and guarded by `dataflow_started`.
-        if matches!(status, DataflowStatus::AllNodesReady) && !dataflow.dataflow_started {
+        //
+        // `should_start_on_barrier_completion` also gates on `!stop_sent`
+        // (dora-rs/dora#3053): unlike the subscribe / `AddNode` callers — which
+        // can no longer fire after `stop_all` drained `subscribe_channels` —
+        // this death-driven trigger is reachable during teardown, because the
+        // stop ladder itself kills a still-pending non-dynamic cohort member.
+        if dataflow.should_start_on_barrier_completion(&status) {
             logger
                 .log(
                     LogLevel::Info,
@@ -7625,6 +7631,34 @@ mod fault_tolerance_tests {
         assert!(!df.dataflow_started);
         df.start(&events_tx, &clock).await.unwrap();
         assert!(df.dataflow_started);
+    }
+
+    // dora-rs/dora#3053: the death-driven start trigger in
+    // `handle_node_stop_inner` (added in #2970) can fire during teardown,
+    // because `stop_all` kills a still-pending non-dynamic cohort member and
+    // that death completes the startup barrier. `should_start_on_barrier_completion`
+    // gates the start on `!stop_sent` so a stopping dataflow is never (re)started.
+    #[test]
+    fn barrier_completion_does_not_start_a_stopping_dataflow() {
+        let mut df = test_dataflow();
+
+        // A fresh dataflow whose barrier just completed should start.
+        assert!(df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
+
+        // Once stop has been sent, the same completion must not start it.
+        df.stop_sent = true;
+        assert!(
+            !df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady),
+            "a stopping dataflow must not be started by a barrier-completing node death"
+        );
+
+        // A `Pending` status never starts, stopping or not.
+        df.stop_sent = false;
+        assert!(!df.should_start_on_barrier_completion(&DataflowStatus::Pending));
+
+        // An already-started dataflow is not started again either.
+        df.dataflow_started = true;
+        assert!(!df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
     }
 
     fn test_running_node() -> RunningNode {
