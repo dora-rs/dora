@@ -40,6 +40,14 @@ serde-big-array = { version = "0.5.1", optional = true }
 arrow = { workspace = true, features = ["ffi"] }
 chrono = { version = "0.4", features = ["serde"] }
 
+[dev-dependencies]
+# Test-only. `PoolSegment::create` refuses to write an `ipc` segment, but
+# `PoolSegment::open` can return one — a Python sender on a discrete GPU
+# registers a header-only pool — and that is the shape the consumer surface has
+# to refuse to hand bytes out of. Writing one by hand is the only way to cover
+# it. Version tracked with `dora-memory-pool`'s own dependency.
+shared_memory_extended = "0.13.0"
+
 [build-dependencies]
 cxx-build = "1.0.194"
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }

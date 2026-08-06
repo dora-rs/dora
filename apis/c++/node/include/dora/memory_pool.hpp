@@ -1,4 +1,4 @@
-// RAII wrapper around the memory-pool write cycle.
+// RAII wrappers around the memory-pool write and read cycles.
 //
 // This header is CUDA-free and depends on nothing but the generated bridge
 // header. The optional `dora/cuda_pool.hpp` maps a pool for the GPU; the two
@@ -27,6 +27,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "dora-node-api.h"
 
@@ -129,6 +130,111 @@ class PoolWriteGuard {
     ::std::uint8_t *data_ = nullptr;
     ::std::size_t size_ = 0;
     bool open_ = false;
+};
+
+/// Copy a whole frame out of `view` into `out`, sizing `out` from the pool
+/// rather than from the caller.
+///
+/// The preferred read. `view_try_read` requires a destination of exactly
+/// `view_payload_len()` bytes — a pool frame is fixed-size, and a short
+/// destination would deliver a prefix as if it were the whole frame — and this
+/// is what makes that requirement impossible to get wrong, so a `false` return
+/// means only the retryable case: a writer was mid-frame, or the pool is `ipc`
+/// or freed.
+///
+/// On `false`, `out`'s contents are **unspecified**: a torn copy may already
+/// have landed in it. Discard it and read again on the next event.
+inline bool try_read_pool(const ::rust::Box<::DoraMemoryPoolView> &view,
+                          ::std::vector<::std::uint8_t> &out) {
+    out.resize(::view_payload_len(view));
+    return ::view_try_read(view, ::rust::Slice<::std::uint8_t>(out.data(), out.size()));
+}
+
+/// Brackets a zero-copy read of a pool with its seqlock check.
+///
+/// For a consumer that works on the payload where it lies — a CUDA kernel over
+/// the device alias, an OpenCV header over the host pointer — rather than
+/// copying it out with `try_read_pool`. The guard samples the generation on
+/// construction and re-checks it in `valid()`:
+///
+/// ```cpp
+/// dora::PoolReadGuard read(view);
+/// auto result = analyse(read.data(), read.size());
+/// if (!read.valid()) {
+///     return;  // the writer overwrote the frame mid-analysis; discard result
+/// }
+/// ```
+///
+/// **`valid()` is not advisory.** Everything computed from `data()` before it
+/// returned true was computed from bytes a writer may have been overwriting,
+/// so it must be thrown away, not merely flagged. Nothing here can prevent a
+/// torn read — only detect one; see `PoolSegment`'s note on the Rust side.
+///
+/// There is nothing to close, so unlike `PoolWriteGuard` this destructor has
+/// no effect. It is a class rather than a pair of calls because the opening
+/// sample must not be storable, comparable, or reusable across frames: it
+/// lives in an opaque `rust::Box<DoraPoolRead>` that C++ can neither construct
+/// nor inspect, and this keeps it together with the pointer and length it
+/// brackets.
+///
+/// Not copyable and not movable, for the same reason as `PoolWriteGuard`: it
+/// holds a reference to the caller's `rust::Box`, so it must not outlive the
+/// scope that owns the view.
+class PoolReadGuard {
+  public:
+    /// Samples the pool's generation and takes the payload bounds.
+    ///
+    /// Throws `std::runtime_error` when there is no payload to read in the
+    /// mapping: an `ipc` pool, whose bytes are in device memory and reachable
+    /// only through `view_ipc_handle`, or a pool that has already been freed.
+    explicit PoolReadGuard(const ::rust::Box<::DoraMemoryPoolView> &view)
+        : view_(view), payload_(open_payload(view)), read_(::view_begin_read(view)) {}
+
+    PoolReadGuard(const PoolReadGuard &) = delete;
+    PoolReadGuard &operator=(const PoolReadGuard &) = delete;
+    PoolReadGuard(PoolReadGuard &&) = delete;
+    PoolReadGuard &operator=(PoolReadGuard &&) = delete;
+
+    /// A guard is only ever a scope-bound stack object; see the class note.
+    static void *operator new(::std::size_t) = delete;
+
+    /// Start of the payload. Valid for the life of the mapping — this view
+    /// owns it — but its *contents* are only trustworthy if `valid()` agrees
+    /// afterwards.
+    const ::std::uint8_t *data() const noexcept { return payload_.data; }
+
+    /// Bytes of payload in the mapping — the only bound for a read through
+    /// `data()`. Never size one from the pool's shape: it is advisory, and an
+    /// unrecognized dtype makes a shape-derived product an under-estimate.
+    ::std::size_t size() const noexcept { return payload_.size; }
+
+    /// True when nothing was written between construction and now, and the
+    /// pool is still alive. Re-checkable: a later call closes a later read.
+    bool valid() const noexcept { return ::view_read_valid(view_, read_); }
+
+  private:
+    struct Payload {
+        const ::std::uint8_t *data;
+        ::std::size_t size;
+    };
+
+    static Payload open_payload(const ::rust::Box<::DoraMemoryPoolView> &view) {
+        ::std::uint64_t ptr = 0;
+        ::std::size_t len = 0;
+        if (!::view_payload(view, ptr, len)) {
+            throw ::std::runtime_error(
+                "dora::PoolReadGuard: pool `" + ::std::string(::view_id(view)) +
+                "` has no payload in its shared-memory mapping (transport `" +
+                ::std::string(::view_transport(view)) +
+                "`); it is either ipc-backed, with its data in device memory, or already freed");
+        }
+        return Payload{reinterpret_cast<const ::std::uint8_t *>(static_cast<::std::uintptr_t>(ptr)),
+                       len};
+    }
+
+    const ::rust::Box<::DoraMemoryPoolView> &view_;
+    Payload payload_;
+    ::rust::Box<::DoraPoolRead> read_;
 };
 
 }  // namespace dora

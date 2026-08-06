@@ -468,6 +468,137 @@ mod ffi {
             pool: Box<DoraMemoryPool>,
         ) -> DoraResult;
 
+        // -------------------------------------------------------------
+        // Memory-pool transport (consumer side)
+        // -------------------------------------------------------------
+
+        type DoraMemoryPoolView;
+        type DoraPoolRead;
+
+        /// Map another node's pool for reading.
+        ///
+        /// The daemon is asked for the pool's metadata and the segment name
+        /// comes from its reply — never from the pool id, which does not
+        /// determine the name and would map a segment the daemon has no record
+        /// of. Fails if the pool is unknown, has already been freed, or its
+        /// segment cannot be opened.
+        ///
+        /// Unlike a pool this node created, a view may be **`ipc`**: a Python
+        /// sender on a discrete GPU registers a header-only segment whose
+        /// payload lives in device memory. Every accessor below that reaches
+        /// bytes reports that case rather than handing out an address.
+        fn read_memory_pool(
+            output_sender: &mut Box<OutputSender>,
+            pool_id: &str,
+        ) -> Result<Box<DoraMemoryPoolView>>;
+
+        /// False once any node has freed this pool and `take_freed_pools` has
+        /// observed the daemon's notification. Every accessor that yields an
+        /// address or bytes fails from that point on.
+        fn view_is_alive(view: &Box<DoraMemoryPoolView>) -> bool;
+
+        /// Page-aligned mapping base and total mapped bytes — this pair, and
+        /// only this pair, is what `cudaHostRegister` takes; the payload start
+        /// is not page-aligned. Returns false, leaving both outputs untouched,
+        /// once the pool has been freed. Paired as an out-param predicate so
+        /// the base cannot be taken without its bound, nor either of them from
+        /// a dead view.
+        fn view_mapping(
+            view: &Box<DoraMemoryPoolView>,
+            out_base: &mut u64,
+            out_bytes: &mut usize,
+        ) -> bool;
+
+        /// Payload pointer and length, as an out-param predicate. Returns
+        /// false — leaving both outputs untouched — for an `ipc` pool, whose
+        /// payload is in device memory and is NOT in this mapping, and for a
+        /// pool that has been freed. This is the only way to reach the bytes:
+        /// the size the sender declared in the segment metadata is
+        /// deliberately not exposed, because on an `ipc` pool it describes a
+        /// device buffer megabytes larger than the whole mapping.
+        fn view_payload(
+            view: &Box<DoraMemoryPoolView>,
+            out_ptr: &mut u64,
+            out_len: &mut usize,
+        ) -> bool;
+        /// Offset of the payload within the mapping, for a caller holding a
+        /// *device* base from `cudaHostGetDevicePointer` that needs to reach
+        /// the payload through it. False for an `ipc` or freed pool.
+        fn view_payload_offset(view: &Box<DoraMemoryPoolView>, out_offset: &mut usize) -> bool;
+        /// Bytes of payload present in this mapping; 0 for an `ipc` or freed
+        /// pool. THIS is the bound for any copy — never a product computed
+        /// from `view_shape`.
+        fn view_payload_len(view: &Box<DoraMemoryPoolView>) -> usize;
+
+        /// The pool id this view was opened with.
+        fn view_id(view: &Box<DoraMemoryPoolView>) -> String;
+        /// The shared-memory segment name the daemon reported for the pool.
+        fn view_shm_name(view: &Box<DoraMemoryPoolView>) -> String;
+        /// `"shmem"`, `"unified"` or `"ipc"`. `"unified"` means the sender
+        /// intends a CUDA receiver to map the segment with
+        /// `cudaHostRegister`; `"ipc"` means there is no payload here at all.
+        fn view_transport(view: &Box<DoraMemoryPoolView>) -> String;
+        /// Advisory metadata for interpreting the buffer — NOT a bound. An
+        /// unrecognized dtype is assumed to be 1 byte per element, so a
+        /// product computed from these under-estimates the real extent. Size
+        /// every copy and every view with `view_payload_len`.
+        fn view_dtype(view: &Box<DoraMemoryPoolView>) -> String;
+        /// Advisory metadata, as `view_dtype`. Not a bound.
+        fn view_shape(view: &Box<DoraMemoryPoolView>) -> Vec<usize>;
+        /// True when the segment carries a CUDA IPC handle instead of a
+        /// payload.
+        fn view_ipc_present(view: &Box<DoraMemoryPoolView>) -> bool;
+        /// The 64-byte CUDA IPC handle for `cudaIpcOpenMemHandle`, from a pool
+        /// the Python binding registered on a discrete GPU. Empty when there
+        /// is none, and empty once the pool has been freed — the device buffer
+        /// it names is gone by then.
+        fn view_ipc_handle(view: &Box<DoraMemoryPoolView>) -> Vec<u8>;
+
+        /// Copy the whole frame into `dst` under the seqlock, returning true
+        /// only if the copy is intact.
+        ///
+        /// This is the read most consumers want: the generation is sampled,
+        /// the payload copied and the generation re-checked entirely inside
+        /// Rust, so there is no token to mishandle. False means **nothing was
+        /// copied that may be used** — a writer was mid-frame (retry on the
+        /// next event), or the pool is `ipc` or freed, or `dst` is not exactly
+        /// `view_payload_len()` bytes. Size `dst` from `view_payload_len()`,
+        /// or use `dora::try_read_pool` (`dora/memory_pool.hpp`) which does,
+        /// and then a false can only mean the retryable case.
+        fn view_try_read(view: &Box<DoraMemoryPoolView>, dst: &mut [u8]) -> bool;
+
+        /// Open a zero-copy read by sampling the pool's generation.
+        ///
+        /// For a reader that consumes the payload in place — a CUDA kernel
+        /// over the device alias, a `cv::Mat` header — instead of copying it.
+        /// Read through `view_payload`, then call `view_read_valid` with this
+        /// token and **discard whatever was computed** if it returns false.
+        ///
+        /// The token is opaque on purpose: it cannot be constructed,
+        /// compared, or arrived at by arithmetic on this side of the bridge,
+        /// and it is bound to the view that issued it. Prefer
+        /// `dora::PoolReadGuard` (`dora/memory_pool.hpp`), which keeps the
+        /// token, the pointer and the length together.
+        fn view_begin_read(view: &Box<DoraMemoryPoolView>) -> Box<DoraPoolRead>;
+        /// True when the payload read since `view_begin_read` is intact: no
+        /// write started or finished in between, the pool is still alive, and
+        /// the token came from this view. A token from a different view is
+        /// rejected rather than compared — two views of the same segment share
+        /// a generation word, so comparing it would accept a bracket that
+        /// never enclosed the read.
+        fn view_read_valid(view: &Box<DoraMemoryPoolView>, read: &Box<DoraPoolRead>) -> bool;
+
+        /// Ids of pools freed by any node since the last call.
+        ///
+        /// Views of those pools are marked dead before this returns, so no
+        /// accessor can hand out a pointer into a pool the daemon has
+        /// released. The ids come back so a CUDA consumer can
+        /// `cudaHostUnregister` the mappings it registered **before** dropping
+        /// the views that hold them: Rust cannot do that on its behalf, having
+        /// no idea which segments were handed to the driver. Drain this once
+        /// per event-loop pass.
+        fn take_freed_pools() -> Vec<String>;
+
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
         fn is_dora(self: &CombinedEvent) -> bool;
@@ -1613,6 +1744,304 @@ fn free_memory_pool(
 }
 
 // ---------------------------------------------------------------------
+// Memory-pool transport (consumer side)
+// ---------------------------------------------------------------------
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use std::sync::{Arc, LazyLock, Mutex};
+
+use dora_memory_pool::segment::OpeningSample;
+
+/// Liveness flags of every open view, keyed by pool id.
+///
+/// When any node frees a pool the daemon notifies this one, and the flags here
+/// flip so that no accessor hands out a pointer into a pool the daemon has
+/// released. The mapping itself stays valid — this process still holds it, and
+/// `unlink` does not unmap — so a read racing the notification is not a
+/// use-after-free; what the flag prevents is a *new* pointer being taken after
+/// the pool is gone, and a CUDA consumer being handed a base it can no longer
+/// tell apart from a live one.
+static VIEW_REGISTRY: LazyLock<Mutex<HashMap<String, Vec<Arc<AtomicBool>>>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Distinguishes views from one another, so a read token cannot be applied to
+/// the view that did not issue it. A counter rather than the segment address:
+/// two views of one segment must still be distinguishable, and an address is
+/// reused once a mapping is dropped.
+static NEXT_VIEW_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+fn view_registry() -> std::sync::MutexGuard<'static, HashMap<String, Vec<Arc<AtomicBool>>>> {
+    VIEW_REGISTRY
+        .lock()
+        .unwrap_or_else(|poison| poison.into_inner())
+}
+
+/// A read-only mapping of a pool, which may belong to another node or another
+/// language binding. Dropping it unmaps; releasing the pool is the daemon's
+/// job, at the request of whichever node owns it.
+pub struct DoraMemoryPoolView {
+    segment: PoolSegment,
+    id: String,
+    serial: u64,
+    alive: Arc<AtomicBool>,
+}
+
+/// The opening generation sample of a zero-copy read, plus the serial of the
+/// view that took it.
+///
+/// Opaque to C++, which is the point: `OpeningSample` is deliberately not a
+/// number even in Rust, and flattening it to a `uint64_t` here would hand the
+/// caller something it could forge, compare with the wrong fence, or hold
+/// across frames — exactly what the type exists to prevent.
+pub struct DoraPoolRead {
+    view_serial: u64,
+    sample: OpeningSample,
+}
+
+/// Register a mapped segment as a live view. Shared with the tests, which have
+/// no daemon to ask for a pool.
+fn register_view(segment: PoolSegment, id: String) -> DoraMemoryPoolView {
+    let alive = Arc::new(AtomicBool::new(true));
+    view_registry()
+        .entry(id.clone())
+        .or_default()
+        .push(alive.clone());
+    DoraMemoryPoolView {
+        segment,
+        id,
+        serial: NEXT_VIEW_SERIAL.fetch_add(1, AtomicOrdering::Relaxed),
+        alive,
+    }
+}
+
+/// Mark every view of every named pool dead, and forget them.
+fn mark_freed(pool_ids: &[String]) {
+    if pool_ids.is_empty() {
+        return;
+    }
+    let mut registry = view_registry();
+    for id in pool_ids {
+        for flag in registry.remove(id).unwrap_or_default() {
+            flag.store(false, AtomicOrdering::Release);
+        }
+    }
+}
+
+impl DoraMemoryPoolView {
+    fn is_alive(&self) -> bool {
+        self.alive.load(AtomicOrdering::Acquire)
+    }
+
+    /// The payload pair, or `None` when there is none to hand out: an `ipc`
+    /// pool, whose bytes are in device memory, or a pool that has been freed.
+    /// Every byte-reaching accessor goes through this, so neither case can be
+    /// missed in one of them.
+    fn live_payload(&self) -> Option<(u64, usize)> {
+        if self.is_alive() {
+            self.segment.payload()
+        } else {
+            None
+        }
+    }
+}
+
+impl Drop for DoraMemoryPoolView {
+    fn drop(&mut self) {
+        let mut registry = view_registry();
+        if let Some(flags) = registry.get_mut(&self.id) {
+            flags.retain(|flag| !Arc::ptr_eq(flag, &self.alive));
+            if flags.is_empty() {
+                registry.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// The segment name for a pool, from the daemon's reply.
+///
+/// Never derived from the pool id: the name embeds the dataflow and the *owning
+/// node's* id, neither of which a consumer knows, and a guessed name would map
+/// whatever segment happened to answer to it rather than the pool the daemon
+/// has a record of.
+fn pool_segment_name(metadata: &DoraMetadata, pool_id: &str) -> EyreResult<String> {
+    match metadata.parameters.get("shared_memory_name") {
+        Some(DoraParameter::String(name)) if !name.is_empty() => Ok(name.clone()),
+        Some(DoraParameter::String(_)) | None => bail!(
+            "memory pool `{pool_id}` has no `shared_memory_name`, so it cannot be mapped; a \
+             pool that was registered without a segment, or one that has just been freed, \
+             looks like this"
+        ),
+        Some(other) => bail!(
+            "memory pool `{pool_id}` reported a `shared_memory_name` that is not a string \
+             ({other:?})"
+        ),
+    }
+}
+
+fn read_memory_pool(
+    output_sender: &mut Box<OutputSender>,
+    pool_id: &str,
+) -> EyreResult<Box<DoraMemoryPoolView>> {
+    // `free: false` — reading a pool must not release it out from under the
+    // node that owns it, and the daemon strips `shared_memory_name` from a
+    // freeing read anyway, which would make the reply unmappable.
+    let metadata = output_sender
+        .0
+        .read_pinned_memory(pool_id.to_string(), false)
+        // Flattened with `{:#}` because cxx converts an error to the C++
+        // exception message through `Display`, which prints only the outermost
+        // line of a `Report` chain — and the daemon's reason is the inner one.
+        .map_err(|err| eyre!("failed to look up memory pool `{pool_id}`: {err:#}"))?;
+
+    let name = pool_segment_name(&metadata, pool_id)?;
+    let segment = PoolSegment::open(&name).map_err(|err| eyre!("{err}"))?;
+
+    Ok(Box::new(register_view(segment, pool_id.to_string())))
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_is_alive(view: &Box<DoraMemoryPoolView>) -> bool {
+    view.is_alive()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_mapping(view: &Box<DoraMemoryPoolView>, out_base: &mut u64, out_bytes: &mut usize) -> bool {
+    if !view.is_alive() {
+        return false;
+    }
+    *out_base = view.segment.shm_base();
+    *out_bytes = view.segment.segment_bytes();
+    true
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_payload(view: &Box<DoraMemoryPoolView>, out_ptr: &mut u64, out_len: &mut usize) -> bool {
+    match view.live_payload() {
+        Some((ptr, len)) => {
+            *out_ptr = ptr;
+            *out_len = len;
+            true
+        }
+        None => false,
+    }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_payload_offset(view: &Box<DoraMemoryPoolView>, out_offset: &mut usize) -> bool {
+    match view
+        .is_alive()
+        .then(|| view.segment.payload_offset())
+        .flatten()
+    {
+        Some(offset) => {
+            *out_offset = offset;
+            true
+        }
+        None => false,
+    }
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_payload_len(view: &Box<DoraMemoryPoolView>) -> usize {
+    view.live_payload().map_or(0, |(_, len)| len)
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_id(view: &Box<DoraMemoryPoolView>) -> String {
+    view.id.clone()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_shm_name(view: &Box<DoraMemoryPoolView>) -> String {
+    view.segment.name().to_string()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_transport(view: &Box<DoraMemoryPoolView>) -> String {
+    view.segment.transport().as_str().to_string()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_dtype(view: &Box<DoraMemoryPoolView>) -> String {
+    view.segment.dtype().to_string()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_shape(view: &Box<DoraMemoryPoolView>) -> Vec<usize> {
+    view.segment.shape().to_vec()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_ipc_present(view: &Box<DoraMemoryPoolView>) -> bool {
+    view.segment.ipc_present()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_ipc_handle(view: &Box<DoraMemoryPoolView>) -> Vec<u8> {
+    if !view.is_alive() {
+        return Vec::new();
+    }
+    view.segment
+        .ipc_handle()
+        .map(|handle| handle.to_vec())
+        .unwrap_or_default()
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_try_read(view: &Box<DoraMemoryPoolView>, dst: &mut [u8]) -> bool {
+    let Some((ptr, len)) = view.live_payload() else {
+        return false;
+    };
+    // Exact, for the reason `write_memory_pool` is exact: a pool frame is
+    // fixed-size and nothing on the wire records a per-frame length, so a
+    // short destination would silently deliver a prefix as a whole frame.
+    if dst.len() != len {
+        return false;
+    }
+
+    let opening = view.segment.begin_read();
+    if !opening.is_complete() {
+        // A writer is mid-frame. Skipping the copy is not just an
+        // optimisation: it keeps the racing read off the payload entirely on
+        // the one path where the result is guaranteed to be discarded.
+        return false;
+    }
+    // Safe against the mapping disappearing — this view owns it — but
+    // deliberately racy against the writer's stores, which is what the
+    // seqlock bracket around it exists to detect. See `PoolSegment`'s note.
+    unsafe {
+        std::ptr::copy_nonoverlapping(ptr as *const u8, dst.as_mut_ptr(), len);
+    }
+    view.segment.read_valid(opening)
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_begin_read(view: &Box<DoraMemoryPoolView>) -> Box<DoraPoolRead> {
+    Box::new(DoraPoolRead {
+        view_serial: view.serial,
+        sample: view.segment.begin_read(),
+    })
+}
+
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn view_read_valid(view: &Box<DoraMemoryPoolView>, read: &Box<DoraPoolRead>) -> bool {
+    view.is_alive() && read.view_serial == view.serial && view.segment.read_valid(read.sample)
+}
+
+fn take_freed_pools() -> Vec<String> {
+    // `event_stream` and `event_stream::memory_pool` are both `pub mod`, so
+    // this path needs no re-export. The set is filled by the event thread when
+    // the daemon sends `FreeMemoryPool`, and draining it is destructive — a
+    // caller that drops the returned ids loses the notification.
+    let freed = dora_node_api::event_stream::memory_pool::drain_freed_pools();
+    // Before the ids reach C++, so a node acting on them is already looking at
+    // views that refuse to hand out an address.
+    mark_freed(&freed);
+    freed
+}
+
+// ---------------------------------------------------------------------
 // Service (request/reply) and Action (goal/feedback/result)
 // ---------------------------------------------------------------------
 
@@ -2654,6 +3083,457 @@ mod tests {
                 Some(DoraParameter::String(value)) => assert_eq!(value, expected, "{transport:?}"),
                 other => panic!("pinned_type is not a string: {other:?}"),
             }
+        }
+    }
+
+    // -----------------------------------------------------------------
+    // Consumer side: segment name resolution
+    // -----------------------------------------------------------------
+
+    fn metadata_with(parameter: Option<DoraParameter>) -> DoraMetadata {
+        let mut parameters = DoraMetadataParameters::new();
+        if let Some(parameter) = parameter {
+            parameters.insert("shared_memory_name".to_string(), parameter);
+        }
+        DoraMetadata::from_parameters(HLC::default().new_timestamp(), parameters)
+    }
+
+    #[test]
+    fn the_segment_name_comes_from_the_daemons_reply() {
+        let metadata = metadata_with(Some(DoraParameter::String("dora_pool_df_n_p".to_string())));
+        assert_eq!(
+            pool_segment_name(&metadata, "p").expect("a named pool maps"),
+            "dora_pool_df_n_p"
+        );
+    }
+
+    /// The daemon strips `shared_memory_name` from the reply to a freeing read,
+    /// and a pool registered without a segment never had one. Guessing a name
+    /// from the pool id would map whatever segment answered to it — the id does
+    /// not determine the name, which embeds the dataflow and the *owning*
+    /// node's id.
+    #[test]
+    fn a_reply_without_a_usable_segment_name_is_refused_rather_than_guessed() {
+        for parameter in [
+            None,
+            Some(DoraParameter::String(String::new())),
+            Some(DoraParameter::Integer(7)),
+        ] {
+            let metadata = metadata_with(parameter.clone());
+            let err = pool_segment_name(&metadata, "eo_frames")
+                .expect_err("an unusable name must not be mapped");
+            let message = format!("{err:#}");
+            assert!(
+                message.contains("eo_frames"),
+                "the error must name the pool: {message}"
+            );
+            assert!(
+                !message.contains("dora_pool"),
+                "nothing may invent a segment name: {message}"
+            );
+        }
+    }
+
+    /// A non-string is a different failure from a missing key: it means the
+    /// daemon (or another binding) wrote the parameter with the wrong variant,
+    /// which no amount of retrying will fix.
+    #[test]
+    fn a_segment_name_of_the_wrong_variant_is_reported_as_such() {
+        let metadata = metadata_with(Some(DoraParameter::Integer(7)));
+        let message = format!(
+            "{:#}",
+            pool_segment_name(&metadata, "p").expect_err("a non-string name is unusable")
+        );
+        assert!(
+            message.contains("not a string"),
+            "unexpected error: {message}"
+        );
+    }
+
+    // -----------------------------------------------------------------
+    // Consumer side: views over real segments
+    //
+    // These map real files in `/dev/shm`, a process-global namespace, so they
+    // are Linux-only for the same platform reasons as `PoolSegment`'s own
+    // tests: macOS caps a POSIX shm name at 31 bytes and neither macOS nor
+    // Windows has the `/dev/shm` path `unlink` removes.
+    // -----------------------------------------------------------------
+
+    #[cfg(target_os = "linux")]
+    mod views {
+        use super::*;
+        use dora_memory_pool::doradma;
+        use dora_memory_pool::segment::Transport;
+        use shared_memory_extended::ShmemConf;
+
+        /// Owns a segment name and unlinks it on drop, so a panicking test
+        /// cannot make its own name permanently unusable — `create` is
+        /// `O_EXCL`.
+        struct SegmentGuard {
+            name: String,
+            pool_id: String,
+        }
+
+        impl SegmentGuard {
+            fn new(tag: &str) -> Self {
+                static COUNTER: AtomicU64 = AtomicU64::new(0);
+                let pool_id = format!(
+                    "{tag}-{}-{}",
+                    std::process::id(),
+                    COUNTER.fetch_add(1, AtomicOrdering::Relaxed)
+                );
+                let name = naming::segment_name("cxxtest", "nodetest", &pool_id)
+                    .expect("a valid segment name");
+                Self { name, pool_id }
+            }
+        }
+
+        impl Drop for SegmentGuard {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(format!("/dev/shm/{}", self.name));
+            }
+        }
+
+        /// A writer plus a view of the same pool, as a producer node and a
+        /// consumer node would have.
+        fn writer_and_view(
+            tag: &str,
+            size: usize,
+        ) -> (SegmentGuard, PoolSegment, DoraMemoryPoolView) {
+            let guard = SegmentGuard::new(tag);
+            let writer = PoolSegment::create(&guard.name, size, "uint8", &[size], Transport::Shmem)
+                .expect("create the pool");
+            let view = open_view(&guard);
+            (guard, writer, view)
+        }
+
+        fn open_view(guard: &SegmentGuard) -> DoraMemoryPoolView {
+            register_view(
+                PoolSegment::open(&guard.name).expect("open the pool"),
+                guard.pool_id.clone(),
+            )
+        }
+
+        /// The segment a Python sender writes for a CUDA receiver on a discrete
+        /// GPU: header-only, `ipc_flag = 1`, and a JSON `size` describing a
+        /// tensor in the IPC-imported device buffer — megabytes larger than the
+        /// mapping itself.
+        fn create_ipc_segment(guard: &SegmentGuard, declared_size: usize) {
+            let json = format!(
+                r#"{{"size":{declared_size},"dtype":"uint8","shape":[{declared_size}],"pinned_type":"cuda"}}"#
+            );
+            let total = doradma::data_offset_for(json.len());
+            let mut shmem = ShmemConf::new()
+                .os_id(&guard.name)
+                .size(total)
+                .writable(true)
+                .create()
+                .expect("create the ipc segment");
+            shmem.set_owner(false);
+            let buf = unsafe { std::slice::from_raw_parts_mut(shmem.as_ptr(), total) };
+            doradma::write_header(buf, &json).expect("write the header");
+            buf[doradma::OFFSET_IPC_FLAG..doradma::OFFSET_IPC_FLAG + 8]
+                .copy_from_slice(&1u64.to_le_bytes());
+        }
+
+        #[test]
+        fn a_view_of_a_live_pool_hands_out_its_mapping_and_its_payload() {
+            let (_guard, writer, view) = writer_and_view("live", 64);
+            let view = Box::new(view);
+
+            assert!(view_is_alive(&view));
+            let (mut base, mut bytes) = (0u64, 0usize);
+            assert!(view_mapping(&view, &mut base, &mut bytes));
+            assert_eq!(base, view.segment.shm_base());
+            assert_eq!(bytes, writer.segment_bytes());
+
+            let (mut ptr, mut len) = (0u64, 0usize);
+            assert!(view_payload(&view, &mut ptr, &mut len));
+            assert_eq!(len, 64);
+            assert_eq!(view_payload_len(&view), 64);
+            let mut offset = 0usize;
+            assert!(view_payload_offset(&view, &mut offset));
+            assert_eq!(ptr, base + offset as u64);
+            assert!(
+                ptr + len as u64 <= base + bytes as u64,
+                "the payload must lie inside the mapping it is bounded by"
+            );
+            assert_eq!(view_transport(&view), "shmem");
+            assert_eq!(view_dtype(&view), "uint8");
+            assert_eq!(view_shape(&view), vec![64]);
+            assert!(!view_ipc_present(&view));
+            assert!(view_ipc_handle(&view).is_empty());
+        }
+
+        /// The whole point of the liveness flag: once the daemon says the pool
+        /// is gone, nothing on this surface may hand out an address into it.
+        #[test]
+        fn a_freed_pool_hands_out_no_address_and_no_bytes() {
+            let (guard, _writer, view) = writer_and_view("freed", 64);
+            let view = Box::new(view);
+            assert_eq!(view_payload_len(&view), 64, "alive to begin with");
+
+            mark_freed(std::slice::from_ref(&guard.pool_id));
+
+            assert!(!view_is_alive(&view));
+            let (mut base, mut bytes) = (0xdead_beefu64, usize::MAX);
+            assert!(!view_mapping(&view, &mut base, &mut bytes));
+            assert_eq!(
+                (base, bytes),
+                (0xdead_beef, usize::MAX),
+                "a refused mapping must leave both outputs untouched, not zero one of them"
+            );
+
+            let (mut ptr, mut len) = (0xdead_beefu64, usize::MAX);
+            assert!(!view_payload(&view, &mut ptr, &mut len));
+            assert_eq!(
+                (ptr, len),
+                (0xdead_beef, usize::MAX),
+                "a refused payload must leave both outputs untouched"
+            );
+
+            let mut offset = usize::MAX;
+            assert!(!view_payload_offset(&view, &mut offset));
+            assert_eq!(offset, usize::MAX);
+            assert_eq!(view_payload_len(&view), 0);
+            assert!(view_ipc_handle(&view).is_empty());
+
+            // A zero-length destination matches a zero-length payload, so the
+            // length rule alone would let this through.
+            let mut nothing: [u8; 0] = [];
+            assert!(
+                !view_try_read(&view, &mut nothing),
+                "a dead pool must be refused before the length is even considered"
+            );
+            let mut buffer = [0u8; 64];
+            assert!(!view_try_read(&view, &mut buffer));
+        }
+
+        /// The registry is keyed by pool id, and a free notification names one
+        /// pool. Killing every view would take out pools the daemon never
+        /// mentioned.
+        #[test]
+        fn freeing_one_pool_leaves_the_other_pools_views_alive() {
+            let (freed_guard, _w1, freed_view) = writer_and_view("selective-a", 32);
+            let (_kept_guard, _w2, kept_view) = writer_and_view("selective-b", 32);
+            let (freed_view, kept_view) = (Box::new(freed_view), Box::new(kept_view));
+
+            mark_freed(std::slice::from_ref(&freed_guard.pool_id));
+
+            assert!(!view_is_alive(&freed_view));
+            assert!(view_is_alive(&kept_view), "an unrelated pool must survive");
+            assert_eq!(view_payload_len(&kept_view), 32);
+        }
+
+        /// Every view of a freed pool dies, not just the first one: a node may
+        /// hold several, and one surviving view is one live pointer into a
+        /// released pool.
+        #[test]
+        fn freeing_a_pool_kills_every_view_of_it() {
+            let (guard, _writer, first) = writer_and_view("multi", 32);
+            let second = open_view(&guard);
+            let (first, second) = (Box::new(first), Box::new(second));
+
+            mark_freed(std::slice::from_ref(&guard.pool_id));
+
+            assert!(!view_is_alive(&first));
+            assert!(!view_is_alive(&second));
+        }
+
+        #[test]
+        fn dropping_a_view_unregisters_only_itself() {
+            let (guard, _writer, first) = writer_and_view("dropreg", 32);
+            let second = Box::new(open_view(&guard));
+            assert_eq!(
+                view_registry().get(&guard.pool_id).map(Vec::len),
+                Some(2),
+                "both views must be registered"
+            );
+
+            drop(first);
+            assert_eq!(
+                view_registry().get(&guard.pool_id).map(Vec::len),
+                Some(1),
+                "dropping one view must not unregister the other"
+            );
+            assert!(
+                view_is_alive(&second),
+                "the surviving view must still be alive"
+            );
+
+            drop(second);
+            assert!(
+                !view_registry().contains_key(&guard.pool_id),
+                "the last view out must remove the entry, not leave an empty one behind"
+            );
+        }
+
+        #[test]
+        fn view_try_read_copies_a_frame_the_writer_finished() {
+            let (_guard, mut writer, view) = writer_and_view("read", 64);
+            writer.write(&[0xAB; 64]).expect("write a frame");
+            let view = Box::new(view);
+
+            let mut buffer = [0u8; 64];
+            assert!(view_try_read(&view, &mut buffer));
+            assert!(buffer.iter().all(|&byte| byte == 0xAB), "{buffer:?}");
+        }
+
+        /// The frame is being overwritten, so whatever is in it now is not a
+        /// frame. The copy must be reported as unusable — this is the case the
+        /// seqlock exists for.
+        #[test]
+        fn view_try_read_refuses_a_frame_a_writer_is_in_the_middle_of() {
+            let (_guard, mut writer, view) = writer_and_view("torn", 64);
+            writer.write(&[0xAB; 64]).expect("a complete frame first");
+            let view = Box::new(view);
+
+            writer.begin_write().expect("open a write cycle");
+            let mut buffer = [0u8; 64];
+            assert!(
+                !view_try_read(&view, &mut buffer),
+                "a frame under construction must not be handed on"
+            );
+
+            writer.end_write(true);
+            assert!(
+                view_try_read(&view, &mut buffer),
+                "the frame must be readable again once the writer closes the cycle"
+            );
+        }
+
+        /// A pool frame is fixed-size and nothing on the wire carries a
+        /// per-frame length, so a destination of any other size cannot be
+        /// filled with a frame.
+        #[test]
+        fn view_try_read_refuses_a_destination_that_is_not_the_frame_size() {
+            let (_guard, mut writer, view) = writer_and_view("size", 64);
+            writer.write(&[0xAB; 64]).expect("write a frame");
+            let view = Box::new(view);
+
+            let mut short = [0u8; 32];
+            assert!(!view_try_read(&view, &mut short));
+            assert!(
+                short.iter().all(|&byte| byte == 0),
+                "a refused read must not have copied a prefix: {short:?}"
+            );
+
+            let mut long = [0u8; 65];
+            assert!(!view_try_read(&view, &mut long));
+            assert!(long.iter().all(|&byte| byte == 0), "{long:?}");
+
+            let mut exact = [0u8; 64];
+            assert!(view_try_read(&view, &mut exact), "the frame size is 64");
+        }
+
+        #[test]
+        fn a_zero_copy_read_is_valid_when_no_write_intervened() {
+            let (_guard, mut writer, view) = writer_and_view("zerocopy", 32);
+            writer.write(&[1; 32]).expect("write a frame");
+            let view = Box::new(view);
+
+            let read = view_begin_read(&view);
+            assert!(view_read_valid(&view, &read));
+
+            writer.write(&[2; 32]).expect("write another frame");
+            assert!(
+                !view_read_valid(&view, &read),
+                "a frame written during the read must invalidate it"
+            );
+        }
+
+        /// Two views of one segment share a generation word, so a token from
+        /// the wrong view would compare equal and validate a bracket that
+        /// never enclosed the read. Identity, not equality, is what rejects it.
+        #[test]
+        fn a_read_token_is_refused_by_a_view_that_did_not_issue_it() {
+            let (guard, mut writer, first) = writer_and_view("token", 32);
+            writer.write(&[3; 32]).expect("write a frame");
+            let second = Box::new(open_view(&guard));
+            let first = Box::new(first);
+
+            let read = view_begin_read(&first);
+            assert!(view_read_valid(&first, &read), "valid on its own view");
+            assert!(
+                !view_read_valid(&second, &read),
+                "a token from another view must be refused, not compared"
+            );
+        }
+
+        #[test]
+        fn a_freed_pool_invalidates_a_read_that_was_already_open() {
+            let (guard, mut writer, view) = writer_and_view("freedread", 32);
+            writer.write(&[4; 32]).expect("write a frame");
+            let view = Box::new(view);
+
+            let read = view_begin_read(&view);
+            assert!(view_read_valid(&view, &read));
+            mark_freed(std::slice::from_ref(&guard.pool_id));
+            assert!(
+                !view_read_valid(&view, &read),
+                "a read of a released pool must not be reported as intact"
+            );
+        }
+
+        /// The hazard the whole consumer surface is shaped around: an `ipc`
+        /// pool's payload is in device memory, its segment holds only a header,
+        /// and its declared size exceeds the entire mapping by megabytes. Every
+        /// byte-reaching accessor must refuse it rather than hand out an
+        /// address one past the end with a multi-megabyte length beside it.
+        #[test]
+        fn an_ipc_pool_view_hands_out_no_bytes_only_its_handle() {
+            let guard = SegmentGuard::new("ipc");
+            create_ipc_segment(&guard, 8 * 1024 * 1024);
+            let view = Box::new(open_view(&guard));
+
+            assert_eq!(view_transport(&view), "ipc");
+            assert!(view_is_alive(&view), "an ipc pool is a live pool");
+
+            let (mut ptr, mut len) = (0xdead_beefu64, usize::MAX);
+            assert!(!view_payload(&view, &mut ptr, &mut len));
+            assert_eq!((ptr, len), (0xdead_beef, usize::MAX));
+            let mut offset = usize::MAX;
+            assert!(!view_payload_offset(&view, &mut offset));
+            assert_eq!(offset, usize::MAX);
+            assert_eq!(view_payload_len(&view), 0);
+
+            let mut buffer = [0u8; 4096];
+            assert!(!view_try_read(&view, &mut buffer));
+            let mut nothing: [u8; 0] = [];
+            assert!(
+                !view_try_read(&view, &mut nothing),
+                "an ipc pool has no frame, so no destination size can match one"
+            );
+
+            // The mapping itself is real and registerable; only the payload is
+            // elsewhere. And the handle is how a discrete-GPU consumer reaches
+            // the payload that is not here.
+            let (mut base, mut bytes) = (0u64, 0usize);
+            assert!(view_mapping(&view, &mut base, &mut bytes));
+            assert!(
+                bytes < 8 * 1024 * 1024,
+                "the point of this segment is that its declared size exceeds it: {bytes}"
+            );
+            assert!(view_ipc_present(&view));
+            assert_eq!(view_ipc_handle(&view).len(), doradma::IPC_HANDLE_LEN);
+        }
+
+        /// The daemon's free notifications reach this binding through
+        /// `dora_node_api::event_stream::memory_pool`. Nothing pushes into that
+        /// set here — only the event thread does — so this pins the path and
+        /// the rule that an empty drain kills nothing.
+        #[test]
+        fn take_freed_pools_is_empty_and_harmless_without_a_notification() {
+            let (_guard, _writer, view) = writer_and_view("nofree", 32);
+            let view = Box::new(view);
+
+            let freed = take_freed_pools();
+            assert!(
+                !freed.iter().any(|id| id == &view.id),
+                "nothing freed this pool: {freed:?}"
+            );
+            assert!(view_is_alive(&view));
+            assert_eq!(view_payload_len(&view), 32);
         }
     }
 

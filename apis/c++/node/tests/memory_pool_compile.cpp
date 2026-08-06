@@ -12,10 +12,12 @@
 #include <cstring>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include "dora/memory_pool.hpp"
 
 using PoolRef = ::rust::Box<::DoraMemoryPool> &;
+using ViewRef = const ::rust::Box<::DoraMemoryPoolView> &;
 
 static_assert(!std::is_copy_constructible<dora::PoolWriteGuard>::value,
               "PoolWriteGuard must not be copyable: two guards would close one cycle twice, "
@@ -54,4 +56,63 @@ bool dora_memory_pool_header_compile_check(PoolRef pool, const void *src, std::s
     std::memcpy(write.data(), src, len);
     write.commit();
     return true;
+}
+
+// The read guard carries the same restrictions as the write guard: it holds a
+// reference to the caller's box, so it must not be copied, moved, or heaped
+// out of the scope that owns the view.
+static_assert(!std::is_copy_constructible<dora::PoolReadGuard>::value,
+              "PoolReadGuard must not be copyable");
+static_assert(!std::is_copy_assignable<dora::PoolReadGuard>::value,
+              "PoolReadGuard must not be copy-assignable");
+static_assert(!std::is_move_constructible<dora::PoolReadGuard>::value,
+              "PoolReadGuard must not be movable");
+static_assert(!std::is_move_assignable<dora::PoolReadGuard>::value,
+              "PoolReadGuard must not be move-assignable");
+static_assert(!std::is_default_constructible<dora::PoolReadGuard>::value,
+              "PoolReadGuard must not be default-constructible: a guard without a view has no "
+              "generation to sample");
+
+template <typename T, typename = void>
+struct is_view_heap_allocatable : std::false_type {};
+template <typename T>
+struct is_view_heap_allocatable<T, std::void_t<decltype(new T(std::declval<ViewRef>()))>>
+    : std::true_type {};
+
+static_assert(!is_view_heap_allocatable<dora::PoolReadGuard>::value,
+              "PoolReadGuard::operator new must stay deleted: a heap guard outlives the scope "
+              "that owns the view");
+
+// `data()` must not hand out a writable pointer: the reader does not own the
+// frame, and a store through it would land in the payload with no generation
+// bump around it, so every other reader would publish it as a complete frame.
+static_assert(std::is_same<decltype(std::declval<const dora::PoolReadGuard &>().data()),
+                           const std::uint8_t *>::value,
+              "PoolReadGuard::data() must be a pointer to const");
+
+// The opening sample must be unreachable as a value: it lives in an opaque
+// rust::Box that C++ can neither construct nor copy out of the guard.
+static_assert(!std::is_constructible<::rust::Box<::DoraPoolRead>>::value,
+              "DoraPoolRead must not be constructible on the C++ side: a forged token would "
+              "bracket a read that never happened");
+
+// The zero-copy shape: work in place, then throw the result away if the
+// bracket did not hold.
+bool dora_memory_pool_read_guard_compile_check(ViewRef view, std::uint64_t *checksum) {
+    dora::PoolReadGuard read(view);
+    std::uint64_t sum = 0;
+    for (std::size_t i = 0; i < read.size(); ++i) {
+        sum += read.data()[i];
+    }
+    if (!read.valid()) {
+        return false;  // the frame was overwritten mid-scan; `sum` is garbage
+    }
+    *checksum = sum;
+    return true;
+}
+
+// The copying shape, which sizes the destination from the pool so that a
+// `false` can only mean a torn frame.
+bool dora_memory_pool_try_read_compile_check(ViewRef view, std::vector<std::uint8_t> &out) {
+    return dora::try_read_pool(view, out);
 }
