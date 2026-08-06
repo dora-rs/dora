@@ -195,11 +195,14 @@ impl MemoryPoolManager {
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
         // Sanity-checks to avoid path traversal: an attacker-supplied
         // shared_memory_name must stay within the expected /dev/shm name space.
-        if !shm_name.starts_with("dora_pool_") || shm_name.contains('/') || shm_name.contains("..")
+        if !shm_name.starts_with(naming::SEGMENT_PREFIX)
+            || shm_name.contains('/')
+            || shm_name.contains("..")
         {
             return Err(format!(
-                "shared_memory_name `{}` does not match expected dora_pool_ prefix",
+                "shared_memory_name `{}` does not match expected {} prefix",
                 shm_name,
+                naming::SEGMENT_PREFIX,
             ));
         }
 
@@ -239,7 +242,7 @@ impl MemoryPoolManager {
     pub fn cleanup_orphans(dataflow_id: &str) {
         #[cfg(target_os = "linux")]
         {
-            let prefix = format!("dora_pool_{}_", dataflow_id);
+            let prefix = format!("{}{}_", naming::SEGMENT_PREFIX, dataflow_id);
             match std::fs::read_dir("/dev/shm") {
                 Ok(entries) => {
                     for entry in entries.flatten() {
