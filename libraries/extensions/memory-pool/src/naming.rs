@@ -89,8 +89,11 @@ mod tests {
         assert!(!name.contains(".."));
     }
 
+    /// Every case here also contains `/`, so the charset rule rejects them on
+    /// its own — this does NOT exercise the `..` rule. That one is guarded by
+    /// `rejects_a_double_dot_component_with_the_traversal_message_not_the_charset_message`.
     #[test]
-    fn rejects_path_traversal_in_any_component() {
+    fn rejects_slash_bearing_traversal_via_the_charset() {
         assert!(segment_name("df", "node", "../etc/passwd").is_err());
         assert!(segment_name("df", "../node", "pool").is_err());
         assert!(segment_name("../df", "node", "pool").is_err());
