@@ -444,6 +444,18 @@ mod ffi {
             timeout_ms: u64,
         ) -> DoraPatternResult;
 
+        /// Forget an outstanding correlation's deadline.
+        ///
+        /// A poll drops its own registration on a match, an error or
+        /// expiry, so this is only needed when a node abandons a
+        /// request it will never poll again — a peer died, the operator
+        /// cancelled, the reply stopped mattering. Without it that one
+        /// entry lives until the event stream is dropped, which for a
+        /// long-running node is an unbounded slow leak.
+        ///
+        /// Safe to call for an id that was never registered.
+        fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str);
+
         /// Send a service request under a caller-supplied `request_id`.
         ///
         /// `send_service_request` mints a fresh id per call, so it
@@ -1543,6 +1555,10 @@ fn parse_server_list(ids: &[&str]) -> Result<OwnedServers, ffi::DoraPatternResul
     Ok(OwnedServers::Some(parsed))
 }
 
+fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str) {
+    events.0.cancel_correlation(correlation_id);
+}
+
 /// Map a C++ `timeout_ms` onto the Rust poll's optional deadline.
 ///
 /// `0` means "no deadline" — the poll then behaves exactly as it did
@@ -2001,10 +2017,6 @@ mod tests {
         dora_node_api::uuid::Uuid::parse_str(&new_goal_id()).expect("goal id should be a UUID");
     }
 
-    /// A caller-supplied `request_id` must be replaced, matching
-    /// `DoraNode::send_service_request`. Silently honouring it would let
-    /// two in-flight requests share a correlation key.
-    #[test]
     // ---- dora-rs/dora#3046 ----
 
     /// The whole point of the `_with_id` variant: the caller's id must
@@ -2151,6 +2163,9 @@ mod tests {
         );
     }
 
+    /// A caller-supplied `request_id` must be replaced, matching
+    /// `DoraNode::send_service_request`. Silently honouring it would let
+    /// two in-flight requests share a correlation key.
     #[test]
     fn insert_request_id_overwrites_caller_value() {
         let mut parameters = DoraMetadataParameters::default();
