@@ -1,7 +1,9 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator, fault_tolerance::CascadingErrorCauses, pending::PendingNodes,
+    DoraEvent, OutputId, coordinator,
+    fault_tolerance::CascadingErrorCauses,
+    pending::{DataflowStatus, PendingNodes},
     send_with_timestamp,
 };
 use dora_core::{
@@ -446,6 +448,21 @@ impl RunningDataflow {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
+    }
+
+    /// Whether a startup-barrier completion (reported as
+    /// [`DataflowStatus::AllNodesReady`]) should start this dataflow.
+    ///
+    /// The subscribe / `AddNode` start triggers only reach a barrier
+    /// completion while the dataflow is still coming up. The death-driven
+    /// trigger in `handle_node_stop_inner` (dora-rs/dora#2970) is different:
+    /// it can fire during teardown, because `stop_all` kills a still-pending
+    /// non-dynamic cohort member and that death completes the barrier. Suppress
+    /// the start once the dataflow is already started or being stopped
+    /// (dora-rs/dora#3053), so teardown never spawns no-op timer tasks nor
+    /// momentarily flips `dataflow_started` back on for a racing `dora list`.
+    pub(crate) fn should_start_on_barrier_completion(&self, status: &DataflowStatus) -> bool {
+        matches!(status, DataflowStatus::AllNodesReady) && !self.dataflow_started && !self.stop_sent
     }
 
     pub(crate) async fn start(
