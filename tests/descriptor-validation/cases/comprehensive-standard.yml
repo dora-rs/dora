@@ -1,0 +1,52 @@
+# comprehensive-standard: Standard 节点全字段测试
+# 所有字段都是 Node 级（Standard 没有子结构）
+nodes:
+  - id: full_standard
+    name: "Comprehensive Standard Node"
+    description: "Tests all Standard node fields"
+    path: ./my_node
+    args: --verbose
+    build: cargo build --release
+    env:
+      DEBUG: "true"
+      PORT: "8080"
+    cpu_affinity: [0, 1]
+
+    # ── 输入输出 ──
+    inputs:
+      sensor_data: sensor/output
+    outputs:
+      - result
+      - debug_info
+    output_types:
+      result: std/array/v1/Int32
+    output_framing:
+      debug_info: raw
+    input_types:
+      sensor_data: std/array/v1/Float64
+
+    # ── 元数据 / 通信模式 ──
+    output_metadata:
+      response:
+        - request_id
+        - correlation_id
+    pattern: service-server
+
+    # ── restart ──
+    restart_policy: on-failure
+    max_restarts: 5
+    restart_delay: 1.0
+    max_restart_delay: 30.0
+    restart_window: 300.0
+
+    # ── 运行时 ──
+    health_check_timeout: 60.0
+    finish_grace_secs: 180.0
+    shared_memory_pool_size: 128MB
+
+    # ── 日志 ──
+    send_stdout_as: stdout
+    send_logs_as: structured_logs
+    min_log_level: debug
+    max_log_size: 100MB
+    max_rotated_files: 7

@@ -82,6 +82,181 @@ fn valid_ros2_passes() {
 }
 
 // ═══════════════════════════════════════════════════════════
+// Comprehensive — 全字段覆盖测试
+// ═══════════════════════════════════════════════════════════
+
+#[test]
+fn comprehensive_custom_all_fields() {
+    let desc = load_descriptor("comprehensive-custom.yml");
+    let resolved = desc
+        .resolve_aliases_and_set_defaults()
+        .expect("comprehensive custom should resolve");
+    let node = resolved.values().next().expect("should have one node");
+    let custom = node.kind.as_custom().expect("should resolve to Custom");
+
+    // run_config fields (merged from Node level)
+    assert!(
+        custom
+            .run_config
+            .outputs
+            .contains(&dora_message::id::DataId::from("data")),
+        "outputs should be merged"
+    );
+    assert!(
+        !custom.run_config.output_types.is_empty(),
+        "output_types should be merged"
+    );
+    assert!(
+        !custom.run_config.output_framing.is_empty(),
+        "output_framing should be merged"
+    );
+    assert!(
+        !custom.run_config.input_types.is_empty(),
+        "input_types should be merged"
+    );
+
+    // restart fields (custom.restart_policy=always wins over node-level)
+    assert!(
+        matches!(
+            custom.restart_policy,
+            dora_message::descriptor::RestartPolicy::Always
+        ),
+        "custom internal restart_policy=always should win"
+    );
+    assert_eq!(custom.max_restarts, 10, "max_restarts should be merged");
+    assert!(
+        custom.restart_delay.is_some(),
+        "restart_delay should be merged"
+    );
+    assert!(
+        custom.max_restart_delay.is_some(),
+        "max_restart_delay should be merged"
+    );
+    assert!(
+        custom.restart_window.is_some(),
+        "restart_window should be merged"
+    );
+
+    // runtime fields
+    assert!(
+        custom.health_check_timeout.is_some(),
+        "health_check_timeout should be merged"
+    );
+    assert!(
+        custom.finish_grace_secs.is_some(),
+        "finish_grace_secs should be merged"
+    );
+    assert!(
+        custom.run_config.shared_memory_pool_size.is_some(),
+        "shared_memory_pool_size should be merged"
+    );
+
+    // build/logging fields
+    assert!(custom.args.is_some(), "args should be merged");
+    assert!(custom.build.is_some(), "build should be merged");
+    assert!(custom.path_sha256.is_some(), "path_sha256 should be merged");
+    assert!(
+        custom.send_stdout_as.is_some(),
+        "send_stdout_as should be merged"
+    );
+    assert!(
+        custom.send_logs_as.is_some(),
+        "send_logs_as should be merged"
+    );
+    assert!(
+        custom.min_log_level.is_some(),
+        "min_log_level should be merged"
+    );
+    assert!(
+        custom.max_log_size.is_some(),
+        "max_log_size should be merged"
+    );
+    assert!(
+        custom.max_rotated_files.is_some(),
+        "max_rotated_files should be merged"
+    );
+
+    // Node-level metadata
+    assert!(node.name.is_some(), "name should be preserved");
+    assert!(
+        node.description.is_some(),
+        "description should be preserved"
+    );
+    assert!(node.env.is_some(), "env should be preserved");
+    assert!(
+        node.cpu_affinity.is_some(),
+        "cpu_affinity should be preserved"
+    );
+}
+
+#[test]
+fn comprehensive_standard_all_fields() {
+    let desc = load_descriptor("comprehensive-standard.yml");
+    let resolved = desc
+        .resolve_aliases_and_set_defaults()
+        .expect("comprehensive standard should resolve");
+    let node = resolved.values().next().expect("should have one node");
+    let custom = node
+        .kind
+        .as_custom()
+        .expect("Standard should resolve to Custom");
+
+    assert!(
+        !custom.run_config.outputs.is_empty(),
+        "outputs should be set"
+    );
+    assert!(!custom.run_config.inputs.is_empty(), "inputs should be set");
+    assert!(
+        !custom.run_config.output_types.is_empty(),
+        "output_types should be set"
+    );
+    assert!(
+        !custom.run_config.input_types.is_empty(),
+        "input_types should be set"
+    );
+    assert!(
+        !custom.run_config.output_framing.is_empty(),
+        "output_framing should be set"
+    );
+    assert!(
+        custom.run_config.shared_memory_pool_size.is_some(),
+        "shared_memory_pool_size should be set"
+    );
+
+    assert!(
+        !matches!(
+            custom.restart_policy,
+            dora_message::descriptor::RestartPolicy::Never
+        ),
+        "restart_policy should be on-failure"
+    );
+    assert!(custom.health_check_timeout.is_some());
+    assert!(custom.finish_grace_secs.is_some());
+    assert!(custom.args.is_some());
+    assert!(custom.build.is_some());
+    assert!(custom.send_stdout_as.is_some());
+    assert!(custom.send_logs_as.is_some());
+    assert!(custom.min_log_level.is_some());
+    assert!(custom.max_log_size.is_some());
+    assert!(custom.max_rotated_files.is_some());
+}
+
+#[test]
+fn comprehensive_runtime_all_fields() {
+    descriptor_should_pass("comprehensive-runtime.yml");
+}
+
+#[test]
+fn comprehensive_operator_all_fields() {
+    descriptor_should_pass("comprehensive-operator.yml");
+}
+
+#[test]
+fn comprehensive_ros2_all_fields() {
+    descriptor_should_pass("comprehensive-ros2.yml");
+}
+
+// ═══════════════════════════════════════════════════════════
 // Runtime — invalid combos
 // ═══════════════════════════════════════════════════════════
 

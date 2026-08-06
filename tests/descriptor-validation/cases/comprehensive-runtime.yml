@@ -1,0 +1,40 @@
+# comprehensive-runtime: Runtime 节点全字段测试
+# 配置字段在 operator.config 内部，Node 级仅有 env/cpu_affinity/name
+nodes:
+  - id: full_runtime
+    name: "Comprehensive Runtime Node"
+    description: "Tests all Runtime node fields via operator config"
+    env:
+      GLOBAL: "1"
+    cpu_affinity: [0, 1, 2, 3]
+
+    operators:
+      - id: processor
+        name: "Data Processor"
+        description: "Processes incoming sensor data"
+        # source
+        shared-library: libprocessor.so
+
+        inputs:
+          raw_data: sensor/raw
+        outputs:
+          - processed
+          - stats
+        output_types:
+          processed: std/array/v1/Float64
+          stats: std/string/v1/String
+        output_framing:
+          stats: raw
+        input_types:
+          raw_data: std/array/v1/Uint8
+        output_metadata:
+          response:
+            - request_id
+        pattern: service-server
+
+        build: cargo build -p processor --release
+        send_stdout_as: op_stdout
+        send_logs_as: op_logs
+        min_log_level: info
+        max_log_size: 50MB
+        max_rotated_files: 5

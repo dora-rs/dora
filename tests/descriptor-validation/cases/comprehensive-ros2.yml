@@ -1,0 +1,42 @@
+# comprehensive-ros2: ROS2 Bridge 节点全字段测试
+# Node 级字段被复制到内部 CustomNode（类似 Standard）
+nodes:
+  - id: full_bridge
+    name: "Comprehensive ROS2 Bridge"
+    description: "Tests all ROS2 bridge fields"
+    ros2:
+      transport:
+        kind: dds
+      topic: /camera/image_raw
+      message_type: sensor_msgs/Image
+      direction: subscribe
+      qos:
+        reliable: true
+        durability: volatile
+        keep_last: 10
+      namespace: /robot
+      node_name: camera_bridge_node
+
+    # Node 级字段（会被复制到解析后的 CustomNode）
+    outputs:
+      - image
+      - camera_info
+    output_types:
+      image: std/media/v1/Image
+      camera_info: sensor_msgs/CameraInfo
+    output_framing:
+      image: raw
+    input_types:
+      config: std/string/v1/String
+    send_stdout_as: bridge_stdout
+    send_logs_as: bridge_logs
+    min_log_level: warn
+    max_log_size: 25MB
+    max_rotated_files: 3
+    restart_policy: on-failure
+    max_restarts: 3
+    restart_delay: 1.0
+    max_restart_delay: 10.0
+    health_check_timeout: 15.0
+    finish_grace_secs: 30.0
+    shared_memory_pool_size: 64MB
