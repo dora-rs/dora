@@ -2089,14 +2089,14 @@ mod tests {
 
     #[test]
     fn server_list_parses_every_entry() {
-        let Ok(parsed) = parse_server_list(&["cam-eo", "cam-ir"]) else {
+        let Ok(parsed) = parse_server_list(&["a", "b"]) else {
             panic!("both ids are valid");
         };
         match parsed {
             OwnedServers::Some(ids) => {
                 assert_eq!(ids.len(), 2);
-                assert_eq!(ids[0].as_ref(), "cam-eo");
-                assert_eq!(ids[1].as_ref(), "cam-ir");
+                assert_eq!(ids[0].as_ref(), "a");
+                assert_eq!(ids[1].as_ref(), "b");
             }
             OwnedServers::Any => panic!("a non-empty list must not widen to Any"),
         }
@@ -2106,7 +2106,7 @@ mod tests {
     fn empty_entry_inside_a_list_is_rejected() {
         // Silently treating this as "any" would let one stray "" switch
         // off restart detection for the whole set.
-        let result = parse_server_list(&["cam-eo", ""]);
+        let result = parse_server_list(&["a", ""]);
         match result {
             Err(failure) => assert!(matches!(
                 failure.status,
@@ -2151,13 +2151,13 @@ mod tests {
         let timeout = try_pattern_result(Err(PatternError::Timeout));
         assert!(matches!(timeout.status, ffi::DoraPatternStatus::Timeout));
 
-        let restarted = try_pattern_result(Err(PatternError::ServerRestarted("cam-ir".into())));
+        let restarted = try_pattern_result(Err(PatternError::ServerRestarted("b".into())));
         assert!(matches!(
             restarted.status,
             ffi::DoraPatternStatus::ServerRestarted
         ));
         assert!(
-            restarted.error.contains("cam-ir"),
+            restarted.error.contains("b"),
             "the restarted node's id must reach the C++ caller: {}",
             restarted.error
         );

@@ -334,8 +334,8 @@ acceptable responders — an empty vector means any node:
 
 ```c++
 rust::Vec<rust::String> candidates;
-candidates.push_back("cam-eo");
-candidates.push_back("cam-ir");
+candidates.push_back("a");
+candidates.push_back("b");
 auto reply = recv_service_response_from(
     dora_node.events, request_id, candidates, /* timeout_ms */ 5000);
 ```

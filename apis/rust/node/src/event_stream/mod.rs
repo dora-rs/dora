@@ -1446,7 +1446,22 @@ impl EventStream {
                 }
                 CorrelationOutcome::ServerRestarted => {
                     let restarted = restarted_node_id(&event);
-                    self.correlation_deadlines.remove(needle);
+                    // Whether the deadline dies with the restart depends
+                    // on what the restart *means* for this caller.
+                    //
+                    // For `One` it is terminal: that request is orphaned,
+                    // so its deadline goes with it.
+                    //
+                    // For `AnyOf` it is only a notification — the other
+                    // candidates may still answer, and the caller is
+                    // documented as free to keep waiting. Dropping the
+                    // deadline there would let the next poll register a
+                    // fresh one on a new clock, so a node that keeps
+                    // flapping would reset the deadline indefinitely and
+                    // the caller could never observe `Timeout`.
+                    if !matches!(expected, ExpectedServers::AnyOf(_)) {
+                        self.correlation_deadlines.remove(needle);
+                    }
                     self.pending_passthrough.push_back(event);
                     return Err(PatternError::ServerRestarted(restarted));
                 }
@@ -1629,7 +1644,13 @@ pub enum ExpectedServers<'a> {
     /// [`PatternError::ServerRestarted`] naming that node. It is a
     /// notification, not a verdict: the remaining candidates may still
     /// answer, so a caller that does not care can simply wait again —
-    /// buffered events and the correlation are preserved across calls.
+    /// buffered events, the correlation **and its deadline** are
+    /// preserved across calls. The deadline deliberately keeps running
+    /// on its original clock, so a node that keeps flapping cannot hold
+    /// the correlation open past the timeout the caller asked for.
+    ///
+    /// [`One`](Self::One) treats a restart as terminal instead: that
+    /// request is orphaned, so its deadline is dropped with it.
     AnyOf(&'a [NodeId]),
     /// Accept a reply from anyone and never correlate restarts. Use when
     /// the responder is not known up front; the wait then ends only on a
@@ -2164,6 +2185,23 @@ impl EventStream {
     /// scheduler mode, simulating an input the scheduler held back while
     /// prioritizing `Stop`. Used to verify `recv_async` drains buffered inputs
     /// after `Stop` instead of dropping them (dora-rs/dora#2027).
+    /// Test-only: deliver a `NodeRestarted` through the *stream* rather
+    /// than the passthrough buffer, so `try_correlation` classifies it
+    /// for real. The scripted integration harness has no
+    /// `IncomingEvent::NodeRestarted`, and pushing into
+    /// `pending_passthrough` would bypass the classifier entirely
+    /// (dora-rs/dora#3046).
+    fn push_scheduler_node_restarted_for_testing(&mut self, id: &str) {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::daemon_to_node::NodeEvent;
+        self.use_scheduler = true;
+        self.scheduler.add_event(EventItem::NodeEvent {
+            event: NodeEvent::NodeRestarted {
+                id: id.to_owned().into(),
+            },
+        });
+    }
+
     fn push_scheduler_input_for_testing(&mut self, id: &str) {
         use crate::event_stream::thread::EventItem;
         use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
@@ -2650,12 +2688,12 @@ mod tests {
 
     #[test]
     fn expected_servers_any_of_matches_each_listed_node() {
-        let eo = NodeId::from("cam-eo".to_string());
-        let ir = NodeId::from("cam-ir".to_string());
+        let a = NodeId::from("a".to_string());
+        let b = NodeId::from("b".to_string());
         let other = NodeId::from("other".to_string());
-        let list = [eo.clone(), ir.clone()];
-        assert!(ExpectedServers::AnyOf(&list).contains(&eo));
-        assert!(ExpectedServers::AnyOf(&list).contains(&ir));
+        let list = [a.clone(), b.clone()];
+        assert!(ExpectedServers::AnyOf(&list).contains(&a));
+        assert!(ExpectedServers::AnyOf(&list).contains(&b));
         assert!(!ExpectedServers::AnyOf(&list).contains(&other));
     }
 
@@ -2676,10 +2714,10 @@ mod tests {
 
     #[test]
     fn classify_any_of_restart_returns_server_restarted() {
-        let eo = NodeId::from("cam-eo".to_string());
-        let ir = NodeId::from("cam-ir".to_string());
-        let list = [eo.clone(), ir.clone()];
-        let event = Event::NodeRestarted { id: ir };
+        let a = NodeId::from("a".to_string());
+        let b = NodeId::from("b".to_string());
+        let list = [a.clone(), b.clone()];
+        let event = Event::NodeRestarted { id: b };
         assert_eq!(
             classify_correlation_event(
                 &event,
@@ -2692,8 +2730,8 @@ mod tests {
 
     #[test]
     fn classify_any_of_unlisted_restart_is_passthrough() {
-        let eo = NodeId::from("cam-eo".to_string());
-        let list = [eo];
+        let a = NodeId::from("a".to_string());
+        let list = [a];
         let event = Event::NodeRestarted {
             id: NodeId::from("unrelated".to_string()),
         };
@@ -2723,7 +2761,7 @@ mod tests {
         // The core fan-out guarantee: a reply is correlated by
         // `request_id` alone, so it matches even when it comes from a
         // node the caller never listed.
-        let listed = NodeId::from("cam-eo".to_string());
+        let listed = NodeId::from("a".to_string());
         let list = [listed];
         let event = make_input_event("response", request_id_params("req-42"));
         for expected in [
@@ -2743,9 +2781,9 @@ mod tests {
         // With `AnyOf` the caller does not know which candidate went
         // down, so the reported name has to come from the event.
         let event = Event::NodeRestarted {
-            id: NodeId::from("cam-ir".to_string()),
+            id: NodeId::from("b".to_string()),
         };
-        assert_eq!(restarted_node_id(&event), "cam-ir");
+        assert_eq!(restarted_node_id(&event), "b");
     }
 
     // ---- dora-rs/adora#172: pending_passthrough integration ----
@@ -3233,6 +3271,65 @@ mod tests {
         );
     }
 
+    /// dora-rs/dora#3046 review: an `AnyOf` restart is documented as a
+    /// notification the caller may wait past, so it must not destroy the
+    /// deadline. If it did, the next poll would register a fresh one on
+    /// a new clock and a flapping node could hold the correlation open
+    /// forever.
+    #[test]
+    fn an_any_of_restart_preserves_the_deadline() {
+        // No scripted events: the restart is injected straight into the
+        // scheduler below, so nothing races it out of the receiver.
+        let (_node, mut events) = scripted_event_stream(vec![]);
+        let a = NodeId::from("a".to_string());
+        let b = NodeId::from("b".to_string());
+        let candidates = [a, b];
+        let timeout = Some(Duration::from_secs(3600));
+
+        // Register the deadline without touching the stream, then note
+        // exactly what it is.
+        assert!(!events.correlation_expired("req-1", timeout));
+        let registered = events.correlation_deadlines["req-1"];
+
+        events.push_scheduler_node_restarted_for_testing("b");
+        let restarted =
+            events.try_recv_service_response("req-1", ExpectedServers::AnyOf(&candidates), timeout);
+        assert!(
+            matches!(&restarted, Err(PatternError::ServerRestarted(id)) if id == "b"),
+            "expected a ServerRestarted naming b, got {restarted:?}"
+        );
+
+        assert_eq!(
+            events.correlation_deadlines.get("req-1"),
+            Some(&registered),
+            "an AnyOf restart must leave the original deadline running, \
+             or a flapping node resets the clock on every poll"
+        );
+    }
+
+    /// The intentional asymmetry: for `One` the restart *is* the verdict,
+    /// so the orphaned request's deadline goes with it rather than
+    /// lingering until the stream drops.
+    #[test]
+    fn a_one_server_restart_clears_the_deadline() {
+        let (_node, mut events) = scripted_event_stream(vec![]);
+        let server = NodeId::from("calc".to_string());
+        let timeout = Some(Duration::from_secs(3600));
+
+        assert!(!events.correlation_expired("req-1", timeout));
+        assert!(events.correlation_deadlines.contains_key("req-1"));
+
+        events.push_scheduler_node_restarted_for_testing("calc");
+        let restarted =
+            events.try_recv_service_response("req-1", ExpectedServers::One(&server), timeout);
+        assert!(matches!(restarted, Err(PatternError::ServerRestarted(_))));
+
+        assert!(
+            !events.correlation_deadlines.contains_key("req-1"),
+            "a One restart orphans the request, so its deadline must go too"
+        );
+    }
+
     #[test]
     fn cancel_correlation_is_safe_for_an_unknown_id() {
         // Callers cancel on paths where the request may already have
@@ -3274,9 +3371,9 @@ mod tests {
             stop_at(),
         ]);
 
-        let eo = NodeId::from("cam-eo".to_string());
-        let ir = NodeId::from("cam-ir".to_string());
-        let candidates = [eo, ir];
+        let a = NodeId::from("a".to_string());
+        let b = NodeId::from("b".to_string());
+        let candidates = [a, b];
         let matched = poll_until(|| {
             events.try_recv_service_response("req-1", ExpectedServers::AnyOf(&candidates), None)
         });
