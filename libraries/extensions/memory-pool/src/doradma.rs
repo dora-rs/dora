@@ -36,7 +36,11 @@ pub struct PoolMetadataJson {
     pub shape: Vec<usize>,
     /// `"cpu"` or `"cuda"` — mirrors the Python key of the same name.
     pub pinned_type: String,
-    /// `"shmem"`, `"unified"` or `"ipc"`. Additive: Python ignores it.
+    /// `"shmem"`, `"unified"` or `"ipc"`. Additive: Python never writes this
+    /// key. `parse_metadata_json` leaves it empty (`String::new()`) when
+    /// absent — it has no way to know whether the segment is IPC-backed —
+    /// and `parse_header` fills it in from the header's `ipc_flag` before
+    /// returning, so callers only ever see the resolved value.
     pub transport: String,
 }
 
@@ -46,14 +50,24 @@ pub struct ParsedHeader {
     pub json_len: usize,
     pub data_offset: usize,
     pub ipc_present: bool,
-    pub ipc_handle: [u8; IPC_HANDLE_LEN],
+    /// The 64-byte CUDA IPC handle. `Some` only when `ipc_present`; a
+    /// non-IPC segment's IPC-handle bytes carry no meaning (they are
+    /// zeroed by `write_header`, but a caller must not treat a zeroed
+    /// handle as if it were a real one).
+    pub ipc_handle: Option<[u8; IPC_HANDLE_LEN]>,
     pub write_gen: u64,
     pub metadata: PoolMetadataJson,
 }
 
 /// Byte offset where the payload starts, given the metadata JSON length.
+///
+/// Uses saturating arithmetic: a hostile or corrupted `json_len` must not
+/// panic (debug) or wrap around to a small offset (release).
 pub fn data_offset_for(json_len: usize) -> usize {
-    HEADER_SIZE + json_len.div_ceil(METADATA_ALIGN) * METADATA_ALIGN
+    let padded_json_len = json_len
+        .div_ceil(METADATA_ALIGN)
+        .saturating_mul(METADATA_ALIGN);
+    HEADER_SIZE.saturating_add(padded_json_len)
 }
 
 /// Serialize the metadata JSON exactly as the Python binding does, plus the
@@ -76,7 +90,9 @@ pub fn metadata_json(
 }
 
 /// Parse a metadata JSON string. Missing optional keys degrade rather than
-/// fail, so a segment written by an older Python sender still reads.
+/// fail, so a segment written by an older Python sender still reads. A key
+/// that IS present but has the wrong JSON type is a malformed header, not a
+/// missing-key degradation, and is rejected rather than silently defaulted.
 pub fn parse_metadata_json(json: &str) -> Result<PoolMetadataJson, String> {
     let v: Value = serde_json::from_str(json).map_err(|e| format!("invalid metadata json: {e}"))?;
     let size = v
@@ -88,27 +104,43 @@ pub fn parse_metadata_json(json: &str) -> Result<PoolMetadataJson, String> {
         .and_then(Value::as_str)
         .ok_or_else(|| "metadata json missing `dtype`".to_string())?
         .to_string();
-    let shape = v
-        .get("shape")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_u64)
-                .map(|x| x as usize)
-                .collect()
-        })
-        .unwrap_or_default();
-    let pinned_type = v
-        .get("pinned_type")
-        .and_then(Value::as_str)
-        .unwrap_or("cpu")
-        .to_string();
-    // Written only by this crate; a Python-written segment has no `transport`
-    // key, and its shape is exactly what `shmem` means.
+    // `filter_map` would silently drop bad elements (`[2,"x",3]` -> `[2,3]`),
+    // turning a 3-D tensor into a plausible-looking 2-D one. Reject instead.
+    let shape = match v.get("shape") {
+        None => Vec::new(),
+        Some(val) => {
+            let arr = val
+                .as_array()
+                .ok_or_else(|| format!("metadata json `shape` is not an array: {val}"))?;
+            let mut shape = Vec::with_capacity(arr.len());
+            for elem in arr {
+                let n = elem.as_u64().ok_or_else(|| {
+                    format!("metadata json `shape` contains a non-integer element: {elem}")
+                })?;
+                shape.push(n as usize);
+            }
+            shape
+        }
+    };
+    // Absent means Python's own `effective_as_cuda` default: no
+    // `pinned_type` key reads as CUDA on the Python side
+    // (apis/python/node/src/lib.rs:3700), so this default must mirror
+    // that polarity, not "cpu".
+    let pinned_type = match v.get("pinned_type") {
+        None => "cuda".to_string(),
+        Some(val) => val
+            .as_str()
+            .ok_or_else(|| format!("metadata json `pinned_type` is not a string: {val}"))?
+            .to_string(),
+    };
+    // Written only by this crate; a Python-written segment has no
+    // `transport` key. Left empty here — resolving it needs the header's
+    // `ipc_flag`, which this function does not see — and filled in by
+    // `parse_header`.
     let transport = v
         .get("transport")
         .and_then(Value::as_str)
-        .unwrap_or("shmem")
+        .unwrap_or("")
         .to_string();
     Ok(PoolMetadataJson {
         size,
@@ -119,8 +151,15 @@ pub fn parse_metadata_json(json: &str) -> Result<PoolMetadataJson, String> {
     })
 }
 
-/// Write magic, `json_len`, `data_offset`, a zeroed IPC area and a zero
-/// `write_gen`, followed by the metadata JSON, into `buf`.
+/// Write magic, `json_len`, `data_offset`, a zeroed IPC area, a zero
+/// `write_gen`, the zeroed reserved region and JSON padding, followed by the
+/// metadata JSON, into `buf`.
+///
+/// `buf` is an arbitrary caller-supplied slice, not assumed to be
+/// freshly-zeroed shared memory — every byte this function's format
+/// documents is written explicitly, including the reserved and padding
+/// ranges, so no stale data from a reused segment can leak into a field a
+/// reader trusts.
 pub fn write_header(buf: &mut [u8], json: &str) -> Result<(), String> {
     let json_len = json.len();
     let data_offset = data_offset_for(json_len);
@@ -138,7 +177,9 @@ pub fn write_header(buf: &mut [u8], json: &str) -> Result<(), String> {
     buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&0u64.to_le_bytes());
     buf[OFFSET_IPC_HANDLE..OFFSET_IPC_HANDLE + IPC_HANDLE_LEN].fill(0);
     buf[OFFSET_WRITE_GEN..OFFSET_WRITE_GEN + 8].copy_from_slice(&0u64.to_le_bytes());
+    buf[OFFSET_WRITE_GEN + 8..HEADER_SIZE].fill(0);
     buf[HEADER_SIZE..HEADER_SIZE + json_len].copy_from_slice(json.as_bytes());
+    buf[HEADER_SIZE + json_len..data_offset].fill(0);
     Ok(())
 }
 
@@ -148,8 +189,25 @@ fn read_u64(buf: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(b)
 }
 
-/// Parse a segment's header. Every field that later becomes a pointer offset
-/// is bounds-checked here so callers never form an out-of-range address.
+/// Parse a segment's header.
+///
+/// Every field that later becomes a pointer offset or a bounds is checked
+/// here: `data_offset` (must land inside the segment and past the fixed
+/// header) and `json_len` (must fit between the header and `data_offset`).
+/// The metadata's `size` is also checked, EXCEPT when `ipc_present`: a
+/// Python CUDA-receiver pool allocates a header-only segment
+/// (`apis/python/node/src/lib.rs:2005`, `total_size = data_offset`) whose
+/// JSON `size` is the byte count of the tensor living in the IPC-imported
+/// GPU buffer, not of anything in this segment's (nonexistent) data region
+/// — so `size` cannot be validated against `buf.len()` in that case.
+///
+/// The metadata JSON is decoded whole in this same pass rather than in a
+/// separate step: the JSON region is written once, by `write_header`,
+/// before the segment is registered with the daemon, and a consumer only
+/// learns a pool exists through that registration — so a reader can never
+/// observe a half-written JSON region. Only the payload and `write_gen`
+/// change after registration. There is therefore no torn-read hazard here
+/// that a fixed-header/metadata split would guard against.
 pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
     if buf.len() < HEADER_SIZE {
         return Err(format!(
@@ -162,6 +220,11 @@ pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
     }
     let json_len = read_u64(buf, OFFSET_JSON_LEN) as usize;
     let data_offset = read_u64(buf, OFFSET_DATA_OFFSET) as usize;
+    if data_offset < HEADER_SIZE {
+        return Err(format!(
+            "header data_offset {data_offset} is less than HEADER_SIZE {HEADER_SIZE} — would overlap the fixed header"
+        ));
+    }
     if data_offset > buf.len() {
         return Err(format!(
             "header data_offset {data_offset} is past the end of the {}-byte segment",
@@ -175,15 +238,44 @@ pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
     }
     let json = std::str::from_utf8(&buf[HEADER_SIZE..HEADER_SIZE + json_len])
         .map_err(|e| format!("metadata json is not utf-8: {e}"))?;
-    let metadata = parse_metadata_json(json)?;
+    let mut metadata = parse_metadata_json(json)?;
 
-    let mut ipc_handle = [0u8; IPC_HANDLE_LEN];
-    ipc_handle.copy_from_slice(&buf[OFFSET_IPC_HANDLE..OFFSET_IPC_HANDLE + IPC_HANDLE_LEN]);
+    let ipc_present = read_u64(buf, OFFSET_IPC_FLAG) == 1;
+
+    if !ipc_present {
+        // Mirrors the Python read path (apis/python/node/src/lib.rs:3677),
+        // which gates this same check on `ipc_present != 1` and uses
+        // saturating arithmetic against a corrupted/hostile `data_offset`.
+        let available = buf.len().saturating_sub(data_offset);
+        if metadata.size > available {
+            return Err(format!(
+                "metadata size {} exceeds the {available}-byte data region available after data_offset {data_offset} in the {}-byte segment",
+                metadata.size,
+                buf.len()
+            ));
+        }
+    }
+
+    if metadata.transport.is_empty() {
+        // Python never writes a `transport` key. Resolve it from the
+        // header bit `parse_metadata_json` could not see: a Python CUDA
+        // pool is ipc_flag=1 and header-only ("ipc"); a Python CPU pool is
+        // ipc_flag=0 with payload in the shmem data region ("shmem").
+        metadata.transport = if ipc_present { "ipc" } else { "shmem" }.to_string();
+    }
+
+    let ipc_handle = if ipc_present {
+        let mut h = [0u8; IPC_HANDLE_LEN];
+        h.copy_from_slice(&buf[OFFSET_IPC_HANDLE..OFFSET_IPC_HANDLE + IPC_HANDLE_LEN]);
+        Some(h)
+    } else {
+        None
+    };
 
     Ok(ParsedHeader {
         json_len,
         data_offset,
-        ipc_present: read_u64(buf, OFFSET_IPC_FLAG) == 1,
+        ipc_present,
         ipc_handle,
         write_gen: read_u64(buf, OFFSET_WRITE_GEN),
         metadata,
@@ -292,5 +384,122 @@ mod tests {
         let mut buf = vec![0u8; HEADER_SIZE];
         let err = write_header(&mut buf, &json).unwrap_err();
         assert!(err.contains("too small"), "unexpected error: {err}");
+    }
+
+    /// Python never writes a `transport` key. When `ipc_flag = 1` (a
+    /// GPU-DMA pool) the absent key must resolve to `"ipc"`.
+    #[test]
+    fn absent_transport_with_ipc_flag_resolves_to_ipc() {
+        let json = r#"{"size":8,"dtype":"uint8","shape":[8],"pinned_type":"cuda"}"#;
+        let mut buf = vec![0u8; data_offset_for(json.len())];
+        write_header(&mut buf, json).expect("write");
+        buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&1u64.to_le_bytes());
+
+        let parsed = parse_header(&buf).expect("parse");
+        assert_eq!(parsed.metadata.transport, "ipc");
+    }
+
+    /// Same absent key, but `ipc_flag = 0` (a plain CPU shmem pool): must
+    /// resolve to `"shmem"`.
+    #[test]
+    fn absent_transport_without_ipc_flag_resolves_to_shmem() {
+        let json = r#"{"size":8,"dtype":"uint8","shape":[8],"pinned_type":"cpu"}"#;
+        let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
+        write_header(&mut buf, json).expect("write");
+
+        let parsed = parse_header(&buf).expect("parse");
+        assert_eq!(parsed.metadata.transport, "shmem");
+    }
+
+    /// Absent `pinned_type` must mirror Python's `effective_as_cuda`
+    /// default (no key reads as CUDA), not "cpu".
+    #[test]
+    fn absent_pinned_type_defaults_to_cuda() {
+        let json = r#"{"size":8,"dtype":"uint8","shape":[8]}"#;
+        let parsed = parse_metadata_json(json).expect("valid json");
+        assert_eq!(parsed.pinned_type, "cuda");
+    }
+
+    #[test]
+    fn pinned_type_present_but_not_a_string_is_rejected() {
+        let json = r#"{"size":8,"dtype":"uint8","shape":[8],"pinned_type":42}"#;
+        let err = parse_metadata_json(json).unwrap_err();
+        assert!(err.contains("pinned_type"), "unexpected error: {err}");
+    }
+
+    /// `filter_map` would silently turn `[2,"x",3]` into `[2,3]`, making a
+    /// 3-D tensor look like a plausible 2-D one. Must error instead.
+    #[test]
+    fn shape_containing_a_non_integer_is_rejected() {
+        let json = r#"{"size":8,"dtype":"uint8","shape":[2,"x",3],"pinned_type":"cpu"}"#;
+        let err = parse_metadata_json(json).unwrap_err();
+        assert!(err.contains("shape"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn shape_present_but_not_an_array_is_rejected() {
+        let json = r#"{"size":8,"dtype":"uint8","shape":8,"pinned_type":"cpu"}"#;
+        let err = parse_metadata_json(json).unwrap_err();
+        assert!(err.contains("shape"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_non_utf8_metadata_json() {
+        let json = metadata_json(8, "uint8", &[8], "cpu", "shmem");
+        let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
+        write_header(&mut buf, &json).expect("write");
+        buf[HEADER_SIZE] = 0xFF; // invalid UTF-8 lead byte, overwrites the leading `{`
+        let err = parse_header(&buf).unwrap_err();
+        assert!(err.contains("utf-8"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn parse_rejects_data_offset_before_the_header_ends() {
+        let json = metadata_json(8, "uint8", &[8], "cpu", "shmem");
+        let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
+        write_header(&mut buf, &json).expect("write");
+        buf[OFFSET_DATA_OFFSET..OFFSET_DATA_OFFSET + 8].copy_from_slice(&0u64.to_le_bytes());
+        let err = parse_header(&buf).unwrap_err();
+        assert!(err.contains("data_offset"), "unexpected error: {err}");
+    }
+
+    /// `size` overrunning the segment is rejected for a plain shmem pool,
+    /// but the exact same oversized `size` is the normal shape of a Python
+    /// CUDA-receiver pool — header-only segment, `ipc_flag = 1`, `size`
+    /// describing a tensor that actually lives in the IPC-imported GPU
+    /// buffer — and must parse.
+    #[test]
+    fn oversized_size_is_rejected_for_shmem_but_allowed_for_ipc() {
+        let json = metadata_json(1_000_000, "uint8", &[1_000_000], "cpu", "shmem");
+        let data_offset = data_offset_for(json.len());
+        let mut buf = vec![0u8; data_offset]; // header-only: no room for the payload
+        write_header(&mut buf, &json).expect("write");
+
+        let err = parse_header(&buf).unwrap_err();
+        assert!(err.contains("size"), "unexpected error: {err}");
+
+        buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&1u64.to_le_bytes());
+        let parsed = parse_header(&buf).expect("ipc-present header-only segment must parse");
+        assert_eq!(parsed.metadata.size, 1_000_000);
+        assert!(parsed.ipc_present);
+    }
+
+    /// `constants_match_the_python_binding` only pins the offset constants
+    /// to literals defined in this same file — an offset typo would
+    /// round-trip through `write_header`/`parse_header` undetected. This
+    /// asserts the actual bytes `write_header` produces.
+    #[test]
+    fn write_header_lays_out_bytes_at_the_documented_offsets() {
+        let json = "{}";
+        let mut buf = vec![0u8; data_offset_for(json.len())];
+        write_header(&mut buf, json).expect("write");
+
+        assert_eq!(&buf[0..8], MAGIC);
+        assert_eq!(&buf[8..16], (json.len() as u64).to_le_bytes());
+        assert_eq!(
+            &buf[16..24],
+            (data_offset_for(json.len()) as u64).to_le_bytes()
+        );
+        assert_eq!(&buf[96..104], 0u64.to_le_bytes());
     }
 }
