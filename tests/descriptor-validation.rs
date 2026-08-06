@@ -583,6 +583,19 @@ fn invalid_ros2_rejects_build() {
     descriptor_should_fail("invalid-ros2-build.yml", &["build", "ros2"]);
 }
 
+#[test]
+fn invalid_ros2_rejects_git() {
+    descriptor_should_fail("invalid-ros2-git.yml", &["git", "not supported"]);
+}
+
+#[test]
+fn invalid_ros2_rejects_metadata() {
+    descriptor_should_fail(
+        "invalid-ros2-metadata.yml",
+        &["output_metadata", "pattern", "not supported"],
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // hub — mutually exclusive
 // ═══════════════════════════════════════════════════════════

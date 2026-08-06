@@ -260,7 +260,32 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     node.id
                 );
             }
-            NodeKind::Ros2Bridge(_) => {}
+            NodeKind::Ros2Bridge(_) => {
+                // Source-definition fields — ROS2 bridge is pre-built,
+                // these are silently dropped during resolution.
+                if node.git.is_some() {
+                    conflicts.push("git");
+                }
+                if node.branch.is_some() {
+                    conflicts.push("branch");
+                }
+                if node.tag.is_some() {
+                    conflicts.push("tag");
+                }
+                if node.rev.is_some() {
+                    conflicts.push("rev");
+                }
+                if node.hub.is_some() {
+                    conflicts.push("hub");
+                }
+                // No corresponding fields in the resolved CustomNode.
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+            }
         }
 
         if !conflicts.is_empty() {
