@@ -171,6 +171,15 @@ The server set only governs *restart* detection — which reply matches is
 decided by `request_id` alone. `ExpectedServers::Any` skips restart
 correlation entirely, for when the responder is not known up front.
 
+A restart means different things to the two variants, and the deadline
+follows that. For `One` it is terminal: the request is orphaned and its
+deadline is dropped with it. For `AnyOf` it is only a notification — the
+other candidates may still answer — so the correlation *and its
+deadline* survive, still running on the original clock. That last part
+matters: if a restart reset the clock, a node that keeps flapping would
+hold the correlation open indefinitely and the caller would never see
+`Timeout`.
+
 ## 3. Action (goal/feedback/result)
 
 A client sends a goal and receives periodic feedback plus a final result.
