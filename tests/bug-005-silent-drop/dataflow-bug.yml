@@ -1,0 +1,34 @@
+# BUG-005 验证: Custom 节点 node-level 字段被静默丢弃
+#
+# 预期行为: ticker 的 tick 路由到 buggy_custom/tick_in，处理后输出
+#           buggy_custom/data_out → checker/data_in
+#           checker 应该收到数据并打印 "PASS"
+#
+# Bug 表现: checker 永远不会收到 data_in，因为 outputs 被静默丢弃
+#           整个数据流静默挂死
+
+nodes:
+  - id: ticker
+    custom:
+      path: ./ticker.py
+      source: Local
+      outputs:
+        - tick
+
+  - id: buggy_custom
+    custom:
+      path: ./passthrough.py
+      source: Local
+      inputs:
+        tick_in: ticker/tick
+    # ↓ 以下 node 级字段会被静默丢弃（BUG-005）
+    outputs:
+      - data_out
+    restart_policy: always
+
+  - id: checker
+    custom:
+      path: ./checker.py
+      source: Local
+      inputs:
+        data_in: buggy_custom/data_out

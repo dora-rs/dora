@@ -267,6 +267,51 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 if node.max_rotated_files.is_some() {
                     conflicts.push("max_rotated_files");
                 }
+                if !node.inputs.is_empty() {
+                    conflicts.push("inputs");
+                }
+                if !node.outputs.is_empty() {
+                    conflicts.push("outputs");
+                }
+                if !node.output_types.is_empty() {
+                    conflicts.push("output_types");
+                }
+                if !node.input_types.is_empty() {
+                    conflicts.push("input_types");
+                }
+                if !node.output_framing.is_empty() {
+                    conflicts.push("output_framing");
+                }
+                if !node.output_metadata.is_empty() {
+                    conflicts.push("output_metadata");
+                }
+                if node.pattern.is_some() {
+                    conflicts.push("pattern");
+                }
+                if !matches!(node.restart_policy, RestartPolicy::Never) {
+                    conflicts.push("restart_policy");
+                }
+                if node.max_restarts != 0 {
+                    conflicts.push("max_restarts");
+                }
+                if node.restart_delay.is_some() {
+                    conflicts.push("restart_delay");
+                }
+                if node.max_restart_delay.is_some() {
+                    conflicts.push("max_restart_delay");
+                }
+                if node.restart_window.is_some() {
+                    conflicts.push("restart_window");
+                }
+                if node.health_check_timeout.is_some() {
+                    conflicts.push("health_check_timeout");
+                }
+                if node.finish_grace_secs.is_some() {
+                    conflicts.push("finish_grace_secs");
+                }
+                if node.shared_memory_pool_size.is_some() {
+                    conflicts.push("shared_memory_pool_size");
+                }
             }
             NodeKind::Module(_) => {
                 eyre::bail!(

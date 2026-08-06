@@ -1,0 +1,25 @@
+# BUG-005 完全静默丢弃场景:
+# buggy_node 的 outputs 写在 node 级 (custom: 外部)
+# 没有任何下游节点引用它，所以 wiring validation 也发现不了
+# outputs + restart_policy + health_check_timeout 全被静默丢弃
+# 用户不会有任何错误提示
+
+nodes:
+  - id: ticker
+    custom:
+      path: ./ticker.py
+      source: Local
+      outputs:
+        - tick
+
+  - id: buggy_node
+    custom:
+      path: ./passthrough.py
+      source: Local
+      inputs:
+        tick_in: ticker/tick
+    # ↓ 以下 node 级字段全部静默丢弃，零错误提示
+    outputs:
+      - should_exist_but_silently_dropped
+    restart_policy: always
+    health_check_timeout: 5.0

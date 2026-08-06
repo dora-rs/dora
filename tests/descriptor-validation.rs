@@ -139,6 +139,53 @@ fn invalid_custom_rejects_git() {
     descriptor_should_fail("invalid-custom-git.yml", &["git", "not supported"]);
 }
 
+#[test]
+fn invalid_custom_rejects_inputs() {
+    descriptor_should_fail("invalid-custom-inputs.yml", &["inputs", "not supported"]);
+}
+
+#[test]
+fn invalid_custom_rejects_outputs() {
+    descriptor_should_fail("invalid-custom-outputs.yml", &["outputs", "not supported"]);
+}
+
+#[test]
+fn invalid_custom_rejects_run_config() {
+    descriptor_should_fail(
+        "invalid-custom-run-config.yml",
+        &[
+            "output_types",
+            "input_types",
+            "output_framing",
+            "not supported",
+        ],
+    );
+}
+
+#[test]
+fn invalid_custom_rejects_metadata() {
+    descriptor_should_fail(
+        "invalid-custom-metadata.yml",
+        &["output_metadata", "pattern", "not supported"],
+    );
+}
+
+#[test]
+fn invalid_custom_rejects_restart() {
+    descriptor_should_fail(
+        "invalid-custom-restart.yml",
+        &["restart_policy", "not supported"],
+    );
+}
+
+#[test]
+fn invalid_custom_rejects_runtime_fields() {
+    descriptor_should_fail(
+        "invalid-custom-runtime-fields.yml",
+        &["health_check_timeout", "not supported"],
+    );
+}
+
 // ═══════════════════════════════════════════════════════════
 // ROS2 Bridge — invalid combos
 // ═══════════════════════════════════════════════════════════
