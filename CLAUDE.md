@@ -264,6 +264,20 @@ cargo fmt --all -- --check
 cargo test --test example-smoke -- --test-threads=1
 ```
 
+### After each bug fix: record progress + clean up
+
+```bash
+# 1. Write progress to memory (required)
+#    Create / update  .claude/projects/<repo>/memory/<bug-slug>.md
+#    with: status, root cause, fix approach, affected files, PR link.
+#    Then add an entry to MEMORY.md.
+
+# 2. Clean build artifacts (required)
+#    target/  grows rapidly during feature work — clean it before
+#    moving to the next task to free disk space.
+cargo clean
+```
+
 ### Smoke test patterns
 
 Two helpers are available in `tests/example-smoke.rs`:
