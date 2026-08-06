@@ -40,7 +40,11 @@ pub struct PoolMetadataJson {
     /// key. `parse_metadata_json` leaves it empty (`String::new()`) when
     /// absent — it has no way to know whether the segment is IPC-backed —
     /// and `parse_header` fills it in from the header's `ipc_flag` before
-    /// returning, so callers only ever see the resolved value.
+    /// returning, so callers only ever see the resolved value. If a value
+    /// IS present, `parse_header` requires it to agree with `ipc_flag`
+    /// (`transport == "ipc"` iff `ipc_flag == 1`) and rejects the header
+    /// otherwise — the flag, not the JSON, is authoritative because it
+    /// alone gates the payload-size bounds check.
     pub transport: String,
 }
 
@@ -262,6 +266,21 @@ pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
         // pool is ipc_flag=1 and header-only ("ipc"); a Python CPU pool is
         // ipc_flag=0 with payload in the shmem data region ("shmem").
         metadata.transport = if ipc_present { "ipc" } else { "shmem" }.to_string();
+    } else if (metadata.transport == "ipc") != ipc_present {
+        // `ipc_flag` and `transport` are both attacker-controlled bytes in
+        // the same world-writable segment, and they must not be allowed to
+        // disagree exactly where it matters: `ipc_flag` gates the size
+        // check above, so `ipc_flag=1` with `transport="shmem"` would tell
+        // a consumer the (nonexistent) data region holds an oversized
+        // payload — the header-only allocation this function's own size
+        // check exists to catch. The flag is authoritative (`"unified"`
+        // legitimately pairs with `ipc_flag=0` and keeps its size check;
+        // only a `transport` claiming "ipc" while the flag disagrees, or
+        // vice versa, is a contradiction).
+        return Err(format!(
+            "metadata transport `{}` contradicts header ipc_flag {}",
+            metadata.transport, ipc_present as u8
+        ));
     }
 
     let ipc_handle = if ipc_present {
@@ -460,20 +479,29 @@ mod tests {
         write_header(&mut buf, &json).expect("write");
         buf[OFFSET_DATA_OFFSET..OFFSET_DATA_OFFSET + 8].copy_from_slice(&0u64.to_le_bytes());
         let err = parse_header(&buf).unwrap_err();
-        assert!(err.contains("data_offset"), "unexpected error: {err}");
+        // `data_offset = 0` also fails the later "json_len does not fit"
+        // check, whose message happens to contain "data_offset" too —
+        // assert the specific cause this test targets, not a substring
+        // both the fixed and unfixed code would produce.
+        assert!(
+            err.contains("less than HEADER_SIZE"),
+            "unexpected error: {err}"
+        );
     }
 
     /// `size` overrunning the segment is rejected for a plain shmem pool,
     /// but the exact same oversized `size` is the normal shape of a Python
     /// CUDA-receiver pool — header-only segment, `ipc_flag = 1`, `size`
     /// describing a tensor that actually lives in the IPC-imported GPU
-    /// buffer — and must parse.
+    /// buffer — and must parse. No `transport` key, matching a real
+    /// Python-written segment, so the flip is driven by `ipc_flag` alone
+    /// and cannot trip the transport/ipc_flag contradiction check.
     #[test]
     fn oversized_size_is_rejected_for_shmem_but_allowed_for_ipc() {
-        let json = metadata_json(1_000_000, "uint8", &[1_000_000], "cpu", "shmem");
+        let json = r#"{"size":1000000,"dtype":"uint8","shape":[1000000],"pinned_type":"cpu"}"#;
         let data_offset = data_offset_for(json.len());
         let mut buf = vec![0u8; data_offset]; // header-only: no room for the payload
-        write_header(&mut buf, &json).expect("write");
+        write_header(&mut buf, json).expect("write");
 
         let err = parse_header(&buf).unwrap_err();
         assert!(err.contains("size"), "unexpected error: {err}");
@@ -484,22 +512,90 @@ mod tests {
         assert!(parsed.ipc_present);
     }
 
+    /// The exploit shape from the code-review finding: `ipc_flag = 1`
+    /// skips the size check, and a present `transport: "shmem"` must not
+    /// then be allowed to tell a consumer the (nonexistent) data region
+    /// holds the oversized payload.
+    #[test]
+    fn transport_shmem_contradicting_ipc_flag_is_rejected() {
+        let json = metadata_json(83_886_080, "uint8", &[83_886_080], "cpu", "shmem");
+        let mut buf = vec![0u8; data_offset_for(json.len())]; // header-only
+        write_header(&mut buf, &json).expect("write");
+        buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&1u64.to_le_bytes());
+
+        let err = parse_header(&buf).unwrap_err();
+        assert!(err.contains("contradicts"), "unexpected error: {err}");
+    }
+
+    /// The reverse direction: `transport: "ipc"` claims the size check is
+    /// skippable, but `ipc_flag = 0` says the data region is real and must
+    /// be validated. Also a contradiction.
+    #[test]
+    fn transport_ipc_contradicting_ipc_flag_is_rejected() {
+        // Room for the 8-byte payload, so the size check (gated on
+        // ipc_flag=0) passes and the transport/ipc_flag contradiction is
+        // what actually fires.
+        let json = metadata_json(8, "uint8", &[8], "cpu", "ipc");
+        let mut buf = vec![0u8; data_offset_for(json.len()) + 8]; // ipc_flag left at 0
+        write_header(&mut buf, &json).expect("write");
+
+        let err = parse_header(&buf).unwrap_err();
+        assert!(err.contains("contradicts"), "unexpected error: {err}");
+    }
+
+    /// `"unified"` legitimately pairs with `ipc_flag = 0` (it is not
+    /// `"ipc"`, so it does not contradict the flag) and must keep its
+    /// normal size check rather than being treated as exempt.
+    #[test]
+    fn transport_unified_with_no_ipc_flag_parses_and_keeps_its_size_check() {
+        let json = metadata_json(8, "uint8", &[8], "cuda", "unified");
+        let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
+        write_header(&mut buf, &json).expect("write");
+        let parsed = parse_header(&buf).expect("parse");
+        assert_eq!(parsed.metadata.transport, "unified");
+        assert!(!parsed.ipc_present);
+
+        let oversized = metadata_json(1_000_000, "uint8", &[1_000_000], "cuda", "unified");
+        let mut buf2 = vec![0u8; data_offset_for(oversized.len())]; // header-only
+        write_header(&mut buf2, &oversized).expect("write");
+        let err = parse_header(&buf2).unwrap_err();
+        assert!(err.contains("size"), "unexpected error: {err}");
+    }
+
     /// `constants_match_the_python_binding` only pins the offset constants
     /// to literals defined in this same file — an offset typo would
     /// round-trip through `write_header`/`parse_header` undetected. This
-    /// asserts the actual bytes `write_header` produces.
+    /// asserts the actual bytes `write_header` produces, at literal offsets
+    /// independent of the `OFFSET_*` constants it exercises.
+    ///
+    /// The buffer starts pre-poisoned (`0xEE`, not `0u8`) so a deleted
+    /// `.fill(0)` call in `write_header` shows up as a non-zero byte here
+    /// instead of being indistinguishable from an already-zeroed `Vec`.
     #[test]
     fn write_header_lays_out_bytes_at_the_documented_offsets() {
         let json = "{}";
-        let mut buf = vec![0u8; data_offset_for(json.len())];
+        let data_offset = data_offset_for(json.len());
+        let mut buf = vec![0xEEu8; data_offset];
         write_header(&mut buf, json).expect("write");
 
         assert_eq!(&buf[0..8], MAGIC);
         assert_eq!(&buf[8..16], (json.len() as u64).to_le_bytes());
-        assert_eq!(
-            &buf[16..24],
-            (data_offset_for(json.len()) as u64).to_le_bytes()
+        assert_eq!(&buf[16..24], (data_offset as u64).to_le_bytes());
+        assert_eq!(&buf[24..32], 0u64.to_le_bytes(), "ipc_flag");
+        assert!(
+            buf[32..96].iter().all(|&b| b == 0),
+            "ipc handle region not zeroed"
         );
-        assert_eq!(&buf[96..104], 0u64.to_le_bytes());
+        assert_eq!(&buf[96..104], 0u64.to_le_bytes(), "write_gen");
+        assert!(
+            buf[104..HEADER_SIZE].iter().all(|&b| b == 0),
+            "reserved region not zeroed"
+        );
+        assert!(
+            buf[HEADER_SIZE + json.len()..data_offset]
+                .iter()
+                .all(|&b| b == 0),
+            "json padding not zeroed"
+        );
     }
 }
