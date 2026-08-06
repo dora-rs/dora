@@ -69,10 +69,13 @@ pub unsafe fn begin_write(gen_ptr: *mut u64) -> u64 {
     if cur.is_multiple_of(2) {
         atomic.store(cur + 1, Ordering::Relaxed);
     }
-    // Unconditional: on the recovery path (generation already odd) there is
-    // no store to attach a release ordering to here, but the payload stores
-    // the caller is about to make still must not surface before this
-    // thread's observation of the odd marker it is about to write over.
+    // Unconditional, and a fence rather than a release store: a release store
+    // would order what precedes it, whereas the edge needed here is
+    // `odd marker -> payload stores`, which only a fence after the store
+    // provides. On the recovery path (generation already odd, left by a writer
+    // that died mid-write) nothing is stored at all, and the fence instead
+    // orders the load above against the caller's payload stores — so another
+    // thread cannot observe those stores without also observing the odd marker.
     fence(Ordering::Release);
     cur & !1
 }
@@ -185,13 +188,13 @@ mod tests {
     fn a_write_that_starts_mid_read_is_rejected() {
         let mut g = cell(4);
         let g1 = unsafe { begin_read(&mut *g) };
-        assert!(is_complete(g1));
+        assert_eq!(g1, 4, "the opening sample must read the current generation");
         let pre = unsafe { begin_write(&mut *g) };
         unsafe { end_write(&mut *g, pre, true) };
-        assert_ne!(
+        assert_eq!(
             unsafe { end_read(&mut *g) },
-            g1,
-            "the closing sample must reject"
+            6,
+            "the closing sample must see the new generation, not the opening one"
         );
     }
 
