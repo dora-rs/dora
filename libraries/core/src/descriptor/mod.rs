@@ -10,6 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use tracing::warn;
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
@@ -290,28 +291,52 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
     fn merge_node_level_fields_into_custom(node: &mut Node) {
         if let Some(ref mut custom) = node.custom {
             let rc = &mut custom.run_config;
+            // Fields whose Node-level value was ignored because the
+            // sub-structure already had a (non-default) value set.
+            let mut shadowed = Vec::new();
 
             // ── run_config fields ──
             if rc.outputs.is_empty() && !node.outputs.is_empty() {
                 rc.outputs = std::mem::take(&mut node.outputs);
+            } else if !rc.outputs.is_empty() && !node.outputs.is_empty() {
+                shadowed.push("outputs");
             }
             if rc.inputs.is_empty() && !node.inputs.is_empty() {
                 rc.inputs = std::mem::take(&mut node.inputs);
+            } else if !rc.inputs.is_empty() && !node.inputs.is_empty() {
+                shadowed.push("inputs");
             }
             if rc.output_types.is_empty() && !node.output_types.is_empty() {
                 rc.output_types = std::mem::take(&mut node.output_types);
+            } else if !rc.output_types.is_empty() && !node.output_types.is_empty() {
+                shadowed.push("output_types");
             }
             if rc.output_framing.is_empty() && !node.output_framing.is_empty() {
                 rc.output_framing = std::mem::take(&mut node.output_framing);
+            } else if !rc.output_framing.is_empty() && !node.output_framing.is_empty() {
+                shadowed.push("output_framing");
             }
             if rc.input_types.is_empty() && !node.input_types.is_empty() {
                 rc.input_types = std::mem::take(&mut node.input_types);
+            } else if !rc.input_types.is_empty() && !node.input_types.is_empty() {
+                shadowed.push("input_types");
             }
             if rc.shared_memory_pool_size.is_none() && node.shared_memory_pool_size.is_some() {
                 rc.shared_memory_pool_size = node.shared_memory_pool_size.take();
+            } else if rc.shared_memory_pool_size.is_some() && node.shared_memory_pool_size.is_some()
+            {
+                shadowed.push("shared_memory_pool_size");
             }
 
             // ── restart fields ──
+            //
+            // Note: `restart_policy` and `max_restarts` are non-Option types
+            // whose defaults (Never / 0) are indistinguishable from
+            // "explicitly set to default". If custom already has a non-default
+            // value we keep it; if both are set to the same non-default we
+            // silently skip the merge (the Node-level value is dropped).
+            // This is the same trade-off Standard nodes make when they always
+            // copy Node-level fields.
             if matches!(custom.restart_policy, RestartPolicy::Never)
                 && !matches!(node.restart_policy, RestartPolicy::Never)
             {
@@ -323,48 +348,83 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             }
             if custom.restart_delay.is_none() && node.restart_delay.is_some() {
                 custom.restart_delay = node.restart_delay.take();
+            } else if custom.restart_delay.is_some() && node.restart_delay.is_some() {
+                shadowed.push("restart_delay");
             }
             if custom.max_restart_delay.is_none() && node.max_restart_delay.is_some() {
                 custom.max_restart_delay = node.max_restart_delay.take();
+            } else if custom.max_restart_delay.is_some() && node.max_restart_delay.is_some() {
+                shadowed.push("max_restart_delay");
             }
             if custom.restart_window.is_none() && node.restart_window.is_some() {
                 custom.restart_window = node.restart_window.take();
+            } else if custom.restart_window.is_some() && node.restart_window.is_some() {
+                shadowed.push("restart_window");
             }
 
             // ── runtime fields ──
             if custom.health_check_timeout.is_none() && node.health_check_timeout.is_some() {
                 custom.health_check_timeout = node.health_check_timeout.take();
+            } else if custom.health_check_timeout.is_some() && node.health_check_timeout.is_some() {
+                shadowed.push("health_check_timeout");
             }
             if custom.finish_grace_secs.is_none() && node.finish_grace_secs.is_some() {
                 custom.finish_grace_secs = node.finish_grace_secs.take();
+            } else if custom.finish_grace_secs.is_some() && node.finish_grace_secs.is_some() {
+                shadowed.push("finish_grace_secs");
             }
 
             // ── build / execution fields ──
             if custom.args.is_none() && node.args.is_some() {
                 custom.args = node.args.take();
+            } else if custom.args.is_some() && node.args.is_some() {
+                shadowed.push("args");
             }
             if custom.build.is_none() && node.build.is_some() {
                 custom.build = node.build.take();
+            } else if custom.build.is_some() && node.build.is_some() {
+                shadowed.push("build");
             }
             if custom.path_sha256.is_none() && node.path_sha256.is_some() {
                 custom.path_sha256 = node.path_sha256.take();
+            } else if custom.path_sha256.is_some() && node.path_sha256.is_some() {
+                shadowed.push("path_sha256");
             }
 
             // ── logging fields ──
             if custom.send_stdout_as.is_none() && node.send_stdout_as.is_some() {
                 custom.send_stdout_as = node.send_stdout_as.take();
+            } else if custom.send_stdout_as.is_some() && node.send_stdout_as.is_some() {
+                shadowed.push("send_stdout_as");
             }
             if custom.send_logs_as.is_none() && node.send_logs_as.is_some() {
                 custom.send_logs_as = node.send_logs_as.take();
+            } else if custom.send_logs_as.is_some() && node.send_logs_as.is_some() {
+                shadowed.push("send_logs_as");
             }
             if custom.min_log_level.is_none() && node.min_log_level.is_some() {
                 custom.min_log_level = node.min_log_level.take();
+            } else if custom.min_log_level.is_some() && node.min_log_level.is_some() {
+                shadowed.push("min_log_level");
             }
             if custom.max_log_size.is_none() && node.max_log_size.is_some() {
                 custom.max_log_size = node.max_log_size.take();
+            } else if custom.max_log_size.is_some() && node.max_log_size.is_some() {
+                shadowed.push("max_log_size");
             }
             if custom.max_rotated_files.is_none() && node.max_rotated_files.is_some() {
                 custom.max_rotated_files = node.max_rotated_files.take();
+            } else if custom.max_rotated_files.is_some() && node.max_rotated_files.is_some() {
+                shadowed.push("max_rotated_files");
+            }
+
+            if !shadowed.is_empty() {
+                warn!(
+                    "node `{}`: the following fields are set at both the node level \
+                     and inside `custom:` — the `custom:` values take precedence: {}",
+                    node.id,
+                    shadowed.join(", ")
+                );
             }
         }
     }

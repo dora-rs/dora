@@ -253,7 +253,85 @@ fn comprehensive_operator_all_fields() {
 
 #[test]
 fn comprehensive_ros2_all_fields() {
-    descriptor_should_pass("comprehensive-ros2.yml");
+    let desc = load_descriptor("comprehensive-ros2.yml");
+    let resolved = desc
+        .resolve_aliases_and_set_defaults()
+        .expect("comprehensive ros2 should resolve");
+    let node = resolved.values().next().expect("should have one node");
+    let custom = node
+        .kind
+        .as_custom()
+        .expect("ROS2 should resolve to Custom");
+
+    // ROS2 bridge config is serialized into env by resolution
+    assert!(
+        custom
+            .envs
+            .as_ref()
+            .is_some_and(|e| e.contains_key("DORA_ROS2_BRIDGE_CONFIG")),
+        "ROS2 config should be serialized into env"
+    );
+
+    // Node-level fields copied into CustomNode (like Standard nodes)
+    assert!(
+        !custom.run_config.outputs.is_empty(),
+        "outputs should be set"
+    );
+    assert!(
+        !custom.run_config.output_types.is_empty(),
+        "output_types should be set"
+    );
+    assert!(
+        !custom.run_config.output_framing.is_empty(),
+        "output_framing should be set"
+    );
+    assert!(
+        !custom.run_config.input_types.is_empty(),
+        "input_types should be set"
+    );
+    assert!(
+        custom.run_config.shared_memory_pool_size.is_some(),
+        "shared_memory_pool_size should be set"
+    );
+
+    assert!(
+        !matches!(
+            custom.restart_policy,
+            dora_message::descriptor::RestartPolicy::Never
+        ),
+        "restart_policy should be on-failure"
+    );
+    assert_eq!(custom.max_restarts, 3, "max_restarts should be set");
+    assert!(
+        custom.restart_delay.is_some(),
+        "restart_delay should be set"
+    );
+    assert!(
+        custom.max_restart_delay.is_some(),
+        "max_restart_delay should be set"
+    );
+    assert!(
+        custom.health_check_timeout.is_some(),
+        "health_check_timeout should be set"
+    );
+    assert!(
+        custom.finish_grace_secs.is_some(),
+        "finish_grace_secs should be set"
+    );
+    assert!(
+        custom.send_stdout_as.is_some(),
+        "send_stdout_as should be set"
+    );
+    assert!(custom.send_logs_as.is_some(), "send_logs_as should be set");
+    assert!(
+        custom.min_log_level.is_some(),
+        "min_log_level should be set"
+    );
+    assert!(custom.max_log_size.is_some(), "max_log_size should be set");
+    assert!(
+        custom.max_rotated_files.is_some(),
+        "max_rotated_files should be set"
+    );
 }
 
 // ═══════════════════════════════════════════════════════════
