@@ -1,4 +1,5 @@
 pub mod doradma;
+pub mod seqlock;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
