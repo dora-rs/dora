@@ -16,6 +16,13 @@ use crate::doradma::{
 use crate::naming;
 use crate::seqlock;
 
+/// Re-exported because it appears in [`PoolSegment::begin_read`]'s signature.
+/// The `seqlock` module itself is crate-private: nothing outside this crate
+/// has any business publishing a generation, which is what `seqlock`'s writer
+/// half lets you do with nothing but an `unsafe` block and a fabricated
+/// token — exactly the hole [`PoolSegment::begin_write`] closes.
+pub use crate::seqlock::OpeningSample;
+
 /// Mirrors the daemon's per-pool size cap so a node fails locally, with a
 /// message naming the limit, instead of after a round trip.
 const MAX_POOL_BYTES: usize = 1024 * 1024 * 1024;
@@ -105,7 +112,8 @@ fn element_size(dtype: &str) -> Option<usize> {
         "int16" | "uint16" | "float16" | "bfloat16" => return Some(2),
         "int32" | "uint32" | "float32" => return Some(4),
         "int64" | "uint64" | "float64" | "complex64" => return Some(8),
-        "complex128" => return Some(16),
+        "complex128" | "float128" => return Some(16),
+        "complex256" => return Some(32),
         _ => {}
     }
     // numpy array-interface typestr: byte-order char, kind char, item size.
@@ -213,7 +221,7 @@ impl std::fmt::Debug for PoolSegment {
             .field("name", &self.name)
             .field("transport", &self.transport)
             .field("segment_bytes", &self.segment_bytes())
-            .field("data_offset", &self.data_offset())
+            .field("payload_offset", &self.payload_offset())
             .field("declared_size", &self.declared_size())
             .field("payload_len", &self.payload_len())
             .field("dtype", &self.dtype())
@@ -324,16 +332,18 @@ impl PoolSegment {
         // the reference. The header+metadata region is safe to reference
         // because it is written once, before the pool is registered, and a
         // consumer only learns the pool exists through that registration.
-        let json_len = {
+        //
+        // `header_region_len` caps the length at `data_offset`, so the slice
+        // provably stops at the payload start rather than merely inside the
+        // mapping. It reads only bytes 0..HEADER_SIZE, which is why the first
+        // slice is clamped to the mapping length.
+        let region_len = {
             let fixed = unsafe {
                 std::slice::from_raw_parts(base, segment_bytes.min(doradma::HEADER_SIZE))
             };
-            doradma::json_len_field(fixed).map_err(name_err)?
+            doradma::header_region_len(fixed, segment_bytes).map_err(name_err)?
         };
-        let header_region_len = doradma::HEADER_SIZE
-            .saturating_add(json_len)
-            .min(segment_bytes);
-        let header_region = unsafe { std::slice::from_raw_parts(base, header_region_len) };
+        let header_region = unsafe { std::slice::from_raw_parts(base, region_len) };
 
         // `parse_header` has already validated `data_offset`, `json_len` and
         // the declared payload size against the mapping length, and derived the
@@ -343,6 +353,13 @@ impl PoolSegment {
         // Python-written CUDA pool, whose segment is header-only while its JSON
         // still declares the full tensor size.
         let header = parse_header(header_region, segment_bytes).map_err(name_err)?;
+        // Machine-checks what `header_region_len` promised, against the
+        // authoritative parsed value rather than the raw one it read.
+        debug_assert!(
+            region_len <= header.data_offset,
+            "the header slice reached into the payload: {region_len} > {}",
+            header.data_offset
+        );
         let transport = header
             .metadata
             .transport
@@ -383,8 +400,23 @@ impl PoolSegment {
         self.shmem.len()
     }
 
-    pub fn data_offset(&self) -> usize {
-        self.header.data_offset
+    /// Byte offset of the payload within the mapping, or `None` for
+    /// [`Transport::Ipc`], whose payload is not in this mapping at all. Pair
+    /// with [`payload_len`](Self::payload_len).
+    ///
+    /// Exists for the CUDA path, which cannot use
+    /// [`payload`](Self::payload)'s host address: it registers the whole
+    /// mapping with `cudaHostRegister(shm_base(), segment_bytes())`, takes the
+    /// device alias with `cudaHostGetDevicePointer`, and then needs this
+    /// offset to reach the payload on the device side. Returning an `Option`
+    /// applies the same discipline as `payload()` — `shm_base() +
+    /// payload_offset()` cannot be formed on an IPC pool without unwrapping a
+    /// `None`.
+    pub fn payload_offset(&self) -> Option<usize> {
+        match self.transport {
+            Transport::Ipc => None,
+            Transport::Shmem | Transport::Unified => Some(self.header.data_offset),
+        }
     }
 
     /// The payload region: its start address and its length in bytes, or `None`
@@ -473,6 +505,27 @@ impl PoolSegment {
     /// a second call while a cycle is already open. The baseline generation is
     /// kept in the segment rather than handed back, so no caller can supply the
     /// wrong one.
+    ///
+    /// # Two contracts this method cannot enforce
+    ///
+    /// **One writer per pool, process-wide.** `pending_write` is per-handle, so
+    /// it catches a doubled `begin_write` on *this* `PoolSegment` and nothing
+    /// else. Two handles onto the same segment — two [`open`](Self::open)
+    /// calls, or a writer in another process — each see the generation, each
+    /// either increment it or skip the increment because it is already odd,
+    /// and each come away with the same baseline; both then interleave payload
+    /// stores and both publish an even generation over the result. Readers
+    /// accept it, because from the outside it is indistinguishable from one
+    /// clean write. Nothing in a seqlock can detect this: the single-writer
+    /// rule is the premise the whole scheme rests on, not something it checks.
+    /// A pool has exactly one producer, and that is the dataflow's job to
+    /// arrange.
+    ///
+    /// **`PoolSegment` is `Send` but not `Sync`.** A handle may be moved to
+    /// another thread; it may not be shared with one. `&self` methods look
+    /// harmless but read the same generation word the writer half mutates, and
+    /// the write cycle is `&mut self` precisely so the borrow checker
+    /// serialises it — which it can only do within a single thread.
     pub fn begin_write(&mut self) -> Result<(), String> {
         if self.transport == Transport::Ipc {
             return Err(format!(
@@ -686,7 +739,7 @@ mod tests {
         assert_eq!(reader.payload_len(), 128);
         assert_eq!(reader.dtype(), "uint8");
         assert_eq!(reader.shape(), &[128]);
-        assert_eq!(reader.data_offset(), writer.data_offset());
+        assert_eq!(reader.payload_offset(), writer.payload_offset());
         assert_eq!(reader.segment_bytes(), writer.segment_bytes());
         assert_eq!(reader.transport(), Transport::Shmem);
         assert_eq!(reader.pinned_type(), "cpu");
@@ -713,9 +766,10 @@ mod tests {
     #[test]
     fn the_payload_lies_after_the_header_and_inside_the_mapping() {
         let (guard, mut writer) = create_test_segment("offset", 32);
-        assert!(writer.data_offset() >= doradma::HEADER_SIZE);
+        let offset = writer.payload_offset().expect("payload offset");
+        assert!(offset >= doradma::HEADER_SIZE);
         let (ptr, len) = writer.payload().expect("payload");
-        assert_eq!(ptr, writer.shm_base() + writer.data_offset() as u64);
+        assert_eq!(ptr, writer.shm_base() + offset as u64);
         assert!(
             ptr + len as u64 <= writer.shm_base() + writer.segment_bytes() as u64,
             "the payload must not extend past the mapping"
@@ -922,7 +976,10 @@ mod tests {
         let seg =
             PoolSegment::create(guard.name(), 64, "uint8", &[64], Transport::Unified).unwrap();
         assert_eq!(seg.pinned_type(), "cuda");
-        assert_eq!(seg.segment_bytes(), seg.data_offset() + 64);
+        assert_eq!(
+            seg.segment_bytes(),
+            seg.payload_offset().expect("payload offset") + 64
+        );
 
         let reader = PoolSegment::open(guard.name()).expect("open");
         assert_eq!(reader.transport(), Transport::Unified);
@@ -988,11 +1045,12 @@ mod tests {
 
         let mut seg = PoolSegment::open(guard.name()).expect("open");
         assert!(seg.payload().is_none());
+        assert!(seg.payload_offset().is_none());
         assert_eq!(seg.payload_len(), 0);
         assert_eq!(seg.declared_size(), 8 * 1024 * 1024);
-        // The pointer that would otherwise have been handed out is exactly one
-        // past the end of the mapping.
-        assert_eq!(seg.data_offset(), seg.segment_bytes());
+        // Reaching past the private field: the offset that would otherwise
+        // have been handed out is exactly one past the end of the mapping.
+        assert_eq!(seg.header.data_offset, seg.segment_bytes());
 
         let err = seg.write(&[0xAB; 4096]).unwrap_err();
         assert!(err.contains("ipc-backed"), "unexpected error: {err}");
@@ -1090,6 +1148,11 @@ mod tests {
         assert_eq!(element_size("<f4"), Some(4));
         assert_eq!(element_size("|b1"), Some(1));
         assert_eq!(element_size("<i8"), Some(8));
+        // Name forms of the wide numpy types; their typestr forms (`<f16`,
+        // `<c32`) already fall out of the generic parse below.
+        assert_eq!(element_size("float128"), Some(16));
+        assert_eq!(element_size("complex256"), Some(32));
+        assert_eq!(element_size("<f16"), Some(16));
         // Not a vocabulary we know: the caller falls back to the 1-byte bound.
         assert_eq!(element_size("posit8"), None);
         assert_eq!(element_size("<U5"), None, "character counts are not bytes");
@@ -1131,8 +1194,48 @@ mod tests {
         assert!(!segment_exists(guard.name()));
     }
 
+    /// Overwrite one 8-byte little-endian header field of an existing segment.
+    fn patch_header_field(guard: &SegmentGuard, offset: usize, value: u64) {
+        let shmem = ShmemConf::new()
+            .os_id(guard.name())
+            .writable(true)
+            .open()
+            .expect("open for patching");
+        let buf = unsafe { std::slice::from_raw_parts_mut(shmem.as_ptr(), shmem.len()) };
+        buf[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+    }
+
+    /// `json_len` is attacker-controlled and unvalidated when `open` needs it,
+    /// yet `open` must bound its slice with it. Both values here would clamp
+    /// harmlessly against the segment length and still span the payload, so
+    /// `open` has to reject them outright — and the message must show the
+    /// bounding step rejected them, not `parse_header` afterwards, because by
+    /// then the offending slice would already have been formed.
+    #[test]
+    fn open_rejects_a_json_len_that_would_make_the_header_slice_span_the_payload() {
+        // Larger than data_offset, but still inside the segment.
+        let a = SegmentGuard::new("badjsonlen");
+        PoolSegment::create(a.name(), 8192, "uint8", &[8192], Transport::Shmem).expect("create");
+        patch_header_field(&a, doradma::OFFSET_JSON_LEN, 4096);
+        let err = PoolSegment::open(a.name()).unwrap_err();
+        assert!(
+            err.contains("cannot bound the header region"),
+            "unexpected error: {err}"
+        );
+
+        // Large enough that HEADER_SIZE + json_len wraps.
+        let b = SegmentGuard::new("hugejsonlen");
+        PoolSegment::create(b.name(), 8192, "uint8", &[8192], Transport::Shmem).expect("create");
+        patch_header_field(&b, doradma::OFFSET_JSON_LEN, u64::MAX);
+        let err = PoolSegment::open(b.name()).unwrap_err();
+        assert!(
+            err.contains("cannot bound the header region"),
+            "unexpected error: {err}"
+        );
+    }
+
     /// A segment too short to hold even the fixed header must be rejected by
-    /// the `json_len_field` step, before anything indexes into it.
+    /// the bounding step, before anything indexes into it.
     ///
     /// Deliberately 8 bytes, not merely under 256: `json_len_field` reads the
     /// `json_len` field at bytes 8..16, so a segment shorter than 16 is the

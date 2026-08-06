@@ -1,7 +1,11 @@
 pub mod doradma;
 pub mod naming;
 pub mod segment;
-pub mod seqlock;
+// Crate-private: its writer half publishes a generation from a raw pointer and
+// a caller-supplied token, which is precisely what `PoolSegment`'s write cycle
+// exists to make unreachable. `segment` re-exports `OpeningSample`, the only
+// part of it that appears in a public signature.
+pub(crate) mod seqlock;
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};

@@ -193,30 +193,62 @@ fn read_u64(buf: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(b)
 }
 
-/// Read the raw `json_len` field out of a segment's fixed 256-byte header.
+/// How many bytes of a segment a caller may safely reference before
+/// [`parse_header`] has run: exactly the write-once header+metadata region,
+/// `HEADER_SIZE + json_len`.
 ///
-/// Deliberately unvalidated — [`parse_header`] does that. Its only job is to
-/// tell a caller how far the write-once header+metadata region extends, so
-/// the caller can form a `&[u8]` over *that* region alone and never over the
-/// payload, which a peer process may be overwriting while the reference
-/// exists. A shared reference to concurrently-written bytes is UB in Rust
-/// regardless of whether anything reads them.
-pub fn json_len_field(fixed_header: &[u8]) -> Result<usize, String> {
-    if fixed_header.len() < HEADER_SIZE {
+/// A `&[u8]` over the payload aliases bytes a peer process may be
+/// overwriting, which is UB whether or not anything reads through it. So a
+/// caller must bound its slice *before* it can parse anything — which means
+/// bounding it against two fields it has not validated yet. Doing that by
+/// hand does not work: clamping to the segment length lets a corrupt
+/// `json_len` overshoot and clamp right back to the whole mapping, payload
+/// included, and even a well-behaved-looking `json_len` (say 4096 against a
+/// `data_offset` of 256 in an 8 KiB segment) passes a segment-length test
+/// while spanning the payload.
+///
+/// The only correct cap is `data_offset`, the payload start. This validates
+/// the chain `HEADER_SIZE + json_len <= data_offset <= segment_len` and
+/// returns `HEADER_SIZE + json_len`, so the result provably cannot reach the
+/// payload. Every well-formed segment satisfies that chain by construction —
+/// `write_header` derives `data_offset` from `json_len` — so nothing
+/// legitimate is rejected here that [`parse_header`] would have accepted.
+/// `parse_header` re-checks all of it as the backstop.
+pub fn header_region_len(fixed_header: &[u8], segment_len: usize) -> Result<usize, String> {
+    if fixed_header.len() < HEADER_SIZE || segment_len < HEADER_SIZE {
         return Err(format!(
-            "segment too small: {} bytes, need at least {HEADER_SIZE}",
-            fixed_header.len()
+            "segment too small: {segment_len} bytes, need at least {HEADER_SIZE}"
         ));
     }
-    Ok(read_u64(fixed_header, OFFSET_JSON_LEN) as usize)
+    let json_len = read_u64(fixed_header, OFFSET_JSON_LEN) as usize;
+    let data_offset = read_u64(fixed_header, OFFSET_DATA_OFFSET) as usize;
+    // Distinct wording from `parse_header`'s equivalent checks: these fire
+    // first, on unvalidated bytes, and a test needs to be able to tell which
+    // of the two rejected a segment.
+    if data_offset > segment_len {
+        return Err(format!(
+            "cannot bound the header region: data_offset {data_offset} is past the end of the \
+             {segment_len}-byte segment"
+        ));
+    }
+    let end = HEADER_SIZE.checked_add(json_len).ok_or_else(|| {
+        format!("cannot bound the header region: json_len {json_len} overflows the address space")
+    })?;
+    if end > data_offset {
+        return Err(format!(
+            "cannot bound the header region: json_len {json_len} does not fit before data_offset \
+             {data_offset}"
+        ));
+    }
+    Ok(end)
 }
 
 /// Parse a segment's header.
 ///
-/// `buf` need only cover the write-once header+metadata region
-/// (`HEADER_SIZE + json_len` bytes, sized via [`json_len_field`]); it must
-/// **not** be extended over the payload, which a peer may be writing
-/// concurrently. `segment_len` carries the total mapping length separately,
+/// `buf` need only cover the write-once header+metadata region (size it with
+/// [`header_region_len`]); it must **not** be extended over the payload,
+/// which a peer may be writing concurrently. `segment_len` carries the total
+/// mapping length separately,
 /// because every bound below is against the whole segment while none of them
 /// needs to read it.
 ///
@@ -410,16 +442,74 @@ mod tests {
         let mut whole = vec![0u8; data_offset + 64];
         write_header(&mut whole, &json).expect("write");
 
-        let json_len = json_len_field(&whole).expect("json_len");
-        let header_region = &whole[..HEADER_SIZE + json_len];
-        let parsed = parse_header(header_region, data_offset + 64).expect("parse");
+        let region_len = header_region_len(&whole, data_offset + 64).expect("bound");
+        let parsed = parse_header(&whole[..region_len], data_offset + 64).expect("parse");
 
         assert_eq!(parsed.metadata.size, 64);
         assert_eq!(parsed.data_offset, data_offset);
         assert!(
-            header_region.len() < data_offset,
-            "the slice must not even reach the payload"
+            region_len <= data_offset,
+            "the slice must not reach the payload"
         );
+    }
+
+    /// The bound must be `data_offset`, not the segment length. Both cases
+    /// here clamp harmlessly against `segment_len` and still span the payload.
+    #[test]
+    fn header_region_len_caps_at_data_offset_not_at_the_segment_length() {
+        let json = metadata_json(64, "uint8", &[64], "cpu", "shmem");
+        let data_offset = data_offset_for(json.len());
+        let segment_len = data_offset + 8192;
+        let mut buf = vec![0u8; HEADER_SIZE];
+        write_header(&mut vec![0u8; data_offset + 64], &json).expect("scratch");
+        // Rebuild just the fixed header so the two fields can be corrupted
+        // independently of what `write_header` would derive.
+        let mut whole = vec![0u8; data_offset + 8192];
+        write_header(&mut whole, &json).expect("write");
+        buf.copy_from_slice(&whole[..HEADER_SIZE]);
+
+        // A json_len that is plausible against the segment but not against
+        // data_offset: 256 + 4096 = 4352 <= segment_len, yet way past the
+        // payload start.
+        buf[OFFSET_JSON_LEN..OFFSET_JSON_LEN + 8].copy_from_slice(&4096u64.to_le_bytes());
+        buf[OFFSET_DATA_OFFSET..OFFSET_DATA_OFFSET + 8]
+            .copy_from_slice(&(HEADER_SIZE as u64).to_le_bytes());
+        let err = header_region_len(&buf, segment_len).unwrap_err();
+        assert!(
+            err.contains("cannot bound the header region"),
+            "unexpected error: {err}"
+        );
+
+        // A json_len large enough to overflow when added to HEADER_SIZE.
+        buf[OFFSET_JSON_LEN..OFFSET_JSON_LEN + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let err = header_region_len(&buf, segment_len).unwrap_err();
+        assert!(err.contains("overflows"), "unexpected error: {err}");
+
+        // A data_offset past the end of the segment.
+        buf[OFFSET_JSON_LEN..OFFSET_JSON_LEN + 8].copy_from_slice(&0u64.to_le_bytes());
+        buf[OFFSET_DATA_OFFSET..OFFSET_DATA_OFFSET + 8].copy_from_slice(&u64::MAX.to_le_bytes());
+        let err = header_region_len(&buf, segment_len).unwrap_err();
+        assert!(err.contains("past the end"), "unexpected error: {err}");
+    }
+
+    /// The whole point of the bound: a well-formed segment must still parse,
+    /// and the region it yields must stop at or before the payload.
+    #[test]
+    fn header_region_len_accepts_every_well_formed_segment() {
+        for payload in [1usize, 64, 4096] {
+            for shape_len in [0usize, 1, 40] {
+                let shape: Vec<usize> = (0..shape_len).map(|_| 1).collect();
+                let json = metadata_json(payload, "uint8", &shape, "cpu", "shmem");
+                let data_offset = data_offset_for(json.len());
+                let mut whole = vec![0u8; data_offset + payload];
+                write_header(&mut whole, &json).expect("write");
+
+                let region_len =
+                    header_region_len(&whole, data_offset + payload).expect("well-formed");
+                assert!(region_len <= data_offset);
+                parse_header(&whole[..region_len], data_offset + payload).expect("parse");
+            }
+        }
     }
 
     /// The size check bounds against `segment_len`, not against the slice —
