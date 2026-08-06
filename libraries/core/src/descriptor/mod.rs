@@ -7,7 +7,7 @@ use eyre::{Context, OptionExt, Result, bail};
 use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
@@ -20,6 +20,26 @@ pub use dora_message::descriptor::{
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
+
+/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
+/// the filesystem — the executable may not be built yet when this is called.
+///
+/// Used to sanitize untrusted node paths before a containment check, so the
+/// two callers (module expansion and manifest injection) must collapse `..`
+/// identically; keeping a single implementation prevents them from drifting.
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
 
 mod expand;
 pub mod validate;

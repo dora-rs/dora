@@ -7,24 +7,10 @@ use eyre::{Context, bail};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
-/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
-/// the filesystem — the executable may not be built yet when this is called.
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
+use super::normalize_path;
 
 /// Check if a path string is absolute on any platform.
 /// On Windows, `Path::is_absolute()` returns false for Unix-style `/foo` paths,
