@@ -193,7 +193,32 @@ fn read_u64(buf: &[u8], offset: usize) -> u64 {
     u64::from_le_bytes(b)
 }
 
+/// Read the raw `json_len` field out of a segment's fixed 256-byte header.
+///
+/// Deliberately unvalidated — [`parse_header`] does that. Its only job is to
+/// tell a caller how far the write-once header+metadata region extends, so
+/// the caller can form a `&[u8]` over *that* region alone and never over the
+/// payload, which a peer process may be overwriting while the reference
+/// exists. A shared reference to concurrently-written bytes is UB in Rust
+/// regardless of whether anything reads them.
+pub fn json_len_field(fixed_header: &[u8]) -> Result<usize, String> {
+    if fixed_header.len() < HEADER_SIZE {
+        return Err(format!(
+            "segment too small: {} bytes, need at least {HEADER_SIZE}",
+            fixed_header.len()
+        ));
+    }
+    Ok(read_u64(fixed_header, OFFSET_JSON_LEN) as usize)
+}
+
 /// Parse a segment's header.
+///
+/// `buf` need only cover the write-once header+metadata region
+/// (`HEADER_SIZE + json_len` bytes, sized via [`json_len_field`]); it must
+/// **not** be extended over the payload, which a peer may be writing
+/// concurrently. `segment_len` carries the total mapping length separately,
+/// because every bound below is against the whole segment while none of them
+/// needs to read it.
 ///
 /// Every field that later becomes a pointer offset or a bounds is checked
 /// here: `data_offset` (must land inside the segment and past the fixed
@@ -212,11 +237,10 @@ fn read_u64(buf: &[u8], offset: usize) -> u64 {
 /// observe a half-written JSON region. Only the payload and `write_gen`
 /// change after registration. There is therefore no torn-read hazard here
 /// that a fixed-header/metadata split would guard against.
-pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
-    if buf.len() < HEADER_SIZE {
+pub fn parse_header(buf: &[u8], segment_len: usize) -> Result<ParsedHeader, String> {
+    if segment_len < HEADER_SIZE || buf.len() < HEADER_SIZE {
         return Err(format!(
-            "segment too small: {} bytes, need at least {HEADER_SIZE}",
-            buf.len()
+            "segment too small: {segment_len} bytes, need at least {HEADER_SIZE}"
         ));
     }
     if &buf[..8] != MAGIC {
@@ -229,15 +253,23 @@ pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
             "header data_offset {data_offset} is less than HEADER_SIZE {HEADER_SIZE} — would overlap the fixed header"
         ));
     }
-    if data_offset > buf.len() {
+    if data_offset > segment_len {
         return Err(format!(
-            "header data_offset {data_offset} is past the end of the {}-byte segment",
-            buf.len()
+            "header data_offset {data_offset} is past the end of the {segment_len}-byte segment"
         ));
     }
     if json_len > data_offset.saturating_sub(HEADER_SIZE) {
         return Err(format!(
             "header json_len {json_len} does not fit before data_offset {data_offset}"
+        ));
+    }
+    // The caller sized `buf` from `json_len_field`, so this holds by
+    // construction; check it anyway rather than let a mis-sized slice become
+    // a panicking index.
+    if buf.len() < HEADER_SIZE + json_len {
+        return Err(format!(
+            "header slice is {} bytes, too short for the {json_len}-byte metadata json it declares",
+            buf.len()
         ));
     }
     let json = std::str::from_utf8(&buf[HEADER_SIZE..HEADER_SIZE + json_len])
@@ -250,12 +282,11 @@ pub fn parse_header(buf: &[u8]) -> Result<ParsedHeader, String> {
         // Mirrors the Python read path (apis/python/node/src/lib.rs:3677),
         // which gates this same check on `ipc_present != 1` and uses
         // saturating arithmetic against a corrupted/hostile `data_offset`.
-        let available = buf.len().saturating_sub(data_offset);
+        let available = segment_len.saturating_sub(data_offset);
         if metadata.size > available {
             return Err(format!(
-                "metadata size {} exceeds the {available}-byte data region available after data_offset {data_offset} in the {}-byte segment",
+                "metadata size {} exceeds the {available}-byte data region available after data_offset {data_offset} in the {segment_len}-byte segment",
                 metadata.size,
-                buf.len()
             ));
         }
     }
@@ -359,7 +390,7 @@ mod tests {
         let mut buf = vec![0u8; data_offset_for(json.len()) + 64];
         write_header(&mut buf, &json).expect("write");
 
-        let parsed = parse_header(&buf).expect("parse");
+        let parsed = parse_header(&buf, buf.len()).expect("parse");
         assert_eq!(parsed.json_len, json.len());
         assert_eq!(parsed.data_offset, data_offset_for(json.len()));
         assert!(!parsed.ipc_present);
@@ -368,20 +399,60 @@ mod tests {
         assert_eq!(parsed.metadata.dtype, "uint8");
     }
 
+    /// `buf` covers only the write-once header+metadata region while
+    /// `segment_len` describes the whole mapping. This is how `PoolSegment`
+    /// calls it: forming a `&[u8]` over the payload would alias bytes a peer
+    /// process is concurrently writing.
+    #[test]
+    fn parses_from_a_slice_that_stops_before_the_payload() {
+        let json = metadata_json(64, "uint8", &[64], "cpu", "shmem");
+        let data_offset = data_offset_for(json.len());
+        let mut whole = vec![0u8; data_offset + 64];
+        write_header(&mut whole, &json).expect("write");
+
+        let json_len = json_len_field(&whole).expect("json_len");
+        let header_region = &whole[..HEADER_SIZE + json_len];
+        let parsed = parse_header(header_region, data_offset + 64).expect("parse");
+
+        assert_eq!(parsed.metadata.size, 64);
+        assert_eq!(parsed.data_offset, data_offset);
+        assert!(
+            header_region.len() < data_offset,
+            "the slice must not even reach the payload"
+        );
+    }
+
+    /// The size check bounds against `segment_len`, not against the slice —
+    /// otherwise every caller passing a header-sized slice would look like a
+    /// header-only segment and reject its own payload.
+    #[test]
+    fn the_size_check_uses_segment_len_not_the_slice_length() {
+        let json = metadata_json(1_000_000, "uint8", &[1_000_000], "cpu", "shmem");
+        let data_offset = data_offset_for(json.len());
+        let mut buf = vec![0u8; data_offset];
+        write_header(&mut buf, &json).expect("write");
+
+        // Slice stops at the header, but the real segment holds the payload.
+        parse_header(&buf, data_offset + 1_000_000).expect("must accept");
+        // Same slice, and now the segment really is header-only.
+        let err = parse_header(&buf, data_offset).unwrap_err();
+        assert!(err.contains("size"), "unexpected error: {err}");
+    }
+
     #[test]
     fn parse_rejects_bad_magic() {
         let json = metadata_json(8, "uint8", &[8], "cpu", "shmem");
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
         write_header(&mut buf, &json).expect("write");
         buf[0] = b'X';
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("magic"), "unexpected error: {err}");
     }
 
     #[test]
     fn parse_rejects_truncated_segment() {
         let buf = vec![0u8; HEADER_SIZE - 1];
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("too small"), "unexpected error: {err}");
     }
 
@@ -393,7 +464,7 @@ mod tests {
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
         write_header(&mut buf, &json).expect("write");
         buf[OFFSET_DATA_OFFSET..OFFSET_DATA_OFFSET + 8].copy_from_slice(&(u64::MAX).to_le_bytes());
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("data_offset"), "unexpected error: {err}");
     }
 
@@ -414,7 +485,7 @@ mod tests {
         write_header(&mut buf, json).expect("write");
         buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&1u64.to_le_bytes());
 
-        let parsed = parse_header(&buf).expect("parse");
+        let parsed = parse_header(&buf, buf.len()).expect("parse");
         assert_eq!(parsed.metadata.transport, "ipc");
     }
 
@@ -426,7 +497,7 @@ mod tests {
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
         write_header(&mut buf, json).expect("write");
 
-        let parsed = parse_header(&buf).expect("parse");
+        let parsed = parse_header(&buf, buf.len()).expect("parse");
         assert_eq!(parsed.metadata.transport, "shmem");
     }
 
@@ -468,7 +539,7 @@ mod tests {
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
         write_header(&mut buf, &json).expect("write");
         buf[HEADER_SIZE] = 0xFF; // invalid UTF-8 lead byte, overwrites the leading `{`
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("utf-8"), "unexpected error: {err}");
     }
 
@@ -478,7 +549,7 @@ mod tests {
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
         write_header(&mut buf, &json).expect("write");
         buf[OFFSET_DATA_OFFSET..OFFSET_DATA_OFFSET + 8].copy_from_slice(&0u64.to_le_bytes());
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         // `data_offset = 0` also fails the later "json_len does not fit"
         // check, whose message happens to contain "data_offset" too —
         // assert the specific cause this test targets, not a substring
@@ -503,11 +574,12 @@ mod tests {
         let mut buf = vec![0u8; data_offset]; // header-only: no room for the payload
         write_header(&mut buf, json).expect("write");
 
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("size"), "unexpected error: {err}");
 
         buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&1u64.to_le_bytes());
-        let parsed = parse_header(&buf).expect("ipc-present header-only segment must parse");
+        let parsed =
+            parse_header(&buf, buf.len()).expect("ipc-present header-only segment must parse");
         assert_eq!(parsed.metadata.size, 1_000_000);
         assert!(parsed.ipc_present);
     }
@@ -523,7 +595,7 @@ mod tests {
         write_header(&mut buf, &json).expect("write");
         buf[OFFSET_IPC_FLAG..OFFSET_IPC_FLAG + 8].copy_from_slice(&1u64.to_le_bytes());
 
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("contradicts"), "unexpected error: {err}");
     }
 
@@ -539,7 +611,7 @@ mod tests {
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8]; // ipc_flag left at 0
         write_header(&mut buf, &json).expect("write");
 
-        let err = parse_header(&buf).unwrap_err();
+        let err = parse_header(&buf, buf.len()).unwrap_err();
         assert!(err.contains("contradicts"), "unexpected error: {err}");
     }
 
@@ -551,14 +623,14 @@ mod tests {
         let json = metadata_json(8, "uint8", &[8], "cuda", "unified");
         let mut buf = vec![0u8; data_offset_for(json.len()) + 8];
         write_header(&mut buf, &json).expect("write");
-        let parsed = parse_header(&buf).expect("parse");
+        let parsed = parse_header(&buf, buf.len()).expect("parse");
         assert_eq!(parsed.metadata.transport, "unified");
         assert!(!parsed.ipc_present);
 
         let oversized = metadata_json(1_000_000, "uint8", &[1_000_000], "cuda", "unified");
         let mut buf2 = vec![0u8; data_offset_for(oversized.len())]; // header-only
         write_header(&mut buf2, &oversized).expect("write");
-        let err = parse_header(&buf2).unwrap_err();
+        let err = parse_header(&buf2, buf2.len()).unwrap_err();
         assert!(err.contains("size"), "unexpected error: {err}");
     }
 

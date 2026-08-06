@@ -2,9 +2,8 @@
 //! of a `DORADMA` segment.
 //!
 //! Even means "the payload is complete", odd means "a writer is mid-write". A
-//! reader takes an opening sample with [`begin_read`], copies the payload,
-//! takes a closing sample with [`end_read`], and keeps the copy only if both
-//! samples are equal and even.
+//! reader takes an opening sample with [`begin_read`], copies the payload, and
+//! keeps the copy only if [`read_completed`] agrees.
 //!
 //! # Two reader edges, two functions
 //!
@@ -16,9 +15,16 @@
 //!
 //! A plain acquire load gives the first edge for free (acquire orders
 //! *later* operations in this thread after it) but gives nothing for the
-//! second (acquire does not hold *earlier* operations before it). `end_read`
-//! therefore pairs a standalone acquire fence *before* a relaxed load,
-//! rather than reusing an acquire load.
+//! second (acquire does not hold *earlier* operations before it).
+//! [`read_completed`] therefore pairs a standalone acquire fence *before* a
+//! relaxed load, rather than reusing an acquire load.
+//!
+//! Getting that backwards — closing the read with a second [`begin_read`] —
+//! produces code that passes every test, because both forms load the same
+//! value and differ only in a fence. The type system is the only thing that
+//! can catch it, so [`begin_read`] returns an opaque [`OpeningSample`] rather
+//! than a `u64`, and the closing load lives inside [`read_completed`] where a
+//! caller cannot substitute for it.
 //!
 //! # Atomics, not volatile
 //!
@@ -101,6 +107,29 @@ pub unsafe fn end_write(gen_ptr: *mut u64, pre_write_gen: u64, ok: bool) {
     atomic.store(pre_write_gen.wrapping_add(2), Ordering::Release);
 }
 
+/// The opening generation sample of a read, from [`begin_read`].
+///
+/// Opaque on purpose: the inner value is not reachable, so it cannot be
+/// forged, arrived at by arithmetic, or handed to something expecting the
+/// closing load. The only thing it can be used for is [`read_completed`].
+///
+/// Deliberately **not** `PartialEq`. Comparing two samples by hand is exactly
+/// the mistake this type exists to prevent — it is how a reader ends up
+/// closing its read with a second [`begin_read`], which loads the same value
+/// with the wrong fence and so passes every test while admitting torn frames
+/// on a weakly-ordered CPU. Without `PartialEq` that code does not compile.
+#[derive(Debug, Clone, Copy)]
+pub struct OpeningSample(u64);
+
+impl OpeningSample {
+    /// True when the sample itself denotes a complete payload. A reader may
+    /// skip the copy entirely when this is false — [`read_completed`] would
+    /// reject it regardless.
+    pub fn is_complete(self) -> bool {
+        is_complete(self.0)
+    }
+}
+
 /// Take the opening generation sample, before reading the payload.
 ///
 /// The acquire load orders every later operation in this thread after it,
@@ -109,24 +138,29 @@ pub unsafe fn end_write(gen_ptr: *mut u64, pre_write_gen: u64, ok: bool) {
 ///
 /// # Safety
 /// See the module docs.
-pub unsafe fn begin_read(gen_ptr: *mut u64) -> u64 {
+pub unsafe fn begin_read(gen_ptr: *mut u64) -> OpeningSample {
     let atomic = unsafe { AtomicU64::from_ptr(gen_ptr) };
-    atomic.load(Ordering::Acquire)
+    OpeningSample(atomic.load(Ordering::Acquire))
 }
 
-/// Take the closing generation sample, after reading the payload.
+/// Close a read: true when the payload copied since `opening` is intact.
+///
+/// Takes the closing sample and applies both acceptance rules in one place —
+/// the opening sample must be even, and the two samples must be equal.
 ///
 /// An acquire load only orders what comes *after* it; it does nothing to
 /// stop the load itself from being hoisted above the payload reads it is
 /// meant to close out. A standalone acquire fence placed *before* a relaxed
-/// load gives the `payload loads -> gen load` edge instead.
+/// load gives the `payload loads -> gen load` edge instead. That is why this
+/// function exists rather than a second sampling function the caller
+/// compares by hand: the wrong load here is invisible to every test.
 ///
 /// # Safety
 /// See the module docs.
-pub unsafe fn end_read(gen_ptr: *mut u64) -> u64 {
+pub unsafe fn read_completed(gen_ptr: *mut u64, opening: OpeningSample) -> bool {
     let atomic = unsafe { AtomicU64::from_ptr(gen_ptr) };
     fence(Ordering::Acquire);
-    atomic.load(Ordering::Relaxed)
+    opening.is_complete() && atomic.load(Ordering::Relaxed) == opening.0
 }
 
 /// True when a generation value denotes a complete payload.
@@ -185,16 +219,41 @@ mod tests {
     }
 
     #[test]
+    fn an_undisturbed_read_completes() {
+        let mut g = cell(4);
+        let opening = unsafe { begin_read(&mut *g) };
+        assert!(opening.is_complete());
+        assert!(unsafe { read_completed(&mut *g, opening) });
+    }
+
+    #[test]
     fn a_write_that_starts_mid_read_is_rejected() {
         let mut g = cell(4);
-        let g1 = unsafe { begin_read(&mut *g) };
-        assert_eq!(g1, 4, "the opening sample must read the current generation");
+        let opening = unsafe { begin_read(&mut *g) };
         let pre = unsafe { begin_write(&mut *g) };
+        assert!(
+            !unsafe { read_completed(&mut *g, opening) },
+            "a write in progress must not be accepted"
+        );
         unsafe { end_write(&mut *g, pre, true) };
-        assert_eq!(
-            unsafe { end_read(&mut *g) },
-            6,
+        assert!(
+            !unsafe { read_completed(&mut *g, opening) },
             "the closing sample must see the new generation, not the opening one"
+        );
+    }
+
+    /// A reader that opens mid-write holds an odd sample. Nothing else
+    /// changes the generation, so both samples agree — parity is the only
+    /// thing that can reject it.
+    #[test]
+    fn an_odd_opening_sample_is_rejected_even_though_both_samples_agree() {
+        let mut g = cell(4);
+        let _pre = unsafe { begin_write(&mut *g) };
+        let opening = unsafe { begin_read(&mut *g) };
+        assert!(!opening.is_complete());
+        assert!(
+            !unsafe { read_completed(&mut *g, opening) },
+            "an odd opening sample must never be accepted"
         );
     }
 

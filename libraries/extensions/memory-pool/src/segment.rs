@@ -13,6 +13,7 @@ use crate::doradma::{
     self, OFFSET_WRITE_GEN, ParsedHeader, data_offset_for, metadata_json, parse_header,
     write_header,
 };
+use crate::naming;
 use crate::seqlock;
 
 /// Mirrors the daemon's per-pool size cap so a node fails locally, with a
@@ -73,21 +74,97 @@ impl std::str::FromStr for Transport {
     }
 }
 
-/// Unlink a segment name from `/dev/shm`, tolerating an already-gone file.
-fn unlink_segment(name: &str) {
-    #[cfg(target_os = "linux")]
-    {
-        let path = format!("/dev/shm/{name}");
-        match std::fs::remove_file(&path) {
-            Ok(()) => {}
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => tracing::warn!("failed to unlink pool segment {path}: {e}"),
-        }
+/// Reject a requested pool size before anything is allocated.
+///
+/// Split out from [`PoolSegment::create`] so the rule can be tested without
+/// `ftruncate`ing a real gigabyte-sized segment.
+fn validate_pool_size(size: usize) -> Result<(), String> {
+    if size == 0 {
+        return Err("pool size must be greater than zero".to_string());
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = name;
+    if size > MAX_POOL_BYTES {
+        return Err(format!(
+            "pool size {size} bytes exceeds the daemon's 1 GiB per-pool cap"
+        ));
     }
+    Ok(())
+}
+
+/// Bytes per element for the dtype strings dora's senders actually write.
+///
+/// Covers numpy names (`float32`), torch's `str(tensor.dtype)` form
+/// (`torch.float32`, which is what `dora.cuda.get_tensor_info` writes) and the
+/// numpy array-interface typestr (`<f4`, `|b1`), whose trailing digits *are*
+/// the item size. `None` means "not a vocabulary we know", which is not an
+/// error: a sender may legitimately use a dtype we have not enumerated, and
+/// [`validate_shape`] falls back to a one-byte-per-element bound for those.
+fn element_size(dtype: &str) -> Option<usize> {
+    let name = dtype.strip_prefix("torch.").unwrap_or(dtype);
+    match name {
+        "bool" | "int8" | "uint8" => return Some(1),
+        "int16" | "uint16" | "float16" | "bfloat16" => return Some(2),
+        "int32" | "uint32" | "float32" => return Some(4),
+        "int64" | "uint64" | "float64" | "complex64" => return Some(8),
+        "complex128" => return Some(16),
+        _ => {}
+    }
+    // numpy array-interface typestr: byte-order char, kind char, item size.
+    // `S`/`U` are excluded — their trailing count is characters, not bytes.
+    let mut chars = name.chars();
+    let order = chars.next()?;
+    let kind = chars.next()?;
+    if !matches!(order, '<' | '>' | '|' | '=') || !matches!(kind, 'b' | 'i' | 'u' | 'f' | 'c') {
+        return None;
+    }
+    chars.as_str().parse::<usize>().ok().filter(|&n| n > 0)
+}
+
+/// Check that the declared shape describes something that fits in the declared
+/// payload.
+///
+/// A consumer builds its view straight out of `shape` and `dtype` — the C++
+/// line is `cv::Mat(shape[0], shape[1], CV_8UC4, ptr)` — so a producer
+/// declaring `size: 64` with `shape: [4096, 4096]` would hand it a 16 MB view
+/// of a 64-byte buffer while passing every other check in this file.
+///
+/// The bound is `<=`, not `==`. Only an over-large shape is a memory-safety
+/// problem; a payload larger than the shape needs is merely unused, it is what
+/// a producer that page-aligns its pool size legitimately writes, and Python's
+/// own reader accepts it (`apis/python/node/dora/cuda.py` rejects only on
+/// `expected_bytes > size`). Requiring equality would break interop in exchange
+/// for no safety.
+fn validate_shape(dtype: &str, shape: &[usize], declared_size: usize) -> Result<(), String> {
+    // An absent `shape` key decodes to an empty vec, indistinguishable from a
+    // genuine scalar shape. Both fall out correctly without a special case:
+    // the product of no dimensions is 1, so a shapeless segment is checked as
+    // a single element and can never exceed a pool that holds anything at all.
+    let mut elements: usize = 1;
+    for &dim in shape {
+        elements = elements
+            .checked_mul(dim)
+            .ok_or_else(|| format!("metadata shape {shape:?} overflows when multiplied out"))?;
+    }
+    let (bytes, unit) = match element_size(dtype) {
+        Some(element) => (
+            elements.checked_mul(element).ok_or_else(|| {
+                format!("metadata shape {shape:?} of `{dtype}` overflows when sized")
+            })?,
+            format!("`{dtype}` ({element} bytes/element)"),
+        ),
+        // Unknown dtype: still enforce the weakest true lower bound, one byte
+        // per element. That is what catches the shape/size mismatch above.
+        None => (
+            elements,
+            format!("unrecognized dtype `{dtype}` (assuming 1 byte/element)"),
+        ),
+    };
+    if bytes > declared_size {
+        return Err(format!(
+            "metadata shape {shape:?} of {unit} needs {bytes} bytes but the pool declares only \
+             {declared_size}"
+        ));
+    }
+    Ok(())
 }
 
 /// A mapped pool segment, from either side.
@@ -97,10 +174,10 @@ fn unlink_segment(name: &str) {
 /// A reader copies the payload while the writer may be overwriting it: that
 /// copy is a plain, non-atomic access to memory another process can be storing
 /// to, which is a data race under Rust's memory model and something a threaded
-/// Miri or TSan run will flag. This is not an oversight and it is not
-/// fixable in a seqlock — mitigating it, rather than preventing it, is the
-/// whole design. The reader is never promised a coherent copy, only the
-/// ability to *detect* an incoherent one: [`begin_read`](Self::begin_read) and
+/// Miri or TSan run will flag. This is not an oversight and it is not fixable
+/// in a seqlock — mitigating it, rather than preventing it, is the whole
+/// design. The reader is never promised a coherent copy, only the ability to
+/// *detect* an incoherent one: [`begin_read`](Self::begin_read) and
 /// [`read_valid`](Self::read_valid) bracket the copy, and the caller discards
 /// it whenever the closing sample disagrees with the opening one, so a torn
 /// copy is never handed on. Making the copy itself race-free would mean
@@ -114,6 +191,16 @@ pub struct PoolSegment {
     header: ParsedHeader,
     transport: Transport,
     name: String,
+    /// The baseline generation of an open write cycle, if one is open.
+    ///
+    /// Held here rather than returned to the caller. A caller-held token
+    /// crossing an FFI boundary is one wrong integer away from publishing an
+    /// even generation over a frame that is still being overwritten — the one
+    /// failure a seqlock cannot detect afterwards, since the corrupt frame then
+    /// looks complete to every reader forever. Keeping it inside also makes a
+    /// doubled `begin_write` and a missing `end_write` observable, neither of
+    /// which a token-passing API can see.
+    pending_write: Option<u64>,
 }
 
 // Hand-written because `Shmem` is not `Debug`. Reports the geometry a
@@ -127,7 +214,8 @@ impl std::fmt::Debug for PoolSegment {
             .field("transport", &self.transport)
             .field("segment_bytes", &self.segment_bytes())
             .field("data_offset", &self.data_offset())
-            .field("size", &self.size())
+            .field("declared_size", &self.declared_size())
+            .field("payload_len", &self.payload_len())
             .field("dtype", &self.dtype())
             .field("shape", &self.shape())
             .field("ipc_present", &self.ipc_present())
@@ -153,14 +241,8 @@ impl PoolSegment {
         shape: &[usize],
         transport: Transport,
     ) -> Result<Self, String> {
-        if size == 0 {
-            return Err("pool size must be greater than zero".to_string());
-        }
-        if size > MAX_POOL_BYTES {
-            return Err(format!(
-                "pool size {size} bytes exceeds the daemon's 1 GiB per-pool cap"
-            ));
-        }
+        validate_pool_size(size)?;
+        validate_shape(dtype, shape, size)?;
         if transport == Transport::Ipc {
             return Err(
                 "transport `ipc` requires exporting a CUDA IPC handle, which this binding \
@@ -191,18 +273,26 @@ impl PoolSegment {
             })?;
         shmem.set_owner(false);
 
+        // A `&mut [u8]` over the whole segment is sound here in a way it would
+        // not be in `open`: this segment was just created `O_EXCL` and has not
+        // been registered with the daemon, so no peer can know its name yet,
+        // let alone map it. This is the only moment the payload region has no
+        // possible concurrent accessor.
         let header = {
             let buf = unsafe { std::slice::from_raw_parts_mut(shmem.as_ptr(), total) };
-            write_header(buf, &json).and_then(|()| parse_header(buf))
+            write_header(buf, &json).and_then(|()| parse_header(buf, total))
         };
         let header = match header {
             Ok(header) => header,
             Err(e) => {
-                // `set_owner(false)` means dropping `shmem` here would unmap
-                // without unlinking, leaving a segment nothing owns and
-                // `create` can never reuse — `shm_open` is `O_EXCL`, so that
-                // pool id would fail for the life of the machine.
-                unlink_segment(name);
+                // Unreachable today — `write_header` cannot fail once `total`
+                // covers the header, and `parse_header` cannot reject bytes
+                // `write_header` just produced. Hardening, not a live leak fix:
+                // the failure it guards against would be silent and permanent,
+                // because `set_owner(false)` means dropping `shmem` here unmaps
+                // without unlinking and strands a name `O_EXCL` can never
+                // reuse.
+                let _ = naming::unlink_segment(name);
                 return Err(e);
             }
         };
@@ -212,6 +302,7 @@ impl PoolSegment {
             header,
             transport,
             name: name.to_string(),
+            pending_write: None,
         })
     }
 
@@ -223,43 +314,64 @@ impl PoolSegment {
             .open()
             .map_err(|e| format!("failed to open pool segment `{name}`: {e}"))?;
 
-        let buf = unsafe { std::slice::from_raw_parts(shmem.as_ptr() as *const u8, shmem.len()) };
+        let segment_bytes = shmem.len();
+        let base = shmem.as_ptr() as *const u8;
+        let name_err = |e: String| format!("pool segment `{name}`: {e}");
+
+        // Two steps so that no `&[u8]` ever covers the payload. The payload is
+        // being written by a peer process, and a shared reference to it would
+        // alias a concurrent write — UB whether or not anything reads through
+        // the reference. The header+metadata region is safe to reference
+        // because it is written once, before the pool is registered, and a
+        // consumer only learns the pool exists through that registration.
+        let json_len = {
+            let fixed = unsafe {
+                std::slice::from_raw_parts(base, segment_bytes.min(doradma::HEADER_SIZE))
+            };
+            doradma::json_len_field(fixed).map_err(name_err)?
+        };
+        let header_region_len = doradma::HEADER_SIZE
+            .saturating_add(json_len)
+            .min(segment_bytes);
+        let header_region = unsafe { std::slice::from_raw_parts(base, header_region_len) };
+
         // `parse_header` has already validated `data_offset`, `json_len` and
-        // the declared payload size against the mapping length, and derived
-        // the transport from the header's `ipc_flag`. Re-checking `size` here
-        // would be worse than redundant: this side cannot see `ipc_flag`'s
-        // gating, and a size check applied unconditionally would reject every
-        // Python-written CUDA pool, whose segment is header-only while its
-        // JSON still declares the full tensor size.
-        // Name the segment: a header rejection here is usually a version or
-        // language mismatch with whoever wrote it, and the bare message says
-        // nothing about which pool went wrong.
-        let header = parse_header(buf).map_err(|e| format!("pool segment `{name}`: {e}"))?;
+        // the declared payload size against the mapping length, and derived the
+        // transport from the header's `ipc_flag`. Re-checking `size` here would
+        // be worse than redundant: this side cannot see `ipc_flag`'s gating, and
+        // a size check applied unconditionally would reject every
+        // Python-written CUDA pool, whose segment is header-only while its JSON
+        // still declares the full tensor size.
+        let header = parse_header(header_region, segment_bytes).map_err(name_err)?;
         let transport = header
             .metadata
             .transport
             .parse::<Transport>()
-            .map_err(|e| format!("pool segment `{name}`: {e}"))?;
+            .map_err(name_err)?;
+        // `size` bounds the mapping (except for `ipc`), but nothing so far
+        // relates it to `shape` — and `shape` is what a consumer builds its
+        // view from.
+        validate_shape(
+            &header.metadata.dtype,
+            &header.metadata.shape,
+            header.metadata.size,
+        )
+        .map_err(name_err)?;
 
         Ok(Self {
             shmem,
             header,
             transport,
             name: name.to_string(),
+            pending_write: None,
         })
-    }
-
-    /// Unlink the segment from `/dev/shm`. Existing mappings stay valid until
-    /// their holders drop them, as POSIX requires.
-    pub fn unlink(&self) {
-        unlink_segment(&self.name);
     }
 
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    /// Base of the mapping. This — not [`host_ptr`](Self::host_ptr) — is what
+    /// Base of the mapping. This — not the payload start — is what
     /// `cudaHostRegister` must be given: it is page-aligned, while the payload
     /// start is only 256-byte aligned.
     pub fn shm_base(&self) -> u64 {
@@ -275,24 +387,41 @@ impl PoolSegment {
         self.header.data_offset
     }
 
-    /// Start of the payload: `shm_base() + data_offset()`.
+    /// The payload region: its start address and its length in bytes, or `None`
+    /// when there is no payload in this mapping.
     ///
-    /// `host_ptr() .. host_ptr() + size()` is inside the mapping for every
-    /// transport except [`Transport::Ipc`], where the segment is header-only
-    /// and there is no payload here at all — see [`size`](Self::size).
-    pub fn host_ptr(&self) -> u64 {
-        self.shm_base() + self.header.data_offset as u64
+    /// The only way to obtain a payload pointer, deliberately. `None` is
+    /// returned for [`Transport::Ipc`], whose data lives in an IPC-imported
+    /// device buffer while its segment holds nothing but the header — so the
+    /// natural `memcpy(ptr, src, len)` on the other side of the bridge cannot
+    /// be handed a one-past-the-end pointer together with a multi-megabyte
+    /// length. The returned pair always satisfies
+    /// `ptr + len <= shm_base() + segment_bytes()`.
+    pub fn payload(&self) -> Option<(u64, usize)> {
+        match self.transport {
+            Transport::Ipc => None,
+            Transport::Shmem | Transport::Unified => Some((
+                self.shm_base() + self.header.data_offset as u64,
+                self.header.metadata.size,
+            )),
+        }
     }
 
-    /// Payload bytes as declared in the metadata JSON.
+    /// Bytes of payload actually present in this mapping — zero for
+    /// [`Transport::Ipc`]. This, never [`declared_size`](Self::declared_size),
+    /// is what bounds a copy through [`payload`](Self::payload).
+    pub fn payload_len(&self) -> usize {
+        self.payload().map_or(0, |(_, len)| len)
+    }
+
+    /// The `size` field as the metadata JSON declares it.
     ///
-    /// For [`Transport::Ipc`] this describes the tensor in the IPC-imported
-    /// device buffer, **not** this segment: a Python CUDA pool allocates only
-    /// the header, so `size()` there routinely exceeds
-    /// [`segment_bytes`](Self::segment_bytes). Anything that turns
-    /// [`host_ptr`](Self::host_ptr) plus this value into a slice must exclude
-    /// that case, as [`write`](Self::write) does.
-    pub fn size(&self) -> usize {
+    /// Not a bound on this mapping. For [`Transport::Ipc`] it describes the
+    /// tensor in the IPC-imported device buffer, and a Python CUDA pool
+    /// allocates only the header — so this routinely exceeds
+    /// [`segment_bytes`](Self::segment_bytes). Use
+    /// [`payload_len`](Self::payload_len) for anything that indexes memory.
+    pub fn declared_size(&self) -> usize {
         self.header.metadata.size
     }
 
@@ -304,8 +433,19 @@ impl PoolSegment {
         &self.header.metadata.shape
     }
 
-    pub fn pinned_type(&self) -> &str {
-        &self.header.metadata.pinned_type
+    /// `"cpu"` or `"cuda"`, derived from [`transport`](Self::transport) rather
+    /// than read back from the metadata JSON.
+    ///
+    /// The JSON carries its own `pinned_type`, but nothing reconciles the two
+    /// and only the transport is checked against the header's `ipc_flag`, so
+    /// returning the raw string would expose a second, unvalidated answer to
+    /// the same question. Nothing is lost by deriving: the Python binding bails
+    /// out rather than write a `pinned_type: "cuda"` segment whose IPC export
+    /// failed (`apis/python/node/src/lib.rs`, `receiver_is_cuda &&
+    /// !ipc_written`), so a CUDA pinned type always arrives with
+    /// `ipc_flag = 1` and resolves to `Ipc` here anyway.
+    pub fn pinned_type(&self) -> &'static str {
+        self.transport.pinned_type()
     }
 
     pub fn transport(&self) -> Transport {
@@ -326,31 +466,14 @@ impl PoolSegment {
         unsafe { self.shmem.as_ptr().add(OFFSET_WRITE_GEN) as *mut u64 }
     }
 
-    /// Open a write cycle; pass the returned value to [`end_write`](Self::end_write).
-    pub fn begin_write(&mut self) -> u64 {
-        unsafe { seqlock::begin_write(self.gen_ptr()) }
-    }
-
-    /// Close a write cycle.
+    /// Open a write cycle, marking the payload incomplete until
+    /// [`end_write`](Self::end_write) closes it.
     ///
-    /// `ok == false` leaves the generation **odd**, so every reader rejects the
-    /// pool until the next successful write. There is no rolling back to the
-    /// previous frame: the payload is written in place, so a failed write has
-    /// already destroyed it.
-    pub fn end_write(&mut self, pre_write_gen: u64, ok: bool) {
-        unsafe { seqlock::end_write(self.gen_ptr(), pre_write_gen, ok) }
-    }
-
-    /// Copy `data` into the payload under the seqlock.
-    ///
-    /// Refuses an IPC-backed pool outright. For every other transport
-    /// `parse_header` has already established `data_offset + size <=
-    /// segment_bytes`, so bounding the copy by [`size`](Self::size) keeps it
-    /// inside the mapping — but that invariant is exactly the one an IPC pool
-    /// does not hold: its `size` describes a tensor in device memory while its
-    /// segment is header-only, so the same bound would authorise a write far
-    /// past the end of the mapping.
-    pub fn write(&mut self, data: &[u8]) -> Result<(), String> {
+    /// Fails on an IPC-backed pool — there is no payload here to write — and on
+    /// a second call while a cycle is already open. The baseline generation is
+    /// kept in the segment rather than handed back, so no caller can supply the
+    /// wrong one.
+    pub fn begin_write(&mut self) -> Result<(), String> {
         if self.transport == Transport::Ipc {
             return Err(format!(
                 "pool `{}` is ipc-backed: its payload lives in device memory, not in this \
@@ -358,50 +481,94 @@ impl PoolSegment {
                 self.name
             ));
         }
-        if data.len() > self.size() {
+        if self.pending_write.is_some() {
             return Err(format!(
-                "write of {} bytes exceeds the {}-byte pool",
-                data.len(),
-                self.size()
+                "pool `{}` already has a write in progress; end_write must close a cycle \
+                 before begin_write opens another",
+                self.name
             ));
         }
-        let pre = self.begin_write();
-        unsafe {
-            std::ptr::copy_nonoverlapping(data.as_ptr(), self.host_ptr() as *mut u8, data.len());
+        self.pending_write = Some(unsafe { seqlock::begin_write(self.gen_ptr()) });
+        Ok(())
+    }
+
+    /// Close the open write cycle. Does nothing when none is open.
+    ///
+    /// `ok == false` leaves the generation **odd**, so every reader rejects the
+    /// pool until the next successful write. There is no rolling back to the
+    /// previous frame: the payload is written in place, so a failed write has
+    /// already destroyed it.
+    pub fn end_write(&mut self, ok: bool) {
+        let Some(pre_write_gen) = self.pending_write.take() else {
+            return;
+        };
+        unsafe { seqlock::end_write(self.gen_ptr(), pre_write_gen, ok) }
+    }
+
+    /// Whether a write cycle is currently open.
+    ///
+    /// Lets a caller detect a missing [`end_write`](Self::end_write) — a bug
+    /// that is otherwise invisible until readers start rejecting every frame.
+    pub fn write_in_progress(&self) -> bool {
+        self.pending_write.is_some()
+    }
+
+    /// Copy `data` into the payload under the seqlock.
+    ///
+    /// `data` must be exactly [`payload_len`](Self::payload_len) bytes. A pool
+    /// frame is fixed-size: nothing on the wire records a per-frame length, so
+    /// a short write would leave the previous frame's bytes in the tail and
+    /// then publish the whole buffer as a complete new frame. A caller with
+    /// genuinely variable-length payloads should write through
+    /// [`payload`](Self::payload) under
+    /// [`begin_write`](Self::begin_write)/[`end_write`](Self::end_write) and
+    /// carry the length in its own message alongside the pool reference.
+    pub fn write(&mut self, data: &[u8]) -> Result<(), String> {
+        let Some((ptr, len)) = self.payload() else {
+            return Err(format!(
+                "pool `{}` is ipc-backed: its payload lives in device memory, not in this \
+                 segment, so there is nothing here to write to",
+                self.name
+            ));
+        };
+        if data.len() != len {
+            return Err(format!(
+                "write of {} bytes does not fill the {len}-byte pool `{}`; a pool frame is \
+                 fixed-size, and a partial write would publish the previous frame's tail as \
+                 part of this one",
+                data.len(),
+                self.name
+            ));
         }
-        self.end_write(pre, true);
+        self.begin_write()?;
+        unsafe {
+            std::ptr::copy_nonoverlapping(data.as_ptr(), ptr as *mut u8, len);
+        }
+        self.end_write(true);
         Ok(())
     }
 
     /// Sample the generation before reading the payload.
     ///
     /// Spins while a write is in progress, up to a fixed budget, then returns
-    /// the odd value it saw — which makes [`read_valid`](Self::read_valid)
+    /// the odd sample it saw — which makes [`read_valid`](Self::read_valid)
     /// return false. A writer killed mid-write therefore cannot hang a reader.
-    pub fn begin_read(&self) -> u64 {
+    pub fn begin_read(&self) -> seqlock::OpeningSample {
         const SPIN_BUDGET: u32 = 10_000;
         for _ in 0..SPIN_BUDGET {
-            let g = unsafe { seqlock::begin_read(self.gen_ptr()) };
-            if seqlock::is_complete(g) {
-                return g;
+            let sample = unsafe { seqlock::begin_read(self.gen_ptr()) };
+            if sample.is_complete() {
+                return sample;
             }
             std::hint::spin_loop();
         }
         unsafe { seqlock::begin_read(self.gen_ptr()) }
     }
 
-    /// True when the payload read after [`begin_read`](Self::begin_read) is
+    /// True when the payload read since [`begin_read`](Self::begin_read) is
     /// intact: no write started or finished in between.
-    ///
-    /// Must use `seqlock::end_read`, not `begin_read`: the closing sample needs
-    /// the acquire edge on the other side of the load, ordering the payload
-    /// reads *before* it. Sampling with `begin_read` here would let a
-    /// weakly-ordered CPU hoist the second generation load above the payload
-    /// reads and accept a torn frame. The two functions return the same value,
-    /// so no test can catch that swap — this comment is the only guard.
-    pub fn read_valid(&self, generation: u64) -> bool {
-        seqlock::is_complete(generation)
-            && unsafe { seqlock::end_read(self.gen_ptr()) } == generation
+    pub fn read_valid(&self, opening: seqlock::OpeningSample) -> bool {
+        unsafe { seqlock::read_completed(self.gen_ptr(), opening) }
     }
 }
 
@@ -433,8 +600,8 @@ mod tests {
     /// A test that panics half-way through must still clean up: `create` is
     /// `O_EXCL`, so a leaked segment does not merely litter `/dev/shm`, it
     /// makes that name permanently unusable and turns one failure into a
-    /// cascade of false ones. Unlinking from `Drop` runs on the panic path
-    /// too, which a trailing `unlink()` call does not.
+    /// cascade of false ones. Unlinking from `Drop` runs on the panic path too,
+    /// which a trailing cleanup call does not.
     struct SegmentGuard {
         name: String,
     }
@@ -457,6 +624,10 @@ mod tests {
         }
     }
 
+    fn segment_exists(name: &str) -> bool {
+        std::path::Path::new(&format!("/dev/shm/{name}")).exists()
+    }
+
     fn create_test_segment(tag: &str, size: usize) -> (SegmentGuard, PoolSegment) {
         let guard = SegmentGuard::new(tag);
         let seg = PoolSegment::create(guard.name(), size, "uint8", &[size], Transport::Shmem)
@@ -464,12 +635,55 @@ mod tests {
         (guard, seg)
     }
 
+    /// Read the payload back the way a consumer does: through the checked
+    /// accessor, never by reconstructing the pointer.
+    fn read_payload(seg: &PoolSegment) -> Vec<u8> {
+        let (ptr, len) = seg.payload().expect("a non-ipc pool has a payload");
+        unsafe { std::slice::from_raw_parts(ptr as *const u8, len) }.to_vec()
+    }
+
+    /// Create a segment from a hand-written metadata JSON, the way a peer in
+    /// another language would. `payload_bytes` is allocated after the header;
+    /// `ipc_flag` sets header byte 24.
+    fn write_raw_segment(guard: &SegmentGuard, json: &str, payload_bytes: usize, ipc_flag: bool) {
+        let total = doradma::data_offset_for(json.len()) + payload_bytes;
+        let mut shmem = ShmemConf::new()
+            .os_id(guard.name())
+            .size(total)
+            .writable(true)
+            .create()
+            .expect("create raw segment");
+        shmem.set_owner(false);
+        let buf = unsafe { std::slice::from_raw_parts_mut(shmem.as_ptr(), total) };
+        write_header(buf, json).expect("write header");
+        if ipc_flag {
+            buf[doradma::OFFSET_IPC_FLAG..doradma::OFFSET_IPC_FLAG + 8]
+                .copy_from_slice(&1u64.to_le_bytes());
+        }
+    }
+
+    /// The segment shape the Python binding produces for a CUDA receiver on a
+    /// discrete GPU: header-only allocation, `ipc_flag = 1`, no `transport`
+    /// key, and a JSON `size` describing the tensor in the IPC-imported device
+    /// buffer — far larger than the segment itself.
+    fn create_python_style_ipc_segment(guard: &SegmentGuard, declared_size: usize) {
+        write_raw_segment(
+            guard,
+            &format!(
+                r#"{{"size":{declared_size},"dtype":"uint8","shape":[{declared_size}],"pinned_type":"cuda"}}"#
+            ),
+            0,
+            true,
+        );
+    }
+
     #[test]
     fn create_then_open_sees_the_same_geometry() {
         let (guard, writer) = create_test_segment("geometry", 128);
         let reader = PoolSegment::open(guard.name()).expect("open");
 
-        assert_eq!(reader.size(), 128);
+        assert_eq!(reader.declared_size(), 128);
+        assert_eq!(reader.payload_len(), 128);
         assert_eq!(reader.dtype(), "uint8");
         assert_eq!(reader.shape(), &[128]);
         assert_eq!(reader.data_offset(), writer.data_offset());
@@ -486,29 +700,35 @@ mod tests {
         writer.write(&[0xAB; 64]).expect("write");
 
         let reader = PoolSegment::open(guard.name()).expect("open");
-        let seen = unsafe { std::slice::from_raw_parts(reader.host_ptr() as *const u8, 64) };
+        let seen = read_payload(&reader);
         assert!(
             seen.iter().all(|&b| b == 0xAB),
             "reader saw {seen:?}, not the written payload"
         );
     }
 
-    /// The payload must start at `data_offset`, not at the mapping base:
-    /// writing at the base would overwrite the header the reader depends on.
+    /// The payload must start after the header — writing at the mapping base
+    /// would overwrite the header the reader depends on — and must end inside
+    /// the mapping.
     #[test]
-    fn the_payload_starts_after_the_header_and_leaves_it_intact() {
+    fn the_payload_lies_after_the_header_and_inside_the_mapping() {
         let (guard, mut writer) = create_test_segment("offset", 32);
-        assert_eq!(writer.host_ptr(), writer.shm_base() + 512);
+        assert!(writer.data_offset() >= doradma::HEADER_SIZE);
+        let (ptr, len) = writer.payload().expect("payload");
+        assert_eq!(ptr, writer.shm_base() + writer.data_offset() as u64);
+        assert!(
+            ptr + len as u64 <= writer.shm_base() + writer.segment_bytes() as u64,
+            "the payload must not extend past the mapping"
+        );
         writer.write(&[0xCD; 32]).expect("write");
 
         let reader = PoolSegment::open(guard.name()).expect("open");
         assert_eq!(
-            reader.size(),
+            reader.declared_size(),
             32,
             "the header must survive the payload write"
         );
-        let seen = unsafe { std::slice::from_raw_parts(reader.host_ptr() as *const u8, 32) };
-        assert!(seen.iter().all(|&b| b == 0xCD));
+        assert!(read_payload(&reader).iter().all(|&b| b == 0xCD));
     }
 
     #[test]
@@ -517,9 +737,9 @@ mod tests {
         writer.write(&[1; 32]).expect("write");
 
         let reader = PoolSegment::open(guard.name()).expect("open");
-        let generation = reader.begin_read();
-        assert!(crate::seqlock::is_complete(generation));
-        assert!(reader.read_valid(generation));
+        let opening = reader.begin_read();
+        assert!(opening.is_complete());
+        assert!(reader.read_valid(opening));
     }
 
     /// The reader must see a torn frame as invalid, not as data.
@@ -528,35 +748,120 @@ mod tests {
         let (guard, mut writer) = create_test_segment("torn", 32);
         let reader = PoolSegment::open(guard.name()).expect("open");
 
-        let generation = reader.begin_read();
-        let pre = writer.begin_write();
-        assert!(!reader.read_valid(generation), "mid-write must be invalid");
-        writer.end_write(pre, true);
+        let opening = reader.begin_read();
+        writer.begin_write().expect("begin");
+        assert!(!reader.read_valid(opening), "mid-write must be invalid");
+        writer.end_write(true);
         assert!(
-            !reader.read_valid(generation),
+            !reader.read_valid(opening),
             "a new frame invalidates the old sample"
         );
     }
 
     /// `begin_read` gives up after its spin budget and hands back the odd
-    /// value it saw. `read_valid` must reject that on parity alone — the two
+    /// sample it saw. `read_valid` must reject that on parity alone — the two
     /// samples agree, so equality is not enough.
     #[test]
     fn an_odd_opening_sample_is_rejected_on_parity_even_though_both_samples_agree() {
         let (guard, mut writer) = create_test_segment("oddsample", 32);
         let reader = PoolSegment::open(guard.name()).expect("open");
 
-        let pre = writer.begin_write();
-        let generation = reader.begin_read();
+        writer.begin_write().expect("begin");
+        let opening = reader.begin_read();
         assert!(
-            !crate::seqlock::is_complete(generation),
-            "begin_read must return the odd value it gave up on"
+            !opening.is_complete(),
+            "begin_read must return the odd sample it gave up on"
         );
         assert!(
-            !reader.read_valid(generation),
+            !reader.read_valid(opening),
             "an odd sample must never be accepted"
         );
-        writer.end_write(pre, true);
+        writer.end_write(true);
+    }
+
+    /// The baseline generation lives in the segment, so there is no token a
+    /// caller can get wrong. The only ways to reach `end_write` are with a
+    /// matching `begin_write` or with none at all, and neither can publish an
+    /// even generation over a frame that is still being written.
+    #[test]
+    fn end_write_without_begin_write_cannot_publish_a_frame() {
+        let (guard, mut writer) = create_test_segment("nobegin", 32);
+        let reader = PoolSegment::open(guard.name()).expect("open");
+
+        // A write is in flight, marked by the odd generation.
+        writer.begin_write().expect("begin");
+        assert!(!reader.begin_read().is_complete());
+
+        // A second handle onto the same segment closes a cycle it never opened.
+        // With a caller-supplied token this is the call that would publish
+        // `pre + 2` over the in-flight frame and make it look complete to every
+        // reader, forever.
+        let mut stray = PoolSegment::open(guard.name()).expect("open");
+        assert!(!stray.write_in_progress());
+        stray.end_write(true);
+
+        assert!(
+            !reader.begin_read().is_complete(),
+            "a stray end_write must not have published the in-flight frame"
+        );
+        writer.end_write(true);
+        assert!(
+            reader.begin_read().is_complete(),
+            "the real writer must still be able to close its cycle"
+        );
+    }
+
+    #[test]
+    fn a_second_begin_write_is_refused_rather_than_losing_the_baseline() {
+        let (_guard, mut writer) = create_test_segment("doublebegin", 32);
+        writer.begin_write().expect("first begin");
+        assert!(writer.write_in_progress());
+
+        let err = writer.begin_write().unwrap_err();
+        assert!(
+            err.contains("already has a write in progress"),
+            "unexpected error: {err}"
+        );
+
+        writer.end_write(true);
+        assert!(!writer.write_in_progress());
+    }
+
+    /// The bracket form must refuse an ipc pool exactly as `write` does — it is
+    /// the form a zero-copy node uses, so guarding only `write` guards the path
+    /// nobody takes.
+    #[test]
+    fn begin_write_is_refused_on_an_ipc_pool() {
+        let guard = SegmentGuard::new("ipcbegin");
+        create_python_style_ipc_segment(&guard, 8 * 1024 * 1024);
+
+        let mut seg = PoolSegment::open(guard.name()).expect("open");
+        let err = seg.begin_write().unwrap_err();
+        assert!(err.contains("ipc-backed"), "unexpected error: {err}");
+        assert!(
+            !seg.write_in_progress(),
+            "a refused begin_write must not leave a cycle open"
+        );
+    }
+
+    /// A frame is fixed-size. A short write would leave the previous frame's
+    /// tail in place and publish the result as a complete new frame.
+    #[test]
+    fn write_rejects_a_payload_that_does_not_fill_the_pool() {
+        let (guard, mut writer) = create_test_segment("shortwrite", 16);
+        writer.write(&[0xFF; 16]).expect("first full frame");
+
+        let err = writer.write(&[0x11; 8]).unwrap_err();
+        assert!(
+            err.contains("8 bytes does not fill the 16-byte pool"),
+            "unexpected error: {err}"
+        );
+
+        let reader = PoolSegment::open(guard.name()).expect("open");
+        assert!(
+            read_payload(&reader).iter().all(|&b| b == 0xFF),
+            "a rejected short write must not have touched the frame"
+        );
     }
 
     #[test]
@@ -564,9 +869,24 @@ mod tests {
         let (_guard, mut writer) = create_test_segment("overflow", 16);
         let err = writer.write(&[0; 17]).unwrap_err();
         assert!(
-            err.contains("17 bytes exceeds the 16-byte pool"),
+            err.contains("17 bytes does not fill the 16-byte pool"),
             "unexpected error: {err}"
         );
+    }
+
+    /// The size rule as a pure predicate, so the boundary can be pinned without
+    /// `ftruncate`ing a real gigabyte.
+    #[test]
+    fn pool_size_must_be_nonzero_and_within_the_daemons_cap() {
+        assert!(
+            validate_pool_size(0)
+                .unwrap_err()
+                .contains("greater than zero")
+        );
+        assert!(validate_pool_size(1).is_ok());
+        assert!(validate_pool_size(MAX_POOL_BYTES).is_ok(), "the cap itself");
+        let err = validate_pool_size(MAX_POOL_BYTES + 1).unwrap_err();
+        assert!(err.contains("1 GiB"), "unexpected error: {err}");
     }
 
     #[test]
@@ -575,40 +895,15 @@ mod tests {
         let err =
             PoolSegment::create(guard.name(), 0, "uint8", &[0], Transport::Shmem).unwrap_err();
         assert!(err.contains("greater than zero"), "unexpected error: {err}");
-    }
-
-    /// Mirrors the daemon's own cap so a node fails locally with a clear
-    /// message instead of after a round trip.
-    #[test]
-    fn create_rejects_a_pool_larger_than_one_gib() {
-        let guard = SegmentGuard::new("huge");
-        let err = PoolSegment::create(
-            guard.name(),
-            1024 * 1024 * 1024 + 1,
-            "uint8",
-            &[1],
-            Transport::Shmem,
-        )
-        .unwrap_err();
-        assert!(err.contains("1 GiB"), "unexpected error: {err}");
-        // One byte under the cap is a legal request, so the message above
-        // cannot be coming from an off-by-one that rejects everything.
         assert!(
-            PoolSegment::create(
-                guard.name(),
-                1024 * 1024 * 1024,
-                "uint8",
-                &[1],
-                Transport::Shmem
-            )
-            .is_ok(),
-            "a pool exactly at the cap must be accepted"
+            !segment_exists(guard.name()),
+            "a rejected size must not leave a segment behind"
         );
     }
 
-    /// Writing `ipc` means exporting a CUDA IPC handle, which this crate
-    /// never does. Accepting it would produce a segment whose header claims
-    /// a handle that is all zeros.
+    /// Writing `ipc` means exporting a CUDA IPC handle, which this crate never
+    /// does. Accepting it would produce a segment whose header claims a handle
+    /// that is all zeros.
     #[test]
     fn create_rejects_the_ipc_transport_it_cannot_export_a_handle_for() {
         let guard = SegmentGuard::new("ipccreate");
@@ -616,7 +911,7 @@ mod tests {
             PoolSegment::create(guard.name(), 64, "uint8", &[64], Transport::Ipc).unwrap_err();
         assert!(err.contains("use `unified`"), "unexpected error: {err}");
         assert!(
-            !std::path::Path::new(&format!("/dev/shm/{}", guard.name())).exists(),
+            !segment_exists(guard.name()),
             "a rejected transport must not leave a segment behind"
         );
     }
@@ -632,38 +927,41 @@ mod tests {
         let reader = PoolSegment::open(guard.name()).expect("open");
         assert_eq!(reader.transport(), Transport::Unified);
         assert_eq!(reader.pinned_type(), "cuda");
-        assert_eq!(reader.size(), 64);
+        assert_eq!(reader.declared_size(), 64);
+        assert_eq!(reader.payload_len(), 64);
         // Byte-identical on the wire apart from the two JSON strings: no IPC
         // flag, and the full data region really is allocated.
         assert!(!reader.ipc_present());
     }
 
-    /// Build the segment shape the Python binding produces for a CUDA
-    /// receiver on a discrete GPU: header-only allocation, `ipc_flag = 1`, no
-    /// `transport` key, and a JSON `size` describing the tensor in the
-    /// IPC-imported device buffer — far larger than the segment itself.
-    fn create_python_style_ipc_segment(guard: &SegmentGuard, declared_size: usize) {
-        let json = format!(
-            r#"{{"size":{declared_size},"dtype":"uint8","shape":[{declared_size}],"pinned_type":"cuda"}}"#
+    /// `pinned_type` is derived from the transport, not read back from the
+    /// JSON. This is the one segment where the two disagree: a hand-rolled
+    /// sender declaring `pinned_type: "cuda"` with `ipc_flag = 0` and a full
+    /// data region. The derived answer is the actionable one — the payload
+    /// really is here in shmem — and it is the only one that was checked
+    /// against the header.
+    #[test]
+    fn pinned_type_follows_the_transport_when_the_json_disagrees() {
+        let guard = SegmentGuard::new("pinnedskew");
+        write_raw_segment(
+            &guard,
+            r#"{"size":64,"dtype":"uint8","shape":[64],"pinned_type":"cuda"}"#,
+            64,
+            false,
         );
-        let total = crate::doradma::data_offset_for(json.len());
-        let mut shmem = ShmemConf::new()
-            .os_id(guard.name())
-            .size(total)
-            .writable(true)
-            .create()
-            .expect("create ipc-style segment");
-        shmem.set_owner(false);
-        let buf = unsafe { std::slice::from_raw_parts_mut(shmem.as_ptr(), total) };
-        write_header(buf, &json).expect("write header");
-        buf[crate::doradma::OFFSET_IPC_FLAG..crate::doradma::OFFSET_IPC_FLAG + 8]
-            .copy_from_slice(&1u64.to_le_bytes());
+        let seg = PoolSegment::open(guard.name()).expect("open");
+        assert_eq!(seg.transport(), Transport::Shmem);
+        assert_eq!(
+            seg.pinned_type(),
+            "cpu",
+            "pinned_type must follow the transport, not the unchecked json field"
+        );
     }
 
     /// `open` must not run a payload-size check of its own. `parse_header`
     /// gates that check on the header's `ipc_flag`, and this is the segment
-    /// shape the gate exists for: a size check applied here would reject
-    /// every Python-written GPU pool.
+    /// shape the gate exists for: a size check applied here would reject every
+    /// Python-written GPU pool.
     #[test]
     fn open_accepts_a_python_written_header_only_cuda_pool() {
         let guard = SegmentGuard::new("pyipc");
@@ -673,25 +971,187 @@ mod tests {
         assert_eq!(reader.transport(), Transport::Ipc);
         assert!(reader.ipc_present());
         assert!(reader.ipc_handle().is_some());
-        assert_eq!(reader.size(), 8 * 1024 * 1024);
+        assert_eq!(reader.declared_size(), 8 * 1024 * 1024);
         assert!(
-            reader.segment_bytes() < reader.size(),
+            reader.segment_bytes() < reader.declared_size(),
             "the point of this segment is that its declared size exceeds it"
         );
     }
 
-    /// The flip side of accepting that segment: `size` no longer bounds the
-    /// mapping, so a write bounded by `size` would run off the end of it.
+    /// The flip side of accepting that segment. `declared_size` no longer
+    /// bounds the mapping, so the payload accessor must refuse to hand out a
+    /// pointer at all rather than one that is already past the end.
     #[test]
-    fn write_is_refused_on_an_ipc_pool_whose_payload_is_not_in_this_segment() {
-        let guard = SegmentGuard::new("ipcwrite");
+    fn an_ipc_pool_hands_out_no_payload_pointer() {
+        let guard = SegmentGuard::new("ipcpayload");
         create_python_style_ipc_segment(&guard, 8 * 1024 * 1024);
 
         let mut seg = PoolSegment::open(guard.name()).expect("open");
-        // Well under the declared `size`, so the byte-count check alone would
-        // let this through and scribble past the end of the mapping.
+        assert!(seg.payload().is_none());
+        assert_eq!(seg.payload_len(), 0);
+        assert_eq!(seg.declared_size(), 8 * 1024 * 1024);
+        // The pointer that would otherwise have been handed out is exactly one
+        // past the end of the mapping.
+        assert_eq!(seg.data_offset(), seg.segment_bytes());
+
         let err = seg.write(&[0xAB; 4096]).unwrap_err();
         assert!(err.contains("ipc-backed"), "unexpected error: {err}");
+    }
+
+    /// A consumer builds its view out of `shape` and `dtype`. A shape that
+    /// multiplies out past the payload is a 16 MB window onto a 64-byte buffer,
+    /// and passes every other check in this file.
+    #[test]
+    fn open_rejects_a_shape_that_does_not_fit_the_declared_size() {
+        let guard = SegmentGuard::new("bigshape");
+        write_raw_segment(
+            &guard,
+            r#"{"size":64,"dtype":"uint8","shape":[4096,4096],"pinned_type":"cpu"}"#,
+            64,
+            false,
+        );
+        let err = PoolSegment::open(guard.name()).unwrap_err();
+        assert!(
+            err.contains("needs 16777216 bytes but the pool declares only 64"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The same hazard through the element size rather than the element count.
+    #[test]
+    fn open_rejects_a_shape_whose_dtype_makes_it_too_large() {
+        let guard = SegmentGuard::new("bigdtype");
+        write_raw_segment(
+            &guard,
+            r#"{"size":64,"dtype":"float64","shape":[32],"pinned_type":"cpu"}"#,
+            64,
+            false,
+        );
+        let err = PoolSegment::open(guard.name()).unwrap_err();
+        assert!(
+            err.contains("needs 256 bytes but the pool declares only 64"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// An unrecognized dtype must not be rejected — a sender may legitimately
+    /// use one we have not enumerated — but the one-byte-per-element lower
+    /// bound still applies, which is what catches the hazard above.
+    #[test]
+    fn an_unrecognized_dtype_keeps_the_one_byte_per_element_bound() {
+        let ok = SegmentGuard::new("weirdok");
+        write_raw_segment(
+            &ok,
+            r#"{"size":64,"dtype":"posit8","shape":[8,8],"pinned_type":"cpu"}"#,
+            64,
+            false,
+        );
+        PoolSegment::open(ok.name()).expect("an unknown dtype must still open");
+
+        let bad = SegmentGuard::new("weirdbad");
+        write_raw_segment(
+            &bad,
+            r#"{"size":64,"dtype":"posit8","shape":[4096,4096],"pinned_type":"cpu"}"#,
+            64,
+            false,
+        );
+        let err = PoolSegment::open(bad.name()).unwrap_err();
+        assert!(
+            err.contains("unrecognized dtype `posit8`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The bound is `<=`, not `==`: a pool larger than its shape needs is safe,
+    /// is what a producer that page-aligns its allocation writes, and is
+    /// accepted by Python's own reader (`dora/cuda.py` rejects only on
+    /// `expected_bytes > size`). Rejecting it would break interop for no safety
+    /// gain.
+    #[test]
+    fn a_pool_larger_than_its_shape_needs_is_accepted() {
+        let guard = SegmentGuard::new("padded");
+        write_raw_segment(
+            &guard,
+            r#"{"size":4096,"dtype":"uint8","shape":[100],"pinned_type":"cpu"}"#,
+            4096,
+            false,
+        );
+        let seg = PoolSegment::open(guard.name()).expect("an over-allocated pool must open");
+        assert_eq!(seg.declared_size(), 4096);
+    }
+
+    #[test]
+    fn element_size_knows_the_vocabularies_dora_senders_write() {
+        // numpy names, torch's `str(tensor.dtype)`, numpy typestr.
+        assert_eq!(element_size("uint8"), Some(1));
+        assert_eq!(element_size("float32"), Some(4));
+        assert_eq!(element_size("torch.float64"), Some(8));
+        assert_eq!(element_size("torch.bfloat16"), Some(2));
+        assert_eq!(element_size("<f4"), Some(4));
+        assert_eq!(element_size("|b1"), Some(1));
+        assert_eq!(element_size("<i8"), Some(8));
+        // Not a vocabulary we know: the caller falls back to the 1-byte bound.
+        assert_eq!(element_size("posit8"), None);
+        assert_eq!(element_size("<U5"), None, "character counts are not bytes");
+        assert_eq!(element_size(""), None);
+    }
+
+    #[test]
+    fn a_shape_that_overflows_when_multiplied_is_rejected_not_wrapped() {
+        let err = validate_shape("uint8", &[usize::MAX, 4], 64).unwrap_err();
+        assert!(err.contains("overflows"), "unexpected error: {err}");
+        let err = validate_shape("float64", &[usize::MAX / 4], 64).unwrap_err();
+        assert!(err.contains("overflows"), "unexpected error: {err}");
+    }
+
+    /// An absent `shape` key decodes to an empty vec, which the check must
+    /// skip: it is indistinguishable from a genuine scalar and neither can
+    /// index out of bounds. Rejecting it would break the documented degradation
+    /// for older senders.
+    #[test]
+    fn an_absent_shape_is_not_treated_as_a_zero_sized_tensor() {
+        assert!(validate_shape("float64", &[], 4096).is_ok());
+        let guard = SegmentGuard::new("noshape");
+        write_raw_segment(
+            &guard,
+            r#"{"size":64,"dtype":"uint8","pinned_type":"cpu"}"#,
+            64,
+            false,
+        );
+        let seg = PoolSegment::open(guard.name()).expect("a shapeless segment must open");
+        assert!(seg.shape().is_empty());
+    }
+
+    #[test]
+    fn create_rejects_a_shape_that_does_not_fit_the_size_it_was_given() {
+        let guard = SegmentGuard::new("createshape");
+        let err =
+            PoolSegment::create(guard.name(), 64, "float32", &[64], Transport::Shmem).unwrap_err();
+        assert!(err.contains("needs 256 bytes"), "unexpected error: {err}");
+        assert!(!segment_exists(guard.name()));
+    }
+
+    /// A segment too short to hold even the fixed header must be rejected by
+    /// the `json_len_field` step, before anything indexes into it.
+    ///
+    /// Deliberately 8 bytes, not merely under 256: `json_len_field` reads the
+    /// `json_len` field at bytes 8..16, so a segment shorter than 16 is the
+    /// only size at which dropping its length guard is an out-of-bounds index
+    /// rather than a redundant check `parse_header` would repeat anyway.
+    #[test]
+    fn open_rejects_a_segment_shorter_than_the_fixed_header() {
+        let guard = SegmentGuard::new("stub");
+        let mut shmem = ShmemConf::new()
+            .os_id(guard.name())
+            .size(8)
+            .writable(true)
+            .create()
+            .expect("create stub segment");
+        shmem.set_owner(false);
+        drop(shmem);
+
+        let err = PoolSegment::open(guard.name()).unwrap_err();
+        assert!(err.contains("too small"), "unexpected error: {err}");
     }
 
     #[test]
@@ -705,9 +1165,12 @@ mod tests {
     fn dropping_a_segment_does_not_unlink_it() {
         let (guard, writer) = create_test_segment("droptest", 32);
         drop(writer);
-        // Still openable: only unlink() (or the daemon) removes a segment.
+        // Still openable: only the daemon's unlink removes a segment.
         let reader = PoolSegment::open(guard.name()).expect("segment must survive drop");
-        reader.unlink();
+        drop(reader);
+        assert!(segment_exists(guard.name()));
+
+        crate::naming::unlink_segment(guard.name()).expect("unlink");
         assert!(
             PoolSegment::open(guard.name()).is_err(),
             "unlink must remove it"

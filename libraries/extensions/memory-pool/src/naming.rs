@@ -75,6 +75,58 @@ pub fn segment_name(dataflow_id: &str, node_id: &str, pool_id: &str) -> Result<S
     Ok(name)
 }
 
+/// Reject a segment name that does not match what the daemon is willing to
+/// unlink: the `dora_pool_` prefix, no `/`, no `..`.
+///
+/// `segment_name` builds names that satisfy this by construction, but a name
+/// can also arrive from a peer over the wire (`shared_memory_name` in the
+/// pool metadata), so the guard is applied at the point of use, not only at
+/// the point of construction.
+fn validate_segment_name(name: &str) -> Result<(), String> {
+    if !name.starts_with(SEGMENT_PREFIX) || name.contains('/') || name.contains("..") {
+        return Err(format!(
+            "shared_memory_name `{name}` does not match expected {SEGMENT_PREFIX} prefix"
+        ));
+    }
+    Ok(())
+}
+
+/// Unlink a pool segment from `/dev/shm`.
+///
+/// The single unlink path for the whole crate. Every caller — the daemon
+/// freeing a pool, and a segment cleaning up after a failed create — goes
+/// through here, so the name guard above cannot be applied in one place and
+/// forgotten in the other. An already-gone file is success: unlink is
+/// idempotent by design, since a pool may be freed concurrently by the node
+/// that read it and by the daemon's shutdown sweep.
+pub fn unlink_segment(name: &str) -> Result<(), String> {
+    validate_segment_name(name)?;
+
+    #[cfg(target_os = "linux")]
+    {
+        let path = format!("/dev/shm/{name}");
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to unlink shared memory file {}: {}. The file may still be in use by other processes.",
+                    path,
+                    e
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(format!(
+            "memory-pool transport is unavailable on this platform; cannot clean up shared memory `{name}`"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,5 +213,31 @@ mod tests {
     #[test]
     fn allows_a_dot_containing_node_id_like_node_id_validation_does() {
         assert!(segment_name("df", "camera.left", "pool").is_ok());
+    }
+
+    /// The guard exists so a `shared_memory_name` arriving from a peer cannot
+    /// turn an unlink into an arbitrary `remove_file`.
+    #[test]
+    fn unlink_rejects_a_name_outside_the_pool_namespace() {
+        for name in [
+            "invalid_name",
+            "/etc/passwd",
+            "dora_pool_../../etc/passwd",
+            "dora_pool_a/b",
+        ] {
+            let err = unlink_segment(name).unwrap_err();
+            assert!(err.contains(name), "unexpected error for {name}: {err}");
+        }
+    }
+
+    /// Unlinking a name that was never created is success, not an error:
+    /// the daemon's shutdown sweep and a node's own free race routinely.
+    #[test]
+    fn unlink_of_a_nonexistent_segment_succeeds() {
+        let name = segment_name("df", "node", "definitely-not-created-anywhere").unwrap();
+        #[cfg(target_os = "linux")]
+        unlink_segment(&name).expect("a missing segment must not be an error");
+        #[cfg(not(target_os = "linux"))]
+        assert!(unlink_segment(&name).is_err(), "unsupported platform");
     }
 }

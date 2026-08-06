@@ -193,44 +193,14 @@ impl MemoryPoolManager {
         Ok((entry.metadata, entry.touched_by))
     }
 
+    /// Unlink a pool's backing segment.
+    ///
+    /// The name-space guard (prefix, no `/`, no `..`) that keeps an
+    /// attacker-supplied `shared_memory_name` from becoming an arbitrary
+    /// `remove_file` lives in `naming::unlink_segment`, which is also what
+    /// `PoolSegment` uses — one guarded path rather than two that can drift.
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
-        // Sanity-checks to avoid path traversal: an attacker-supplied
-        // shared_memory_name must stay within the expected /dev/shm name space.
-        if !shm_name.starts_with(naming::SEGMENT_PREFIX)
-            || shm_name.contains('/')
-            || shm_name.contains("..")
-        {
-            return Err(format!(
-                "shared_memory_name `{}` does not match expected {} prefix",
-                shm_name,
-                naming::SEGMENT_PREFIX,
-            ));
-        }
-
-        #[cfg(target_os = "linux")]
-        {
-            let shm_path = format!("/dev/shm/{}", shm_name);
-            match std::fs::remove_file(&shm_path) {
-                Ok(_) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to unlink shared memory file {}: {}. The file may still be in use by other processes.",
-                        shm_path,
-                        e
-                    );
-                }
-            }
-            Ok(())
-        }
-
-        #[cfg(not(target_os = "linux"))]
-        {
-            Err(format!(
-                "memory-pool transport is unavailable on this platform; cannot clean up shared memory `{}`",
-                shm_name
-            ))
-        }
+        naming::unlink_segment(shm_name)
     }
 
     /// Sweep orphaned shared-memory segments from a previous crash or
