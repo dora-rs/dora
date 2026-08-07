@@ -343,7 +343,14 @@ auto reply = recv_service_response_from(
 The set governs only restart detection; which reply matches is decided by
 `request_id` alone. A restart of any listed node is reported as
 `ServerRestarted` naming that node — a notification, not a verdict, since
-the other candidates may still answer.
+the other candidates may still answer, so the request's deadline keeps
+running on its original clock.
+
+A list holding exactly one id is treated as the single-server case, not
+as a one-element set: with nobody else to answer, that restart *is* the
+verdict, and the orphaned request's deadline is released with it. The
+single-server polls above take the same path, so they behave
+identically.
 
 The server must echo the request's `request_id` back, which is why it needs
 `event_as_input_with_metadata`:

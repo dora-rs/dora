@@ -1527,7 +1527,24 @@ impl OwnedServers {
     fn as_ref(&self) -> ExpectedServers<'_> {
         match self {
             Self::Any => ExpectedServers::Any,
-            Self::Some(ids) => ExpectedServers::AnyOf(ids),
+            // Exactly one candidate is `One`, not a one-element `AnyOf`.
+            //
+            // The two differ in what a restart *means*: with a set,
+            // a restart is a notification because the others may still
+            // answer, so the deadline keeps running. With a single
+            // server there is nobody else, so the restart is the
+            // verdict and the deadline must go with the orphaned
+            // request.
+            //
+            // This is the path every C++ single-server poll takes —
+            // `try_recv_service_response(.., server_node_id, ..)` wraps
+            // its lone id in a slice — so without this it would leak one
+            // deadline entry per abandoned request, which is exactly
+            // what `cancel_correlation` was added to avoid needing.
+            Self::Some(ids) => match ids.as_slice() {
+                [only] => ExpectedServers::One(only),
+                many => ExpectedServers::AnyOf(many),
+            },
         }
     }
 }
@@ -2085,6 +2102,45 @@ mod tests {
             panic!("an empty id is the 'any' spelling and must be accepted");
         };
         assert!(matches!(parsed, OwnedServers::Any));
+    }
+
+    /// The C++ single-server polls wrap their lone id in a slice, so
+    /// this is the mapping every one of them goes through. It has to
+    /// land on `One`: with a single candidate a restart is terminal, and
+    /// `One` is what drops the orphaned request's deadline. A
+    /// one-element `AnyOf` would keep it, leaking one entry per
+    /// abandoned request.
+    ///
+    /// Paired with `a_one_server_restart_clears_the_deadline` in
+    /// `dora-node-api`, which pins the clearing behaviour itself.
+    #[test]
+    fn a_single_server_maps_to_one_not_a_one_element_any_of() {
+        let Ok(parsed) = parse_server_list(&["srv"]) else {
+            panic!("a single valid id must parse");
+        };
+        assert!(
+            matches!(parsed.as_ref(), ExpectedServers::One(id) if id.as_ref() == "srv"),
+            "a lone server must become One, or its restart will not clear the deadline"
+        );
+    }
+
+    #[test]
+    fn several_servers_still_map_to_any_of() {
+        let Ok(parsed) = parse_server_list(&["a", "b"]) else {
+            panic!("both ids are valid");
+        };
+        assert!(
+            matches!(parsed.as_ref(), ExpectedServers::AnyOf(ids) if ids.len() == 2),
+            "a real fan-out must keep AnyOf semantics"
+        );
+    }
+
+    #[test]
+    fn no_servers_still_maps_to_any() {
+        let Ok(parsed) = parse_server_list(&[]) else {
+            panic!("an empty list is valid");
+        };
+        assert!(matches!(parsed.as_ref(), ExpectedServers::Any));
     }
 
     #[test]
