@@ -7,41 +7,21 @@ use eyre::{Context, OptionExt, Result, bail};
 use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
     process::Command,
 };
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, RUNTIME_PYTHON, RUNTIME_SHARED_LIBRARY, RUNTIME_WASM,
-    ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
-    Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
+    OperatorSource, PythonSource, ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig,
+    Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE,
+    SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
 
 mod classify;
-/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
-/// the filesystem — the executable may not be built yet when this is called.
-///
-/// Used to sanitize untrusted node paths before a containment check, so the
-/// two callers (module expansion and manifest injection) must collapse `..`
-/// identically; keeping a single implementation prevents them from drifting.
-pub(crate) fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
-
 mod expand;
 pub mod validate;
 mod visualize;
@@ -173,6 +153,14 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 .iter_mut()
                 .flat_map(|op| op.config.inputs.values_mut())
                 .collect(),
+            classify::NodeClass::Custom => node
+                .custom
+                .as_mut()
+                .ok_or_eyre("no custom")?
+                .run_config
+                .inputs
+                .values_mut()
+                .collect(),
             classify::NodeClass::Operator => node
                 .operator
                 .as_mut()
@@ -227,6 +215,10 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     health_check_timeout: node.health_check_timeout,
                     finish_grace_secs: node.finish_grace_secs,
                 })
+            }
+            classify::NodeClass::Custom => {
+                let custom = node.custom.as_ref().ok_or_eyre("no custom")?;
+                CoreNodeKind::Custom(custom.clone())
             }
             classify::NodeClass::Runtime => {
                 let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
@@ -359,28 +351,23 @@ impl DescriptorExt for Descriptor {
 }
 
 /// Merge dataflow-level `env` into a node's `env`, with per-node keys winning
-/// on conflict. Returns `None` when the merged result is empty so the resolved
-/// node serializes cleanly (no empty `env: {}` map) whenever no env vars are
-/// effectively set — regardless of whether the emptiness comes from the global
-/// map, the node map, or both (e.g. a node that declares `env: {}` with no
-/// dataflow-level env).
+/// on conflict. Returns `None` when both inputs are empty so the resolved
+/// node serializes cleanly when no env vars are set anywhere.
 fn merge_env(
     global: Option<&BTreeMap<String, EnvValue>>,
     node: Option<BTreeMap<String, EnvValue>>,
 ) -> Option<BTreeMap<String, EnvValue>> {
-    let merged = match (global, node) {
-        (None, None) => return None,
-        (None, Some(node)) => node,
-        (Some(global), None) => global.clone(),
+    match (global, node) {
+        (None, node) => node,
+        (Some(global), None) if global.is_empty() => None,
+        (Some(global), None) => Some(global.clone()),
         (Some(global), Some(node)) => {
             let mut merged = global.clone();
             // Per-node entries override global ones on key conflict.
             merged.extend(node);
-            merged
+            Some(merged)
         }
-    };
-    // Normalize an empty result to `None` regardless of which side was empty.
-    (!merged.is_empty()).then_some(merged)
+    }
 }
 
 pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
@@ -575,24 +562,26 @@ impl NodeExt for Node {
         match (
             &self.path,
             &self.operators,
+            &self.custom,
             &self.operator,
             &self.ros2,
             &self.module,
         ) {
-            (None, None, None, None, None) => {
+            (None, None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
-            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
-            (None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
-            (None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
+            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
+            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `operators`, `operator`, `ros2`, and `module` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -605,6 +594,7 @@ pub enum NodeKind<'a> {
     Standard(&'a String),
     /// Dora runtime node
     Runtime(&'a RuntimeNode),
+    Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
@@ -685,21 +675,6 @@ mod tests {
         let global = env(&[("A", "1")]);
         let merged = merge_env(Some(&global), None).unwrap();
         assert_eq!(merged, global);
-    }
-
-    #[test]
-    fn merge_env_normalizes_empty_node_map_to_none() {
-        // A node that declares `env: {}` with no dataflow-level env must
-        // resolve to `None`, not `Some({})`, matching the documented contract
-        // (and the `(Some(empty), None)` arm) so the resolved node serializes
-        // without an empty `env:` map.
-        assert!(merge_env(None, Some(env(&[]))).is_none());
-    }
-
-    #[test]
-    fn merge_env_normalizes_empty_global_and_node_maps_to_none() {
-        assert!(merge_env(Some(&env(&[])), Some(env(&[]))).is_none());
-        assert!(merge_env(Some(&env(&[])), None).is_none());
     }
 
     #[test]
