@@ -29,10 +29,17 @@ const MAX_POOL_BYTES: usize = 1024 * 1024 * 1024;
 
 /// How a receiver is expected to reach the payload.
 ///
-/// `Shmem` and `Unified` are byte-identical on the wire — both allocate the
-/// full data region and set `ipc_flag = 0`. They differ only in the declared
-/// `pinned_type`, which tells a receiver whether mapping the segment for CUDA
-/// is worth doing.
+/// `Shmem` and `Unified` have the same *layout* on the wire — both allocate the
+/// full data region and set `ipc_flag = 0` — so a receiver reaches the payload
+/// the same way for either, and mapping one for CUDA works whichever it is.
+/// They are not byte-identical: the metadata JSON records a different
+/// `pinned_type` (`"cpu"` / `"cuda"`) and a different `transport` string, and
+/// since those strings differ in length so does `json_len`. Nothing reads
+/// around that — `json_len` and `data_offset` come out of the header — but a
+/// test that diffs two segments will see it.
+///
+/// The `pinned_type` is the part a receiver acts on: it tells it whether
+/// mapping the segment for CUDA is worth doing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// CPU receiver: read the data region directly.

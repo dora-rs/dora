@@ -1318,6 +1318,25 @@ jobs:
           Remove-Item "C:\Android" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\go" -Force -Recurse
           Remove-Item "C:\hostedtoolcache\windows\CodeQL" -Force -Recurse
+      # `cxx-memory-pool`'s Python→C++ interop dataflow needs the *workspace*
+      # Python binding (PyPI `dora-rs` has drifted), and it is abi3-py311.
+      # Without this the example still passes — `run.rs` skips that dataflow
+      # with a warning rather than failing — so the step exists precisely to
+      # stop the skip becoming permanent. Linux only: the memory-pool transport
+      # is a /dev/shm segment. Mirrors the smoke-suite job's provisioning.
+      - uses: astral-sh/setup-uv@v8.1.0
+        if: runner.os == 'Linux'
+        with:
+          enable-cache: true
+      - name: Set up Python venv (C++ <-> Python pool interop)
+        if: runner.os == 'Linux'
+        timeout-minutes: 20
+        run: |
+          uv venv --seed -p 3.12
+          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
+          source .venv/bin/activate
+          uv pip install pyarrow
+          uv pip install -e apis/python/node
       # Examples call dora_cli as a library (via `examples/*/run.rs`) but the
       # daemon still spawns runtime nodes as child processes via
       # `which::which("dora")`. Build the CLI binary and add it to PATH so

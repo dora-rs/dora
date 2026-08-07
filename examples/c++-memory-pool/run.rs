@@ -3,9 +3,17 @@ use eyre::bail;
 use std::{env::consts::EXE_SUFFIX, path::Path, time::Duration};
 
 /// Nodes to compile: (source file stem, output binary name).
+///
+/// `pool-interop-receiver` is compiled but only *run* when a Python binding is
+/// available — see `run_python_interop`. Compiling it unconditionally is the
+/// point: it is the consumer for `dataflow-python-interop.yml`, it uses the
+/// same pool surface as the other two, and if nothing built it, the first
+/// change to that surface would break it silently. (Its CUDA twin is built from
+/// the same source by `nvcc`, per the README; nothing here can do that.)
 const NODES: &[(&str, &str)] = &[
     ("pool-sender", "pool_sender"),
     ("pool-receiver", "pool_receiver"),
+    ("pool-interop-receiver", "pool_interop_receiver"),
 ];
 
 /// Where a POSIX shared-memory segment shows up on Linux, and the prefix every
@@ -71,6 +79,8 @@ fn main() -> eyre::Result<()> {
     run.stop_after = Some(Duration::from_secs(60));
     run.execute()?;
 
+    run_python_interop(root)?;
+
     // Each pool is registered with the daemon, which is the only thing that
     // unlinks it. A segment still here is one no node handed back.
     let leaked = pool_segments()?;
@@ -78,6 +88,78 @@ fn main() -> eyre::Result<()> {
         bail!("memory-pool segments leaked in {SHM_DIR}: {leaked:?}");
     }
 
+    Ok(())
+}
+
+/// Run `dataflow-python-interop.yml` when this environment can spawn its Python
+/// node, and skip loudly when it cannot.
+///
+/// The probe uses the same interpreter the daemon will (`get_python_path`,
+/// which asks `uv python find` first), so a pass here means the node really can
+/// start rather than that *some* Python somewhere could import `dora`.
+///
+/// The skip is not a way of avoiding the test. The binding is `abi3-py311` and
+/// has to be installed from the workspace (`uv pip install -e apis/python/node`),
+/// which the nightly `examples` job now provisions; a developer running
+/// `cargo run --example cxx-memory-pool` on a bare checkout has no reason to
+/// have it, and failing there would make the whole example unrunnable for a
+/// part of it that is about a *different* binding.
+///
+/// # Why the CLI binary and not `RunCommand::execute()` again
+///
+/// `execute()` installs the global `tracing` subscriber, and a process gets one
+/// of those. A second in-process call dies with "a global default trace
+/// dispatcher has already been set" before it reaches the dataflow. Spawning
+/// `dora run` has the side benefit of being character-for-character the command
+/// the README documents.
+fn run_python_interop(root: &Path) -> eyre::Result<()> {
+    let python = match dora_core::get_python_path() {
+        Ok(python) => python,
+        Err(err) => {
+            tracing::warn!("skipping the Python interop dataflow: no Python 3 found ({err})");
+            return Ok(());
+        }
+    };
+    let probe = std::process::Command::new(&python)
+        .args(["-c", "import dora, pyarrow"])
+        .output();
+    match probe {
+        Ok(output) if output.status.success() => {}
+        Ok(output) => {
+            tracing::warn!(
+                "skipping the Python interop dataflow: `{} -c 'import dora, pyarrow'` failed. \
+                 Install the workspace binding with `uv pip install -e apis/python/node` \
+                 (it is abi3-py311, so it needs Python >= 3.11). stderr: {}",
+                python.display(),
+                String::from_utf8_lossy(&output.stderr).trim(),
+            );
+            return Ok(());
+        }
+        Err(err) => {
+            tracing::warn!(
+                "skipping the Python interop dataflow: could not run `{}`: {err}",
+                python.display()
+            );
+            return Ok(());
+        }
+    }
+
+    build_package("dora-cli")?;
+    let dora = root
+        .join("target")
+        .join("debug")
+        .join(format!("dora{EXE_SUFFIX}"));
+    tracing::info!(
+        "running the Python interop dataflow with {}",
+        python.display()
+    );
+    let status = std::process::Command::new(&dora)
+        .args(["run", "dataflow-python-interop.yml", "--stop-after", "60s"])
+        .status()
+        .map_err(|e| eyre::eyre!("failed to run `{} run`: {e}", dora.display()))?;
+    if !status.success() {
+        bail!("the Python interop dataflow failed ({status})");
+    }
     Ok(())
 }
 

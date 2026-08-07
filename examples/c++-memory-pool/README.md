@@ -217,16 +217,75 @@ producer, and not for cosmetic reasons:
   `ipc_flag = 0`. `pool-receiver-cuda.cc` asserts `unified` and would fail on a
   segment it can otherwise read perfectly.
 
-The last point is worth stating precisely, because it qualifies "byte-identical
-on the wire": a Python CPU pool and a C++ `unified` pool differ in the metadata
-JSON by that one key, and in nothing else. The `DORADMA` header, the seqlock at
-offset 96, the padded metadata region and the data region are the same layout,
-which is why the same `cudaHostRegister` + device-alias path works on both. The
-transport string is a label; the mapping is what the GPU reads.
+- **The pool id is not a substring of the segment name.** The C++ producer
+  derives both from `naming::segment_name`, so `checks.h` can look for
+  `…_<node>_<pool-id>`. Python formats the segment name
+  (`dora_pool_{dataflow}_{node}_{counter}`) and the buffer id
+  (`pool_{node}_{counter}`) in two independent `format!` calls that share no
+  code; only the `<node>_<counter>` tail is common.
+
+### The two segments are not byte-identical
+
+"Byte-identical on the wire" is the claim this example exists to test, and it is
+**too strong**. Dumped side by side for the same 16 KiB `uint8` payload, a Python
+CPU pool and a C++ `unified` pool disagree in four places:
+
+| | Python (`register_memory_pool(…, "cpu")`) | C++ (`Transport::Unified`) |
+|---|---|---|
+| `transport` key | absent | `"unified"` |
+| `pinned_type` | `"cpu"` | `"cuda"` |
+| JSON separators | `json.dumps` defaults: `", "` / `": "` | `serde_json` compact |
+| `json_len` | 73 | 91 |
+| `write_gen` after registration | `2` — the register copies the source tensor and closes a seqlock cycle around it | `0` — `PoolSegment::create` allocates and registers without an intervening write |
+
+What makes the interop work anyway is a better argument than byte-identity, and
+it is the one the consumer actually relies on: **`json_len`, `data_offset`,
+`pinned_type` and the generation are read out of the header, never assumed.**
+What has to agree is the layout the header *describes* — the `DORADMA` magic,
+the `json_len`/`data_offset` pair, the seqlock at offset 96, and a data region
+starting at `data_offset` — and that is what makes one `cudaHostRegister` +
+device-alias path serve both.
+
+Two consequences worth not misreading:
+
+- **`payload at +512` is a property of this tensor, not of the format.**
+  `data_offset_for` rounds `json_len` up to a multiple of 256, and 73 and 91
+  both round to 256 — so both producers land on 512 *here*. A longer dtype
+  string or a higher-rank shape puts one at 512 and the other at 768, and
+  nothing breaks when it does, because the consumer reads the offset.
+- **`write_gen = 0` is a state Python cannot represent.** A C++ pool is visible
+  to the daemon between `create` and its first write, and a consumer mapping in
+  that window reads a full frame of zeros that passes the seqlock — even is
+  even. The handshake in every dataflow here closes that window, so it is not
+  exercised, but it is a genuine producer asymmetry that "same semantics" would
+  hide.
 
 `nodes/pool-interop-receiver.cc` is one source compiled twice — g++ for the CPU
-path, `nvcc -x cu` for the device alias — so the two cannot drift in what they
-claim about a Python segment.
+path, `nvcc -x cu` for the device alias. Precisely: the two builds differ in
+`read_ring`'s body and in `map()`/`release()` (no-ops on the CPU build), so the
+*read* really is two implementations. What the shared source locks together is
+everything either build claims about the **segment** — the pool id arriving as
+data, the segment-name check, the transport/`ipc_present`/`payload_len`
+assertions, the ring model and its script, and the free path through to
+`Unavailable`. Those cannot drift because there is one copy of them. The CUDA
+build never runs `try_read_pool`'s `Copied` path against a Python pool
+(`use_copy_path` is discarded there on purpose — copying the payload would
+defeat the point), so that is CPU-only coverage.
+
+### What builds and runs where
+
+`cargo run --example cxx-memory-pool` **compiles `pool_interop_receiver`** along
+with the other two nodes, so the interop source cannot rot when the pool surface
+changes; that is the whole reason it is in `run.rs`'s `NODES`. It then runs
+`dataflow-python-interop.yml` **only if** `get_python_path()`'s interpreter can
+`import dora, pyarrow`, and otherwise prints a warning naming what is missing —
+the binding is `abi3-py311` and has to come from the workspace, which a bare
+checkout has no reason to have. The nightly `examples` job provisions it
+(Linux-only) so that skip is not permanent.
+
+The CUDA twin is out of scope for `run.rs`: it needs `nvcc`, and GitHub's
+runners have no GPU at all, let alone an integrated one. It is built and run by
+hand, below.
 
 ### Building and running it
 
@@ -333,3 +392,11 @@ whose bytes are in question:
 Every one of those also ends with the sender's own
 `stopped at step N of 21 without completing the script`, because the consumer
 stops acking as soon as it fails.
+
+Two more, on the consumer and the runner rather than the sender, because they
+guard the two things this example changed structurally:
+
+| break this | and this catches it |
+|---|---|
+| pass a tail one character off to the shared `segment_name_from_daemon` | `segment name 'dora_pool_019fdb5b-…_python-pool-sender_1' is not the daemon's name for pool 'pool_python-pool-sender_1'` — the assertion still fires after being hoisted into `checks.h` and parameterised |
+| run `cargo run --example cxx-memory-pool` with no importable binding | `skipping the Python interop dataflow: '/usr/bin/python3 -c "import dora, pyarrow"' failed … ModuleNotFoundError: No module named 'dora'`, and the example still exits 0 — the skip is loud and names the fix, rather than passing silently |

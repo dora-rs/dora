@@ -8,9 +8,20 @@
 //
 // One source, two binaries. Compiled by g++ it reads the payload on the CPU;
 // compiled by nvcc (`-x cu`) it page-locks the segment once and reads the same
-// payload through its device alias. Keeping them in one file is what makes
-// "the CPU path and the GPU path agree about a Python segment" a single set of
-// assertions rather than two that could drift.
+// payload through its device alias.
+//
+// Be precise about what that shares. The two builds differ in exactly two
+// places — `read_ring`'s body, and `map()`/`release()`, which are no-ops on the
+// CPU build — so the *read* is genuinely two implementations. What the one
+// source locks together is everything either build says about the **segment**:
+// the pool id arriving as data, `segment_name_matches_python_pool_id`, the
+// transport/`ipc_present`/`payload_len` assertions, the ring model and the
+// script it is driven by, and the free path down to `try_read_pool` returning
+// `Unavailable`. Those cannot disagree between CPU and GPU because there is
+// only one copy of them. The CUDA build also never exercises `try_read_pool`'s
+// `Copied` path against a Python pool (`use_copy_path` is discarded there,
+// deliberately — copying the payload would defeat the point), so that half is
+// CPU-only coverage.
 //
 // # Why this is not `pool-receiver.cc` with a different producer
 //
@@ -29,9 +40,22 @@
 //     that is byte-identical everywhere it matters.
 //
 // The third point is the interesting one, and this file states it as an
-// assertion rather than a footnote: the transport *label* differs while the
-// data region, the header and the seqlock do not — which is exactly why the
-// CUDA build below can map a `shmem` pool the same way it maps a `unified` one.
+// assertion rather than a footnote. Note what it is *not* saying: the two
+// segments are not byte-identical. Dumped side by side for the same 16 KiB
+// payload, a Python CPU pool and a C++ `unified` pool disagree in four places —
+// Python writes no `transport` key, writes `pinned_type: "cpu"` where C++
+// writes `"cuda"`, uses `json.dumps`'s spaced separators against serde_json's
+// compact ones (so `json_len` is 73 against 91 even where every key and value
+// agrees), and arrives at `write_gen = 2` because its register copies the
+// source tensor and closes a seqlock cycle, where `PoolSegment::create` leaves
+// `0`.
+//
+// None of that reaches the consumer, and the reason is the point: `json_len`,
+// `data_offset`, `pinned_type` and the generation are all read **out of the
+// header**, never assumed. What has to match is the layout the header
+// describes — magic, the `json_len`/`data_offset` pair, the seqlock at offset
+// 96, and a data region at `data_offset` — and that is what makes the CUDA
+// build below able to map a `shmem` pool exactly as it maps a `unified` one.
 
 #include <dora-node-api.h>
 
@@ -233,26 +257,22 @@ class InteropView
 
 /// The segment name can only have come from the daemon.
 ///
-/// The consumer asked with a pool id it read off a topic and nothing else. What
-/// came back is `dora_pool_<dataflow-uuid>_<node-id>_<counter>`, whose uuid is
-/// minted per run and whose `<node-id>_<counter>` tail must be exactly the tail
-/// of the pool id — so the name is neither guessable nor derivable from the id
-/// alone.
-///
-/// This hard-codes the grammar the *Python* binding builds its segment name
-/// with (`apis/python/node/src/lib.rs`, `dora_pool_{dataflow}_{node}_{counter}`)
-/// on purpose: it is the lock that makes "C++ read the segment Python named"
-/// checkable at all.
+/// The consumer asked with a pool id it read off a topic and nothing else. The
+/// uuid/prefix/suffix grammar is checked by `checks.h`, shared with the two C++
+/// receivers; all this adds is the Python-specific step of turning the pool id
+/// into the tail the daemon's name is expected to end with — Python formats the
+/// two strings independently, so the pool id is not a substring of the segment
+/// name the way the C++ producer's is.
 bool segment_name_matches_python_pool_id(const std::string &name, const std::string &pool_id)
 {
-    const std::string segment_prefix = "dora_pool_";
     const std::string id_prefix = "pool_";
     if (pool_id.compare(0, id_prefix.size(), id_prefix) != 0)
     {
         std::cerr << kTag << " pool id `" << pool_id << "` is not a Python pool id" << std::endl;
         return false;
     }
-    // `<node-id>_<counter>`: what the pool id and the segment name share.
+    // `<node-id>_<counter>`: the one component the two independently-formatted
+    // strings do share.
     const std::string tail = pool_id.substr(id_prefix.size());
     if (tail.compare(0, std::string(kPythonSenderNodeId).size(), kPythonSenderNodeId) != 0)
     {
@@ -260,24 +280,7 @@ bool segment_name_matches_python_pool_id(const std::string &name, const std::str
                   << "`" << std::endl;
         return false;
     }
-    const std::string suffix = "_" + tail;
-    if (name.size() <= segment_prefix.size() + suffix.size() ||
-        name.compare(0, segment_prefix.size(), segment_prefix) != 0 ||
-        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
-    {
-        std::cerr << kTag << " segment name `" << name << "` is not the daemon's name for pool `"
-                  << pool_id << "`" << std::endl;
-        return false;
-    }
-    const std::string dataflow_id =
-        name.substr(segment_prefix.size(), name.size() - segment_prefix.size() - suffix.size());
-    if (dataflow_id.size() != 36 || std::count(dataflow_id.begin(), dataflow_id.end(), '-') != 4)
-    {
-        std::cerr << kTag << " segment name `" << name << "` carries `" << dataflow_id
-                  << "` where the dataflow uuid should be" << std::endl;
-        return false;
-    }
-    return true;
+    return segment_name_from_daemon(name, tail, pool_id, kTag);
 }
 
 } // namespace
@@ -547,10 +550,11 @@ int main()
                 break;
             }
             // `shmem`, not `unified`: Python writes no `transport` key and the
-            // C++ side resolves it from `ipc_flag = 0`. The label is the only
-            // thing that differs from a C++ `unified` pool — the header, the
-            // seqlock and the data region are the same, which is what the reads
-            // below actually depend on.
+            // C++ side resolves it from `ipc_flag = 0`. One of the four ways a
+            // Python CPU segment differs from a C++ `unified` one (see the file
+            // comment) — and, like the other three, not something the reads
+            // below depend on, because they take their offsets and their
+            // generation from the header rather than from this label.
             if (transport != "shmem")
             {
                 std::cerr << kTag << " expected transport `shmem` for a Python CPU pool, got `"

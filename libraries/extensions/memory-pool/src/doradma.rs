@@ -74,8 +74,21 @@ pub fn data_offset_for(json_len: usize) -> usize {
     HEADER_SIZE.saturating_add(padded_json_len)
 }
 
-/// Serialize the metadata JSON exactly as the Python binding does, plus the
-/// additive `transport` key.
+/// Serialize the metadata JSON: the four keys the Python binding writes, plus
+/// the additive `transport` key.
+///
+/// **Not byte-for-byte what Python emits, and it does not need to be.** Python
+/// builds this with `json.dumps`, whose default separators are `", "` and
+/// `": "`; `serde_json::to_string` is compact. So the same four keys with the
+/// same values already produce a different `json_len` here than there — 73
+/// bytes against 91 for a 16 KiB `uint8` pool, measured on a live segment of
+/// each. That is invisible to every reader because `json_len` and
+/// `data_offset` are fields *in the header*, not constants: [`parse_header`]
+/// reads them, and [`data_offset_for`] rounds up to [`METADATA_ALIGN`], so
+/// two producers only land on the same payload offset when their two lengths
+/// round to the same multiple of 256. They do for the pools in
+/// `examples/c++-memory-pool`; a longer dtype or a higher-rank shape would
+/// separate them, and nothing would break when it did.
 pub fn metadata_json(
     size: usize,
     dtype: &str,

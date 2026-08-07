@@ -49,11 +49,24 @@ inline const char *outcome_name(dora::PoolReadOutcome outcome)
 /// what makes "the consumer did not guess the name" checkable at all. A
 /// deliberate change to that grammar (or to `DataflowId` no longer being a
 /// uuid) will fail here, and this is the reason why.
-inline bool segment_name_from_daemon(const std::string &name, const std::string &pool_id,
-                                     const char *tag)
+///
+/// `owner_tail` is everything the name carries after the uuid. It is a
+/// parameter because the two producers spell it differently, and *that
+/// difference is itself part of what the check pins*:
+///
+///   * the C++ producer builds both the pool id and the segment name from
+///     `naming::segment_name`, so the tail is `<node-id>_<pool-id>`;
+///   * the Python binding formats its segment name (`dora_pool_{dataflow}_
+///     {node}_{counter}`) and its buffer id (`pool_{node}_{counter}`) in two
+///     separate `format!` calls that share no code, so the tail is
+///     `<node-id>_<counter>` and the pool id is *not* a substring of the name.
+///
+/// A single `pool_id`-derived suffix could only serve the first.
+inline bool segment_name_from_daemon(const std::string &name, const std::string &owner_tail,
+                                     const std::string &pool_id, const char *tag)
 {
     const std::string prefix = "dora_pool_";
-    const std::string suffix = std::string("_") + kSenderNodeId + "_" + pool_id;
+    const std::string suffix = "_" + owner_tail;
     if (name.size() <= prefix.size() + suffix.size() ||
         name.compare(0, prefix.size(), prefix) != 0 ||
         name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
@@ -71,6 +84,15 @@ inline bool segment_name_from_daemon(const std::string &name, const std::string 
         return false;
     }
     return true;
+}
+
+/// The C++ producer's spelling: it derives the pool id and the segment name
+/// from the same `naming::segment_name`, so the id is the name's last
+/// component.
+inline bool segment_name_from_daemon(const std::string &name, const std::string &pool_id,
+                                     const char *tag)
+{
+    return segment_name_from_daemon(name, std::string(kSenderNodeId) + "_" + pool_id, pool_id, tag);
 }
 
 } // namespace pool_example
