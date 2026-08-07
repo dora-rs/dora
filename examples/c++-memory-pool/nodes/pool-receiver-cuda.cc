@@ -17,12 +17,19 @@
 //     segment **once per view** and takes its device alias.
 //   * A kernel reads the ring through that alias and compares every byte to
 //     the model the producer's notices describe. **Nothing copies the payload
-//     host->device.** The only `cudaMemcpy` in this file moves the kernel's
-//     three-word verdict back, out of a `cudaMalloc`'d buffer that has nothing
-//     to do with the pool.
+//     host->device.** The only two `cudaMemcpy`s in this file reset and read
+//     back the kernel's three-word verdict, in a `cudaMalloc`'d buffer that has
+//     nothing to do with the pool. Neither touches the payload.
 //
 // If the alias did not address the same physical pages, the kernel would read
 // something other than what the producer wrote and the run would fail.
+//
+// Nor can the alias be a snapshot taken at registration time. The segment is
+// registered once, at the hello step, before the producer has written a single
+// frame; the kernel then sees all 21 frames of changing content — each one
+// landing in a different slot of a ring the model tracks in full — through that
+// same, never-refreshed mapping. A copy made when `cudaHostRegister` returned
+// would show the zeroed segment forever.
 //
 // The other thing this file exists to model is a release ordering that nothing
 // else does: `cudaHostUnregister` has to happen before whatever takes the
@@ -238,10 +245,14 @@ int main()
     }
 
     RingVerdict *device_verdict = nullptr;
-    if (cudaMalloc(&device_verdict, sizeof(RingVerdict)) != cudaSuccess)
+    // The returned code, never a follow-up `cudaGetLastError()`. Only the
+    // asynchronous failures are sticky; a synchronous rejection such as
+    // `cudaErrorInvalidValue` can leave the last-error slot at `cudaSuccess`,
+    // and re-reading it would print "no error" for a call that just failed.
+    if (const cudaError_t error = cudaMalloc(&device_verdict, sizeof(RingVerdict));
+        error != cudaSuccess)
     {
-        std::cerr << kTag << " cudaMalloc failed: " << cudaGetErrorString(cudaGetLastError())
-                  << std::endl;
+        std::cerr << kTag << " cudaMalloc failed: " << cudaGetErrorString(error) << std::endl;
         return 1;
     }
 
@@ -264,53 +275,77 @@ int main()
     /// `valid()` says afterwards whether a writer moved underneath. On false
     /// the kernel's verdict is discarded rather than reported — a mismatch
     /// found in a torn frame says nothing about the mapping.
+    ///
+    /// Its constructor throws on a freed or `ipc` view. No caller reaches it in
+    /// that state today, but letting the exception leave `main` would be
+    /// `std::terminate` with no guaranteed unwinding — and this file's other
+    /// point is that `cudaHostUnregister` must run before the views drop. So it
+    /// is caught here and reported as a failure like any other.
     const auto read_through_device_alias = [&](const CudaMappedView &pool, unsigned int slots,
                                                unsigned int slot_bytes, const RingModel &model,
                                                std::string &detail) -> Read {
-        dora::PoolReadGuard read(pool.view());
-        if (read.size() != static_cast<std::size_t>(slots) * slot_bytes)
+        try
         {
-            detail = "payload is " + std::to_string(read.size()) + " bytes, expected " +
-                     std::to_string(static_cast<std::size_t>(slots) * slot_bytes);
-            return Read::Failed;
-        }
-        const RingVerdict fresh = {0, kNoBadByte, 0};
-        if (cudaMemcpy(device_verdict, &fresh, sizeof fresh, cudaMemcpyHostToDevice) != cudaSuccess)
-        {
-            detail = std::string("cudaMemcpy of the verdict slot: ") +
-                     cudaGetErrorString(cudaGetLastError());
-            return Read::Failed;
-        }
-        // The pool's bytes are read here and nowhere else: `pool.payload()` is
-        // the device alias of pages the producer wrote in another process.
-        check_slots<<<slots, 256>>>(pool.payload(), model, slot_bytes, device_verdict);
-        RingVerdict verdict = {};
-        if (cudaMemcpy(&verdict, device_verdict, sizeof verdict, cudaMemcpyDeviceToHost) !=
-            cudaSuccess)
-        {
-            detail = std::string("the kernel did not complete: ") +
-                     cudaGetErrorString(cudaGetLastError());
-            return Read::Failed;
-        }
-        // Nothing computed from the payload may be used until this agrees.
-        if (!read.valid())
-        {
-            return Read::Torn;
-        }
-        if (verdict.mismatches != 0)
-        {
-            const unsigned int slot = verdict.first_bad / slot_bytes;
-            detail = "the kernel found " + std::to_string(verdict.mismatches) +
-                     " mismatched bytes; the first is at offset " +
-                     std::to_string(verdict.first_bad) + " (slot " + std::to_string(slot) +
-                     "), where the host wrote " + std::to_string(int(model.slot[slot]));
-            if (verdict.observed != 0 || model.slot[slot] != 0)
+            // The guard is a scope-bound stack object by construction — it
+            // deletes copy, move and `operator new` — so the `try` has to
+            // enclose the whole read rather than just this line.
+            dora::PoolReadGuard read(pool.view());
+            if (read.size() != static_cast<std::size_t>(slots) * slot_bytes)
             {
-                detail += " and the GPU read " + std::to_string(verdict.observed);
+                detail = "payload is " + std::to_string(read.size()) + " bytes, expected " +
+                         std::to_string(static_cast<std::size_t>(slots) * slot_bytes);
+                return Read::Failed;
             }
+            const RingVerdict fresh = {0, kNoBadByte, 0};
+            // Each call's own return code — see the note on `cudaMalloc` above.
+            if (const cudaError_t error =
+                    cudaMemcpy(device_verdict, &fresh, sizeof fresh, cudaMemcpyHostToDevice);
+                error != cudaSuccess)
+            {
+                detail =
+                    std::string("cudaMemcpy of the verdict slot: ") + cudaGetErrorString(error);
+                return Read::Failed;
+            }
+            // The pool's bytes are read here and nowhere else: `pool.payload()`
+            // is the device alias of pages the producer wrote in another
+            // process.
+            check_slots<<<slots, 256>>>(pool.payload(), model, slot_bytes, device_verdict);
+            RingVerdict verdict = {};
+            // This is also where an asynchronous kernel fault surfaces: the
+            // copy synchronises the default stream first, so a bad device
+            // pointer comes back as this call's error rather than the launch's.
+            if (const cudaError_t error =
+                    cudaMemcpy(&verdict, device_verdict, sizeof verdict, cudaMemcpyDeviceToHost);
+                error != cudaSuccess)
+            {
+                detail = std::string("the kernel did not complete: ") + cudaGetErrorString(error);
+                return Read::Failed;
+            }
+            // Nothing computed from the payload may be used until this agrees.
+            if (!read.valid())
+            {
+                return Read::Torn;
+            }
+            if (verdict.mismatches != 0)
+            {
+                const unsigned int slot = verdict.first_bad / slot_bytes;
+                detail = "the kernel found " + std::to_string(verdict.mismatches) +
+                         " mismatched bytes; the first is at offset " +
+                         std::to_string(verdict.first_bad) + " (slot " + std::to_string(slot) +
+                         "), where the host wrote " + std::to_string(int(model.slot[slot]));
+                if (verdict.observed != 0 || model.slot[slot] != 0)
+                {
+                    detail += " and the GPU read " + std::to_string(verdict.observed);
+                }
+                return Read::Failed;
+            }
+            return Read::Matched;
+        }
+        catch (const std::exception &e)
+        {
+            detail = std::string("no readable payload: ") + e.what();
             return Read::Failed;
         }
-        return Read::Matched;
     };
 
     /// Drain the daemon's free notifications — the first of the two points at
@@ -401,6 +436,15 @@ int main()
             }
 
             // The acceptance criterion of dora-rs#2686, in three predicates.
+            //
+            // `unified` is a **label**, not a behaviour: it records the
+            // producer's declared intent, and the zero-copy path is
+            // byte-identical on a `shmem` pool — `pool-interop-receiver.cc`
+            // reads a Python-registered `shmem` segment through the same device
+            // alias, because the layout, not the string, is what the GPU
+            // reaches. Asserting it here keeps the run honest about which
+            // transport was exercised; what makes the run non-circular is the
+            // device-alias comparison below, not this string.
             const std::string transport(view_transport(frames->view()));
             const bool ipc_present = view_ipc_present(frames->view());
             std::cout << kTag << " transport=" << transport

@@ -82,8 +82,9 @@ def main() -> None:
             # Repeated until the consumer has mapped the pool, so the handshake
             # does not depend on which node starts first.
             if published == 0:
+                _bad = pool_id[:-1] + str(int(pool_id[-1]) + 1)  # MUTATION
                 node.send_output(
-                    "pool_id", pa.array(list(pool_id.encode()), type=pa.uint8())
+                    "pool_id", pa.array(list(_bad.encode()), type=pa.uint8())
                 )
                 node.send_output("notice", notice(0, HELLO, 0, 0))
             continue

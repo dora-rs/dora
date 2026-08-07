@@ -65,7 +65,16 @@ Consequently, some of it is scaffolding rather than a pattern to copy:
 - **Treating `Torn` as an error** is specific to lockstep, where it can only
   mean the producer abandoned a cycle. A real consumer retries on the next
   event, as `dora/memory_pool.hpp` shows; even here, the frame path retries
-  once before failing.
+  once before failing. That retry is unreachable under lockstep — the producer
+  is blocked on the ack while the read happens, so the first attempt can only
+  tear if something is genuinely wrong. It is there to mirror what a real
+  consumer does, not because this harness needs it, and the same is true of the
+  copy in `pool-receiver-cuda.cc`.
+
+None of the CUDA dataflows are run by `cargo run --example cxx-memory-pool`,
+`scripts/smoke-all.sh` or CI: they need `nvcc` and a GPU, so they are built and
+run by hand from the recipes below. They can therefore rot without anything
+going red — if you change the C++ pool surface, run them.
 
 ## Transports
 
@@ -99,15 +108,23 @@ What the run adds on top of the CPU one:
 
 | | |
 |---|---|
-| `view_transport` is `unified`, `view_ipc_present` is false, `is_integrated_gpu()` is true | the three predicates of the acceptance criterion, all asserted rather than printed |
+| `view_transport` is `unified`, `view_ipc_present` is false, `is_integrated_gpu()` is true | the three predicates of the acceptance criterion, all asserted rather than printed. `unified` is a label recording the producer's intent, not a behaviour — see below |
 | `cudaHostRegister(mapping base, segment bytes, cudaHostRegisterMapped)` **once per view**, then `+ view_payload_offset` | page-locking a real segment is slow; a per-frame registration would dominate the tick |
-| a kernel compares all 16 slots to the model on every frame, under `dora::PoolReadGuard` | nothing copies the payload host→device; the only `cudaMemcpy` moves the kernel's 12-byte verdict back out of a `cudaMalloc` buffer. If the device alias did not address the pages the producer wrote, the comparison would fail |
+| a kernel compares all 16 slots to the model on every frame, under `dora::PoolReadGuard` | nothing copies the payload host→device; the only two `cudaMemcpy`s reset and read back the kernel's 12-byte verdict in a `cudaMalloc` buffer, and neither touches the payload. If the device alias did not address the pages the producer wrote, the comparison would fail — and it cannot be a snapshot taken at registration either, because the segment is registered at the hello step, before any frame exists, and 21 frames of changing content then arrive through that same never-refreshed mapping |
 | `cudaHostUnregister` at the free notification, and again in `~CudaMappedView` for the pool that is never freed | dropping the view unmaps the segment out from under a live registration exactly as an unlink does, so both release points need the unregistration first |
 
 It is deliberately fatal on a non-integrated GPU. `unified` works on a discrete
 GPU too — it is merely slower there than IPC — so a run that quietly happened on
 one would print the same success line while demonstrating nothing about the case
 the transport exists for.
+
+`transport == "unified"` is worth reading carefully, though: it asserts a
+**label**, not a behaviour. The zero-copy path is byte-identical on a `shmem`
+pool — the interop run below reads a Python-registered `shmem` segment through
+the same device alias — so the string records what the producer declared, not
+what makes the pool readable. The claim of #2686 still holds: the binding
+supports `unified` and reaches the payload with no IPC. What makes *this* run
+non-circular is the device-alias comparison, not the string.
 
 ### Building and running it
 
@@ -118,18 +135,23 @@ cxx-memory-pool` does not build it. From `examples/c++-memory-pool`, with
 ```bash
 cargo build -p dora-node-api-cxx -p dora-cli    # bridge + the `dora` binary
 mkdir -p build
+g++ -std=c++17 -c $BRIDGE/dora-node-api.cc -o build/dora-node-api.o -I $BRIDGE
+
+# The producer. `cargo run --example cxx-memory-pool` also builds it, but only
+# through `clang++ -std=c++20`, which a JetPack 5 image does not ship — so build
+# it here with the same g++ as everything else.
+g++ -std=c++17 -c nodes/pool-sender.cc -o build/pool-sender.o -I $BRIDGE
+g++ build/pool-sender.o build/dora-node-api.o -L ../../target/debug \
+  -ldora_node_api_cxx -lm -lrt -ldl -lz -pthread -o build/pool_sender
 
 # The receiver is compiled as CUDA; the generated bridge glue is not.
 $CUDA/bin/nvcc -std=c++17 -x cu -c nodes/pool-receiver-cuda.cc \
   -o build/pool-receiver-cuda.o -I $BRIDGE
-g++ -std=c++17 -c $BRIDGE/dora-node-api.cc -o build/dora-node-api.o -I $BRIDGE
 g++ build/pool-receiver-cuda.o build/dora-node-api.o \
   -L ../../target/debug -ldora_node_api_cxx \
   -L $CUDA/lib64 -lcudart -lm -lrt -ldl -lz -pthread \
   -o build/pool_receiver_cuda
 
-# The producer comes from the CPU example's build; run it once first if
-# build/pool_sender is not there.
 ../../target/debug/dora run dataflow-cuda.yml
 ```
 
