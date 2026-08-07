@@ -579,7 +579,7 @@ mod tests {
 
     /// #3065: the fixed-size length check (#2027) must also apply to the `Binary`
     /// representation — a wrong-length byte buffer must error, not silently emit
-    /// a mis-sized tuple.
+    /// a wrong-sized tuple.
     #[test]
     fn fixed_byte_array_binary_length_is_checked() {
         let type_info = |size| TypeInfo {
