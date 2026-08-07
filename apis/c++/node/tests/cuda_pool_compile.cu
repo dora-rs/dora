@@ -28,14 +28,26 @@ static_assert(std::is_trivially_copyable<dora::cuda::MappedPool>::value,
 // The shape every caller uses it in: declare, attempt to map, use the device
 // pointer only if mapping succeeded, unmap on every exit path. `unmap_pool`
 // has to tolerate being called on a `MappedPool` that never mapped
-// successfully, and to tolerate being called twice.
+// successfully, and to tolerate a second call on the *same* handle (it is not
+// safe on two independently-mapped or copied handles for the same mapping;
+// see `MappedPool`'s doc).
 bool dora_cuda_pool_header_compile_check(void *shm_base, std::size_t bytes) {
     dora::cuda::MappedPool m;
-    const bool mapped = dora::cuda::map_pool(shm_base, bytes, m);
+    cudaError_t map_err = cudaSuccess;
+    const bool mapped = dora::cuda::map_pool(shm_base, bytes, m, &map_err);
     void *device = mapped ? m.device : nullptr;
     dora::cuda::unmap_pool(m);
-    dora::cuda::unmap_pool(m);  // must be safe to call twice
-    return device != nullptr;
+    dora::cuda::unmap_pool(m);  // must be safe to call twice on the same handle
+    return device != nullptr && map_err == cudaSuccess;
+}
+
+// `out_error` is optional: the common case (a caller that only branches on
+// success/failure) must still compile without it.
+bool dora_cuda_pool_header_compile_check_no_out_error(void *shm_base, std::size_t bytes) {
+    dora::cuda::MappedPool m;
+    const bool mapped = dora::cuda::map_pool(shm_base, bytes, m);
+    dora::cuda::unmap_pool(m);
+    return mapped;
 }
 
 // `is_integrated_gpu` takes no pool at all — it is a property of the device,

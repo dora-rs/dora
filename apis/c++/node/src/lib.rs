@@ -3706,6 +3706,11 @@ mod tests {
     /// `/usr/local/cuda` install, or `PATH`, in that order. `None` means no
     /// CUDA toolchain is available on this machine.
     fn find_nvcc() -> Option<std::path::PathBuf> {
+        // Unlike the three discovered paths below, an explicit `NVCC` is
+        // trusted without an `is_file` check: a caller who set it meant for
+        // it to be used, so a stale or misspelled path should fail loudly in
+        // the "failed to run the CUDA compiler" panic below, not disappear
+        // into a silent skip that looks identical to "no CUDA on this box".
         if let Ok(from_env) = std::env::var("NVCC") {
             return Some(std::path::PathBuf::from(from_env));
         }
@@ -3739,14 +3744,27 @@ mod tests {
     /// an object without linking is the cheapest equivalent — it walks every
     /// declaration without needing a `-arch` or a link step — so the object
     /// file is discarded immediately after.
+    ///
+    /// `cargo test`'s default output capture makes a skipped test print
+    /// identically to one that actually ran: both read `... ok` with nothing
+    /// else visible unless the run is passed `--nocapture` or fails. On a
+    /// machine that is supposed to have CUDA, that means this test could
+    /// silently stop covering the header — a driver update breaks `nvcc`
+    /// discovery, say — and nothing would go red. Set `DORA_REQUIRE_CUDA` to
+    /// turn the skip into a panic on exactly that machine, while every other
+    /// runner keeps the skip and the crate's tests keep not requiring CUDA.
     #[test]
     fn cuda_pool_header_compiles() {
         let Some(nvcc) = find_nvcc() else {
-            eprintln!(
-                "skipping cuda_pool_header_compiles: no CUDA toolchain found (set NVCC or \
-                 CUDA_PATH/CUDA_HOME, or put nvcc on PATH); dora/cuda_pool.hpp gets no compile \
-                 coverage on this machine"
+            let message = "no CUDA toolchain found (set NVCC or CUDA_PATH/CUDA_HOME, or put \
+                            nvcc on PATH); dora/cuda_pool.hpp gets no compile coverage on this \
+                            machine";
+            assert!(
+                std::env::var_os("DORA_REQUIRE_CUDA").is_none(),
+                "cuda_pool_header_compiles: {message} (DORA_REQUIRE_CUDA is set, so this is a \
+                 failure rather than a skip)"
             );
+            eprintln!("skipping cuda_pool_header_compiles: {message}");
             return;
         };
 
