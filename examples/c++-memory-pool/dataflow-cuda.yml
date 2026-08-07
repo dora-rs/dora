@@ -1,0 +1,30 @@
+# The same producer as `dataflow.yml`, byte for byte, reading into a CUDA
+# consumer instead of a CPU one. Only one consumer is wired to the producer:
+# it advances on the first ack matching the step it is waiting for, so a second
+# consumer on the same output would destroy the lockstep the assertions need.
+#
+# `build/pool_receiver_cuda` is NOT built by `cargo run --example
+# cxx-memory-pool` — it needs nvcc. See the README for the two commands.
+nodes:
+  - id: cxx-pool-sender
+    path: build/pool_sender
+    env:
+      # The producer asks for `transport: "auto"` with `receiver_is_cuda`
+      # unset, which resolves to `shmem`. This override — which applies to
+      # `auto` and to nothing else — is what makes the pool `unified`, so the
+      # run demonstrates the transport the CUDA consumer is there to exercise.
+      # It is set here rather than in the producer's source so that both
+      # dataflows run the same, unmodified binary.
+      DORA_MEMORY_POOL_TRANSPORT: unified
+    inputs:
+      tick: dora/timer/millis/100
+      ack: cxx-pool-receiver/ack
+    outputs:
+      - notice
+
+  - id: cxx-pool-receiver
+    path: build/pool_receiver_cuda
+    inputs:
+      notice: cxx-pool-sender/notice
+    outputs:
+      - ack

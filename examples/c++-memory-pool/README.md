@@ -79,3 +79,69 @@ Consequently, some of it is scaffolding rather than a pattern to copy:
 `shmem` otherwise; `DORA_MEMORY_POOL_TRANSPORT` overrides `auto` and nothing
 else. On an integrated GPU `unified` is the only mode that works, because
 `cudaIpcGetMemHandle` is unsupported there.
+
+## The CUDA consumer
+
+`dataflow-cuda.yml` runs the **same producer binary** against
+`nodes/pool-receiver-cuda.cc`, which reads the pool from a kernel instead of
+from the CPU. That is the acceptance case of
+[dora-rs#2686](https://github.com/dora-rs/dora/issues/2686): a C++ node
+registers a memory pool and does zero-copy CPU→GPU transfer through the
+host-pinned path on an integrated GPU, with no CUDA IPC.
+
+The producer is not forked for it. It asks for `auto` with `receiver_is_cuda`
+unset, so the dataflow sets `DORA_MEMORY_POOL_TRANSPORT: unified` in the
+producer's `env:` block — the override applies to `auto` and to nothing else.
+Only one consumer is wired up: the producer advances on the first ack matching
+the step it is waiting for, so a second consumer would break the lockstep.
+
+What the run adds on top of the CPU one:
+
+| | |
+|---|---|
+| `view_transport` is `unified`, `view_ipc_present` is false, `is_integrated_gpu()` is true | the three predicates of the acceptance criterion, all asserted rather than printed |
+| `cudaHostRegister(mapping base, segment bytes, cudaHostRegisterMapped)` **once per view**, then `+ view_payload_offset` | page-locking a real segment is slow; a per-frame registration would dominate the tick |
+| a kernel compares all 16 slots to the model on every frame, under `dora::PoolReadGuard` | nothing copies the payload host→device; the only `cudaMemcpy` moves the kernel's 12-byte verdict back out of a `cudaMalloc` buffer. If the device alias did not address the pages the producer wrote, the comparison would fail |
+| `cudaHostUnregister` at the free notification, and again in `~CudaMappedView` for the pool that is never freed | dropping the view unmaps the segment out from under a live registration exactly as an unlink does, so both release points need the unregistration first |
+
+It is deliberately fatal on a non-integrated GPU. `unified` works on a discrete
+GPU too — it is merely slower there than IPC — so a run that quietly happened on
+one would print the same success line while demonstrating nothing about the case
+the transport exists for.
+
+### Building and running it
+
+`build/pool_receiver_cuda` needs `nvcc`, so `cargo run --example
+cxx-memory-pool` does not build it. From `examples/c++-memory-pool`, with
+`CUDA=/usr/local/cuda` and `BRIDGE=../../target/cxxbridge/dora-node-api-cxx/install`:
+
+```bash
+cargo build -p dora-node-api-cxx -p dora-cli    # bridge + the `dora` binary
+mkdir -p build
+
+# The receiver is compiled as CUDA; the generated bridge glue is not.
+$CUDA/bin/nvcc -std=c++17 -x cu -c nodes/pool-receiver-cuda.cc \
+  -o build/pool-receiver-cuda.o -I $BRIDGE
+g++ -std=c++17 -c $BRIDGE/dora-node-api.cc -o build/dora-node-api.o -I $BRIDGE
+g++ build/pool-receiver-cuda.o build/dora-node-api.o \
+  -L ../../target/debug -ldora_node_api_cxx \
+  -L $CUDA/lib64 -lcudart -lm -lrt -ldl -lz -pthread \
+  -o build/pool_receiver_cuda
+
+# The producer comes from the CPU example's build; run it once first if
+# build/pool_sender is not there.
+../../target/debug/dora run dataflow-cuda.yml
+```
+
+The `dora run` exit code is the verdict — both nodes exit non-zero on any failed
+assertion. Then check for leaks by hand, because `run.rs`'s `/dev/shm` gate only
+wraps `dataflow.yml`:
+
+```bash
+ls /dev/shm | grep dora_pool_ || echo "clean after run"
+```
+
+Compiling the receiver and the bridge glue separately keeps `nvcc` away from the
+generated `dora-node-api.cc`, which has no CUDA in it. Both objects are built as
+C++17 — `nvcc` 11.4 goes no further, and mixing standards across the two would
+be an ODR trap.

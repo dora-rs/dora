@@ -33,6 +33,7 @@
 #include <utility>
 #include <vector>
 
+#include "checks.h"
 #include "protocol.h"
 
 namespace
@@ -46,20 +47,6 @@ using OwnedView = std::optional<rust::Box<DoraMemoryPoolView>>;
 /// in full on every read — a write that lands in the wrong slot shows up here
 /// even though the frame the producer announced is correct.
 using Ring = std::uint8_t[kSlotCount];
-
-const char *outcome_name(dora::PoolReadOutcome outcome)
-{
-    switch (outcome)
-    {
-    case dora::PoolReadOutcome::Copied:
-        return "Copied";
-    case dora::PoolReadOutcome::Torn:
-        return "Torn";
-    case dora::PoolReadOutcome::Unavailable:
-        return "Unavailable";
-    }
-    return "?";
-}
 
 /// Empty when every slot of `frame` holds the byte the ring model says it
 /// does; otherwise a description of the first byte that disagrees.
@@ -90,42 +77,6 @@ std::string ring_mismatch(const std::uint8_t *frame, std::size_t len, const Ring
         }
     }
     return {};
-}
-
-/// The segment name can only have come from the daemon.
-///
-/// This node passed `read_memory_pool` a pool id and nothing else. The name it
-/// got back is `dora_pool_<dataflow-uuid>_<owning-node-id>_<pool-id>`: the
-/// dataflow uuid is minted per run and the owning node id belongs to the other
-/// node, so neither is anything this one could have derived from the id it
-/// asked with.
-///
-/// **This hard-codes the segment grammar on purpose** — it is a contract lock
-/// on `libraries/extensions/memory-pool/src/naming.rs::segment_name`, which is
-/// what makes "the consumer did not guess the name" checkable at all. A
-/// deliberate change to that grammar (or to `DataflowId` no longer being a
-/// uuid) will fail here, and this is the reason why.
-bool segment_name_from_daemon(const std::string &name, const std::string &pool_id)
-{
-    const std::string prefix = "dora_pool_";
-    const std::string suffix = std::string("_") + kSenderNodeId + "_" + pool_id;
-    if (name.size() <= prefix.size() + suffix.size() ||
-        name.compare(0, prefix.size(), prefix) != 0 ||
-        name.compare(name.size() - suffix.size(), suffix.size(), suffix) != 0)
-    {
-        std::cerr << "[receiver] segment name `" << name << "` is not the daemon's name for pool `"
-                  << pool_id << "`" << std::endl;
-        return false;
-    }
-    const std::string dataflow_id =
-        name.substr(prefix.size(), name.size() - prefix.size() - suffix.size());
-    if (dataflow_id.size() != 36 || std::count(dataflow_id.begin(), dataflow_id.end(), '-') != 4)
-    {
-        std::cerr << "[receiver] segment name `" << name << "` carries `" << dataflow_id
-                  << "` where the dataflow uuid should be" << std::endl;
-        return false;
-    }
-    return true;
 }
 
 /// Drain the daemon's free notifications. This is what marks a view dead, so
@@ -228,7 +179,7 @@ int main()
                 std::cout << "[receiver] mapped pool `" << id << "` transport="
                           << std::string(view_transport(view)) << " segment=" << name
                           << " payload=" << view_payload_len(view) << " bytes" << std::endl;
-                return segment_name_from_daemon(name, id);
+                return segment_name_from_daemon(name, id, "[receiver]");
             };
             const bool frames_named = report(*frames, kFramesPool);
             const bool banner_named = report(*banner, kBannerPool);
