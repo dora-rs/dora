@@ -1936,24 +1936,43 @@ impl DoraNode {
                         .wait()
                     {
                         Ok(mut sbuf) => {
-                            sbuf.as_mut().copy_from_slice(&avec);
-                            if diag {
-                                tracing::warn!(
-                                    "output `{output_id}`: entering zenoh put of a \
-                                     copied SHM buffer (dora-rs/dora#2742 diagnostic)"
-                                );
-                            }
-                            return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
-                            {
-                                Ok(()) => Ok(PublishOutcome::Published),
-                                Err(e) => {
+                            // Mirror the guard in `allocate_data_sample`: only
+                            // copy into the SHM buffer when it is exactly the
+                            // requested size. zenoh 1.8 guarantees the logical
+                            // length matches the request, but `copy_from_slice`
+                            // requires equal lengths and would panic on the
+                            // node's send thread if a future provider ever
+                            // over-allocated. Fall through to the reliable
+                            // daemon path instead of risking that panic.
+                            if sbuf.as_mut().len() == avec.len() {
+                                sbuf.as_mut().copy_from_slice(&avec);
+                                if diag {
                                     tracing::warn!(
-                                        "zenoh SHM publish failed ({e}); \
-                                         falling back to daemon path"
+                                        "output `{output_id}`: entering zenoh put of a \
+                                         copied SHM buffer (dora-rs/dora#2742 diagnostic)"
                                     );
-                                    Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
                                 }
-                            };
+                                return match publisher
+                                    .put(sbuf)
+                                    .attachment(&metadata_bytes[..])
+                                    .wait()
+                                {
+                                    Ok(()) => Ok(PublishOutcome::Published),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "zenoh SHM publish failed ({e}); \
+                                             falling back to daemon path"
+                                        );
+                                        Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                                    }
+                                };
+                            }
+                            tracing::debug!(
+                                "zenoh SHM alloc returned {} bytes for a {}-byte \
+                                 request; using daemon path",
+                                sbuf.as_ref().len(),
+                                avec.len()
+                            );
                         }
                         Err(e) => {
                             tracing::debug!("SHM alloc failed ({e}), using heap buffer");
