@@ -83,10 +83,16 @@ fn standard_source(node: &Node) -> Result<NodeSource> {
 /// Detect the node kind from the discriminator fields directly.
 ///
 /// This mirrors the match in `NodeExt::kind()` but WITHOUT the hub
-/// pre-check: the `hub:`/`path` resolution check belongs to
-/// `check_standard()` only, so the classifier can still report the
-/// precise kind-specific errors for other node types instead of bailing
-/// out early for every node that carries a `hub:` field.
+/// pre-check, so the classifier can still report the precise
+/// kind-specific errors for other node types instead of bailing out
+/// early for every node that carries a `hub:` field.
+///
+/// NOTE: hub resolution validation lives in `Node::kind()`'s pre-check
+/// (mod.rs), not here. kind() rejects hub-only nodes (no path, no other
+/// discriminator) early because hub references must be resolved by
+/// `dora build` before descriptor resolution. For nodes with a kind
+/// discriminator (like Standard with path), hub is a valid field and
+/// proceeds through the whitelist normally.
 fn classify_inner(node: &Node) -> Result<NodeClassOrModule> {
     match (
         &node.path,
@@ -239,7 +245,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
     if kind_name == "Custom" {
         msg.push_str(
             "these fields should be placed inside the `custom:` block \
-             (e.g. `custom.run_config.outputs`, `custom.restart_policy`)",
+             (e.g. `custom.outputs`, `custom.restart_policy`)",
         );
     } else {
         msg.push_str("these fields are not consumed by this node kind; remove them from the node");
@@ -292,17 +298,6 @@ const STANDARD_ALLOWED: &[&str] = &[
 ];
 
 fn check_standard(node: &Node) -> Result<()> {
-    // `hub:` is desugared into a concrete git node by `dora build` /
-    // `dora run` / `dora validate` before any kind dispatch — an
-    // unresolved reference reaching this point means a flow that
-    // skipped resolution.
-    if node.hub.is_some() && node.path.is_none() {
-        bail!(
-            "node `{}` uses an unresolved `hub:` reference — run `dora build` \
-             first (`dora start` requires a prior build for hub nodes)",
-            node.id
-        );
-    }
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(STANDARD_ALLOWED);
     validate_against_whitelist(node, &allowed, "Standard")
