@@ -2286,6 +2286,11 @@ impl Node {
         // already logged a warning; we roll back the local pool and
         // return None rather than crash.
         let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
+        // Tracks whether the GPU pool buffer + IPC handle were successfully
+        // set up.  Declared here (before the cross-machine ack handling) so
+        // the same-host IPC export below can set it; the GPU allocation block
+        // and the bail check below read it too.
+        let mut ipc_written = false;
         if machine.is_none() {
             NO_MIRROR_POOLS
                 .lock()
@@ -2324,6 +2329,72 @@ impl Node {
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
                             .insert(buffer_id.clone());
+                        // Same-host direct access: the receiver can open this
+                        // machine's CUDA IPC handle.  Cross-machine GPU pools
+                        // skip IPC export at registration (handles are
+                        // host-local), but on a same-host deployment the
+                        // export is valid — it turns the staging path
+                        // (DtoH → zenoh → mirror → HtoD) into zero-copy IPC
+                        // reads.  Export now, best-effort: stage the initial
+                        // frame into the pooled GPU buffer and publish the
+                        // handle; the write path switches automatically
+                        // (classify_write_path sees ipc_present == 1) and
+                        // the mirror push stops (should_push_mirror).  Any
+                        // failure keeps the staging path (ipc_written stays
+                        // false) — the pool still works.
+                        if receiver_is_cuda && !ipc_written {
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                let receiver_device_idx = device
+                                    .rsplit(':')
+                                    .next()
+                                    .and_then(|s| s.parse::<i32>().ok())
+                                    .unwrap_or(0);
+                                let saved_dev = bound
+                                    .call_method0("_get_cuda_device")
+                                    .and_then(|r| r.extract::<i32>())
+                                    .unwrap_or(0);
+                                let _ =
+                                    bound.call_method1("_set_cuda_device", (receiver_device_idx,));
+                                let gpu_ptr_opt = bound
+                                    .call_method1("_get_gpu_buf", (pool_counter, size))
+                                    .and_then(|r| r.extract::<u64>())
+                                    .ok();
+                                let _ = bound.call_method1("_set_cuda_device", (saved_dev,));
+                                if let Some(gpu_ptr) = gpu_ptr_opt {
+                                    // Stage the initial frame into the GPU
+                                    // buffer (the data region already holds
+                                    // it from the registration copy above).
+                                    let htod_ok = bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                gpu_ptr,
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                size,
+                                                1u32,
+                                            ),
+                                        )
+                                        .is_ok();
+                                    if htod_ok
+                                        && let Ok(handle) = bound
+                                            .call_method1("_ipc_export", (gpu_ptr,))
+                                            .and_then(|r| r.extract::<Vec<u8>>())
+                                        && handle.len() == 64
+                                    {
+                                        unsafe {
+                                            std::ptr::copy_nonoverlapping(
+                                                handle.as_ptr(),
+                                                shmem_ptr.add(32),
+                                                64,
+                                            );
+                                            std::ptr::write(shmem_ptr.add(24) as *mut u64, 1u64);
+                                        }
+                                        ipc_written = true;
+                                    }
+                                }
+                            }
+                        }
                     }
                     // Local pool stays; the daemon recorded CROSS_POOLS.
                     // Push the registered tensor through the daemon so the
@@ -2337,8 +2408,12 @@ impl Node {
                     // cannot carry. Local pools (no `machine`) skip this —
                     // their receivers read the local shmem directly.
                     // A cross-machine GPU pool stages its data region too
-                    // (no IPC handle crosses hosts), so it pushes as well.
-                    if !receiver_is_cuda || cross_machine {
+                    // (no IPC handle crosses hosts), so it pushes as well —
+                    // unless the same-host IPC export above succeeded: then
+                    // the receiver reads the GPU buffer directly and the
+                    // push would only feed a mirror nobody reads (same
+                    // semantics as should_push_mirror on the write path).
+                    if (!receiver_is_cuda || cross_machine) && !ipc_written {
                         self.push_mirror_update(
                             &buffer_id,
                             shmem_ptr,
@@ -2392,14 +2467,12 @@ impl Node {
             sender_device_idx
         };
 
-        // Tracks whether the GPU pool buffer + IPC handle were successfully set
-        // up.  A same-host CUDA receiver's shmem is header-only, so without the
+        // A same-host CUDA receiver's shmem is header-only, so without the
         // handle the pool is unusable — we fail registration rather than hand
         // back a permanently-broken pool.  A cross-machine GPU pool skips the
-        // GPU buffer and IPC export entirely: the receiver stages the data
-        // region HtoD on its own machine, so there is nothing to export.
-        let mut ipc_written = false;
-
+        // GPU buffer and IPC export entirely (the receiver stages the data
+        // region HtoD on its own machine) unless the ack reported same-host
+        // direct access — the ack branch above re-exports in that case.
         if receiver_is_cuda
             && !cross_machine
             && let Ok(helpers) = get_cuda_helpers(py)
