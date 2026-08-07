@@ -1,0 +1,21 @@
+nodes:
+  # The pool is registered by the untouched Python binding. The tick only
+  # bootstraps the handshake — after the consumer's first ack the two nodes run
+  # in lockstep, one round trip per step, so the consumer's checks never race a
+  # write.
+  - id: python-pool-sender
+    path: python_sender.py
+    inputs:
+      tick: dora/timer/millis/100
+      ack: cxx-pool-interop-receiver/ack
+    outputs:
+      - pool_id
+      - notice
+
+  - id: cxx-pool-interop-receiver
+    path: build/pool_interop_receiver
+    inputs:
+      pool_id: python-pool-sender/pool_id
+      notice: python-pool-sender/notice
+    outputs:
+      - ack

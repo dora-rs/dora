@@ -1,0 +1,23 @@
+nodes:
+  # The same Python sender as `dataflow-python-interop.yml`, unchanged: it
+  # registers a CPU pool and never touches CUDA. Only the consumer differs — it
+  # reads the segment from a kernel through `cudaHostRegister` + the device
+  # alias. No CUDA IPC is involved on either side, which is the point: the
+  # Python binding cannot export an IPC handle on an integrated GPU, and nothing
+  # here needs it to.
+  - id: python-pool-sender
+    path: python_sender.py
+    inputs:
+      tick: dora/timer/millis/100
+      ack: cxx-pool-interop-receiver/ack
+    outputs:
+      - pool_id
+      - notice
+
+  - id: cxx-pool-interop-receiver
+    path: build/pool_interop_receiver_cuda
+    inputs:
+      pool_id: python-pool-sender/pool_id
+      notice: python-pool-sender/notice
+    outputs:
+      - ack

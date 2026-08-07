@@ -164,3 +164,150 @@ reason:
 | skip `release()` in the free drain | `the mapping of 'frames' is still registered after the free notification` |
 | ack only frames, not `kHello`/`kAbandoned`/`kFreed` | the producer never advances: `[sender] stopped at step 0 of 23 without completing the script`, and the run only ends at `--stop-after` |
 | query a device that is not there | `device 0 is not an integrated GPU (or could not be queried)` |
+
+## Python → C++ interop
+
+Everything above has C++ on both ends. `dataflow-python-interop.yml` replaces the
+producer with `python_sender.py`, which registers its pool through the
+**untouched Python binding** — `register_memory_pool(tensor_info, "cpu")` — and
+never touches CUDA. `dataflow-python-interop-cuda.yml` runs the same sender
+against a receiver that reads the pool from a kernel.
+
+That second run is the whole claim of the transport in one line: a segment
+written by Python, read zero-copy by a CUDA kernel on an integrated GPU, with no
+CUDA IPC anywhere.
+
+### Why this needs its own consumer
+
+`pool-receiver.cc` and `pool-receiver-cuda.cc` cannot be pointed at a Python
+producer, and not for cosmetic reasons:
+
+- **The pool id is generated, not chosen.** Python's is
+  `pool_<node-id>_<counter>`, so there is no `"frames"` to ask for. The sender
+  publishes the id on a `pool_id` output and the consumer maps whatever it is
+  told — which is a stronger check than the hard-coded id, not a weaker one.
+- **Python cannot abandon a write cycle.** `write_memory_pool` brackets its own
+  seqlock in Rust; there is no API for leaving the generation odd. The `Torn`
+  outcome that both existing consumers *require* to have happened exactly once
+  can therefore never occur.
+- **A Python CPU pool reports transport `shmem`, not `unified`.** Python writes
+  no `transport` key in the metadata JSON, so `parse_header` resolves it from
+  `ipc_flag = 0`. `pool-receiver-cuda.cc` asserts `unified` and would fail on a
+  segment it can otherwise read perfectly.
+
+The last point is worth stating precisely, because it qualifies "byte-identical
+on the wire": a Python CPU pool and a C++ `unified` pool differ in the metadata
+JSON by that one key, and in nothing else. The `DORADMA` header, the seqlock at
+offset 96, the padded metadata region and the data region are the same layout,
+which is why the same `cudaHostRegister` + device-alias path works on both. The
+transport string is a label; the mapping is what the GPU reads.
+
+`nodes/pool-interop-receiver.cc` is one source compiled twice — g++ for the CPU
+path, `nvcc -x cu` for the device alias — so the two cannot drift in what they
+claim about a Python segment.
+
+### Building and running it
+
+The Python node needs the **workspace** binding, not PyPI `dora-rs`, whose
+message format has drifted. The binding is `abi3-py311`, so it needs a Python
+≥ 3.11 even where the system Python is older:
+
+```bash
+cd /path/to/dora
+uv venv --python 3.11 target/interop-venv
+VIRTUAL_ENV=$PWD/target/interop-venv uv pip install maturin numpy 'pyarrow>=14.0.1' pyyaml
+(cd apis/python/node && VIRTUAL_ENV=$PWD/../../../target/interop-venv \
+   PATH=$PWD/../../../target/interop-venv/bin:$PATH maturin develop)
+```
+
+The consumers, from `examples/c++-memory-pool`, with `CUDA=/usr/local/cuda` and
+`BRIDGE=../../target/cxxbridge/dora-node-api-cxx/install`:
+
+```bash
+cargo build -p dora-node-api-cxx -p dora-cli
+mkdir -p build
+g++ -std=c++17 -c $BRIDGE/dora-node-api.cc -o build/dora-node-api.o -I $BRIDGE
+
+# CPU
+g++ -std=c++17 -c nodes/pool-interop-receiver.cc \
+  -o build/pool-interop-receiver.o -I $BRIDGE
+g++ build/pool-interop-receiver.o build/dora-node-api.o \
+  -L ../../target/debug -ldora_node_api_cxx -lm -lrt -ldl -lz -pthread \
+  -o build/pool_interop_receiver
+
+# CUDA — same source, nvcc defines __CUDACC__ and the device path compiles in
+$CUDA/bin/nvcc -std=c++17 -x cu -c nodes/pool-interop-receiver.cc \
+  -o build/pool-interop-receiver-cuda.o -I $BRIDGE
+g++ build/pool-interop-receiver-cuda.o build/dora-node-api.o \
+  -L ../../target/debug -ldora_node_api_cxx \
+  -L $CUDA/lib64 -lcudart -lm -lrt -ldl -lz -pthread \
+  -o build/pool_interop_receiver_cuda
+```
+
+Then, with the venv exported so the daemon spawns the right interpreter
+(`get_python_path` asks `uv python find` first):
+
+```bash
+export VIRTUAL_ENV=$PWD/../../target/interop-venv
+../../target/debug/dora run dataflow-python-interop.yml      --stop-after 90s
+../../target/debug/dora run dataflow-python-interop-cuda.yml --stop-after 90s
+ls /dev/shm | grep dora_pool_ || echo "clean after run"
+```
+
+`--stop-after` matters on a failure: a consumer that dies mid-script leaves the
+sender waiting for an ack that never comes, and `dora run` has no timeout of its
+own.
+
+Measured on a Xavier NX (JetPack 5, CUDA 11.4, Python 3.11.15):
+
+```
+[python-sender] registered pool `pool_python-pool-sender_1`
+[interop] Python published pool id `pool_python-pool-sender_1`
+[interop] mapped Python's pool: segment=dora_pool_019fdb17-…_python-pool-sender_1 transport=shmem ipc_present=false payload=16384 bytes
+[interop] daemon released pool `pool_python-pool-sender_1`
+[interop] Python's pool is permanently unreadable after its free
+[interop] 20 Python-written frames verified (10 copied, 10 zero-copy), 1 unavailable
+```
+
+```
+[cuda-interop] mapped Python's pool: segment=dora_pool_019fdb17-…_python-pool-sender_1 transport=shmem ipc_present=false payload=16384 bytes
+[cuda-interop] page-locked 16896 bytes of Python's segment: host=0xffff95fef000 device=0x20310a000, payload at +512
+[cuda-interop] unregistered `pool_python-pool-sender_1` before its segment could go away
+[cuda-interop] Python's pool is permanently unreadable after its free
+[cuda-interop] 20 Python-written frames verified through the device alias, 1 unavailable
+```
+
+`host` and `device` are genuinely different addresses, so the kernel is not
+reading through the host pointer; the payload sits at +512 into the segment,
+which is where Python's `data_offset` puts it after a 256-byte header and a
+padded metadata region.
+
+### What the sender cannot do here
+
+`register_memory_pool(tensor_info, "cuda")` **fails on this machine, by
+design**: the Python binding hard-requires a `cudaIpcGetMemHandle` export, which
+an integrated GPU does not support, and it bails rather than hand back a pool
+every later write would reject. Only the *sender* half of Python is stuck there.
+A CPU pool feeds a CUDA C++ consumer perfectly well, which is exactly what the
+second run above does. Closing that gap would mean teaching the Python binding
+`unified`, and this change does not.
+
+### Each interop assertion, and what breaking it looks like
+
+Same discipline as the table above, but the mutations are applied to
+**`python_sender.py`** — to what the producer writes — since that is the side
+whose bytes are in question:
+
+| break this in the sender | and this catches it |
+|---|---|
+| write to slot `n+1` while the notice says slot `n` | CPU: `step 1: slot 0 byte 0 is 0, expected 1`; CUDA: `step 1: the kernel found 2048 mismatched bytes; the first is at offset 0 (slot 0), where Python wrote 1 and the GPU read 0` |
+| skip `write_memory_pool` on one step but publish its notice | `step 3: slot 2 byte 0 is 0, expected 3` — the ring model, not the notice, is what is believed |
+| overwrite the segment's magic with `XORADMA\0` after registering | `failed to map Python's pool: pool segment '…': segment magic is not DORADMA — not a dora memory pool` |
+| register 8 KiB instead of 16 KiB | `payload is 8192 bytes, expected 16384` (`view_payload_len`, before any read) |
+| publish a pool id one counter off | `failed to look up memory pool 'pool_python-pool-sender_2': memory pool with ID pool_python-pool-sender_2 not found` — the daemon, not a guessed segment name, is what resolves an id |
+| poke the seqlock generation at offset 96 to an odd value after a write | CPU and CUDA both: `step 5 was overwritten mid-read twice` — the seqlock Python writes and the seqlock C++ reads are the same field |
+| skip `free_memory_pool` but still send the freed notice | `no free notification for 'pool_python-pool-sender_1' arrived` |
+
+Every one of those also ends with the sender's own
+`stopped at step N of 21 without completing the script`, because the consumer
+stops acking as soon as it fails.
