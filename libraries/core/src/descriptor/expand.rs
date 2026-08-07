@@ -1,3 +1,4 @@
+use super::classify;
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
     descriptor::{Descriptor, EnvValue, Node},
@@ -123,6 +124,10 @@ pub fn expand_modules_with_boundaries(
 
     for node in &descriptor.nodes {
         if node.module.is_some() {
+            // Validate module node fields against the module whitelist
+            classify::check_module_fields(node)
+                .with_context(|| format!("invalid module node `{}`", node.id))?;
+
             let (expanded, omap) =
                 expand_module_node(node, base_dir, &canonical_base, 0, &mut seen)?;
             let module_id = node.id.to_string();
