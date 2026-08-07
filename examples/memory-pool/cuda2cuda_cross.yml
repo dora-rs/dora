@@ -5,6 +5,7 @@ nodes:
   - id: sender_node
     _unstable_deploy:
       machine: A
+      working_dir: /data5/tangcanran/dora/examples/memory-pool
     build: pip install torch numpy
     path: sender.py
     inputs:
@@ -12,6 +13,7 @@ nodes:
     outputs:
       - data
     env:
+      cross_machine: "B"
       sender_device: cuda:0
       receiver_device: cuda:0
       message_num: 100
@@ -19,6 +21,7 @@ nodes:
   - id: receiver_node
     _unstable_deploy:
       machine: B
+      working_dir: /data5/tangcanran/dora/examples/memory-pool
     build: pip install torch numpy tqdm
     path: receiver.py
     inputs:
