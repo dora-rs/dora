@@ -1,0 +1,18 @@
+nodes:
+  # The producer owns both pools. The tick only bootstraps the handshake —
+  # after the consumer's first ack the two nodes run in lockstep, one round
+  # trip per step, so the consumer's checks never race a write.
+  - id: cxx-pool-sender
+    path: build/pool_sender
+    inputs:
+      tick: dora/timer/millis/100
+      ack: cxx-pool-receiver/ack
+    outputs:
+      - notice
+
+  - id: cxx-pool-receiver
+    path: build/pool_receiver
+    inputs:
+      notice: cxx-pool-sender/notice
+    outputs:
+      - ack

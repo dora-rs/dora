@@ -1354,6 +1354,12 @@ jobs:
       - name: C++ Service and Action example
         timeout-minutes: 15
         run: cargo run --example cxx-service-action
+      # The memory-pool transport is a named POSIX segment in /dev/shm, so
+      # only the Linux runner can exercise it (#2686).
+      - name: C++ Memory Pool example
+        if: runner.os == 'Linux'
+        timeout-minutes: 15
+        run: cargo run --example cxx-memory-pool
       - name: Install Arrow C++ Library
         timeout-minutes: 10
         shell: bash
