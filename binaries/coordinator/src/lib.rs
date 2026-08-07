@@ -2370,6 +2370,15 @@ async fn start_inner(
                         use opentelemetry::KeyValue;
                         let df_id = dataflow_id.to_string();
                         for (node_id, node_metrics) in &metrics {
+                            // Same authority as the in-memory table above: a
+                            // finalized node's delayed metrics push is a stale
+                            // pre-exit snapshot. Skip it here too, so OTEL does
+                            // not record a fresh data point that resurrects the
+                            // node's CPU/memory time series one push past its
+                            // death.
+                            if dataflow.node_finalized.contains(node_id) {
+                                continue;
+                            }
                             let daemon = dataflow
                                 .node_to_daemon
                                 .get(node_id)
