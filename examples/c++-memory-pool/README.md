@@ -145,3 +145,22 @@ Compiling the receiver and the bridge glue separately keeps `nvcc` away from the
 generated `dora-node-api.cc`, which has no CUDA in it. Both objects are built as
 C++17 — `nvcc` 11.4 goes no further, and mixing standards across the two would
 be an ODR trap.
+
+Add `--stop-after 20s` when you expect a failure. A consumer that dies mid-script
+leaves the producer waiting for an ack that will never come, and `dora run` has
+no timeout of its own.
+
+### Each assertion, and what breaking it looks like
+
+An assertion that cannot fail is decoration. These were checked by breaking what
+each one guards, one at a time, and confirming the run failed for the right
+reason:
+
+| break this | and this catches it |
+|---|---|
+| remove `DORA_MEMORY_POOL_TRANSPORT: unified` | `expected transport 'unified', got 'shmem'` |
+| take `mapped_.host` for the payload instead of `mapped_.device` | the kernel dies with `an illegal memory access was encountered` — on this Xavier NX the device alias is a genuinely different address (`0xffff9c133000` vs `0x20310a000`), so the host pointer is not device-addressable |
+| use the mapping base without `view_payload_offset` | the kernel reports `the host wrote 165 and the GPU read 68` — 68 is `'D'`, the first byte of the segment's `DORADMA` magic, exactly the failure `cuda_pool.hpp` warns is silent |
+| skip `release()` in the free drain | `the mapping of 'frames' is still registered after the free notification` |
+| ack only frames, not `kHello`/`kAbandoned`/`kFreed` | the producer never advances: `[sender] stopped at step 0 of 23 without completing the script`, and the run only ends at `--stop-after` |
+| query a device that is not there | `device 0 is not an integrated GPU (or could not be queried)` |
