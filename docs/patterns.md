@@ -180,6 +180,12 @@ matters: if a restart reset the clock, a node that keeps flapping would
 hold the correlation open indefinitely and the caller would never see
 `Timeout`.
 
+What decides this is how many candidates there actually are, not which
+spelling the caller used. A C++ list holding exactly one id — and the
+single-server polls, which wrap their lone id the same way — resolve to
+`One`, so their restart releases the deadline rather than leaving an
+entry behind.
+
 ## 3. Action (goal/feedback/result)
 
 A client sends a goal and receives periodic feedback plus a final result.
