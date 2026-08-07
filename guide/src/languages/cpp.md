@@ -649,3 +649,217 @@ cmake --build .
 - Arrow FFI functions (`event_as_arrow_input`, `send_arrow_output`) are `unsafe` on the Rust side. The caller must pass valid pointers to `ArrowArray` / `ArrowSchema` structs cast to `uint8_t*`.
 - The node library is a static archive (`staticlib`). Link it into your executable with `-ldora_node_api_cxx`.
 - The operator library is also a static archive. Link it into your shared library with `-ldora_operator_api_cxx`.
+
+---
+
+## Memory Pools
+
+A memory pool is a named shared-memory segment that several nodes address directly, instead of sending its bytes through the dataflow. One node registers it, writes into it in place, and publishes something small on a normal output — a slot index, a frame counter — to say that new data is there. Consumers map the segment once and read it where it lies.
+
+This is for large payloads that are rewritten over and over: camera frames above all. For anything else, `send_output` is simpler and already zero-copy for messages of 4 KiB or more.
+
+Three headers are involved, and only the first is required:
+
+| Header | Contents | Requires |
+|--------|----------|----------|
+| `dora-node-api.h` | the pool functions themselves | nothing beyond the normal node build |
+| `dora/memory_pool.hpp` | `dora::PoolWriteGuard`, `dora::PoolReadGuard`, `dora::try_read_pool` | `dora-node-api.h`; no CUDA |
+| `dora/cuda_pool.hpp` | `dora::cuda::map_pool` / `unmap_pool` / `is_integrated_gpu` | the CUDA runtime, linked by your node |
+
+Both extra headers are installed next to the generated `dora-node-api.h`. `dora/cuda_pool.hpp` is not included by anything — a node that does not include it needs no CUDA toolchain, and neither does the Rust build that generates the bridge.
+
+A runnable end-to-end example, including the CUDA and Python-interop variants, is in [`examples/c++-memory-pool`](https://github.com/dora-rs/dora/tree/main/examples/c%2B%2B-memory-pool).
+
+### Registering a pool
+
+```cpp
+#include "dora-node-api.h"
+#include <dora/memory_pool.hpp>
+
+auto dora_node = init_dora_node();
+
+DoraMemoryPoolSpec spec{};
+spec.id = rust::String("frames");     // your name for it; consumers ask by this
+spec.size = 16 * 1024;                // bytes of payload
+spec.dtype = rust::String("uint8");   // must not be empty
+spec.shape = rust::Vec<std::size_t>();
+spec.shape.push_back(16);             // must not be empty either
+spec.shape.push_back(1024);
+spec.transport = rust::String("auto");
+spec.receiver_is_cuda = false;
+
+// Throws on failure. The segment is unlinked again if the daemon refuses the
+// registration, so a failed call leaves nothing behind in /dev/shm.
+rust::Box<DoraMemoryPool> pool = register_memory_pool(dora_node.send_output, spec);
+```
+
+`dtype` and `shape` must both be non-empty — the daemon rejects a registration without them — and `shape` multiplied out by `dtype`'s element size must fit in `size`.
+
+They are, however, **advisory metadata and never a bound**. An unrecognized `dtype` is assumed to be one byte per element, so a product computed from `shape` can fall short of the real extent; on a pool created by another binding it can also overshoot the mapping by megabytes. Size every write, every read and every view from `pool_payload_len()` / `view_payload_len()` instead. That is the number this API guarantees.
+
+### Writing a frame
+
+The pool has one writer at a time, bracketed by a seqlock so readers can tell a complete frame from one being overwritten. `dora::PoolWriteGuard` opens that bracket in its constructor and closes it in its destructor:
+
+```cpp
+{
+    dora::PoolWriteGuard write(pool);
+    if (write.size() < frame_bytes) {
+        return;                          // early exit: the guard still closes
+    }
+    std::memcpy(write.data(), frame, frame_bytes);
+    write.commit();                      // publishes the frame
+}   // an uncommitted guard closes the cycle as *incomplete* instead
+```
+
+Use the guard rather than the raw `pool_begin_write` / `pool_end_write` pair. Between those two calls the pool's generation is odd, which is how every reader knows the payload is torn — but a `return`, a `break` or a thrown exception in between leaves it odd *permanently*. The pool is then unreadable to every consumer until some later write closes a cycle, and nothing on the Rust side recovers it. The guard's destructor runs on all three of those paths.
+
+Publishing is opt-in: only `commit()` marks the frame complete. There is deliberately no rollback — the payload is written in place, so by the time a write fails the previous frame is already gone. An abandoned cycle costs one frame, not the pool.
+
+If you already hold the bytes in a buffer of your own, `write_memory_pool` copies them and brackets its own cycle:
+
+```cpp
+DoraResult r = write_memory_pool(pool, data);   // data.size() == pool_payload_len(pool)
+```
+
+The length must match exactly: a short write would leave the previous frame's bytes in the tail and publish them as complete. Do not call it while a `PoolWriteGuard` is alive on the same pool — the second cycle is refused. Fill in place through the guard, or copy through this; not both.
+
+### Reading a pool
+
+A consumer maps the pool by id. The daemon supplies the segment name — it is not derivable from the id — so this fails if the pool is unknown or already freed.
+
+```cpp
+rust::Box<DoraMemoryPoolView> view =
+    read_memory_pool(dora_node.send_output, "frames");   // throws on failure
+```
+
+For a consumer that wants its own copy, `dora::try_read_pool` sizes the destination from the pool and reads it under the seqlock:
+
+```cpp
+std::vector<std::uint8_t> frame;
+switch (dora::try_read_pool(view, frame)) {
+    case dora::PoolReadOutcome::Copied:      consume(frame); break;
+    case dora::PoolReadOutcome::Torn:        break;   // retry on the next event
+    case dora::PoolReadOutcome::Unavailable: return;  // never succeeds; stop
+}
+```
+
+Three outcomes rather than a bool because one of the two failures is permanent and the other is not, and telling them apart is the difference between a retry and an infinite loop. `Torn` means a writer was mid-frame — likely to succeed next event. `Unavailable` means there is no payload in this mapping and there never will be: the pool has been freed, or it is an `ipc` pool whose bytes live in device memory. Distinguish those two with `view_is_alive` and `view_transport`.
+
+For a consumer that works on the payload where it lies — a CUDA kernel over the device alias, a `cv::Mat` header over the host pointer — `dora::PoolReadGuard` samples the generation and lets you re-check it afterwards:
+
+```cpp
+dora::PoolReadGuard read(view);            // throws if there is no payload here
+auto result = analyse(read.data(), read.size());
+if (!read.valid()) {
+    return;   // the writer overwrote the frame mid-analysis: discard `result`
+}
+```
+
+`valid()` is not advisory. Everything computed from `data()` before it returned true was computed from bytes a writer may have been overwriting, so it must be thrown away, not merely flagged. Nothing here can prevent a torn read — only detect one.
+
+### Transports
+
+| transport | what is in the segment | how the receiver reaches the payload |
+|-----------|------------------------|--------------------------------------|
+| `shmem` | the full data region | read the mapping directly (CPU receiver) |
+| `unified` | the full data region | `cudaHostRegister(..., cudaHostRegisterMapped)` + `cudaHostGetDevicePointer` |
+| `ipc` | header only | `cudaIpcOpenMemHandle` on `view_ipc_handle()` |
+
+`transport: "auto"` (or an empty string) resolves to `unified` when `receiver_is_cuda` is set and to `shmem` otherwise. The `DORA_MEMORY_POOL_TRANSPORT` environment variable overrides `auto` and nothing else: an explicit `shmem` or `unified` in the spec is the node author's decision about its own buffer layout, and a deployment's environment must not silently rewrite it. An unrecognized value in the variable is an error rather than a silent fallback.
+
+`unified` is the only mode that works on an **integrated GPU**, where `cudaIpcGetMemHandle` is unsupported. It also works on a discrete GPU — it is merely slower there than IPC.
+
+The C++ binding does not *produce* `ipc` pools; requesting `transport: "ipc"` is rejected at registration, because exporting a handle would require CUDA inside the binding. It does *read* one: a pool registered by the Python binding on a discrete GPU arrives as a view with `view_ipc_present()` true and the 64-byte handle available from `view_ipc_handle()`. Every accessor that would otherwise hand out an address reports the absence instead — `view_payload()` returns false, `view_payload_len()` is 0, and `try_read_pool` returns `Unavailable`.
+
+### CUDA
+
+`dora/cuda_pool.hpp` does mapping and unmapping, and nothing else. Streams, kernels and any `cudaMemcpy` stay in your node.
+
+```cpp
+#include <dora/cuda_pool.hpp>
+
+dora::cuda::MappedPool m;
+std::uint64_t base = 0;
+std::size_t bytes = 0;
+if (view_mapping(view, base, bytes) &&
+    dora::cuda::map_pool(reinterpret_cast<void *>(base), bytes, m)) {
+    std::size_t offset = 0;
+    if (view_payload_offset(view, offset)) {
+        const void *device_payload = static_cast<char *>(m.device) + offset;
+        // ... hand device_payload to a kernel ...
+    }
+}
+```
+
+Two rules matter here. The first is silent when broken; the second only costs you the performance the pool exists for.
+
+**Register the whole segment, then offset to the payload.** `cudaHostRegister` needs a page-aligned address, and a pool's payload does not start on a page boundary — it starts at a 256-byte boundary after the header and the padded metadata. So the pair you register is the mapping base and the segment length (`view_mapping`, or `pool_shm_base` + `pool_segment_bytes` on the producer side), and you reach the payload by adding `view_payload_offset` / `pool_payload_offset` to `m.device`. Both offset functions are predicates that return false — leaving your variable untouched — for an `ipc` or freed pool. Check the return value: on false, whatever you initialized the offset to lands you in the segment's header instead of the payload, and a kernel writing through that pointer corrupts the segment without crashing.
+
+**Register once per pool or view, never per frame.** `cudaHostRegister` walks and pins every page in the segment, which is slow relative to a frame tick on a segment sized for real payloads. Map when the pool or the view first appears, and reuse the `MappedPool` across every frame.
+
+`dora::cuda::is_integrated_gpu()` reports whether device 0 shares memory with the host. False means "not known to be integrated", not "confirmed discrete" — it also covers a query that failed because there is no CUDA device at all.
+
+### Freeing, and what a CUDA node must do first
+
+Any node may free a pool, not only the one that registered it. The daemon unlinks the segment and notifies every node that touched it.
+
+```cpp
+DoraResult r = free_memory_pool(dora_node.send_output, std::move(pool));
+```
+
+On the consumer side, drain the notifications once per event-loop pass, from the same thread that calls `read_memory_pool`:
+
+```cpp
+for (const rust::String &id : take_freed_pools()) {
+    if (std::string(id) == "frames") {
+        dora::cuda::unmap_pool(m);   // CUDA nodes only, and *before* the next line
+        view.reset();                // e.g. a std::optional<rust::Box<...>>
+    }
+}
+```
+
+`take_freed_pools()` marks the matching views dead before it returns, so no accessor can hand out a pointer into a released segment: `view_is_alive` goes false, `try_read_pool` returns `Unavailable`, and a `PoolReadGuard` constructor throws.
+
+A node that mapped the segment for CUDA has one extra obligation, and Rust cannot discharge it — Rust has no idea which segments were handed to the driver. **`cudaHostUnregister` must happen while the mapping is still there**, which means before *both* of these:
+
+- the segment is unlinked, which `take_freed_pools()` warns you about; and
+- you drop the pool or view handle. Dropping the `rust::Box` unmaps the segment out from under a still-registered mapping exactly as an unlink does — so an ordinary "done with this view" path at shutdown needs the unmap first too, and nothing enforces that for you.
+
+Dropping a handle unmaps but never unlinks. The daemon owns the segment's lifetime and removes it on `free_memory_pool`, at dataflow shutdown, or during its orphan sweep.
+
+### Function reference
+
+Producer side, on a `rust::Box<DoraMemoryPool>`:
+
+| Function | Returns |
+|----------|---------|
+| `register_memory_pool(sender, spec)` | the pool; throws on failure |
+| `pool_id` / `pool_shm_name` / `pool_transport` | `rust::String` |
+| `pool_dtype` / `pool_shape` | advisory metadata — never a bound |
+| `pool_payload(pool, out_ptr, out_len)` | `false` for an `ipc` pool, leaving both outputs untouched |
+| `pool_payload_len(pool)` | bytes of payload in the mapping — **this** is the bound |
+| `pool_payload_offset(pool, out_offset)` | payload offset within the mapping; `false` for `ipc` |
+| `pool_shm_base` / `pool_segment_bytes` | the page-aligned base and length `cudaHostRegister` takes |
+| `pool_ipc_present(pool)` | whether the segment carries a CUDA IPC handle |
+| `pool_begin_write` / `pool_end_write` | the raw cycle — prefer `dora::PoolWriteGuard` |
+| `pool_write_in_progress(pool)` | whether a cycle is open on this handle |
+| `write_memory_pool(pool, data)` | copies an exactly-`pool_payload_len()`-sized buffer in |
+| `free_memory_pool(sender, std::move(pool))` | asks the daemon to release the pool |
+
+Consumer side, on a `rust::Box<DoraMemoryPoolView>`:
+
+| Function | Returns |
+|----------|---------|
+| `read_memory_pool(sender, pool_id)` | the view; throws on failure |
+| `view_is_alive(view)` | `false` once a free notification has been drained |
+| `view_id` / `view_shm_name` / `view_transport` | `rust::String` |
+| `view_dtype` / `view_shape` | advisory metadata — never a bound, in either direction |
+| `view_payload(view, out_ptr, out_len)` | `false` for an `ipc` or freed pool |
+| `view_payload_len(view)` | bytes of payload in the mapping — **this** is the bound |
+| `view_payload_offset(view, out_offset)` | payload offset within the mapping; `false` for `ipc` or freed |
+| `view_mapping(view, out_base, out_bytes)` | the page-aligned base and length `cudaHostRegister` takes |
+| `view_ipc_present` / `view_ipc_handle` | whether the segment carries a CUDA IPC handle, and the 64-byte handle itself; both report absent once the pool is freed |
+| `view_try_read(view, dst)` | raw copy; `dst` must be exactly `view_payload_len()` bytes |
+| `view_begin_read` / `view_read_valid` | the raw seqlock bracket — prefer `dora::PoolReadGuard` |
+| `take_freed_pools()` | ids freed by any node since the last call |
