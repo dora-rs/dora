@@ -1815,17 +1815,24 @@ fn register_view(segment: PoolSegment, id: String) -> DoraMemoryPoolView {
     }
 }
 
-/// Mark every view of every named pool dead, and forget them.
-fn mark_freed(pool_ids: &[String]) {
-    if pool_ids.is_empty() {
-        return;
-    }
-    let mut registry = view_registry();
-    for id in pool_ids {
-        for flag in registry.remove(id).unwrap_or_default() {
-            flag.store(false, AtomicOrdering::Release);
+/// Mark every view of every named pool dead, forget them, and hand the ids
+/// back for the caller to act on.
+///
+/// Consuming and returning the ids is the point rather than a convenience: it
+/// is the only way to obtain them, so a caller cannot pass them to C++ without
+/// having killed the views first. It also puts the rule somewhere a test can
+/// reach — nothing in this crate can push a notification into the event
+/// stream's pending set, which only the daemon-facing event thread fills.
+fn mark_freed(pool_ids: Vec<String>) -> Vec<String> {
+    if !pool_ids.is_empty() {
+        let mut registry = view_registry();
+        for id in &pool_ids {
+            for flag in registry.remove(id).unwrap_or_default() {
+                flag.store(false, AtomicOrdering::Release);
+            }
         }
     }
+    pool_ids
 }
 
 impl DoraMemoryPoolView {
@@ -2034,11 +2041,11 @@ fn take_freed_pools() -> Vec<String> {
     // this path needs no re-export. The set is filled by the event thread when
     // the daemon sends `FreeMemoryPool`, and draining it is destructive — a
     // caller that drops the returned ids loses the notification.
-    let freed = dora_node_api::event_stream::memory_pool::drain_freed_pools();
-    // Before the ids reach C++, so a node acting on them is already looking at
-    // views that refuse to hand out an address.
-    mark_freed(&freed);
-    freed
+    // `mark_freed` kills the views before handing the ids back, so a node
+    // acting on them is already looking at accessors that refuse to produce an
+    // address. Routing the ids *through* it, rather than marking and returning
+    // separately, is what makes that ordering unskippable here.
+    mark_freed(dora_node_api::event_stream::memory_pool::drain_freed_pools())
 }
 
 // ---------------------------------------------------------------------
@@ -3273,7 +3280,7 @@ mod tests {
             let view = Box::new(view);
             assert_eq!(view_payload_len(&view), 64, "alive to begin with");
 
-            mark_freed(std::slice::from_ref(&guard.pool_id));
+            mark_freed(vec![guard.pool_id.clone()]);
 
             assert!(!view_is_alive(&view));
             let (mut base, mut bytes) = (0xdead_beefu64, usize::MAX);
@@ -3296,7 +3303,9 @@ mod tests {
             assert!(!view_payload_offset(&view, &mut offset));
             assert_eq!(offset, usize::MAX);
             assert_eq!(view_payload_len(&view), 0);
-            assert!(view_ipc_handle(&view).is_empty());
+            // Nothing about the ipc handle is asserted here: this pool never
+            // had one, so the assertion would hold whatever the accessor did.
+            // The rule is checked on the pool that has one instead.
 
             // A zero-length destination matches a zero-length payload, so the
             // length rule alone would let this through.
@@ -3318,7 +3327,7 @@ mod tests {
             let (_kept_guard, _w2, kept_view) = writer_and_view("selective-b", 32);
             let (freed_view, kept_view) = (Box::new(freed_view), Box::new(kept_view));
 
-            mark_freed(std::slice::from_ref(&freed_guard.pool_id));
+            mark_freed(vec![freed_guard.pool_id.clone()]);
 
             assert!(!view_is_alive(&freed_view));
             assert!(view_is_alive(&kept_view), "an unrelated pool must survive");
@@ -3334,7 +3343,13 @@ mod tests {
             let second = open_view(&guard);
             let (first, second) = (Box::new(first), Box::new(second));
 
-            mark_freed(std::slice::from_ref(&guard.pool_id));
+            // The ids come back out, which is the only way `take_freed_pools`
+            // can hand them to a node that has to `cudaHostUnregister` the
+            // mappings — and it can only get them by having killed the views.
+            assert_eq!(
+                mark_freed(vec![guard.pool_id.clone()]),
+                vec![guard.pool_id.clone()]
+            );
 
             assert!(!view_is_alive(&first));
             assert!(!view_is_alive(&second));
@@ -3468,7 +3483,7 @@ mod tests {
 
             let read = view_begin_read(&view);
             assert!(view_read_valid(&view, &read));
-            mark_freed(std::slice::from_ref(&guard.pool_id));
+            mark_freed(vec![guard.pool_id.clone()]);
             assert!(
                 !view_read_valid(&view, &read),
                 "a read of a released pool must not be reported as intact"
@@ -3516,6 +3531,17 @@ mod tests {
             );
             assert!(view_ipc_present(&view));
             assert_eq!(view_ipc_handle(&view).len(), doradma::IPC_HANDLE_LEN);
+
+            // The handle is not a pointer into this mapping, but it names a
+            // device buffer that the free released, so it must stop being
+            // handed out with everything else. This is the only pool in these
+            // tests that has a handle at all, so it is the only place the rule
+            // can be checked.
+            mark_freed(vec![guard.pool_id.clone()]);
+            assert!(
+                view_ipc_handle(&view).is_empty(),
+                "a released pool must not keep handing out a handle to its device buffer"
+            );
         }
 
         /// The daemon's free notifications reach this binding through
