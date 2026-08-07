@@ -3701,4 +3701,88 @@ mod tests {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+
+    /// Locates `nvcc` via `NVCC`, `CUDA_PATH`/`CUDA_HOME`, the conventional
+    /// `/usr/local/cuda` install, or `PATH`, in that order. `None` means no
+    /// CUDA toolchain is available on this machine.
+    fn find_nvcc() -> Option<std::path::PathBuf> {
+        if let Ok(from_env) = std::env::var("NVCC") {
+            return Some(std::path::PathBuf::from(from_env));
+        }
+        if let Ok(cuda_root) = std::env::var("CUDA_PATH").or_else(|_| std::env::var("CUDA_HOME")) {
+            let candidate = std::path::PathBuf::from(cuda_root).join("bin").join("nvcc");
+            if candidate.is_file() {
+                return Some(candidate);
+            }
+        }
+        let conventional = std::path::PathBuf::from("/usr/local/cuda/bin/nvcc");
+        if conventional.is_file() {
+            return Some(conventional);
+        }
+        std::process::Command::new("nvcc")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+            .then(|| std::path::PathBuf::from("nvcc"))
+    }
+
+    /// `dora/cuda_pool.hpp` is optional and CUDA-only, so unlike
+    /// `memory_pool_header_compiles` this test must not require CUDA to be
+    /// installed: the crate's test suite has to pass on a machine with no
+    /// GPU. It skips (prints and returns, rather than failing or being
+    /// marked `#[ignore]`) when `find_nvcc` comes up empty, and otherwise
+    /// gives the header the same rot-proofing `memory_pool_header_compiles`
+    /// gives `dora/memory_pool.hpp`: compile the checked-in probe against the
+    /// headers `build.rs` just installed.
+    ///
+    /// `-c` rather than `-fsyntax-only`: nvcc has no such flag. Compiling to
+    /// an object without linking is the cheapest equivalent — it walks every
+    /// declaration without needing a `-arch` or a link step — so the object
+    /// file is discarded immediately after.
+    #[test]
+    fn cuda_pool_header_compiles() {
+        let Some(nvcc) = find_nvcc() else {
+            eprintln!(
+                "skipping cuda_pool_header_compiles: no CUDA toolchain found (set NVCC or \
+                 CUDA_PATH/CUDA_HOME, or put nvcc on PATH); dora/cuda_pool.hpp gets no compile \
+                 coverage on this machine"
+            );
+            return;
+        };
+
+        let source = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("cuda_pool_compile.cu");
+        let include_dir = env!("DORA_NODE_API_CXX_INCLUDE_DIR");
+        let out_object =
+            std::env::temp_dir().join(format!("dora-cuda-pool-compile-{}.o", std::process::id()));
+
+        let output = std::process::Command::new(&nvcc)
+            .arg("-std=c++17")
+            .arg("-x")
+            .arg("cu")
+            .arg("-c")
+            .arg("-I")
+            .arg(include_dir)
+            .arg(&source)
+            .arg("-o")
+            .arg(&out_object)
+            .output()
+            .unwrap_or_else(|err| {
+                panic!(
+                    "failed to run the CUDA compiler `{}` on {}: {err}",
+                    nvcc.display(),
+                    source.display()
+                )
+            });
+        let _ = std::fs::remove_file(&out_object);
+
+        assert!(
+            output.status.success(),
+            "`{}` rejected {} (headers from {include_dir}):\n{}",
+            nvcc.display(),
+            source.display(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
 }

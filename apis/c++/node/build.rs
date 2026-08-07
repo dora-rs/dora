@@ -139,7 +139,7 @@ fn generate_config_version_cmake(cmake_dir: &Path, version: &str) {
 /// rather than generated, so the subdirectory has to be recreated and the
 /// rerun trigger declared by hand — without both, an edit to one of these
 /// silently never reaches an installed tree.
-const EXTRA_HEADERS: &[&str] = &["dora/memory_pool.hpp"];
+const EXTRA_HEADERS: &[&str] = &["dora/memory_pool.hpp", "dora/cuda_pool.hpp"];
 
 fn copy_extra_headers(dest_dir: &Path) {
     let include_src = Path::new(env!("CARGO_MANIFEST_DIR")).join("include");
