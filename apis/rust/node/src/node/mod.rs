@@ -2389,6 +2389,7 @@ impl DoraNode {
     /// `Ok(Ok(()))` on success or `Ok(Err(msg))` when the mirror failed
     /// (unresolved machine, remote pool creation failure, or ack
     /// timeout).
+    #[allow(clippy::too_many_arguments)]
     pub fn register_cross_machine_pool(
         &mut self,
         shared_memory_id: String,

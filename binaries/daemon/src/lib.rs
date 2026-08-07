@@ -68,8 +68,11 @@ use tokio::{
 use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
 use tracing::error;
 use uuid::{NoContext, Timestamp, Uuid};
+use zenoh::Wait;
+use zenoh::bytes::ZBytes;
 use zenoh::qos::{CongestionControl, Priority};
 use zenoh::sample::Locality;
+use zenoh::shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder};
 
 pub use flume;
 pub use log::LogDestination;
@@ -485,6 +488,7 @@ async fn publish_memory_pool_event(
     clock: &Arc<HLC>,
     dataflow_id: &Uuid,
     event: &InterDaemonEvent,
+    shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
 ) -> eyre::Result<()> {
     let serialized = bincode::serialize(&Timestamped {
         inner: event.clone(),
@@ -510,10 +514,38 @@ async fn publish_memory_pool_event(
         declared.elapsed()
     );
     let started = std::time::Instant::now();
-    publisher
-        .put(serialized)
-        .await
-        .map_err(|e| eyre!("memory pool: publish to {topic} failed: {e}"))?;
+    // Control events (RegisterPool/RegisterPoolAck/FreePool) go over zenoh
+    // SHM when a provider exists: same-host daemons map the payload
+    // zero-copy, cross-host receivers get an implicit copy from the zenoh
+    // transport. MemoryPoolWrite carries the cross-machine tensor data and
+    // only ever happens cross-host, where an SHM segment would be an extra
+    // copy with no benefit — keep it on the plain path.
+    let put_result = if matches!(event, InterDaemonEvent::MemoryPoolWrite { .. }) {
+        publisher.put(serialized).await
+    } else if let Some(provider) = shm_provider {
+        // Synchronous wait: control payloads are KB-scale, so the shm
+        // segment allocation is microseconds — no need for the async
+        // allocation policy machinery.
+        match provider.alloc(payload_len).wait() {
+            // `alloc` guarantees a buffer of at least `payload_len` bytes
+            // (alignment may round up), so the copy cannot overflow.
+            Ok(mut buf) => {
+                let buf_slice: &mut [u8] = buf.as_mut();
+                buf_slice[..payload_len].copy_from_slice(&serialized);
+                let payload: ZBytes = buf.into();
+                publisher.put(payload).await
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "memory pool: SHM alloc failed ({e}), falling back to regular payload"
+                );
+                publisher.put(serialized).await
+            }
+        }
+    } else {
+        publisher.put(serialized).await
+    };
+    put_result.map_err(|e| eyre!("memory pool: publish to {topic} failed: {e}"))?;
     tracing::info!(
         "memory pool: put to {topic} completed in {:?}",
         started.elapsed()
@@ -536,6 +568,7 @@ async fn release_cross_pool(
     machine_id: &str,
     peer_machine_id: &str,
     shared_memory_id: &str,
+    shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
 ) {
     let Some(shmem_name) = MemoryPoolManager::cross_pool_shmem_name(
         machine_id,
@@ -556,6 +589,7 @@ async fn release_cross_pool(
             machine_id: peer_machine_id.to_string(),
             shared_memory_id: shared_memory_id.to_string(),
         },
+        shm_provider,
     )
     .await
     {
@@ -564,13 +598,20 @@ async fn release_cross_pool(
 }
 
 /// Pending synchronous register confirmations: pool id -> ack channel.
-static CROSS_REGISTER_PENDING: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<(bool, bool)>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+type RegisterAckSenders =
+    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<(bool, bool)>>>;
+static CROSS_REGISTER_PENDING: std::sync::LazyLock<RegisterAckSenders> =
+    std::sync::LazyLock::new(RegisterAckSenders::default);
 
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
+/// Size of the daemon's zenoh SHM provider segment. Memory-pool control
+/// notifications (RegisterPool/RegisterPoolAck/FreePool) are KB-scale,
+/// so a small segment carries all in-flight control traffic with headroom;
+/// the cross-machine tensor payload (MemoryPoolWrite) deliberately stays
+/// on the plain path and never allocates from here.
+const MEMORY_POOL_SHM_PROVIDER_SIZE: usize = 8 * 1024 * 1024;
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -661,6 +702,14 @@ pub struct Daemon {
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
+    /// SHM provider for inter-daemon memory-pool control notifications
+    /// (RegisterPool / RegisterPoolAck / FreePool). Same-host daemons
+    /// receive the payload as a zero-copy shared-memory reference;
+    /// cross-host receivers get an implicit regular-buffer copy from the
+    /// zenoh transport (SHM only works within a host). `None` when the
+    /// provider could not be created — control events then fall back to
+    /// regular payloads.
+    pub(crate) shm_provider: Option<Arc<ShmProvider<PosixShmProviderBackend>>>,
     /// Loopback endpoint that the daemon's zenoh session listens on. Injected
     /// into spawned nodes via `DORA_ZENOH_CONNECT` so they can find their
     /// peer without multicast (#1778). `None` when the OS rejected the
@@ -1725,6 +1774,23 @@ impl Daemon {
         )
         .await
         .wrap_err("failed to open zenoh session")?;
+        // Same-host control notifications (RegisterPool/FreePool) go over
+        // zenoh SHM: the payload stays in shared memory and peer daemons
+        // on the same host map it zero-copy. Cross-host receivers get the
+        // payload copied by the zenoh transport when it leaves the host.
+        // Failure here is non-fatal — control events fall back to regular
+        // payloads (see publish_memory_pool_event).
+        let shm_provider =
+            match ShmProviderBuilder::default_backend(MEMORY_POOL_SHM_PROVIDER_SIZE).wait() {
+                Ok(provider) => Some(Arc::new(provider)),
+                Err(e) => {
+                    tracing::warn!(
+                        "memory pool: zenoh SHM provider creation failed ({e}); \
+                     control events will use regular payloads"
+                    );
+                    None
+                }
+            };
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
             // Same argument as the reservation above: an address the operator
             // named must actually be listening, or this daemon is unreachable
@@ -1786,6 +1852,7 @@ impl Daemon {
             clock,
             ft_stats: Default::default(),
             zenoh_session,
+            shm_provider,
             zenoh_listen_endpoint,
             disable_multicast,
             zenoh_publish_tx,
@@ -3434,6 +3501,7 @@ impl Daemon {
                 let local_machine_id = self.machine_id.clone();
                 // 建池在 spawn 内（建池是毫秒级但发布可能 Block）
                 let memory_pool = self.memory_pool.clone();
+                let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
                     let result = create_cross_pool_shmem(
                         &dataflow_id,
@@ -3463,12 +3531,14 @@ impl Daemon {
                         // Remote reference: same-host readers resolve the
                         // sender's segment name through this daemon's table
                         // and open it directly (zero-copy, no transfer).
-                        let mut remote_metadata = dora_memory_pool::MemoryPoolMetadata::default();
-                        remote_metadata.shared_memory_name = Some(shmem_name);
-                        remote_metadata.size = size;
-                        remote_metadata.dtype = dtype.clone();
-                        remote_metadata.shape = shape.iter().map(|s| *s as usize).collect();
-                        remote_metadata.pinned_type = Some(device.clone());
+                        let remote_metadata = dora_memory_pool::MemoryPoolMetadata {
+                            shared_memory_name: Some(shmem_name),
+                            size,
+                            dtype: dtype.clone(),
+                            shape: shape.iter().map(|s| *s as usize).collect(),
+                            pinned_type: Some(device.clone()),
+                            ..Default::default()
+                        };
                         if let Err(e) = memory_pool.register_remote_pool(
                             MemoryPoolId {
                                 dataflow_id: dataflow_id.to_string(),
@@ -3501,6 +3571,7 @@ impl Daemon {
                             direct,
                             error,
                         },
+                        shm_provider.as_deref(),
                     )
                     .await
                     {
@@ -4695,6 +4766,7 @@ impl Daemon {
                         self.machine_id.as_deref().unwrap_or_default(),
                         peer,
                         &shared_memory_id,
+                        self.shm_provider.as_deref(),
                     )
                     .await;
                 }
@@ -4735,6 +4807,7 @@ impl Daemon {
                         self.machine_id.as_deref().unwrap_or_default(),
                         peer,
                         &shared_memory_id,
+                        self.shm_provider.as_deref(),
                     )
                     .await;
                 }
@@ -4814,6 +4887,7 @@ impl Daemon {
                 }
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
+                let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
                     if let Err(e) = publish_memory_pool_event(
                         &session,
@@ -4825,6 +4899,7 @@ impl Daemon {
                             tensor_data,
                             size,
                         },
+                        shm_provider.as_deref(),
                     )
                     .await
                     {
@@ -4859,6 +4934,7 @@ impl Daemon {
                 // toward it. `self` is not reachable inside the spawn.
                 let origin_machine_id = self.machine_id.clone();
                 let memory_pool = self.memory_pool.clone();
+                let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
                     // Clone for the post-flow cleanup below: the inner
                     // async block moves `shared_memory_id` into the pool
@@ -4950,7 +5026,35 @@ impl Daemon {
                                     return Err(format!("RegisterPool 发布失败（declare_publisher）: {e}"));
                                 }
                             };
-                            if let Err(e) = publisher.put(serialized).await {
+                            // RegisterPool is a control notification — go
+                            // over zenoh SHM when available (same-host
+                            // zero-copy; cross-host the transport copies),
+                            // falling back to the plain payload on any
+                            // alloc/size failure.
+                            let payload_len = serialized.len();
+                            let put_result = if let Some(provider) = shm_provider.as_ref() {
+                                // Synchronous wait: KB-scale control payload,
+                                // microsecond allocation. `alloc` guarantees
+                                // a buffer of at least `payload_len` bytes.
+                                match provider.alloc(payload_len).wait() {
+                                    Ok(mut buf) => {
+                                        let buf_slice: &mut [u8] = buf.as_mut();
+                                        buf_slice[..payload_len].copy_from_slice(&serialized);
+                                        let payload: ZBytes = buf.into();
+                                        publisher.put(payload).await
+                                    }
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "memory pool: SHM alloc failed ({e}), \
+                                             falling back to regular payload"
+                                        );
+                                        publisher.put(serialized).await
+                                    }
+                                }
+                            } else {
+                                publisher.put(serialized).await
+                            };
+                            if let Err(e) = put_result {
                                 tracing::error!(
                                     "memory pool: publish RegisterPool to {topic} failed: {e}"
                                 );

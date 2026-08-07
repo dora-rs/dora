@@ -228,6 +228,7 @@ impl ControlChannel {
     /// Register a pool on a remote machine via the daemon (the daemon
     /// resolves the machine through the coordinator and mirrors the
     /// pool there with a synchronous confirmation).
+    #[allow(clippy::too_many_arguments)]
     pub fn register_cross_machine_pool(
         &mut self,
         shared_memory_id: String,
