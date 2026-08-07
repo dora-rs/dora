@@ -33,19 +33,31 @@ for i in range(MESSAGE_COUNT):
 
     if i == 0:
         memory_pool_id = event["value"]
-        tensor_info = node.read_memory_pool(memory_pool_id)
-        torch_tensor = tensor_from_info(tensor_info)
+        # First read: the registration push races the data event over
+        # zenoh, so the mirror may not hold frame 0 yet.  Retry with the
+        # same frame-order guard as the steady-state reads below — a
+        # first-frame read of an empty or stale mirror would otherwise
+        # corrupt iteration 0.
+        deadline = time.monotonic() + 300
+        while time.monotonic() < deadline:
+            tensor_info = node.read_memory_pool(memory_pool_id)
+            torch_tensor = tensor_from_info(tensor_info)
+            if int(torch_tensor[0].item()) == 0:
+                break
+        else:
+            raise AssertionError(
+                "iteration 0: expected frame 0 never arrived within the retry window"
+            )
         print(f"Receiver preview: {torch_tensor[:5]}")
     else:
         # The zero-copy in-place update only holds for local shmem views.
         # Cross-machine reads go through the daemon-mirrored pool on this
         # host, so the tensor must be re-read (and re-built) each
         # iteration.  The memory-pool event trails the latency output on a
-        # WAN (separate topics, no ordering guarantee) — and the sender's
-        # registration re-push may overwrite the mirror with the previous
-        # frame — so a read can return the *previous* frame.  Retry until
-        # the expected frame arrives; each read reflects the mirror's
-        # current generation.
+        # WAN (separate topics, no ordering guarantee) — and the mirror
+        # write may lag the notification — so a read can return the
+        # *previous* frame.  Retry until the expected frame arrives; each
+        # read reflects the mirror's current generation.
         # Time-boxed, not count-boxed: on a WAN the mirror write lags the
         # notification, so a count window can burn through before the data
         # lands; 300s covers a slow WAN round trip and caps waits at ~5

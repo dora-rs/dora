@@ -3,7 +3,6 @@
 
 import os
 import sys
-import threading
 import time
 
 import numpy as np
@@ -56,26 +55,13 @@ for i in range(MESSAGE_COUNT):
                     flush=True,
                 )
             sys.exit(1)
-        # Cross-machine: the registration push can be lost while the
-        # remote daemon's subscription is still replicating (observed as
-        # the receiver reading the *next* write's data at iteration 0).
-        # Keep re-pushing the registration data until the receiver has
-        # consumed it (signalled by next_require arriving on next()).
-        stop = threading.Event()
-
-        def re_push():
-            while not stop.is_set():
-                time.sleep(0.5)
-                try:
-                    node.write_memory_pool(memory_pool_id, tensor_info)
-                except Exception:
-                    pass
-
-        repush_thread = threading.Thread(target=re_push, daemon=True)
-        repush_thread.start()
+        # The receiver retries its first read (frame-order guard) until
+        # the registration push lands — no background re-push needed: the
+        # daemon declares the memory-pool subscription before building
+        # nodes, so the registration push cannot be lost, and the
+        # handshake (next_require) confirms the frame was consumed.
         node.send_output("data", memory_pool_id, metadata)
         node.next()
-        stop.set()
     else:
         tensor_info = get_tensor_info(torch_tensor)
         if SCENARIO == "write_after_free" and i == 1:
