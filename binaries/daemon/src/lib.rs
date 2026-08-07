@@ -314,6 +314,7 @@ fn create_cross_pool_shmem(
     size: usize,
     dtype: &str,
     shape: &[i64],
+    device: &str,
 ) -> eyre::Result<()> {
     // Machine-qualified OS id: the mirror lives on the target machine's
     // /dev/shm, which on a dual-daemon test host is the SAME namespace as
@@ -326,8 +327,12 @@ fn create_cross_pool_shmem(
         shared_memory_id,
     )
     .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
+    // `device` is the receiver's device (the mirror's consumer): the
+    // sender relays it in RegisterPool. A GPU receiver ("cuda:0") reads
+    // the mirror's CPU data region and stages it HtoD into its own GPU
+    // buffer; "cpu" readers consume the data region directly.
     let json = format!(
-        "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"cpu\"}}",
+        "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"{device}\"}}",
         shape
     );
     let data_offset = DORADMA_HEADER_SIZE + json.len();
@@ -3510,6 +3515,7 @@ impl Daemon {
                         size,
                         &dtype,
                         &shape,
+                        &device,
                     );
                     let (ok, error) = match result {
                         Ok(()) => (true, None),
@@ -8987,12 +8993,38 @@ mod cross_pool_write_tests {
         std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 512]).unwrap();
         let _cleanup = ShmemCleanup(shmem_name.clone());
 
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512]).unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], "cpu").unwrap();
 
         // The recreated segment must be a valid DORADMA mirror.
         let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
         let magic = unsafe { std::slice::from_raw_parts(shmem.as_ptr(), 8) };
         assert_eq!(magic, DORADMA_MAGIC);
+    }
+
+    #[test]
+    fn mirror_json_records_receiver_device() {
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 4096;
+        for device in ["cpu", "cuda:0"] {
+            let shmem_name =
+                MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                    .unwrap();
+            let _cleanup = ShmemCleanup(shmem_name.clone());
+            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], device)
+                .unwrap();
+            let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+            let json_len = unsafe { read_header_u64(shmem.as_ptr().add(8)) } as usize;
+            let json_bytes = unsafe {
+                std::slice::from_raw_parts(shmem.as_ptr().add(DORADMA_HEADER_SIZE), json_len)
+            };
+            let json = String::from_utf8(json_bytes.to_vec()).unwrap();
+            assert!(
+                json.contains(&format!("\"pinned_type\":\"{device}\"")),
+                "mirror json {json} must record receiver device {device}"
+            );
+            std::fs::remove_file(format!("/dev/shm/{shmem_name}")).unwrap();
+        }
     }
 
     /// Concurrent writers to the same mirror must not interleave bytes:
@@ -9016,7 +9048,7 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 4 * 1024 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192]).unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
         let shmem_name =
             MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
