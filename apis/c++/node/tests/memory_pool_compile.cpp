@@ -10,6 +10,7 @@
 
 #include <cstddef>
 #include <cstring>
+#include <new>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -83,6 +84,20 @@ static_assert(!is_view_heap_allocatable<dora::PoolReadGuard>::value,
               "PoolReadGuard::operator new must stay deleted: a heap guard outlives the scope "
               "that owns the view");
 
+// Placement new is the same hazard wearing a caller-owned buffer. Probed
+// separately because deleting the plain form leaves this one available.
+template <typename T, typename A, typename = void>
+struct is_placement_constructible : std::false_type {};
+template <typename T, typename A>
+struct is_placement_constructible<
+    T, A, std::void_t<decltype(new (std::declval<void *>()) T(std::declval<A>()))>>
+    : std::true_type {};
+
+static_assert(!is_placement_constructible<dora::PoolWriteGuard, PoolRef>::value,
+              "PoolWriteGuard placement new must stay deleted");
+static_assert(!is_placement_constructible<dora::PoolReadGuard, ViewRef>::value,
+              "PoolReadGuard placement new must stay deleted");
+
 // `data()` must not hand out a writable pointer: the reader does not own the
 // frame, and a store through it would land in the payload with no generation
 // bump around it, so every other reader would publish it as a complete frame.
@@ -111,8 +126,30 @@ bool dora_memory_pool_read_guard_compile_check(ViewRef view, std::uint64_t *chec
     return true;
 }
 
-// The copying shape, which sizes the destination from the pool so that a
-// `false` can only mean a torn frame.
+// The copying shape. The outcome is a three-state `enum class`, so the caller
+// has to say what it does about a pool that will never yield bytes.
 bool dora_memory_pool_try_read_compile_check(ViewRef view, std::vector<std::uint8_t> &out) {
-    return dora::try_read_pool(view, out);
+    switch (dora::try_read_pool(view, out)) {
+        case dora::PoolReadOutcome::Copied:
+            return true;
+        case dora::PoolReadOutcome::Torn:
+            return false;  // retry on the next event
+        case dora::PoolReadOutcome::Unavailable:
+            return false;  // ipc or freed: retrying would spin forever
+    }
+    return false;
 }
+
+// The bug the enum exists to stop: `while (!try_read_pool(...)) {}` spins
+// forever on an `ipc` view, whose payload is in device memory and will never
+// arrive in this mapping. An `enum class` has no conversion to bool, so the
+// loop is ill-formed rather than merely wrong.
+template <typename T, typename = void>
+struct is_negatable : std::false_type {};
+template <typename T>
+struct is_negatable<T, std::void_t<decltype(!std::declval<T>())>> : std::true_type {};
+
+static_assert(is_negatable<bool>::value, "the probe must detect a type that IS negatable");
+static_assert(!is_negatable<dora::PoolReadOutcome>::value,
+              "try_read_pool's outcome must not be usable as a bool: `while (!try_read_pool(view, "
+              "buf)) {}` spins forever on an ipc or freed view");

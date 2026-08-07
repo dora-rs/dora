@@ -45,8 +45,9 @@ chrono = { version = "0.4", features = ["serde"] }
 # `PoolSegment::open` can return one — a Python sender on a discrete GPU
 # registers a header-only pool — and that is the shape the consumer surface has
 # to refuse to hand bytes out of. Writing one by hand is the only way to cover
-# it. Version tracked with `dora-memory-pool`'s own dependency.
-shared_memory_extended = "0.13.0"
+# it. Taken from the workspace so it cannot drift from the version
+# `dora-memory-pool` maps the same segment with.
+shared_memory_extended = { workspace = true }
 
 [build-dependencies]
 cxx-build = "1.0.194"

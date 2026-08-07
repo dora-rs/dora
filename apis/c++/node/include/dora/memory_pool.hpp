@@ -94,7 +94,10 @@ class PoolWriteGuard {
     PoolWriteGuard &operator=(PoolWriteGuard &&) = delete;
 
     /// A guard is only ever a scope-bound stack object; see the class note.
+    /// Placement new is deleted too: a guard constructed into a caller-owned
+    /// buffer outlives its scope exactly as a heap one does.
     static void *operator new(::std::size_t) = delete;
+    static void *operator new(::std::size_t, void *) = delete;
 
     /// Publishes the frame and closes the cycle. Idempotent; after it returns,
     /// the destructor does nothing and `data()` is null.
@@ -132,22 +135,60 @@ class PoolWriteGuard {
     bool open_ = false;
 };
 
+/// The outcome of `try_read_pool`.
+///
+/// Three states rather than a bool because two of the ways a read can fail are
+/// permanent, and telling them apart is the difference between a retry and an
+/// infinite loop. An `enum class` on purpose: `while (!try_read_pool(view,
+/// buf)) {}` does not compile against it, and that loop spins forever on an
+/// `ipc` view.
+enum class PoolReadOutcome {
+    /// `out` holds the whole frame, and no writer touched it during the copy.
+    Copied,
+    /// A writer was in the middle of the frame. **Retryable** — the same call
+    /// on the next event is likely to succeed. `out`'s contents are
+    /// unspecified: a torn copy may already have landed in it.
+    Torn,
+    /// There is no payload in this mapping and there never will be: the pool
+    /// is `ipc`, whose bytes live in device memory reachable only through
+    /// `view_ipc_handle`, or it has been freed. **Not retryable** — retrying
+    /// spins forever. `out` is left untouched. Distinguish the two with
+    /// `view_transport` and `view_is_alive`.
+    Unavailable,
+};
+
 /// Copy a whole frame out of `view` into `out`, sizing `out` from the pool
 /// rather than from the caller.
 ///
 /// The preferred read. `view_try_read` requires a destination of exactly
 /// `view_payload_len()` bytes — a pool frame is fixed-size, and a short
-/// destination would deliver a prefix as if it were the whole frame — and this
-/// is what makes that requirement impossible to get wrong, so a `false` return
-/// means only the retryable case: a writer was mid-frame, or the pool is `ipc`
-/// or freed.
+/// destination would deliver a prefix as if it were the whole frame — and
+/// sizing `out` here is what makes that requirement impossible to get wrong.
 ///
-/// On `false`, `out`'s contents are **unspecified**: a torn copy may already
-/// have landed in it. Discard it and read again on the next event.
-inline bool try_read_pool(const ::rust::Box<::DoraMemoryPoolView> &view,
-                          ::std::vector<::std::uint8_t> &out) {
-    out.resize(::view_payload_len(view));
-    return ::view_try_read(view, ::rust::Slice<::std::uint8_t>(out.data(), out.size()));
+/// ```cpp
+/// std::vector<std::uint8_t> frame;
+/// switch (dora::try_read_pool(view, frame)) {
+///     case dora::PoolReadOutcome::Copied:      consume(frame); break;
+///     case dora::PoolReadOutcome::Torn:        break;   // retry next event
+///     case dora::PoolReadOutcome::Unavailable: return;  // never succeeds
+/// }
+/// ```
+inline PoolReadOutcome try_read_pool(const ::rust::Box<::DoraMemoryPoolView> &view,
+                                     ::std::vector<::std::uint8_t> &out) {
+    // Asked before resizing, so that an `ipc` or freed pool does not silently
+    // empty a vector the caller may still be holding the last good frame in.
+    const ::std::size_t len = ::view_payload_len(view);
+    if (len == 0) {
+        return PoolReadOutcome::Unavailable;
+    }
+    out.resize(len);
+    if (::view_try_read(view, ::rust::Slice<::std::uint8_t>(out.data(), out.size()))) {
+        return PoolReadOutcome::Copied;
+    }
+    // The length was non-zero a moment ago. If it is zero now, the pool was
+    // freed underneath the read rather than torn by a writer, and retrying
+    // would never succeed.
+    return ::view_payload_len(view) == 0 ? PoolReadOutcome::Unavailable : PoolReadOutcome::Torn;
 }
 
 /// Brackets a zero-copy read of a pool with its seqlock check.
@@ -196,7 +237,10 @@ class PoolReadGuard {
     PoolReadGuard &operator=(PoolReadGuard &&) = delete;
 
     /// A guard is only ever a scope-bound stack object; see the class note.
+    /// Placement new is deleted too: a guard constructed into a caller-owned
+    /// buffer outlives its scope exactly as a heap one does.
     static void *operator new(::std::size_t) = delete;
+    static void *operator new(::std::size_t, void *) = delete;
 
     /// Start of the payload. Valid for the life of the mapping — this view
     /// owns it — but its *contents* are only trustworthy if `valid()` agrees

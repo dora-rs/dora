@@ -503,6 +503,13 @@ mod ffi {
         /// once the pool has been freed. Paired as an out-param predicate so
         /// the base cannot be taken without its bound, nor either of them from
         /// a dead view.
+        ///
+        /// Whatever this base was registered with must be `cudaHostUnregister`ed
+        /// before the view is dropped — on the ordinary "done with this view"
+        /// path as much as after a `take_freed_pools` notification. Dropping
+        /// the view unmaps the segment, and a mapping the driver still has
+        /// registered is gone out from under it. Rust cannot do the
+        /// unregistering: it does not know which segments were handed to CUDA.
         fn view_mapping(
             view: &Box<DoraMemoryPoolView>,
             out_base: &mut u64,
@@ -538,15 +545,27 @@ mod ffi {
         /// intends a CUDA receiver to map the segment with
         /// `cudaHostRegister`; `"ipc"` means there is no payload here at all.
         fn view_transport(view: &Box<DoraMemoryPoolView>) -> String;
-        /// Advisory metadata for interpreting the buffer — NOT a bound. An
-        /// unrecognized dtype is assumed to be 1 byte per element, so a
-        /// product computed from these under-estimates the real extent. Size
-        /// every copy and every view with `view_payload_len`.
+        /// Advisory metadata for interpreting the buffer — NOT a bound, and
+        /// wrong in **both** directions.
+        ///
+        /// Too small: an unrecognized dtype is assumed to be 1 byte per
+        /// element, so a shape-derived product can fall short of the real
+        /// extent. Too large: on an `ipc` view the shape describes a tensor
+        /// in device memory that is not in this mapping at all, and routinely
+        /// exceeds the whole segment by megabytes — `view_payload_len` is 0
+        /// there, and a copy sized from the shape instead would run megabytes
+        /// past the end.
+        ///
+        /// Size every copy and every view with `view_payload_len`.
         fn view_dtype(view: &Box<DoraMemoryPoolView>) -> String;
-        /// Advisory metadata, as `view_dtype`. Not a bound.
+        /// Advisory metadata, as `view_dtype`. Not a bound in either
+        /// direction.
         fn view_shape(view: &Box<DoraMemoryPoolView>) -> Vec<usize>;
         /// True when the segment carries a CUDA IPC handle instead of a
-        /// payload.
+        /// payload. False once the pool has been freed, like
+        /// `view_ipc_handle`: the device buffer the handle named is gone, so
+        /// reporting one as still present would only invite a
+        /// `cudaIpcOpenMemHandle` on it.
         fn view_ipc_present(view: &Box<DoraMemoryPoolView>) -> bool;
         /// The 64-byte CUDA IPC handle for `cudaIpcOpenMemHandle`, from a pool
         /// the Python binding registered on a discrete GPU. Empty when there
@@ -597,6 +616,13 @@ mod ffi {
         /// the views that hold them: Rust cannot do that on its behalf, having
         /// no idea which segments were handed to the driver. Drain this once
         /// per event-loop pass.
+        ///
+        /// Call it from the same thread that calls `read_memory_pool`. A drain
+        /// landing between the daemon's reply and the new view's registration
+        /// would leave that view alive onto a pool already released — the one
+        /// ordering the liveness flag cannot cover, since the flag does not
+        /// exist yet. The node event loop is single-threaded, so this holds by
+        /// construction; it is stated because nothing else here enforces it.
         fn take_freed_pools() -> Vec<String>;
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
@@ -1818,11 +1844,12 @@ fn register_view(segment: PoolSegment, id: String) -> DoraMemoryPoolView {
 /// Mark every view of every named pool dead, forget them, and hand the ids
 /// back for the caller to act on.
 ///
-/// Consuming and returning the ids is the point rather than a convenience: it
-/// is the only way to obtain them, so a caller cannot pass them to C++ without
-/// having killed the views first. It also puts the rule somewhere a test can
-/// reach — nothing in this crate can push a notification into the event
-/// stream's pending set, which only the daemon-facing event thread fills.
+/// Consuming and returning the ids keeps the marking and the hand-off in one
+/// expression, so the ordering is visible at the call site rather than being
+/// two statements that could be reordered or separated. It is **not**
+/// enforcement: `drain_freed_pools` returns the same `Vec<String>` this does,
+/// so a caller can bypass this function entirely and the compiler will not
+/// object. [`take_freed_pools_from`] exists to put that gap under test.
 fn mark_freed(pool_ids: Vec<String>) -> Vec<String> {
     if !pool_ids.is_empty() {
         let mut registry = view_registry();
@@ -1981,7 +2008,11 @@ fn view_shape(view: &Box<DoraMemoryPoolView>) -> Vec<usize> {
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn view_ipc_present(view: &Box<DoraMemoryPoolView>) -> bool {
-    view.segment.ipc_present()
+    // Gated on liveness for the same reason `view_ipc_handle` is: the handle
+    // names a device buffer the free released. Reporting one as present while
+    // handing back an empty handle would read as "there is a handle, you just
+    // failed to get it" and invite a retry.
+    view.is_alive() && view.segment.ipc_present()
 }
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
@@ -2041,11 +2072,26 @@ fn take_freed_pools() -> Vec<String> {
     // this path needs no re-export. The set is filled by the event thread when
     // the daemon sends `FreeMemoryPool`, and draining it is destructive — a
     // caller that drops the returned ids loses the notification.
-    // `mark_freed` kills the views before handing the ids back, so a node
-    // acting on them is already looking at accessors that refuse to produce an
-    // address. Routing the ids *through* it, rather than marking and returning
-    // separately, is what makes that ordering unskippable here.
-    mark_freed(dora_node_api::event_stream::memory_pool::drain_freed_pools())
+    take_freed_pools_from(dora_node_api::event_stream::memory_pool::drain_freed_pools)
+}
+
+/// The body of [`take_freed_pools`], with the drain supplied by the caller.
+///
+/// Split out purely so a test can push the notification the daemon would.
+/// `push_freed_pool` is `pub(crate)` in `dora-node-api` and should stay that
+/// way — it is an event-thread internal, and publishing it would let any node
+/// forge a free notification — so without this seam the rule that the views
+/// die *before* the ids are handed back has no test at all.
+///
+/// It needs one, because nothing enforces it. `drain_freed_pools` already
+/// returns exactly what this returns, so dropping `mark_freed` out of the
+/// composition type-checks, raises no dead-code warning, and reads like a
+/// simplification.
+fn take_freed_pools_from(drain: impl FnOnce() -> Vec<String>) -> Vec<String> {
+    // Marking first is the whole point: by the time an id reaches C++, every
+    // view of that pool already refuses to hand out an address, so the node
+    // can cudaHostUnregister its mappings without racing a fresh pointer.
+    mark_freed(drain())
 }
 
 // ---------------------------------------------------------------------
@@ -3542,6 +3588,35 @@ mod tests {
                 view_ipc_handle(&view).is_empty(),
                 "a released pool must not keep handing out a handle to its device buffer"
             );
+            assert!(
+                !view_ipc_present(&view),
+                "reporting a handle as present while refusing to hand it over reads as a \
+                 transient failure and invites a retry"
+            );
+        }
+
+        /// The rule `take_freed_pools` exists for: an id is only safe to hand
+        /// to a node that is about to `cudaHostUnregister` if every view of
+        /// that pool has already stopped producing addresses. Driven through
+        /// the seam because the real drain is fed by the event thread, and
+        /// `push_freed_pool` is `pub(crate)` in `dora-node-api` — which is
+        /// where it belongs.
+        #[test]
+        fn take_freed_pools_kills_the_views_before_returning_their_ids() {
+            let (guard, _writer, view) = writer_and_view("takefree", 32);
+            let view = Box::new(view);
+            assert_eq!(view_payload_len(&view), 32, "alive to begin with");
+
+            let pool_id = guard.pool_id.clone();
+            let returned = take_freed_pools_from(|| vec![pool_id.clone()]);
+
+            assert_eq!(returned, vec![guard.pool_id.clone()], "the ids come back");
+            assert!(
+                !view_is_alive(&view),
+                "the view must already be dead when its id is handed over, not merely \
+                 scheduled to die"
+            );
+            assert_eq!(view_payload_len(&view), 0);
         }
 
         /// The daemon's free notifications reach this binding through
