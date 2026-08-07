@@ -363,7 +363,16 @@ impl IndexCatalog {
         // yanked versions
         let mut had_yanked_match = false;
         for version in matching.iter().rev() {
-            let entry = self.entry(&reference.namespace, &reference.name, version)?;
+            // A single corrupt/unreadable entry for one version must not sink
+            // the whole resolution: skip it and fall through to lower matching
+            // versions, mirroring the lenient handling in the "available
+            // versions" list below (which also swallows per-entry errors). A
+            // hard `?` here made a truncated or hand-broken `<version>.yml` for
+            // the *highest* matching version fail the reference outright, even
+            // when a perfectly good lower version would resolve.
+            let Ok(entry) = self.entry(&reference.namespace, &reference.name, version) else {
+                continue;
+            };
             if entry.yanked {
                 had_yanked_match = true;
                 continue;
@@ -550,6 +559,19 @@ mod tests {
         let (git, rev) = resolved.entry.source.git_pin().unwrap();
         assert_eq!(git, "https://github.com/dora-rs/dora-hub");
         assert_eq!(rev, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn resolve_skips_a_corrupt_highest_entry_and_falls_back() {
+        let (_tmp, catalog) = fixture();
+        // Corrupt the highest matching entry (0.5.2) in place — a truncated /
+        // hand-broken YAML body that `entry()` can no longer parse.
+        let pkg = _tmp.path().join("dora-rs/dora-yolo");
+        std::fs::write(pkg.join("0.5.2.yml"), "manifest: {not: [valid").unwrap();
+        // Resolution must fall back to the next-highest good version (0.5.1)
+        // instead of failing the whole reference on the one bad entry.
+        let resolved = catalog.resolve(&parse_ref("dora-yolo@^0.5")).unwrap();
+        assert_eq!(resolved.version, Version::parse("0.5.1").unwrap());
     }
 
     #[cfg(unix)]
