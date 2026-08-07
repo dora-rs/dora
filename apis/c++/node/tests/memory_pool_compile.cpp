@@ -84,8 +84,12 @@ static_assert(!is_view_heap_allocatable<dora::PoolReadGuard>::value,
               "PoolReadGuard::operator new must stay deleted: a heap guard outlives the scope "
               "that owns the view");
 
-// Placement new is the same hazard wearing a caller-owned buffer. Probed
-// separately because deleting the plain form leaves this one available.
+// Placement new is the same hazard wearing a caller-owned buffer, and it is
+// blocked by the same single declaration: a class-scope `operator new` hides
+// every global form, so `new (buffer) Guard(...)` never reaches ::operator new.
+// These probe the property, not the line that provides it — they fire when a
+// guard declares no `operator new` at all, which is what a class that forgot
+// the deletion looks like.
 template <typename T, typename A, typename = void>
 struct is_placement_constructible : std::false_type {};
 template <typename T, typename A>
@@ -94,9 +98,17 @@ struct is_placement_constructible<
     : std::true_type {};
 
 static_assert(!is_placement_constructible<dora::PoolWriteGuard, PoolRef>::value,
-              "PoolWriteGuard placement new must stay deleted");
+              "PoolWriteGuard must not be placement-constructible: a guard built into a "
+              "caller-owned buffer outlives its scope exactly as a heap one does");
 static_assert(!is_placement_constructible<dora::PoolReadGuard, ViewRef>::value,
-              "PoolReadGuard placement new must stay deleted");
+              "PoolReadGuard must not be placement-constructible");
+
+// The probe must be able to say yes, or it proves nothing about either guard.
+struct PlacementProbe {
+    explicit PlacementProbe(int) {}
+};
+static_assert(is_placement_constructible<PlacementProbe, int>::value,
+              "the placement probe must detect a type that IS placement-constructible");
 
 // `data()` must not hand out a writable pointer: the reader does not own the
 // frame, and a store through it would land in the payload with no generation

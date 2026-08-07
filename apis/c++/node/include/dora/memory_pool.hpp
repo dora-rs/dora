@@ -94,10 +94,10 @@ class PoolWriteGuard {
     PoolWriteGuard &operator=(PoolWriteGuard &&) = delete;
 
     /// A guard is only ever a scope-bound stack object; see the class note.
-    /// Placement new is deleted too: a guard constructed into a caller-owned
-    /// buffer outlives its scope exactly as a heap one does.
+    /// This one declaration covers placement new as well: a class-scope
+    /// `operator new` hides *every* global form, so `new (buffer) Guard(...)`
+    /// finds only this deleted signature and does not match it.
     static void *operator new(::std::size_t) = delete;
-    static void *operator new(::std::size_t, void *) = delete;
 
     /// Publishes the frame and closes the cycle. Idempotent; after it returns,
     /// the destructor does nothing and `data()` is null.
@@ -237,10 +237,10 @@ class PoolReadGuard {
     PoolReadGuard &operator=(PoolReadGuard &&) = delete;
 
     /// A guard is only ever a scope-bound stack object; see the class note.
-    /// Placement new is deleted too: a guard constructed into a caller-owned
-    /// buffer outlives its scope exactly as a heap one does.
+    /// This one declaration covers placement new as well: a class-scope
+    /// `operator new` hides *every* global form, so `new (buffer) Guard(...)`
+    /// finds only this deleted signature and does not match it.
     static void *operator new(::std::size_t) = delete;
-    static void *operator new(::std::size_t, void *) = delete;
 
     /// Start of the payload. Valid for the life of the mapping — this view
     /// owns it — but its *contents* are only trustworthy if `valid()` agrees
