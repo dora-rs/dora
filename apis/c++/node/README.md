@@ -250,6 +250,108 @@ The `event` field also carries a matching `DoraEventType` (`Timeout` /
 `server_node_id` yields `DoraPatternStatus::InvalidArgument` rather than
 aborting the process.
 
+#### Clients that cannot block
+
+`recv_service_response` waits. A single-threaded node with its own
+schedule to keep, or several requests outstanding at once, cannot afford
+that. `try_recv_service_response` polls instead and returns
+`DoraPatternStatus::NotReady` when the reply has not arrived — the same
+convention `try_next_event` uses for plain events. Buffering, restart
+detection and correlation are unchanged; only the waiting is gone.
+
+```c++
+// per loop iteration, for each outstanding request
+auto poll = try_recv_service_response(
+    dora_node.events, request_id, "server-node-id", /* timeout_ms */ 5000);
+switch (poll.status)
+{
+case DoraPatternStatus::Matched:
+    complete(event_as_input(std::move(poll.event)));
+    break;
+case DoraPatternStatus::NotReady:
+    break; // nothing to do, and no time spent
+case DoraPatternStatus::Timeout:
+    give_up(); // the registered deadline lapsed; reported once
+    break;
+default:
+    std::cerr << std::string(poll.error) << std::endl;
+}
+```
+
+The framework owns the deadline: the first poll carrying a `timeout_ms`
+registers it against that `request_id`, and a later poll past it returns
+`Timeout` exactly once. A caller passes the same `timeout_ms` every
+iteration and reacts to `Timeout` like any other status — no deadline
+bookkeeping of its own. The clock starts at that first poll rather than
+at send time, and the first deadline registered for an id wins.
+
+`timeout_ms == 0` means **no deadline**, not "return immediately" — a
+poll never blocks anyway, so there is nothing to time out. This inverts
+the usual convention for a `timeout` argument, so it is worth a second
+look when reading calling code.
+
+A poll drops its own registration on a match, an error or expiry. If the
+node abandons a request it will never poll again — the peer died, the
+operator cancelled, the reply stopped mattering — release it explicitly,
+or that one entry lives until the event stream is dropped:
+
+```c++
+cancel_correlation(dora_node.events, request_id);
+```
+
+Safe to call for an id that was never registered, so a cancel racing a
+reply is harmless.
+
+> **Ordering matters.** The polls and your own `next_event` read the same
+> event stream, so whichever runs first consumes what is there. A poll
+> correlates the reply it wants and buffers everything else for a later
+> `next_event`, so polling first loses nothing. The reverse is not true:
+> a reply handed to `next_event` is gone, and no later poll can see it.
+> Poll first, then drain your own events with `try_next_event`.
+
+`try_recv_action_result` is the equivalent for actions. See
+`examples/c++-service-action/nodes/polling-client.cc` for a client with
+several requests in flight that never blocks.
+
+#### Fanning one request out to several servers
+
+`send_service_request` mints a fresh `request_id` per call, so it cannot
+express one logical request sent to several nodes. Mint the id once and
+send each copy with `send_service_request_with_id`:
+
+```c++
+auto request_id = std::string(new_request_id());
+for (const auto &server : servers)
+{
+    send_service_request_with_id(
+        dora_node.send_output, server.output, payload, new_metadata(), request_id);
+}
+```
+
+Then await whichever answers first with `recv_service_response_from` (or
+`try_recv_service_response_from`), which take a `Vec<String>` of
+acceptable responders — an empty vector means any node:
+
+```c++
+rust::Vec<rust::String> candidates;
+candidates.push_back("a");
+candidates.push_back("b");
+auto reply = recv_service_response_from(
+    dora_node.events, request_id, candidates, /* timeout_ms */ 5000);
+```
+
+The set governs only restart detection; which reply matches is decided by
+`request_id` alone. A restart of any listed node is reported as
+`ServerRestarted` naming that node — a notification, not a verdict, since
+the other candidates may still answer, so the request's deadline keeps
+running on its original clock.
+
+A list holding exactly one id is treated as the single-server case, not
+as a one-element set: with nobody else to answer, that restart *is* the
+verdict, and the orphaned request's deadline is released with it. The
+single-server polls above take the same path, so they behave
+identically.
+
 The server must echo the request's `request_id` back, which is why it needs
 `event_as_input_with_metadata`:
 

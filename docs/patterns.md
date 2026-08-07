@@ -97,6 +97,95 @@ intermediate inputs, parameter updates, or lifecycle events.
 
 **Example**: `examples/service-example/`
 
+#### Clients that cannot block
+
+`recv_service_response` waits. A single-threaded node with its own
+schedule to keep — or several requests outstanding at once — cannot
+afford that: the wait stalls everything else, and on a wedged server it
+stalls for the whole timeout.
+
+`try_recv_service_response` polls instead, returning `Ok(None)` when the
+reply has not arrived (dora-rs/dora#3046). Buffering, restart detection,
+correlation *and the deadline* are all handled as in the blocking form;
+only the waiting is gone.
+
+The framework owns the timeout: the first poll carrying one registers a
+deadline for that `request_id`, and a later poll past it returns
+`PatternError::Timeout` once. A caller passes the same timeout every
+iteration and reacts to `Timeout` like any other outcome — it does not
+sweep deadlines itself. Pass `None` to poll without one.
+
+```rust
+// once per loop iteration, for each outstanding request
+let timeout = Some(Duration::from_secs(5));
+match events.try_recv_service_response(&rid, ExpectedServers::One(&server), timeout) {
+    Ok(Some(Event::Input { data, .. })) => complete(data),
+    Ok(None) => {}                        // not ready — get on with the iteration
+    Err(PatternError::Timeout) => give_up(),
+    Err(e) => return Err(e.into()),
+    _ => unreachable!(),
+}
+```
+
+The clock starts at that first poll rather than at send time, and the
+first deadline registered for an id wins.
+
+A poll drops its own registration on a match, an error or expiry.
+`cancel_correlation` releases one the node abandons and will never poll
+again; without it that entry lives until the stream is dropped. It is
+available in both Rust and C++ and is a no-op for an unknown id.
+
+In C++ the timeout is `timeout_ms`, where `0` means *no deadline* rather
+than "return immediately" — a poll never blocks, so there is nothing to
+time out. That inverts the usual convention for a timeout argument.
+
+> **Ordering matters.** The polls and your own `recv()` read the same
+> stream, so whichever runs first consumes what is there. A poll
+> correlates the reply it wants and buffers everything else for a later
+> `recv()`, so polling first loses nothing. The reverse is not true: a
+> reply consumed by `recv()` is gone, and no later poll can see it.
+> Poll first, then drain your own events.
+
+`try_recv_action_result` is the same for actions.
+
+#### Fanning one request out to several servers
+
+`send_service_request` mints a fresh `request_id` per call, so it cannot
+express one logical request sent to several nodes. Use
+`send_service_request_with_id` with a shared id, and await it with
+`ExpectedServers::AnyOf`, which accepts whichever node answers first:
+
+```rust
+let request_id = DoraNode::new_request_id();
+for server in &servers {
+    node.send_service_request_with_id(
+        output.clone(), params.clone(), data.clone(), request_id.clone(),
+    )?;
+}
+let reply = events
+    .recv_service_response_from(&request_id, ExpectedServers::AnyOf(&servers), timeout)
+    .await?;
+```
+
+The server set only governs *restart* detection — which reply matches is
+decided by `request_id` alone. `ExpectedServers::Any` skips restart
+correlation entirely, for when the responder is not known up front.
+
+A restart means different things to the two variants, and the deadline
+follows that. For `One` it is terminal: the request is orphaned and its
+deadline is dropped with it. For `AnyOf` it is only a notification — the
+other candidates may still answer — so the correlation *and its
+deadline* survive, still running on the original clock. That last part
+matters: if a restart reset the clock, a node that keeps flapping would
+hold the correlation open indefinitely and the caller would never see
+`Timeout`.
+
+What decides this is how many candidates there actually are, not which
+spelling the caller used. A C++ list holding exactly one id — and the
+single-server polls, which wrap their lone id the same way — resolve to
+`One`, so their restart releases the deadline rather than leaving an
+entry behind.
+
 ## 3. Action (goal/feedback/result)
 
 A client sends a goal and receives periodic feedback plus a final result.
@@ -348,8 +437,14 @@ into `dora-node-api.h` (dora-rs/dora#2686).
 | `DoraNode::new_request_id` / `new_goal_id` | `new_request_id()` / `new_goal_id()` |
 | `DoraNode::send_service_request` | `send_service_request(...)` / `send_arrow_service_request(...)` |
 | `DoraNode::send_service_response` | `send_service_response(...)` |
+| `DoraNode::send_service_request_with_id` | `send_service_request_with_id(...)` |
 | `EventStream::recv_service_response` | `recv_service_response(...)` |
 | `EventStream::recv_action_result` | `recv_action_result(...)` |
+| `EventStream::try_recv_service_response` | `try_recv_service_response(...)` |
+| `EventStream::try_recv_action_result` | `try_recv_action_result(...)` |
+| `EventStream::recv_service_response_from` | `recv_service_response_from(...)` |
+| `EventStream::recv_action_result_from` | `recv_action_result_from(...)` |
+| `ExpectedServers::AnyOf` / `::Any` | a `Vec<String>` of node ids / an empty one |
 | `GOAL_STATUS_SUCCEEDED` / `_ABORTED` / `_CANCELED` | `goal_status_succeeded()` / `_aborted()` / `_canceled()` |
 | `PatternError` | `DoraPatternStatus` |
 
@@ -385,6 +480,41 @@ auto input = event_as_input_with_metadata(std::move(event));
 send_service_response(
     node.send_output, "response", result, std::move(input.metadata));
 ```
+
+A C++ node that cannot block uses `try_recv_service_response`, which
+returns `DoraPatternStatus::NotReady` instead of waiting — the same
+convention `try_next_event` already uses for plain events:
+
+```cpp
+// per loop iteration, for each outstanding request
+auto poll = try_recv_service_response(node.events, request_id, "server", 5000);
+switch (poll.status) {
+case DoraPatternStatus::Matched:
+    complete(event_as_input(std::move(poll.event)));
+    break;
+case DoraPatternStatus::NotReady:
+    break; // nothing to do, and no time spent
+case DoraPatternStatus::Timeout:
+    give_up(); // the registered deadline lapsed; reported once
+    break;
+default:
+    std::cerr << std::string(poll.error) << std::endl;
+}
+```
+
+`timeout_ms` works as in Rust — registered once per `request_id` by the
+framework, reported as `Timeout` when it lapses; pass `0` for no
+deadline. The same ordering rule applies: poll before consuming events
+yourself, or a reply your own `next_event` picked up is lost. Passing an
+empty `server_node_id` accepts a reply from any node.
+
+For a request fanned out to several servers, mint the id once with
+`new_request_id()`, send each copy with `send_service_request_with_id`,
+and await them with `recv_service_response_from` /
+`try_recv_service_response_from`, which take a `Vec<String>` of
+acceptable responders (empty means any).
+
+**Example**: `examples/c++-service-action/nodes/polling-client.cc`
 
 For actions, set `goal_id` on the metadata (`metadata->set_goal_id(...)`),
 send with `send_output_with_metadata`, and wait with `recv_action_result`.

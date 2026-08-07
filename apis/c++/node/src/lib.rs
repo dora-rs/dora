@@ -11,7 +11,7 @@ use chrono::DateTime;
 #[cfg(any(feature = "ros2-bridge", test))]
 use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
-    self, Event, EventStream, Metadata as DoraMetadata,
+    self, Event, EventStream, ExpectedServers, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, PatternError,
     TryRecvError,
     arrow::array::{AsArray, UInt8Array},
@@ -116,6 +116,11 @@ mod ffi {
         /// A caller-supplied argument was rejected (e.g. a malformed
         /// server node id). Nothing was awaited.
         InvalidArgument,
+        /// Returned only by the `try_recv_*` polls: no correlated reply
+        /// is available yet. Not an error — call again on a later
+        /// iteration. Distinct from `Timeout`, which means a deadline
+        /// actually elapsed.
+        NotReady,
     }
 
     /// Result of `recv_service_response` / `recv_action_result`.
@@ -348,6 +353,123 @@ mod ffi {
             server_node_id: &str,
             timeout_ms: u64,
         ) -> DoraPatternResult;
+
+        /// Non-blocking poll for the response carrying `request_id`.
+        ///
+        /// Returns `NotReady` when the reply has not arrived yet, so a
+        /// single-threaded node can check several outstanding requests
+        /// per event-loop iteration without ever stalling. Follows the
+        /// same convention as `try_next_event`.
+        ///
+        /// Non-matching events are buffered for later `next_event`
+        /// calls exactly as in `recv_service_response`, and correlation
+        /// state carries across calls — so polling in a loop is
+        /// equivalent to waiting, minus the blocking.
+        ///
+        /// `timeout_ms` is owned by the framework: the first poll
+        /// carrying one registers a deadline for `request_id`, and a
+        /// later poll past it returns `Timeout` exactly once. So a
+        /// caller does not sweep deadlines itself — it passes the same
+        /// `timeout_ms` every iteration and reacts to `Timeout` like
+        /// any other status. Pass `0` for no deadline.
+        ///
+        /// The clock starts at that first poll rather than at send
+        /// time, and the first deadline registered for an id wins.
+        ///
+        /// Pass an empty `server_node_id` to accept a reply from any
+        /// node and skip restart correlation.
+        fn try_recv_service_response(
+            events: &mut Box<Events>,
+            request_id: &str,
+            server_node_id: &str,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Non-blocking poll for a *terminal* result for `goal_id`.
+        ///
+        /// Returns `NotReady` while the goal is still running. Feedback
+        /// messages stay buffered for the caller's own event loop.
+        ///
+        /// `timeout_ms` behaves as in `try_recv_service_response`, but
+        /// bounds the *whole goal* rather than the gap between feedback
+        /// messages: a long goal that is making visible progress will
+        /// still expire. Pass `0` for no deadline, and an empty
+        /// `server_node_id` to accept any responder.
+        fn try_recv_action_result(
+            events: &mut Box<Events>,
+            goal_id: &str,
+            server_node_id: &str,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// `recv_service_response` over a set of acceptable responders,
+        /// for a request fanned out to several nodes under one
+        /// `request_id` where the first reply wins.
+        ///
+        /// An empty `server_node_ids` accepts a reply from any node.
+        /// The set only affects restart detection: which reply matches
+        /// is decided by `request_id` alone. A restart of any listed
+        /// node is reported as `ServerRestarted` naming that node — a
+        /// notification, not a verdict, since the other candidates may
+        /// still answer.
+        fn recv_service_response_from(
+            events: &mut Box<Events>,
+            request_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// `recv_action_result` over a set of acceptable responders.
+        /// See `recv_service_response_from`.
+        fn recv_action_result_from(
+            events: &mut Box<Events>,
+            goal_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Non-blocking `recv_service_response_from`: the fan-out poll.
+        fn try_recv_service_response_from(
+            events: &mut Box<Events>,
+            request_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Non-blocking `recv_action_result_from`.
+        fn try_recv_action_result_from(
+            events: &mut Box<Events>,
+            goal_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Forget an outstanding correlation's deadline.
+        ///
+        /// A poll drops its own registration on a match, an error or
+        /// expiry, so this is only needed when a node abandons a
+        /// request it will never poll again — a peer died, the operator
+        /// cancelled, the reply stopped mattering. Without it that one
+        /// entry lives until the event stream is dropped, which for a
+        /// long-running node is an unbounded slow leak.
+        ///
+        /// Safe to call for an id that was never registered.
+        fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str);
+
+        /// Send a service request under a caller-supplied `request_id`.
+        ///
+        /// `send_service_request` mints a fresh id per call, so it
+        /// cannot express one logical request fanned out to several
+        /// nodes. Use `new_request_id()` once, then send each copy with
+        /// this, and await them with `recv_service_response_from` /
+        /// `try_recv_service_response_from`.
+        fn send_service_request_with_id(
+            output_sender: &mut Box<OutputSender>,
+            output_id: String,
+            data: &[u8],
+            metadata: Box<Metadata>,
+            request_id: &str,
+        ) -> DoraResult;
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
@@ -1264,6 +1386,253 @@ fn recv_action_result(
     ))
 }
 
+fn try_recv_service_response(
+    events: &mut Box<Events>,
+    request_id: &str,
+    server_node_id: &str,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_list(std::slice::from_ref(&server_node_id)) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_service_response(
+        request_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
+}
+
+fn try_recv_action_result(
+    events: &mut Box<Events>,
+    goal_id: &str,
+    server_node_id: &str,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_list(std::slice::from_ref(&server_node_id)) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_action_result(
+        goal_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn recv_service_response_from(
+    events: &mut Box<Events>,
+    request_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    pattern_result(futures_lite::future::block_on(
+        events.0.recv_service_response_from(
+            request_id,
+            servers.as_ref(),
+            clamp_pattern_timeout(timeout_ms),
+        ),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn recv_action_result_from(
+    events: &mut Box<Events>,
+    goal_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    pattern_result(futures_lite::future::block_on(
+        events.0.recv_action_result_from(
+            goal_id,
+            servers.as_ref(),
+            clamp_pattern_timeout(timeout_ms),
+        ),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn try_recv_service_response_from(
+    events: &mut Box<Events>,
+    request_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_service_response(
+        request_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn try_recv_action_result_from(
+    events: &mut Box<Events>,
+    goal_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_action_result(
+        goal_id,
+        servers.as_ref(),
+        poll_timeout(timeout_ms),
+    ))
+}
+
+/// Owned form of [`ExpectedServers`], which borrows.
+///
+/// The parsed `NodeId`s must outlive the borrow handed to the receive,
+/// so they are held here and lent out via [`Self::as_ref`].
+enum OwnedServers {
+    /// No node ids were supplied — accept any responder.
+    Any,
+    /// One or more parsed node ids.
+    Some(Vec<NodeId>),
+}
+
+impl OwnedServers {
+    fn as_ref(&self) -> ExpectedServers<'_> {
+        match self {
+            Self::Any => ExpectedServers::Any,
+            // Exactly one candidate is `One`, not a one-element `AnyOf`.
+            //
+            // The two differ in what a restart *means*: with a set,
+            // a restart is a notification because the others may still
+            // answer, so the deadline keeps running. With a single
+            // server there is nobody else, so the restart is the
+            // verdict and the deadline must go with the orphaned
+            // request.
+            //
+            // This is the path every C++ single-server poll takes —
+            // `try_recv_service_response(.., server_node_id, ..)` wraps
+            // its lone id in a slice — so without this it would leak one
+            // deadline entry per abandoned request, which is exactly
+            // what `cancel_correlation` was added to avoid needing.
+            Self::Some(ids) => match ids.as_slice() {
+                [only] => ExpectedServers::One(only),
+                many => ExpectedServers::AnyOf(many),
+            },
+        }
+    }
+}
+
+/// Parse a C++-supplied list of server node ids.
+///
+/// An empty list — or a single empty string, which is how the
+/// single-server polls spell "anyone" — means [`OwnedServers::Any`].
+/// Empty entries in a non-trivial list are rejected rather than silently
+/// widening the set to "any", which would be a surprising way for a
+/// stray `""` to disable restart detection.
+fn parse_server_strings(ids: &[String]) -> Result<OwnedServers, ffi::DoraPatternResult> {
+    let borrowed: Vec<&str> = ids.iter().map(String::as_str).collect();
+    parse_server_list(&borrowed)
+}
+
+fn parse_server_list(ids: &[&str]) -> Result<OwnedServers, ffi::DoraPatternResult> {
+    if ids.is_empty() || (ids.len() == 1 && ids[0].is_empty()) {
+        return Ok(OwnedServers::Any);
+    }
+    let mut parsed = Vec::with_capacity(ids.len());
+    for id in ids {
+        parsed.push(parse_server_node_id(id)?);
+    }
+    Ok(OwnedServers::Some(parsed))
+}
+
+fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str) {
+    events.0.cancel_correlation(correlation_id);
+}
+
+/// Map a C++ `timeout_ms` onto the Rust poll's optional deadline.
+///
+/// `0` means "no deadline" — the poll then behaves exactly as it did
+/// before deadlines existed. Any other value is clamped the same way
+/// `clamp_pattern_timeout` clamps the blocking waits, because it
+/// crosses the bridge as an unbounded `u64` and ends up in an
+/// `Instant + Duration`.
+fn poll_timeout(timeout_ms: u64) -> Option<Duration> {
+    if timeout_ms == 0 {
+        None
+    } else {
+        Some(clamp_pattern_timeout(timeout_ms))
+    }
+}
+
+/// Map a non-blocking correlated receive onto the C++ result struct.
+///
+/// `Ok(None)` becomes `NotReady` with an `Empty` event, mirroring how
+/// `try_next_event` reports "nothing available" — deliberately distinct
+/// from `Timeout`, since no deadline was involved.
+fn try_pattern_result(outcome: Result<Option<Event>, PatternError>) -> ffi::DoraPatternResult {
+    match outcome {
+        Ok(Some(event)) => pattern_result(Ok(event)),
+        Ok(None) => pattern_failure(
+            ffi::DoraPatternStatus::NotReady,
+            String::new(),
+            EventOrReason::Empty,
+        ),
+        Err(err) => pattern_result(Err(err)),
+    }
+}
+
+#[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
+fn send_service_request_with_id(
+    sender: &mut Box<OutputSender>,
+    output_id: String,
+    data: &[u8],
+    metadata: Box<Metadata>,
+    request_id: &str,
+) -> ffi::DoraResult {
+    let mut parameters = (*metadata).into_parameters();
+    set_request_id(&mut parameters, request_id);
+    send_output_internal(sender, output_id, data, parameters)
+}
+
+/// Pin `parameters` to a caller-supplied `request_id`.
+///
+/// The counterpart of [`insert_request_id`], which always mints a fresh
+/// one. Split out so the "the caller's id survives" contract can be
+/// tested without a live daemon connection.
+fn set_request_id(parameters: &mut DoraMetadataParameters, request_id: &str) {
+    parameters.insert(
+        dora_node_api::REQUEST_ID.to_string(),
+        DoraParameter::String(request_id.to_owned()),
+    );
+}
+
 /// Validate and normalise the arguments shared by both pattern-aware
 /// waits, before anything is awaited.
 ///
@@ -1275,14 +1644,26 @@ fn pattern_wait_args(
     server_node_id: &str,
     timeout_ms: u64,
 ) -> Result<(NodeId, Duration), ffi::DoraPatternResult> {
-    let server = server_node_id.parse::<NodeId>().map_err(|e| {
+    Ok((
+        parse_server_node_id(server_node_id)?,
+        clamp_pattern_timeout(timeout_ms),
+    ))
+}
+
+/// Parse one server node id, reporting a malformed one as
+/// `InvalidArgument` instead of panicking.
+///
+/// `FromStr` rather than `From<String>`: the latter is documented as
+/// panicking on invalid characters (`libraries/message/src/id.rs`), so a
+/// typo in a C++ string literal would abort the whole node.
+fn parse_server_node_id(server_node_id: &str) -> Result<NodeId, ffi::DoraPatternResult> {
+    server_node_id.parse::<NodeId>().map_err(|e| {
         pattern_failure(
             ffi::DoraPatternStatus::InvalidArgument,
             format!("invalid server node id '{server_node_id}': {e}"),
             EventOrReason::Empty,
         )
-    })?;
-    Ok((server, clamp_pattern_timeout(timeout_ms)))
+    })
 }
 
 /// Convert `timeout_ms` into a `Duration` that `Instant::now() + dur`
@@ -1651,6 +2032,191 @@ mod tests {
         // `new_goal_id` is documented as an alias, so it must draw from
         // the same generator rather than being a distinct id space.
         dora_node_api::uuid::Uuid::parse_str(&new_goal_id()).expect("goal id should be a UUID");
+    }
+
+    // ---- dora-rs/dora#3046 ----
+
+    /// The whole point of the `_with_id` variant: the caller's id must
+    /// survive, or a fan-out cannot share one correlation.
+    #[test]
+    fn send_service_request_with_id_preserves_the_caller_id() {
+        let mut parameters = DoraMetadataParameters::default();
+        parameters.insert(
+            dora_node_api::REQUEST_ID.to_string(),
+            DoraParameter::String("stale".into()),
+        );
+
+        set_request_id(&mut parameters, "caller-supplied");
+
+        assert_eq!(
+            parameters.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("caller-supplied".into())),
+            "the caller's id must replace whatever the metadata carried"
+        );
+    }
+
+    /// The two id paths must stay distinguishable: one mints, one obeys.
+    #[test]
+    fn set_request_id_and_insert_request_id_differ() {
+        let mut minted = DoraMetadataParameters::default();
+        let generated = insert_request_id(&mut minted);
+
+        let mut pinned = DoraMetadataParameters::default();
+        set_request_id(&mut pinned, "req-fixed");
+
+        assert_ne!(generated, "req-fixed");
+        assert_eq!(
+            pinned.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("req-fixed".into()))
+        );
+    }
+
+    #[test]
+    fn zero_timeout_means_no_deadline() {
+        // `0` has to keep meaning "poll forever", or a caller that
+        // never wanted a deadline would start getting Timeout.
+        assert!(poll_timeout(0).is_none());
+    }
+
+    #[test]
+    fn nonzero_timeout_is_clamped_like_the_blocking_waits() {
+        let clamped = poll_timeout(u64::MAX).expect("a non-zero timeout is a deadline");
+        assert_eq!(clamped, clamp_pattern_timeout(u64::MAX));
+
+        let ordinary = poll_timeout(5_000).expect("a non-zero timeout is a deadline");
+        assert_eq!(ordinary, Duration::from_millis(5_000));
+    }
+
+    #[test]
+    fn empty_server_list_means_any() {
+        let Ok(parsed) = parse_server_list(&[]) else {
+            panic!("an empty list is valid and means Any");
+        };
+        assert!(matches!(parsed, OwnedServers::Any));
+    }
+
+    #[test]
+    fn single_empty_server_id_means_any() {
+        // How the single-server polls spell "accept any responder".
+        let Ok(parsed) = parse_server_list(&[""]) else {
+            panic!("an empty id is the 'any' spelling and must be accepted");
+        };
+        assert!(matches!(parsed, OwnedServers::Any));
+    }
+
+    /// The C++ single-server polls wrap their lone id in a slice, so
+    /// this is the mapping every one of them goes through. It has to
+    /// land on `One`: with a single candidate a restart is terminal, and
+    /// `One` is what drops the orphaned request's deadline. A
+    /// one-element `AnyOf` would keep it, leaking one entry per
+    /// abandoned request.
+    ///
+    /// Paired with `a_one_server_restart_clears_the_deadline` in
+    /// `dora-node-api`, which pins the clearing behaviour itself.
+    #[test]
+    fn a_single_server_maps_to_one_not_a_one_element_any_of() {
+        let Ok(parsed) = parse_server_list(&["srv"]) else {
+            panic!("a single valid id must parse");
+        };
+        assert!(
+            matches!(parsed.as_ref(), ExpectedServers::One(id) if id.as_ref() == "srv"),
+            "a lone server must become One, or its restart will not clear the deadline"
+        );
+    }
+
+    #[test]
+    fn several_servers_still_map_to_any_of() {
+        let Ok(parsed) = parse_server_list(&["a", "b"]) else {
+            panic!("both ids are valid");
+        };
+        assert!(
+            matches!(parsed.as_ref(), ExpectedServers::AnyOf(ids) if ids.len() == 2),
+            "a real fan-out must keep AnyOf semantics"
+        );
+    }
+
+    #[test]
+    fn no_servers_still_maps_to_any() {
+        let Ok(parsed) = parse_server_list(&[]) else {
+            panic!("an empty list is valid");
+        };
+        assert!(matches!(parsed.as_ref(), ExpectedServers::Any));
+    }
+
+    #[test]
+    fn server_list_parses_every_entry() {
+        let Ok(parsed) = parse_server_list(&["a", "b"]) else {
+            panic!("both ids are valid");
+        };
+        match parsed {
+            OwnedServers::Some(ids) => {
+                assert_eq!(ids.len(), 2);
+                assert_eq!(ids[0].as_ref(), "a");
+                assert_eq!(ids[1].as_ref(), "b");
+            }
+            OwnedServers::Any => panic!("a non-empty list must not widen to Any"),
+        }
+    }
+
+    #[test]
+    fn empty_entry_inside_a_list_is_rejected() {
+        // Silently treating this as "any" would let one stray "" switch
+        // off restart detection for the whole set.
+        let result = parse_server_list(&["a", ""]);
+        match result {
+            Err(failure) => assert!(matches!(
+                failure.status,
+                ffi::DoraPatternStatus::InvalidArgument
+            )),
+            Ok(_) => panic!("an empty entry in a real list must be rejected"),
+        }
+    }
+
+    #[test]
+    fn invalid_server_id_in_a_list_is_reported_not_panicked() {
+        let result = parse_server_list(&["ok", "bad id/with slash"]);
+        match result {
+            Err(failure) => {
+                assert!(matches!(
+                    failure.status,
+                    ffi::DoraPatternStatus::InvalidArgument
+                ));
+                assert!(failure.error.contains("bad id/with slash"));
+            }
+            Ok(_) => panic!("a malformed node id must be rejected"),
+        }
+    }
+
+    #[test]
+    fn not_ready_is_distinct_from_timeout_and_carries_no_error() {
+        let not_ready = try_pattern_result(Ok(None));
+        assert!(matches!(not_ready.status, ffi::DoraPatternStatus::NotReady));
+        assert!(
+            not_ready.error.is_empty(),
+            "NotReady is not a failure, so it must not carry an error string: {}",
+            not_ready.error
+        );
+        assert!(matches!(
+            event_type(&not_ready.event),
+            ffi::DoraEventType::Empty
+        ));
+    }
+
+    #[test]
+    fn try_pattern_result_passes_errors_through_unchanged() {
+        let timeout = try_pattern_result(Err(PatternError::Timeout));
+        assert!(matches!(timeout.status, ffi::DoraPatternStatus::Timeout));
+
+        let restarted = try_pattern_result(Err(PatternError::ServerRestarted("b".into())));
+        assert!(matches!(
+            restarted.status,
+            ffi::DoraPatternStatus::ServerRestarted
+        ));
+        assert!(
+            restarted.error.contains("b"),
+            "the restarted node's id must reach the C++ caller: {}",
+            restarted.error
+        );
     }
 
     /// A caller-supplied `request_id` must be replaced, matching
