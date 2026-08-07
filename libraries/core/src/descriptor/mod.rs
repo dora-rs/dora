@@ -1,6 +1,6 @@
 use dora_message::{
-    config::{Input, InputMapping, NodeRunConfig},
-    descriptor::{EnvValue, GitRepoRev, NodeSource},
+    config::{InputMapping, NodeRunConfig},
+    descriptor::{EnvValue, NodeSource},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
@@ -21,6 +21,7 @@ pub use dora_message::descriptor::{
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
 
+mod classify;
 mod expand;
 pub mod validate;
 mod visualize;
@@ -127,7 +128,10 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
 
     let mut resolved = BTreeMap::new();
     for mut node in desc.nodes.clone() {
-        // adjust ROS2 bridge input mappings early (before node_kind borrows node)
+        // classify node: determine kind + validate fields against whitelist
+        let node_class = classify::classify(&node)?;
+
+        // adjust ROS2 bridge input mappings early
         if node.ros2.is_some() {
             for input in node.inputs.values_mut() {
                 if let InputMapping::User(m) = &mut input.mapping
@@ -139,17 +143,33 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         }
 
         // adjust input mappings
-        let mut node_kind = node_kind_mut(&mut node)?;
-        let input_mappings: Vec<_> = match &mut node_kind {
-            NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
-            NodeKindMut::Runtime(node) => node
+        let input_mappings: Vec<_> = match &node_class {
+            classify::NodeClass::Standard { .. } => node.inputs.values_mut().collect(),
+            classify::NodeClass::Runtime => node
+                .operators
+                .as_mut()
+                .ok_or_eyre("no operators")?
                 .operators
                 .iter_mut()
                 .flat_map(|op| op.config.inputs.values_mut())
                 .collect(),
-            NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
-            NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
-            NodeKindMut::Ros2Bridge(_) => vec![],
+            classify::NodeClass::Custom => node
+                .custom
+                .as_mut()
+                .ok_or_eyre("no custom")?
+                .run_config
+                .inputs
+                .values_mut()
+                .collect(),
+            classify::NodeClass::Operator => node
+                .operator
+                .as_mut()
+                .ok_or_eyre("no operator")?
+                .config
+                .inputs
+                .values_mut()
+                .collect(),
+            classify::NodeClass::Ros2Bridge => vec![],
         };
         for mapping in input_mappings
             .into_iter()
@@ -164,48 +184,57 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         }
 
         // resolve nodes
-        let kind = match node_kind {
-            NodeKindMut::Standard {
-                path,
-                source,
-                inputs: _,
-            } => CoreNodeKind::Custom(CustomNode {
-                path: path.clone(),
-                source,
-                path_sha256: node.path_sha256,
-                args: node.args,
-                build: node.build,
-                send_stdout_as: node.send_stdout_as,
-                send_logs_as: node.send_logs_as,
-                min_log_level: node.min_log_level,
-                max_log_size: node.max_log_size,
-                max_rotated_files: node.max_rotated_files,
-                run_config: NodeRunConfig {
-                    inputs: node.inputs,
-                    outputs: node.outputs,
-                    output_types: node.output_types,
-                    output_framing: node.output_framing,
-                    input_types: node.input_types,
-                    shared_memory_pool_size: node.shared_memory_pool_size,
-                },
-                envs: None,
-                restart_policy: node.restart_policy,
-                max_restarts: node.max_restarts,
-                restart_delay: node.restart_delay,
-                max_restart_delay: node.max_restart_delay,
-                restart_window: node.restart_window,
-                health_check_timeout: node.health_check_timeout,
-                finish_grace_secs: node.finish_grace_secs,
-            }),
-            NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
-            NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
-            NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
-                operators: vec![OperatorDefinition {
-                    id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                    config: op.config.clone(),
-                }],
-            }),
-            NodeKindMut::Ros2Bridge(config) => {
+        let kind = match node_class {
+            classify::NodeClass::Standard { source } => {
+                let path = node.path.as_ref().ok_or_eyre("missing `path` attribute")?;
+                CoreNodeKind::Custom(CustomNode {
+                    path: path.clone(),
+                    source,
+                    path_sha256: node.path_sha256,
+                    args: node.args,
+                    build: node.build,
+                    send_stdout_as: node.send_stdout_as,
+                    send_logs_as: node.send_logs_as,
+                    min_log_level: node.min_log_level,
+                    max_log_size: node.max_log_size,
+                    max_rotated_files: node.max_rotated_files,
+                    run_config: NodeRunConfig {
+                        inputs: node.inputs,
+                        outputs: node.outputs,
+                        output_types: node.output_types,
+                        output_framing: node.output_framing,
+                        input_types: node.input_types,
+                        shared_memory_pool_size: node.shared_memory_pool_size,
+                    },
+                    envs: None,
+                    restart_policy: node.restart_policy,
+                    max_restarts: node.max_restarts,
+                    restart_delay: node.restart_delay,
+                    max_restart_delay: node.max_restart_delay,
+                    restart_window: node.restart_window,
+                    health_check_timeout: node.health_check_timeout,
+                    finish_grace_secs: node.finish_grace_secs,
+                })
+            }
+            classify::NodeClass::Custom => {
+                let custom = node.custom.as_ref().ok_or_eyre("no custom")?;
+                CoreNodeKind::Custom(custom.clone())
+            }
+            classify::NodeClass::Runtime => {
+                let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
+                CoreNodeKind::Runtime(runtime.clone())
+            }
+            classify::NodeClass::Operator => {
+                let op = node.operator.as_ref().ok_or_eyre("no operator")?;
+                CoreNodeKind::Runtime(RuntimeNode {
+                    operators: vec![OperatorDefinition {
+                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
+                        config: op.config.clone(),
+                    }],
+                })
+            }
+            classify::NodeClass::Ros2Bridge => {
+                let config = node.ros2.as_ref().ok_or_eyre("no ros2")?;
                 let bridge_config_json = serde_json::to_string(&config)
                     .context("failed to serialize ROS2 bridge config")?;
 
@@ -346,69 +375,6 @@ pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
         .await
         .context("failed to open given file")?;
     Descriptor::parse(buf)
-}
-
-fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
-    match node.kind()? {
-        NodeKind::Module(_) => {
-            eyre::bail!(
-                "module node `{}` must be expanded before resolution — \
-                 call expand_modules() first",
-                node.id
-            )
-        }
-        NodeKind::Standard(_) => {
-            let source = match (&node.git, &node.branch, &node.tag, &node.rev) {
-                (None, None, None, None) => NodeSource::Local,
-                (Some(repo), branch, tag, rev) => {
-                    let rev = match (branch, tag, rev) {
-                        (None, None, None) => None,
-                        (Some(branch), None, None) => Some(GitRepoRev::Branch(branch.clone())),
-                        (None, Some(tag), None) => Some(GitRepoRev::Tag(tag.clone())),
-                        (None, None, Some(rev)) => Some(GitRepoRev::Rev(rev.clone())),
-                        other @ (_, _, _) => {
-                            eyre::bail!(
-                                "only one of `branch`, `tag`, and `rev` are allowed (got {other:?})"
-                            )
-                        }
-                    };
-                    NodeSource::GitBranch {
-                        repo: repo.clone(),
-                        rev,
-                    }
-                }
-                (None, _, _, _) => {
-                    eyre::bail!("`git` source required when using branch, tag, or rev")
-                }
-            };
-
-            Ok(NodeKindMut::Standard {
-                path: node.path.as_ref().ok_or_eyre("missing `path` attribute")?,
-                source,
-                inputs: &mut node.inputs,
-            })
-        }
-        NodeKind::Runtime(_) => node
-            .operators
-            .as_mut()
-            .map(NodeKindMut::Runtime)
-            .ok_or_eyre("no operators"),
-        NodeKind::Custom(_) => node
-            .custom
-            .as_mut()
-            .map(NodeKindMut::Custom)
-            .ok_or_eyre("no custom"),
-        NodeKind::Operator(_) => node
-            .operator
-            .as_mut()
-            .map(NodeKindMut::Operator)
-            .ok_or_eyre("no operator"),
-        NodeKind::Ros2Bridge(_) => node
-            .ros2
-            .as_ref()
-            .map(NodeKindMut::Ros2Bridge)
-            .ok_or_eyre("no ros2"),
-    }
 }
 
 /// Returns `true` if `source` is an `http://` or `https://` URL.
@@ -634,21 +600,6 @@ pub enum NodeKind<'a> {
     Ros2Bridge(&'a Ros2BridgeConfig),
     /// Module (sub-dataflow) reference — must be expanded before resolution
     Module(&'a String),
-}
-
-#[derive(Debug)]
-enum NodeKindMut<'a> {
-    Standard {
-        path: &'a String,
-        source: NodeSource,
-        inputs: &'a mut BTreeMap<DataId, Input>,
-    },
-    /// Dora runtime node
-    Runtime(&'a mut RuntimeNode),
-    Custom(&'a mut CustomNode),
-    Operator(&'a mut SingleOperatorDefinition),
-    /// ROS2 bridge node
-    Ros2Bridge(&'a Ros2BridgeConfig),
 }
 
 #[cfg(test)]
