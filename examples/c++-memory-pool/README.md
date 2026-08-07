@@ -181,7 +181,7 @@ reason:
 | break this | and this catches it |
 |---|---|
 | remove `DORA_MEMORY_POOL_TRANSPORT: unified` | `expected transport 'unified', got 'shmem'` |
-| take `mapped_.host` for the payload instead of `mapped_.device` | the kernel dies with `an illegal memory access was encountered` — on this Xavier NX the device alias is a genuinely different address (`0xffff9c133000` vs `0x20310a000`), so the host pointer is not device-addressable |
+| take `mapped_.host` for the payload instead of `mapped_.device` | the kernel dies with `an illegal memory access was encountered` — on this Jetson the device alias is a genuinely different address (`0xffff9c133000` vs `0x20310a000`), so the host pointer is not device-addressable |
 | use the mapping base without `view_payload_offset` | the kernel reports `the host wrote 165 and the GPU read 68` — 68 is `'D'`, the first byte of the segment's `DORADMA` magic, exactly the failure `cuda_pool.hpp` warns is silent |
 | skip `release()` in the free drain | `the mapping of 'frames' is still registered after the free notification` |
 | ack only frames, not `kHello`/`kAbandoned`/`kFreed` | the producer never advances: `[sender] stopped at step 0 of 23 without completing the script`, and the run only ends at `--stop-after` |
@@ -339,7 +339,7 @@ ls /dev/shm | grep dora_pool_ || echo "clean after run"
 sender waiting for an ack that never comes, and `dora run` has no timeout of its
 own.
 
-Measured on a Xavier NX (JetPack 5, CUDA 11.4, Python 3.11.15):
+Measured on a Jetson (JetPack 5, CUDA 11.4, Python 3.11.15):
 
 ```
 [python-sender] registered pool `pool_python-pool-sender_1`
