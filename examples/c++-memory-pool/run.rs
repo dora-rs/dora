@@ -29,6 +29,18 @@ fn main() -> eyre::Result<()> {
 
     std::fs::create_dir_all("build")?;
 
+    // Before the build, not after: a leftover segment fails the check at the
+    // end for a reason that has nothing to do with this run, and finding that
+    // out costs a couple of minutes of C++ compilation if it waits.
+    let before = pool_segments()?;
+    if !before.is_empty() {
+        bail!(
+            "memory-pool segments were already in {SHM_DIR} before the run: {before:?}. \
+             They are left over from an earlier run and would fail this example's leak \
+             check; remove them with `rm {SHM_DIR}/{SEGMENT_PREFIX}*`."
+        );
+    }
+
     build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
         .join("cxxbridge")
@@ -50,13 +62,6 @@ fn main() -> eyre::Result<()> {
             out_name,
             &["-I", include_dir, "-l", "dora_node_api_cxx"],
         )?;
-    }
-
-    // A leftover segment would make the check below fail for a reason that has
-    // nothing to do with this run, so say so before the run rather than after.
-    let before = pool_segments()?;
-    if !before.is_empty() {
-        bail!("memory-pool segments were already in {SHM_DIR} before the run: {before:?}");
     }
 
     // Bound the run so a wedged node fails fast via the daemon's stop

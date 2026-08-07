@@ -61,14 +61,20 @@ const char *outcome_name(dora::PoolReadOutcome outcome)
     return "?";
 }
 
-/// True when every slot of `frame` holds the byte the ring model says it does.
-bool ring_matches(const std::uint8_t *frame, std::size_t len, const Ring &expected)
+/// Empty when every slot of `frame` holds the byte the ring model says it
+/// does; otherwise a description of the first byte that disagrees.
+///
+/// Returned rather than printed, because the zero-copy caller must not report a
+/// mismatch before `PoolReadGuard::valid()` has confirmed the bytes were stable
+/// at all: a writer overwriting the frame mid-read produces arbitrary
+/// differences, and printing them first buries the real cause under a
+/// misleading byte-mismatch line.
+std::string ring_mismatch(const std::uint8_t *frame, std::size_t len, const Ring &expected)
 {
     if (len != kFramesBytes)
     {
-        std::cerr << "[receiver] payload is " << len << " bytes, expected " << kFramesBytes
-                  << std::endl;
-        return false;
+        return "payload is " + std::to_string(len) + " bytes, expected " +
+               std::to_string(kFramesBytes);
     }
     for (std::size_t slot = 0; slot < kSlotCount; ++slot)
     {
@@ -78,12 +84,12 @@ bool ring_matches(const std::uint8_t *frame, std::size_t len, const Ring &expect
                          [&](std::uint8_t byte) { return byte != expected[slot]; });
         if (bad != begin + kSlotBytes)
         {
-            std::cerr << "[receiver] slot " << slot << " byte " << (bad - begin) << " is "
-                      << int(*bad) << ", expected " << int(expected[slot]) << std::endl;
-            return false;
+            return "slot " + std::to_string(slot) + " byte " + std::to_string(bad - begin) +
+                   " is " + std::to_string(int(*bad)) + ", expected " +
+                   std::to_string(int(expected[slot]));
         }
     }
-    return true;
+    return {};
 }
 
 /// The segment name can only have come from the daemon.
@@ -93,6 +99,12 @@ bool ring_matches(const std::uint8_t *frame, std::size_t len, const Ring &expect
 /// dataflow uuid is minted per run and the owning node id belongs to the other
 /// node, so neither is anything this one could have derived from the id it
 /// asked with.
+///
+/// **This hard-codes the segment grammar on purpose** — it is a contract lock
+/// on `libraries/extensions/memory-pool/src/naming.rs::segment_name`, which is
+/// what makes "the consumer did not guess the name" checkable at all. A
+/// deliberate change to that grammar (or to `DataflowId` no longer being a
+/// uuid) will fail here, and this is the reason why.
 bool segment_name_from_daemon(const std::string &name, const std::string &pool_id)
 {
     const std::string prefix = "dora_pool_";
@@ -225,6 +237,15 @@ int main()
                 failed = true;
                 break;
             }
+            // The positive half of the liveness check. Without it, a
+            // `view_is_alive` stuck at false would satisfy the assertion after
+            // the free while having told us nothing.
+            if (!view_is_alive(*frames) || !view_is_alive(*banner))
+            {
+                std::cerr << "[receiver] a freshly mapped view is not alive" << std::endl;
+                failed = true;
+                break;
+            }
 
             // The copy path's own pool, written once by `write_memory_pool`.
             const auto outcome = dora::try_read_pool(*banner, buffer);
@@ -262,16 +283,28 @@ int main()
             // copy on even steps, the in-place read on odd ones.
             if (step % 2 == 0)
             {
-                const auto outcome = dora::try_read_pool(*frames, buffer);
+                auto outcome = dora::try_read_pool(*frames, buffer);
+                if (outcome == dora::PoolReadOutcome::Torn)
+                {
+                    // `Torn` is retryable, and a real consumer comes back for
+                    // the frame on its next event rather than failing. This
+                    // harness must terminate, so it retries in place instead —
+                    // and in lockstep the producer is blocked on our ack, so a
+                    // second `Torn` is a genuine fault, not a busy writer.
+                    outcome = dora::try_read_pool(*frames, buffer);
+                }
                 if (outcome != dora::PoolReadOutcome::Copied)
                 {
                     std::cerr << "[receiver] step " << int(step) << " read "
-                              << outcome_name(outcome) << ", expected Copied" << std::endl;
+                              << outcome_name(outcome) << " twice, expected Copied" << std::endl;
                     failed = true;
                     break;
                 }
-                if (!ring_matches(buffer.data(), buffer.size(), expected))
+                const std::string mismatch =
+                    ring_mismatch(buffer.data(), buffer.size(), expected);
+                if (!mismatch.empty())
                 {
+                    std::cerr << "[receiver] step " << int(step) << ": " << mismatch << std::endl;
                     failed = true;
                     break;
                 }
@@ -279,19 +312,28 @@ int main()
             }
             else
             {
-                dora::PoolReadGuard read(*frames);
-                const bool matches = ring_matches(read.data(), read.size(), expected);
-                if (!read.valid())
+                // Same retry, for the zero-copy read: a guard whose `valid()`
+                // is false is the in-place spelling of `Torn`.
+                std::string mismatch;
+                bool stable = false;
+                for (int attempt = 0; attempt < 2 && !stable; ++attempt)
                 {
-                    // Nothing computed above may be used, so this is a failure
-                    // rather than a retry: in lockstep no writer is running.
+                    dora::PoolReadGuard read(*frames);
+                    mismatch = ring_mismatch(read.data(), read.size(), expected);
+                    // Everything computed from `data()` is unusable until this
+                    // says otherwise — including `mismatch`.
+                    stable = read.valid();
+                }
+                if (!stable)
+                {
                     std::cerr << "[receiver] step " << int(step)
-                              << " was overwritten mid-read" << std::endl;
+                              << " was overwritten mid-read twice" << std::endl;
                     failed = true;
                     break;
                 }
-                if (!matches)
+                if (!mismatch.empty())
                 {
+                    std::cerr << "[receiver] step " << int(step) << ": " << mismatch << std::endl;
                     failed = true;
                     break;
                 }
@@ -302,6 +344,9 @@ int main()
 
         case kAbandoned:
         {
+            // No retry here, unlike the frame path: an abandoned cycle leaves
+            // the generation odd until the next successful write, so `Torn` is
+            // the steady state and retrying would only confirm it again.
             const auto outcome = dora::try_read_pool(*frames, buffer);
             if (outcome != dora::PoolReadOutcome::Torn)
             {

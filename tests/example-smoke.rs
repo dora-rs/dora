@@ -2056,6 +2056,12 @@ fn smoke_memory_pool_cuda2cuda() {
 // | c++-service-action        | covered: `examples` job via                          | covered  |
 // |                           | `[[example]] cxx-service-action` (cargo run          |          |
 // |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
+// | c++-memory-pool           | covered: nightly `C++ Memory Pool example`           | covered  |
+// |                           | (.github/workflows/nightly.yml:1359) via             |          |
+// |                           | `[[example]] cxx-memory-pool` (cargo run             |          |
+// |                           | --example). Linux-gated: the transport is a named    |          |
+// |                           | POSIX segment in /dev/shm. The runner asserts no     |          |
+// |                           | `dora_pool_*` segment survives the run.              |          |
 // | cmake-dataflow            | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
 // | cpu-affinity-probe        | covered: nightly `cpu-affinity-smoke`                | covered  |
 // |                           | (.github/workflows/nightly.yml:535)                  |          |

@@ -7,9 +7,17 @@
 //
 // `frames` is filled **in place** through `dora::PoolWriteGuard` — a ring of
 // slots in one pool, with only the slot index on the topic. `banner` is
-// written once through the copy path, `write_memory_pool`. They are separate
-// pools because the copy path brackets its own write cycle and so cannot run
-// while a guard holds one open.
+// written once through the copy path, `write_memory_pool`.
+//
+// Two pools rather than one for two reasons, neither of which is an API
+// restriction. `write_memory_pool` demands the whole payload exactly, so a
+// copy-path write to `frames` would have to be all 16 KiB and would flatten
+// the ring the consumer is checking. And the consumer's "freeing one pool
+// leaves the other readable" assertion needs a second live pool to survive
+// the free. (`write_memory_pool` also cannot run while a `PoolWriteGuard`
+// holds a cycle open on the *same* pool — but that never arises here: the
+// guard is scoped inside `fill_slot`, and the banner is written before the
+// event loop starts.)
 
 #include <dora-node-api.h>
 
@@ -56,6 +64,20 @@ void describe(const rust::Box<DoraMemoryPool> &pool)
               << " bytes" << std::endl;
 }
 
+/// How a call to `fill_slot` ended. Three outcomes rather than a bool because
+/// two of them mean opposite things: `Abandoned` is what the abandon step asks
+/// for and a success there, while `Failed` is a real fault that must not be
+/// mistaken for it.
+enum class Fill
+{
+    /// The slot was filled and published.
+    Committed,
+    /// The producer gave up mid-frame; the guard closed the cycle incomplete.
+    Abandoned,
+    /// The write could not be attempted at all.
+    Failed,
+};
+
 /// Fill one slot of `frames` in place.
 ///
 /// `frame_complete` stands in for what the producer's data source tells it. On
@@ -64,7 +86,7 @@ void describe(const rust::Box<DoraMemoryPool> &pool)
 /// the cycle as incomplete, so the pool's generation is left odd and every
 /// reader rejects the half-filled slot instead of taking it for a frame. The
 /// next successful write recovers the pool.
-bool fill_slot(rust::Box<DoraMemoryPool> &pool, std::uint8_t slot, std::uint8_t value,
+Fill fill_slot(rust::Box<DoraMemoryPool> &pool, std::uint8_t slot, std::uint8_t value,
                bool frame_complete)
 {
     dora::PoolWriteGuard write(pool);
@@ -76,18 +98,20 @@ bool fill_slot(rust::Box<DoraMemoryPool> &pool, std::uint8_t slot, std::uint8_t 
     {
         std::cerr << "[sender] slot " << int(slot) << " does not fit in " << write.size()
                   << " payload bytes" << std::endl;
-        return false;
+        // Also an early exit out of a live cycle — the guard covers this one
+        // exactly as it covers the deliberate one below.
+        return Fill::Failed;
     }
 
     const std::size_t filled = frame_complete ? kSlotBytes : kSlotBytes / 2;
     std::fill_n(write.data() + offset, filled, value);
     if (!frame_complete)
     {
-        return false;
+        return Fill::Abandoned;
     }
 
     write.commit();
-    return true;
+    return Fill::Committed;
 }
 
 /// A pool the node still owns, so that every exit path can hand it back to the
@@ -229,31 +253,42 @@ int main()
         {
             slot = slot_for_step(step);
             value = step;
-            failed = !fill_slot(*frames, slot, value, true);
+            failed = fill_slot(*frames, slot, value, true) != Fill::Committed;
         }
         else if (step == kAbandonStep)
         {
             kind = kAbandoned;
             slot = kAbandonSlot;
             value = kPoisonValue;
-            // Expected to report failure: the frame is deliberately abandoned.
-            if (fill_slot(*frames, slot, value, false))
+            const Fill result = fill_slot(*frames, slot, value, false);
+            if (result != Fill::Abandoned)
             {
-                std::cerr << "[sender] the abandoned write reported success" << std::endl;
+                std::cerr << "[sender] the abandoned write ended as "
+                          << (result == Fill::Committed ? "committed" : "failed") << std::endl;
+                failed = true;
+            }
+            // The bridge's own leak detector for a missed `end_write`. The
+            // guard has just gone out of scope, so a cycle still open here
+            // would mean the destructor did not run — and the pool would be
+            // unreadable for the rest of the dataflow with nothing to say why.
+            else if (pool_write_in_progress(*frames))
+            {
+                std::cerr << "[sender] the abandoned cycle is still open after the guard died"
+                          << std::endl;
                 failed = true;
             }
             else
             {
                 std::cout << "[sender] step " << int(step)
                           << ": abandoned a write guard on slot " << int(slot)
-                          << " without committing" << std::endl;
+                          << " without committing, cycle closed" << std::endl;
             }
         }
         else if (step == kRecoverStep)
         {
             slot = kAbandonSlot;
             value = kRecoverValue;
-            failed = !fill_slot(*frames, slot, value, true);
+            failed = fill_slot(*frames, slot, value, true) != Fill::Committed;
         }
         else
         {

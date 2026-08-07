@@ -21,9 +21,10 @@ constexpr std::size_t kFramesBytes = kSlotBytes * kSlotCount;
 constexpr const char *kFramesPool = "frames";
 
 /// `banner`: a second, tiny pool written once through the copy path,
-/// `write_memory_pool`. It is a separate pool on purpose — the copy path
-/// brackets its own write cycle, so it cannot be used on a pool a
-/// `PoolWriteGuard` is holding open.
+/// `write_memory_pool`. Separate from `frames` because the copy path writes
+/// the whole payload — on `frames` that would be all 16 KiB and would flatten
+/// the ring — and because the consumer needs a pool that outlives the free of
+/// `frames` to show that freeing one pool leaves the other readable.
 constexpr std::size_t kBannerBytes = 32;
 constexpr std::uint8_t kBannerByte = 0xA5;
 constexpr const char *kBannerPool = "banner";
