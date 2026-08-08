@@ -26,12 +26,17 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// reference points to a declared output on the source node.
 pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    check_wiring_resolved(&nodes)
+}
 
+/// [`check_wiring`] on an already-resolved node map, so callers that have
+/// resolved the descriptor can avoid re-resolving it.
+fn check_wiring_resolved(nodes: &BTreeMap<NodeId, ResolvedNode>) -> eyre::Result<()> {
     for node in nodes.values() {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom_node) => {
                 for (input_id, input) in &custom_node.run_config.inputs {
-                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
+                    check_input(input, nodes, &format!("{}/{input_id}", node.id))?;
                 }
             }
             descriptor::CoreNodeKind::Runtime(runtime_node) => {
@@ -39,7 +44,7 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
                     for (input_id, input) in &operator_definition.config.inputs {
                         check_input(
                             input,
-                            &nodes,
+                            nodes,
                             &format!("{}/{}/{input_id}", node.id, operator_definition.id),
                         )?;
                     }
@@ -59,14 +64,31 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
 /// step and adds source-path existence and Python runtime checks on top.
 pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     // validate ROS2 bridge configs before resolution
+    validate_ros2_configs(dataflow)?;
+
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    check_dataflow_static_resolved(dataflow, &nodes)
+}
+
+/// Validate all ROS2 bridge configs on the *unresolved* descriptor.
+///
+/// Run before [`Descriptor::resolve_aliases_and_set_defaults`] so a ROS2
+/// misconfiguration is reported ahead of any alias-resolution error.
+fn validate_ros2_configs(dataflow: &Descriptor) -> eyre::Result<()> {
     for node in &dataflow.nodes {
         if let Some(ros2) = &node.ros2 {
             validate_ros2_config(&node.id, ros2, &node.inputs, &node.outputs)?;
         }
     }
+    Ok(())
+}
 
-    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
-
+/// The resolution-dependent part of [`check_dataflow_static`], operating on an
+/// already-resolved node map so callers don't re-resolve the descriptor.
+fn check_dataflow_static_resolved(
+    dataflow: &Descriptor,
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+) -> eyre::Result<()> {
     // reject negative / non-finite / overflowing timing values before they
     // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
     for node in nodes.values() {
@@ -97,7 +119,7 @@ pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     )?;
 
     // check that all inputs mappings point to an existing output
-    check_wiring(dataflow)?;
+    check_wiring_resolved(nodes)?;
 
     // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
     for node in nodes.values() {
@@ -117,9 +139,13 @@ pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
 }
 
 pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
-    check_dataflow_static(dataflow)?;
-
+    // Resolve the descriptor once and share the result across every check
+    // (static validation + path/runtime existence) instead of re-resolving it
+    // for each, which clones the whole node topology on every call.
+    validate_ros2_configs(dataflow)?;
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    check_dataflow_static_resolved(dataflow, &nodes)?;
+
     let mut has_python_operator = false;
 
     // check that nodes and operators exist
