@@ -175,7 +175,7 @@ The daemon runs one per machine and manages the lifecycle of all nodes on that m
 1. Create working directory for the node
 2. Set up communication channel (TCP or shmem)
 3. Serialize `NodeConfig` to environment variable
-4. Spawn process with sanitized environment (blocks `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, etc.)
+4. Spawn process with sanitized environment (blocks `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, etc.; descriptor `env:` entries cannot override the daemon's own control-plane variables — `DORA_NODE_CONFIG`, `DORA_RUNTIME_CONFIG`, `DORA_ZENOH_*`)
 5. Monitor via `ProcessHandle`
 
 ### Runtime
@@ -614,7 +614,7 @@ pub enum RestartPolicy {
 - `restart_delay` — initial backoff in seconds (doubles each attempt)
 - `max_restart_delay` — caps exponential backoff
 - `restart_window` — reset counter after N seconds (enables "N restarts per M seconds")
-- `health_check_timeout` — kill node if no activity within this duration
+- `health_check_timeout` — kill node if no activity within this duration, measured only after the node connects (post-connection liveness, not a startup deadline)
 
 ### Health Monitoring
 

@@ -213,6 +213,15 @@ pub enum ControlRequest {
         node_id: NodeId,
         grace_duration: Option<std::time::Duration>,
     },
+    /// Atomically replace a running node with a new definition under the
+    /// same id (dora-rs/dora#2927). The replacement must keep the node's
+    /// edges (same input mappings, outputs covering every mapped output);
+    /// a spawn failure leaves the current incarnation running.
+    ReplaceNode {
+        dataflow_id: Uuid,
+        node: crate::descriptor::Node,
+        grace_duration: Option<std::time::Duration>,
+    },
     /// Add a mapping (connection) between two nodes in a running dataflow.
     AddMapping {
         dataflow_id: Uuid,

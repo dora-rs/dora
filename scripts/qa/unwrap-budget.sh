@@ -120,7 +120,7 @@ fi
 
 CURRENT=$(count_unwraps)
 
-BUDGET=$(cat "$BUDGET_FILE" | tr -d ' \n')
+BUDGET=$(cat "$BUDGET_FILE" | tr -d ' \r\n')
 
 echo "unwrap/expect count: $CURRENT (budget: $BUDGET)"
 

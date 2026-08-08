@@ -241,7 +241,15 @@ fn default_for_referenced_message(
         })
         .collect::<Result<_, _>>()?;
 
-    let struct_array: StructArray = fields.into();
+    // A referenced message with zero fields (e.g. `std_msgs/msg/Empty`) yields an
+    // empty `fields` vec. `StructArray::from(Vec<..>)` panics on an empty vec
+    // because the array length is ambiguous, so build a length-1 empty-fields
+    // struct explicitly instead.
+    let struct_array: StructArray = if fields.is_empty() {
+        StructArray::new_empty_fields(1, None)
+    } else {
+        fields.into()
+    };
     Ok(struct_array.into())
 }
 

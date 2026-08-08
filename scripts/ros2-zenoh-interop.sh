@@ -16,6 +16,22 @@ if [[ "$CASE" != all ]] && [[ ! " ${CASES[*]} " =~ " $CASE " ]]; then
   exit 2
 fi
 
+# Preflight the host tools before spending ~2 min pulling and booting a
+# ROS container. `maturin` in particular used to surface only as a bare
+# `line 49: maturin: command not found` (exit 127) *after* the pull, on
+# every nightly from #2790 until #2742 — far enough from the cause to
+# read as a ROS problem rather than a missing build tool.
+missing=()
+for tool in docker maturin; do
+  command -v "$tool" >/dev/null || missing+=("$tool")
+done
+if ((${#missing[@]})); then
+  echo "missing required tool(s): ${missing[*]}" >&2
+  echo "  docker:  https://docs.docker.com/engine/install/" >&2
+  echo "  maturin: pip install maturin" >&2
+  exit 1
+fi
+
 PROJECT="dora-rmw-zenoh-${DISTRO}-$$"
 compose=("${COMPOSE[@]}" "$DISTRO" -p "$PROJECT")
 service="${DISTRO}-router"
@@ -23,7 +39,7 @@ cleanup() { "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || t
 trap cleanup EXIT INT TERM
 
 "${compose[@]}" up -d "$service"
-timeout 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "${PROJECT}-${service}-1"
+timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "${PROJECT}-${service}-1"
 "${compose[@]}" exec -T "$service" bash -lc \
   "source /opt/ros/$DISTRO/setup.bash; dpkg-query -W 'ros-${DISTRO}-rmw-zenoh-cpp'; ros2 pkg executables rmw_zenoh_cpp"
 

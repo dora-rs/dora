@@ -346,6 +346,11 @@ pub enum DaemonCoordinatorReply {
     RestartNodeResult(Result<(), String>),
     StopNodeResult(Result<(), String>),
     RemoveNodeResult(Result<(), String>),
+    /// Reply for `DaemonCoordinatorEvent::ReplaceNode`. Same
+    /// specific-reply contract as `AddNodeResult` (#1682): the
+    /// coordinator only commits its descriptor update after matching
+    /// this exact variant.
+    ReplaceNodeResult(Result<(), String>),
     /// Reply for `DaemonCoordinatorEvent::AddMapping`. Previously the daemon
     /// returned `None`, which the coordinator's WS layer skipped instead
     /// of forwarding as a reply, causing `send_and_receive` to time out

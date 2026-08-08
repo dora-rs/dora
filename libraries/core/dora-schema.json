@@ -14,6 +14,13 @@
         "$ref": "#/$defs/EnvValue"
       }
     },
+    "exit_when_nodes_finish": {
+      "description": "Finish the dataflow once every node has, treating\n`dora/timer/...` inputs as a clock rather than as work.\n\nA timer input has no upstream node, so it never closes. By default\na node consuming one is therefore never told its inputs are done\nand the graph cannot end on its own, even after every node doing\nreal work has exited (dora-rs/dora#2920).\n\nOff by default: for a long-lived dataflow the timer is precisely\nwhat keeps it alive. Nodes with no data inputs at all (timer-only\nsources, or no inputs) are unaffected either way -- they have no\ndependency that could finish, so they are treated as sources.\n\nSet by `dora run --exit-when-nodes-finish` and `dora start\n--exit-when-nodes-finish`, and settable directly in YAML. It lives\non the descriptor rather than on the wire so that it survives the\nevents a dataflow outlives: auto-recovery re-spawn, coordinator\nrestart with state reconstruction, and `dora restart`.\n\n## Example\n\n```yaml\nexit_when_nodes_finish: true\nnodes:\n  - id: worker\n    path: ./worker\n    inputs:\n      tick: dora/timer/millis/100\n```",
+      "type": [
+        "boolean",
+        "null"
+      ]
+    },
     "health_check_interval": {
       "description": "How often the daemon checks node health (in seconds).\n\nDefaults to 5.0 seconds if not specified. Lower values detect hung nodes\nfaster but add more overhead.",
       "type": [

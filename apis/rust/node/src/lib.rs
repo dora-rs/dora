@@ -126,6 +126,7 @@ mod error;
 pub mod event_stream;
 pub mod integration_testing;
 mod node;
+mod orphan_guard;
 
 pub use error::{NodeError, NodeResult, PatternError};
 
