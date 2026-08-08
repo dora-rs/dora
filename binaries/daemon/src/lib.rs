@@ -2084,7 +2084,7 @@ impl Daemon {
             tokio::spawn(Self::finish_destroy(reply_tx));
             return None;
         }
-        if self.running_node_pids().is_empty() {
+        if self.running_node_pids().is_empty() && !self.has_starting_node() {
             return Some(reply_tx);
         }
 
@@ -2127,7 +2127,18 @@ impl Daemon {
 
         let survivors = match progress {
             shutdown::DestroyProgress::Waiting => return false,
-            shutdown::DestroyProgress::Done => Vec::new(),
+            shutdown::DestroyProgress::Done => {
+                // A node whose entry exists but whose pid Arc still reads 0 was
+                // spawned but has not reported its pid yet. `running_node_pids`
+                // filters those out, so `poll` sees "nothing to reap" and would
+                // let the daemon exit, orphaning the just-spawned process — the
+                // exact leak the reaper exists to close (#3067). Keep waiting
+                // until every entry has either reported a pid or been removed.
+                if self.has_starting_node() {
+                    return false;
+                }
+                Vec::new()
+            }
             shutdown::DestroyProgress::Abandoned(survivors) => survivors,
         };
 
@@ -2163,6 +2174,21 @@ impl Daemon {
             .map(|pid| pid.load(atomic::Ordering::Acquire))
             .filter(|pid| *pid != 0)
             .collect()
+    }
+
+    /// Whether any running node was spawned but has not reported its pid yet
+    /// (its pid Arc still reads 0, set right after spawn in `prepared.rs`).
+    ///
+    /// Such a node is mid-spawn: `running_node_pids` filters it out, so a
+    /// destroy landing in that window must not conclude there is nothing to
+    /// reap. Dynamic nodes carry no pid Arc and are not counted — the daemon
+    /// did not spawn them and cannot reap them.
+    fn has_starting_node(&self) -> bool {
+        self.running
+            .values()
+            .flat_map(|dataflow| dataflow.running_nodes.values())
+            .filter_map(|node| node.pid.as_ref())
+            .any(|pid| pid.load(atomic::Ordering::Acquire) == 0)
     }
 
     /// Send the destroy reply and wait for it to go out.
