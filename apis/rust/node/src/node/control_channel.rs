@@ -199,4 +199,65 @@ impl ControlChannel {
             other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
         }
     }
+
+    pub fn write_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::WritePinnedMemory {
+            shared_memory_id,
+            tensor_data,
+            size,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send WritePinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected WritePinnedMemory reply: {other:?}"),
+        }
+    }
+
+    /// Register a pool on a remote machine via the daemon (the daemon
+    /// resolves the machine through the coordinator and mirrors the
+    /// pool there with a synchronous confirmation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_cross_machine_pool(
+        &mut self,
+        shared_memory_id: String,
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    ) -> eyre::Result<(Result<(), String>, bool)> {
+        let request = DaemonRequest::RegisterCrossMachinePool {
+            shared_memory_id,
+            shmem_name,
+            size,
+            dtype,
+            shape,
+            device,
+            machine_id,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send RegisterCrossMachinePool request to dora-daemon")?;
+        match reply {
+            DaemonReply::CrossMachinePoolRegistered { result, direct } => Ok((result, direct)),
+            other => bail!("unexpected RegisterCrossMachinePool reply: {other:?}"),
+        }
+    }
 }

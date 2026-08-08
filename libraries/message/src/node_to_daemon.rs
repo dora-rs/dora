@@ -39,6 +39,25 @@ pub enum DaemonRequest {
     FreePinnedMemory {
         shared_memory_id: String,
     },
+    WritePinnedMemory {
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+    },
+    /// Cross-machine memory pool registration: the daemon resolves the
+    /// target machine via the coordinator and mirrors the pool there.
+    RegisterCrossMachinePool {
+        shared_memory_id: String,
+        /// The local /dev/shm segment name (explicit `name=` or
+        /// machine-qualified auto name) — forwarded to the mirror daemon
+        /// as a remote reference for same-host direct reads.
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    },
 }
 
 impl DaemonRequest {
@@ -56,7 +75,9 @@ impl DaemonRequest {
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => true,
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. } => true,
         }
     }
 
@@ -74,7 +95,9 @@ impl DaemonRequest {
             | DaemonRequest::EventStreamDropped
             | DaemonRequest::RegisterPinnedMemory { .. }
             | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => false,
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. } => false,
         }
     }
 }

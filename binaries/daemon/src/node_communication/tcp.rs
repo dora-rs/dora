@@ -105,9 +105,17 @@ impl Connection for TcpConnection {
                 }
             },
         };
-        bincode::deserialize(&raw)
-            .wrap_err("failed to deserialize DaemonRequest")
-            .map(Some)
+        match bincode::deserialize(&raw) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) => {
+                tracing::warn!(
+                    "failed to deserialize DaemonRequest: frame {} bytes, first bytes {:02x?}: {e:?}",
+                    raw.len(),
+                    &raw[..raw.len().min(16)]
+                );
+                Err(e).wrap_err("failed to deserialize DaemonRequest")
+            }
+        }
     }
 
     async fn send_reply(&mut self, message: DaemonReply) -> eyre::Result<()> {

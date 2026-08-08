@@ -19,6 +19,9 @@ const DAEMON_COORDINATOR_RETRY_MAX: Duration = Duration::from_secs(30);
 /// Maximum number of consecutive failed connection attempts before giving up.
 const DAEMON_COORDINATOR_RETRY_LIMIT: u32 = 50;
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
+/// Timeout for the cross-machine register flow: awaiting the ResolveMachine
+/// reply here and the RegisterPoolAck in lib.rs.
+pub const CROSS_REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
 pub struct CoordinatorEvent {
@@ -72,6 +75,25 @@ impl CoordinatorSender {
             .map_err(|_| eyre!("WS send channel closed"))
     }
 
+    /// Send a request with a caller-controlled id so the reply can be
+    /// routed back (see COORDINATOR_PENDING in resolve_machine).
+    ///
+    /// Unlike [`Self::send_event`], which wraps the message in a fresh
+    /// envelope with a new id, this builds the single `daemon_event`
+    /// envelope itself and expects bare `Timestamped` serialization bytes
+    /// as `params`, so the coordinator receives exactly one envelope
+    /// layer with the caller's request id.
+    pub async fn send_event_with_id(&self, request_id: Uuid, params: &[u8]) -> eyre::Result<()> {
+        let json = format!(
+            r#"{{"id":"{request_id}","method":"daemon_event","params":{}}}"#,
+            std::str::from_utf8(params).map_err(|_| eyre::eyre!("params must be utf-8"))?
+        );
+        self.sender
+            .send(json)
+            .await
+            .map_err(|_| eyre!("WS send channel closed"))
+    }
+
     pub fn try_send_event(&self, message: &[u8]) -> Result<(), TrySendEventError> {
         let json = Self::format_event_message(message)?;
         self.sender.try_send(json).map_err(|err| match err {
@@ -88,6 +110,16 @@ impl CoordinatorSender {
         (Self { sender }, rx)
     }
 }
+
+/// Pending daemon→coordinator request replies: request id -> reply value.
+/// The coordinator answers daemon requests in the same `daemon_event`
+/// envelope, so the receive loop routes these replies to the pending
+/// caller (see `register`) before dispatching them as commands.
+static COORDINATOR_PENDING: std::sync::LazyLock<
+    std::sync::Mutex<
+        std::collections::HashMap<Uuid, tokio::sync::oneshot::Sender<serde_json::Value>>,
+    >,
+> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
 pub async fn register(
     addr: SocketAddr,
@@ -225,6 +257,25 @@ pub async fn register(
                         }
                     };
 
+                    // Replies to our own daemon→coordinator requests
+                    // (e.g. ResolveMachine) arrive in the same
+                    // daemon_event envelope as commands, but with a
+                    // different params type (`Timestamped<ResolveMachineReply>`)
+                    // that the typed `CoordinatorCommandRaw` parse below
+                    // would reject. Route them to the pending caller by
+                    // id before the command parse.
+                    if let Ok(reply) = serde_json::from_str::<ReplyRouteRaw>(&text) {
+                        let pending = COORDINATOR_PENDING
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&reply.id);
+                        if let Some(tx) = pending {
+                            let _ =
+                                tx.send(reply.params.unwrap_or(serde_json::Value::Null));
+                            continue;
+                        }
+                    }
+
                     // Parse directly from raw text to preserve u128 fidelity
                     // for uhlc::ID inside timestamps.
                     let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
@@ -301,11 +352,90 @@ pub async fn register(
     ))
 }
 
+/// Resolve a machine id through the coordinator. Returns false when the
+/// machine is unknown or no coordinator is reachable (warn-and-skip).
+///
+/// The coordinator replies over the same `daemon_event` envelope the
+/// request was sent in (params: `Timestamped<ResolveMachineReply>`); the
+/// receive loop in `register` routes the reply here by request id.
+pub(crate) async fn resolve_machine(
+    coordinator_sender: &CoordinatorSender,
+    clock: &Arc<HLC>,
+    machine_id: &str,
+) -> bool {
+    let request_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    COORDINATOR_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(request_id, reply_tx);
+    let params = match serde_json::to_string(&Timestamped {
+        inner: CoordinatorRequest::ResolveMachine {
+            machine_id: machine_id.to_string(),
+        },
+        timestamp: clock.new_timestamp(),
+    }) {
+        Ok(p) => p,
+        Err(_) => {
+            COORDINATOR_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            return false;
+        }
+    };
+    if coordinator_sender
+        .send_event_with_id(request_id, params.as_bytes())
+        .await
+        .is_err()
+    {
+        COORDINATOR_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&request_id);
+        return false;
+    }
+    match tokio::time::timeout(CROSS_REGISTER_TIMEOUT, reply_rx).await {
+        Ok(Ok(value)) => value
+            .get("inner")
+            .and_then(|v| v.get("ResolveMachineResult"))
+            .and_then(|v| v.get("found"))
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false),
+        Ok(Err(_)) => {
+            // Sender dropped without sending. In the normal flow this
+            // cannot happen: the routing block removes the pending entry
+            // *before* sending the reply, so the entry is already gone
+            // and there is nothing to clean up here (only the timeout
+            // branch below can leave a stale entry).
+            false
+        }
+        Err(_) => {
+            // Timeout: drop the stale pending entry so it cannot leak.
+            COORDINATOR_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&request_id);
+            false
+        }
+    }
+}
+
 /// Helper for deserializing register reply directly from raw JSON text,
 /// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
 #[derive(serde::Deserialize)]
 struct RegisterReplyRaw {
     params: Timestamped<RegisterResult>,
+}
+
+/// Helper for routing replies to pending daemon→coordinator requests by
+/// id, parsing only the fields routing needs (`id` + optional `params`).
+/// Like [`RegisterReplyRaw`], a bare Deserialize struct (not a full
+/// `serde_json::Value` parse of the whole message) is used.
+#[derive(serde::Deserialize)]
+struct ReplyRouteRaw {
+    id: Uuid,
+    params: Option<serde_json::Value>,
 }
 
 /// Helper for deserializing coordinator commands directly from raw JSON text,
@@ -346,6 +476,41 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn send_event_with_id_sends_single_layer_envelope_with_caller_id() {
+        let (sender, mut rx) = CoordinatorSender::for_test();
+        let request_id = Uuid::new_v4();
+        let params = br#"{"inner":{"ResolveMachine":{"machine_id":"host"}}}"#;
+        sender
+            .send_event_with_id(request_id, params)
+            .await
+            .expect("send should succeed");
+        let json = rx.recv().await.expect("message should be queued");
+        // Exactly one envelope layer, echoing the caller's request id
+        // (the double-wrap bug produced two layers and a fresh id that
+        // the reply routing could never match).
+        let expected = format!(
+            r#"{{"id":"{request_id}","method":"daemon_event","params":{}}}"#,
+            std::str::from_utf8(params).unwrap()
+        );
+        assert_eq!(json, expected);
+        // The coordinator's parse target: `params` must be the bare
+        // request body, not another envelope.
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            parsed["id"],
+            serde_json::Value::String(request_id.to_string())
+        );
+        assert_eq!(
+            parsed["method"],
+            serde_json::Value::String("daemon_event".into())
+        );
+        assert_eq!(
+            parsed["params"]["inner"]["ResolveMachine"]["machine_id"],
+            serde_json::Value::String("host".into())
+        );
+    }
 
     #[test]
     fn jittered_backoff_is_centered_and_symmetric() {

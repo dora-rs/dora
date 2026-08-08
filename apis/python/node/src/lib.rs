@@ -137,6 +137,21 @@ static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
 /// Counter to make pinned memory buffer IDs unique across registrations.
 static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
 
+/// Buffer ids of pools registered WITHOUT a mirror (`machine=None`). The
+/// daemon's forward gate drops their write pushes anyway (no cross-pool
+/// entry), so skipping the push saves the per-frame to_vec + daemon
+/// round trip — on a same-host deployment the reader reads the sender's
+/// segment directly and the push would be pure waste.
+static NO_MIRROR_POOLS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
+/// Buffer ids of pools whose remote daemon confirmed same-host direct
+/// access (register ack `direct`). Their per-frame push is skipped — the
+/// reader opens this segment directly; the push would only feed a mirror
+/// nobody reads.
+static DIRECT_POOLS: LazyLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
 /// read-after-free. Entries are inserted on free_memory_pool and never
 /// pruned — bounded in practice by the total number of registrations
@@ -207,6 +222,26 @@ unsafe impl Sync for RecvGpuSlot {}
 /// Set up lazily in try_doradma_read: open shmem, cudaHostRegister,
 /// cudaHostGetDevicePointer, then cache both Shmem and GPU VA.
 static RECV_GPU_VA: LazyLock<std::sync::Mutex<HashMap<String, RecvGpuSlot>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
+/// Receiver-side HtoD staging slot for cross-machine GPU pools.
+/// The mirror (or a same-host sender's data region) holds CPU bytes —
+/// CUDA IPC handles are host-local, so the receiver pins the segment
+/// and stages a pooled GPU DRAM buffer on every read instead.  Keeping
+/// `_shmem` alive preserves the pin's backing mapping across reads.
+struct RecvGpuHtodSlot {
+    _shmem: shared_memory_extended::Shmem,
+    host_base: u64, // mirror base (cudaHostRegister'd), for free-path unpin
+    gpu_buf: u64,   // pooled GPU DRAM target (cudaMalloc'd, keyed by buffer_id)
+    gpu_buf_size: u64,
+}
+unsafe impl Send for RecvGpuHtodSlot {}
+unsafe impl Sync for RecvGpuHtodSlot {}
+
+/// Receiver-side per-pool HtoD staging cache (cross-machine GPU pools).
+/// Separate from RECV_GPU_VA on purpose: that cache's free path calls
+/// `_ipc_close` on `gpu_buf`, which would destroy a cudaMalloc'd pointer.
+static RECV_GPU_HTOD: LazyLock<std::sync::Mutex<HashMap<String, RecvGpuHtodSlot>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
 /// Receiver-side per-pool Shmem cache for CPU receivers.
@@ -318,26 +353,34 @@ enum TransportPath {
     P2PPeerAccess,
     /// Cross-device without P2P — CPU page-locked transit (DtoH → HtoD).
     HostStagingTransit,
+    /// Cross-machine — sender and receiver on different hosts; data
+    /// serialised and routed through the daemon's Zenoh channel.
+    NetworkZenohTransport,
 }
 
 /// Classify which transport path a GPU-pool write should take at
 /// registration time.
 ///
-/// Decision matrix (2³ = 8 cases, `is_cuda_source` dominates):
+/// Decision matrix (2⁴ = 16 cases, `is_cross_machine` checked first):
 ///
-/// | src CUDA | same dev | P2P | path                |
-/// |----------|----------|-----|---------------------|
-/// | false    | *        | *   | `SameDeviceDtoD`    |
-/// | true     | true     | *   | `SameDeviceDtoD`    |
-/// | true     | false    | yes | `P2PPeerAccess`     |
-/// | true     | false    | no  | `HostStagingTransit`|
+/// | cross machine | src CUDA | same dev | P2P | path                     |
+/// |---------------|----------|----------|-----|--------------------------|
+/// | true          | *        | *        | *   | `NetworkZenohTransport`  |
+/// | false         | false    | *        | *   | `SameDeviceDtoD`         |
+/// | false         | true     | true     | *   | `SameDeviceDtoD`         |
+/// | false         | true     | false    | yes | `P2PPeerAccess`          |
+/// | false         | true     | false    | no  | `HostStagingTransit`     |
 #[inline]
 fn classify_transport(
     sender_device: i32,
     receiver_device: i32,
     p2p_available: bool,
     is_cuda_source: bool,
+    is_cross_machine: bool,
 ) -> TransportPath {
+    if is_cross_machine {
+        return TransportPath::NetworkZenohTransport;
+    }
     if !is_cuda_source {
         return TransportPath::SameDeviceDtoD;
     }
@@ -369,6 +412,27 @@ enum WritePath {
     /// CPU source → shmem data region via `ptr::copy_nonoverlapping`
     /// (ipc_present≠1, !is_cuda).
     CpuToShmem,
+}
+
+/// Whether this write must push the frame to the cross-machine mirror.
+/// Same-machine GPU pools (ipc_present == 1) travel via the IPC buffer,
+/// so their shmem data region is never populated; pools without a mirror
+/// (machine=None) and same-host direct readers skip too — the push would
+/// feed a mirror nobody reads.  Shared by the fast and slow write paths
+/// (symmetry discipline).
+fn should_push_mirror(buffer_id: &str, ipc_present: u64) -> bool {
+    if ipc_present == 1 {
+        return false;
+    }
+    let skip_push = {
+        let pools = NO_MIRROR_POOLS.lock().unwrap_or_else(|e| e.into_inner());
+        pools.contains(buffer_id)
+            || DIRECT_POOLS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .contains(buffer_id)
+    };
+    !skip_push
 }
 
 /// Classify which write path to take.
@@ -439,11 +503,11 @@ mod transport_tests {
     fn same_device_no_transit() {
         // Same GPU — never transit, regardless of P2P
         assert_eq!(
-            classify_transport(0, 0, false, true),
+            classify_transport(0, 0, false, true, false),
             TransportPath::SameDeviceDtoD
         );
         assert_eq!(
-            classify_transport(1, 1, true, true),
+            classify_transport(1, 1, true, true, false),
             TransportPath::SameDeviceDtoD
         );
     }
@@ -452,11 +516,11 @@ mod transport_tests {
     fn cpu_source_never_transit() {
         // CPU→GPU always uses dma_copy, no transit needed
         assert_eq!(
-            classify_transport(0, 1, false, false),
+            classify_transport(0, 1, false, false, false),
             TransportPath::SameDeviceDtoD
         );
         assert_eq!(
-            classify_transport(0, 2, true, false),
+            classify_transport(0, 2, true, false, false),
             TransportPath::SameDeviceDtoD
         );
     }
@@ -464,7 +528,7 @@ mod transport_tests {
     #[test]
     fn cross_device_with_p2p() {
         assert_eq!(
-            classify_transport(0, 1, true, true),
+            classify_transport(0, 1, true, true, false),
             TransportPath::P2PPeerAccess
         );
     }
@@ -474,33 +538,51 @@ mod transport_tests {
         // This is the RTX 5090 / Blackwell path — the flag-ship non-P2P
         // fallback that must NOT be dead code.
         assert_eq!(
-            classify_transport(0, 1, false, true),
+            classify_transport(0, 1, false, true, false),
             TransportPath::HostStagingTransit
         );
         assert_eq!(
-            classify_transport(2, 0, false, true),
+            classify_transport(2, 0, false, true, false),
             TransportPath::HostStagingTransit
         );
     }
 
     #[test]
+    fn cross_machine_uses_zenoh() {
+        // When sender and receiver are on different hosts, all paths
+        // go through the Zenoh network transport — regardless of GPU
+        // topology.
+        assert_eq!(
+            classify_transport(0, 0, false, false, true),
+            TransportPath::NetworkZenohTransport
+        );
+        assert_eq!(
+            classify_transport(0, 1, true, true, true),
+            TransportPath::NetworkZenohTransport
+        );
+    }
+
+    #[test]
     fn classify_transport_full_8_case_matrix() {
-        let cases: &[((i32, i32, bool, bool), TransportPath)] = &[
-            // (src_dev, dst_dev, p2p, is_cuda) → expected
-            ((0, 0, false, false), TransportPath::SameDeviceDtoD),
-            ((0, 0, false, true), TransportPath::SameDeviceDtoD),
-            ((0, 0, true, false), TransportPath::SameDeviceDtoD),
-            ((0, 0, true, true), TransportPath::SameDeviceDtoD),
-            ((0, 1, false, false), TransportPath::SameDeviceDtoD),
-            ((0, 1, false, true), TransportPath::HostStagingTransit),
-            ((0, 1, true, false), TransportPath::SameDeviceDtoD),
-            ((0, 1, true, true), TransportPath::P2PPeerAccess),
+        let cases: &[((i32, i32, bool, bool, bool), TransportPath)] = &[
+            // (src_dev, dst_dev, p2p, is_cuda, cross_machine) → expected
+            ((0, 0, false, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, false, true, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, true, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 0, true, true, false), TransportPath::SameDeviceDtoD),
+            ((0, 1, false, false, false), TransportPath::SameDeviceDtoD),
+            (
+                (0, 1, false, true, false),
+                TransportPath::HostStagingTransit,
+            ),
+            ((0, 1, true, false, false), TransportPath::SameDeviceDtoD),
+            ((0, 1, true, true, false), TransportPath::P2PPeerAccess),
         ];
-        for ((s, r, p2p, cuda), expected) in cases {
-            let got = classify_transport(*s, *r, *p2p, *cuda);
+        for ((s, r, p2p, cuda, cross), expected) in cases {
+            let got = classify_transport(*s, *r, *p2p, *cuda, *cross);
             assert_eq!(
                 got, *expected,
-                "classify_transport(s={s}, r={r}, p2p={p2p}, cuda={cuda}) → {got:?}, expected {expected:?}"
+                "classify_transport(s={s}, r={r}, p2p={p2p}, cuda={cuda}, cross={cross}) → {got:?}, expected {expected:?}"
             );
         }
     }
@@ -877,6 +959,30 @@ def _free_gpu_buf(slot):
     if slot in _gpu_bufs:
         _lib.cudaFree(ctypes.c_void_p(_gpu_bufs[slot][0]))
         del _gpu_bufs[slot]
+
+# Receiver-side HtoD staging buffers, keyed by buffer_id (string).  The
+# cross-machine GPU pool's data arrives as CPU bytes; the receiver stages
+# it into a pooled GPU DRAM buffer each read (see RECV_GPU_HTOD).
+_htod_bufs = {}
+
+def _get_htod_buf(buf_id, size):
+    """Get or allocate a pooled GPU buffer for receiver-side HtoD staging."""
+    if buf_id in _htod_bufs and _htod_bufs[buf_id][1] >= size:
+        return _htod_bufs[buf_id][0]
+    if buf_id in _htod_bufs:
+        _lib.cudaFree(ctypes.c_void_p(_htod_bufs[buf_id][0]))
+    d_ptr = ctypes.c_void_p()
+    err = _lib.cudaMalloc(ctypes.byref(d_ptr), size)
+    if err != 0:
+        raise RuntimeError(f'cudaMalloc({size}) failed: {err}')
+    _htod_bufs[buf_id] = (d_ptr.value, size)
+    return d_ptr.value
+
+def _free_htod_buf(buf_id):
+    """Free the pooled receiver-side HtoD staging buffer."""
+    if buf_id in _htod_bufs:
+        _lib.cudaFree(ctypes.c_void_p(_htod_bufs[buf_id][0]))
+        del _htod_bufs[buf_id]
 
 def _ipc_export(d_ptr):
     """Export GPU memory for cross-process sharing. Returns 64-byte handle."""
@@ -1919,11 +2025,13 @@ impl Node {
     /// **not** block the writer from starting a new write while a consumer
     /// holds a zero-copy tensor. Skipping the turn-based discipline risks
     /// torn data at the consumer.
-    #[pyo3(signature = (tensor_info, device))]
+    #[pyo3(signature = (tensor_info, device, machine = None, name = None))]
     pub fn register_memory_pool(
         &self,
         tensor_info: &Bound<'_, PyDict>,
         device: String,
+        machine: Option<String>,
+        name: Option<String>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
         let ptr_val: u64 = tensor_info
@@ -1950,6 +2058,11 @@ impl Node {
         let is_cuda = tensor_device.starts_with("cuda");
         let receiver_is_cuda = device.starts_with("cuda");
         let cpu_mode = !receiver_is_cuda;
+        // Cross-machine registration: the pool gets a mirror on the target
+        // machine. A GPU receiver's cross-machine pool is staged through the
+        // shmem data region (receiver HtoD), never through an IPC handle —
+        // CUDA IPC handles are only valid within one host.
+        let cross_machine = machine.is_some();
         // Auto-select pinning: key off the source device — pinning only
         // matters when the source is CPU (cudaHostRegister would raise on a
         // device pointer; prevented by the !is_cuda guard above).
@@ -1975,10 +2088,39 @@ impl Node {
             *c += 1;
             *c
         };
-        let shmem_name = format!(
-            "dora_pool_{}_{}_{}",
-            self.dataflow_id, self.node_id, pool_counter
-        );
+        // Segment name: an explicit `name` is used verbatim (after the
+        // path-traversal checks below); otherwise the name is generated
+        // with the machine id when known, so multi-dataflow / multi-node
+        // deployments cannot collide and leftover segments are attributable.
+        let shmem_name = match &name {
+            Some(name) => {
+                if name.is_empty()
+                    || name.contains('/')
+                    || name.contains("..")
+                    || name.len() > 128
+                    || name.starts_with("dora_pool_")
+                {
+                    eyre::bail!(
+                        "invalid memory pool name `{name}`: must be non-empty, without '/' or '..',                          at most 128 chars, and must not start with `dora_pool_` (reserved for                          auto-generated names)"
+                    );
+                }
+                name.clone()
+            }
+            None => {
+                let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
+                if machine.is_empty() {
+                    format!(
+                        "dora_pool_{}_{}_{}",
+                        self.dataflow_id, self.node_id, pool_counter
+                    )
+                } else {
+                    format!(
+                        "dora_pool_{}_{}_{}_{}",
+                        machine, self.dataflow_id, self.node_id, pool_counter
+                    )
+                }
+            }
+        };
 
         let header_meta = PyDict::new(py);
         header_meta.set_item("size", size)?;
@@ -1997,29 +2139,61 @@ impl Node {
         let json_len = json_bytes.len();
         let padded_json_len = json_len.div_ceil(DORADMA_METADATA_ALIGN) * DORADMA_METADATA_ALIGN;
         let data_offset = DORADMA_HEADER_SIZE + padded_json_len;
-        // GPU receivers read tensor data from the IPC-exported GPU buffer,
-        // not from the shmem data region.  Allocate only the header portion
-        // (metadata + IPC handle + seqlock) — a few hundred bytes instead of
-        // 80 MB.  This also lets us skip cudaHostRegister on a useless data
-        // region.
-        let total_size = if receiver_is_cuda {
+        // Same-host GPU receivers read tensor data from the IPC-exported GPU
+        // buffer, not from the shmem data region — allocate only the header
+        // portion (metadata + IPC handle + seqlock), a few hundred bytes
+        // instead of 80 MB.  A cross-machine GPU receiver cannot use the IPC
+        // handle (host-local), so its pool carries a data region: the sender
+        // stages every frame there (DtoH) and the daemon pushes it to the
+        // mirror — the data region is the sender-side staging pool.
+        let total_size = if receiver_is_cuda && !cross_machine {
             data_offset
         } else {
             data_offset + size
         };
 
-        // Create shared memory
-        let mut shmem = ShmemConf::new()
+        // Create shared memory. A name collision means a leftover segment
+        // from a previous dataflow whose daemon was killed without running
+        // shutdown cleanup (local pool segments are owner-less too). The
+        // old process is dead — its nodes were daemon children — so
+        // unlink and retry once.
+        let mut shmem = match ShmemConf::new()
             .os_id(&shmem_name)
             .size(total_size)
             .writable(true)
             .create()
-            .wrap_err_with(|| {
-                format!(
-                    "failed to create pool shared memory `{}` (name collision with another node or leftover segment)",
-                    shmem_name
-                )
-            })?;
+        {
+            Ok(s) => s,
+            Err(e) => {
+                let shm_path = format!("/dev/shm/{shmem_name}");
+                // Auto-generated names only collide with a leftover of a
+                // dead dataflow (machine + df + node + counter are unique
+                // among live pools) — replacing is safe. An explicit name
+                // may legitimately belong to a live peer (two nodes
+                // agreeing on one segment): never replace it.
+                if name.is_none() && std::path::Path::new(&shm_path).exists() {
+                    tracing::warn!(
+                        "[{}] register_memory_pool: leftover segment {shmem_name} exists, replacing",
+                        self.node_id
+                    );
+                    std::fs::remove_file(&shm_path).wrap_err_with(|| {
+                        format!("failed to remove leftover segment `{shmem_name}`")
+                    })?;
+                    ShmemConf::new()
+                        .os_id(&shmem_name)
+                        .size(total_size)
+                        .writable(true)
+                        .create()
+                        .wrap_err_with(|| {
+                            format!("failed to recreate pool shared memory `{shmem_name}`")
+                        })?
+                } else {
+                    return Err(eyre::eyre!(
+                        "failed to create pool shared memory `{shmem_name}`: {e}"
+                    ));
+                }
+            }
+        };
         let shmem_ptr = unsafe { shmem.as_slice_mut().as_mut_ptr() };
 
         // Pin the shmem for DMA only when the receiver reads from it
@@ -2063,12 +2237,14 @@ impl Node {
         }
 
         // Copy tensor data to shmem — only when the receiver will
-        // actually read it.  GPU receivers import the pool GPU buffer
-        // via the IPC handle in the DORADMA header and never touch the
-        // shmem data region; skipping this copy for them eliminates
+        // actually read it.  Same-host GPU receivers import the pool GPU
+        // buffer via the IPC handle in the DORADMA header and never touch
+        // the shmem data region; skipping this copy for them eliminates
         // a redundant CPU-memcpy or GPU-DtoH transfer on every
-        // registration (cpu2cuda and cuda2cuda respectively).
-        if !receiver_is_cuda {
+        // registration (cpu2cuda and cuda2cuda respectively).  A
+        // cross-machine GPU receiver reads the staged data region instead
+        // (no IPC handle crosses hosts), so the initial copy runs there.
+        if !receiver_is_cuda || cross_machine {
             // The DtoH copy must publish either a fully-initialized data
             // region or nothing — uninitialized shmem exposed as a valid
             // frame is data corruption.  Both a failed cudaMemcpy and a
@@ -2114,6 +2290,173 @@ impl Node {
             }
         }
 
+        // Cross-machine: mirror the pool on the target machine via the
+        // daemon (coordinator resolves the machine; sync confirm).  The
+        // mirror is independent of the local receiver's device — the
+        // target machine's pool is always CPU-style DORADMA shmem.
+        // Failure (unresolved machine, remote pool creation failure, ack
+        // timeout, or a broken daemon channel — including the
+        // interactive / integration-testing mocks, which reject
+        // cross-machine registration) is a warn-and-no-op: the daemon has
+        // already logged a warning; we roll back the local pool and
+        // return None rather than crash.
+        let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
+        // Tracks whether the GPU pool buffer + IPC handle were successfully
+        // set up.  Declared here (before the cross-machine ack handling) so
+        // the same-host IPC export below can set it; the GPU allocation block
+        // and the bail check below read it too.
+        let mut ipc_written = false;
+        if machine.is_none() {
+            NO_MIRROR_POOLS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .insert(buffer_id.clone());
+        }
+        if let Some(target_machine) = machine {
+            let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
+            // register_cross_machine_pool returns `Result<Result<(), String>,
+            // eyre::Error>`: the outer Err is a transport failure (daemon
+            // channel closed, interactive / integration-testing mock mode),
+            // the inner Err the daemon-reported mirror failure.  Map the
+            // transport Err to the same String type so the two failure
+            // channels merge below.
+            let result = self
+                .node
+                .get_mut()
+                .register_cross_machine_pool(
+                    buffer_id.clone(),
+                    shmem_name.clone(),
+                    size,
+                    dtype.clone(),
+                    shape_list.clone(),
+                    // The mirror's consumer is the receiver — relay the
+                    // RECEIVER device, not the source device, so the
+                    // mirror's pinned_type matches how the receiver reads
+                    // it (cpu = data region, cuda = HtoD staging).
+                    device.clone(),
+                    target_machine,
+                )
+                .map_err(|e| e.to_string());
+            match result {
+                Ok((Ok(()), direct)) => {
+                    if direct {
+                        DIRECT_POOLS
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .insert(buffer_id.clone());
+                        // Same-host direct access: the receiver can open this
+                        // machine's CUDA IPC handle.  Cross-machine GPU pools
+                        // skip IPC export at registration (handles are
+                        // host-local), but on a same-host deployment the
+                        // export is valid — it turns the staging path
+                        // (DtoH → zenoh → mirror → HtoD) into zero-copy IPC
+                        // reads.  Export now, best-effort: stage the initial
+                        // frame into the pooled GPU buffer and publish the
+                        // handle; the write path switches automatically
+                        // (classify_write_path sees ipc_present == 1) and
+                        // the mirror push stops (should_push_mirror).  Any
+                        // failure keeps the staging path (ipc_written stays
+                        // false) — the pool still works.
+                        if receiver_is_cuda && !ipc_written {
+                            if let Ok(helpers) = get_cuda_helpers(py) {
+                                let bound = helpers.bind(py);
+                                let receiver_device_idx = device
+                                    .rsplit(':')
+                                    .next()
+                                    .and_then(|s| s.parse::<i32>().ok())
+                                    .unwrap_or(0);
+                                let saved_dev = bound
+                                    .call_method0("_get_cuda_device")
+                                    .and_then(|r| r.extract::<i32>())
+                                    .unwrap_or(0);
+                                let _ =
+                                    bound.call_method1("_set_cuda_device", (receiver_device_idx,));
+                                let gpu_ptr_opt = bound
+                                    .call_method1("_get_gpu_buf", (pool_counter, size))
+                                    .and_then(|r| r.extract::<u64>())
+                                    .ok();
+                                let _ = bound.call_method1("_set_cuda_device", (saved_dev,));
+                                if let Some(gpu_ptr) = gpu_ptr_opt {
+                                    // Stage the initial frame into the GPU
+                                    // buffer (the data region already holds
+                                    // it from the registration copy above).
+                                    let htod_ok = bound
+                                        .call_method1(
+                                            "_cuda_memcpy",
+                                            (
+                                                gpu_ptr,
+                                                shmem_ptr as u64 + data_offset as u64,
+                                                size,
+                                                1u32,
+                                            ),
+                                        )
+                                        .is_ok();
+                                    if htod_ok
+                                        && let Ok(handle) = bound
+                                            .call_method1("_ipc_export", (gpu_ptr,))
+                                            .and_then(|r| r.extract::<Vec<u8>>())
+                                        && handle.len() == 64
+                                    {
+                                        unsafe {
+                                            std::ptr::copy_nonoverlapping(
+                                                handle.as_ptr(),
+                                                shmem_ptr.add(32),
+                                                64,
+                                            );
+                                            std::ptr::write(shmem_ptr.add(24) as *mut u64, 1u64);
+                                        }
+                                        ipc_written = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Local pool stays; the daemon recorded CROSS_POOLS.
+                    // Push the registered tensor through the daemon so the
+                    // mirror pool is populated before the first explicit
+                    // write. The receiver's first read blocks on this data
+                    // (flow control: the receiver cannot send next_require
+                    // until it has the pool data), so the push must happen
+                    // at registration — the write path alone would deadlock
+                    // on message 1. Only for CPU receivers: GPU pools
+                    // travel via the IPC handle, which the daemon path
+                    // cannot carry. Local pools (no `machine`) skip this —
+                    // their receivers read the local shmem directly.
+                    // A cross-machine GPU pool stages its data region too
+                    // (no IPC handle crosses hosts), so it pushes as well —
+                    // unless the same-host IPC export above succeeded: then
+                    // the receiver reads the GPU buffer directly and the
+                    // push would only feed a mirror nobody reads (same
+                    // semantics as should_push_mirror on the write path).
+                    if (!receiver_is_cuda || cross_machine) && !ipc_written {
+                        self.push_mirror_update(
+                            &buffer_id,
+                            shmem_ptr,
+                            data_offset,
+                            size,
+                            "register_memory_pool",
+                        );
+                    }
+                }
+                Ok((Err(msg), _)) | Err(msg) => {
+                    tracing::warn!(
+                        "[{}] register_memory_pool: cross-machine mirror failed for {}: {msg}",
+                        self.node_id,
+                        buffer_id
+                    );
+                    rollback_local_pool(
+                        &mut shmem,
+                        shmem_ptr as u64,
+                        receiver_is_cuda,
+                        pool_counter,
+                        buffer_id,
+                        py,
+                    );
+                    return Ok(py.None());
+                }
+            }
+        }
+
         // GPU pool: allocate GPU buffer on current device, copy data, export
         // IPC handle for cross-process zero-copy access.  When the source
         // tensor is also on CUDA (GPU→GPU), the source and pool buffer are on
@@ -2139,13 +2482,16 @@ impl Node {
             sender_device_idx
         };
 
-        // Tracks whether the GPU pool buffer + IPC handle were successfully set
-        // up.  A CUDA receiver's shmem is header-only, so without the handle the
-        // pool is unusable — we fail registration rather than hand back a
-        // permanently-broken pool.
-        let mut ipc_written = false;
-
-        if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+        // A same-host CUDA receiver's shmem is header-only, so without the
+        // handle the pool is unusable — we fail registration rather than hand
+        // back a permanently-broken pool.  A cross-machine GPU pool skips the
+        // GPU buffer and IPC export entirely (the receiver stages the data
+        // region HtoD on its own machine) unless the ack reported same-host
+        // direct access — the ack branch above re-exports in that case.
+        if receiver_is_cuda
+            && !cross_machine
+            && let Ok(helpers) = get_cuda_helpers(py)
+        {
             let bound = helpers.bind(py);
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
@@ -2173,6 +2519,7 @@ impl Node {
                 receiver_device_idx,
                 p2p_available,
                 is_cuda,
+                /*is_cross_machine=*/ false,
             );
             let use_transit = transport_path == TransportPath::HostStagingTransit;
 
@@ -2305,7 +2652,9 @@ impl Node {
         // unavailable), fail registration instead of returning a pool that
         // every later write/read would silently reject.  Reclaim the shmem
         // segment on the way out (it was created with owner=false).
-        if receiver_is_cuda && !ipc_written {
+        // Cross-machine GPU pools never export an IPC handle (host-local),
+        // so the missing handle is expected there — no bail.
+        if receiver_is_cuda && !cross_machine && !ipc_written {
             // The GPU pool buffer (and, on the transit path, the page-locked
             // host transit buffer) were allocated before the IPC export, which
             // failed.  Free them before bailing — otherwise they leak for the
@@ -2503,10 +2852,20 @@ impl Node {
                     } else {
                         // Cache miss: open via ShmemConf, wrap immediately
                         // so the mapping stays alive until post-write re-insert.
-                        let shmem_name = format!(
-                            "dora_pool_{}_{}_{}",
-                            self.dataflow_id, self.node_id, counter
-                        );
+                        let shmem_name = {
+                            let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
+                            if machine.is_empty() {
+                                format!(
+                                    "dora_pool_{}_{}_{}",
+                                    self.dataflow_id, self.node_id, counter
+                                )
+                            } else {
+                                format!(
+                                    "dora_pool_{}_{}_{}_{}",
+                                    machine, self.dataflow_id, self.node_id, counter
+                                )
+                            }
+                        };
                         match ShmemConf::new().os_id(&shmem_name).open() {
                             Ok(shmem) => {
                                 let cap = shmem.len();
@@ -2771,6 +3130,26 @@ impl Node {
                                 .insert(counter, slot_data);
                         }
 
+                        // Cross-machine: push the frame through the daemon
+                        // so the mirror pool is updated in place. GPU pools
+                        // without an IPC handle (cross-machine: data region
+                        // staged via DtoH) push; same-machine GPU pools
+                        // (ipc_present == 1) hold their data in the IPC
+                        // buffer — skip. Pools whose reader confirmed
+                        // same-host direct access (or that have no mirror at
+                        // all) skip too — the reader opens this segment
+                        // directly; the push would only feed a mirror nobody
+                        // reads.
+                        if should_push_mirror(&buffer_id, ipc_present) {
+                            self.push_mirror_update(
+                                &buffer_id,
+                                shmem_ptr,
+                                data_offset,
+                                size,
+                                "write_memory_pool",
+                            );
+                        }
+
                         return Ok(());
                     }
                 }
@@ -2995,6 +3374,18 @@ impl Node {
                                 seqlock_end(gen_ptr, pre_write_gen, true);
                             }
                         }
+                        // Cross-machine: push the frame through the daemon so
+                        // the mirror pool is updated in place — same gate as
+                        // the fast path (symmetry discipline).
+                        if should_push_mirror(&buffer_id, ipc_present) {
+                            self.push_mirror_update(
+                                &buffer_id,
+                                shmem_ptr,
+                                data_offset,
+                                size,
+                                "write_memory_pool (slow path)",
+                            );
+                        }
                     }
                 }
             }
@@ -3065,20 +3456,51 @@ impl Node {
 
         // Fast path: DORADMA header read with daemon-trusted size validation.
         if buffer_id.starts_with("pool_") {
+            // Explicit (`name=`) segments cannot be guessed from the buffer
+            // id. Resolve the registered segment name from the daemon once
+            // (cheap control-plane round trip) and read by name; without
+            // this, every read would burn the whole retry window guessing.
+            let known_name = self
+                .node
+                .get_mut()
+                .read_pinned_memory(buffer_id.clone(), false)
+                .ok()
+                .and_then(|m| {
+                    m.parameters.get("shared_memory_name").and_then(|p| {
+                        if let Parameter::String(name) = p {
+                            Some(name.clone())
+                        } else {
+                            None
+                        }
+                    })
+                });
             // Retry on transient failures (odd seqlock, shmem not yet
             // mapped) so a concurrent writer doesn't cause a hard error.
-            // Time-bounded: a GPU copy (cudaMemcpy + synchronize) takes
-            // milliseconds, so we wait up to 500ms total with 1ms sleeps
-            // between attempts.
+            // Cross-machine writes arrive via the daemon over the network
+            // (MemoryPoolWrite event): a 61 MiB tensor fragments into
+            // 64 KiB zenoh batches and takes tens of seconds to cross a
+            // WAN, and the inter-daemon link itself can drop for minutes
+            // under host contention (zenoh reconnects with backoff, then
+            // the queued Block-mode put drains) — so the window is 3600s.
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_millis(500))
+                .checked_add(std::time::Duration::from_millis(3_600_000))
                 .unwrap_or(std::time::Instant::now());
             loop {
+                // Same-host direct read first: the sender's segment (via
+                // the remote reference / explicit name) always holds the
+                // freshest data — the mirror lags behind the zenoh
+                // transfer. Falls back to the guessed mirror name when
+                // the segment is not openable (cross-machine).
+                if let Some(name) = &known_name
+                    && let Some(result) = self.try_doradma_read_by_name(name, &buffer_id, py)?
+                {
+                    return Ok(result);
+                }
                 match self.try_doradma_read(&buffer_id, py) {
                     Ok(Some(result)) => return Ok(result),
                     Ok(None) if std::time::Instant::now() < deadline => {
-                        // Transient — yield the GIL and sleep so the
-                        // writer can complete its copy+sync.
+                        // WAN propagation delay — yield the GIL and sleep
+                        // so the writer can complete its copy+sync.
                         py.detach(|| {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         });
@@ -3091,7 +3513,6 @@ impl Node {
                     }
                 }
             }
-            // Retries exhausted — fall back to the daemon for CPU pools.
             if let Ok(metadata) = self
                 .node
                 .get_mut()
@@ -3225,7 +3646,7 @@ impl Node {
             }
             warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
             eyre::bail!(
-                "memory pool {}: fast path retries exhausted — pool not ready after 500ms",
+                "memory pool {}: fast path retries exhausted — pool not ready after 3600s",
                 buffer_id
             );
         }
@@ -3307,6 +3728,21 @@ impl Node {
                 }
                 // slot._shmem drops here -> munmap
             }
+            // Cross-machine GPU pool staging cache: unpin the mirror and
+            // free the pooled GPU buffer BEFORE dropping the mapping
+            // (unregister must precede munmap).
+            if let Some(slot) = RECV_GPU_HTOD
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&buffer_id)
+            {
+                if let Ok(helpers) = get_cuda_helpers(py) {
+                    let bound = helpers.bind(py);
+                    let _ = bound.call_method1("_unregister_host", (slot.host_base,));
+                    let _ = bound.call_method1("_free_htod_buf", (&buffer_id,));
+                }
+                // slot._shmem drops here -> munmap
+            }
         }
         RECV_CPU_SHMEM
             .lock()
@@ -3330,6 +3766,49 @@ impl Node {
 
         Ok(())
     }
+}
+
+/// Roll back a locally-registered pool whose cross-machine mirror failed:
+/// unpin host memory (when the receiver reads from the shmem), drop any
+/// sender-side cache entries, and unlink the shmem segment (cleanup
+/// mirrors `free_memory_pool`).  Shared by the transport-failure and
+/// daemon-reported-failure paths of `register_memory_pool`.
+fn rollback_local_pool(
+    shmem: &mut shared_memory_extended::Shmem,
+    shmem_ptr: u64,
+    receiver_is_cuda: bool,
+    pool_counter: u64,
+    buffer_id: String,
+    py: Python<'_>,
+) {
+    if !receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+        let bound = helpers.bind(py);
+        let _ = bound.call_method1("_unregister_host", (shmem_ptr,));
+    }
+    {
+        let mut pool = PINNED_POOL.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(slot) = pool.remove(&pool_counter) {
+            // Defensive: the slot is normally stored after this point, but
+            // if it exists free its GPU-side resources too.
+            if let Ok(helpers) = get_cuda_helpers(py) {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1("_free_gpu_buf", (pool_counter,));
+                if slot.transit_ptr != 0 {
+                    let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                }
+            }
+        }
+    }
+    TRANSIT_META
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pool_counter);
+    FREED_POOL_IDS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(buffer_id);
+    // Unlink the local shmem segment (drop with owner=true removes it).
+    shmem.set_owner(true);
 }
 
 /// Stub for `send_output_raw` on Python < 3.11.
@@ -3536,11 +4015,43 @@ impl Node {
         self.node_id.to_string()
     }
 
+    /// Push the current frame's bytes to the daemon so a mirrored
+    /// cross-machine pool is updated in place. Reads from the shmem data
+    /// region, not `ptr_val`: for GPU sources the latter is a CUDA device
+    /// pointer (the staging copy already wrote the bytes into shmem).
+    /// Failures are logged loudly — a silent drop strands remote readers
+    /// with a stale mirror. `caller` names the calling function in the
+    /// error message.
+    fn push_mirror_update(
+        &self,
+        buffer_id: &str,
+        shmem_ptr: *const u8,
+        data_offset: usize,
+        size: usize,
+        caller: &str,
+    ) {
+        let tensor_bytes = unsafe { std::slice::from_raw_parts(shmem_ptr.add(data_offset), size) };
+        if let Err(e) = self.node.get_mut().write_pinned_memory(
+            buffer_id.to_string(),
+            tensor_bytes.to_vec(),
+            size,
+        ) {
+            tracing::error!(
+                "[{}] {caller}: daemon push failed for {}: {e}",
+                self.node_id,
+                buffer_id
+            );
+        }
+    }
+
     /// DORADMA fast path for read_memory_pool: reads metadata directly from
     /// the shmem header, bypassing the daemon for zero-copy metadata retrieval.
     ///
     /// Buffer ID format: `"pool_{node_id}_{counter}"` →
-    /// shmem name: `"dora_pool_{dataflow_id}_{node_id}_{counter}"`.
+    /// shmem name: machine-qualified when `DORA_MACHINE_ID` is set
+    /// (`"dora_pool_{machine}_{dataflow_id}_{node_id}_{counter}"`), legacy
+    /// unqualified otherwise; explicit `register_memory_pool(name=...)`
+    /// segments use the given name verbatim.
     ///
     /// # Synchronization model
     ///
@@ -3587,15 +4098,49 @@ impl Node {
             }
         }
 
-        let shmem_name = format!(
+        // Cross-machine: the mirrored pool's OS id is machine-qualified
+        // (`dora_pool_{machine}_{df}_{node}_{counter}` — see the daemon's
+        // `create_cross_pool_shmem`) so a same-host dual-daemon test does
+        // not collide with the sender's local segment. Try the qualified
+        // name first (this node's machine via `DORA_MACHINE_ID`, injected
+        // by the spawning daemon), then the legacy unqualified name for
+        // local pools and nodes spawned without the env.
+        let mut names: Vec<String> = Vec::new();
+        if let Ok(machine) = std::env::var("DORA_MACHINE_ID")
+            && !machine.is_empty()
+        {
+            names.push(format!(
+                "dora_pool_{machine}_{}_{}_{}",
+                self.dataflow_id, pool_node_id, counter
+            ));
+        }
+        names.push(format!(
             "dora_pool_{}_{}_{}",
             self.dataflow_id, pool_node_id, counter
-        );
+        ));
 
+        // Try each candidate name in order; the first readable segment wins.
+        for name in &names {
+            if let Some(result) = self.try_doradma_read_by_name(name, buffer_id, py)? {
+                return Ok(Some(result));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Read a DORADMA pool by explicit shmem name — used for machine-
+    /// qualified names and for explicit `register_memory_pool(name=...)`
+    /// segments, which cannot be derived from the buffer id. Returns
+    /// `Ok(None)` when the segment is absent or not yet readable.
+    fn try_doradma_read_by_name(
+        &self,
+        shmem_name: &str,
+        buffer_id: &str,
+        py: Python<'_>,
+    ) -> eyre::Result<Option<Py<PyAny>>> {
         // Open shared memory
-        let shmem = match ShmemConf::new().os_id(&shmem_name).open() {
-            Ok(s) => s,
-            Err(_) => return Ok(None),
+        let Ok(shmem) = ShmemConf::new().os_id(shmem_name).open() else {
+            return Ok(None);
         };
 
         let shmem_ptr = shmem.as_ptr();
@@ -3778,42 +4323,74 @@ impl Node {
                 }
             };
         } else if effective_as_cuda {
+            // Cross-machine GPU pool (or a same-host direct read of one):
+            // ipc_present == 0 with a non-"cpu" pinned_type — the data
+            // arrives as CPU bytes in the mirror / sender data region
+            // (CUDA IPC handles are host-local).  Pin the segment and
+            // stage a pooled GPU DRAM buffer via cudaMemcpy HtoD; the
+            // returned pointer is a stable DRAM buffer, NOT a view of the
+            // shmem (the mirror may be overwritten by the next zenoh frame
+            // without corrupting this tensor — relaxes the turn-based
+            // discipline on this side).
             read_ptr = {
-                let cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
+                // Trust anchor: the daemon-relayed size (GPU_BUF_SIZES,
+                // populated at read_memory_pool entry) bounds the staging
+                // allocation; never touch untrusted shmem sizes.
+                let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
+                match check_capacity_gpu_pool(trusted.get(buffer_id).copied(), None, size as u64) {
+                    CapacityCheck::Ok => {}
+                    _ => return Ok(None), // retry window; see caller
+                }
+                let cache = RECV_GPU_HTOD.lock().unwrap_or_else(|e| e.into_inner());
                 match cache.get(buffer_id) {
-                    Some(slot_data) => {
-                        // GPU VA is stable across data overwrites;
-                        // cache is keyed by full buffer_id (namespaced).
-                        slot_data.gpu_va + data_offset as u64
-                    }
+                    Some(slot) if slot.gpu_buf_size >= size as u64 => slot.gpu_buf,
+                    Some(_) => return Ok(None), // capacity changed (unreachable: register fixes size)
                     None => {
                         drop(cache);
                         let helpers = get_cuda_helpers(py)
                             .map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
                         let bound = helpers.bind(py);
+                        // Pin the whole mirror (covers the data region) so
+                        // the HtoD copy runs at DMA bandwidth.  First read
+                        // only; idempotent (error 712 tolerated).
                         bound
                             .call_method1("_register_host", (shmem_ptr as u64, shmem_size))
                             .map_err(|e| eyre::eyre!("_register_host: {}", e))?;
-                        let va: u64 = bound
-                            .call_method1("_get_device_ptr", (shmem_ptr as u64,))
-                            .map_err(|e| eyre::eyre!("_get_device_ptr: {}", e))?
+                        let gpu_buf: u64 = bound
+                            .call_method1("_get_htod_buf", (buffer_id, size))
+                            .map_err(|e| eyre::eyre!("_get_htod_buf: {}", e))?
                             .extract()
-                            .map_err(|e| eyre::eyre!("extract gpu_va: {}", e))?;
-                        let mut cache = RECV_GPU_VA.lock().unwrap_or_else(|e| e.into_inner());
+                            .map_err(|e| eyre::eyre!("extract gpu_buf: {}", e))?;
+                        let mut cache = RECV_GPU_HTOD.lock().unwrap_or_else(|e| e.into_inner());
                         cache.insert(
                             buffer_id.to_string(),
-                            RecvGpuSlot {
+                            RecvGpuHtodSlot {
                                 _shmem: shmem,
-                                gpu_va: va,
-                                gpu_buf: 0,
                                 host_base: shmem_ptr as u64,
-                                gpu_buf_size: 0, // CPU memory, no GPU buffer
+                                gpu_buf,
+                                gpu_buf_size: size as u64,
                             },
                         );
-                        va + data_offset as u64
+                        gpu_buf
                     }
                 }
             };
+            // HtoD staging: mirror data region → pooled GPU buffer (sync
+            // copy, cudaMemcpy kind 1).  Sits between the two seqlock
+            // reads: a frame that changes mid-copy fails the re-check and
+            // the caller retries — the stale GPU buffer is overwritten on
+            // the next read.
+            {
+                let helpers =
+                    get_cuda_helpers(py).map_err(|e| eyre::eyre!("get_cuda_helpers: {}", e))?;
+                let bound = helpers.bind(py);
+                bound
+                    .call_method1(
+                        "_cuda_memcpy",
+                        (read_ptr, shmem_ptr as u64 + data_offset as u64, size, 1u32),
+                    )
+                    .map_err(|e| eyre::eyre!("HtoD staging copy: {}", e))?;
+            }
         } else {
             // On the first read the fresh mapping is cached; on subsequent
             // reads the fresh mapping is dropped and the returned pointer

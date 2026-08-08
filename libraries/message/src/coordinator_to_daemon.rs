@@ -56,6 +56,15 @@ impl RegisterResult {
     }
 }
 
+/// Reply to `CoordinatorRequest::ResolveMachine` — sent by the coordinator
+/// to the requesting daemon over the same request/response channel used for
+/// `RegisterResult`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ResolveMachineReply {
+    /// Reply to `CoordinatorRequest::ResolveMachine`.
+    ResolveMachineResult { found: bool },
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {

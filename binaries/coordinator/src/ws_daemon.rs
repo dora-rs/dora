@@ -3,10 +3,12 @@ use crate::{
     state::DaemonConnection,
 };
 use axum::extract::ws::{Message, WebSocket};
+use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    coordinator_to_daemon::ResolveMachineReply,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
     ws_protocol::WsResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -22,6 +24,7 @@ pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
+    store: Arc<dyn CoordinatorStore>,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -72,6 +75,7 @@ pub(crate) async fn handle_daemon_ws(
                         &clock,
                         &cmd_tx,
                         &pending_replies,
+                        &store,
                         &mut tracked_daemon_id,
                         &mut tracked_connection_id,
                     ).await {
@@ -110,18 +114,23 @@ pub(crate) async fn handle_daemon_ws(
 /// `u128` numbers (used by `uhlc::ID(NonZeroU128)` in uhlc 0.5.x).
 #[derive(serde::Deserialize)]
 struct DaemonWsRequestRaw {
+    /// Request id from the daemon envelope — echoed back in replies so
+    /// the daemon can route the reply to its pending caller.
+    id: Uuid,
     params: dora_message::daemon_to_coordinator::Timestamped<
         dora_message::daemon_to_coordinator::CoordinatorRequest,
     >,
 }
 
 /// Handle a daemon request (event or register). Returns false if the event channel closed.
+#[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    store: &Arc<dyn CoordinatorStore>,
     tracked_daemon_id: &mut Option<DaemonId>,
     tracked_connection_id: &mut Option<Uuid>,
 ) -> bool {
@@ -133,6 +142,7 @@ async fn handle_daemon_request(
         }
     };
     let message = parsed.params;
+    let request_id = parsed.id;
 
     if let Err(err) = clock.update_with_timestamp(&message.timestamp) {
         tracing::warn!("failed to update coordinator clock: {err}");
@@ -206,6 +216,39 @@ async fn handle_daemon_request(
             } else {
                 true
             }
+        }
+        CoordinatorRequest::ResolveMachine { machine_id } => {
+            // Resolve the machine id against the registered-daemon store;
+            // unknown machines (or store errors) resolve to `found: false`.
+            let found = match store.get_daemon_by_machine(&machine_id) {
+                Ok(d) => d.is_some(),
+                Err(e) => {
+                    tracing::warn!("failed to resolve machine `{machine_id}`: {e}");
+                    false
+                }
+            };
+            // Reply over the same WS envelope the Register flow uses
+            // (`{"id", "method": "daemon_event", "params": <Timestamped<...>>}`),
+            // mirroring `DaemonConnection::send`.
+            let reply = Timestamped {
+                inner: ResolveMachineReply::ResolveMachineResult { found },
+                timestamp: clock.new_timestamp(),
+            };
+            let params = match serde_json::to_string(&reply) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::warn!("failed to serialize ResolveMachine reply: {err}");
+                    return true;
+                }
+            };
+            // Echo the request id so the daemon can route this reply to
+            // its pending caller (COORDINATOR_PENDING).
+            let json =
+                format!(r#"{{"id":"{request_id}","method":"daemon_event","params":{params}}}"#);
+            if cmd_tx.send(json).await.is_err() {
+                return false;
+            }
+            true
         }
     }
 }

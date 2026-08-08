@@ -91,8 +91,21 @@ pub enum DaemonCommunication {
 pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
-    PinnedMemoryMetadata { metadata: Metadata },
+    NodeConfig {
+        result: Result<NodeConfig, String>,
+    },
+    PinnedMemoryMetadata {
+        metadata: Metadata,
+    },
+    /// Result of a cross-machine pool registration. `Err` carries the
+    /// warning message (resolution failure or remote creation failure) —
+    /// the register is a warn-and-no-op in both cases. `direct` tells the
+    /// node whether the remote daemon can open its segment directly
+    /// (same host): when true, the per-frame data push is skipped.
+    CrossMachinePoolRegistered {
+        result: Result<(), String>,
+        direct: bool,
+    },
     Empty,
 }
 

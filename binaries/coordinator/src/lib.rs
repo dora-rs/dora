@@ -256,6 +256,7 @@ async fn start_with_events(
         clock.clone(),
         auth_token,
         artifact_store,
+        store.clone(),
     )
     .await
     .wrap_err("failed to start WS server")?;

@@ -100,6 +100,12 @@ fn main() -> eyre::Result<()> {
                 InterDaemonEvent::OutputClosed { .. } => {
                     // Skip close events during replay
                 }
+                // Internal cross-machine memory-pool bookkeeping; nothing to
+                // replay.
+                InterDaemonEvent::MemoryPoolWrite { .. } => {}
+                InterDaemonEvent::RegisterPool { .. }
+                | InterDaemonEvent::RegisterPoolAck { .. }
+                | InterDaemonEvent::FreePool { .. } => {}
             }
         }
 

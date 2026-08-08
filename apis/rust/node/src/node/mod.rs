@@ -2374,6 +2374,47 @@ impl DoraNode {
     pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
         self.control_channel.free_pinned_memory(shared_memory_id)
     }
+
+    /// Write tensor bytes to a pinned memory pool via the daemon. The
+    /// daemon forwards the payload to remote daemons so the mirror pool
+    /// is updated in place.
+    pub fn write_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+    ) -> Result<(), eyre::Error> {
+        self.control_channel
+            .write_pinned_memory(shared_memory_id, tensor_data, size)
+    }
+
+    /// Register a memory pool on a remote machine via the daemon. The
+    /// daemon resolves the machine through the coordinator and mirrors
+    /// the pool there with a synchronous confirmation, returning
+    /// `Ok(Ok(()))` on success or `Ok(Err(msg))` when the mirror failed
+    /// (unresolved machine, remote pool creation failure, or ack
+    /// timeout).
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_cross_machine_pool(
+        &mut self,
+        shared_memory_id: String,
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    ) -> Result<(Result<(), String>, bool), eyre::Error> {
+        self.control_channel.register_cross_machine_pool(
+            shared_memory_id,
+            shmem_name,
+            size,
+            dtype,
+            shape,
+            device,
+            machine_id,
+        )
+    }
 }
 
 /// Builder for initializing a node with custom connection parameters.
