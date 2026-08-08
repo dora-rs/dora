@@ -183,15 +183,16 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts = v.get("ts")?.as_str()?;
     let timestamp = chrono::DateTime::parse_from_rfc3339(ts).ok()?.to_utc();
-    let level_str = v.get("level")?.as_str().unwrap_or("stdout");
-    let level = match level_str {
-        "error" => LogLevelOrStdout::LogLevel(log::Level::Error),
-        "warn" => LogLevelOrStdout::LogLevel(log::Level::Warn),
-        "info" => LogLevelOrStdout::LogLevel(log::Level::Info),
-        "debug" => LogLevelOrStdout::LogLevel(log::Level::Debug),
-        "trace" => LogLevelOrStdout::LogLevel(log::Level::Trace),
-        _ => LogLevelOrStdout::Stdout,
-    };
+    // A missing `level` key, a non-string value, or an unrecognized level all
+    // default to stdout, so that externally-produced JSONL log lines are still
+    // shown rather than silently dropped. Reuse `parse_log_level_str` (the
+    // single source of truth for level names) so a capitalized level such as
+    // "INFO" is classified correctly instead of falling through to stdout.
+    let level = v
+        .get("level")
+        .and_then(|l| l.as_str())
+        .and_then(|s| parse_log_level_str(s).ok())
+        .unwrap_or(LogLevelOrStdout::Stdout);
     let node_id = v
         .get("node")
         .and_then(|n| n.as_str())
@@ -450,6 +451,43 @@ mod tests {
             LogLevelOrStdout::LogLevel(log::Level::Info)
         ));
         assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_missing_level_defaults_to_stdout() {
+        // A line without a `level` key must still be parsed (defaulting to
+        // stdout), not silently dropped.
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","node":"sensor","msg":"hello"}"#;
+        let msg = parse_jsonl_line(line).expect("line without level should still parse");
+        assert_eq!(msg.message, "hello");
+        assert!(matches!(msg.level, LogLevelOrStdout::Stdout));
+        assert_eq!(msg.node_id.unwrap().to_string(), "sensor");
+    }
+
+    #[test]
+    fn parse_jsonl_non_string_level_defaults_to_stdout() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":42,"msg":"hi"}"#;
+        let msg = parse_jsonl_line(line).expect("line with non-string level should still parse");
+        assert!(matches!(msg.level, LogLevelOrStdout::Stdout));
+    }
+
+    #[test]
+    fn parse_jsonl_capitalized_level_is_classified() {
+        // An external tool emitting a capitalized level must be classified,
+        // not silently treated as stdout.
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"INFO","msg":"hi"}"#;
+        let msg = parse_jsonl_line(line).unwrap();
+        assert!(matches!(
+            msg.level,
+            LogLevelOrStdout::LogLevel(log::Level::Info)
+        ));
+    }
+
+    #[test]
+    fn parse_jsonl_unknown_level_defaults_to_stdout() {
+        let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"bogus","msg":"hi"}"#;
+        let msg = parse_jsonl_line(line).unwrap();
+        assert!(matches!(msg.level, LogLevelOrStdout::Stdout));
     }
 
     #[test]
