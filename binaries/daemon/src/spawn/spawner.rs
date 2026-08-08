@@ -594,7 +594,6 @@ impl Spawner {
                             .wrap_err("failed to serialize node config")?,
                     );
 
-
                     // For managed Python custom nodes, also set VIRTUAL_ENV and
                     // prepend the env's bin dir to PATH so subprocesses, console
                     // scripts, and `python -m pip` see the env. Mirrors the
@@ -784,7 +783,6 @@ impl Spawner {
                         serde_yaml::to_string(&runtime_config)
                             .wrap_err("failed to serialize runtime config")?,
                     );
-
 
                     // For managed Python runtime nodes (Python operator + uv on),
                     // set VIRTUAL_ENV and prepend the env's bin dir to PATH so

@@ -351,7 +351,7 @@ fn create_cross_pool_shmem(
             if std::path::Path::new(&shm_path).exists() {
                 tracing::warn!("memory pool: stale mirror {shmem_name} exists, replacing");
                 std::fs::remove_file(&shm_path)
-                    .map_err(|ue| eyre::eyre!("remove stale mirror {shmem_name}: {ue}"))?;
+                    .map_err(|e| eyre::eyre!("remove stale mirror {shmem_name}: {e}"))?;
                 make_conf()
                     .create()
                     .map_err(|re| eyre::eyre!("recreate mirror {shmem_name} after unlink: {re}"))?
@@ -5993,7 +5993,6 @@ impl Daemon {
                         direct,
                     });
                 });
-
             }
         }
         Ok(())
@@ -10916,6 +10915,5 @@ mod cross_pool_write_tests {
                 "round {round}: odd generation after write"
             );
         }
-
     }
 }
