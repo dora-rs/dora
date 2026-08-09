@@ -10,6 +10,15 @@
 //! | `serial:///dev/path?baud=N` (Unix)    | `serial:/dev/path:N`         | n/a       |
 //! | `serial://COM1?baud=N` (Windows)      | `serial:COM1:N`              | n/a       |
 //!
+//! ## Protocol version
+//!
+//! All three schemes accept an optional `?proto=` query parameter to
+//! select the MAVLink wire version: `proto=v1` / `proto=1` / `proto=1.0`
+//! for MAVLink 1, and `proto=v2` / `proto=2` / `proto=2.0` for MAVLink 2.
+//! When omitted (or unrecognized) the connection defaults to MAVLink 2.
+//! It combines with the other query parameters, e.g.
+//! `serial:///dev/ttyUSB0?baud=57600&proto=v1`.
+//!
 //! ## Known limitations (intentional, not bugs)
 //!
 //! * **`tcp://` is always `tcpout:` (client mode).** There is no way
@@ -85,17 +94,14 @@ fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> +
         )));
     }
     let baud = parse_baud(url).unwrap_or(DEFAULT_SERIAL_BAUD);
-    open_mavlink(&format!("serial:{device}:{baud}"))
+    let version = parse_proto_query(url).unwrap_or(MavlinkVersion::V2);
+    open_mavlink_versioned(&format!("serial:{device}:{baud}"), version)
 }
 
 fn parse_baud(url: &Url) -> Option<u32> {
     url.query_pairs()
         .find(|(k, _)| k == "baud")
         .and_then(|(_, v)| v.parse::<u32>().ok())
-}
-
-fn open_mavlink(addr: &str) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
-    open_mavlink_versioned(addr, MavlinkVersion::V2)
 }
 
 fn open_mavlink_versioned(
@@ -138,5 +144,32 @@ mod tests {
     fn parses_baud_garbage() {
         let url = Url::parse("serial:///dev/tty.usbmodem1?baud=fast").unwrap();
         assert_eq!(parse_baud(&url), None);
+    }
+
+    #[test]
+    fn parses_proto_query_variants() {
+        for spelling in ["v1", "1", "1.0", "V1"] {
+            let url = Url::parse(&format!("tcp://host:5760?proto={spelling}")).unwrap();
+            assert!(matches!(parse_proto_query(&url), Some(MavlinkVersion::V1)));
+        }
+        for spelling in ["v2", "2", "2.0", "V2"] {
+            let url = Url::parse(&format!("tcp://host:5760?proto={spelling}")).unwrap();
+            assert!(matches!(parse_proto_query(&url), Some(MavlinkVersion::V2)));
+        }
+    }
+
+    #[test]
+    fn parses_proto_query_missing_or_garbage() {
+        assert!(parse_proto_query(&Url::parse("tcp://host:5760").unwrap()).is_none());
+        assert!(parse_proto_query(&Url::parse("tcp://host:5760?proto=v3").unwrap()).is_none());
+    }
+
+    #[test]
+    fn serial_url_honors_proto_query() {
+        // The serial path must read `proto` just like tcp/udp; regression guard
+        // for the version being hardcoded to V2 on the serial branch.
+        let url = Url::parse("serial:///dev/ttyUSB0?baud=57600&proto=v1").unwrap();
+        assert_eq!(parse_baud(&url), Some(57600));
+        assert!(matches!(parse_proto_query(&url), Some(MavlinkVersion::V1)));
     }
 }
