@@ -54,7 +54,8 @@ pub(crate) async fn handle_daemon_ws(
                 };
 
                 // Distinguish request vs response by checking for "method" key.
-                // Parse to Value first just for routing (u128 precision loss is OK here).
+                // Parse to Value first just for routing; the typed payload is
+                // deserialized from the raw text below.
                 let value: serde_json::Value = match serde_json::from_str(&text) {
                     Ok(v) => v,
                     Err(e) => {
@@ -65,7 +66,8 @@ pub(crate) async fn handle_daemon_ws(
 
                 if value.get("method").is_some() {
                     // Daemon request: deserialize Timestamped<CoordinatorRequest>
-                    // directly from raw text to preserve u128 fidelity (uhlc::ID).
+                    // directly from the raw text, skipping a second pass over
+                    // the `Value` we only built for routing.
                     if !handle_daemon_request(
                         &text,
                         &event_tx,
@@ -106,8 +108,8 @@ pub(crate) async fn handle_daemon_ws(
 }
 
 /// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
-/// from the raw JSON text, bypassing `serde_json::Value` which cannot represent
-/// `u128` numbers (used by `uhlc::ID(NonZeroU128)` in uhlc 0.5.x).
+/// from the raw JSON text, so the payload is parsed once into its real type
+/// instead of going through the `serde_json::Value` used for routing.
 #[derive(serde::Deserialize)]
 struct DaemonWsRequestRaw {
     params: dora_message::daemon_to_coordinator::Timestamped<
