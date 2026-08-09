@@ -150,8 +150,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon and wait for a reply.
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
@@ -206,8 +206,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon without waiting for a reply (fire-and-forget).
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send(&self, message: &[u8]) -> eyre::Result<()> {
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
