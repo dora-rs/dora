@@ -49,14 +49,21 @@ struct UpConfig {}
 
 pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    let addr: std::net::IpAddr = std::env::var("DORA_COORDINATOR_ADDR")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(LOCALHOST);
-    let port: u16 = std::env::var("DORA_COORDINATOR_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
+    // Surface a malformed value instead of silently falling back to the
+    // default: every other lifecycle command reads these env vars through
+    // clap's typed `env=` on `CoordinatorOptions`, which errors on an
+    // unparseable value. If `dora up` quietly ignored a typo it would bind a
+    // different port than `dora stop`/`list`/`down` then look for.
+    let addr: std::net::IpAddr = coordinator_env_value(
+        "DORA_COORDINATOR_ADDR",
+        std::env::var("DORA_COORDINATOR_ADDR").ok().as_deref(),
+        LOCALHOST,
+    )?;
+    let port: u16 = coordinator_env_value(
+        "DORA_COORDINATOR_PORT",
+        std::env::var("DORA_COORDINATOR_PORT").ok().as_deref(),
+        DORA_COORDINATOR_PORT_WS_DEFAULT,
+    )?;
     let coordinator_addr = (addr, port).into();
     if recreate_store && !addr.is_loopback() {
         bail!(
@@ -108,6 +115,24 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -
     }
 
     Ok(())
+}
+
+/// Resolve a coordinator connection env var: `None` (unset) yields `default`,
+/// but a value that is present yet unparseable is a hard error rather than a
+/// silent fallback. This mirrors the strictness of clap's typed `env=` on
+/// `CoordinatorOptions`, so `dora up` and the other lifecycle commands agree
+/// on where the coordinator lives.
+fn coordinator_env_value<T>(var_name: &str, raw: Option<&str>, default: T) -> eyre::Result<T>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    match raw {
+        Some(s) => s
+            .parse()
+            .map_err(|e| eyre::eyre!("invalid {var_name}: {s:?} ({e})")),
+        None => Ok(default),
+    }
 }
 
 fn attach_to_running_coordinator(
@@ -680,6 +705,58 @@ mod tests {
             .expect("second recreation did not acquire the released lock");
         drop(second);
         waiter.join().expect("join lock waiter");
+    }
+}
+
+#[cfg(test)]
+mod coordinator_env_tests {
+    use super::{DORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST, coordinator_env_value};
+    use std::net::IpAddr;
+
+    #[test]
+    fn unset_uses_default() {
+        let addr: IpAddr = coordinator_env_value("DORA_COORDINATOR_ADDR", None, LOCALHOST).unwrap();
+        assert_eq!(addr, LOCALHOST);
+        let port: u16 = coordinator_env_value(
+            "DORA_COORDINATOR_PORT",
+            None,
+            DORA_COORDINATOR_PORT_WS_DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(port, DORA_COORDINATOR_PORT_WS_DEFAULT);
+    }
+
+    #[test]
+    fn valid_value_is_parsed() {
+        let addr: IpAddr =
+            coordinator_env_value("DORA_COORDINATOR_ADDR", Some("10.0.0.5"), LOCALHOST).unwrap();
+        assert_eq!(addr, "10.0.0.5".parse::<IpAddr>().unwrap());
+        let port: u16 = coordinator_env_value(
+            "DORA_COORDINATOR_PORT",
+            Some("6100"),
+            DORA_COORDINATOR_PORT_WS_DEFAULT,
+        )
+        .unwrap();
+        assert_eq!(port, 6100);
+    }
+
+    #[test]
+    fn malformed_value_errors_instead_of_defaulting() {
+        // Regression: `dora up` previously swallowed a parse error via
+        // `.and_then(|s| s.parse().ok()).unwrap_or(default)`, silently binding
+        // the default port while every other command errored on the same typo.
+        let err = coordinator_env_value::<u16>(
+            "DORA_COORDINATOR_PORT",
+            Some("not-a-port"),
+            DORA_COORDINATOR_PORT_WS_DEFAULT,
+        )
+        .expect_err("a malformed port must be rejected, not defaulted");
+        assert!(format!("{err:#}").contains("DORA_COORDINATOR_PORT"));
+
+        assert!(
+            coordinator_env_value::<IpAddr>("DORA_COORDINATOR_ADDR", Some("999.1.1.1"), LOCALHOST)
+                .is_err()
+        );
     }
 }
 
