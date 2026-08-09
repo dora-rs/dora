@@ -2112,10 +2112,20 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 
     let deadline = std::time::Instant::now() + timeout;
     let success = loop {
-        if let Ok(output) = std::fs::read_to_string(&attach_log)
-            && output.contains("Average transfer throughput")
-        {
-            break true;
+        if let Ok(output) = std::fs::read_to_string(&attach_log) {
+            // The marker alone is not enough: it must be accompanied by a
+            // clean finish (no Failed state), so a degraded/short transfer
+            // cannot pass. The receiver.py per-frame assertions (tensor[0]
+            // == i for all 100 frames) run before the marker prints, so a
+            // byte-correct full transfer is implied; require the finished
+            // marker too.
+            if output.contains("Average transfer throughput")
+                && (output.contains("dataflow finished")
+                    || output.contains("finished successfully"))
+                && !output.contains("Failed")
+            {
+                break true;
+            }
         }
         if std::time::Instant::now() >= deadline {
             break false;

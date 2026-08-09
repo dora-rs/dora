@@ -3517,10 +3517,17 @@ impl Node {
                 }
                 name
             });
-            // Local pool: the daemon-registered name matches the local
-            // derivation (or the metadata is absent) → fast window.
+            // Same-host pool (single-daemon or cross-daemon): the resolved
+            // sender-side segment exists on this machine, so a crashed or
+            // never-publishing producer must fail fast. Cross-machine pools
+            // resolve to a segment on the remote host (only the mirror is
+            // local), which is not openable here — keep the long window for
+            // them. Metadata absent → assume local.
             let is_local = match &resolved {
-                Some(name) => local_name.as_deref() == Some(name.as_str()),
+                Some(name) => {
+                    std::path::Path::new(&format!("/dev/shm/{name}")).exists()
+                        || local_name.as_deref() == Some(name.as_str())
+                }
                 None => true,
             };
             let deadline = std::time::Instant::now()
