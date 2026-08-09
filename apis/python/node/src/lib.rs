@@ -184,6 +184,12 @@ unsafe impl Sync for PoolSlot {}
 
 /// Persistent pool storage — stable mmap addresses for zero-copy detection.
 /// Keyed by counter (unique per registration), supports unlimited pools.
+/// Cache of daemon-resolved segment names per buffer id, so the
+/// zero-copy fast path resolves each pool's name once instead of paying a
+/// control-plane round trip on every read.
+static RESOLVED_POOL_NAMES: LazyLock<std::sync::Mutex<HashMap<String, String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
@@ -3456,12 +3462,20 @@ impl Node {
 
         // Fast path: DORADMA header read with daemon-trusted size validation.
         if buffer_id.starts_with("pool_") {
-            // Same-machine auto-named pools can be read by a name derived
-            // from the buffer id (`dora_pool_[machine_]dataflow_node_counter`),
-            // so the zero-copy fast path needs no daemon round trip. Only
-            // explicit (`name=`) segments and cross-machine pools (whose
-            // registering machine differs) need the daemon's registered
-            // name — resolve it once, after the local window expires.
+            // Same-machine auto-named pools have a segment name derivable
+            // from the buffer id (`dora_pool_[machine_]dataflow_node_counter`).
+            // The daemon-registered name is resolved once per pool and
+            // cached, so steady-state reads do not pay a control-plane round
+            // trip; reading the resolved (sender-side) name first also keeps
+            // same-host cross-daemon reads on the freshest segment instead
+            // of a lagging mirror. The long retry window (3600 s) is only
+            // justified for explicit-name / cross-machine pools: their
+            // writes arrive via the daemon over the network (MemoryPoolWrite
+            // event), where a 61 MiB tensor fragments into 64 KiB zenoh
+            // batches and takes tens of seconds to cross a WAN, and the
+            // inter-daemon link itself can drop for minutes under host
+            // contention. Local pools fail fast (500 ms) when a producer
+            // crashes or never publishes.
             let local_name = buffer_id.strip_prefix("pool_").and_then(|rest| {
                 let (node_id, counter) = rest.rsplit_once('_')?;
                 let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
@@ -3474,28 +3488,54 @@ impl Node {
                     )
                 })
             });
-            let mut daemon_name: Option<String> = None;
-            // Retry on transient failures (odd seqlock, shmem not yet
-            // mapped) so a concurrent writer doesn't cause a hard error.
-            // Local pools fail fast (500 ms): a producer that crashes or
-            // never publishes must not block the consumer for long. The
-            // long window (3600 s) is only justified for cross-machine
-            // reads, whose writes arrive via the daemon over the network
-            // (MemoryPoolWrite event): a 61 MiB tensor fragments into
-            // 64 KiB zenoh batches and takes tens of seconds to cross a
-            // WAN, and the inter-daemon link itself can drop for minutes
-            // under host contention (zenoh reconnects with backoff, then
-            // the queued Block-mode put drains).
-            let mut deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_millis(500))
+            let resolved = {
+                let cache = RESOLVED_POOL_NAMES
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                cache.get(&buffer_id).cloned()
+            }
+            .or_else(|| {
+                let name = self
+                    .node
+                    .get_mut()
+                    .read_pinned_memory(buffer_id.clone(), false)
+                    .ok()
+                    .and_then(|m| {
+                        m.parameters.get("shared_memory_name").and_then(|p| {
+                            if let Parameter::String(name) = p {
+                                Some(name.clone())
+                            } else {
+                                None
+                            }
+                        })
+                    });
+                if let Some(name) = &name {
+                    RESOLVED_POOL_NAMES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(buffer_id.clone(), name.clone());
+                }
+                name
+            });
+            // Local pool: the daemon-registered name matches the local
+            // derivation (or the metadata is absent) → fast window.
+            let is_local = match &resolved {
+                Some(name) => local_name.as_deref() == Some(name.as_str()),
+                None => true,
+            };
+            let deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(if is_local {
+                    500
+                } else {
+                    3_600_000
+                }))
                 .unwrap_or(std::time::Instant::now());
             loop {
                 // Same-host direct read first: the sender's segment (via
-                // the remote reference / explicit name) always holds the
-                // freshest data — the mirror lags behind the zenoh
-                // transfer. Falls back to the guessed mirror name when
-                // the segment is not openable (cross-machine).
-                let name = daemon_name.as_deref().or(local_name.as_deref());
+                // the resolved name) always holds the freshest data — the
+                // mirror lags behind the zenoh transfer. Falls back to the
+                // guessed mirror name when the segment is not openable.
+                let name = resolved.as_deref().or(local_name.as_deref());
                 if let Some(name) = name
                     && let Some(result) = self.try_doradma_read_by_name(name, &buffer_id, py)?
                 {
@@ -3510,39 +3550,6 @@ impl Node {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         });
                         continue;
-                    }
-                    Ok(None) if daemon_name.is_none() => {
-                        // Local window exhausted: either a crashed local
-                        // producer, or an explicit-name / cross-machine pool
-                        // whose segment name cannot be derived locally.
-                        // Resolve the registered name from the daemon once;
-                        // a name that differs from the local derivation
-                        // proves the pool is remote → switch to the WAN
-                        // window. A matching (local) name means the producer
-                        // never wrote → fail fast.
-                        daemon_name = self
-                            .node
-                            .get_mut()
-                            .read_pinned_memory(buffer_id.clone(), false)
-                            .ok()
-                            .and_then(|m| {
-                                m.parameters.get("shared_memory_name").and_then(|p| {
-                                    if let Parameter::String(name) = p {
-                                        Some(name.clone())
-                                    } else {
-                                        None
-                                    }
-                                })
-                            });
-                        if let Some(name) = &daemon_name
-                            && local_name.as_deref() != Some(name.as_str())
-                        {
-                            deadline = std::time::Instant::now()
-                                .checked_add(std::time::Duration::from_millis(3_600_000))
-                                .unwrap_or(std::time::Instant::now());
-                            continue;
-                        }
-                        break;
                     }
                     Ok(None) => break,
                     Err(e) => {

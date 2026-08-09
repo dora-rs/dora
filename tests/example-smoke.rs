@@ -1949,6 +1949,194 @@ fn smoke_local_memory_pool_cpu2cpu() {
     );
 }
 
+// Same-host cross-daemon memory-pool example: needs two daemons
+// (machine A and B), so it uses a dedicated harness instead of
+// `dora up` (which starts a single daemon). The four true
+// cross-machine examples (`*_cross.yml`) require two hosts and are
+// intentionally not smoke-tested on CI.
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_cpu2cpu_cross_local() {
+    run_cross_local_smoke_test(
+        "local-memory-pool-cpu2cpu-cross-local",
+        "examples/memory-pool/cpu2cpu_cross_local.yml",
+        Duration::from_secs(150),
+    );
+}
+
+/// Start a coordinator plus two same-host daemons (machine A and B),
+/// run the dataflow with `dora start --attach`, and wait for the
+/// receiver's throughput line. Cleans up every child process on both
+/// success and failure.
+fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
+    use std::net::TcpListener;
+
+    ensure_cli_built();
+
+    let dora = dora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let full_yaml = Path::new(manifest_dir).join(yaml_path);
+    assert!(
+        full_yaml.exists(),
+        "{name}: dataflow YAML not found at {full_yaml:?}"
+    );
+
+    let uv = needs_uv(&full_yaml);
+
+    // Pick free ports for the coordinator and the daemons' zenoh peer.
+    let coordinator_port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("pick coordinator port");
+    let zenoh_port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("pick zenoh port");
+
+    let tmp = std::env::temp_dir().join(format!("{name}-{coordinator_port}"));
+    std::fs::create_dir_all(&tmp).expect("create smoke tmp dir");
+
+    // A stale session file from a previous local build would make
+    // `dora start` reject the dataflow ("built locally"); start clean.
+    let _ = std::fs::remove_file(
+        Path::new(manifest_dir)
+            .join("examples/memory-pool/out/cpu2cpu_cross_local.dora-session.yaml"),
+    );
+
+    let mut children: Vec<std::process::Child> = Vec::new();
+    fn cleanup(children: &mut Vec<std::process::Child>, tmp: &std::path::Path) {
+        for child in children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    // Coordinator.
+    let coordinator_log = tmp.join("coordinator.log");
+    let coordinator = Command::new(&dora)
+        .args([
+            "coordinator",
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            &coordinator_port.to_string(),
+            "--store",
+            "memory",
+        ])
+        .stdout(Stdio::from(
+            std::fs::File::create(&coordinator_log).unwrap(),
+        ))
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{name}: failed to spawn coordinator: {e}"));
+    children.push(coordinator);
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Daemon A (listens on the zenoh peer port) and daemon B (dials it).
+    // Each daemon also gets an explicit local listen port: two daemons on
+    // one host would otherwise pick the same default and collide.
+    let mut local_listen_port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("pick local listen port");
+    for (machine, dial) in [
+        ("A", format!("tcp/0.0.0.0:{zenoh_port}")),
+        ("B", format!("tcp/127.0.0.1:{zenoh_port}")),
+    ] {
+        let listen_port = local_listen_port;
+        local_listen_port += 1;
+        let log = tmp.join(format!("daemon-{machine}.log"));
+        // The yml's `working_dir: ../../examples/memory-pool` is relative to
+        // the daemon's cwd (the repo root, per the multiple-daemons
+        // convention), so the daemons run from the test's cwd.
+        let daemon = Command::new(&dora)
+            .args([
+                "daemon",
+                "--machine-id",
+                machine,
+                "--coordinator-addr",
+                "127.0.0.1",
+                "--coordinator-port",
+                &coordinator_port.to_string(),
+                "--zenoh-peer",
+                &dial,
+                "--local-listen-port",
+                &listen_port.to_string(),
+            ])
+            .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("{name}: failed to spawn daemon {machine}: {e}"));
+        children.push(daemon);
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    // Cross-machine deploys must be built through the coordinator: a local
+    // build cannot be used by remote daemons.
+    let mut build_cmd = Command::new(&dora);
+    build_cmd.args([
+        "build",
+        full_yaml.to_str().unwrap(),
+        "--coordinator-port",
+        &coordinator_port.to_string(),
+    ]);
+    if uv {
+        build_cmd.arg("--uv");
+    }
+    let build_status = build_cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap_or_else(|e| panic!("{name}: failed to run dora build: {e}"));
+    assert!(build_status.success(), "{name}: dora build failed");
+
+    // Start the dataflow attached and poll for the receiver's marker.
+    let attach_log = tmp.join("attach.log");
+    // The CLI's logs go to stderr — capture both streams so the marker
+    // and any failure detail land in the same file.
+    let attach_file = std::fs::File::create(&attach_log).unwrap();
+    let attach = Command::new(&dora)
+        .args([
+            "start",
+            full_yaml.to_str().unwrap(),
+            "--coordinator-port",
+            &coordinator_port.to_string(),
+            "--attach",
+        ])
+        .stdout(Stdio::from(attach_file.try_clone().unwrap()))
+        .stderr(Stdio::from(attach_file))
+        .spawn()
+        .unwrap_or_else(|e| panic!("{name}: failed to spawn dora start: {e}"));
+    children.push(attach);
+
+    let deadline = std::time::Instant::now() + timeout;
+    let success = loop {
+        if let Ok(output) = std::fs::read_to_string(&attach_log)
+            && output.contains("Average transfer throughput")
+        {
+            break true;
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+
+    let attach_tail = std::fs::read_to_string(&attach_log)
+        .unwrap_or_default()
+        .lines()
+        .rev()
+        .take(15)
+        .collect::<Vec<_>>()
+        .join("\n");
+    cleanup(&mut children, &tmp);
+    assert!(
+        success,
+        "{name}: timed out waiting for the throughput marker in {attach_log:?}; last lines:\n{attach_tail}"
+    );
+}
+
 // Negative-lifecycle scenarios validate the "warn, don't crash" contract.
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]

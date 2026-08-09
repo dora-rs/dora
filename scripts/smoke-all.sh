@@ -549,6 +549,11 @@ except Exception:
         run_local     "local-memory-pool-duplicate-free"    "examples/memory-pool/duplicate_free.yml" 10
         run_local     "local-memory-pool-read-after-free"   "examples/memory-pool/read_after_free.yml" 10
         run_local     "local-memory-pool-write-after-free"  "examples/memory-pool/write_after_free.yml" 10
+        # Same-host cross-daemon: needs two daemons (machine A/B); the
+        # example-smoke harness starts them.
+        run_local     "local-memory-pool-cpu2cpu-cross-local" "examples/memory-pool/cpu2cpu_cross_local.yml" 150
+        # The true cross-machine examples (cpu2cpu/cpu2cuda/cuda2cpu/
+        # cuda2cuda `_cross.yml`) need two hosts and are not run on CI.
     else
         log_skip "memory-pool" "download.pytorch.org unreachable (run on a machine with PyPI access to exercise this suite)"
     fi
