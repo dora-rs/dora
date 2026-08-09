@@ -5,7 +5,7 @@ use dora_core::{
     descriptor::OperatorConfig,
 };
 use dora_message::daemon_to_node::{NodeConfig, RuntimeConfig};
-use dora_node_api::{DoraNode, Event};
+use dora_node_api::{DoraNode, Event, StopCause};
 use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
@@ -13,7 +13,7 @@ use futures_concurrency::stream::Merge;
 use operator::{OperatorEvent, RuntimeHandle, SharedAllocator, StopReason, run_operator};
 
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     mem,
     sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
@@ -103,10 +103,11 @@ pub fn main() -> eyre::Result<()> {
 
     let operator_id = operator_definition.id.clone();
     // Keep the operator's shared library mapped until *after* the main event
-    // loop has joined below: its outputs are Arrow arrays whose FFI `release`
-    // callbacks live in the `.so`, and the loop may still hold in-flight arrays
-    // (see `run_operator` / `shared_lib::run`). Unloading it earlier dangles
-    // those callbacks and SIGSEGVs when the arrays are freed.
+    // loop has joined below. Since dora-rs/dora#2742 the loop no longer holds
+    // Arrow arrays exported by the operator, but values whose vtable lives in
+    // the `.so` can still be in flight (an `OperatorEvent::Panic` payload).
+    // Unloading it earlier dangles those (see `run_operator` /
+    // `shared_lib::run`).
     let _operator_library = run_operator(
         &node_id,
         operator_definition,
@@ -123,8 +124,7 @@ pub fn main() -> eyre::Result<()> {
     }
 
     // `_operator_library` drops (unloads the `.so`) at end of scope here, after
-    // the main loop has joined and released every Arrow array the operator
-    // exported.
+    // the main loop has joined and released everything the operator handed it.
     Ok(())
 }
 
@@ -231,11 +231,18 @@ async fn run(
         });
     }
 
+    // Events pulled off the stream while a send was in flight (see
+    // `await_send_watching_for_stop`); they are handled before the stream is
+    // polled again so ordering is preserved.
+    let mut pending: VecDeque<RuntimeEvent> = VecDeque::new();
+
     loop {
         *lock(&activity) = LoopActivity::Idle;
-        let Some(event) = events.next().await else {
-            break;
+        let next = match pending.pop_front() {
+            buffered @ Some(_) => buffered,
+            None => events.next().await,
         };
+        let Some(event) = next else { break };
         *lock(&activity) = LoopActivity::Handling {
             since: Instant::now(),
             what: describe_runtime_event(&event),
@@ -298,37 +305,24 @@ async fn run(
                     encoded,
                 } => {
                     let output_id = operator_output_id(&operator_id, &output_id);
-                    let result;
-                    (node, result) = tokio::task::spawn_blocking(move || {
+                    let mut send = tokio::task::spawn_blocking(move || {
                         let result = node.send_output_encoded(output_id, parameters, encoded);
                         (node, result)
-                    })
+                    });
+                    let result;
+                    (node, result) = await_send_watching_for_stop(
+                        &mut send,
+                        &mut events,
+                        &mut pending,
+                        &mut operator_channels,
+                    )
                     .await
                     .wrap_err("failed to wait for send_output task")?;
                     result.wrap_err("failed to send node output")?;
                 }
             },
             RuntimeEvent::Event(Event::Stop(cause)) => {
-                // Diagnostic (dora-rs/dora#2742): trace Stop delivery so a
-                // Windows nightly shows whether the runtime received Stop and
-                // whether each per-operator forward *completed*. A logged
-                // "received Stop" with no matching "forwarded Stop" means the
-                // forward blocked on a full operator channel — i.e. the operator
-                // is parked in its own `on_event` and never draining.
-                // `warn!` (not `info!`) so it survives the runtime's default
-                // stdout filter (`with_stdout("warn", …)`) and reaches the
-                // nightly log.
-                tracing::warn!(
-                    "runtime received Stop; forwarding to {} operator(s) (dora-rs/dora#2742 diagnostic)",
-                    operator_channels.len()
-                );
-                // forward stop event to all operators and close the event channels
-                for (id, channel) in operator_channels.drain() {
-                    let _ = channel.send_async(Event::Stop(cause.clone())).await;
-                    tracing::warn!(
-                        "forwarded Stop to operator `{id}` (dora-rs/dora#2742 diagnostic)"
-                    );
-                }
+                forward_stop(&mut operator_channels, &cause).await;
             }
             RuntimeEvent::Event(Event::Reload {
                 operator_id: Some(operator_id),
@@ -426,6 +420,82 @@ async fn run(
     Ok(())
 }
 
+/// Forward `Stop` to every operator and close their event channels.
+///
+/// Diagnostic (dora-rs/dora#2742): a logged "received Stop" with no matching
+/// "forwarded Stop" means the forward blocked on a full operator channel — i.e.
+/// the operator is parked in its own `on_event` and never draining. The `warn!`
+/// level is deliberate: the runtime's default stdout filter is `warn`
+/// (`with_stdout("warn", …)`), so anything quieter never reaches a nightly log —
+/// which is what made the original wedge invisible.
+async fn forward_stop(
+    operator_channels: &mut HashMap<OperatorId, flume::Sender<Event>>,
+    cause: &StopCause,
+) {
+    tracing::warn!(
+        "runtime received Stop; forwarding to {} operator(s) (dora-rs/dora#2742 diagnostic)",
+        operator_channels.len()
+    );
+    for (id, channel) in operator_channels.drain() {
+        let _ = channel.send_async(Event::Stop(cause.clone())).await;
+        tracing::warn!("forwarded Stop to operator `{id}` (dora-rs/dora#2742 diagnostic)");
+    }
+}
+
+/// Wait for an in-flight output send without going deaf to `Stop`
+/// (dora-rs/dora#2742).
+///
+/// The main loop is the only consumer of the merged operator/daemon event
+/// stream, so awaiting a send inline meant the node could not observe `Stop` —
+/// and could not let its operators start winding down — until the send
+/// returned. This keeps consuming the stream: `Stop` is forwarded to the
+/// operators immediately, everything else is buffered for the caller to handle,
+/// in order, once the send completes.
+///
+/// This does **not** rescue a send that never returns: the node still owes the
+/// daemon an exit and will be force-killed at the grace period. Bailing out of a
+/// wedged send is not possible from here — the `DoraNode` lives inside the
+/// blocking task, and `Runtime::drop` waits forever for `spawn_blocking` work,
+/// so a real escape needs `shutdown_background()` at the `main()` layer.
+async fn await_send_watching_for_stop<S, T>(
+    send: &mut tokio::task::JoinHandle<T>,
+    events: &mut S,
+    pending: &mut VecDeque<RuntimeEvent>,
+    operator_channels: &mut HashMap<OperatorId, flume::Sender<Event>>,
+) -> Result<T, tokio::task::JoinError>
+where
+    S: Stream<Item = RuntimeEvent> + Unpin,
+{
+    /// Stop pulling events into memory once this many are buffered. Each
+    /// buffered `Event::Input` pins its payload (a mapped shared-memory region
+    /// above the zero-copy threshold), so this is deliberately small: it only
+    /// has to cover the handful of events that can arrive while one send is in
+    /// flight. Beyond it the events simply stay in the stream.
+    const MAX_BUFFERED: usize = 4;
+
+    let mut stop_seen = false;
+    loop {
+        // Once `Stop` is forwarded there is nothing left to watch for, so stop
+        // consuming and just wait the send out.
+        let watching = !stop_seen && pending.len() < MAX_BUFFERED;
+        tokio::select! {
+            biased;
+            joined = &mut *send => return joined,
+            event = events.next(), if watching => {
+                match event {
+                    Some(RuntimeEvent::Event(Event::Stop(cause))) => {
+                        forward_stop(operator_channels, &cause).await;
+                        stop_seen = true;
+                    }
+                    Some(other) => pending.push_back(other),
+                    // The stream ended, so no `Stop` can arrive.
+                    None => stop_seen = true,
+                }
+            }
+        }
+    }
+}
+
 fn operator_output_id(operator_id: &OperatorId, output_id: &DataId) -> DataId {
     DataId::from(format!("{operator_id}/{output_id}"))
 }
@@ -479,4 +549,117 @@ fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[cfg(test)]
+mod stop_responsiveness_tests {
+    use super::*;
+    use futures::stream;
+
+    fn operator_channel() -> (
+        HashMap<OperatorId, flume::Sender<Event>>,
+        flume::Receiver<Event>,
+    ) {
+        let (tx, rx) = flume::unbounded();
+        let mut channels = HashMap::new();
+        channels.insert(OperatorId::from("op".to_string()), tx);
+        (channels, rx)
+    }
+
+    /// The ordinary case: nothing else happens, the send completes, and no
+    /// event is buffered.
+    #[tokio::test]
+    async fn a_send_that_completes_is_returned() {
+        let mut send = tokio::spawn(async { 42 });
+        let mut events = stream::empty::<RuntimeEvent>();
+        let mut pending = VecDeque::new();
+        let (mut channels, _rx) = operator_channel();
+
+        let joined =
+            await_send_watching_for_stop(&mut send, &mut events, &mut pending, &mut channels)
+                .await
+                .expect("joined");
+
+        assert_eq!(joined, 42);
+        assert!(pending.is_empty());
+    }
+
+    /// The #2742 behaviour: a `Stop` arriving mid-send reaches the operator
+    /// without waiting for the send, and a non-`Stop` event is kept for the
+    /// caller rather than dropped or reordered.
+    #[tokio::test]
+    async fn stop_reaches_the_operator_while_a_send_is_in_flight() {
+        let (unblock_tx, unblock_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut send = tokio::spawn(async move {
+            let _ = unblock_rx.await;
+            7
+        });
+        let mut events = stream::iter(vec![
+            RuntimeEvent::Event(Event::Reload { operator_id: None }),
+            RuntimeEvent::Event(Event::Stop(StopCause::Manual)),
+        ]);
+        let mut pending = VecDeque::new();
+        let (mut channels, rx) = operator_channel();
+
+        // Release the send only after the operator has been told to stop, which
+        // is only possible if the forward happened while the send was pending.
+        tokio::spawn(async move {
+            while rx.is_empty() {
+                tokio::task::yield_now().await;
+            }
+            assert!(matches!(rx.recv_async().await, Ok(Event::Stop(_))));
+            let _ = unblock_tx.send(());
+        });
+
+        let joined = tokio::time::timeout(
+            Duration::from_secs(5),
+            await_send_watching_for_stop(&mut send, &mut events, &mut pending, &mut channels),
+        )
+        .await
+        .expect("must not hang")
+        .expect("joined");
+
+        assert_eq!(joined, 7);
+        assert_eq!(
+            pending.len(),
+            1,
+            "the non-Stop event must be kept, not lost"
+        );
+        assert!(
+            channels.is_empty(),
+            "forwarding Stop closes the operator channels"
+        );
+    }
+
+    /// Buffering is bounded: a flood of events during a send does not pull the
+    /// whole stream into memory.
+    #[tokio::test]
+    async fn buffering_during_a_send_is_bounded() {
+        let (unblock_tx, unblock_rx) = tokio::sync::oneshot::channel::<()>();
+        let mut send = tokio::spawn(async move {
+            let _ = unblock_rx.await;
+            0
+        });
+        let flood = (0..1000)
+            .map(|_| RuntimeEvent::Event(Event::Reload { operator_id: None }))
+            .collect::<Vec<_>>();
+        let mut events = stream::iter(flood);
+        let mut pending = VecDeque::new();
+        let (mut channels, _rx) = operator_channel();
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            let _ = unblock_tx.send(());
+        });
+
+        await_send_watching_for_stop(&mut send, &mut events, &mut pending, &mut channels)
+            .await
+            .expect("joined");
+
+        assert!(
+            pending.len() <= 4,
+            "buffered {} events, expected the cap to hold",
+            pending.len()
+        );
+    }
 }
