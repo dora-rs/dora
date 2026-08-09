@@ -277,7 +277,8 @@ For a complete guide to all logging features, see [Logging](logging.md).
 | `restart_delay` | float | -- | Initial backoff in seconds. Doubles each attempt |
 | `max_restart_delay` | float | -- | Cap for exponential backoff |
 | `restart_window` | float | -- | Time window for counting restarts. The counter resets after this many seconds since the first restart in the current window. Enables "N restarts per M seconds" semantics with `max_restarts` |
-| `health_check_timeout` | float | -- | If the node does not communicate with the daemon (send outputs, subscribe, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy` |
+| `startup_timeout` | float | -- | If the node does not initialize its Dora connection within this many seconds, the daemon kills the process and lets the `restart_policy` decide whether to retry. Covers **pre-connection** startup hangs only |
+| `health_check_timeout` | float | -- | Once the node has connected, if it then does not communicate with the daemon (send outputs, acknowledge ticks, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy`. Covers **post-connection** liveness only |
 
 Restart policies:
 
@@ -295,6 +296,7 @@ Example with exponential backoff:
   restart_delay: 1.0         # 1s, 2s, 4s, 8s, 16s
   max_restart_delay: 30.0    # capped at 30s
   restart_window: 300.0      # 5 restarts per 5 minutes
+  startup_timeout: 60.0      # kill if startup never reaches Node::init
   health_check_timeout: 30.0
 ```
 

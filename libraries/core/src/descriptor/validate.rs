@@ -208,6 +208,7 @@ fn check_timing_fields(
     for (field, value) in [
         ("finish_grace_secs", custom.finish_grace_secs),
         ("health_check_timeout", custom.health_check_timeout),
+        ("startup_timeout", custom.startup_timeout),
         ("restart_delay", custom.restart_delay),
         ("max_restart_delay", custom.max_restart_delay),
         ("restart_window", custom.restart_window),
@@ -1386,6 +1387,7 @@ operators:
             max_restart_delay: None,
             restart_window: None,
             health_check_timeout: None,
+            startup_timeout: None,
             finish_grace_secs: None,
             run_config: serde_yaml::from_str("{}").unwrap(),
         }
@@ -1400,6 +1402,7 @@ operators:
         // a large finite grace is fine
         node.finish_grace_secs = Some(3600.0);
         node.health_check_timeout = Some(0.0);
+        node.startup_timeout = Some(0.0);
         check_timing_fields(&id, &node).unwrap();
     }
 
@@ -1411,6 +1414,18 @@ operators:
         let err = check_timing_fields(&id, &node).unwrap_err().to_string();
         assert!(
             err.contains("finish_grace_secs") && err.contains("non-negative"),
+            "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn timing_fields_reject_negative_startup_timeout() {
+        let id = NodeId::from("n".to_owned());
+        let mut node = custom_node();
+        node.startup_timeout = Some(-1.0);
+        let err = check_timing_fields(&id, &node).unwrap_err().to_string();
+        assert!(
+            err.contains("startup_timeout") && err.contains("non-negative"),
             "error should name the field and the constraint, got: {err}"
         );
     }

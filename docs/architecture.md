@@ -614,6 +614,7 @@ pub enum RestartPolicy {
 - `restart_delay` — initial backoff in seconds (doubles each attempt)
 - `max_restart_delay` — caps exponential backoff
 - `restart_window` — reset counter after N seconds (enables "N restarts per M seconds")
+- `startup_timeout` — kill node if it does not initialize its Dora connection within this duration
 - `health_check_timeout` — kill node if no activity within this duration, measured only after the node connects (post-connection liveness, not a startup deadline)
 
 ### Health Monitoring

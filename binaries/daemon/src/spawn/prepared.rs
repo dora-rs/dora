@@ -215,6 +215,7 @@ impl PreparedNode {
             },
             last_activity: self.last_activity.clone(),
             health_check_timeout: self.health_check_timeout(),
+            startup_timeout: self.startup_timeout(),
             finish_grace_secs: self.finish_grace_secs(),
         };
 
@@ -244,6 +245,15 @@ impl PreparedNode {
         match &self.node.kind {
             dora_core::descriptor::CoreNodeKind::Custom(n) => {
                 n.health_check_timeout.map(Duration::from_secs_f64)
+            }
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
+        }
+    }
+
+    fn startup_timeout(&self) -> Option<Duration> {
+        match &self.node.kind {
+            dora_core::descriptor::CoreNodeKind::Custom(n) => {
+                n.startup_timeout.map(Duration::from_secs_f64)
             }
             dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }

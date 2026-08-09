@@ -829,6 +829,14 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    /// Startup timeout in seconds.
+    ///
+    /// When set, the daemon kills this node if it does not initialize its Dora
+    /// connection within the timeout. This bounds pre-connection startup hangs;
+    /// after the node has connected, `health_check_timeout` handles liveness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
+
     /// Per-node finish-drain grace period in seconds.
     ///
     /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
@@ -1166,6 +1174,14 @@ pub struct CustomNode {
     /// not reaped here either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
+
+    /// Startup timeout in seconds.
+    ///
+    /// When set, the daemon kills this node if it does not initialize its Dora
+    /// connection within the timeout. This bounds pre-connection startup hangs;
+    /// after the node has connected, `health_check_timeout` handles liveness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
 
     /// Per-node finish-drain grace period in seconds.
     ///

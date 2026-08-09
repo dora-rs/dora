@@ -403,6 +403,7 @@ fn patch_descriptor_entry(
         entry.max_restart_delay = custom.max_restart_delay;
         entry.restart_window = custom.restart_window;
         entry.health_check_timeout = custom.health_check_timeout;
+        entry.startup_timeout = custom.startup_timeout;
         entry.finish_grace_secs = custom.finish_grace_secs;
         entry.send_stdout_as = custom.send_stdout_as.clone();
         entry.send_logs_as = custom.send_logs_as.clone();
@@ -1890,6 +1891,7 @@ impl Daemon {
                 }
                 Event::NodeHealthCheckInterval => {
                     self.check_node_health();
+                    self.check_startup_timeouts();
                     self.check_input_timeouts();
                     self.check_finish_stragglers();
                     if self.ft_stats.any_nonzero() {
@@ -2818,6 +2820,7 @@ impl Daemon {
                             max_restart_delay: None,
                             restart_window: None,
                             health_check_timeout: None,
+                            startup_timeout: None,
                             finish_grace_secs: None,
                             module: None,
                             params: Default::default(),
@@ -3557,6 +3560,39 @@ impl Daemon {
                 self.ft_stats
                     .health_check_kills
                     .fetch_add(1, atomic::Ordering::Relaxed);
+                if let Some(process) = &node.process {
+                    process.submit(ProcessOperation::Kill);
+                }
+            }
+        }
+    }
+
+    fn check_startup_timeouts(&mut self) {
+        let now_millis = node_communication::current_millis();
+        for (dataflow_id, dataflow) in &mut self.running {
+            for (node_id, node) in &dataflow.running_nodes {
+                let Some(timeout) = node.startup_timeout else {
+                    continue;
+                };
+                let timeout_key = (node_id.clone(), node.generation);
+                let timed_out = startup_timeout_should_kill(
+                    dataflow.pending_nodes.is_pending(node_id),
+                    dataflow.connected_nodes.contains(node_id),
+                    dataflow.startup_timeout_kills.contains_key(&timeout_key),
+                    node.last_activity.load(atomic::Ordering::Acquire),
+                    now_millis,
+                    timeout,
+                );
+                if !timed_out {
+                    continue;
+                }
+                tracing::warn!(
+                    %dataflow_id,
+                    %node_id,
+                    generation = node.generation,
+                    "node did not initialize dora connection within {timeout:?}; killing"
+                );
+                dataflow.startup_timeout_kills.insert(timeout_key, timeout);
                 if let Some(process) = &node.process {
                     process.submit(ProcessOperation::Kill);
                 }
@@ -5856,10 +5892,14 @@ impl Daemon {
                         dataflow
                             .grace_duration_kills
                             .remove(&(node_id.clone(), generation));
+                        dataflow
+                            .startup_timeout_kills
+                            .remove(&(node_id.clone(), generation));
                     }
                     return Ok(());
                 }
 
+                let lifecycle_key = (node_id.clone(), generation);
                 let node_result = match exit_status {
                     NodeExitStatus::Success => Ok(()),
                     exit_status => {
@@ -5872,9 +5912,12 @@ impl Daemon {
                         let grace_duration_kill = dataflow
                             .map(|d| {
                                 d.grace_duration_kills
-                                    .contains(&(node_id.clone(), generation))
+                                    .contains(&lifecycle_key)
                             })
                             .unwrap_or_default();
+                        let startup_timeout_kill = dataflow.and_then(|d| {
+                            d.startup_timeout_kills.get(&lifecycle_key).copied()
+                        });
                         // Killed by the finish-straggler watchdog
                         // (dora-rs/dora#2152): the node blocked an
                         // otherwise-finished dataflow past the drain grace
@@ -5969,6 +6012,11 @@ impl Daemon {
                                 None if grace_duration_kill || finish_escalated => {
                                     NodeErrorCause::GraceDuration
                                 }
+                                None if let Some(timeout) = startup_timeout_kill => {
+                                    NodeErrorCause::StartupTimeout {
+                                        timeout_secs: timeout.as_secs_f64(),
+                                    }
+                                }
                                 None => {
                                     let cause = dataflow
                                         .and_then(|d| d.node_stderr_most_recent.get(&node_id))
@@ -6013,7 +6061,10 @@ impl Daemon {
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     dataflow
                         .grace_duration_kills
-                        .remove(&(node_id.clone(), generation));
+                        .remove(&lifecycle_key);
+                    if !restart {
+                        dataflow.startup_timeout_kills.remove(&lifecycle_key);
+                    }
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     // a respawned node must re-subscribe before it counts as
                     // connected, else a slow restart could be silence-escalated
@@ -6164,8 +6215,15 @@ impl Daemon {
                             new_generation,
                             new_handle,
                         ) {
-                            running_dataflow::HandleReplacement::Replaced => {}
+                            running_dataflow::HandleReplacement::Replaced => {
+                                dataflow
+                                    .startup_timeout_kills
+                                    .remove(&(node_id.clone(), previous_generation));
+                            }
                             running_dataflow::HandleReplacement::RejectedTeardown(new_handle) => {
+                                dataflow
+                                    .startup_timeout_kills
+                                    .remove(&(node_id.clone(), previous_generation));
                                 dataflow.stop_rejected_replacement(
                                     &node_id,
                                     new_generation,
@@ -6917,6 +6975,28 @@ fn health_check_should_kill(
     elapsed_ms > timeout.as_millis() as u64
 }
 
+/// Whether the startup watchdog should kill a node that has not initialized its
+/// Dora connection yet.
+///
+/// This is deliberately separate from [`health_check_should_kill`]:
+/// `health_check_timeout` covers post-connection silence, while
+/// `startup_timeout` covers the pre-connection gap where a process can hang
+/// before its first `Subscribe` and keep the startup barrier pending forever.
+fn startup_timeout_should_kill(
+    pending: bool,
+    connected: bool,
+    already_killed: bool,
+    last_activity_millis: u64,
+    now_millis: u64,
+    timeout: Duration,
+) -> bool {
+    if !pending || connected || already_killed {
+        return false;
+    }
+    let elapsed_ms = now_millis.saturating_sub(last_activity_millis);
+    elapsed_ms > timeout.as_millis() as u64
+}
+
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
 /// `None` if the watchdog has been explicitly **disabled**.
 ///
@@ -7658,6 +7738,7 @@ mod fault_tolerance_tests {
             force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
             health_check_timeout: None,
+            startup_timeout: None,
             finish_grace_secs: None,
         }
     }
@@ -8588,6 +8669,8 @@ mod fault_tolerance_tests {
             );
             df.broken_inputs
                 .insert((node.clone(), input_x.clone()), timeout);
+            df.startup_timeout_kills
+                .insert((node.clone(), 7), timeout);
             df.node_stderr_most_recent
                 .insert(node.clone(), Arc::new(ArrayQueue::new(4)));
         }
@@ -8603,6 +8686,10 @@ mod fault_tolerance_tests {
             !df.broken_inputs
                 .contains_key(&(node_a.clone(), input_x.clone()))
         );
+        assert!(
+            !df.startup_timeout_kills
+                .contains_key(&(node_a.clone(), 7))
+        );
         assert!(!df.node_stderr_most_recent.contains_key(&node_a));
 
         // … while node_b's are untouched.
@@ -8613,6 +8700,10 @@ mod fault_tolerance_tests {
         assert!(
             df.broken_inputs
                 .contains_key(&(node_b.clone(), input_x.clone()))
+        );
+        assert!(
+            df.startup_timeout_kills
+                .contains_key(&(node_b.clone(), 7))
         );
         assert!(df.node_stderr_most_recent.contains_key(&node_b));
     }
@@ -9717,5 +9808,58 @@ mod health_check_tests {
         let last = 10_000u64;
         let now = 1_000u64;
         assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+}
+
+#[cfg(test)]
+mod startup_timeout_tests {
+    use super::startup_timeout_should_kill;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn pending_unconnected_node_past_startup_timeout_is_killed() {
+        let spawn = 1_000u64;
+        let now = spawn + 6_000;
+        assert!(startup_timeout_should_kill(
+            true, false, false, spawn, now, TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn subscribed_node_is_not_killed_by_startup_timeout() {
+        let spawn = 1_000u64;
+        let now = spawn + 6_000;
+        assert!(!startup_timeout_should_kill(
+            false, true, false, spawn, now, TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn non_pending_node_is_not_killed_by_startup_timeout() {
+        let spawn = 1_000u64;
+        let now = spawn + 6_000;
+        assert!(!startup_timeout_should_kill(
+            false, false, false, spawn, now, TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn startup_timeout_kill_is_one_shot_per_generation() {
+        let spawn = 1_000u64;
+        let now = spawn + 6_000;
+        assert!(!startup_timeout_should_kill(
+            true, false, true, spawn, now, TIMEOUT
+        ));
+    }
+
+    #[test]
+    fn exactly_at_startup_timeout_is_not_killed() {
+        let spawn = 1_000u64;
+        let now = spawn + 5_000;
+        assert!(!startup_timeout_should_kill(
+            true, false, false, spawn, now, TIMEOUT
+        ));
     }
 }

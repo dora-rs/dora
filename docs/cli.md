@@ -175,6 +175,7 @@ nodes:
     restart_delay: 1.0            # initial backoff in seconds
     max_restart_delay: 30.0       # backoff cap in seconds
     restart_window: 300.0         # reset counter after N seconds
+    startup_timeout: 60.0         # kill if startup never reaches Node::init
     health_check_timeout: 30.0    # kill if no activity for N seconds
 
     # --- Logging ---

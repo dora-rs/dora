@@ -162,6 +162,11 @@ impl std::fmt::Display for NodeError {
                 f,
                 ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
+            NodeErrorCause::StartupTimeout { timeout_secs } => write!(
+                f,
+                ". Dora killed the node because it did not initialize its \
+                 connection within {timeout_secs}s."
+            )?,
             NodeErrorCause::FailedToSpawn(_) => unreachable!(), // handled above
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
@@ -182,6 +187,9 @@ pub enum NodeErrorCause {
     /// Node failed because another node failed before,
     Cascading {
         caused_by_node: NodeId,
+    },
+    StartupTimeout {
+        timeout_secs: f64,
     },
     FailedToSpawn(String),
     Other {

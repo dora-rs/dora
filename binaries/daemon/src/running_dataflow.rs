@@ -109,6 +109,7 @@ pub struct RunningNode {
     pub(crate) force_restart_next: Arc<AtomicBool>,
     pub(crate) last_activity: Arc<AtomicU64>,
     pub(crate) health_check_timeout: Option<Duration>,
+    pub(crate) startup_timeout: Option<Duration>,
     /// Per-node finish-drain grace override (from `finish_grace_secs` in the
     /// descriptor). When `Some`, overrides the global `DORA_FINISH_DRAIN_GRACE_SECS`
     /// for this node in the finish-straggler watchdog.
@@ -314,6 +315,9 @@ pub struct RunningDataflow {
     pub(crate) connected_nodes: BTreeSet<NodeId>,
     /// Nodes already escalated by the finish-straggler watchdog (one-shot).
     pub(crate) finish_escalated: BTreeSet<NodeId>,
+    /// Startup timeout kills keyed by `(node id, generation)`, so a restarted
+    /// successor never inherits the previous incarnation's timeout marker.
+    pub(crate) startup_timeout_kills: BTreeMap<(NodeId, u64), Duration>,
     /// Per node, the inputs that can ever close — i.e. those fed by
     /// another node's output rather than by the daemon.
     ///
@@ -408,6 +412,7 @@ impl RunningDataflow {
             all_inputs_closed_at: HashMap::new(),
             connected_nodes: BTreeSet::new(),
             finish_escalated: BTreeSet::new(),
+            startup_timeout_kills: BTreeMap::new(),
             data_inputs: BTreeMap::new(),
             timers_gate_drain: true,
             stop_sent: false,
@@ -445,6 +450,7 @@ impl RunningDataflow {
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
+        self.startup_timeout_kills.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
     }
 

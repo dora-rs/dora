@@ -7,6 +7,7 @@ Dora provides built-in fault tolerance for robotic and AI dataflows. Nodes can a
 | Feature | Scope | Config |
 |---------|-------|--------|
 | Restart policies | Per-node | `restart_policy`, `max_restarts`, `restart_delay`, ... |
+| Startup deadline | Per-node | `startup_timeout`, `health_check_interval` (dataflow-level) |
 | Health monitoring | Per-node | `health_check_timeout`, `health_check_interval` (dataflow-level) |
 | Input timeouts | Per-input | `input_timeout` |
 | Circuit breaker | Automatic | Triggered by `input_timeout`, auto-recovers |
@@ -122,6 +123,7 @@ health_check_interval: 2.0  # seconds (default: 5.0, dataflow-level)
 nodes:
   - id: my-node
     path: ./target/debug/my-node
+    startup_timeout: 60.0       # seconds to reach Node::init (per-node)
     health_check_timeout: 30.0  # seconds (per-node)
     restart_policy: on-failure
 ```
@@ -159,11 +161,11 @@ mid-startup -- and under `restart_policy: always`/`on-failure` that becomes an
 unescapable restart loop.
 
 The tradeoff is that a node that hangs **before** it ever subscribes -- a
-deadlock in import or init code that never reaches `Node::init` -- is not
-reaped by this watchdog, and the dataflow stays in its pending state waiting
-for that node. Slow-but-legitimate startup and hung startup are
-indistinguishable before the node connects, so bounding them needs a separate
-startup deadline rather than this timeout.
+deadlock in import or init code that never reaches `Node::init` -- is outside
+this watchdog. Use `startup_timeout` when you want to bound that pre-connection
+phase: if the node does not initialize its Dora connection before the deadline,
+the daemon kills that process and the normal restart policy decides whether to
+retry.
 
 ### What Counts as "Activity"
 
