@@ -103,7 +103,7 @@ impl GitManager {
                 "the build directory is still in use by the following \
                     dataflows, please stop them before rebuilding: {}",
                 using.iter().join(", ")
-            );
+            )
         }
 
         let reuse = if self.clone_dir_ready(session_id, &clone_dir) {
@@ -293,7 +293,7 @@ impl GitFolder {
                             .log_message(LogLevel::Error, format!("{err:?}"))
                             .await;
                         cleanup_failed_clone(logger, &target_dir).await;
-                        bail!(err);
+                        bail!(err)
                     }
                 }
             }
@@ -345,7 +345,7 @@ impl GitFolder {
                     Ok(()) => target_dir,
                     Err(err) => {
                         cleanup_failed_clone(logger, &target_dir).await;
-                        bail!(err);
+                        bail!(err)
                     }
                 }
             }
@@ -379,7 +379,7 @@ impl GitFolder {
                     Ok(()) => target_dir,
                     Err(err) => {
                         cleanup_failed_clone(logger, &target_dir).await;
-                        bail!(err);
+                        bail!(err)
                     }
                 }
             }
@@ -432,14 +432,12 @@ impl GitFolder {
                         // in-progress set only covers one GitManager and the CLI
                         // builds with its own, so deleting here is how #2711
                         // wipes out a live build. Fail loudly, leave the dir.
-                        Err(err) => {
-                            bail!(
-                                "couldn't verify clone dir {} is on commit {commit_hash}: {err:?}; \
-                                 leaving it in place in case another build is writing it, \
-                                 please retry",
-                                dir.display()
-                            );
-                        }
+                        Err(err) => bail!(
+                            "couldn't verify clone dir {} is on commit {commit_hash}: {err:?}; \
+                             leaving it in place in case another build is writing it, \
+                             please retry",
+                            dir.display()
+                        ),
                     }
                 }
 

@@ -425,9 +425,7 @@ fn parse_byte_size(s: &str) -> eyre::Result<u64> {
         "KB" | "K" => 1024,
         "MB" | "M" => 1024 * 1024,
         "GB" | "G" => 1024 * 1024 * 1024,
-        _ => {
-            bail!("unknown byte size unit: '{unit}', expected B, KB, MB, or GB");
-        }
+        _ => bail!("unknown byte size unit: '{unit}', expected B, KB, MB, or GB"),
     };
     // Use integer parse when possible to avoid float rounding
     if let Ok(num) = num_str.parse::<u64>() {
@@ -474,11 +472,9 @@ fn parse_log_level(s: &str) -> eyre::Result<dora_message::common::LogLevelOrStdo
             log::Level::Trace,
         )),
         "stdout" => Ok(dora_message::common::LogLevelOrStdout::Stdout),
-        _ => {
-            bail!(
-                "invalid min_log_level: '{s}', expected one of: error, warn, info, debug, trace, stdout"
-            );
-        }
+        _ => bail!(
+            "invalid min_log_level: '{s}', expected one of: error, warn, info, debug, trace, stdout"
+        ),
     }
 }
 
@@ -569,7 +565,7 @@ assert dora.__version__=='{VERSION}',  'Python dora-rs should be {VERSION}, but 
         .wrap_err("Could not get exit status when checking python dora-rs")?;
 
     if !status.success() {
-        bail!("Something went wrong with Python dora-rs. {reinstall_command}");
+        bail!("Something went wrong with Python dora-rs. {reinstall_command}")
     }
 
     Ok(())
@@ -761,23 +757,19 @@ fn validate_ros2_qos(
     if let Some(d) = &qos.durability {
         match d.as_str() {
             "volatile" | "transient_local" => {}
-            _ => {
-                bail!(
-                    "node `{node_id}`: invalid QoS durability `{d}`, \
-                     expected \"volatile\" or \"transient_local\""
-                );
-            }
+            _ => bail!(
+                "node `{node_id}`: invalid QoS durability `{d}`, \
+                 expected \"volatile\" or \"transient_local\""
+            ),
         }
     }
     if let Some(l) = &qos.liveliness {
         match l.as_str() {
             "automatic" | "manual_by_participant" | "manual_by_topic" => {}
-            _ => {
-                bail!(
-                    "node `{node_id}`: invalid QoS liveliness `{l}`, \
-                     expected \"automatic\", \"manual_by_participant\", or \"manual_by_topic\""
-                );
-            }
+            _ => bail!(
+                "node `{node_id}`: invalid QoS liveliness `{l}`, \
+                 expected \"automatic\", \"manual_by_participant\", or \"manual_by_topic\""
+            ),
         }
     }
     if let Some(depth) = qos.keep_last
