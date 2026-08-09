@@ -88,6 +88,20 @@ fn truncate_log_line(content: &mut String) {
     }
 }
 
+/// Drop a single trailing line terminator (`\n`, or `\r\n`) from an owned
+/// log line, in place. `content` holds one logical line (the reader stops at
+/// the first `\n`), so this reproduces what `content.lines().next()` would
+/// yield without allocating a new `String`.
+fn strip_trailing_newline(mut content: String) -> String {
+    if content.ends_with('\n') {
+        content.pop();
+        if content.ends_with('\r') {
+            content.pop();
+        }
+    }
+    content
+}
+
 /// Read a single log line from `reader`, buffering at most
 /// `MAX_LOG_LINE_BYTES + 1` bytes into `raw`. Returns `Ok(true)` once the
 /// stream reaches EOF (nothing more to read).
@@ -948,10 +962,11 @@ impl PreparedNode {
                     }
                 }
 
-                let formatted = content.lines().fold(String::default(), |mut output, line| {
-                    output.push_str(line);
-                    output
-                });
+                // `content` is a single logical line (the reader stops at the
+                // first `\n`), so this only needs to drop the trailing line
+                // terminator. Reuse the already-owned buffer instead of
+                // allocating and copying a fresh String on every log line.
+                let formatted = strip_trailing_newline(content);
 
                 // Build a LogMessage for both file writing and channel forwarding
                 let log_message = match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
@@ -1156,6 +1171,38 @@ struct RestartLoopReceivers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_trailing_newline_matches_lines_for_single_line() {
+        // The previous implementation was
+        // `content.lines().fold(String::new(), |mut o, l| { o.push_str(l); o })`.
+        // For the single-line inputs the reader produces, the in-place strip
+        // must be byte-for-byte identical.
+        let old = |content: &str| -> String {
+            content.lines().fold(String::new(), |mut output, line| {
+                output.push_str(line);
+                output
+            })
+        };
+        for case in [
+            "hello",
+            "hello\n",
+            "hello\r\n",
+            "hello\r",
+            "",
+            "\n",
+            "\r\n",
+            "a\rb\n",
+            "trailing spaces  \n",
+            "... [truncated]",
+        ] {
+            assert_eq!(
+                strip_trailing_newline(case.to_string()),
+                old(case),
+                "mismatch for {case:?}"
+            );
+        }
+    }
 
     /// Deserialize from YAML (mirroring `dora_core::build` tests) to avoid
     /// coupling this fixture to ResolvedNode's exact field list.
