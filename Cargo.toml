@@ -92,6 +92,9 @@ members = [
 
 [workspace.package]
 edition = "2024"
+# Raising this does not raise `dora-message`, which pins its own lower
+# `rust-version` so Kani's bundled toolchain can still build the proof
+# harnesses (#3090). Bump that one only against Kani's rustc.
 rust-version = "1.95.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
 version = "1.0.0-rc.4"
