@@ -104,7 +104,7 @@
           "format": "double"
         },
         "health_check_timeout": {
-          "description": "Health check timeout in seconds.\n\nWhen set, the daemon monitors this node for activity. If the node does not\ncommunicate with the daemon within this timeout, it is killed and the restart\npolicy is evaluated.",
+          "description": "Health check timeout in seconds.\n\nWhen set, the daemon monitors this node for activity **once it has\nconnected** (i.e. subscribed to events during `Node::init`). If the\nconnected node then does not communicate with the daemon within this\ntimeout, it is killed and the restart policy is evaluated.\n\nThis bounds post-connection liveness only, not startup time: a node\nstill in a slow cold start has not connected yet and is never killed by\nthis watchdog. A node that hangs before it ever subscribes is therefore\nnot reaped here either.",
           "type": [
             "number",
             "null"
@@ -535,7 +535,7 @@
           ]
         },
         "health_check_timeout": {
-          "description": "Health check timeout in seconds.\n\nWhen set, the daemon monitors this node for activity. If the node does not\ncommunicate with the daemon within this timeout, it is killed and the restart\npolicy is evaluated.",
+          "description": "Health check timeout in seconds.\n\nWhen set, the daemon monitors this node for activity **once it has\nconnected** (i.e. subscribed to events during `Node::init`). If the\nconnected node then does not communicate with the daemon within this\ntimeout, it is killed and the restart policy is evaluated.\n\nThis bounds post-connection liveness only, not startup time: a node\nstill in a slow cold start has not connected yet and is never killed by\nthis watchdog. A node that hangs before it ever subscribes is therefore\nnot reaped here either.",
           "type": [
             "number",
             "null"
