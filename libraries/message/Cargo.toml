@@ -42,6 +42,10 @@ libc = "0.2"
 tempfile = { workspace = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = { workspace = true }
+# `Uuid::new_v4` is used only by the `#[cfg(test)]` modules, so `v4` is
+# dev-only. It used to arrive by accident through feature unification: uhlc 0.5
+# depended on `uuid` with `v4` enabled, and the uhlc 0.9 bump dropped that dep.
+uuid = { workspace = true, features = ["v4"] }
 
 [[bench]]
 name = "message_serde"
