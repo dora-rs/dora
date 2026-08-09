@@ -10,12 +10,12 @@ use dora_tracing::TracingBuilder;
 use eyre::{Context, Result, bail};
 use futures::{Stream, StreamExt};
 use futures_concurrency::stream::Merge;
-use operator::{OperatorEvent, StopReason, run_operator};
+use operator::{OperatorEvent, RuntimeHandle, SharedAllocator, StopReason, run_operator};
 
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap},
     mem,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, OnceLock},
     time::{Duration, Instant},
 };
 use tokio::{
@@ -86,6 +86,10 @@ pub fn main() -> eyre::Result<()> {
     .into_iter()
     .collect();
     let (init_done_tx, init_done) = oneshot::channel();
+    // Filled by `run` as soon as the node exists; operators encode their outputs
+    // through it (see `SharedAllocator`, dora-rs/dora#2742).
+    let allocator: SharedAllocator = Arc::new(OnceLock::new());
+    let run_allocator = allocator.clone();
     let main_task = std::thread::spawn(move || -> Result<()> {
         tokio_runtime.block_on(run(
             operator_config,
@@ -93,6 +97,7 @@ pub fn main() -> eyre::Result<()> {
             operator_events,
             operator_channels,
             init_done,
+            run_allocator,
         ))
     });
 
@@ -106,7 +111,7 @@ pub fn main() -> eyre::Result<()> {
         &node_id,
         operator_definition,
         incoming_events,
-        operator_events_tx,
+        RuntimeHandle::new(operator_events_tx, allocator),
         init_done_tx,
         &dataflow_descriptor,
     )
@@ -137,13 +142,14 @@ fn queue_sizes(
     sizes
 }
 
-#[tracing::instrument(skip(operator_events, operator_channels), level = "trace")]
+#[tracing::instrument(skip(operator_events, operator_channels, allocator), level = "trace")]
 async fn run(
     operators: HashMap<OperatorId, OperatorConfig>,
     config: NodeConfig,
     operator_events: impl Stream<Item = RuntimeEvent> + Unpin,
     mut operator_channels: HashMap<OperatorId, flume::Sender<Event>>,
     init_done: oneshot::Receiver<Result<()>>,
+    allocator: SharedAllocator,
 ) -> eyre::Result<()> {
     // Start the OTLP metrics exporter only when an endpoint is configured, and
     // spawn it as a background task. `run_metrics_monitor` is an `async fn`, so
@@ -174,6 +180,9 @@ async fn run(
     tracing::info!("All operators are ready, starting runtime");
 
     let (mut node, mut daemon_events) = DoraNode::init(config)?;
+    // Publish the allocator before any input can reach an operator, so an
+    // operator's first `send_output` already has somewhere to encode into.
+    let _ = allocator.set(node.sample_allocator());
     let (daemon_events_tx, daemon_event_stream) = flume::bounded(1);
     tokio::task::spawn_blocking(move || {
         while let Some(event) = daemon_events.recv() {
@@ -286,13 +295,12 @@ async fn run(
                 OperatorEvent::Output {
                     output_id,
                     parameters,
-                    arrow_array,
+                    encoded,
                 } => {
                     let output_id = operator_output_id(&operator_id, &output_id);
                     let result;
                     (node, result) = tokio::task::spawn_blocking(move || {
-                        let array = dora_node_api::arrow::array::make_array(arrow_array);
-                        let result = node.send_output(output_id, parameters, array);
+                        let result = node.send_output_encoded(output_id, parameters, encoded);
                         (node, result)
                     })
                     .await
