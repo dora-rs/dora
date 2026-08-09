@@ -97,16 +97,20 @@ pub enum DaemonReply {
     PinnedMemoryMetadata {
         metadata: Metadata,
     },
+    Empty,
     /// Result of a cross-machine pool registration. `Err` carries the
     /// warning message (resolution failure or remote creation failure) —
     /// the register is a warn-and-no-op in both cases. `direct` tells the
     /// node whether the remote daemon can open its segment directly
     /// (same host): when true, the per-frame data push is skipped.
+    ///
+    /// Appended last so existing variants keep their bincode indices: the
+    /// Python node API ships separately (PyPI) from the daemon, so a
+    /// mixed-version pair must not misdecode older replies.
     CrossMachinePoolRegistered {
         result: Result<(), String>,
         direct: bool,
     },
-    Empty,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]

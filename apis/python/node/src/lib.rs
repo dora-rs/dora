@@ -2098,10 +2098,10 @@ impl Node {
                     || name.contains('/')
                     || name.contains("..")
                     || name.len() > 128
-                    || name.starts_with("dora_pool_")
+                    || !name.starts_with("dora_pool_")
                 {
                     eyre::bail!(
-                        "invalid memory pool name `{name}`: must be non-empty, without '/' or '..',                          at most 128 chars, and must not start with `dora_pool_` (reserved for                          auto-generated names)"
+                        "invalid memory pool name `{name}`: must be non-empty, start with                          `dora_pool_` (the dora-owned /dev/shm namespace), without '/' or                          '..', and at most 128 chars"
                     );
                 }
                 name.clone()
@@ -3456,34 +3456,38 @@ impl Node {
 
         // Fast path: DORADMA header read with daemon-trusted size validation.
         if buffer_id.starts_with("pool_") {
-            // Explicit (`name=`) segments cannot be guessed from the buffer
-            // id. Resolve the registered segment name from the daemon once
-            // (cheap control-plane round trip) and read by name; without
-            // this, every read would burn the whole retry window guessing.
-            let known_name = self
-                .node
-                .get_mut()
-                .read_pinned_memory(buffer_id.clone(), false)
-                .ok()
-                .and_then(|m| {
-                    m.parameters.get("shared_memory_name").and_then(|p| {
-                        if let Parameter::String(name) = p {
-                            Some(name.clone())
-                        } else {
-                            None
-                        }
-                    })
-                });
+            // Same-machine auto-named pools can be read by a name derived
+            // from the buffer id (`dora_pool_[machine_]dataflow_node_counter`),
+            // so the zero-copy fast path needs no daemon round trip. Only
+            // explicit (`name=`) segments and cross-machine pools (whose
+            // registering machine differs) need the daemon's registered
+            // name — resolve it once, after the local window expires.
+            let local_name = buffer_id.strip_prefix("pool_").and_then(|rest| {
+                let (node_id, counter) = rest.rsplit_once('_')?;
+                let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
+                Some(if machine.is_empty() {
+                    format!("dora_pool_{}_{}_{}", self.dataflow_id, node_id, counter)
+                } else {
+                    format!(
+                        "dora_pool_{}_{}_{}_{}",
+                        machine, self.dataflow_id, node_id, counter
+                    )
+                })
+            });
+            let mut daemon_name: Option<String> = None;
             // Retry on transient failures (odd seqlock, shmem not yet
             // mapped) so a concurrent writer doesn't cause a hard error.
-            // Cross-machine writes arrive via the daemon over the network
+            // Local pools fail fast (500 ms): a producer that crashes or
+            // never publishes must not block the consumer for long. The
+            // long window (3600 s) is only justified for cross-machine
+            // reads, whose writes arrive via the daemon over the network
             // (MemoryPoolWrite event): a 61 MiB tensor fragments into
             // 64 KiB zenoh batches and takes tens of seconds to cross a
             // WAN, and the inter-daemon link itself can drop for minutes
             // under host contention (zenoh reconnects with backoff, then
-            // the queued Block-mode put drains) — so the window is 3600s.
-            let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_millis(3_600_000))
+            // the queued Block-mode put drains).
+            let mut deadline = std::time::Instant::now()
+                .checked_add(std::time::Duration::from_millis(500))
                 .unwrap_or(std::time::Instant::now());
             loop {
                 // Same-host direct read first: the sender's segment (via
@@ -3491,7 +3495,8 @@ impl Node {
                 // freshest data — the mirror lags behind the zenoh
                 // transfer. Falls back to the guessed mirror name when
                 // the segment is not openable (cross-machine).
-                if let Some(name) = &known_name
+                let name = daemon_name.as_deref().or(local_name.as_deref());
+                if let Some(name) = name
                     && let Some(result) = self.try_doradma_read_by_name(name, &buffer_id, py)?
                 {
                     return Ok(result);
@@ -3505,6 +3510,39 @@ impl Node {
                             std::thread::sleep(std::time::Duration::from_millis(1));
                         });
                         continue;
+                    }
+                    Ok(None) if daemon_name.is_none() => {
+                        // Local window exhausted: either a crashed local
+                        // producer, or an explicit-name / cross-machine pool
+                        // whose segment name cannot be derived locally.
+                        // Resolve the registered name from the daemon once;
+                        // a name that differs from the local derivation
+                        // proves the pool is remote → switch to the WAN
+                        // window. A matching (local) name means the producer
+                        // never wrote → fail fast.
+                        daemon_name = self
+                            .node
+                            .get_mut()
+                            .read_pinned_memory(buffer_id.clone(), false)
+                            .ok()
+                            .and_then(|m| {
+                                m.parameters.get("shared_memory_name").and_then(|p| {
+                                    if let Parameter::String(name) = p {
+                                        Some(name.clone())
+                                    } else {
+                                        None
+                                    }
+                                })
+                            });
+                        if let Some(name) = &daemon_name
+                            && local_name.as_deref() != Some(name.as_str())
+                        {
+                            deadline = std::time::Instant::now()
+                                .checked_add(std::time::Duration::from_millis(3_600_000))
+                                .unwrap_or(std::time::Instant::now());
+                            continue;
+                        }
+                        break;
                     }
                     Ok(None) => break,
                     Err(e) => {

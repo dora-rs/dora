@@ -305,14 +305,16 @@ impl MemoryPoolManager {
     }
 
     fn free_shared_memory(&self, shm_name: &str) -> Result<(), String> {
-        // Sanity-checks to avoid path traversal: an attacker-supplied
-        // shared_memory_name must stay within the expected /dev/shm name
-        // space. No `dora_pool_` prefix requirement — explicit names via
-        // `register_memory_pool(name=...)` may be arbitrary (checked at
-        // registration), only '/' and '..' are rejected here.
-        if shm_name.contains('/') || shm_name.contains("..") {
+        // Sanity-checks to avoid path traversal and foreign-segment
+        // deletion: a dora pool must live in the `dora_pool_` namespace
+        // (registration enforces this for explicit `name=` pools too), and
+        // stay within the expected /dev/shm name space.
+        if !shm_name.starts_with("dora_pool_")
+            || shm_name.contains('/')
+            || shm_name.contains("..")
+        {
             return Err(format!(
-                "shared_memory_name `{shm_name}` is invalid: must not contain '/' or '..'",
+                "shared_memory_name `{shm_name}` is invalid: must live under the                  `dora_pool_` namespace and must not contain '/' or '..'",
             ));
         }
 

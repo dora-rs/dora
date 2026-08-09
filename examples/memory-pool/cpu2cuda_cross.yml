@@ -4,7 +4,6 @@ nodes:
   - id: sender_node
     _unstable_deploy:
       machine: A
-      working_dir: /data5/tangcanran/dora/examples/memory-pool
     build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy
     path: sender.py
     inputs:
@@ -20,7 +19,6 @@ nodes:
   - id: receiver_node
     _unstable_deploy:
       machine: B
-      working_dir: /data5/tangcanran/dora/examples/memory-pool
     build: pip install torch numpy tqdm
     path: receiver.py
     inputs:

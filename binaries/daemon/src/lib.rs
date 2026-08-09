@@ -4349,7 +4349,7 @@ impl Daemon {
                 // The gating above guarantees this daemon IS the target
                 // machine, so its machine id is the mirror's namespace.
                 let local_machine_id = self.machine_id.clone();
-                // 建池在 spawn 内（建池是毫秒级但发布可能 Block）
+                // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let memory_pool = self.memory_pool.clone();
                 let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
@@ -5552,8 +5552,13 @@ impl Daemon {
                     // `register_memory_pool(name=...)` option) are not
                     // required to carry the `dora_pool_` prefix, but must
                     // stay within /dev/shm (no '/', no '..').
-                    if shm_name.contains('/') || shm_name.contains("..") {
-                        return Err(format!("shared_memory_name `{}` is invalid", shm_name));
+                    if !shm_name.starts_with("dora_pool_")
+                        || shm_name.contains('/')
+                        || shm_name.contains("..")
+                    {
+                        return Err(format!(
+                            "shared_memory_name `{shm_name}` is invalid: must live under the                              `dora_pool_` namespace"
+                        ));
                     }
 
                     // Per-daemon pool cap (soft limit — rejects excess registrations).
@@ -5826,14 +5831,14 @@ impl Daemon {
                         // warn-and-skip.
                         let Some(coordinator_sender) = coordinator_sender.as_ref() else {
                             return Err(format!(
-                                r#"machine "{machine_id}" 无法解析：coordinator 无此机器或无 coordinator，未创建跨机内存池"#
+                                r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
                             ));
                         };
                         if !coordinator::resolve_machine(coordinator_sender, &clock, &machine_id)
                             .await
                         {
                             return Err(format!(
-                                r#"machine "{machine_id}" 无法解析：coordinator 无此机器或无 coordinator，未创建跨机内存池"#
+                                r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
                             ));
                         }
                         // Publish RegisterPool and await the ack, retrying on
@@ -5847,7 +5852,7 @@ impl Daemon {
                         // is not retried (the remote was reached and
                         // reported a creation failure).
                         let mut reply = Err(format!(
-                            r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
+                            r#"machine "{machine_id}" resolved but remote pool creation failed: RegisterPoolAck timed out (5s); cross-machine memory pool not created"#
                         ));
 
                         for attempt in 0..3 {
@@ -5879,7 +5884,7 @@ impl Daemon {
                                     tracing::error!(
                                         "memory pool: bincode serialize RegisterPool failed: {e}"
                                     );
-                                    return Err(format!("RegisterPool 序列化失败: {e}"));
+                                    return Err(format!("RegisterPool serialization failed: {e}"));
                                 }
                             };
                             let publisher = match session
@@ -5899,7 +5904,7 @@ impl Daemon {
                                     tracing::error!(
                                         "memory pool: declare_publisher({topic}) failed: {e}"
                                     );
-                                    return Err(format!("RegisterPool 发布失败（declare_publisher）: {e}"));
+                                    return Err(format!("RegisterPool publish failed (declare_publisher): {e}"));
                                 }
                             };
                             // RegisterPool is a control notification — go
@@ -5934,7 +5939,7 @@ impl Daemon {
                                 tracing::error!(
                                     "memory pool: publish RegisterPool to {topic} failed: {e}"
                                 );
-                                return Err(format!("RegisterPool 发布失败: {e}"));
+                                return Err(format!("RegisterPool publish failed: {e}"));
                             }
                             match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
                                 .await
@@ -5951,19 +5956,19 @@ impl Daemon {
                                 }
                                 Ok(Ok((false, _))) => {
                                     reply = Err(format!(
-                                        r#"machine "{machine_id}" 已解析但远端建池失败：远端返回 ok=false，未创建跨机内存池"#
+                                        r#"machine "{machine_id}" resolved but remote pool creation failed: remote returned ok=false; cross-machine memory pool not created"#
                                     ));
                                     break;
                                 }
                                 Ok(Err(_)) => {
                                     reply = Err(format!(
-                                        r#"machine "{machine_id}" 已解析但远端建池失败：ack 通道关闭（远端 daemon 断开），未创建跨机内存池"#
+                                        r#"machine "{machine_id}" resolved but remote pool creation failed: ack channel closed (remote daemon disconnected); cross-machine memory pool not created"#
                                     ));
                                     break;
                                 }
                                 Err(_) => {
                                     reply = Err(format!(
-                                        r#"machine "{machine_id}" 已解析但远端建池失败：等待 RegisterPoolAck 超时（5s），未创建跨机内存池"#
+                                        r#"machine "{machine_id}" resolved but remote pool creation failed: RegisterPoolAck timed out (5s); cross-machine memory pool not created"#
                                     ));
                                     if attempt < 2 {
                                         tracing::warn!(
@@ -10772,6 +10777,58 @@ mod announce_zenoh_bind_tests {
             sock(REMOTE_COORDINATOR),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod health_check_tests {
+    use super::health_check_should_kill;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn not_connected_is_never_killed_even_when_long_silent() {
+        // Regression for #2937: `last_activity` is seeded to the spawn
+        // timestamp, so a node in a slow cold start (imports + model-weight
+        // load) reads as long-silent well before it ever connects. The
+        // watchdog must not kill it while it is still starting up — even if
+        // the elapsed time since spawn already exceeds the timeout.
+        let spawn = 1_000u64;
+        let now = spawn + 10_000; // 10s after spawn, timeout is 5s
+        assert!(!health_check_should_kill(false, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_and_silent_past_timeout_is_killed() {
+        let last = 1_000u64;
+        let now = last + 6_000; // 6s of post-connection silence, timeout 5s
+        assert!(health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_and_recently_active_is_not_killed() {
+        let last = 1_000u64;
+        let now = last + 4_000; // 4s < 5s timeout
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn exactly_at_timeout_is_not_killed() {
+        // The comparison is strictly greater-than, so a node silent for
+        // exactly the timeout is given the benefit of the doubt.
+        let last = 1_000u64;
+        let now = last + 5_000;
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn clock_skew_does_not_underflow() {
+        // `now` before `last` (clock went backwards) must not panic via
+        // subtraction underflow, and must not be treated as elapsed time.
+        let last = 10_000u64;
+        let now = 1_000u64;
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
     }
 }
 

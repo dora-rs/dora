@@ -1,0 +1,20 @@
+# CPU-only throughput test: CPU sender, CPU receiver, explicit pool release.
+# This scenario can run on GPU-less CI runners and exercises the daemon pool path.
+env:
+  sender_device: cpu
+  receiver_device: cpu
+  message_num: 100
+  memory_pool_scenario: throughput
+nodes:
+  - id: sender_node
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require
