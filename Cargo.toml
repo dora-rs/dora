@@ -289,6 +289,37 @@ path = "tests/finish-straggler-e2e.rs"
 [profile.release]
 lto = "thin"
 
+# mio 0.6.23 (pulled in on all platforms by mio-extras -> rustdds/ros2-client)
+# computes struct field offsets with the pre-`offset_of!` hack
+# `&(*(0 as *const T)).field as *const _ as usize` — a literal null-pointer
+# dereference (src/sys/windows/selector.rs:470). Its Windows IOCP completion
+# handlers run that macro on *every* UDP/TCP completion, so with
+# `debug-assertions` on, rustc's null-pointer check fires a **non-unwinding**
+# panic and aborts the process:
+#
+#     thread 'RustDDS Participant 0 event loop' panicked at
+#       mio-0.6.23\src\sys\windows\udp.rs:401:25:
+#     null pointer dereference occurred
+#     thread caused non-unwinding panic. aborting.
+#
+# That kills the `dora-ros2-bridge` test binary on Windows (dora-rs/dora#3091)
+# and any debug build that actually receives DDS traffic. Release builds are
+# unaffected because `debug-assertions` is off there.
+#
+# This cannot be upgraded away: mio 0.6.23 (2019) is the last 0.6.x, and
+# `mio_06 = "^0.6.23"` is a *non-optional direct* dependency of every published
+# rustdds — 0.14.0 included — and of ros2-client 0.8-0.10, with mio-extras
+# 2.0.6 requiring mio ^0.6.14 on top. So the #2854 port does not remove it.
+# The only way to remove the UB rather than the check is to patch mio itself
+# (a one-line `offset_of!` fix, via a git fork so `--cap-lints allow` still
+# applies); that was weighed and deferred as too much supply-chain surface for
+# this. Opting the one dependency out of debug assertions restores the behavior
+# mio 0.6 was written against. The version is pinned in the spec on purpose: if
+# mio 0.6.23 ever does leave the graph, `cargo check` warns that the spec
+# matches nothing, which is the cue to delete this block.
+[profile.dev.package."mio:0.6.23"]
+debug-assertions = false
+
 # The profile that 'dist' will build with
 [profile.dist]
 inherits = "release"
