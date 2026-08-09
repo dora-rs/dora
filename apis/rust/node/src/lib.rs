@@ -113,7 +113,8 @@ pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
 pub use node::{
-    DataSample, DoraNode, DoraNodeBuilder, StreamSegment, ZERO_COPY_THRESHOLD, arrow_utils,
+    DataSample, DoraNode, DoraNodeBuilder, EncodedSample, SampleAllocator, StreamSegment,
+    ZERO_COPY_THRESHOLD, arrow_utils,
 };
 pub use uuid;
 

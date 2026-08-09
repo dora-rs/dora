@@ -724,7 +724,10 @@ pub struct DoraNode {
     /// `None` in interactive/testing mode.
     zenoh_session: Option<zenoh::Session>,
     /// Zenoh shared memory provider for zero-copy publishing.
-    zenoh_shm_provider: Option<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>,
+    /// Owns the SHM provider and the zero-copy threshold. Cloned out by
+    /// [`DoraNode::sample_allocator`] so an operator thread can build output
+    /// samples without reaching into the node (dora-rs/dora#2742).
+    sample_allocator: SampleAllocator,
     /// Per-output zenoh publishers with their handshake state, declared eagerly
     /// at init (see [`declare_output_publishers`]) so zenoh wires routes
     /// immediately and [`StartupHandshake`] can probe them before the first
@@ -751,7 +754,6 @@ pub struct DoraNode {
     /// the time of the last full-stream send (for the periodic in-band refresh).
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
     /// Threshold for using zenoh SHM vs inline bytes (default 4096).
-    zenoh_zero_copy_threshold: usize,
 
     /// Diagnostic (dora-rs/dora#2742): how many large sends have already been
     /// traced hop-by-hop. The Windows nightly wedges the *runtime's* main loop
@@ -1265,7 +1267,7 @@ impl DoraNode {
 
                 match layout {
                     Some(layout) => match ShmProviderBuilder::default_backend(layout).wait() {
-                        Ok(provider) => Some(provider),
+                        Ok(provider) => Some(Arc::new(provider)),
                         Err(e) => {
                             warn!(
                                 "failed to create zenoh SHM provider ({e}); \
@@ -1373,12 +1375,14 @@ impl DoraNode {
             control_channel,
             clock,
             zenoh_session,
-            zenoh_shm_provider,
             zenoh_publishers,
             startup_handshake,
             zenoh_schema_publishers: HashMap::new(),
             zenoh_schema_state: HashMap::new(),
-            zenoh_zero_copy_threshold,
+            sample_allocator: SampleAllocator {
+                shm_provider: zenoh_shm_provider,
+                zero_copy_threshold: zenoh_zero_copy_threshold,
+            },
             large_send_diag_count: 0,
             dataflow_descriptor: serde_yaml::from_value(dataflow_descriptor),
             warned_unknown_output: BTreeSet::new(),
@@ -1515,78 +1519,83 @@ impl DoraNode {
         };
 
         let arrow_array = data.to_data();
+        self.check_output_type(&output_id, arrow_array.data_type(), &parameters)?;
 
-        // Runtime type check (only when DORA_RUNTIME_TYPE_CHECK is set).
-        //
-        // Skip the check when this message carries pattern metadata
-        // (`request_id`, `goal_id`, or `goal_status`). Service, action,
-        // and streaming patterns legitimately multiplex multiple Arrow
-        // schemas through a single output — a service server may reply
-        // with different response shapes for different request types —
-        // so a single declared Arrow type cannot cover all variants.
-        // Non-pattern messages still get full validation
-        // (dora-rs/adora#150).
-        if let Some((mode, checks)) = &self.runtime_type_checks
-            && let Some(expected) = checks.get(&output_id)
-            && !carries_pattern_correlation(&parameters)
-        {
-            let actual = arrow_array.data_type();
-            if actual != expected {
-                let msg = format!(
-                    "output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}"
-                );
-                match mode {
-                    RuntimeTypeCheck::Error => {
-                        return Err(NodeError::Output(msg));
-                    }
-                    RuntimeTypeCheck::Warn => {
-                        warn!("type mismatch: {msg}");
-                    }
-                    RuntimeTypeCheck::Off => unreachable!(),
-                }
-            }
-        }
-
-        self.send_output_array(output_id, parameters, arrow_array)
+        let encoded = self.sample_allocator.encode_arrow(&arrow_array)?;
+        self.send_encoded_unchecked(output_id, parameters, encoded.sample)
     }
 
-    /// IPC-encode `arrow_array` into a (shared-memory) sample and send it.
+    /// Send a payload that has already been IPC-encoded into a dora-owned
+    /// [`EncodedSample`] by [`SampleAllocator::encode_arrow`].
     ///
-    /// Every data-plane payload is a self-describing Arrow IPC stream. Uses the
-    /// hand-rolled 1-copy fast path when the array type is eligible, falling
-    /// back to the official writer (one extra copy) otherwise. The shared send
-    /// path for [`send_output`](Self::send_output) and
-    /// [`send_output_raw`](Self::send_output_raw).
-    fn send_output_array(
+    /// This is the entry point the runtime uses for operator outputs: the
+    /// operator thread does the encoding so that no memory owned by the
+    /// operator's language runtime is ever released on the node's thread — see
+    /// [`SampleAllocator`] (dora-rs/dora#2742).
+    pub fn send_output_encoded(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        encoded: EncodedSample,
+    ) -> NodeResult<()> {
+        if !self.validate_output(&output_id) {
+            return Ok(());
+        };
+        self.check_output_type(&output_id, &encoded.data_type, &parameters)?;
+        self.send_encoded_unchecked(output_id, parameters, encoded.sample)
+    }
+
+    /// Tag an already-encoded sample as an Arrow IPC stream and send it. The
+    /// caller has already run `validate_output` and `check_output_type`.
+    fn send_encoded_unchecked(
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
-        arrow_array: ArrayData,
+        sample: DataSample,
     ) -> NodeResult<()> {
         parameters.insert(
             FRAMING.to_string(),
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
 
-        let sample = match ipc_encode::ipc_fast_path_len(&arrow_array) {
-            Some(len) => {
-                let mut s = self.allocate_data_sample(len)?;
-                ipc_encode::encode_ipc_into(&arrow_array, &mut s)
-                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-                s
-            }
-            None => {
-                let bytes = ipc_encode::encode_ipc_to_vec(&arrow_array)
-                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-                let mut s = self.allocate_data_sample(bytes.len())?;
-                s.copy_from_slice(&bytes);
-                s
-            }
-        };
-
         self.send_output_sample(output_id, parameters, Some(sample))
             .wrap_err("failed to send output")?;
 
+        Ok(())
+    }
+
+    /// Runtime type check (only when `DORA_RUNTIME_TYPE_CHECK` is set).
+    ///
+    /// Skips the check when this message carries pattern metadata
+    /// (`request_id`, `goal_id`, or `goal_status`). Service, action, and
+    /// streaming patterns legitimately multiplex multiple Arrow schemas through
+    /// a single output — a service server may reply with different response
+    /// shapes for different request types — so a single declared Arrow type
+    /// cannot cover all variants. Non-pattern messages still get full
+    /// validation (dora-rs/adora#150).
+    fn check_output_type(
+        &self,
+        output_id: &DataId,
+        actual: &arrow_schema::DataType,
+        parameters: &MetadataParameters,
+    ) -> NodeResult<()> {
+        if let Some((mode, checks)) = &self.runtime_type_checks
+            && let Some(expected) = checks.get(output_id)
+            && !carries_pattern_correlation(parameters)
+            && actual != expected
+        {
+            let msg =
+                format!("output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}");
+            match mode {
+                RuntimeTypeCheck::Error => {
+                    return Err(NodeError::Output(msg));
+                }
+                RuntimeTypeCheck::Warn => {
+                    warn!("type mismatch: {msg}");
+                }
+                RuntimeTypeCheck::Off => unreachable!(),
+            }
+        }
         Ok(())
     }
 
@@ -1675,7 +1684,7 @@ impl DoraNode {
         // run pays one comparison per send and prints a handful of lines.
         // `warn!` so it survives the default stdout filter and reaches CI logs.
         let diag_bytes = finalized.as_ref().map_or(0, |f| f.byte_len());
-        let diag = diag_bytes >= self.zenoh_zero_copy_threshold
+        let diag = diag_bytes >= self.sample_allocator.zero_copy_threshold
             && self.large_send_diag_count < LARGE_SEND_DIAG_LIMIT;
         if diag {
             self.large_send_diag_count += 1;
@@ -1911,8 +1920,8 @@ impl DoraNode {
             // The heap buffer is only borrowed, so any put error can fall back
             // to the daemon path with the payload intact.
             FinalizedSample::Vec(avec) => {
-                if avec.len() >= self.zenoh_zero_copy_threshold
-                    && let Some(provider) = &self.zenoh_shm_provider
+                if avec.len() >= self.sample_allocator.zero_copy_threshold
+                    && let Some(provider) = &self.sample_allocator.shm_provider
                 {
                     use zenoh::shm::GarbageCollect;
                     // Non-blocking: garbage-collect freed chunks and allocate, but
@@ -1970,7 +1979,7 @@ impl DoraNode {
                 // reliable daemon path instead (TCP, up to `MAX_MESSAGE_BYTES`).
                 // Only sub-threshold payloads, which fit a single batch and never
                 // fragment, take the zenoh heap put below.
-                if avec.len() >= self.zenoh_zero_copy_threshold {
+                if avec.len() >= self.sample_allocator.zero_copy_threshold {
                     return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
                 }
 
@@ -2015,7 +2024,7 @@ impl DoraNode {
                 // attachment bytes outlive the `put` below.
                 let schema_once = if schema_once_eligible(
                     avec.len(),
-                    self.zenoh_zero_copy_threshold,
+                    self.sample_allocator.zero_copy_threshold,
                     &metadata.parameters,
                 ) {
                     publish_schema_once(
@@ -2088,7 +2097,7 @@ impl DoraNode {
     /// `DORA_ZERO_COPY_THRESHOLD` env var, defaulting to
     /// [`ZERO_COPY_THRESHOLD`].
     pub fn zero_copy_threshold(&self) -> usize {
-        self.zenoh_zero_copy_threshold
+        self.sample_allocator.zero_copy_threshold
     }
 
     /// Returns true if this node was restarted after a previous exit or failure.
@@ -2280,55 +2289,18 @@ impl DoraNode {
 
     /// Allocates a [`DataSample`] of the specified size.
     ///
-    /// For payloads at or above the zero-copy threshold the buffer is allocated
-    /// directly from the zenoh SHM provider (when available), so the producer
-    /// writes straight into shared memory and publishing moves the buffer into
-    /// zenoh's `put` without a further copy. Smaller payloads — or the case
-    /// where no SHM provider exists (interactive/testing mode) — use a
-    /// heap-allocated, 128-byte-aligned buffer; the SHM provider is
-    /// page-aligned, so dedicating a full page to a small message is pure waste.
+    /// See [`SampleAllocator::allocate`] for the allocation strategy.
     pub fn allocate_data_sample(&mut self, data_len: usize) -> NodeResult<DataSample> {
-        if data_len >= self.zenoh_zero_copy_threshold
-            && let Some(provider) = &self.zenoh_shm_provider
-        {
-            use zenoh::Wait;
-            use zenoh::shm::GarbageCollect;
-            // Non-blocking (see `zenoh_publish`): GC and allocate, but fall back
-            // to a heap buffer rather than `BlockOn`-sleeping 1 ms when the pool
-            // is momentarily full under a large-message burst. The heap buffer
-            // costs one extra copy on publish but keeps the producer from
-            // stalling, which is what regressed sustained throughput (PR #2366).
-            match provider
-                .alloc(data_len)
-                .with_policy::<GarbageCollect>()
-                .wait()
-            {
-                Ok(sbuf) => {
-                    // Use the SHM buffer only when it is exactly the requested
-                    // size — zenoh 1.8 guarantees this (the logical length
-                    // matches the request even when the backing chunk is
-                    // larger). If a future provider ever over-allocates, fall
-                    // back to heap rather than expose or publish an oversized
-                    // slice (`DataSample` has no length cap of its own).
-                    if sbuf.as_ref().len() == data_len {
-                        return Ok(DataSample {
-                            storage: SampleStorage::Shm(sbuf),
-                        });
-                    }
-                    tracing::debug!(
-                        "zenoh SHM alloc returned {} bytes for a {data_len}-byte \
-                         request; using heap",
-                        sbuf.as_ref().len()
-                    );
-                }
-                Err(e) => {
-                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
-                }
-            }
-        }
+        self.sample_allocator.allocate(data_len)
+    }
 
-        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
-        Ok(avec.into())
+    /// A handle for building output samples off this node's thread.
+    ///
+    /// The runtime hands one to each operator thread so the operator can encode
+    /// its payload into a dora-owned [`DataSample`] itself — see
+    /// [`SampleAllocator`] for why that matters (dora-rs/dora#2742).
+    pub fn sample_allocator(&self) -> SampleAllocator {
+        self.sample_allocator.clone()
     }
 
     /// Returns the full dataflow descriptor that this node is part of.
@@ -2558,7 +2530,7 @@ impl Drop for DoraNode {
         // daemon-signaled `InputClosed` cannot overtake in-flight zenoh data.
         let publishers = std::mem::take(&mut self.zenoh_publishers);
         let schema_publishers = std::mem::take(&mut self.zenoh_schema_publishers);
-        let shm_provider = self.zenoh_shm_provider.take();
+        let shm_provider = self.sample_allocator.shm_provider.take();
         let session = self.zenoh_session.take();
         let runtime = self._owned_runtime.take();
         if session.is_none() && shm_provider.is_none() && publishers.is_empty() {
@@ -2615,6 +2587,157 @@ impl Drop for DoraNode {
         if let Err(err) = self.control_channel.report_outputs_done() {
             tracing::warn!("{err:?}")
         }
+    }
+}
+
+/// A payload already encoded as an Arrow IPC stream in a dora-owned sample,
+/// together with the Arrow type it was encoded from.
+///
+/// The two travel together so a consumer can still type-check the output after
+/// the source array is gone — see [`DoraNode::send_output_encoded`].
+#[derive(Debug)]
+pub struct EncodedSample {
+    sample: DataSample,
+    data_type: arrow_schema::DataType,
+}
+
+impl EncodedSample {
+    /// The Arrow type the payload was encoded from.
+    pub fn data_type(&self) -> &arrow_schema::DataType {
+        &self.data_type
+    }
+
+    /// The encoded Arrow IPC stream.
+    pub fn as_bytes(&self) -> &[u8] {
+        &self.sample
+    }
+}
+
+/// Builds dora-owned output samples without borrowing the node.
+///
+/// ## Why this exists (dora-rs/dora#2742)
+///
+/// An operator runs on its own thread and hands its outputs to the runtime's
+/// event loop. If what crosses that boundary is an Arrow array whose buffers
+/// belong to the operator's language runtime — a `pyarrow` array wrapping a
+/// numpy buffer, say — then the *runtime* ends up freeing them. Releasing a
+/// numpy-backed buffer acquires the Python GIL (pyarrow's `NumPyBuffer`
+/// destructor does `PyAcquireGIL`), so the runtime's event loop blocks for as
+/// long as the operator holds the GIL. That made a node unable to observe
+/// `Stop`, and the daemon force-killed it at the grace period.
+///
+/// Handing the operator thread an allocator instead lets it encode into memory
+/// dora owns and release its own payload while it still holds the GIL. It is
+/// not an extra copy: the IPC encode is the same single copy the node would
+/// otherwise have made, just performed on the other side of the channel.
+#[derive(Clone)]
+pub struct SampleAllocator {
+    shm_provider: Option<Arc<zenoh::shm::ShmProvider<zenoh::shm::PosixShmProviderBackend>>>,
+    zero_copy_threshold: usize,
+}
+
+impl SampleAllocator {
+    /// Allocates a [`DataSample`] of the specified size.
+    ///
+    /// For payloads at or above the zero-copy threshold the buffer is allocated
+    /// directly from the zenoh SHM provider (when available), so the producer
+    /// writes straight into shared memory and publishing moves the buffer into
+    /// zenoh's `put` without a further copy. Smaller payloads — or the case
+    /// where no SHM provider exists (interactive/testing mode) — use a
+    /// heap-allocated, 128-byte-aligned buffer; the SHM provider is
+    /// page-aligned, so dedicating a full page to a small message is pure waste.
+    pub fn allocate(&self, data_len: usize) -> NodeResult<DataSample> {
+        if data_len >= self.zero_copy_threshold
+            && let Some(provider) = &self.shm_provider
+        {
+            use zenoh::Wait;
+            use zenoh::shm::GarbageCollect;
+            // Non-blocking (see `zenoh_publish`): GC and allocate, but fall back
+            // to a heap buffer rather than `BlockOn`-sleeping 1 ms when the pool
+            // is momentarily full under a large-message burst. The heap buffer
+            // costs one extra copy on publish but keeps the producer from
+            // stalling, which is what regressed sustained throughput (PR #2366).
+            match provider
+                .alloc(data_len)
+                .with_policy::<GarbageCollect>()
+                .wait()
+            {
+                Ok(sbuf) => {
+                    // Use the SHM buffer only when it is exactly the requested
+                    // size — zenoh 1.8 guarantees this (the logical length
+                    // matches the request even when the backing chunk is
+                    // larger). If a future provider ever over-allocates, fall
+                    // back to heap rather than expose or publish an oversized
+                    // slice (`DataSample` has no length cap of its own).
+                    if sbuf.as_ref().len() == data_len {
+                        return Ok(DataSample {
+                            storage: SampleStorage::Shm(sbuf),
+                        });
+                    }
+                    tracing::debug!(
+                        "zenoh SHM alloc returned {} bytes for a {data_len}-byte \
+                         request; using heap",
+                        sbuf.as_ref().len()
+                    );
+                }
+                Err(e) => {
+                    tracing::debug!("SHM alloc failed ({e}), using heap buffer");
+                }
+            }
+        }
+
+        let avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, data_len);
+        Ok(avec.into())
+    }
+
+    /// Encodes `array` as a complete Arrow IPC stream into a freshly allocated
+    /// sample. Uses the hand-rolled 1-copy fast path when the array type is
+    /// eligible, falling back to the official writer (one extra copy) otherwise.
+    ///
+    /// The returned sample shares no memory with `array`, so the caller may —
+    /// and, when the payload is owned by a foreign runtime, **must** — drop
+    /// `array` on its own thread rather than let it travel to the node.
+    pub fn encode_arrow(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
+        let sample = match ipc_encode::ipc_fast_path_len(array) {
+            Some(len) => {
+                let mut sample = self.allocate(len)?;
+                ipc_encode::encode_ipc_into(array, &mut sample)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                sample
+            }
+            None => {
+                let bytes = ipc_encode::encode_ipc_to_vec(array)
+                    .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
+                let mut sample = self.allocate(bytes.len())?;
+                sample.copy_from_slice(&bytes);
+                sample
+            }
+        };
+        Ok(EncodedSample {
+            sample,
+            data_type: array.data_type().clone(),
+        })
+    }
+
+    /// An allocator with no shared memory, so every sample is heap-backed.
+    ///
+    /// This is what a node without a zenoh session (interactive/testing mode)
+    /// uses; it also lets callers that only need the encoding — tests, most
+    /// obviously — build one without a live node.
+    pub fn heap() -> Self {
+        Self {
+            shm_provider: None,
+            zero_copy_threshold: ZERO_COPY_THRESHOLD,
+        }
+    }
+}
+
+impl std::fmt::Debug for SampleAllocator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SampleAllocator")
+            .field("shm", &self.shm_provider.is_some())
+            .field("zero_copy_threshold", &self.zero_copy_threshold)
+            .finish()
     }
 }
 
@@ -3791,5 +3914,109 @@ mod tests {
              force-kill grace ({DAEMON_FORCE_KILL_GRACE:?}); raising ZENOH_TEARDOWN_TIMEOUT \
              reintroduces dora-rs/dora#2742"
         );
+    }
+}
+
+/// Ownership invariant at the operator -> runtime boundary (dora-rs/dora#2742).
+///
+/// A [`SampleAllocator`] lets an operator thread encode its payload into a
+/// dora-owned [`EncodedSample`] itself, so the runtime never holds a reference
+/// to memory whose owner lives in another language runtime. The tests below pin
+/// the properties that make the result safe to hand across a thread boundary.
+#[cfg(test)]
+mod operator_boundary_tests {
+    use super::*;
+    use arrow::buffer::Buffer;
+    use std::ptr::NonNull;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// Stands in for a foreign owner of an Arrow payload buffer — a numpy array
+    /// held alive by pyarrow, or a buffer owned by an operator's `.so`. Flips
+    /// `released` when the last Arrow reference to the buffer goes away.
+    struct ForeignOwner {
+        released: Arc<AtomicBool>,
+        _backing: Vec<u8>,
+    }
+
+    impl Drop for ForeignOwner {
+        fn drop(&mut self) {
+            self.released.store(true, Ordering::SeqCst);
+        }
+    }
+
+    /// A `UInt8` array whose payload buffer is owned by `ForeignOwner`.
+    fn foreign_owned_array(len: usize) -> (ArrayData, Arc<AtomicBool>) {
+        let backing = vec![0xABu8; len];
+        // A `Vec`'s heap allocation does not move when the `Vec` itself is
+        // moved into `ForeignOwner` below, so this pointer stays valid for as
+        // long as the owner is alive — which is exactly what the `Allocation`
+        // contract requires.
+        let ptr = NonNull::new(backing.as_ptr() as *mut u8).expect("non-null");
+        let released = Arc::new(AtomicBool::new(false));
+        let owner = Arc::new(ForeignOwner {
+            released: released.clone(),
+            _backing: backing,
+        });
+        let buffer = unsafe { Buffer::from_custom_allocation(ptr, len, owner) };
+        let array = ArrayData::builder(arrow::datatypes::DataType::UInt8)
+            .len(len)
+            .add_buffer(buffer)
+            .build()
+            .expect("valid UInt8 array");
+        (array, released)
+    }
+
+    /// The heart of the #2742 fix: the sample the operator hands to the runtime
+    /// must be an independent, dora-owned copy. If it kept the source buffer
+    /// alive, the runtime would be the one releasing foreign memory — and for a
+    /// Python operator that release takes the GIL (pyarrow's `NumPyBuffer`
+    /// destructor), which stalls the runtime's event loop for as long as the
+    /// operator holds it.
+    #[test]
+    fn encoded_sample_does_not_retain_the_source_payload() {
+        let allocator = SampleAllocator::heap();
+        let (array, released) = foreign_owned_array(8192);
+
+        let sample = allocator
+            .encode_arrow(&array)
+            .expect("encoding a UInt8 array must succeed");
+
+        assert!(
+            !released.load(Ordering::SeqCst),
+            "sanity: the source buffer is still alive while the array is"
+        );
+        drop(array);
+        assert!(
+            released.load(Ordering::SeqCst),
+            "the encoded sample must not keep the operator's payload alive; \
+             otherwise the runtime frees foreign memory (dora-rs/dora#2742)"
+        );
+        drop(sample);
+    }
+
+    /// The encode must be lossless: the sample is the same Arrow IPC stream the
+    /// node would have produced when it did the encoding itself.
+    #[test]
+    fn encoded_sample_round_trips_to_the_source_array() {
+        let allocator = SampleAllocator::heap();
+        let (array, _released) = foreign_owned_array(1024);
+
+        let encoded = allocator.encode_arrow(&array).expect("encode");
+        assert_eq!(encoded.data_type(), array.data_type());
+        let decoded = crate::node::arrow_utils::decode_arrow_ipc(encoded.as_bytes())
+            .expect("the sample must be a well-formed Arrow IPC stream");
+
+        assert_eq!(decoded, array);
+    }
+
+    /// The allocator is handed to operator threads, so it has to cross thread
+    /// boundaries — and so does the sample it produces.
+    #[test]
+    fn allocator_and_sample_cross_thread_boundaries() {
+        const fn assert_send<T: Send>() {}
+        const fn assert_send_sync_clone<T: Send + Sync + Clone>() {}
+        assert_send::<DataSample>();
+        assert_send::<EncodedSample>();
+        assert_send_sync_clone::<SampleAllocator>();
     }
 }

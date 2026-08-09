@@ -19,17 +19,20 @@ use std::{
     path::Path,
     sync::Arc,
 };
-use tokio::sync::{mpsc::Sender, oneshot};
+use tokio::sync::oneshot;
 use tracing::{field, span};
 
 pub fn run(
     _node_id: &NodeId,
     _operator_id: &OperatorId,
     source: &str,
-    events_tx: Sender<OperatorEvent>,
+    handle: super::RuntimeHandle,
     incoming_events: flume::Receiver<Event>,
     init_done: oneshot::Sender<Result<()>>,
 ) -> eyre::Result<libloading::Library> {
+    // Kept for the lifecycle events reported after the operator loop returns;
+    // `handle` itself moves into the operator below.
+    let reporter = handle.clone();
     let path = if source_is_url(source) {
         let target_path = &Path::new("build");
         // try to download the shared library
@@ -65,41 +68,43 @@ pub fn run(
         let operator = SharedLibraryOperator {
             incoming_events,
             bindings,
-            events_tx: events_tx.clone(),
+            handle,
         };
 
         operator.run(init_done)
     });
     match catch_unwind(closure) {
         Ok(Ok(reason)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Finished { reason });
+            reporter.report(OperatorEvent::Finished { reason });
         }
         Ok(Err(err)) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Error(err));
+            reporter.report(OperatorEvent::Error(err));
         }
         Err(panic) => {
-            let _ = events_tx.blocking_send(OperatorEvent::Panic(panic));
+            reporter.report(OperatorEvent::Panic(panic));
         }
     }
 
     // Hand the loaded library back to the caller instead of dropping (unloading)
-    // it here. Arrow arrays produced by this operator are exported over the C
-    // data interface with a `release` callback that points *into* this `.so`
-    // (`arrow::ffi::from_ffi` imports them in `send_output_closure`). The runtime's
-    // main event loop runs on another thread and may still hold in-flight arrays
-    // when we return — the `OperatorEvent::Finished` above only guarantees the
-    // channel slot was taken, not that every prior output has been sent and
-    // dropped. Unloading the library now (dlclose on drop) would dangle those
-    // release callbacks, so freeing the arrays afterwards jumps into unmapped
-    // code (SIGSEGV, reproducible under a high output rate at shutdown). The
-    // caller keeps this alive until after the main loop has joined, by which
-    // point every exported array has been released.
+    // it here.
+    //
+    // Historically this guarded exported Arrow arrays: they carry a `release`
+    // callback pointing *into* this `.so`, the runtime's main loop held them,
+    // and unloading first turned freeing one into a jump into unmapped memory
+    // (SIGSEGV under a high output rate at shutdown). Since dora-rs/dora#2742
+    // outputs are encoded into dora-owned samples on this thread and the arrays
+    // never leave it, so that specific hazard is gone — but values whose vtable
+    // lives in the `.so` can still be in flight when we return (an
+    // `OperatorEvent::Panic` payload above is a `Box<dyn Any>` built inside it,
+    // and `OperatorEvent::Finished` only means the channel slot was taken). The
+    // caller keeps this mapped until the main loop has joined.
     Ok(library)
 }
 
 struct SharedLibraryOperator<'lib> {
     incoming_events: flume::Receiver<Event>,
-    events_tx: Sender<OperatorEvent>,
+    /// Sends outputs, encoding them on this thread (dora-rs/dora#2742).
+    handle: super::RuntimeHandle,
 
     bindings: Bindings<'lib>,
 }
@@ -146,20 +151,17 @@ impl SharedLibraryOperator<'_> {
                 Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
-            let event = OperatorEvent::Output {
-                output_id: DataId::from(String::from(output_id)),
+            // `arrow_array` is only borrowed: it is encoded into a dora-owned
+            // sample here and dropped at the end of this closure, on the
+            // operator thread, so its `.so`-resident release callback never runs
+            // on the runtime's event loop (dora-rs/dora#2742).
+            match self.handle.send_output(
+                DataId::from(String::from(output_id)),
                 parameters,
-                arrow_array,
-            };
-
-            let result = self
-                .events_tx
-                .blocking_send(event)
-                .map_err(|_| eyre!("failed to send output to runtime"));
-
-            match result {
+                &arrow_array,
+            ) {
                 Ok(()) => DoraResult::SUCCESS,
-                Err(_) => DoraResult::from_error("runtime process closed unexpectedly".into()),
+                Err(err) => DoraResult::from_error(format!("{err}")),
             }
         });
 
