@@ -309,9 +309,7 @@ impl MemoryPoolManager {
         // deletion: a dora pool must live in the `dora_pool_` namespace
         // (registration enforces this for explicit `name=` pools too), and
         // stay within the expected /dev/shm name space.
-        if !shm_name.starts_with("dora_pool_")
-            || shm_name.contains('/')
-            || shm_name.contains("..")
+        if !shm_name.starts_with("dora_pool_") || shm_name.contains('/') || shm_name.contains("..")
         {
             return Err(format!(
                 "shared_memory_name `{shm_name}` is invalid: must live under the                  `dora_pool_` namespace and must not contain '/' or '..'",
