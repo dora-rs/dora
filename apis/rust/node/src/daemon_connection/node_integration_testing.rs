@@ -293,7 +293,21 @@ fn json_header(
     let mut output = serde_json::Map::new();
     output.insert("id".into(), id.to_string().into());
     if !skip_output_time_offsets {
-        let time_offset = metadata.timestamp().get_diff_duration(&start_timestamp);
+        let input_ts = metadata.timestamp();
+        // A zenoh-delivered input can carry a remote HLC timestamp that
+        // precedes this node's `start_timestamp` (a remote clock that is
+        // behind, or a producer that started earlier). `get_diff_duration` is
+        // an unguarded NTP64 (`u64`) subtraction that would underflow — a debug
+        // panic (which unwinds past `add_event`'s `Err` guard and kills the
+        // event loop) or a release wraparound to a garbage offset. Clamp to
+        // zero when the input predates start. The daemon path only ever records
+        // locally-timestamped inputs (always >= start), so this is a no-op
+        // there.
+        let time_offset = if input_ts.get_time() >= start_timestamp.get_time() {
+            input_ts.get_diff_duration(&start_timestamp)
+        } else {
+            std::time::Duration::ZERO
+        };
         output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
     }
     output

@@ -2920,6 +2920,37 @@ mod tests {
         );
     }
 
+    /// A zenoh input can carry a remote HLC timestamp that predates this node's
+    /// `start_timestamp`. The recording must clamp the offset to zero instead of
+    /// underflowing the NTP64 subtraction (a debug panic that would kill the
+    /// event loop, or a release wraparound to a garbage offset).
+    #[test]
+    fn zenoh_input_with_earlier_timestamp_does_not_underflow() {
+        use crate::daemon_connection::node_integration_testing::convert_arrow_input_to_json;
+
+        let hlc = dora_core::uhlc::HLC::default();
+        // `input_ts` is created first, so it is strictly before `start`.
+        let input_ts = hlc.new_timestamp();
+        let start = hlc.new_timestamp();
+        let metadata = Metadata::new(input_ts);
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1]));
+
+        // `skip_output_time_offsets = false` exercises the time-offset path.
+        let json = convert_arrow_input_to_json(
+            &DataId::from("in".to_string()),
+            &metadata,
+            array,
+            start,
+            false,
+        )
+        .expect("recording an earlier-timestamped input must not fail");
+        assert_eq!(
+            json["time_offset_secs"], 0.0,
+            "an input predating start must clamp to a zero offset"
+        );
+    }
+
     /// The schema-plane FatalError only fires after the grace window: the
     /// producer's periodic full-stream refresh heals an unprimed input in-band,
     /// so a node with a dead `@schema` plane must not be killed on the first
