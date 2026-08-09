@@ -74,6 +74,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=../cargo-target-dir.sh
+source scripts/cargo-target-dir.sh
+TARGET_DIR="$(cargo_target_dir "$PWD")"
+
 # -----------------------------------------------------------------------------
 # Platform + env setup
 # -----------------------------------------------------------------------------
@@ -879,14 +883,12 @@ job_cluster_e2e() {
       exit 1
     fi
 
-    local REPO_ROOT
-    REPO_ROOT="$(pwd)"
     cat > "$WORK/dataflow.yml" <<EOF
 nodes:
   - id: rust-node
     _unstable_deploy:
       machine: m1
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -896,7 +898,7 @@ nodes:
   - id: rust-status-node
     _unstable_deploy:
       machine: m2
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
@@ -909,7 +911,7 @@ nodes:
   - id: rust-sink
     _unstable_deploy:
       machine: m3
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    path: $TARGET_DIR/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
     input_types:
@@ -1067,9 +1069,6 @@ job_cluster_record_replay() {
 
     cluster_up_and_verify || exit 1
 
-    local REPO_ROOT
-    REPO_ROOT="$(pwd)"
-
     # plain.yml: the deploy-free, build-free, absolute-path descriptor. This
     # is what gets embedded in the .drec and replayed locally, so it must NOT
     # carry `_unstable_deploy` (local `dora run` rejects it) or `build:`
@@ -1078,7 +1077,7 @@ job_cluster_record_replay() {
     cat > "$WORK/plain.yml" <<EOF
 nodes:
   - id: rust-node
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -1086,7 +1085,7 @@ nodes:
     output_types:
       random: std/core/v1/UInt64
   - id: rust-status-node
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
@@ -1097,7 +1096,7 @@ nodes:
     output_types:
       status: std/core/v1/String
   - id: rust-sink
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    path: $TARGET_DIR/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
     input_types:
@@ -1421,10 +1420,10 @@ job_redb_backend() {
   rm -f "$STORE"
 
   # Inline dataflow fixture
-  cat > examples/rust-dataflow/redb-smoke.yml <<'EOF'
+  cat > examples/rust-dataflow/redb-smoke.yml <<EOF
 nodes:
   - id: source
-    path: ../../target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/500
     outputs:
@@ -1568,10 +1567,10 @@ job_state_reconstruction() {
   local STORE=/tmp/state-reconstruct.db
   rm -f "$STORE"
 
-  cat > examples/rust-dataflow/long-running.yml <<'EOF'
+  cat > examples/rust-dataflow/long-running.yml <<EOF
 nodes:
   - id: source
-    path: ../../target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/500
     outputs:
