@@ -30,7 +30,11 @@ serde = { workspace = true }
 eyre = { workspace = true }
 arrow-schema = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["sync"] }
-uuid = { workspace = true }
+# `v4` is used directly by this crate (see `Uuid::new_v4()` in `common.rs` /
+# `ws_protocol.rs`). Declared explicitly rather than relying on feature
+# unification from another crate, so an isolated build (`cargo bench -p
+# dora-message`) compiles on its own — see #3020.
+uuid = { workspace = true, features = ["v4"] }
 log = { version = "0.4.33", features = ["serde"] }
 aligned-vec = { version = "0.6.4", features = ["serde"] }
 semver = { workspace = true }
