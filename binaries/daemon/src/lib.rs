@@ -3109,10 +3109,10 @@ impl Daemon {
                         match current_edges.remove(input_id) {
                             Some(mapping) if mapping == input.mapping => {}
                             Some(_) => {
-                                eyre::bail!("replacement remaps input `{input_id}`; {EDGE_HINT}")
+                                eyre::bail!("replacement remaps input `{input_id}`; {EDGE_HINT}");
                             }
                             None => {
-                                eyre::bail!("replacement adds input `{input_id}`; {EDGE_HINT}")
+                                eyre::bail!("replacement adds input `{input_id}`; {EDGE_HINT}");
                             }
                         }
                     }

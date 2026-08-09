@@ -379,7 +379,7 @@ fn available_backup_path(path: &Path) -> eyre::Result<PathBuf> {
             return Ok(candidate);
         }
     }
-    bail!("could not find an available coordinator store backup path")
+    bail!("could not find an available coordinator store backup path");
 }
 
 /// Whether `dora down` may destroy the coordinator it just connected to.

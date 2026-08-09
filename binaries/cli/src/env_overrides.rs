@@ -100,19 +100,23 @@ fn ensure_wire_safe(key: &str, value: &str) -> Result<()> {
         .with_context(|| format!("failed to encode --env `{key}`"))?;
     match serde_json::from_str::<EnvValue>(&encoded) {
         Ok(decoded) if decoded.to_string() == value => Ok(()),
-        Ok(decoded) => bail!(
-            "--env `{key}={value}` would not survive the dataflow descriptor's \
-             encoding: nodes would receive `{decoded}` instead.\n\n  \
-             hint: numeric-looking values are coerced (`1.10` -> `1.1`, \
-             `01234` -> `1234`). Set this one in the node's `env:` block in \
-             the dataflow YAML instead."
-        ),
-        Err(err) => bail!(
-            "--env `{key}={value}` cannot be represented in the dataflow \
-             descriptor: {err}.\n\n  \
-             hint: set this one in the node's `env:` block in the dataflow \
-             YAML instead."
-        ),
+        Ok(decoded) => {
+            bail!(
+                "--env `{key}={value}` would not survive the dataflow descriptor's \
+                 encoding: nodes would receive `{decoded}` instead.\n\n  \
+                 hint: numeric-looking values are coerced (`1.10` -> `1.1`, \
+                 `01234` -> `1234`). Set this one in the node's `env:` block in \
+                 the dataflow YAML instead."
+            );
+        }
+        Err(err) => {
+            bail!(
+                "--env `{key}={value}` cannot be represented in the dataflow \
+                 descriptor: {err}.\n\n  \
+                 hint: set this one in the node's `env:` block in the dataflow \
+                 YAML instead."
+            );
+        }
     }
 }
 
