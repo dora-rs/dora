@@ -14,21 +14,23 @@
 // base with the wrong pool's offset:
 //
 //   - producer side: `pool_shm_base(pool)` + `pool_segment_bytes(pool)` for
-//     the base and length, `pool_payload_offset(pool, offset)` for the
-//     payload's offset into that mapping.
+//     the base and length, `pool_payload_offset(pool)` for the payload's
+//     offset into that mapping.
 //   - consumer side: `view_mapping(view, base, bytes)` for the base and
 //     length, `view_payload_offset(view, offset)` for the offset.
 //
-// `pool_payload_offset` and `view_payload_offset` are predicates that return
-// false — leaving `offset` untouched — for an `ipc` pool: its payload lives
-// in device memory, not in this host mapping, so there is no host offset to
-// report and nothing here to map. `view_payload_offset` also returns false
-// for a pool that has already been freed. **Check the return value before
-// using the offset** — on false it is left at whatever you initialized it
-// to, and adding that to `m.device` lands in the DORADMA header (magic,
-// `json_len`, `data_offset`, the seqlock generation) instead of the payload.
-// A kernel writing through a pointer built that way corrupts the segment
-// silently; it does not crash.
+// `view_payload_offset` is a predicate that returns false — leaving `offset`
+// untouched — for an `ipc` pool, whose payload lives in device memory rather
+// than in this host mapping, and for a pool that has already been freed.
+// **Check the return value before using the offset** — on false it is left at
+// whatever you initialized it to, and adding that to `m.device` lands in the
+// DORADMA header (magic, `json_len`, `data_offset`, the seqlock generation)
+// instead of the payload. A kernel writing through a pointer built that way
+// corrupts the segment silently; it does not crash.
+//
+// `pool_payload_offset` needs no such check: a pool you created is never
+// `ipc` (registration refuses it) and never freed while you hold it, so it
+// always has a payload in its own mapping.
 //
 // Producer side, once at setup (never per frame — see `map_pool`'s note on
 // cost):
@@ -36,11 +38,9 @@
 //   dora::cuda::MappedPool m;
 //   if (dora::cuda::map_pool(reinterpret_cast<void *>(pool_shm_base(pool)),
 //                             pool_segment_bytes(pool), m)) {
-//       std::size_t offset = 0;
-//       if (pool_payload_offset(pool, offset)) {
-//           void *device_payload = static_cast<char *>(m.device) + offset;
-//           // ... hand device_payload to a kernel ...
-//       }
+//       void *device_payload =
+//           static_cast<char *>(m.device) + pool_payload_offset(pool);
+//       // ... hand device_payload to a kernel ...
 //   }
 //
 // Consumer side, once per view (a fresh `view_mapping` on every frame would

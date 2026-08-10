@@ -128,9 +128,11 @@ dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.4", path = "libraries/extension
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
 dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
-# Used by `dora-memory-pool` for the segment mapping and by `dora-node-api-cxx`
-# (dev only) to hand-write the segment shapes its consumer surface must refuse.
-# Workspace-pinned so the two cannot drift onto different mappings of one segment.
+# Maps the pool segments. Four crates touch one segment through it — the daemon
+# creates and unlinks, `dora-memory-pool` and the Python binding map and write,
+# `dora-node-api-cxx` (dev only) hand-writes the shapes its consumer surface
+# must refuse — so all four take the pin from here and cannot drift onto
+# different mappings of the same segment.
 shared_memory_extended = "0.13.0"
 dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
 arrow = { version = "59", default-features = false }

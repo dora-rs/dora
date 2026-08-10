@@ -35,6 +35,17 @@ pub struct PoolMetadataJson {
     pub dtype: String,
     pub shape: Vec<usize>,
     /// `"cpu"` or `"cuda"` — mirrors the Python key of the same name.
+    ///
+    /// **No path in this workspace reads this value.** The transport, checked
+    /// against the header's `ipc_flag`, is what every consumer here acts on.
+    /// It is decoded anyway for two reasons. It is written by
+    /// [`metadata_json`], and a parser that dropped a key its own writer emits
+    /// would make this a partial definition of the format rather than the
+    /// whole one. And decoding is what *type-checks* it: a segment whose
+    /// `pinned_type` is not a string is rejected at [`parse_metadata_json`],
+    /// on every open, before it can reach the peer that does branch on it —
+    /// the Python binding computes `ipc_present == 1 || pinned_type !=
+    /// Some("cpu")` and picks its whole read path from the answer.
     pub pinned_type: String,
     /// `"shmem"`, `"unified"` or `"ipc"`. Additive: Python never writes this
     /// key. `parse_metadata_json` leaves it empty (`String::new()`) when
@@ -381,12 +392,11 @@ pub fn parse_header(buf: &[u8], segment_len: usize) -> Result<ParsedHeader, Stri
 mod tests {
     use super::*;
 
-    /// These constants are duplicated in `apis/python/node/src/lib.rs`
-    /// (DORADMA_HEADER_SIZE / DORADMA_MAGIC / DORADMA_METADATA_ALIGN) and in the
-    /// field offsets it writes by hand. If Python ever changes, this test is the
-    /// tripwire — a C++ node and a Python node must agree byte for byte.
+    /// This file's offsets, asserted against themselves. It fixes the layout
+    /// against an accidental edit *here*; it says nothing about the Python
+    /// binding, which is what [`constants_match_the_python_binding`] is for.
     #[test]
-    fn constants_match_the_python_binding() {
+    fn the_header_layout_is_the_one_this_module_documents() {
         assert_eq!(HEADER_SIZE, 256);
         assert_eq!(MAGIC, b"DORADMA\x00");
         assert_eq!(METADATA_ALIGN, 256);
@@ -396,6 +406,88 @@ mod tests {
         assert_eq!(OFFSET_IPC_HANDLE, 32);
         assert_eq!(IPC_HANDLE_LEN, 64);
         assert_eq!(OFFSET_WRITE_GEN, 96);
+    }
+
+    /// The `const NAME: ... = <value>;` initializer text from `source`, or a
+    /// message naming what was searched for.
+    ///
+    /// Text, not a parsed value: the point is to compare what the other file
+    /// literally says, so an edit there — to the number, or to the byte-string
+    /// spelling of the magic — is visible here whatever form it takes.
+    fn const_initializer(source: &str, name: &str) -> Result<String, String> {
+        let needle = format!("const {name}");
+        let line = source
+            .lines()
+            .find(|line| line.trim_start().starts_with(&needle))
+            .ok_or_else(|| format!("no `{needle}` declaration"))?;
+        let (_, rhs) = line
+            .split_once('=')
+            .ok_or_else(|| format!("`{needle}` line has no `=`: {line}"))?;
+        Ok(rhs.trim().trim_end_matches(';').trim().to_string())
+    }
+
+    /// The byte-string literal a Rust source file would have to spell to mean
+    /// [`MAGIC`], e.g. `b"DORADMA\x00"`. Derived from `MAGIC` rather than
+    /// written out, so changing the constant changes what is demanded of the
+    /// Python binding.
+    fn magic_as_source_literal() -> String {
+        let escaped: String = MAGIC
+            .iter()
+            .map(|&byte| {
+                if byte.is_ascii_graphic() && byte != b'"' && byte != b'\\' {
+                    (byte as char).to_string()
+                } else {
+                    format!("\\x{byte:02x}")
+                }
+            })
+            .collect();
+        format!("b\"{escaped}\"")
+    }
+
+    /// The Python binding declares this same wire format a second time, by
+    /// hand (`DORADMA_HEADER_SIZE` / `DORADMA_MAGIC` /
+    /// `DORADMA_METADATA_ALIGN` in `apis/python/node/src/lib.rs`), and this
+    /// branch did not remove that copy. So this test reads Python's three
+    /// constants out of its source and fails when they drift from ours — a
+    /// C++ node and a Python node have to agree byte for byte, and nothing
+    /// else notices if they stop.
+    ///
+    /// **What it does not cover:** the field offsets. Python writes them as
+    /// bare literals inside `unsafe` blocks (`shmem_ptr.add(8)`, `.add(16)`,
+    /// `.add(96)`) with no names to read, so an offset change there still
+    /// passes here. Removing the duplicate definition is the real fix; this
+    /// is the cheap guard until then.
+    ///
+    /// Reading a sibling crate's source makes this test workspace-only. That
+    /// is deliberate: a version that skipped when the file was missing would
+    /// promise a tripwire and silently not be one, which is the failure being
+    /// corrected here. It fails loudly instead, naming the path.
+    #[test]
+    fn constants_match_the_python_binding() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../apis/python/node/src/lib.rs");
+        let source = std::fs::read_to_string(&path).unwrap_or_else(|err| {
+            panic!(
+                "cannot cross-check the DORADMA constants against the Python binding at {}: {err}",
+                path.display()
+            )
+        });
+
+        for (python_name, expected) in [
+            ("DORADMA_HEADER_SIZE", HEADER_SIZE.to_string()),
+            ("DORADMA_METADATA_ALIGN", METADATA_ALIGN.to_string()),
+            ("DORADMA_MAGIC", magic_as_source_literal()),
+        ] {
+            let found = const_initializer(&source, python_name)
+                .unwrap_or_else(|err| panic!("{}: {err}", path.display()));
+            assert_eq!(
+                found,
+                expected,
+                "`{python_name}` in {} no longer matches this crate's definition of the \
+                 DORADMA format",
+                path.display()
+            );
+        }
     }
 
     #[test]

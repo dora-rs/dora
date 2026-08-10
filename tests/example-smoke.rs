@@ -2057,7 +2057,7 @@ fn smoke_memory_pool_cuda2cuda() {
 // |                           | `[[example]] cxx-service-action` (cargo run          |          |
 // |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
 // | c++-memory-pool           | covered: nightly `C++ Memory Pool example`           | covered  |
-// |                           | (.github/workflows/nightly.yml:1359) via             |          |
+// |                           | (.github/workflows/nightly.yml:1378) via             |          |
 // |                           | `[[example]] cxx-memory-pool` (cargo run             |          |
 // |                           | --example). Linux-gated: the transport is a named    |          |
 // |                           | POSIX segment in /dev/shm. The runner asserts no     |          |

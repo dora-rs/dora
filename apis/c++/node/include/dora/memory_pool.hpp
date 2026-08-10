@@ -55,26 +55,23 @@ namespace dora {
 /// same reason a stack guard is the point — a heap guard outlives the scope
 /// that owns the pool as easily as it outlives nothing at all.
 ///
-/// Do not move or free the pool while a guard is alive. The guard holds a
-/// reference to the caller's `rust::Box`, so moving the box out from under it
-/// or calling `free_memory_pool` leaves the destructor closing a cycle on a
-/// null box.
+/// Do not move the pool while a guard is alive. The guard holds a reference to
+/// the caller's `rust::Box`, so moving the box out from under it — including
+/// the `std::move` that `free_memory_pool` takes — leaves the destructor
+/// closing a cycle on a null box, and no signature here can stop that: the
+/// move happens at your call site, before any Rust code runs. `free_memory_pool`
+/// does refuse the *free* while a cycle is open, so the daemon never unlinks a
+/// segment mid-write; the moved-from box is the part that stays your job.
+/// Free the pool after the guard's scope ends.
 class PoolWriteGuard {
   public:
     /// Opens a write cycle on `pool`.
     ///
-    /// Throws `std::runtime_error` if the pool has no payload in its mapping
-    /// (an `ipc` pool, whose data is in device memory) or if a cycle is
-    /// already open on this handle. Nothing is left open when it throws.
+    /// Throws `std::runtime_error` if a cycle is already open on this handle.
+    /// Nothing is left open when it throws.
     explicit PoolWriteGuard(::rust::Box<::DoraMemoryPool> &pool) : pool_(pool) {
-        ::std::uint64_t payload_ptr = 0;
-        ::std::size_t payload_len = 0;
-        if (!::pool_payload(pool_, payload_ptr, payload_len)) {
-            throw ::std::runtime_error(
-                "dora::PoolWriteGuard: pool `" + ::std::string(::pool_id(pool_)) +
-                "` has no payload in its shared-memory mapping (transport `" +
-                ::std::string(::pool_transport(pool_)) + "`), so there is nothing here to write");
-        }
+        const ::std::uint64_t payload_ptr = ::pool_payload_ptr(pool_);
+        const ::std::size_t payload_len = ::pool_payload_len(pool_);
         ::DoraResult result = ::pool_begin_write(pool_);
         if (!result.error.empty()) {
             throw ::std::runtime_error("dora::PoolWriteGuard: " + ::std::string(result.error));
@@ -152,8 +149,12 @@ enum class PoolReadOutcome {
     /// There is no payload in this mapping and there never will be: the pool
     /// is `ipc`, whose bytes live in device memory reachable only through
     /// `view_ipc_handle`, or it has been freed. **Not retryable** — retrying
-    /// spins forever. `out` is left untouched. Distinguish the two with
-    /// `view_transport` and `view_is_alive`.
+    /// spins forever. Distinguish the two with `view_transport` and
+    /// `view_is_alive`.
+    ///
+    /// `out` may have been resized, and its contents are unspecified: a pool
+    /// freed *during* the read lands here after the copy was attempted. Only
+    /// `Copied` says anything about `out`.
     Unavailable,
 };
 
@@ -252,8 +253,15 @@ class PoolReadGuard {
     /// unrecognized dtype makes a shape-derived product an under-estimate.
     ::std::size_t size() const noexcept { return payload_.size; }
 
-    /// True when nothing was written between construction and now, and the
-    /// pool is still alive. Re-checkable: a later call closes a later read.
+    /// True when nothing was written between this guard's construction and
+    /// now, and the pool is still alive.
+    ///
+    /// The opening sample is fixed at construction, so calling this again only
+    /// widens the *same* window — it never starts a new one. A second call
+    /// that returns false does not mean a second frame was torn, and once it
+    /// has returned false it can never return true again. Never write
+    /// `while (!read.valid())`: that spins forever on a pool a writer has
+    /// touched. To read the next frame, construct the next guard.
     bool valid() const noexcept { return ::view_read_valid(view_, read_); }
 
   private:

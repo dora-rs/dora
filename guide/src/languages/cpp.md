@@ -768,6 +768,8 @@ if (!read.valid()) {
 
 `transport: "auto"` (or an empty string) resolves to `unified` when `receiver_is_cuda` is set and to `shmem` otherwise. The `DORA_MEMORY_POOL_TRANSPORT` environment variable overrides `auto` and nothing else: an explicit `shmem` or `unified` in the spec is the node author's decision about its own buffer layout, and a deployment's environment must not silently rewrite it. An unrecognized value in the variable is an error rather than a silent fallback.
 
+**`unified` is not free when the consumer is Python.** The choice is invisible to a C++ or Rust consumer — both transports lay the payload out identically — but it is not invisible to the Python binding. A `unified` pool registers `pinned_type: "cuda"`, and a Python consumer picks its read path from exactly that: `ipc_present == 1 || pinned_type != "cpu"` sends it down the torch-backed CUDA branch. So switching a producer to `unified` — in the spec, or by setting `DORA_MEMORY_POOL_TRANSPORT=unified` on a node whose spec said `auto` — makes its pool unreadable to a CPU Python consumer, which is a change to a *different node's* code path made from this node's environment. Use `shmem` when any consumer is a CPU Python node.
+
 `unified` is the only mode that works on an **integrated GPU**, where `cudaIpcGetMemHandle` is unsupported. It also works on a discrete GPU — it is merely slower there than IPC.
 
 The C++ binding does not *produce* `ipc` pools; requesting `transport: "ipc"` is rejected at registration, because exporting a handle would require CUDA inside the binding. It does *read* one: a pool registered by the Python binding on a discrete GPU arrives as a view with `view_ipc_present()` true and the 64-byte handle available from `view_ipc_handle()`. Every accessor that would otherwise hand out an address reports the absence instead — `view_payload()` returns false, `view_payload_len()` is 0, and `try_read_pool` returns `Unavailable`.
@@ -794,7 +796,7 @@ if (view_mapping(view, base, bytes) &&
 
 Two rules matter here. The first is silent when broken; the second only costs you the performance the pool exists for.
 
-**Register the whole segment, then offset to the payload.** `cudaHostRegister` needs a page-aligned address, and a pool's payload does not start on a page boundary — it starts at a 256-byte boundary after the header and the padded metadata. So the pair you register is the mapping base and the segment length (`view_mapping`, or `pool_shm_base` + `pool_segment_bytes` on the producer side), and you reach the payload by adding `view_payload_offset` / `pool_payload_offset` to `m.device`. Both offset functions are predicates that return false — leaving your variable untouched — for an `ipc` or freed pool. Check the return value: on false, whatever you initialized the offset to lands you in the segment's header instead of the payload, and a kernel writing through that pointer corrupts the segment without crashing.
+**Register the whole segment, then offset to the payload.** `cudaHostRegister` needs a page-aligned address, and a pool's payload does not start on a page boundary — it starts at a 256-byte boundary after the header and the padded metadata. So the pair you register is the mapping base and the segment length (`view_mapping`, or `pool_shm_base` + `pool_segment_bytes` on the producer side), and you reach the payload by adding `view_payload_offset` / `pool_payload_offset` to `m.device`. `view_payload_offset` is a predicate that returns false — leaving your variable untouched — for an `ipc` or freed pool. Check the return value: on false, whatever you initialized the offset to lands you in the segment's header instead of the payload, and a kernel writing through that pointer corrupts the segment without crashing. `pool_payload_offset` returns the offset directly: a pool you created is never `ipc` and never freed while you hold it.
 
 **Register once per pool or view, never per frame.** `cudaHostRegister` walks and pins every page in the segment, which is slow relative to a frame tick on a segment sized for real payloads. Map when the pool or the view first appears, and reuse the `MappedPool` across every frame.
 
@@ -837,15 +839,16 @@ Producer side, on a `rust::Box<DoraMemoryPool>`:
 | `register_memory_pool(sender, spec)` | the pool; throws on failure |
 | `pool_id` / `pool_shm_name` / `pool_transport` | `rust::String` |
 | `pool_dtype` / `pool_shape` | advisory metadata — never a bound |
-| `pool_payload(pool, out_ptr, out_len)` | `false` for an `ipc` pool, leaving both outputs untouched |
+| `pool_payload_ptr(pool)` | start of the payload in the mapping |
 | `pool_payload_len(pool)` | bytes of payload in the mapping — **this** is the bound |
-| `pool_payload_offset(pool, out_offset)` | payload offset within the mapping; `false` for `ipc` |
+| `pool_payload_offset(pool)` | payload offset within the mapping |
 | `pool_shm_base` / `pool_segment_bytes` | the page-aligned base and length `cudaHostRegister` takes |
-| `pool_ipc_present(pool)` | whether the segment carries a CUDA IPC handle |
 | `pool_begin_write` / `pool_end_write` | the raw cycle — prefer `dora::PoolWriteGuard` |
 | `pool_write_in_progress(pool)` | whether a cycle is open on this handle |
 | `write_memory_pool(pool, data)` | copies an exactly-`pool_payload_len()`-sized buffer in |
-| `free_memory_pool(sender, std::move(pool))` | asks the daemon to release the pool |
+| `free_memory_pool(sender, std::move(pool))` | asks the daemon to release the pool; refuses while a write cycle is open |
+
+The three payload accessors are plain getters, unlike their `view_` counterparts, because a pool you created always has its payload in its own mapping: registration refuses `ipc`, and the pool is not freed while you hold it. There is no `pool_ipc_present` for the same reason — it could only ever answer `false`.
 
 Consumer side, on a `rust::Box<DoraMemoryPoolView>`:
 

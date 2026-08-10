@@ -38,8 +38,11 @@ const MAX_POOL_BYTES: usize = 1024 * 1024 * 1024;
 /// around that — `json_len` and `data_offset` come out of the header — but a
 /// test that diffs two segments will see it.
 ///
-/// The `pinned_type` is the part a receiver acts on: it tells it whether
-/// mapping the segment for CUDA is worth doing.
+/// Nothing in this crate branches on `pinned_type` — [`Transport`], resolved
+/// against the header's `ipc_flag`, is what every path here acts on. It is
+/// written because a *Python* consumer branches on it: it takes the
+/// torch-backed CUDA read path unless `pinned_type` is exactly `"cpu"`, so a
+/// `Unified` pool is not readable by a CPU Python node.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transport {
     /// CPU receiver: read the data region directly.
@@ -218,10 +221,14 @@ pub struct PoolSegment {
     pending_write: Option<u64>,
 }
 
-// Hand-written because `Shmem` is not `Debug`. Reports the geometry a
-// mismatched producer/consumer pair needs to diagnose itself, and no mapping
-// address — an address is meaningless in any other process (see
-// `MemoryPoolMetadata::ptr`) and only invites cross-process misuse.
+// Hand-written because `Shmem` is not `Debug`, and required rather than
+// optional: `Result<PoolSegment, String>::unwrap_err()` — how every rejection
+// test here asserts — does not compile without it, and the geometry printed
+// below is what a failed assertion has to show to be worth reading.
+//
+// It reports no mapping address on purpose: an address is meaningless in any
+// other process (see `MemoryPoolMetadata::ptr`) and only invites cross-process
+// misuse.
 impl std::fmt::Debug for PoolSegment {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("PoolSegment")
@@ -372,6 +379,19 @@ impl PoolSegment {
             .transport
             .parse::<Transport>()
             .map_err(name_err)?;
+        // `create` refuses a zero-size pool, but a segment this side merely
+        // opens was written by someone else — possibly the Python binding,
+        // possibly by hand. A zero-length payload is exactly what consumers
+        // read as "there is no payload here and there never will be": the C++
+        // binding's `try_read_pool` returns `Unavailable` for it, the same
+        // answer it gives for an `ipc` pool and for a freed one. A foreign
+        // segment declaring `size: 0` would otherwise open cleanly, stay
+        // alive, report transport `shmem`, and be unreadable forever with
+        // nothing for the caller to diagnose it by. Rejecting it here is what
+        // makes "payload_len == 0 implies ipc or freed" true.
+        if header.metadata.size == 0 {
+            return Err(name_err("pool size must be greater than zero".to_string()));
+        }
         // `size` bounds the mapping (except for `ipc`), but nothing so far
         // relates it to `shape` — and `shape` is what a consumer builds its
         // view from.
@@ -472,21 +492,15 @@ impl PoolSegment {
         &self.header.metadata.shape
     }
 
-    /// `"cpu"` or `"cuda"`, derived from [`transport`](Self::transport) rather
-    /// than read back from the metadata JSON.
+    /// How a receiver reaches this segment's payload.
     ///
-    /// The JSON carries its own `pinned_type`, but nothing reconciles the two
-    /// and only the transport is checked against the header's `ipc_flag`, so
-    /// returning the raw string would expose a second, unvalidated answer to
-    /// the same question. Nothing is lost by deriving: the Python binding bails
-    /// out rather than write a `pinned_type: "cuda"` segment whose IPC export
-    /// failed (`apis/python/node/src/lib.rs`, `receiver_is_cuda &&
-    /// !ipc_written`), so a CUDA pinned type always arrives with
-    /// `ipc_flag = 1` and resolves to `Ipc` here anyway.
-    pub fn pinned_type(&self) -> &'static str {
-        self.transport.pinned_type()
-    }
-
+    /// This — not the JSON's `pinned_type` — is the validated answer: it comes
+    /// from the header's `ipc_flag`, which the JSON's `transport` key must
+    /// agree with. The JSON also carries a `pinned_type`, but nothing
+    /// reconciles the two, so there is deliberately no accessor handing that
+    /// second, unvalidated string back out. [`Transport::pinned_type`] derives
+    /// it where it is needed: the metadata this crate writes, and the daemon
+    /// parameters the C++ binding registers.
     pub fn transport(&self) -> Transport {
         self.transport
     }
@@ -749,7 +763,7 @@ mod tests {
         assert_eq!(reader.payload_offset(), writer.payload_offset());
         assert_eq!(reader.segment_bytes(), writer.segment_bytes());
         assert_eq!(reader.transport(), Transport::Shmem);
-        assert_eq!(reader.pinned_type(), "cpu");
+        assert_eq!(reader.transport().pinned_type(), "cpu");
         assert!(!reader.ipc_present());
         assert!(reader.ipc_handle().is_none());
     }
@@ -962,6 +976,25 @@ mod tests {
         );
     }
 
+    /// A foreign segment can declare `size: 0` even though `create` never
+    /// writes one. It maps fine, reports `shmem`, and stays alive — and every
+    /// consumer reads its zero-length payload as "no payload, permanently",
+    /// the answer reserved for `ipc` and for a freed pool. `open` has to
+    /// refuse it, or that reading is wrong and the caller has nothing to
+    /// diagnose the difference with.
+    #[test]
+    fn open_rejects_a_foreign_segment_declaring_a_zero_size() {
+        let guard = SegmentGuard::new("zeroopen");
+        write_raw_segment(
+            &guard,
+            r#"{"size":0,"dtype":"uint8","shape":[0],"pinned_type":"cpu"}"#,
+            0,
+            false,
+        );
+        let err = PoolSegment::open(guard.name()).unwrap_err();
+        assert!(err.contains("greater than zero"), "unexpected error: {err}");
+    }
+
     /// Writing `ipc` means exporting a CUDA IPC handle, which this crate never
     /// does. Accepting it would produce a segment whose header claims a handle
     /// that is all zeros.
@@ -977,12 +1010,16 @@ mod tests {
         );
     }
 
+    /// `unified` allocates the same *layout* as `shmem` — no IPC flag and the
+    /// full data region — so a reader reaches the payload identically for
+    /// either. The bytes are not identical: the JSON records a different
+    /// `transport` and a different `pinned_type`, and so a different
+    /// `json_len`. This asserts the layout, which is what interoperates.
     #[test]
-    fn unified_and_shmem_differ_only_in_the_declared_pinned_type() {
+    fn unified_allocates_the_same_payload_layout_as_shmem() {
         let guard = SegmentGuard::new("unified");
         let seg =
             PoolSegment::create(guard.name(), 64, "uint8", &[64], Transport::Unified).unwrap();
-        assert_eq!(seg.pinned_type(), "cuda");
         assert_eq!(
             seg.segment_bytes(),
             seg.payload_offset().expect("payload offset") + 64
@@ -990,22 +1027,20 @@ mod tests {
 
         let reader = PoolSegment::open(guard.name()).expect("open");
         assert_eq!(reader.transport(), Transport::Unified);
-        assert_eq!(reader.pinned_type(), "cuda");
+        assert_eq!(reader.transport().pinned_type(), "cuda");
         assert_eq!(reader.declared_size(), 64);
         assert_eq!(reader.payload_len(), 64);
-        // Byte-identical on the wire apart from the two JSON strings: no IPC
-        // flag, and the full data region really is allocated.
         assert!(!reader.ipc_present());
     }
 
-    /// `pinned_type` is derived from the transport, not read back from the
-    /// JSON. This is the one segment where the two disagree: a hand-rolled
-    /// sender declaring `pinned_type: "cuda"` with `ipc_flag = 0` and a full
-    /// data region. The derived answer is the actionable one — the payload
+    /// The transport comes from the header's `ipc_flag`, never from the JSON's
+    /// `pinned_type`. This is the segment where the two disagree: a
+    /// hand-rolled sender declaring `pinned_type: "cuda"` with `ipc_flag = 0`
+    /// and a full data region. `Shmem` is the actionable answer — the payload
     /// really is here in shmem — and it is the only one that was checked
     /// against the header.
     #[test]
-    fn pinned_type_follows_the_transport_when_the_json_disagrees() {
+    fn the_transport_follows_the_ipc_flag_when_the_json_pinned_type_disagrees() {
         let guard = SegmentGuard::new("pinnedskew");
         write_raw_segment(
             &guard,
@@ -1014,12 +1049,12 @@ mod tests {
             false,
         );
         let seg = PoolSegment::open(guard.name()).expect("open");
-        assert_eq!(seg.transport(), Transport::Shmem);
         assert_eq!(
-            seg.pinned_type(),
-            "cpu",
-            "pinned_type must follow the transport, not the unchecked json field"
+            seg.transport(),
+            Transport::Shmem,
+            "the transport must follow the ipc flag, not the unchecked json field"
         );
+        assert_eq!(seg.payload_len(), 64, "the payload is here in the mapping");
     }
 
     /// `open` must not run a payload-size check of its own. `parse_header`

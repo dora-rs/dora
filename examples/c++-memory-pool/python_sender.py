@@ -1,11 +1,19 @@
 """Register a CPU memory pool with the untouched Python binding, for a C++ node to read.
 
 `register_memory_pool(tensor_info, "cpu")` writes a `DORADMA` segment with a
-full data region and `ipc_present = 0` — the same bytes the C++ `unified`
-transport writes, except for one key the C++ writer adds to the metadata JSON
-(`transport`) and Python does not. That is what makes cross-language interop
-work on a platform with no CUDA IPC: nothing in the Python binding is patched
-here, and the C++ consumer maps the segment the same way it maps one of its own.
+full data region and `ipc_present = 0`. These are **not** the same bytes the
+C++ `unified` transport writes: dumped side by side for the same payload the
+two segments differ in four places — no `transport` key here, `pinned_type`
+`"cpu"` against `"cuda"`, `json.dumps`'s spaced separators against
+serde_json's compact ones (so a different `json_len`), and `write_gen` 2 after
+this register-with-copy where `PoolSegment::create` leaves 0. See the "The two
+segments are not byte-identical" section of `README.md` for the table.
+
+What makes cross-language interop work is not byte-identity but that the
+consumer reads `json_len`, `data_offset`, `pinned_type` and the generation out
+of the header instead of assuming them. Nothing in the Python binding is
+patched here, and the C++ consumer maps this segment the same way it maps one
+of its own.
 
 `"cuda"` as the receiver device would fail at registration on this machine, by
 design: the Python binding hard-requires a `cudaIpcGetMemHandle` export, which

@@ -89,6 +89,15 @@ going red — if you change the C++ pool surface, run them.
 else. On an integrated GPU `unified` is the only mode that works, because
 `cudaIpcGetMemHandle` is unsupported there.
 
+`unified` is not a free choice, though, if any consumer is a **CPU Python
+node**. It registers `pinned_type: "cuda"`, and the Python binding selects its
+read path from that field alone (`ipc_present == 1 || pinned_type != "cpu"`),
+so it takes the torch-backed CUDA branch and cannot read the pool. Every
+dataflow here has a C++ consumer, which is why none of them notices; but
+`DORA_MEMORY_POOL_TRANSPORT=unified` on a producer whose consumer is a CPU
+Python node changes that consumer's code path from this node's environment.
+`shmem` is the transport for a CPU Python consumer.
+
 ## The CUDA consumer
 
 `dataflow-cuda.yml` runs the **same producer binary** against

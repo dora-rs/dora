@@ -390,20 +390,22 @@ mod ffi {
         fn pool_shm_base(pool: &Box<DoraMemoryPool>) -> u64;
         fn pool_segment_bytes(pool: &Box<DoraMemoryPool>) -> usize;
 
-        /// Payload pointer and length, as an out-param predicate. Returns
-        /// false — leaving both outputs untouched — for an `ipc` pool, whose
-        /// payload is in device memory and is NOT in this mapping. A struct
-        /// with a nullable pointer would invite dereferencing without the
-        /// check; this shape does not.
-        fn pool_payload(pool: &Box<DoraMemoryPool>, out_ptr: &mut u64, out_len: &mut usize)
-        -> bool;
+        /// Start of the payload inside the mapping. Never null and never
+        /// outside the mapping: `register_memory_pool` refuses `ipc`, the one
+        /// transport whose payload is elsewhere, so a pool you hold always has
+        /// its bytes here. Pair it with `pool_payload_len`, never with a
+        /// product computed from `pool_shape`.
+        ///
+        /// (The consumer-side `view_payload` *is* a predicate, because a view
+        /// can be of an `ipc` pool or of a freed one. Neither state is
+        /// reachable here.)
+        fn pool_payload_ptr(pool: &Box<DoraMemoryPool>) -> u64;
         /// Offset of the payload within the mapping, for callers that hold a
         /// *device* base from `cudaHostGetDevicePointer` and need to reach the
-        /// payload through it. Returns false for an `ipc` pool.
-        fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bool;
-        /// Bytes of payload actually present in this mapping; 0 for `ipc`.
-        /// THIS is the bound for any copy — never a product computed from
-        /// `pool_shape`.
+        /// payload through it.
+        fn pool_payload_offset(pool: &Box<DoraMemoryPool>) -> usize;
+        /// Bytes of payload in this mapping. THIS is the bound for any copy —
+        /// never a product computed from `pool_shape`.
         ///
         /// The size the producer declared in the segment metadata is
         /// deliberately not exposed. It would carry no information here —
@@ -426,10 +428,9 @@ mod ffi {
         fn pool_dtype(pool: &Box<DoraMemoryPool>) -> String;
         /// Advisory metadata, as `pool_dtype`. Not a bound.
         fn pool_shape(pool: &Box<DoraMemoryPool>) -> Vec<usize>;
-        fn pool_ipc_present(pool: &Box<DoraMemoryPool>) -> bool;
 
-        /// Open a write cycle. Fails on an `ipc` pool, or if a cycle is
-        /// already open on this handle. **Prefer the `dora::PoolWriteGuard`
+        /// Open a write cycle. Fails if a cycle is already open on this
+        /// handle. **Prefer the `dora::PoolWriteGuard`
         /// RAII wrapper** (`dora/memory_pool.hpp`) over calling this directly:
         /// an early return or a thrown exception between begin and end leaves
         /// the generation odd permanently, which kills the pool for every
@@ -463,6 +464,16 @@ mod ffi {
         /// Ask the daemon to release the pool. The daemon unlinks the segment
         /// and notifies every node that touched it; this binding deliberately
         /// does not unlink locally.
+        ///
+        /// Refused, with an error naming the pool, while a write cycle is
+        /// open on it — see `pool_write_in_progress`. The pool is consumed
+        /// either way, because C++ moved it in before this ran: a
+        /// `free_memory_pool` inside a live `dora::PoolWriteGuard`'s scope
+        /// still leaves that guard's destructor closing a cycle on a
+        /// moved-from box, which no signature on this side can prevent. What
+        /// the refusal does prevent is the daemon unlinking a segment
+        /// mid-write and telling every consumer the pool is gone while its
+        /// generation is odd. Free the pool after the guard's scope ends.
         fn free_memory_pool(
             output_sender: &mut Box<OutputSender>,
             pool: Box<DoraMemoryPool>,
@@ -1423,11 +1434,26 @@ use dora_memory_pool::{
     segment::{PoolSegment, Transport},
 };
 
+/// Where the payload sits inside a pool this node created.
+///
+/// Resolved once, at registration, rather than re-derived per call. A pool
+/// only reaches C++ through `register_memory_pool`, which refuses `ipc` — the
+/// one transport whose payload is outside the mapping — and which has already
+/// failed the registration if the segment had no payload to hand the daemon.
+/// So on this side the answer always exists, and holding it lets the
+/// accessors be plain getters instead of predicates whose false branch no
+/// caller can reach.
+struct PoolPayload {
+    ptr: u64,
+    offset: usize,
+}
+
 /// A pool this node owns: the mapped segment plus the id the daemon knows it
 /// by. Dropping it unmaps the segment; only `free_memory_pool` releases it.
 pub struct DoraMemoryPool {
     segment: PoolSegment,
     id: String,
+    payload: PoolPayload,
 }
 
 const TRANSPORT_ENV: &str = "DORA_MEMORY_POOL_TRANSPORT";
@@ -1566,27 +1592,36 @@ fn pool_daemon_params(
     params
 }
 
+/// Register the segment with the daemon and report where its payload is.
+///
+/// The payload address is what the daemon is told, so resolving it is part of
+/// registering; returning it saves the caller re-deriving the same answer
+/// through an accessor that can fail.
 fn register_with_daemon(
     output_sender: &mut Box<OutputSender>,
     segment: &PoolSegment,
     spec: &ffi::DoraMemoryPoolSpec,
     name: &str,
     transport: Transport,
-) -> EyreResult<()> {
-    // The daemon rejects `ptr == 0`. This is always `Some` here — `create`
+) -> EyreResult<PoolPayload> {
+    // The daemon rejects `ptr == 0`. These are always `Some` here — `create`
     // refuses the one transport that has no payload in its mapping — but going
-    // through the accessor keeps the one-past-the-end address of an `ipc`
+    // through the accessors keeps the one-past-the-end address of an `ipc`
     // segment unreachable from this file too.
-    let (payload_ptr, _) = segment
-        .payload()
-        .ok_or_else(|| eyre!("pool `{}` has no payload to register", spec.id))?;
+    let no_payload = || eyre!("pool `{}` has no payload to register", spec.id);
+    let (payload_ptr, _) = segment.payload().ok_or_else(no_payload)?;
+    let payload_offset = segment.payload_offset().ok_or_else(no_payload)?;
 
     let params = pool_daemon_params(payload_ptr, spec, name, transport);
     let timestamp = dora_node_api::uhlc::HLC::default().new_timestamp();
     let metadata = DoraMetadata::from_parameters(timestamp, params);
     output_sender
         .0
-        .register_pinned_memory(spec.id.clone(), metadata)
+        .register_pinned_memory(spec.id.clone(), metadata)?;
+    Ok(PoolPayload {
+        ptr: payload_ptr,
+        offset: payload_offset,
+    })
 }
 
 /// True where [`naming::unlink_segment`] can actually remove a segment. Off
@@ -1633,9 +1668,10 @@ fn register_memory_pool(
         .map_err(|e| eyre!("{e}"))?;
 
     match register_with_daemon(output_sender, &segment, &spec, &name, transport) {
-        Ok(()) => Ok(Box::new(DoraMemoryPool {
+        Ok(payload) => Ok(Box::new(DoraMemoryPool {
             segment,
             id: spec.id,
+            payload,
         })),
         Err(err) => {
             // The daemon has no record of this pool, so nothing will ever
@@ -1668,26 +1704,13 @@ fn pool_segment_bytes(pool: &Box<DoraMemoryPool>) -> usize {
 }
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
-fn pool_payload(pool: &Box<DoraMemoryPool>, out_ptr: &mut u64, out_len: &mut usize) -> bool {
-    match pool.segment.payload() {
-        Some((ptr, len)) => {
-            *out_ptr = ptr;
-            *out_len = len;
-            true
-        }
-        None => false,
-    }
+fn pool_payload_ptr(pool: &Box<DoraMemoryPool>) -> u64 {
+    pool.payload.ptr
 }
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
-fn pool_payload_offset(pool: &Box<DoraMemoryPool>, out_offset: &mut usize) -> bool {
-    match pool.segment.payload_offset() {
-        Some(offset) => {
-            *out_offset = offset;
-            true
-        }
-        None => false,
-    }
+fn pool_payload_offset(pool: &Box<DoraMemoryPool>) -> usize {
+    pool.payload.offset
 }
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
@@ -1720,11 +1743,6 @@ fn pool_shape(pool: &Box<DoraMemoryPool>) -> Vec<usize> {
     pool.segment.shape().to_vec()
 }
 
-#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
-fn pool_ipc_present(pool: &Box<DoraMemoryPool>) -> bool {
-    pool.segment.ipc_present()
-}
-
 fn pool_begin_write(pool: &mut Box<DoraMemoryPool>) -> ffi::DoraResult {
     match pool.segment.begin_write() {
         Ok(()) => ffi::DoraResult {
@@ -1752,11 +1770,36 @@ fn write_memory_pool(pool: &mut Box<DoraMemoryPool>, data: &[u8]) -> ffi::DoraRe
     }
 }
 
+/// The error `free_memory_pool` refuses with, or `None` when the pool is
+/// releasable.
+///
+/// Split out so the rule is testable: `free_memory_pool` itself needs an
+/// `OutputSender`, which only a running node has.
+fn open_write_cycle_refusal(pool: &DoraMemoryPool) -> Option<String> {
+    pool.segment.write_in_progress().then(|| {
+        format!(
+            "refusing to free memory pool `{}` while a write cycle is open on it; close the \
+             cycle first (let the `dora::PoolWriteGuard` go out of scope, or call \
+             `pool_end_write`) and free the pool after that",
+            pool.id
+        )
+    })
+}
+
 #[allow(clippy::boxed_local)]
 fn free_memory_pool(
     output_sender: &mut Box<OutputSender>,
     pool: Box<DoraMemoryPool>,
 ) -> ffi::DoraResult {
+    // Freeing mid-cycle asks the daemon to unlink a segment this node is
+    // halfway through overwriting, and to tell every consumer the pool is
+    // gone while its generation is still odd. Refused rather than ordered
+    // around: the caller lost track of a cycle it opened, and closing it here
+    // would publish whatever half-written bytes are in the payload as a
+    // deliberate final frame.
+    if let Some(error) = open_write_cycle_refusal(&pool) {
+        return ffi::DoraResult { error };
+    }
     // Daemon only, deliberately. `free_pinned_memory` unlinks the segment and
     // notifies every node that touched the pool; unlinking here as well would
     // bypass that table, and — when the daemon call fails — would remove a
@@ -3635,6 +3678,68 @@ mod tests {
             );
             assert!(view_is_alive(&view));
             assert_eq!(view_payload_len(&view), 32);
+        }
+
+        /// A producer pool, as `register_memory_pool` would return it.
+        fn producer_pool(tag: &str, size: usize) -> (SegmentGuard, DoraMemoryPool) {
+            let guard = SegmentGuard::new(tag);
+            let segment =
+                PoolSegment::create(&guard.name, size, "uint8", &[size], Transport::Shmem)
+                    .expect("create the pool");
+            let (ptr, _) = segment.payload().expect("a shmem pool has a payload");
+            let offset = segment.payload_offset().expect("and an offset");
+            let pool = DoraMemoryPool {
+                segment,
+                id: guard.pool_id.clone(),
+                payload: PoolPayload { ptr, offset },
+            };
+            (guard, pool)
+        }
+
+        /// The producer-side accessors are plain getters, so they must agree
+        /// with the segment they were resolved from rather than drifting from
+        /// it.
+        #[test]
+        fn the_resolved_payload_matches_the_segment_it_came_from() {
+            let (_guard, pool) = producer_pool("payload", 96);
+            let pool = Box::new(pool);
+
+            let (ptr, len) = pool.segment.payload().expect("payload");
+            assert_eq!(pool_payload_ptr(&pool), ptr);
+            assert_eq!(pool_payload_len(&pool), len);
+            assert_eq!(
+                pool_payload_offset(&pool),
+                pool_payload_ptr(&pool) as usize - pool_shm_base(&pool) as usize
+            );
+            assert_eq!(
+                pool_shm_base(&pool) as usize + pool_payload_offset(&pool),
+                pool_payload_ptr(&pool) as usize
+            );
+        }
+
+        /// Freeing mid-cycle would have the daemon unlink a segment this node
+        /// is halfway through overwriting, and announce the pool gone while
+        /// its generation is still odd.
+        #[test]
+        fn a_pool_with_an_open_write_cycle_refuses_to_be_freed() {
+            let (_guard, mut pool) = producer_pool("freemidwrite", 32);
+            assert!(
+                open_write_cycle_refusal(&pool).is_none(),
+                "a quiescent pool is releasable"
+            );
+
+            pool.segment.begin_write().expect("open a cycle");
+            let refusal = open_write_cycle_refusal(&pool).expect("an open cycle must refuse");
+            assert!(
+                refusal.contains(&pool.id) && refusal.contains("write cycle is open"),
+                "unexpected refusal: {refusal}"
+            );
+
+            pool.segment.end_write(true);
+            assert!(
+                open_write_cycle_refusal(&pool).is_none(),
+                "closing the cycle must make it releasable again"
+            );
         }
     }
 
