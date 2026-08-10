@@ -135,6 +135,15 @@ A poll drops its own registration on a match, an error or expiry.
 again; without it that entry lives until the stream is dropped. It is
 available in both Rust and C++ and is a no-op for an unknown id.
 
+It releases the deadline only. A reply that arrives *after* its request
+timed out or was cancelled matches no live correlation, so the next poll
+buffers it for the caller's event loop like any other unrelated input.
+Reading events clears those; a node that only polls and never reads
+keeps one buffered event per unclaimed reply. Do not work around that
+with a loop that reads until empty — the non-blocking read returns
+buffered events first but then falls through to the live stream, so it
+can consume and discard a reply a later poll was going to correlate.
+
 In C++ the timeout is `timeout_ms`, where `0` means *no deadline* rather
 than "return immediately" — a poll never blocks, so there is nothing to
 time out. That inverts the usual convention for a timeout argument.

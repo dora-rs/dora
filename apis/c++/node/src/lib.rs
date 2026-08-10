@@ -454,6 +454,19 @@ mod ffi {
         /// long-running node is an unbounded slow leak.
         ///
         /// Safe to call for an id that was never registered.
+        ///
+        /// It releases the deadline and nothing else. A reply arriving
+        /// *after* its request timed out or was cancelled matches no
+        /// live correlation, so the next poll buffers it for
+        /// `next_event` like any other unrelated input. A node that
+        /// reads its events clears those as a matter of course; one
+        /// that only polls and never reads keeps one buffered event per
+        /// unclaimed reply.
+        ///
+        /// Do not "fix" that with a loop that reads until empty:
+        /// `try_next_event` returns buffered events first but then
+        /// falls through to the live stream, so such a loop can consume
+        /// and discard a reply a later poll was going to correlate.
         fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str);
 
         /// Send a service request under a caller-supplied `request_id`.

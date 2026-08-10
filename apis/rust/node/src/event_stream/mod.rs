@@ -1562,6 +1562,25 @@ impl EventStream {
     /// this is only needed when a caller abandons a request it will
     /// never poll again — otherwise that one entry lives until the
     /// `EventStream` is dropped.
+    ///
+    /// # It does not discard a reply that arrives later
+    ///
+    /// This clears the deadline and nothing else. A reply that arrives
+    /// *after* its request timed out or was cancelled matches no live
+    /// correlation, so the next poll buffers it for the caller's own
+    /// event loop, exactly like any other unrelated input.
+    ///
+    /// [`recv`](Self::recv) and friends drain that buffer, so a client
+    /// that reads its events at all clears these as a matter of course.
+    /// A client that *only* polls and never reads events keeps one
+    /// buffered event per unclaimed reply.
+    ///
+    /// Draining defensively is not as simple as it looks:
+    /// [`try_recv`](Self::try_recv) returns buffered events first but
+    /// then falls through to the live stream, so a loop that reads
+    /// until empty can consume — and discard — a reply a later poll was
+    /// going to correlate. Read events you can classify yourself rather
+    /// than discarding whatever comes back.
     pub fn cancel_correlation(&mut self, correlation_id: &str) {
         self.correlation_deadlines.remove(correlation_id);
     }

@@ -36,6 +36,18 @@
 // no tick input and never calls `next_event`. Shutdown arrives through
 // the polls as `StreamEnded`. A node that does need its own dora inputs
 // should poll first, then drain with `try_next_event`.
+//
+// That is fine for a demo that exits after a fixed number of requests.
+// A long-lived node should know the cost: anything a poll consumes but
+// does not want — notably a reply that arrives after its request timed
+// out — is buffered for `next_event`, and a node that never reads events
+// never releases it. `cancel_correlation` frees the deadline, not the
+// buffered reply.
+//
+// Do not "fix" that with a loop that reads until empty: `try_next_event`
+// hands back buffered events first but then falls through to the live
+// stream, so such a loop can consume and discard a reply a later poll
+// was going to correlate. Read events you can classify yourself.
 // ---------------------------------------------------------------------
 
 #include <dora-node-api.h>
