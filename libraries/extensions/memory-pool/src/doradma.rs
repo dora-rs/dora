@@ -320,8 +320,8 @@ pub fn parse_header(buf: &[u8], segment_len: usize) -> Result<ParsedHeader, Stri
         ));
     }
     // The caller sized `buf` from `json_len_field`, so this holds by
-    // construction; check it anyway rather than let a mis-sized slice become
-    // a panicking index.
+    // construction; check it anyway rather than let a wrongly sized slice
+    // become a panicking index.
     if buf.len() < HEADER_SIZE + json_len {
         return Err(format!(
             "header slice is {} bytes, too short for the {json_len}-byte metadata json it declares",

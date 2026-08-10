@@ -653,7 +653,12 @@ impl PoolSegment {
 /// path `unlink` removes. The memory-pool transport is already Linux-only —
 /// `MemoryPoolManager::free_shared_memory` returns an "unavailable on this
 /// platform" error everywhere else.
-#[cfg(all(test, target_os = "linux"))]
+// Written as two stacked attributes rather than `cfg(all(test, ...))` because
+// `scripts/qa/unwrap-budget.sh` recognizes only the literal `#[cfg(test)]` when
+// deciding which blocks are test-only. The combined form made this module count
+// as production code and blew the unwrap budget by its own size.
+#[cfg(test)]
+#[cfg(target_os = "linux")]
 mod tests {
     use super::*;
 
