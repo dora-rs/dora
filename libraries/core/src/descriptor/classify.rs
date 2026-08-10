@@ -146,6 +146,44 @@ fn classify_inner(node: &Node) -> Result<NodeClassOrModule> {
 /// Fields shared by ALL node types (consumed at ResolvedNode construction).
 const SHARED_FIELDS: &[&str] = &["id", "name", "description", "env", "deploy"];
 
+/// All non-discriminator `Node` fields that are classified per node kind.
+///
+/// Keep this list exhaustive for `dora_message::descriptor::Node`: a field
+/// missing here is never checked against the per-kind whitelists.
+const ALL_CHECKABLE_FIELDS: &[&str] = &[
+    "path",
+    "path_sha256",
+    "args",
+    "build",
+    "git",
+    "hub",
+    "branch",
+    "tag",
+    "rev",
+    "outputs",
+    "output_types",
+    "output_framing",
+    "inputs",
+    "input_types",
+    "output_metadata",
+    "pattern",
+    "send_stdout_as",
+    "send_logs_as",
+    "min_log_level",
+    "max_log_size",
+    "max_rotated_files",
+    "shared_memory_pool_size",
+    "restart_policy",
+    "max_restarts",
+    "restart_delay",
+    "max_restart_delay",
+    "restart_window",
+    "health_check_timeout",
+    "finish_grace_secs",
+    "cpu_affinity",
+    "params",
+];
+
 fn is_set(field: &str, node: &Node) -> bool {
     match field {
         "path" => node.path.is_some(),
@@ -187,43 +225,8 @@ fn is_set(field: &str, node: &Node) -> bool {
 }
 
 fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) -> Result<()> {
-    // All fields that could be set on a Node (not kind discriminators)
-    let all_checkable: &[&str] = &[
-        "path",
-        "path_sha256",
-        "args",
-        "build",
-        "git",
-        "hub",
-        "branch",
-        "tag",
-        "rev",
-        "outputs",
-        "output_types",
-        "output_framing",
-        "inputs",
-        "input_types",
-        "output_metadata",
-        "pattern",
-        "send_stdout_as",
-        "send_logs_as",
-        "min_log_level",
-        "max_log_size",
-        "max_rotated_files",
-        "shared_memory_pool_size",
-        "restart_policy",
-        "max_restarts",
-        "restart_delay",
-        "max_restart_delay",
-        "restart_window",
-        "health_check_timeout",
-        "finish_grace_secs",
-        "cpu_affinity",
-        "params",
-    ];
-
     let mut unknown: Vec<&str> = Vec::new();
-    for field in all_checkable {
+    for field in ALL_CHECKABLE_FIELDS {
         if is_set(field, node) && !allowed.contains(field) {
             unknown.push(field);
         }
@@ -342,7 +345,7 @@ fn check_operator(node: &Node) -> Result<()> {
 /// restart_policy, max_restarts, restart_delay, max_restart_delay,
 /// restart_window, health_check_timeout, finish_grace_secs,
 /// send_stdout_as, send_logs_as, min_log_level, max_log_size, max_rotated_files,
-/// cpu_affinity (+ shared)
+/// output_metadata, pattern, cpu_affinity (+ shared)
 const ROS2_ALLOWED: &[&str] = &[
     "ros2",
     "args",
@@ -364,6 +367,8 @@ const ROS2_ALLOWED: &[&str] = &[
     "min_log_level",
     "max_log_size",
     "max_rotated_files",
+    "output_metadata",
+    "pattern",
     "cpu_affinity",
 ];
 
@@ -382,4 +387,191 @@ fn check_module(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(MODULE_ALLOWED);
     validate_against_whitelist(node, &allowed, "Module")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    fn parse_node(yaml: &str) -> Node {
+        serde_yaml::from_str(yaml).expect("test node should parse")
+    }
+
+    fn classify_error(yaml: &str) -> String {
+        let node = parse_node(yaml);
+        format!(
+            "{:#}",
+            classify(&node).expect_err("node should fail classification")
+        )
+    }
+
+    #[test]
+    fn valid_nodes_for_each_kind_pass_field_classification() {
+        for yaml in [
+            r#"
+id: standard
+path: ./node
+inputs:
+  in: source/out
+outputs: [out]
+output_metadata:
+  out: [request_id]
+pattern: service-server
+"#,
+            r#"
+id: custom
+custom:
+  path: ./node.py
+  source: Local
+  inputs:
+    in: source/out
+  outputs: [out]
+"#,
+            r#"
+id: runtime
+operators:
+  - id: op
+    python: op.py
+    inputs:
+      in: source/out
+    outputs: [out]
+"#,
+            r#"
+id: operator
+operator:
+  python: op.py
+  inputs:
+    in: source/out
+  outputs: [out]
+"#,
+            r#"
+id: bridge
+ros2:
+  topic: /odom
+  message_type: nav_msgs/msg/Odometry
+  direction: subscribe
+outputs: [odom]
+output_metadata:
+  odom: [request_id]
+pattern: service-server
+"#,
+        ] {
+            let node = parse_node(yaml);
+            classify(&node).expect("valid node should classify");
+        }
+
+        let module = parse_node(
+            r#"
+id: nav
+module: modules/nav.yml
+inputs:
+  pose: localization/pose
+params:
+  speed: "2.0"
+"#,
+        );
+        check_module_fields(&module).expect("valid module node should classify");
+    }
+
+    #[test]
+    fn rejected_fields_are_reported_for_each_kind() {
+        for (yaml, expected_kind, expected_field) in [
+            (
+                r#"
+id: standard
+path: ./node
+params:
+  speed: "2.0"
+"#,
+                "Standard",
+                "params",
+            ),
+            (
+                r#"
+id: custom
+custom:
+  path: ./node.py
+  source: Local
+outputs: [out]
+"#,
+                "Custom",
+                "outputs",
+            ),
+            (
+                r#"
+id: runtime
+operators:
+  - id: op
+    python: op.py
+outputs: [out]
+"#,
+                "Runtime",
+                "outputs",
+            ),
+            (
+                r#"
+id: operator
+operator:
+  python: op.py
+outputs: [out]
+"#,
+                "Operator",
+                "outputs",
+            ),
+            (
+                r#"
+id: bridge
+ros2:
+  topic: /odom
+  message_type: nav_msgs/msg/Odometry
+  direction: subscribe
+git: https://github.com/example/node.git
+"#,
+                "ROS2 bridge",
+                "git",
+            ),
+        ] {
+            let error = classify_error(yaml);
+            assert!(error.contains(expected_kind), "{error}");
+            assert!(error.contains(expected_field), "{error}");
+        }
+
+        let module = parse_node(
+            r#"
+id: nav
+module: modules/nav.yml
+build: cargo build
+"#,
+        );
+        let error = format!(
+            "{:#}",
+            check_module_fields(&module).expect_err("module build should be rejected")
+        );
+        assert!(error.contains("Module"), "{error}");
+        assert!(error.contains("build"), "{error}");
+    }
+
+    #[test]
+    fn all_node_fields_are_classified_or_marked_shared() {
+        let schema = schemars::schema_for!(Node);
+        let schema = serde_json::to_value(schema).expect("schema should serialize");
+        let properties = schema
+            .pointer("/$defs/Node/properties")
+            .or_else(|| schema.pointer("/definitions/Node/properties"))
+            .or_else(|| schema.pointer("/properties"))
+            .and_then(serde_json::Value::as_object)
+            .expect("Node schema should expose properties");
+
+        let mut actual: BTreeSet<_> = properties.keys().map(String::as_str).collect();
+        // `deploy` is a real `Node` field, but is intentionally skipped in the
+        // generated schema because it uses the unstable `_unstable_deploy`
+        // YAML surface.
+        actual.insert("deploy");
+        let mut classified: BTreeSet<_> = SHARED_FIELDS.iter().copied().collect();
+        classified.extend(ALL_CHECKABLE_FIELDS.iter().copied());
+        classified.extend(["custom", "operators", "operator", "ros2", "module"]);
+
+        assert_eq!(actual, classified);
+    }
 }

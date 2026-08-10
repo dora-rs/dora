@@ -1,0 +1,7 @@
+nodes:
+  - id: runtime
+    operators:
+      - id: op
+        python: op.py
+        outputs:
+          - result

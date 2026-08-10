@@ -1,0 +1,7 @@
+nodes:
+  - id: bridge
+    ros2:
+      topic: /odom
+      message_type: nav_msgs/msg/Odometry
+      direction: subscribe
+    git: https://github.com/example/node.git

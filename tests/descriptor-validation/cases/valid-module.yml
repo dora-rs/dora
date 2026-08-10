@@ -1,0 +1,7 @@
+nodes:
+  - id: nav
+    module: module-valid.yml
+    inputs:
+      pose: localization/pose
+    params:
+      speed: "2.0"

@@ -1,0 +1,8 @@
+nodes:
+  - id: custom
+    custom:
+      path: ./custom-node
+      source: Local
+      outputs:
+        - result
+      restart_policy: always
