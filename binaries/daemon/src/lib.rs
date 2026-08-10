@@ -195,7 +195,11 @@ use zenoh::shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder};
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
-const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
+/// Shortest sampling window (seconds) we trust for a disk-I/O rate. A window
+/// below this either has no prior baseline (first sample) or is so short that
+/// dividing by it would blow the rate up into a meaningless spike, so we report
+/// no rate for that sample instead.
+const MIN_METRICS_WINDOW_SECS: f64 = 0.1;
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
@@ -1783,6 +1787,9 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
+    /// Wall-clock instant of the previous successful metrics refresh, used to
+    /// compute the real disk-I/O sampling window. `None` until the first refresh.
+    pub(crate) metrics_last_refresh: Arc<std::sync::Mutex<Option<Instant>>>,
     /// Opaque, dataflow-scoped store for out-of-tree extensions. See
     /// `extension_table` and `docs/extensions.md`.
     pub(crate) extensions: ExtensionTable,
@@ -1919,11 +1926,62 @@ struct DataflowMetricsSnapshot {
     net_publish_failures: Arc<AtomicU64>,
 }
 
+/// Convert a byte delta observed over `window` into a bytes-per-second rate.
+///
+/// `window` is the wall-clock time since the previous successful refresh.
+/// Returns `None` when there is no usable measurement window: the first sample
+/// after the metrics `System` is (re)initialized has no prior baseline — sysinfo
+/// then reports the process's total-since-start I/O, which divided by any window
+/// is a spurious spike — and a near-zero window would similarly explode the rate.
+fn disk_rate_bytes_per_sec(bytes: u64, window: Option<Duration>) -> Option<u64> {
+    let secs = window?.as_secs_f64();
+    if secs < MIN_METRICS_WINDOW_SECS {
+        return None;
+    }
+    Some((bytes as f64 / secs) as u64)
+}
+
+#[cfg(test)]
+mod disk_rate_tests {
+    use super::*;
+
+    #[test]
+    fn no_baseline_reports_no_rate() {
+        // First sample: no prior refresh, so no measurement window.
+        assert_eq!(disk_rate_bytes_per_sec(10_000_000, None), None);
+    }
+
+    #[test]
+    fn near_zero_window_reports_no_rate() {
+        // A window below the floor would explode into a spurious spike.
+        assert_eq!(
+            disk_rate_bytes_per_sec(10_000_000, Some(Duration::from_millis(1))),
+            None
+        );
+    }
+
+    #[test]
+    fn divides_by_the_actual_window_not_a_constant() {
+        // 8 MB observed over a 4 s window (e.g. one skipped cycle) is 2 MB/s —
+        // the old constant-2s divisor would have reported 4 MB/s.
+        assert_eq!(
+            disk_rate_bytes_per_sec(8_000_000, Some(Duration::from_secs(4))),
+            Some(2_000_000)
+        );
+        // The steady-state 2 s window is unchanged.
+        assert_eq!(
+            disk_rate_bytes_per_sec(4_000_000, Some(Duration::from_secs(2))),
+            Some(2_000_000)
+        );
+    }
+}
+
 /// Collect and send metrics in the background. Errors are returned to the
 /// caller (the spawned task logs them).
 async fn collect_and_send_metrics_bg(
     dataflows: Vec<DataflowMetricsSnapshot>,
     metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
+    metrics_last_refresh: Arc<std::sync::Mutex<Option<Instant>>>,
     sender: coordinator::CoordinatorSender,
     daemon_id: DaemonId,
     clock: Arc<uhlc::HLC>,
@@ -1937,6 +1995,10 @@ async fn collect_and_send_metrics_bg(
 
     // Refresh sysinfo on a blocking thread if any nodes are running.
     // Use try_lock to skip if a previous collection is still in progress.
+    // `refresh_ok` tracks whether we hold a valid per-process I/O baseline: it
+    // is false when the refresh panicked (the `System` is then reset to empty,
+    // losing every baseline) so the next cycle is treated as a first sample.
+    let mut refresh_ok = false;
     let refreshed_system = if has_any_running {
         let sys = match metrics_system.try_lock() {
             Ok(mut guard) => std::mem::take(&mut *guard),
@@ -1949,18 +2011,51 @@ async fn collect_and_send_metrics_bg(
             .with_cpu()
             .with_memory()
             .with_disk_usage();
-        let sys = tokio::task::spawn_blocking(move || {
+        match tokio::task::spawn_blocking(move || {
             let mut sys = sys;
             sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
             sys
         })
         .await
-        .unwrap_or_else(|e| {
-            tracing::error!("sysinfo refresh panicked: {e}");
-            sysinfo::System::new()
-        });
-        Some(sys)
+        {
+            Ok(sys) => {
+                refresh_ok = true;
+                Some(sys)
+            }
+            Err(e) => {
+                tracing::error!("sysinfo refresh panicked: {e}");
+                // The `System` (and its per-process I/O baseline) is gone.
+                Some(sysinfo::System::new())
+            }
+        }
     } else {
+        None
+    };
+
+    // Measure the real time since the previous successful refresh so the
+    // disk-I/O rate reflects the actual sampling window rather than a hard-coded
+    // interval. The constant divisor over-reported whenever the window differed
+    // from `METRICS_INTERVAL` — e.g. after a skipped/catch-up cycle (~2x) or on
+    // the first sample, when there is no baseline at all.
+    //
+    // Only a successful refresh establishes a baseline for the *next* delta, so
+    // the timestamp is recorded only then. When the refresh was skipped (no
+    // nodes) or panicked (System reset to empty), clear the timestamp so the
+    // next successful refresh is treated as a first sample instead of dividing
+    // total-since-start I/O by the gap. `None` (first sample or a poisoned lock)
+    // suppresses the rate until a real window exists.
+    let disk_window = if refresh_ok {
+        let now = Instant::now();
+        match metrics_last_refresh.lock() {
+            Ok(mut guard) => guard
+                .replace(now)
+                .map(|prev| now.saturating_duration_since(prev)),
+            Err(_) => None,
+        }
+    } else {
+        if let Ok(mut guard) = metrics_last_refresh.lock() {
+            *guard = None;
+        }
         None
     };
 
@@ -2017,11 +2112,10 @@ async fn collect_and_send_metrics_bg(
                                 pid,
                                 cpu_usage,
                                 memory_bytes,
-                                disk_read_bytes: Some(
-                                    (disk_read as f64 / METRICS_INTERVAL_SECS) as u64,
-                                ),
-                                disk_write_bytes: Some(
-                                    (disk_written as f64 / METRICS_INTERVAL_SECS) as u64,
+                                disk_read_bytes: disk_rate_bytes_per_sec(disk_read, disk_window),
+                                disk_write_bytes: disk_rate_bytes_per_sec(
+                                    disk_written,
+                                    disk_window,
                                 ),
                                 restart_count,
                                 broken_inputs: node.broken_inputs.clone(),
@@ -3002,6 +3096,7 @@ impl Daemon {
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
+            metrics_last_refresh: Arc::new(std::sync::Mutex::new(None)),
         };
 
         Ok((daemon, dora_events_rx))
@@ -4998,6 +5093,7 @@ impl Daemon {
             .collect();
 
         let metrics_system = self.metrics_system.clone();
+        let metrics_last_refresh = self.metrics_last_refresh.clone();
         let daemon_id = self.daemon_id.clone();
         let clock = self.clock.clone();
 
@@ -5005,6 +5101,7 @@ impl Daemon {
             if let Err(e) = collect_and_send_metrics_bg(
                 dataflow_snapshots,
                 metrics_system,
+                metrics_last_refresh,
                 sender,
                 daemon_id,
                 clock,
