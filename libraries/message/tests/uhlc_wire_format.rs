@@ -147,12 +147,20 @@ fn timestamp_survives_a_serde_json_value_round_trip() {
 }
 
 #[test]
-fn a_freshly_generated_hlc_id_uses_all_sixteen_bytes() {
-    // Guards the premise of the test above: if `HLC::default()` ever produced a
-    // short id, the `serde_json::Value` round trip would pass for reasons that
-    // do not generalize to production timestamps.
+fn a_freshly_generated_hlc_timestamp_survives_a_serde_json_value_round_trip() {
+    // Companion to `timestamp_survives_a_serde_json_value_round_trip`, which pins
+    // the property on the deterministic full-width `golden_timestamp` (top byte
+    // `0x10`, so it exceeds `u64`): confirm a *real* `HLC::default()` timestamp
+    // also survives `serde_json::Value`.
+    //
+    // We deliberately do NOT assert that the id uses all sixteen bytes. Under
+    // uhlc 0.9 `HLC::default()` seeds its id with a uniformly random 128-bit
+    // value (`ID::rand()`), whose most-significant byte is zero ~1/256 of the
+    // time, so `size() == 16` is probabilistic and would flake ~1 run in 256
+    // (dora-rs/dora#3104). The round trip below is lossless for an id of any
+    // width — that, not the byte count of a random id, is the property that
+    // matters here.
     let timestamp = dora_message::uhlc::HLC::default().new_timestamp();
-    assert_eq!(timestamp.get_id().size(), 16);
 
     let value = serde_json::to_value(Timestamped {
         inner: (),
