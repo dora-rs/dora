@@ -39,7 +39,7 @@ dora-memory-pool = { workspace = true }
 serde_yaml = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
-shared_memory_extended = "0.13.0"
+shared_memory_extended = { workspace = true }
 bincode = { workspace = true }
 aligned-vec = "0.6.4"
 ctrlc = "3.5.2"
