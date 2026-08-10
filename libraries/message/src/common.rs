@@ -140,8 +140,23 @@ impl std::fmt::Display for NodeError {
                     13 => "SIGPIPE".into(),
                     14 => "SIGALRM".into(),
                     15 => "SIGTERM".into(),
+                    // Signals 1..=22 above share the same number on every Unix
+                    // dora targets. Numbers past that diverge — signal 23 is
+                    // SIGURG on Linux but SIGIO on macOS/BSD — so name 23 per
+                    // target OS and fall back to the raw number on any other
+                    // platform rather than printing a wrong name.
                     22 => "SIGTTOU".into(),
+                    #[cfg(any(target_os = "linux", target_os = "android"))]
                     23 => "SIGURG".into(),
+                    #[cfg(any(
+                        target_os = "macos",
+                        target_os = "ios",
+                        target_os = "freebsd",
+                        target_os = "openbsd",
+                        target_os = "netbsd",
+                        target_os = "dragonfly"
+                    ))]
+                    23 => "SIGIO".into(),
                     other => other.to_string().into(),
                 };
                 if matches!(self.cause, NodeErrorCause::GraceDuration) {
@@ -399,8 +414,23 @@ mod tests {
     }
 
     #[test]
-    fn node_error_signal_display_uses_linux_signal_names() {
-        for (signal, name) in [(6, "SIGABRT"), (22, "SIGTTOU"), (23, "SIGURG")] {
+    fn node_error_signal_display_uses_platform_signal_names() {
+        // Portable across every Unix dora targets.
+        let mut cases = vec![(6, "SIGABRT"), (22, "SIGTTOU")];
+        // Signal 23 diverges: SIGURG on Linux, SIGIO on macOS/BSD.
+        #[cfg(any(target_os = "linux", target_os = "android"))]
+        cases.push((23, "SIGURG"));
+        #[cfg(any(
+            target_os = "macos",
+            target_os = "ios",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        ))]
+        cases.push((23, "SIGIO"));
+
+        for (signal, name) in cases {
             assert_eq!(
                 node_error_with_signal(signal).to_string(),
                 format!("exited because of signal {name}")
