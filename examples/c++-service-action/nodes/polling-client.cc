@@ -106,6 +106,14 @@ std::string send_one(DoraNode &node, std::uint8_t a, std::uint8_t b)
 struct SweepResult
 {
     int completed = 0;
+    /// Requests that reached a terminal outcome without a reply —
+    /// timed out, orphaned by a restart, or errored.
+    ///
+    /// Counted separately from `completed` but tracked just as
+    /// carefully: a request that ends without an answer has still
+    /// *ended*, and the main loop needs to know that or it will wait
+    /// for a reply that is never coming.
+    int failed = 0;
     bool stream_ended = false;
 };
 
@@ -148,6 +156,7 @@ SweepResult sweep(DoraNode &node, std::vector<Pending> &pending)
             // The deadline registered on the first poll has lapsed.
             // Reported once, then the registration is gone.
             std::cerr << "[polling-client] timed out: " << entry.request_id << std::endl;
+            out.failed++;
             break;
 
         case DoraPatternStatus::StreamEnded:
@@ -160,11 +169,13 @@ SweepResult sweep(DoraNode &node, std::vector<Pending> &pending)
             // resend against the new instance.
             std::cerr << "[polling-client] server restarted, dropping " << entry.request_id
                       << std::endl;
+            out.failed++;
             break;
 
         default:
             std::cerr << "[polling-client] " << entry.request_id
                       << " failed: " << std::string(result.error) << std::endl;
+            out.failed++;
             break;
         }
 
@@ -190,9 +201,16 @@ int main()
     std::vector<Pending> pending;
     std::uint8_t next = 0;
     int completed = 0;
+    int failed = 0;
     int issued = 0;
 
-    while (completed < REQUEST_BUDGET || !pending.empty())
+    // Terminate on requests *settled*, not requests answered. A request
+    // that timed out or was orphaned is finished too; waiting for it to
+    // "complete" would spin here forever, and — because `sweep` only
+    // polls entries still in `pending` — with nothing left to poll the
+    // node would never see `StreamEnded` either, so it could not even
+    // shut down with the dataflow.
+    while (completed + failed < REQUEST_BUDGET || !pending.empty())
     {
         // The node's own work, on its own schedule — never gated on a
         // reply. This is what a blocking receive would have stalled: it
@@ -205,6 +223,11 @@ int main()
             auto request_id = send_one(dora_node, a, b);
             if (request_id.empty())
             {
+                // A request that never reached the wire is settled too.
+                // Counting it keeps a persistently failing send from
+                // retrying forever.
+                failed++;
+                issued++;
                 break;
             }
             pending.push_back(Pending{request_id, a, b});
@@ -217,6 +240,7 @@ int main()
 
         auto result = sweep(dora_node, pending);
         completed += result.completed;
+        failed += result.failed;
         if (result.stream_ended)
         {
             std::cerr << "[polling-client] stream ended with " << pending.size()
@@ -227,7 +251,11 @@ int main()
         std::this_thread::sleep_for(POLL_INTERVAL);
     }
 
-    std::cout << "[polling-client] completed " << completed
-              << " request(s), several in flight at a time, never blocking" << std::endl;
+    std::cout << "[polling-client] completed " << completed << " request(s)";
+    if (failed > 0)
+    {
+        std::cout << ", " << failed << " unanswered";
+    }
+    std::cout << ", several in flight at a time, never blocking" << std::endl;
     return 0;
 }
