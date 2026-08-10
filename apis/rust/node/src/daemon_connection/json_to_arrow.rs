@@ -3,8 +3,21 @@ use std::{
     sync::Arc,
 };
 
-use arrow::array::{Array, ArrayData};
+use arrow::array::{Array, ArrayData, RecordBatch};
 use eyre::{Context, ContextCompat};
+
+/// Extract the first column of `batch` as [`ArrayData`].
+///
+/// `RecordBatch::column(0)` panics on a batch with no columns; both JSON
+/// readers can be handed (or infer) a zero-field schema, so return an error
+/// instead of panicking.
+fn first_column_data(batch: &RecordBatch) -> eyre::Result<ArrayData> {
+    Ok(batch
+        .columns()
+        .first()
+        .context("JSON record batch has no columns")?
+        .to_data())
+}
 
 pub fn read_json_bytes_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
     match arrow_json::reader::infer_json_schema(wrapped(data), None) {
@@ -36,10 +49,7 @@ fn read_from_json_with_schema(
         .context("no record batch in JSON")?
         .context("failed to read record batch")?;
 
-    if batch.num_columns() == 0 {
-        eyre::bail!("JSON record batch has no columns");
-    }
-    Ok(batch.column(0).to_data())
+    first_column_data(&batch)
 }
 
 // wrap data into JSON object to also allow bare JSON values
@@ -70,10 +80,7 @@ pub fn read_json_value_as_arrow(
         .flush()
         .context("failed to read record batch")?
         .context("no record batch in JSON")?;
-    if batch.num_columns() == 0 {
-        eyre::bail!("JSON record batch has no columns");
-    }
-    Ok(batch.column(0).to_data())
+    first_column_data(&batch)
 }
 
 #[cfg(test)]
@@ -100,6 +107,19 @@ mod tests {
         let values = [serde_json::json!({})];
         let result = read_json_value_as_arrow(&values, schema);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn single_field_schema_reads_first_column() {
+        // The zero-column guard must not reject a normal single-field schema.
+        let schema = Arc::new(Schema::new(vec![arrow_schema::Field::new(
+            "value",
+            arrow_schema::DataType::Int64,
+            false,
+        )]));
+        let values = [serde_json::json!({ "value": 7 })];
+        let array = read_json_value_as_arrow(&values, schema).expect("valid single-field decode");
+        assert_eq!(array.len(), 1);
     }
 
     #[test]
