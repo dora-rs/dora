@@ -345,24 +345,30 @@ impl MemoryPoolManager {
     /// Sweep orphaned shared-memory segments from a previous crash or
     /// SIGKILL of the same dataflow.
     ///
-    /// `dataflow_id` scopes the sweep.  Segments appear under two naming
-    /// formats:
+    /// `dataflow_id` scopes the sweep to one dataflow, and `own_machine_id`
+    /// (this daemon's `--machine-id`, if any) scopes it to this machine.
+    /// Segments appear under three naming formats:
     ///
-    /// - local pool:            `dora_pool_{dataflow_id}_{node_id}_{counter}`
-    /// - cross-machine mirror:  `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}`
+    /// - local pool (no machine id):        `dora_pool_{dataflow_id}_{node_id}_{counter}`
+    /// - own local pool / mirror:           `dora_pool_{own_machine_id}_{dataflow_id}_{node_id}_{counter}`
+    /// - sibling daemon's segment:          `dora_pool_{other_machine_id}_{dataflow_id}_{node_id}_{counter}`
     ///
-    /// Both are removed (mirrors are machine-qualified, so the daemon cannot
-    /// know the machine prefix in advance).  This is safe even when other
-    /// daemons are running on the same host, because dataflow IDs are UUIDs
-    /// and no two daemons run the same one concurrently; matching the
-    /// dataflow id only as an underscore-delimited segment (not a bare
-    /// substring) means a foreign dataflow's segments or unrelated /dev/shm
-    /// files can never be swept.
-    pub fn cleanup_orphans(dataflow_id: &str) {
+    /// Only the first two are swept.  The machine-qualified form is
+    /// attributable to this daemon only when its machine prefix matches our
+    /// own id: on a same-host multi-daemon dataflow the daemons share one
+    /// `/dev/shm` namespace, so sweeping `dora_pool_{any_machine}_{df}_*`
+    /// could unlink a sibling daemon's LIVE segments (a consumer reopening
+    /// by name would hit ENOENT, or the sender would recreate a same-named
+    /// segment with a divergent inode).  Matching the dataflow id only as
+    /// an underscore-delimited prefix (never a bare substring) means a
+    /// foreign dataflow's segments or unrelated /dev/shm files can never be
+    /// swept.
+    pub fn cleanup_orphans(dataflow_id: &str, own_machine_id: Option<&str>) {
         #[cfg(target_os = "linux")]
         {
             let unqualified_prefix = format!("dora_pool_{}_", dataflow_id);
-            let qualified_segment = format!("_{}_", dataflow_id);
+            let own_qualified_prefix =
+                own_machine_id.map(|machine_id| format!("dora_pool_{machine_id}_{dataflow_id}_"));
             match std::fs::read_dir("/dev/shm") {
                 Ok(entries) => {
                     for entry in entries.flatten() {
@@ -370,7 +376,9 @@ impl MemoryPoolManager {
                         let name = name.to_string_lossy();
                         let is_this_dataflow = name.starts_with("dora_pool_")
                             && (name.starts_with(&unqualified_prefix)
-                                || name.contains(&qualified_segment));
+                                || own_qualified_prefix
+                                    .as_deref()
+                                    .is_some_and(|prefix| name.starts_with(prefix)));
                         if is_this_dataflow
                             && let Err(err) = std::fs::remove_file(entry.path())
                             && err.kind() != std::io::ErrorKind::NotFound
@@ -392,7 +400,7 @@ impl MemoryPoolManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = dataflow_id;
+            let _ = (dataflow_id, own_machine_id);
         }
     }
 
@@ -688,16 +696,17 @@ mod tests {
     #[test]
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
-        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid");
+        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid", None);
     }
 
-    /// Regression test: the orphan sweep must remove both the unqualified
-    /// local segment (`dora_pool_{df}_*`) and the machine-qualified
-    /// cross-machine mirror (`dora_pool_{machine}_{df}_*`), while never
-    /// touching another dataflow's segments.
+    /// Regression test: the orphan sweep must remove the unqualified local
+    /// segment (`dora_pool_{df}_*`) and THIS machine's qualified segments
+    /// (`dora_pool_{own_machine}_{df}_*`), while leaving a sibling daemon's
+    /// same-dataflow segments alone — on a same-host multi-daemon dataflow
+    /// they are live, and a consumer may reopen them by name at any time.
     #[test]
     #[cfg(target_os = "linux")]
-    fn cleanup_orphans_removes_local_and_machine_qualified_segments() {
+    fn cleanup_orphans_removes_local_and_own_machine_qualified_segments() {
         use std::fs;
         use std::path::PathBuf;
 
@@ -709,8 +718,12 @@ mod tests {
                 true,
             ),
             (
-                format!("dora_pool_machine-1_{dataflow_id}_node_1"), // mirror
+                format!("dora_pool_machine-1_{dataflow_id}_node_1"), // own mirror
                 true,
+            ),
+            (
+                format!("dora_pool_machine-2_{dataflow_id}_node_2"), // sibling daemon's segment
+                false,
             ),
             (format!("dora_pool_other-df_node_0"), false), // foreign
         ];
@@ -733,7 +746,7 @@ mod tests {
         }
         let _guard = RemoveOnDrop(created.clone());
 
-        MemoryPoolManager::cleanup_orphans(dataflow_id);
+        MemoryPoolManager::cleanup_orphans(dataflow_id, Some("machine-1"));
 
         for (i, (_name, expected_swept)) in segments.iter().enumerate() {
             assert_eq!(

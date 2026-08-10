@@ -4631,9 +4631,10 @@ impl Daemon {
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
         // Sweep orphaned /dev/shm segments from a previous crash of the
-        // same dataflow (keyed by dataflow_id, a UUID — safe in multi-
-        // daemon setups).
-        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+        // same dataflow (keyed by dataflow_id, a UUID; scoped to this
+        // daemon's own machine prefix so a sibling daemon's live segments
+        // on the same host are never touched).
+        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string(), self.machine_id.as_deref());
 
         // Subscribe to the dataflow memory-pool topic for cross-machine
         // WriteMemoryPool events arriving through Zenoh. Declared FIRST,
