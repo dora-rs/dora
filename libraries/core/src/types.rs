@@ -236,6 +236,29 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
 /// - Same base + one side unparameterized -> compatible (wildcard)
 /// - Same base + different param values -> mismatch
 /// - Different base -> mismatch
+///
+/// Note that "different param values" only rejects when the two sides
+/// disagree on a *shared* key; params on disjoint keys never conflict.
+///
+/// # Examples
+///
+/// ```
+/// use dora_core::types::types_match;
+///
+/// // Identical URNs match.
+/// assert!(types_match("std/media/v1/Image", "std/media/v1/Image"));
+/// // An unparameterized side acts as a wildcard.
+/// assert!(types_match("std/media/v1/Image[encoding=jpeg]", "std/media/v1/Image"));
+/// // Disjoint parameter keys never conflict.
+/// assert!(types_match("x/T[a=1]", "x/T[b=2]"));
+/// // A shared key with different values is a mismatch.
+/// assert!(!types_match(
+///     "std/media/v1/Image[encoding=jpeg]",
+///     "std/media/v1/Image[encoding=png]"
+/// ));
+/// // Different bases never match.
+/// assert!(!types_match("std/core/v1/Int32", "std/core/v1/Int64"));
+/// ```
 pub fn types_match(a: &str, b: &str) -> bool {
     let Some(pa) = parse_urn(a) else {
         return a == b;
@@ -325,6 +348,32 @@ impl CompatibilityGraph {
     ///
     /// Uses BFS with a depth limit of 3 to prevent surprise transitive chains.
     /// Also handles the universal `* -> Bytes` sink.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dora_core::types::{CompatibilityGraph, TypeRule};
+    ///
+    /// let graph = CompatibilityGraph::new(&[]);
+    /// // Anything widens into the universal `Bytes` sink.
+    /// assert!(graph.is_compatible("std/media/v1/Image", "std/core/v1/Bytes"));
+    /// // Built-in numeric widening, including a two-hop chain (UInt8 -> UInt32 -> UInt64).
+    /// assert!(graph.is_compatible("std/core/v1/UInt8", "std/core/v1/UInt32"));
+    /// assert!(graph.is_compatible("std/core/v1/UInt8", "std/core/v1/UInt64"));
+    /// // Same base with an unparameterized target is a wildcard match.
+    /// assert!(graph.is_compatible("std/media/v1/Image[encoding=jpeg]", "std/media/v1/Image"));
+    ///
+    /// // Transitive chains are bounded at depth 3.
+    /// let rule = |from: &str, to: &str| TypeRule { from: from.into(), to: to.into() };
+    /// let chain = CompatibilityGraph::new(&[
+    ///     rule("a", "b"),
+    ///     rule("b", "c"),
+    ///     rule("c", "d"),
+    ///     rule("d", "e"),
+    /// ]);
+    /// assert!(chain.is_compatible("a", "d")); // three hops: reachable
+    /// assert!(!chain.is_compatible("a", "e")); // four hops: beyond the depth limit
+    /// ```
     pub fn is_compatible(&self, from: &str, to: &str) -> bool {
         // Universal sink: anything -> Bytes
         if to == "std/core/v1/Bytes" {
