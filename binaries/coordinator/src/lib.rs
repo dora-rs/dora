@@ -4583,6 +4583,52 @@ fn release_barrier_message(
     all_nodes_ready_message(uuid, dataflow, clock)
 }
 
+/// Persist the ready-barrier release durably.
+///
+/// The release flag and the failure verdict live on the record produced by
+/// `make_record` (`ready_barrier_released` / `barrier_exited_before_subscribe`).
+/// The in-memory entry is destroyed by orphan reclaim and by coordinator
+/// restart; without a durable record of the release, a daemon that missed the
+/// broadcast and reconnects afterwards is never replayed it and hangs for the
+/// life of the dataflow (#2998).
+///
+/// This must happen on a *failed* barrier too -- a reconnecting daemon still has
+/// to be told the barrier is down and why. **Only the status is conditional; the
+/// write itself is not.** A successful barrier promotes to `Running`; a failed
+/// barrier must never promote, so it preserves the record's current status when
+/// it can be read and otherwise falls back to `Pending` (a non-promoting status
+/// the reconcile path can still advance). Previously the failed path skipped the
+/// entire write when the status read failed or returned `None`, which left the
+/// in-memory flag `true` but no durable record -- re-opening the #2998 window on
+/// exactly the store-I/O-trouble path where durability matters most (#3115).
+fn persist_ready_barrier_release(
+    uuid: DataflowId,
+    dataflow: &mut RunningDataflow,
+    store: &Arc<dyn dora_coordinator_store::CoordinatorStore>,
+) {
+    let status = if dataflow.exited_before_subscribe.is_empty() {
+        StoreDataflowStatus::Running
+    } else {
+        match store.get_dataflow(&uuid) {
+            Ok(Some(existing)) => existing.status,
+            Ok(None) => StoreDataflowStatus::Pending,
+            Err(e) => {
+                tracing::warn!(
+                    dataflow = %uuid,
+                    "cannot read status to persist failed barrier, falling back to Pending: {e}"
+                );
+                StoreDataflowStatus::Pending
+            }
+        }
+    };
+    if let Err(e) = dataflow
+        .make_record(status)
+        .and_then(|r| store.put_dataflow(&r))
+    {
+        tracing::warn!(dataflow = %uuid, "failed to persist ready-barrier release: {e}");
+    }
+}
+
 /// Re-send a barrier release that a daemon missed because it was
 /// disconnected when the broadcast fired.
 ///
@@ -4648,36 +4694,7 @@ async fn broadcast_all_nodes_ready(
     tracing::debug!("sending all nodes ready message to daemons");
     let message = release_barrier_message(uuid, dataflow, clock)?;
 
-    // Persist the release. The in-memory entry is destroyed by orphan reclaim
-    // and by coordinator restart; without a durable record of it, a daemon that
-    // missed this broadcast and reconnects afterwards is never replayed it and
-    // hangs for the life of the dataflow (#2998).
-    //
-    // This must happen on a *failed* barrier too. The failure verdict is just
-    // as load-bearing as a success -- a daemon that reconnects still has to be
-    // told the barrier is down and why -- and deferring the write to whatever
-    // failure path runs next leaves a restart window that reproduces #2998.
-    // Only the status is conditional: a failed barrier keeps whatever status
-    // the record already has rather than being promoted to `Running`.
-    let persist_status = if dataflow.exited_before_subscribe.is_empty() {
-        Some(StoreDataflowStatus::Running)
-    } else {
-        match store.get_dataflow(&uuid) {
-            Ok(Some(existing)) => Some(existing.status),
-            Ok(None) => None,
-            Err(e) => {
-                tracing::warn!(dataflow = %uuid, "cannot read status to persist failed barrier: {e}");
-                None
-            }
-        }
-    };
-    if let Some(status) = persist_status
-        && let Err(e) = dataflow
-            .make_record(status)
-            .and_then(|r| store.put_dataflow(&r))
-    {
-        tracing::warn!(dataflow = %uuid, "failed to persist ready-barrier release: {e}");
-    }
+    persist_ready_barrier_release(uuid, dataflow, store);
 
     // notify all machines that run parts of the dataflow
     for daemon_id in &dataflow.daemons {
@@ -5160,6 +5177,181 @@ mod tests {
             state_log: Vec::new(),
             daemon_ack_sequence: BTreeMap::new(),
         }
+    }
+
+    /// A store whose `get_dataflow` always fails (simulating a transient
+    /// read error), delegating every other method to a backing
+    /// [`InMemoryStore`]. Used to prove the ready-barrier release is still
+    /// persisted when the status read fails (#3115).
+    struct FailingReadStore {
+        inner: InMemoryStore,
+    }
+
+    impl FailingReadStore {
+        fn new() -> Self {
+            Self {
+                inner: InMemoryStore::new(),
+            }
+        }
+    }
+
+    impl CoordinatorStore for FailingReadStore {
+        fn get_dataflow(
+            &self,
+            _uuid: &Uuid,
+        ) -> Result<Option<dora_coordinator_store::DataflowRecord>> {
+            Err(eyre!("simulated transient store read error"))
+        }
+
+        fn register_daemon(&self, info: dora_coordinator_store::DaemonInfo) -> Result<()> {
+            self.inner.register_daemon(info)
+        }
+        fn unregister_daemon(&self, id: &DaemonId) -> Result<()> {
+            self.inner.unregister_daemon(id)
+        }
+        fn list_daemons(&self) -> Result<Vec<dora_coordinator_store::DaemonInfo>> {
+            self.inner.list_daemons()
+        }
+        fn get_daemon(&self, id: &DaemonId) -> Result<Option<dora_coordinator_store::DaemonInfo>> {
+            self.inner.get_daemon(id)
+        }
+        fn get_daemon_by_machine(&self, machine_id: &str) -> Result<Option<DaemonId>> {
+            self.inner.get_daemon_by_machine(machine_id)
+        }
+        fn put_dataflow(&self, record: &dora_coordinator_store::DataflowRecord) -> Result<()> {
+            self.inner.put_dataflow(record)
+        }
+        fn list_dataflows(&self) -> Result<Vec<dora_coordinator_store::DataflowRecord>> {
+            self.inner.list_dataflows()
+        }
+        fn delete_dataflow(&self, uuid: &Uuid) -> Result<()> {
+            self.inner.delete_dataflow(uuid)
+        }
+        fn put_build(&self, record: &dora_coordinator_store::BuildRecord) -> Result<()> {
+            self.inner.put_build(record)
+        }
+        fn get_build(
+            &self,
+            build_id: &Uuid,
+        ) -> Result<Option<dora_coordinator_store::BuildRecord>> {
+            self.inner.get_build(build_id)
+        }
+        fn list_builds(&self) -> Result<Vec<dora_coordinator_store::BuildRecord>> {
+            self.inner.list_builds()
+        }
+        fn delete_build(&self, build_id: &Uuid) -> Result<()> {
+            self.inner.delete_build(build_id)
+        }
+        fn put_node_param(
+            &self,
+            dataflow_id: &Uuid,
+            node_id: &NodeId,
+            key: &str,
+            value: &[u8],
+        ) -> Result<()> {
+            self.inner.put_node_param(dataflow_id, node_id, key, value)
+        }
+        fn get_node_param(
+            &self,
+            dataflow_id: &Uuid,
+            node_id: &NodeId,
+            key: &str,
+        ) -> Result<Option<Vec<u8>>> {
+            self.inner.get_node_param(dataflow_id, node_id, key)
+        }
+        fn list_node_params(
+            &self,
+            dataflow_id: &Uuid,
+            node_id: &NodeId,
+        ) -> Result<Vec<(String, Vec<u8>)>> {
+            self.inner.list_node_params(dataflow_id, node_id)
+        }
+        fn delete_node_param(&self, dataflow_id: &Uuid, node_id: &NodeId, key: &str) -> Result<()> {
+            self.inner.delete_node_param(dataflow_id, node_id, key)
+        }
+    }
+
+    /// #3115: a *failed*-barrier release must still be persisted (with the
+    /// `ready_barrier_released` flag set) even when the store status read
+    /// fails. Otherwise the in-memory flag flips to `true` but the durable
+    /// record stays stale, re-opening the #2998 reconnect-hang window on the
+    /// store-I/O-trouble path.
+    #[test]
+    fn failed_barrier_release_persists_when_status_read_fails() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("d1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        // A failed barrier: at least one node exited before subscribing.
+        df.exited_before_subscribe.push(node_id);
+        // `release_barrier_message` flips the in-memory flag before persisting.
+        df.ready_barrier_released = true;
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(FailingReadStore::new());
+        persist_ready_barrier_release(dataflow_id, &mut df, &store);
+
+        // The read failed, but the release must still be on disk.
+        let record = store
+            .list_dataflows()
+            .expect("store should list")
+            .into_iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("failed-barrier release must be persisted even when the status read fails");
+        assert!(
+            record.ready_barrier_released,
+            "persisted record must carry ready_barrier_released == true"
+        );
+        // A failed barrier must never be promoted to Running.
+        assert!(
+            !matches!(record.status, StoreDataflowStatus::Running),
+            "failed barrier must not promote to Running, got: {:?}",
+            record.status
+        );
+    }
+
+    /// #3115 companion: the same skip-the-write bug also fired on the
+    /// `Ok(None)` branch (no existing record). It must now persist the
+    /// release rather than dropping it.
+    #[test]
+    fn failed_barrier_release_persists_when_record_absent() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("d1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        df.exited_before_subscribe.push(node_id);
+        df.ready_barrier_released = true;
+
+        // Empty store => get_dataflow returns Ok(None).
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        persist_ready_barrier_release(dataflow_id, &mut df, &store);
+
+        let record = store
+            .get_dataflow(&dataflow_id)
+            .expect("store read")
+            .expect("failed-barrier release must be persisted even with no prior record");
+        assert!(record.ready_barrier_released);
+        assert!(!matches!(record.status, StoreDataflowStatus::Running));
+    }
+
+    /// A *successful* barrier still promotes the record to `Running`.
+    #[test]
+    fn successful_barrier_release_persists_running() {
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("d1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+        let mut df = test_running_dataflow(dataflow_id, daemon_id, node_id);
+        // exited_before_subscribe stays empty => successful barrier.
+        df.ready_barrier_released = true;
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        persist_ready_barrier_release(dataflow_id, &mut df, &store);
+
+        let record = store
+            .get_dataflow(&dataflow_id)
+            .expect("store read")
+            .expect("successful barrier release must be persisted");
+        assert!(record.ready_barrier_released);
+        assert!(matches!(record.status, StoreDataflowStatus::Running));
     }
 
     #[test]
