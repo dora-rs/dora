@@ -33,7 +33,9 @@ pub struct List {
     #[clap(long, short = 'd', value_name = "NAME_OR_UUID")]
     pub dataflow: Option<String>,
 
-    /// Output format: table or json
+    /// Output format
+    ///
+    /// `json` emits a single pretty-printed JSON document.
     #[clap(long, default_value = "table")]
     pub format: OutputFormat,
 

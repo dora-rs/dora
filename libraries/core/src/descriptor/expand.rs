@@ -157,6 +157,7 @@ pub fn expand_modules_with_boundaries(
             debug: descriptor.debug.clone(),
             health_check_interval: descriptor.health_check_interval,
             strict_types: descriptor.strict_types,
+            exit_when_nodes_finish: descriptor.exit_when_nodes_finish,
             type_rules: descriptor.type_rules.clone(),
             env: descriptor.env.clone(),
         },
@@ -852,6 +853,86 @@ mod tests {
 
     fn parse_descriptor(yaml: &str) -> Descriptor {
         serde_yaml::from_str(yaml).unwrap()
+    }
+
+    /// dora-rs/dora#2920: expansion rebuilds the `Descriptor` field by
+    /// field, so any dataflow-level setting it forgets to copy is
+    /// silently dropped for every dataflow that uses modules. The
+    /// completion policy decides whether the graph can ever end, so
+    /// losing it turns a batch run into a hang.
+    ///
+    /// The descriptor MUST contain a module: without one,
+    /// `expand_modules_with_boundaries` short-circuits to a whole-struct
+    /// clone and never reaches the field-by-field rebuild this guards.
+    #[test]
+    fn expand_preserves_exit_when_nodes_finish() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            base,
+            "echo_module.yml",
+            r#"
+module:
+  name: echo
+  inputs: [data_in]
+  outputs: [data_out]
+
+nodes:
+  - id: passthrough
+    path: echo.py
+    inputs:
+      incoming: _mod/data_in
+    outputs:
+      - data_out
+"#,
+        );
+        let descriptor = parse_descriptor(
+            r#"
+exit_when_nodes_finish: true
+
+nodes:
+  - id: source
+    path: source.py
+    outputs:
+      - number
+
+  - id: my_echo
+    module: echo_module.yml
+    inputs:
+      data_in: source/number
+"#,
+        );
+        assert_eq!(descriptor.exit_when_nodes_finish, Some(true));
+        assert!(
+            descriptor.nodes.iter().any(|n| n.module.is_some()),
+            "precondition: without a module, expansion clones the whole \
+             descriptor and this test would pass even if the rebuild \
+             dropped the field"
+        );
+
+        let expanded = expand_modules(&descriptor, base).unwrap();
+        assert_eq!(
+            expanded.exit_when_nodes_finish,
+            Some(true),
+            "expansion must carry the completion policy through, or a \
+             module-using dataflow silently loses it and never ends"
+        );
+    }
+
+    /// Absent means absent: it must not become `Some(false)`, which
+    /// would be indistinguishable from an explicit opt out and would
+    /// start round-tripping into serialized output.
+    #[test]
+    fn expand_leaves_exit_when_nodes_finish_unset() {
+        let tmp = TempDir::new().unwrap();
+        let descriptor = parse_descriptor(
+            "nodes:\n  \
+               - id: worker\n    \
+                 path: ./worker\n",
+        );
+        assert_eq!(descriptor.exit_when_nodes_finish, None);
+        let expanded = expand_modules(&descriptor, tmp.path()).unwrap();
+        assert_eq!(expanded.exit_when_nodes_finish, None);
     }
 
     #[test]

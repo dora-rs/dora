@@ -5,6 +5,16 @@ mod redb_store;
 
 pub use in_memory::InMemoryStore;
 
+/// Marker prefix of the error produced by `RedbStore::open` when the store on
+/// disk is unusable by this binary: either the record schema version differs,
+/// or the file predates the redb v3 on-disk format (#2449). Both are recovered
+/// the same way -- archive the old file and start fresh -- so they share one
+/// marker. The CLI (`dora up`) matches coordinator stderr against this exact
+/// string to decide whether to suggest `--recreate-store`, so any rewording
+/// must update both sites together (covered end-to-end by
+/// `tests/ws-cli-e2e.rs::e2e_up_reports_incompatible_coordinator_store`).
+pub const SCHEMA_MISMATCH_MARKER: &str = "redb schema version mismatch";
+
 /// Maximum allowed length for a param key (bytes).
 pub const MAX_PARAM_KEY_BYTES: usize = 256;
 /// Maximum allowed size for a serialized param value (bytes).
@@ -18,6 +28,23 @@ pub const MAX_PARAM_VALUE_BYTES: usize = 65_536;
 /// internal composite-key separator (see `redb_store::KEY_SEPARATOR`); without
 /// this check `put_node_param` with a `\0`-containing key would succeed on the
 /// in-memory backend but fail on redb.
+///
+/// # Examples
+///
+/// ```
+/// use dora_coordinator_store::{validate_param_limits, MAX_PARAM_KEY_BYTES};
+///
+/// // Ordinary keys and values are accepted.
+/// assert!(validate_param_limits("robot_pose", b"{...}").is_ok());
+///
+/// // A key exactly at the limit is fine; one byte over is rejected.
+/// assert!(validate_param_limits(&"k".repeat(MAX_PARAM_KEY_BYTES), b"v").is_ok());
+/// assert!(validate_param_limits(&"k".repeat(MAX_PARAM_KEY_BYTES + 1), b"v").is_err());
+///
+/// // A null byte in the key is rejected so every backend behaves identically
+/// // (redb uses `\0` as a composite-key separator).
+/// assert!(validate_param_limits("a\0b", b"v").is_err());
+/// ```
 pub fn validate_param_limits(key: &str, value: &[u8]) -> Result<()> {
     if key.len() > MAX_PARAM_KEY_BYTES {
         eyre::bail!("param key too long (max {MAX_PARAM_KEY_BYTES} bytes)");
@@ -70,6 +97,24 @@ pub struct DataflowRecord {
     /// Whether the dataflow was started with Python UV support.
     #[serde(default)]
     pub uv: bool,
+    /// Whether the start barrier (`AllNodesReady`) has already been broadcast.
+    ///
+    /// Persisted because the in-memory `RunningDataflow` is destroyed whenever
+    /// every daemon running the dataflow disconnects (orphan reclaim) or the
+    /// coordinator restarts. A daemon that missed the broadcast and reconnects
+    /// after that point would otherwise never be replayed it -- and it cannot
+    /// prompt a fresh one, because daemon-side `reported_init_to_coordinator`
+    /// is never reset (dora-rs/dora#2998).
+    #[serde(default)]
+    pub ready_barrier_released: bool,
+    /// The verdict the barrier carried: nodes that exited before subscribing.
+    ///
+    /// Persisted alongside the flag so a replay after reconstruction repeats
+    /// the *outcome*, not a blank success. Replaying an empty list for a
+    /// barrier that actually failed would start a dataflow the coordinator had
+    /// already given up on.
+    #[serde(default)]
+    pub barrier_exited_before_subscribe: Vec<String>,
     /// Monotonically increasing version; bumped on every persist.
     pub generation: u64,
     /// Unix epoch milliseconds.

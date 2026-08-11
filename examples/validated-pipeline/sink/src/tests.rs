@@ -1,5 +1,5 @@
 use dora_node_api::{
-    DoraNode, flume,
+    DoraNode,
     integration_testing::{
         IntegrationTestInput,
         integration_testing_format::{IncomingEvent, InputData, TimedIncomingEvent},
@@ -25,7 +25,7 @@ fn run_sink(events: Vec<TimedIncomingEvent>) -> eyre::Result<()> {
     let inputs = dora_node_api::integration_testing::TestingInput::Input(
         IntegrationTestInput::new("sink".parse().unwrap(), events),
     );
-    let (tx, _rx) = flume::unbounded();
+    let (tx, _rx) = dora_node_api::integration_testing::unbounded_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 

@@ -120,6 +120,16 @@ pub enum DaemonCoordinatorEvent {
         node_id: NodeId,
         grace_duration: Option<Duration>,
     },
+    /// Atomically replace a running node on this daemon with a new
+    /// definition under the same id (dora-rs/dora#2927): spawn the
+    /// replacement first (a failure leaves the current incarnation
+    /// untouched), then swap the entry and stop the outgoing incarnation.
+    ReplaceNode {
+        dataflow_id: DataflowId,
+        node: crate::descriptor::ResolvedNode,
+        uv: bool,
+        grace_duration: Option<Duration>,
+    },
     /// Add a mapping (connection) in a running dataflow.
     AddMapping {
         dataflow_id: DataflowId,

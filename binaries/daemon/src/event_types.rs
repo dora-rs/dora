@@ -34,6 +34,11 @@ pub enum Event {
     Node {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        /// The process incarnation this event's connection belongs to,
+        /// stamped by the per-spawn listener. Events from a superseded
+        /// incarnation (replaced or re-added id) must not mutate the
+        /// current entry's state (dora-rs/dora#2926, #2927).
+        generation: u64,
         event: DaemonNodeEvent,
     },
     Coordinator(CoordinatorEvent),
@@ -41,6 +46,8 @@ pub enum Event {
     Dora(DoraEvent),
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
+    /// Re-check whether a pending `Destroy`'s nodes have exited (#2980).
+    DestroyTick,
     MetricsInterval,
     NodeHealthCheckInterval,
     CtrlC,
@@ -97,6 +104,7 @@ impl Event {
             Event::Dora(_) => "Dora",
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
+            Event::DestroyTick => "DestroyTick",
             Event::MetricsInterval => "MetricsInterval",
             Event::NodeHealthCheckInterval => "NodeHealthCheckInterval",
             Event::CtrlC => "CtrlC",
@@ -175,6 +183,7 @@ pub enum DoraEvent {
     SpawnedNodeResult {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        generation: u64,
         dynamic_node: bool,
         exit_status: NodeExitStatus,
         restart: bool,
@@ -191,6 +200,8 @@ pub enum DoraEvent {
     ProcessHandleReplaced {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        previous_generation: u64,
+        new_generation: u64,
         new_handle: crate::ProcessHandle,
     },
 }

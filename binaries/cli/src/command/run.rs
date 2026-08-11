@@ -21,7 +21,8 @@ use crate::{
     session::DataflowSession,
 };
 use dora_core::build::LogLevelOrStdout;
-use dora_daemon::{Daemon, LogDestination, flume};
+use dora_core::descriptor::{Descriptor, DescriptorExt};
+use dora_daemon::{Daemon, LogDestination, RunDataflowOptions, flume};
 use eyre::Context;
 use std::{path::PathBuf, time::Duration};
 use tokio::runtime::Builder;
@@ -61,6 +62,8 @@ pub struct Run {
     #[arg(value_parser = parse_log_level_str)]
     pub log_level: LogLevelOrStdout,
     /// Output format for log messages
+    ///
+    /// `json` emits JSON Lines (one object per log message).
     #[clap(long, default_value = "pretty", env = "DORA_LOG_FORMAT")]
     pub log_format: LogFormat,
     /// Per-node log level filter
@@ -105,6 +108,46 @@ pub struct Run {
     /// --hub-override`; `dora run` is always local, so it applies directly.
     #[clap(long = "hub-override", value_name = "PKG=PATH")]
     pub hub_override: Vec<String>,
+    /// Set an environment variable for every node of this dataflow
+    /// (repeatable). Merges into the dataflow-level `env:` block;
+    /// node-level `env:` entries still win on conflict.
+    ///
+    /// Under `dora run` nodes also inherit this process's environment,
+    /// but `--env` is the portable spelling that behaves identically
+    /// under `dora start` (where nodes inherit the DAEMON's environment
+    /// instead). Applies at spawn time only; `build:` commands are
+    /// unaffected.
+    /// Values must survive the descriptor encoding verbatim: a literal
+    /// `$` is refused (the receiving process would expand it) and so are
+    /// numeric-looking values that would be coerced.
+    #[clap(long = "env", value_name = "KEY=VALUE")]
+    pub env: Vec<String>,
+    /// Exit once every node has finished, treating `dora/timer/...`
+    /// inputs as a clock rather than as work.
+    ///
+    /// By default a node is only told its inputs are closed when ALL of
+    /// them are, and a timer input never closes — so a graph where any
+    /// node consumes a timer cannot finish on its own, even after every
+    /// worker has done its work. With this flag a node is finished once
+    /// its DATA inputs have closed, which makes "run N items and exit"
+    /// scriptable without wrapping the command in a timeout.
+    ///
+    /// Nodes whose inputs are all timers are unaffected: they have no
+    /// data dependency that could finish, so they are treated as
+    /// sources, exactly as a node with no inputs is.
+    ///
+    /// Overrides `exit_when_nodes_finish:` in the dataflow YAML in
+    /// either direction: pass the flag to force it on, or
+    /// `--exit-when-nodes-finish=false` to force it off for a descriptor
+    /// that asks for it. Omit it entirely and the descriptor decides.
+    #[clap(
+        long,
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "true",
+        value_name = "BOOL"
+    )]
+    pub exit_when_nodes_finish: Option<bool>,
 }
 
 impl Run {
@@ -123,6 +166,8 @@ impl Run {
             lockfile: None,
             working_dir: None,
             hub_override: Vec::new(),
+            env: Vec::new(),
+            exit_when_nodes_finish: None,
         }
     }
 
@@ -166,6 +211,10 @@ impl Executable for Run {
 
         let dataflow_path =
             resolve_dataflow(self.dataflow.clone()).context("could not resolve dataflow")?;
+        // Validate `--env` BEFORE building: a typo should fail in
+        // milliseconds, not after a full dataflow build.
+        let env_overrides = crate::env_overrides::parse_env_overrides(&self.env)?;
+
         build_dataflow(BuildConfig {
             dataflow: dataflow_path.to_string_lossy().into_owned(),
             uv: self.uv,
@@ -180,6 +229,23 @@ impl Executable for Run {
         .context("failed to build dataflow before run")?;
         let dataflow_session = DataflowSession::read_session(&dataflow_path)
             .context("failed to read DataflowSession")?;
+
+        // `--env` merges into the dataflow-level `env:` of the descriptor
+        // handed to the in-process daemon. The hub-resolved descriptor
+        // (when present) is the mandatory base — the on-disk YAML still
+        // has unresolved `hub:` references. Without `--env`, pass the
+        // session state through unchanged.
+        let descriptor_override = if env_overrides.is_empty() {
+            dataflow_session.resolved_dataflow.clone()
+        } else {
+            let mut descriptor = match dataflow_session.resolved_dataflow.clone() {
+                Some(resolved) => resolved,
+                None => Descriptor::blocking_read(&dataflow_path)
+                    .context("failed to read dataflow descriptor for --env")?,
+            };
+            crate::env_overrides::apply_env_overrides(&mut descriptor, env_overrides);
+            Some(descriptor)
+        };
 
         let node_filters = match &self.log_filter {
             Some(filter) => parse_log_filter(filter).map_err(|e| eyre::eyre!(e))?,
@@ -219,8 +285,9 @@ impl Executable for Run {
         let stop_after = self.stop_after;
         let debug = self.debug;
         let working_dir_override = self.working_dir.clone();
+        let exit_when_nodes_finish = self.exit_when_nodes_finish;
         let handle = rt.spawn(async move {
-            Daemon::run_dataflow(
+            Daemon::run_dataflow_with(
                 &dataflow_path_for_daemon,
                 dataflow_session.build_id,
                 dataflow_session.local_build,
@@ -231,9 +298,13 @@ impl Executable for Run {
                 stop_after,
                 debug,
                 working_dir_override,
-                // hub: dataflows run from the desugared descriptor stored at
-                // build time (the on-disk YAML has unresolved references)
-                dataflow_session.resolved_dataflow,
+                // hub-resolved descriptor and/or `--env` merge — see above
+                descriptor_override,
+                // Left unset the descriptor decides; given, it overrides.
+                match exit_when_nodes_finish {
+                    Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
+                    None => RunDataflowOptions::default(),
+                },
             )
             .await
         });

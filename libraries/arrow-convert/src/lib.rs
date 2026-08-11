@@ -48,6 +48,46 @@ pub trait IntoArrow {
 }
 
 /// Wrapper type for an Arrow [`ArrayRef`](arrow::array::ArrayRef).
+///
+/// `ArrowData` is the counterpart to [`IntoArrow`]: dora node APIs hand
+/// received outputs to nodes as `ArrowData`, which is read back into plain
+/// Rust values through its `TryFrom<&ArrowData>` implementations.
+///
+/// Two conversion shapes are provided, with different length contracts:
+///
+/// - **Scalar** conversions (`bool`, the primitive integer/float types,
+///   `String`, `&str`, and the `chrono` date/time types) require the array to
+///   hold **exactly one element and no nulls**; any other length is an error.
+/// - **Slice / `Vec`** conversions (`&[T]` and `Vec<T>` for the primitive
+///   types) accept **any length** but still reject **any null values**.
+///
+/// # Example
+///
+/// ```
+/// use std::sync::Arc;
+/// use dora_arrow_convert::{ArrowData, IntoArrow};
+///
+/// // Scalar: a single-element array converts to the value.
+/// let data = ArrowData(Arc::new(42_u8.into_arrow()));
+/// let scalar: u8 = (&data).try_into()?;
+/// assert_eq!(scalar, 42);
+///
+/// // Strings follow the same single-element rule.
+/// let data = ArrowData(Arc::new("hello".to_string().into_arrow()));
+/// let text: String = (&data).try_into()?;
+/// assert_eq!(text, "hello");
+///
+/// // Vec: any length, collected into an owned `Vec`.
+/// let data = ArrowData(Arc::new(vec![1_i32, 2, 3].into_arrow()));
+/// let values: Vec<i32> = (&data).try_into()?;
+/// assert_eq!(values, vec![1, 2, 3]);
+///
+/// // A multi-element array cannot be read as a scalar.
+/// let data = ArrowData(Arc::new(vec![1_i32, 2, 3].into_arrow()));
+/// let scalar: Result<i32, _> = (&data).try_into();
+/// assert!(scalar.is_err());
+/// # Ok::<(), eyre::Report>(())
+/// ```
 #[derive(Debug)]
 pub struct ArrowData(pub arrow::array::ArrayRef);
 
