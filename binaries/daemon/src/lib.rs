@@ -1020,7 +1020,7 @@ async fn release_cross_pool(
 type RegisterAckSenders = std::sync::Mutex<
     std::collections::HashMap<
         (Uuid, String),
-        tokio::sync::oneshot::Sender<(bool, bool, Option<u16>)>,
+        tokio::sync::oneshot::Sender<(bool, bool, Option<u16>, Option<std::net::SocketAddr>)>,
     >,
 >;
 static CROSS_REGISTER_PENDING: std::sync::LazyLock<RegisterAckSenders> =
@@ -4865,6 +4865,7 @@ impl Daemon {
                 ok,
                 direct,
                 data_port,
+                data_addr,
                 ..
             } => {
                 // Complete a synchronous cross-machine register: hand the
@@ -4874,7 +4875,7 @@ impl Daemon {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&(dataflow_id, shared_memory_id))
                 {
-                    let _ = tx.send((ok, direct, data_port));
+                    let _ = tx.send((ok, direct, data_port, data_addr));
                 }
                 Ok(())
             }
@@ -4912,6 +4913,24 @@ impl Daemon {
                 // Advertise this daemon's direct-TCP data listener so the
                 // origin can bypass the zenoh relay for per-frame writes.
                 let data_port = self.cross_data_listener_port;
+                // Explicit dialable address override: the coordinator only
+                // sees this daemon's WS source address, which is the wrong
+                // dial target under NAT / multi-homed / same-host
+                // coordinator deployment (e.g. 127.0.0.1). The deployer
+                // sets DORA_MEMORY_POOL_DATA_ADDR (full `ip:port`) to the
+                // address origins can actually reach.
+                let data_addr = std::env::var("DORA_MEMORY_POOL_DATA_ADDR")
+                    .ok()
+                    .and_then(|s| match s.parse::<std::net::SocketAddr>() {
+                        Ok(addr) => Some(addr),
+                        Err(_) => {
+                            tracing::warn!(
+                                "memory pool: DORA_MEMORY_POOL_DATA_ADDR `{s}` is not an ip:port \
+                                 address; ignoring"
+                            );
+                            None
+                        }
+                    });
                 tokio::spawn(async move {
                     // Mirror allocation cap: the RegisterPool event's
                     // `size` comes from a remote daemon (untrusted
@@ -4995,6 +5014,7 @@ impl Daemon {
                             direct,
                             error,
                             data_port,
+                            data_addr,
                         },
                         shm_provider.as_deref(),
                     )
@@ -6687,20 +6707,31 @@ impl Daemon {
                             match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
                                 .await
                             {
-                                Ok(Ok((true, ack_direct, ack_data_port))) => {
+                                Ok(Ok((true, ack_direct, ack_data_port, ack_data_addr))) => {
                                     // Direct-TCP data plane: remember the
                                     // mirror's data listener so per-frame
-                                    // writes bypass the zenoh relay.
-                                    if let Some(data_port) = ack_data_port {
+                                    // writes bypass the zenoh relay. The
+                                    // explicitly advertised address wins —
+                                    // the coordinator-derived one
+                                    // (`peer_addr.ip()`, the mirror daemon's
+                                    // WS source address) is the wrong dial
+                                    // target under NAT / multi-homed /
+                                    // same-host coordinator deployment.
+                                    let endpoint = ack_data_addr.or_else(|| {
+                                        ack_data_port.map(|data_port| {
+                                            std::net::SocketAddr::new(
+                                                peer_addr.ip(),
+                                                data_port,
+                                            )
+                                        })
+                                    });
+                                    if let Some(endpoint) = endpoint {
                                         cross_data_endpoints
                                             .lock()
                                             .unwrap_or_else(|e| e.into_inner())
                                             .insert(
                                                 (dataflow_id, shared_memory_id.clone()),
-                                                std::net::SocketAddr::new(
-                                                    peer_addr.ip(),
-                                                    data_port,
-                                                ),
+                                                endpoint,
                                             );
                                     }
                                     memory_pool.register_cross_pool(
@@ -6712,7 +6743,7 @@ impl Daemon {
                                     direct = ack_direct;
                                     break;
                                 }
-                                Ok(Ok((false, _, _))) => {
+                                Ok(Ok((false, _, _, _))) => {
                                     reply = Err(format!(
                                         r#"machine "{machine_id}" resolved but remote pool creation failed: remote returned ok=false; cross-machine memory pool not created"#
                                     ));

@@ -73,6 +73,15 @@ pub enum InterDaemonEvent {
         /// stream straight into the mirror segment). `None` when the
         /// mirror daemon has no data listener (falls back to zenoh).
         data_port: Option<u16>,
+        /// The mirror daemon's **explicitly advertised** dialable address
+        /// (`DORA_MEMORY_POOL_DATA_ADDR`), when set. Overrides the
+        /// coordinator-derived address: the coordinator only sees the WS
+        /// source address, which is the wrong dial target under NAT,
+        /// multi-homed, or same-host coordinator deployment (e.g.
+        /// `127.0.0.1` when the daemon connects locally). `None` without
+        /// the env — the origin then falls back to
+        /// `<coordinator-visible address>:<data_port>`.
+        data_addr: Option<std::net::SocketAddr>,
     },
     /// Release a cross-machine pool on the target machine. The event is
     /// a dataflow-scope broadcast; the daemon whose machine id matches
