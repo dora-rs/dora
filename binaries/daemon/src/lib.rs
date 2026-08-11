@@ -206,6 +206,15 @@ static CROSS_POOL_WRITE_LOCKS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Async per-pool write lock for the direct-TCP data plane: a
+/// `std::sync::MutexGuard` cannot be held across an `.await`, so the
+/// receive-into-mirror path (which reads the stream while holding the
+/// per-pool serialization lock) uses an async mutex instead. Serializes
+/// concurrent direct writes to the same pool across connections.
+static CROSS_POOL_WRITE_LOCKS_ASYNC: std::sync::LazyLock<
+    tokio::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
+
 // DORADMA shmem layout — must match the node API exactly
 // (apis/python/node/src/lib.rs): [magic:8][json_len:8][data_offset:8]
 // [ipc_present:8][ipc_handle:64][write_gen:8 @96][reserved:152][json:256]
@@ -459,6 +468,333 @@ fn write_cross_pool_data(
     true
 }
 
+/// Direct-TCP cross-machine data plane.
+///
+/// Frame: `[u32 magic][16-byte dataflow UUID][u32 pool_id_len][pool_id]
+/// [u64 seq][u64 size][size bytes of tensor data]`. The mirror daemon
+/// reads the tensor straight into the mirror segment's data region
+/// (zero user-space copies on the receive side); the origin pays a single
+/// user-space copy (segment → send buffer). The commit ack travels over
+/// zenoh (existing `MemoryPoolWriteAck` machinery) so the origin's
+/// pending resolution is unchanged.
+const CROSS_DATA_MAGIC: u32 = 0xD0A0_0011;
+
+/// Keeps a mirror mapping alive while the direct-TCP payload is read
+/// straight into its data region. Only Send-safe values (plain addresses
+/// and the keep-alive `Shmem`) cross the `.await` in
+/// [`serve_cross_data_frame`]; the mapping itself is process-wide and
+/// thread-agnostic (same pattern as the python extension's `PoolSlot`).
+struct DirectMirrorWriter {
+    _shmem: shared_memory_extended::Shmem,
+    data_addr: usize,
+    data_len: usize,
+    gen_addr: usize,
+    pre: u64,
+}
+
+// SAFETY: the wrapper owns the mapping (`_shmem` keeps it alive until
+// `finish`/drop) and carries only plain addresses across awaits. Moving
+// the wrapper between threads never invalidates the mapping (mmap is
+// process-wide); no thread-bound state is involved.
+unsafe impl Send for DirectMirrorWriter {}
+
+impl DirectMirrorWriter {
+    /// Begin a seqlock write: computes the data region address from the
+    /// (already validated) header and takes the odd (in-progress)
+    /// generation.
+    fn new(shmem: shared_memory_extended::Shmem, data_offset: usize, size: usize) -> Self {
+        let shmem_ptr = shmem.as_ptr();
+        let gen_addr = unsafe { shmem_ptr.add(96) } as usize;
+        let pre = unsafe { seqlock_begin_if_even(gen_addr as *mut u64) };
+        Self {
+            _shmem: shmem,
+            data_addr: unsafe { shmem_ptr.add(data_offset) } as usize,
+            data_len: size,
+            gen_addr,
+            pre,
+        }
+    }
+
+    /// The mirror's data region, exactly `size` bytes (validated against
+    /// the segment length by the caller before construction).
+    fn data_slice_mut(&mut self) -> &mut [u8] {
+        unsafe { std::slice::from_raw_parts_mut(self.data_addr as *mut u8, self.data_len) }
+    }
+
+    /// Complete the seqlock write (even generation).
+    fn finish(self) {
+        unsafe { seqlock_end(self.gen_addr as *mut u64, self.pre, true) };
+    }
+}
+
+/// Port for the mirror daemon's direct-TCP data listener. Overridable for
+/// deployment (e.g. the rendezvous machine must publish this port to the
+/// origin machine on a routed WAN link).
+const CROSS_DATA_PORT_ENV: &str = "DORA_MEMORY_POOL_DATA_PORT";
+const CROSS_DATA_PORT_DEFAULT: u16 = 7410;
+
+/// Start this daemon's direct-TCP data listener (mirror side). Returns
+/// the bound port; the caller records it in `cross_data_listener_port`
+/// and it is reported to origins in `RegisterPoolAck.data_port`. Only
+/// daemons with a machine id run a listener (cross-machine mirrors exist
+/// only there).
+async fn start_cross_data_listener(
+    machine_id: Option<&str>,
+    memory_pool: MemoryPoolManager,
+    session: zenoh::Session,
+    clock: Arc<HLC>,
+    shm_provider: Option<Arc<ShmProvider<PosixShmProviderBackend>>>,
+) -> Option<u16> {
+    machine_id?;
+    let port = std::env::var(CROSS_DATA_PORT_ENV)
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(CROSS_DATA_PORT_DEFAULT);
+    let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+        Ok(l) => l,
+        Err(e) => {
+            tracing::warn!("memory pool: direct-TCP data listener bind failed on {port}: {e}");
+            return None;
+        }
+    };
+    let bound_port = listener.local_addr().ok().map(|a| a.port());
+    tracing::info!("memory pool: direct-TCP data listener on port {bound_port:?}");
+
+    let machine_id = machine_id.unwrap_or_default().to_string();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, peer)) = listener.accept().await else {
+                continue;
+            };
+            tracing::debug!("memory pool: direct-TCP data connection from {peer}");
+            let (memory_pool, machine_id, session, clock, shm_provider) = (
+                memory_pool.clone(),
+                machine_id.clone(),
+                session.clone(),
+                clock.clone(),
+                shm_provider.clone(),
+            );
+            tokio::spawn(async move {
+                let mut stream = stream;
+                loop {
+                    match serve_cross_data_frame(
+                        &memory_pool,
+                        &machine_id,
+                        &session,
+                        &clock,
+                        shm_provider.as_deref(),
+                        &mut stream,
+                    )
+                    .await
+                    {
+                        Ok(true) => continue,
+                        Ok(false) => break, // clean EOF
+                        Err(e) => {
+                            tracing::warn!("memory pool: direct-TCP data connection closed: {e}");
+                            break;
+                        }
+                    }
+                }
+            });
+        }
+    });
+
+    bound_port
+}
+
+/// Read and serve one direct-TCP data frame: write the payload straight
+/// into the mirror segment's data region (under the per-pool lock and
+/// seqlock) and publish the zenoh commit ack. Returns `Ok(true)` for the
+/// next frame, `Ok(false)` on clean EOF.
+async fn serve_cross_data_frame(
+    memory_pool: &MemoryPoolManager,
+    machine_id: &str,
+    session: &zenoh::Session,
+    clock: &Arc<HLC>,
+    shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
+    stream: &mut tokio::net::TcpStream,
+) -> Result<bool, String> {
+    use tokio::io::AsyncReadExt;
+
+    let mut magic = [0u8; 4];
+    match stream.read_exact(&mut magic).await {
+        Ok(_) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+        Err(e) => return Err(format!("read magic: {e}")),
+    }
+    if u32::from_be_bytes(magic) != CROSS_DATA_MAGIC {
+        return Err("bad frame magic (not a memory-pool data connection?)".to_string());
+    }
+    let mut df_bytes = [0u8; 16];
+    stream
+        .read_exact(&mut df_bytes)
+        .await
+        .map_err(|e| format!("read dataflow id: {e}"))?;
+    let dataflow_id = Uuid::from_bytes(df_bytes);
+    let mut pool_len = [0u8; 4];
+    stream
+        .read_exact(&mut pool_len)
+        .await
+        .map_err(|e| format!("read pool id length: {e}"))?;
+    let pool_len = u32::from_be_bytes(pool_len) as usize;
+    if pool_len > 1024 {
+        return Err(format!("pool id too long ({pool_len} bytes)"));
+    }
+    let mut pool_bytes = vec![0u8; pool_len];
+    stream
+        .read_exact(&mut pool_bytes)
+        .await
+        .map_err(|e| format!("read pool id: {e}"))?;
+    let shared_memory_id =
+        String::from_utf8(pool_bytes).map_err(|_| "pool id not UTF-8".to_string())?;
+    let mut seq_bytes = [0u8; 8];
+    stream
+        .read_exact(&mut seq_bytes)
+        .await
+        .map_err(|e| format!("read seq: {e}"))?;
+    let seq = u64::from_be_bytes(seq_bytes);
+    let mut size_bytes = [0u8; 8];
+    stream
+        .read_exact(&mut size_bytes)
+        .await
+        .map_err(|e| format!("read size: {e}"))?;
+    let size = u64::from_be_bytes(size_bytes) as usize;
+
+    let dataflow_str = dataflow_id.to_string();
+    if !memory_pool.is_cross(&dataflow_str, &shared_memory_id) {
+        return Err(format!(
+            "write for a pool without a cross-machine entry: {shared_memory_id}"
+        ));
+    }
+    let Some(shmem_name) =
+        MemoryPoolManager::cross_pool_shmem_name(machine_id, &dataflow_str, &shared_memory_id)
+    else {
+        return Err(format!("invalid pool id {shared_memory_id}"));
+    };
+    // Serialise concurrent direct writes to the same pool first (async
+    // lock: a std MutexGuard cannot be held across an await), so nothing
+    // non-Send crosses this await.
+    let write_lock = {
+        let mut locks = CROSS_POOL_WRITE_LOCKS_ASYNC.lock().await;
+        match locks.get(&shared_memory_id) {
+            Some(lock) => lock.clone(),
+            None => {
+                let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
+                locks.insert(shared_memory_id.clone(), lock.clone());
+                lock
+            }
+        }
+    };
+    let _guard = write_lock.lock().await;
+    // Open + validate the mirror (all sync, no awaits while raw pointers
+    // are live), then read the payload straight into the data region
+    // under the seqlock — zero user-space copies on this side. The open
+    // lives inside a block so the `Shmem` local (with its drop flag) is
+    // consumed before the read await.
+    let mut writer = {
+        let shmem = ShmemConf::new()
+            .os_id(&shmem_name)
+            .open()
+            .map_err(|e| format!("cannot open mirror {shmem_name}: {e}"))?;
+        let shmem_ptr = shmem.as_ptr();
+        let magic8 = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+        if magic8 != DORADMA_MAGIC {
+            return Err(format!("{shared_memory_id} header magic mismatch"));
+        }
+        let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
+        if data_offset + size > shmem.len() {
+            return Err(format!(
+                "{shared_memory_id} data_offset {data_offset} + {size} exceeds shmem size {}",
+                shmem.len()
+            ));
+        }
+        DirectMirrorWriter::new(shmem, data_offset, size)
+    };
+    let dst = writer.data_slice_mut();
+    stream
+        .read_exact(dst)
+        .await
+        .map_err(|e| format!("read payload: {e}"))?;
+    writer.finish();
+    // Remote commit ack via zenoh (the origin's pending reply waits on it).
+    publish_memory_pool_event(
+        session,
+        clock,
+        &dataflow_id,
+        &InterDaemonEvent::MemoryPoolWriteAck {
+            dataflow_id,
+            shared_memory_id,
+            seq,
+            ok: true,
+            error: None,
+        },
+        shm_provider,
+    )
+    .await
+    .map_err(|e| format!("failed to publish MemoryPoolWriteAck: {e}"))?;
+    Ok(true)
+}
+
+/// Send one direct-TCP data frame to a peer's data listener (origin side).
+/// Reuses a persistent connection per endpoint; a dead connection is
+/// dropped and re-established lazily. The connection is taken out of the
+/// map while in flight (a std `MutexGuard` cannot be held across an
+/// `.await`), so concurrent writers to the same endpoint serialize on the
+/// map lock instead — fine for the turn-based benchmark cadence.
+async fn send_cross_data_frame(
+    conns: &Arc<std::sync::Mutex<HashMap<std::net::SocketAddr, tokio::net::TcpStream>>>,
+    endpoint: std::net::SocketAddr,
+    dataflow_id: Uuid,
+    shared_memory_id: &str,
+    seq: u64,
+    data: &[u8],
+) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+
+    let mut stream = {
+        // The guard is a temporary: it must be dropped before the connect
+        // await below (a std MutexGuard is not Send across awaits).
+        let existing = conns
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&endpoint);
+        match existing {
+            Some(stream) => stream,
+            None => tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                tokio::net::TcpStream::connect(endpoint),
+            )
+            .await
+            .map_err(|_| format!("connect timeout to {endpoint}"))?
+            .map_err(|e| format!("connect to {endpoint} failed: {e}"))?,
+        }
+    };
+    let mut buf = Vec::with_capacity(4 + 16 + 4 + shared_memory_id.len() + 8 + 8 + data.len());
+    buf.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
+    buf.extend_from_slice(dataflow_id.as_bytes());
+    buf.extend_from_slice(&(shared_memory_id.len() as u32).to_be_bytes());
+    buf.extend_from_slice(shared_memory_id.as_bytes());
+    buf.extend_from_slice(&seq.to_be_bytes());
+    buf.extend_from_slice(&(data.len() as u64).to_be_bytes());
+    let result = async {
+        stream.write_all(&buf).await?;
+        stream.write_all(data).await?;
+        stream.flush().await?;
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+    if let Err(e) = result {
+        // Dead connection — drop it (not re-inserted) so the next write
+        // reconnects.
+        return Err(format!("direct write to {endpoint} failed: {e}"));
+    }
+    conns
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(endpoint, stream);
+    Ok(())
+}
+
 /// Read a pool's tensor bytes from its local segment — the
 /// shared-memory-reference write path: the node's write request carries
 /// only `(id, size)` metadata, so the daemon opens the sender's segment
@@ -652,7 +988,10 @@ async fn release_cross_pool(
 /// repeats across concurrently running dataflows and an ack could
 /// satisfy the wrong registration.
 type RegisterAckSenders = std::sync::Mutex<
-    std::collections::HashMap<(Uuid, String), tokio::sync::oneshot::Sender<(bool, bool)>>,
+    std::collections::HashMap<
+        (Uuid, String),
+        tokio::sync::oneshot::Sender<(bool, bool, Option<u16>)>,
+    >,
 >;
 static CROSS_REGISTER_PENDING: std::sync::LazyLock<RegisterAckSenders> =
     std::sync::LazyLock::new(RegisterAckSenders::default);
@@ -905,6 +1244,22 @@ pub struct Daemon {
     /// accumulating one task per spawn (and duplicate consumers on
     /// repeated spawns).
     pub(crate) memory_pool_subscribers: HashMap<DataflowId, tokio::task::JoinHandle<()>>,
+    /// Port of this daemon's direct-TCP memory-pool data listener (the
+    /// mirror side of the cross-machine data plane), when it was started.
+    /// Reported to the origin in `RegisterPoolAck.data_port`.
+    pub(crate) cross_data_listener_port: Option<u16>,
+    /// Persistent direct-TCP connections to peer daemons' data listeners
+    /// (the origin side of the cross-machine data plane). Keyed by the
+    /// peer's `SocketAddr`; a dead connection is dropped on write failure
+    /// and re-established lazily.
+    pub(crate) cross_data_conns:
+        Arc<std::sync::Mutex<HashMap<std::net::SocketAddr, tokio::net::TcpStream>>>,
+    /// Direct-TCP endpoint per cross-machine pool: (dataflow id, pool id)
+    /// -> peer's `SocketAddr` (the target daemon's IP from the
+    /// coordinator + the mirror's `data_port`). Populated when the
+    /// register ack carries a data port; absent pools fall back to zenoh.
+    pub(crate) cross_data_endpoints:
+        Arc<std::sync::Mutex<HashMap<(Uuid, String), std::net::SocketAddr>>>,
 }
 
 /// Cap on `Daemon::warned_late_outputs`, so a daemon that serves many
@@ -2221,7 +2576,7 @@ impl Daemon {
             tracing::debug!("zenoh publish drain task exiting");
         });
 
-        let daemon = Self {
+        let mut daemon = Self {
             logger: Logger {
                 destination: log_destination,
                 daemon_id: daemon_id.clone(),
@@ -2239,6 +2594,9 @@ impl Daemon {
             dataflow_node_results: BTreeMap::new(),
             warned_late_outputs: HashSet::new(),
             memory_pool_subscribers: HashMap::new(),
+            cross_data_listener_port: None,
+            cross_data_conns: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            cross_data_endpoints: Arc::new(std::sync::Mutex::new(HashMap::new())),
             clock,
             ft_stats: Default::default(),
             zenoh_session,
@@ -2256,6 +2614,17 @@ impl Daemon {
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
             machine_id,
         };
+
+        // Direct-TCP cross-machine data plane (mirror side): bind the
+        // data listener once, before any dataflow can register a mirror.
+        daemon.cross_data_listener_port = start_cross_data_listener(
+            daemon.machine_id.as_deref(),
+            daemon.memory_pool.clone(),
+            daemon.zenoh_session.clone(),
+            daemon.clock.clone(),
+            daemon.shm_provider.clone(),
+        )
+        .await;
 
         Ok((daemon, dora_events_rx))
     }
@@ -4476,6 +4845,7 @@ impl Daemon {
                 shared_memory_id,
                 ok,
                 direct,
+                data_port,
                 ..
             } => {
                 // Complete a synchronous cross-machine register: hand the
@@ -4485,7 +4855,7 @@ impl Daemon {
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&(dataflow_id, shared_memory_id))
                 {
-                    let _ = tx.send((ok, direct));
+                    let _ = tx.send((ok, direct, data_port));
                 }
                 Ok(())
             }
@@ -4516,6 +4886,9 @@ impl Daemon {
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let memory_pool = self.memory_pool.clone();
                 let shm_provider = self.shm_provider.clone();
+                // Advertise this daemon's direct-TCP data listener so the
+                // origin can bypass the zenoh relay for per-frame writes.
+                let data_port = self.cross_data_listener_port;
                 tokio::spawn(async move {
                     // Mirror allocation cap: the RegisterPool event's
                     // `size` comes from a remote daemon (untrusted
@@ -4598,6 +4971,7 @@ impl Daemon {
                             ok,
                             direct,
                             error,
+                            data_port,
                         },
                         shm_provider.as_deref(),
                     )
@@ -6017,6 +6391,21 @@ impl Daemon {
                     .unwrap_or_else(|e| e.into_inner())
                     .insert((dataflow_id, shared_memory_id.clone(), seq), reply_sender);
                 let pending_key = (dataflow_id, shared_memory_id.clone(), seq);
+                // Direct-TCP data plane: when the register ack reported a
+                // data listener, writes bypass the zenoh relay entirely —
+                // one user-space copy on this side (segment → send
+                // buffer), the mirror daemon reads the stream straight
+                // into the mirror segment. The commit ack still arrives
+                // via zenoh, so the pending machinery is unchanged. Falls
+                // back to zenoh when no endpoint is known or the send
+                // fails.
+                let direct_endpoint = self
+                    .cross_data_endpoints
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .get(&(dataflow_id, shared_memory_id.clone()))
+                    .copied();
+                let cross_data_conns = self.cross_data_conns.clone();
                 tokio::spawn(async move {
                     // The segment read (a full-size allocation plus copy)
                     // runs here, off the event loop.
@@ -6050,6 +6439,28 @@ impl Daemon {
                         }
                         None => tensor_data,
                     };
+                    if let Some(endpoint) = direct_endpoint {
+                        match send_cross_data_frame(
+                            &cross_data_conns,
+                            endpoint,
+                            dataflow_id,
+                            &shared_memory_id,
+                            seq,
+                            &tensor_data,
+                        )
+                        .await
+                        {
+                            Ok(()) => {
+                                // The commit ack arrives via zenoh.
+                                return;
+                            }
+                            Err(e) => {
+                                tracing::warn!(
+                                    "memory pool: direct TCP write failed ({e}), falling back to zenoh"
+                                );
+                            }
+                        }
+                    }
                     let event = InterDaemonEvent::MemoryPoolWrite {
                         dataflow_id,
                         shared_memory_id: shared_memory_id.clone(),
@@ -6123,6 +6534,7 @@ impl Daemon {
                 let origin_machine_id = self.machine_id.clone();
                 let memory_pool = self.memory_pool.clone();
                 let shm_provider = self.shm_provider.clone();
+                let cross_data_endpoints = self.cross_data_endpoints.clone();
                 tokio::spawn(async move {
                     // Clone for the post-flow cleanup below: the inner
                     // async block moves `shared_memory_id` into the pool
@@ -6141,13 +6553,14 @@ impl Daemon {
                                 r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
                             ));
                         };
-                        if !coordinator::resolve_machine(coordinator_sender, &clock, &machine_id)
-                            .await
-                        {
+                        let Some(peer_addr) =
+                            coordinator::resolve_machine(coordinator_sender, &clock, &machine_id)
+                                .await
+                        else {
                             return Err(format!(
                                 r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
                             ));
-                        }
+                        };
                         // Publish RegisterPool and await the ack, retrying on
                         // timeout: the remote daemon's memory-pool
                         // subscription is established in parallel during
@@ -6251,7 +6664,22 @@ impl Daemon {
                             match tokio::time::timeout(coordinator::CROSS_REGISTER_TIMEOUT, ack_rx)
                                 .await
                             {
-                                Ok(Ok((true, ack_direct))) => {
+                                Ok(Ok((true, ack_direct, ack_data_port))) => {
+                                    // Direct-TCP data plane: remember the
+                                    // mirror's data listener so per-frame
+                                    // writes bypass the zenoh relay.
+                                    if let Some(data_port) = ack_data_port {
+                                        cross_data_endpoints
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .insert(
+                                                (dataflow_id, shared_memory_id.clone()),
+                                                std::net::SocketAddr::new(
+                                                    peer_addr.ip(),
+                                                    data_port,
+                                                ),
+                                            );
+                                    }
                                     memory_pool.register_cross_pool(
                                         dataflow_id.to_string(),
                                         shared_memory_id,
@@ -6261,7 +6689,7 @@ impl Daemon {
                                     direct = ack_direct;
                                     break;
                                 }
-                                Ok(Ok((false, _))) => {
+                                Ok(Ok((false, _, _))) => {
                                     reply = Err(format!(
                                         r#"machine "{machine_id}" resolved but remote pool creation failed: remote returned ok=false; cross-machine memory pool not created"#
                                     ));

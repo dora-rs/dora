@@ -250,6 +250,12 @@ async fn start_with_events(
     #[cfg(feature = "metrics")]
     let otel_metrics = otel_metrics::new_shared();
 
+    // DaemonId -> WS peer address, shared with the WS server so the
+    // ResolveMachine reply can carry the target daemon's direct-TCP data
+    // listener address.
+    let daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
@@ -257,6 +263,7 @@ async fn start_with_events(
         auth_token,
         artifact_store,
         store.clone(),
+        daemon_peer_addrs.clone(),
     )
     .await
     .wrap_err("failed to start WS server")?;
@@ -275,6 +282,7 @@ async fn start_with_events(
             clock,
             store,
             span_store,
+            daemon_peer_addrs,
             #[cfg(feature = "metrics")]
             otel_metrics,
         )
@@ -300,6 +308,9 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
     #[cfg(feature = "metrics")] otel_metrics: otel_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
@@ -428,6 +439,12 @@ async fn start_inner(
                     match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
+                            if let Some(peer_addr) = connection.peer_addr {
+                                daemon_peer_addrs
+                                    .write()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(daemon_id.to_string(), peer_addr);
+                            }
                             daemon_connections.add(daemon_id.clone(), connection);
                             if let Err(e) =
                                 store.register_daemon(dora_coordinator_store::DaemonInfo {

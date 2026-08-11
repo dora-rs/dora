@@ -25,6 +25,10 @@ pub(crate) async fn handle_daemon_ws(
     event_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
+    peer_addr: std::net::SocketAddr,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -80,7 +84,11 @@ pub(crate) async fn handle_daemon_ws(
                         &store,
                         &mut tracked_daemon_id,
                         &mut tracked_connection_id,
-                    ).await {
+                        peer_addr,
+                        daemon_peer_addrs.clone(),
+                    )
+                    .await
+                    {
                         break;
                     }
                 } else {
@@ -135,6 +143,10 @@ async fn handle_daemon_request(
     store: &Arc<dyn CoordinatorStore>,
     tracked_daemon_id: &mut Option<DaemonId>,
     tracked_connection_id: &mut Option<Uuid>,
+    peer_addr: std::net::SocketAddr,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
 ) -> bool {
     let parsed: DaemonWsRequestRaw = match serde_json::from_str(raw_text) {
         Ok(m) => m,
@@ -175,6 +187,7 @@ async fn handle_daemon_request(
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
+            connection.peer_addr = Some(peer_addr);
             // Capture the connection_id before moving `connection` into the event.
             let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
@@ -222,18 +235,28 @@ async fn handle_daemon_request(
         CoordinatorRequest::ResolveMachine { machine_id } => {
             // Resolve the machine id against the registered-daemon store;
             // unknown machines (or store errors) resolve to `found: false`.
-            let found = match store.get_daemon_by_machine(&machine_id) {
-                Ok(d) => d.is_some(),
+            // Also report the target daemon's WS peer address so the
+            // requesting daemon can reach its direct-TCP data listener.
+            let (found, address) = match store.get_daemon_by_machine(&machine_id) {
+                Ok(Some(d)) => (
+                    true,
+                    daemon_peer_addrs
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&d.to_string())
+                        .copied(),
+                ),
+                Ok(None) => (false, None),
                 Err(e) => {
                     tracing::warn!("failed to resolve machine `{machine_id}`: {e}");
-                    false
+                    (false, None)
                 }
             };
             // Reply over the same WS envelope the Register flow uses
             // (`{"id", "method": "daemon_event", "params": <Timestamped<...>>}`),
             // mirroring `DaemonConnection::send`.
             let reply = Timestamped {
-                inner: ResolveMachineReply::ResolveMachineResult { found },
+                inner: ResolveMachineReply::ResolveMachineResult { found, address },
                 timestamp: clock.new_timestamp(),
             };
             let params = match serde_json::to_string(&reply) {

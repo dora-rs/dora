@@ -62,7 +62,13 @@ impl RegisterResult {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum ResolveMachineReply {
     /// Reply to `CoordinatorRequest::ResolveMachine`.
-    ResolveMachineResult { found: bool },
+    ResolveMachineResult {
+        found: bool,
+        /// The target daemon's WS peer address as seen by the coordinator
+        /// (set at registration). Used by the memory-pool direct-TCP data
+        /// plane to reach the mirror daemon's data listener.
+        address: Option<std::net::SocketAddr>,
+    },
 }
 
 #[allow(clippy::large_enum_variant)]

@@ -84,6 +84,9 @@ pub(crate) struct WsState {
     pub artifact_store: Arc<ArtifactStore>,
     pub store: Arc<dyn CoordinatorStore>,
     pub rate_limiter: IpRateLimiter,
+    /// DaemonId -> WS peer address (set at registration). Lets daemons
+    /// reach each other's direct-TCP memory-pool data listeners.
+    pub daemon_peer_addrs: Arc<std::sync::RwLock<std::collections::HashMap<String, SocketAddr>>>,
 }
 
 /// Query parameters for backward compatibility — old clients may send `?token=...`.
@@ -184,6 +187,8 @@ async fn ws_daemon_handler(
                 state.event_tx.clone(),
                 state.clock.clone(),
                 state.store.clone(),
+                addr,
+                state.daemon_peer_addrs.clone(),
             )
         }))
 }
@@ -230,6 +235,7 @@ pub(crate) async fn serve(
     auth_token: Option<AuthToken>,
     artifact_store: Arc<ArtifactStore>,
     store: Arc<dyn CoordinatorStore>,
+    daemon_peer_addrs: Arc<std::sync::RwLock<std::collections::HashMap<String, SocketAddr>>>,
 ) -> eyre::Result<(
     u16,
     ShutdownTrigger,
@@ -244,6 +250,7 @@ pub(crate) async fn serve(
         artifact_store,
         store,
         rate_limiter: IpRateLimiter::new(),
+        daemon_peer_addrs,
     };
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

@@ -362,7 +362,7 @@ pub(crate) async fn resolve_machine(
     coordinator_sender: &CoordinatorSender,
     clock: &Arc<HLC>,
     machine_id: &str,
-) -> bool {
+) -> Option<std::net::SocketAddr> {
     let request_id = Uuid::new_v4();
     let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
     COORDINATOR_PENDING
@@ -381,7 +381,7 @@ pub(crate) async fn resolve_machine(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
-            return false;
+            return None;
         }
     };
     if coordinator_sender
@@ -393,22 +393,34 @@ pub(crate) async fn resolve_machine(
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .remove(&request_id);
-        return false;
+        return None;
     }
     match tokio::time::timeout(CROSS_REGISTER_TIMEOUT, reply_rx).await {
-        Ok(Ok(value)) => value
-            .get("inner")
-            .and_then(|v| v.get("ResolveMachineResult"))
-            .and_then(|v| v.get("found"))
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false),
+        Ok(Ok(value)) => {
+            let result = value
+                .get("inner")
+                .and_then(|v| v.get("ResolveMachineResult"));
+            let found = result
+                .and_then(|v| v.get("found"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if !found {
+                return None;
+            }
+            // The target daemon's WS peer address (its direct-TCP data
+            // listener lives on the same IP).
+            result
+                .and_then(|v| v.get("address"))
+                .and_then(|v| v.as_str())
+                .and_then(|s| s.parse::<std::net::SocketAddr>().ok())
+        }
         Ok(Err(_)) => {
             // Sender dropped without sending. In the normal flow this
             // cannot happen: the routing block removes the pending entry
             // *before* sending the reply, so the entry is already gone
             // and there is nothing to clean up here (only the timeout
             // branch below can leave a stale entry).
-            false
+            None
         }
         Err(_) => {
             // Timeout: drop the stale pending entry so it cannot leak.
@@ -416,7 +428,7 @@ pub(crate) async fn resolve_machine(
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .remove(&request_id);
-            false
+            None
         }
     }
 }

@@ -66,6 +66,13 @@ pub enum InterDaemonEvent {
         /// push — readers open the sender's segment, no transfer needed.
         direct: bool,
         error: Option<String>,
+        /// The mirror daemon's direct-TCP data-plane listener port, when
+        /// available. The origin opens a persistent connection to
+        /// `<target daemon address>:<data_port>` for cross-machine writes
+        /// (one user-space copy on the send side; the receiver writes the
+        /// stream straight into the mirror segment). `None` when the
+        /// mirror daemon has no data listener (falls back to zenoh).
+        data_port: Option<u16>,
     },
     /// Release a cross-machine pool on the target machine. The event is
     /// a dataflow-scope broadcast; the daemon whose machine id matches

@@ -98,6 +98,10 @@ pub(crate) struct DaemonConnection {
     pub(crate) sender: mpsc::Sender<String>,
     /// Shared with the ws_daemon handler task to resolve correlation-based replies.
     pub(crate) pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    /// The daemon's WS peer address as seen by the coordinator (set at
+    /// registration). Lets other daemons reach this daemon's direct-TCP
+    /// memory-pool data listener.
+    pub(crate) peer_addr: Option<std::net::SocketAddr>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
@@ -131,6 +135,7 @@ impl DaemonConnection {
         Self {
             sender,
             pending_replies,
+            peer_addr: None,
             last_heartbeat: Instant::now(),
             labels,
             ft_stats: None,
