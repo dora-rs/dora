@@ -4688,15 +4688,28 @@ async fn broadcast_all_nodes_ready(
         tracing::warn!(dataflow = %uuid, "failed to persist ready-barrier release: {e}");
     }
 
-    // notify all machines that run parts of the dataflow
+    // notify all machines that run parts of the dataflow.
+    //
+    // This is best-effort per daemon: a broken (but not yet dropped)
+    // connection makes `send` fail, but that must not tear down coordination
+    // for every other dataflow and daemon. `ready_barrier_released` was
+    // already set and persisted above, so a daemon that misses this frame is
+    // replayed on reconnect (#2998) -- a dropped send is recoverable. Log and
+    // move on instead of aborting the coordinator's event loop (the same
+    // best-effort posture the multi-daemon stop path already takes), and keep
+    // notifying the remaining daemons rather than stopping at the first
+    // failure. A fully-gone daemon takes the `None` branch above.
     for daemon_id in &dataflow.daemons {
         let Some(connection) = daemon_connections.get_mut(daemon_id) else {
             tracing::warn!("no daemon connection found for machine `{daemon_id}`");
             continue;
         };
-        connection.send(&message).await.wrap_err_with(|| {
-            format!("failed to send AllNodesReady({uuid}) message to machine {daemon_id}")
-        })?;
+        if let Err(err) = connection.send(&message).await {
+            tracing::warn!(
+                "failed to send AllNodesReady({uuid}) message to machine {daemon_id}: {err} \
+                 (will be replayed on reconnect)"
+            );
+        }
     }
 
     schedule_param_replay_for_ready_dataflow(
@@ -5561,6 +5574,52 @@ mod tests {
             .await
             .expect("daemon did not receive both halves of the release")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_broadcast_is_best_effort_when_a_daemon_send_fails() {
+        // A broken (but not yet dropped) daemon connection makes the
+        // per-daemon `send` fail. That must not abort the coordinator's event
+        // loop: `broadcast_all_nodes_ready` returns `Ok` and relies on the
+        // persisted release being replayed when the daemon reconnects (#2998).
+        // Before this fix the send error propagated with `?` and tore down the
+        // whole coordinator -- every dataflow and daemon -- over one transient
+        // per-daemon failure.
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        // A connection whose receive half is already gone, so `send` errors.
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        drop(rx);
+        let connection = crate::state::DaemonConnection::new(
+            tx,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        );
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+        assert!(!dataflow.ready_barrier_released);
+
+        let result = broadcast_all_nodes_ready(
+            dataflow_id,
+            &mut dataflow,
+            &mut daemon_connections,
+            &store,
+            &Arc::new(HLC::default()),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "a single daemon send failure must not fail the broadcast: {result:?}"
+        );
+        // The barrier is still recorded as released, so the daemon that missed
+        // the frame is replayed on reconnect rather than parked forever.
+        assert!(dataflow.ready_barrier_released);
     }
 
     #[test]
