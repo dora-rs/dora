@@ -93,8 +93,15 @@ pub enum LogLevelOrStdout {
 impl LogLevelOrStdout {
     /// Returns true if a message at this level passes the given minimum level filter.
     ///
-    /// Ordering: Stdout < Error < Warn < Info < Debug < Trace.
-    /// A message passes if its level is "at or above" (i.e. <=) the minimum.
+    /// `Stdout` is treated as a distinct channel rather than a severity, so it
+    /// does not participate in the `Error < Warn < Info < Debug < Trace`
+    /// ordering (where `Error` is the most severe and `Trace` the least):
+    ///
+    /// - A `Stdout` message passes only a `Stdout` filter; it is never
+    ///   delivered to a severity filter.
+    /// - A `LogLevel` message always passes a `Stdout` filter (the most
+    ///   permissive), and passes a `LogLevel` filter `min` when its severity is
+    ///   at least as severe as `min` (`msg <= min` in log-crate ordering).
     pub fn passes(&self, min: &LogLevelOrStdout) -> bool {
         match (self, min) {
             (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
