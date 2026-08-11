@@ -87,8 +87,8 @@ macro_rules! register_array_handlers {
         ///
         /// // Values are cast element-wise to the requested target type.
         /// let data = ArrowData(Arc::new(UInt64Array::from(vec![1u64, 2, 3])));
-        /// assert_eq!(into_vec::<u64>(&data).unwrap(), vec![1, 2, 3]);
-        /// assert_eq!(into_vec::<f64>(&data).unwrap(), vec![1.0, 2.0, 3.0]);
+        /// assert_eq!(into_vec::<u64>(&data).ok(), Some(vec![1, 2, 3]));
+        /// assert_eq!(into_vec::<f64>(&data).ok(), Some(vec![1.0, 2.0, 3.0]));
         ///
         /// // Any null in the array is rejected.
         /// let with_null = ArrowData(Arc::new(UInt64Array::from(vec![Some(1u64), None])));
