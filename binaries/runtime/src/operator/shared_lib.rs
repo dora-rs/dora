@@ -273,7 +273,7 @@ impl SharedLibraryOperator<'_> {
                 )
             };
             match error {
-                Some(error) => bail!("on_input failed: {}", *error),
+                Some(error) => bail!("on_event failed: {}", *error),
                 None => match status {
                     DoraStatus::Continue => {}
                     DoraStatus::Stop => break StopReason::ExplicitStop,
