@@ -137,16 +137,25 @@ static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
 /// Counter to make pinned memory buffer IDs unique across registrations.
 static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
 
-/// Maximum number of freed pool buffer IDs to remember at once. Only
-/// recently-freed buffers are useful for read-after-free detection, so
-/// once the cap is exceeded the oldest entries are evicted rather than
-/// keeping every ID for the life of the process.
+/// Maximum number of freed pool buffer IDs to remember at once. This is a
+/// single budget shared across every peer the process reads from, not a
+/// per-stream allowance — once the cap is exceeded the oldest entries are
+/// evicted rather than keeping every ID for the life of the process.
 const FREED_POOL_IDS_CAP: usize = 4096;
 
 /// Tracks freed pool buffer IDs so the DORADMA fast path can detect
 /// read-after-free. Bounded to `FREED_POOL_IDS_CAP` entries (oldest evicted
 /// first) so long-running nodes doing register->write->free every frame
 /// don't leak memory indefinitely.
+///
+/// The cap is one shared budget across *all* peers the process reads
+/// from, not a per-stream recency window: a high-rate sender's frees can
+/// evict a low-rate sender's tombstones well before the low-rate sender's
+/// own next free (e.g. a 60Hz peer can cycle the whole cap in ~68s,
+/// evicting a 1Hz peer's entries long before they'd naturally expire). An
+/// evicted tombstone is harmless — it just makes a stale fast-path read
+/// fall back to the existing `warn_missing_memory_pool`/daemon path
+/// instead of being caught here.
 static FREED_POOL_IDS: LazyLock<std::sync::Mutex<FreedPoolIds>> =
     LazyLock::new(|| std::sync::Mutex::new(FreedPoolIds::default()));
 
