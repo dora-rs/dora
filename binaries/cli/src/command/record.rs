@@ -471,6 +471,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     InterDaemonEvent::MemoryPoolWrite { .. } => continue,
                     InterDaemonEvent::RegisterPool { .. }
                     | InterDaemonEvent::RegisterPoolAck { .. }
+                    | InterDaemonEvent::MemoryPoolWriteAck { .. }
                     | InterDaemonEvent::FreePool { .. } => continue,
                 };
 

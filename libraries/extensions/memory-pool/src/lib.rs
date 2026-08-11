@@ -68,21 +68,27 @@ pub struct CleanupSummary {
     pub released_count: usize,
 }
 
+/// Cross-machine pool tracking entries:
+/// (dataflow id, pool id) -> (peer machine id, dataflow id).
+type CrossPools = HashMap<(String, String), (String, String)>;
+
 /// Manager for memory pool allocations.
 #[derive(Clone)]
 pub struct MemoryPoolManager {
     /// Table mapping memory pool IDs to their entries.
     memory_pool_table: Arc<Mutex<HashMap<MemoryPoolId, MemoryPoolEntry>>>,
-    /// Cross-machine pools this daemon participates in:
-    /// pool id -> (peer machine id, dataflow id).
+    /// Cross-machine pools this daemon participates in.
     ///
     /// Unlike the main table these entries describe *mirrors* (pools that
     /// live on another machine's /dev/shm), so they never carry a
     /// `MemoryPoolEntry` and are tracked separately. Written on register
     /// ack (origin side) and on mirror creation (mirror side); read on
     /// every write (is_cross / forward gate) and on free (peer routing);
-    /// drained by `cleanup_all` on daemon exit.
-    cross_pools: Arc<Mutex<HashMap<String, (String, String)>>>,
+    /// drained by `cleanup_all` on daemon exit. Keyed by dataflow too:
+    /// every node process restarts its pool counter from zero, so a bare
+    /// pool id repeats across concurrently running dataflows and would
+    /// alias a sibling flow's registration, ack routing, and free.
+    cross_pools: Arc<Mutex<CrossPools>>,
 }
 
 impl MemoryPoolManager {
@@ -182,37 +188,47 @@ impl MemoryPoolManager {
         table.len()
     }
 
-    fn lock_cross_pools(&self) -> std::sync::MutexGuard<'_, HashMap<String, (String, String)>> {
+    fn lock_cross_pools(&self) -> std::sync::MutexGuard<'_, CrossPools> {
         self.cross_pools
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Record a cross-machine pool: `pool_id` mirrors to/from `peer_machine`.
+    /// Record a cross-machine pool: `pool_id` (of `dataflow_id`) mirrors
+    /// to/from `peer_machine`.
     ///
     /// Called on both sides: the origin records `{pool -> target}` when the
     /// register ack arrives, the mirror records `{pool -> origin}` after
-    /// creating the mirror segment.
-    pub fn register_cross_pool(&self, pool_id: String, peer_machine: String, dataflow_id: String) {
+    /// creating the mirror segment. Keyed by dataflow so concurrently
+    /// running dataflows (whose node processes each restart their pool
+    /// counter from zero) cannot alias each other's entries.
+    pub fn register_cross_pool(&self, dataflow_id: String, pool_id: String, peer_machine: String) {
         self.lock_cross_pools()
-            .insert(pool_id, (peer_machine, dataflow_id));
+            .insert((dataflow_id.clone(), pool_id), (peer_machine, dataflow_id));
     }
 
     /// Forget a cross-machine pool (called on free).
-    pub fn unregister_cross_pool(&self, pool_id: &str) -> Option<(String, String)> {
-        self.lock_cross_pools().remove(pool_id)
+    pub fn unregister_cross_pool(
+        &self,
+        dataflow_id: &str,
+        pool_id: &str,
+    ) -> Option<(String, String)> {
+        self.lock_cross_pools()
+            .remove(&(dataflow_id.to_string(), pool_id.to_string()))
     }
 
     /// The pool's peer machine (the machine it mirrors to/from), if any.
-    pub fn cross_peer(&self, pool_id: &str) -> Option<String> {
+    pub fn cross_peer(&self, dataflow_id: &str, pool_id: &str) -> Option<String> {
         self.lock_cross_pools()
-            .get(pool_id)
+            .get(&(dataflow_id.to_string(), pool_id.to_string()))
             .map(|(peer, _)| peer.clone())
     }
 
-    /// Whether `pool_id` is a cross-machine pool this daemon participates in.
-    pub fn is_cross(&self, pool_id: &str) -> bool {
-        self.lock_cross_pools().contains_key(pool_id)
+    /// Whether `pool_id` (of `dataflow_id`) is a cross-machine pool this
+    /// daemon participates in.
+    pub fn is_cross(&self, dataflow_id: &str, pool_id: &str) -> bool {
+        self.lock_cross_pools()
+            .contains_key(&(dataflow_id.to_string(), pool_id.to_string()))
     }
 
     /// Machine-qualified OS id of a cross-machine pool mirror:
@@ -454,7 +470,7 @@ impl MemoryPoolManager {
                     cross.len()
                 );
             }
-            for (pool_id, (_peer, dataflow_id)) in &cross {
+            for ((dataflow_id, pool_id), (_peer, _)) in &cross {
                 let Some(shm_name) = Self::cross_pool_shmem_name(machine_id, dataflow_id, pool_id)
                 else {
                     continue;
@@ -473,6 +489,9 @@ impl MemoryPoolManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
+            // `machine_id` is only consumed by the Linux mirror-resolution
+            // block above; keep the parameter used on every platform.
+            let _ = machine_id;
             self.lock_cross_pools().clear();
         }
 
@@ -775,13 +794,13 @@ mod cross_pool_tests {
         // a mirror segment that lives on this machine ("B")
         let own = MemoryPoolManager::cross_pool_shmem_name("B", df, "pool_node_0").unwrap();
         std::fs::write(format!("/dev/shm/{own}"), vec![0u8; 1024]).unwrap();
-        mgr.register_cross_pool("pool_node_0".into(), "A".into(), df.into());
+        mgr.register_cross_pool(df.into(), "pool_node_0".into(), "A".into());
 
         // a mirror segment that lives on another machine ("C") — the
         // origin-side entry for it must NOT cause a local unlink
         let foreign = MemoryPoolManager::cross_pool_shmem_name("C", df, "pool_node_1").unwrap();
         std::fs::write(format!("/dev/shm/{foreign}"), vec![0u8; 1024]).unwrap();
-        mgr.register_cross_pool("pool_node_1".into(), "C".into(), df.into());
+        mgr.register_cross_pool(df.into(), "pool_node_1".into(), "C".into());
 
         let _ = mgr.cleanup_all("B");
 
@@ -802,15 +821,39 @@ mod cross_pool_tests {
     #[test]
     fn cross_pool_lifecycle() {
         let mgr = MemoryPoolManager::new();
-        assert!(!mgr.is_cross("pool_node_0"));
-        assert_eq!(mgr.cross_peer("pool_node_0"), None);
+        assert!(!mgr.is_cross("df", "pool_node_0"));
+        assert_eq!(mgr.cross_peer("df", "pool_node_0"), None);
 
-        mgr.register_cross_pool("pool_node_0".into(), "B".into(), "df".into());
-        assert!(mgr.is_cross("pool_node_0"));
-        assert_eq!(mgr.cross_peer("pool_node_0").as_deref(), Some("B"));
+        mgr.register_cross_pool("df".into(), "pool_node_0".into(), "B".into());
+        assert!(mgr.is_cross("df", "pool_node_0"));
+        assert_eq!(mgr.cross_peer("df", "pool_node_0").as_deref(), Some("B"));
 
-        let removed = mgr.unregister_cross_pool("pool_node_0");
+        let removed = mgr.unregister_cross_pool("df", "pool_node_0");
         assert_eq!(removed.as_ref().map(|(peer, _)| peer.as_str()), Some("B"));
-        assert!(!mgr.is_cross("pool_node_0"));
+        assert!(!mgr.is_cross("df", "pool_node_0"));
+    }
+
+    /// The cross table is keyed by (dataflow, pool id): the same pool id
+    /// in another dataflow must not alias this flow's registration, peer
+    /// lookup, or free.
+    #[test]
+    fn cross_pool_state_is_dataflow_scoped() {
+        let mgr = MemoryPoolManager::new();
+        mgr.register_cross_pool("df-A".into(), "pool_node_0".into(), "B".into());
+
+        // A concurrent dataflow restarts its counter at zero — the same
+        // pool id must not see df-A's entry.
+        assert!(!mgr.is_cross("df-B", "pool_node_0"));
+        assert_eq!(mgr.cross_peer("df-B", "pool_node_0"), None);
+
+        // Registering df-B's own entry leaves df-A's untouched.
+        mgr.register_cross_pool("df-B".into(), "pool_node_0".into(), "C".into());
+        assert_eq!(mgr.cross_peer("df-A", "pool_node_0").as_deref(), Some("B"));
+        assert_eq!(mgr.cross_peer("df-B", "pool_node_0").as_deref(), Some("C"));
+
+        // Freeing df-B's pool does not stop df-A's forwarding entry.
+        let removed = mgr.unregister_cross_pool("df-B", "pool_node_0");
+        assert_eq!(removed.as_ref().map(|(peer, _)| peer.as_str()), Some("C"));
+        assert!(mgr.is_cross("df-A", "pool_node_0"));
     }
 }

@@ -246,6 +246,7 @@ fn inspect(
             InterDaemonEvent::MemoryPoolWrite { .. } => {}
             InterDaemonEvent::RegisterPool { .. }
             | InterDaemonEvent::RegisterPoolAck { .. }
+            | InterDaemonEvent::MemoryPoolWriteAck { .. }
             | InterDaemonEvent::FreePool { .. } => {}
         }
     }

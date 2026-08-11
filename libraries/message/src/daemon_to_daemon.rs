@@ -30,6 +30,11 @@ pub enum InterDaemonEvent {
         shared_memory_id: String,
         tensor_data: Vec<u8>,
         size: usize,
+        /// Per-pool write sequence assigned by the origin daemon. Echoed
+        /// back in `MemoryPoolWriteAck` so the commit matches the exact
+        /// write (an ack for a previous write can never resolve a newer
+        /// pending reply).
+        seq: u64,
     },
     /// Cross-machine pool registration — the matching machine's daemon
     /// mirrors the pool locally and replies with `RegisterPoolAck`.
@@ -71,5 +76,18 @@ pub enum InterDaemonEvent {
         /// Target machine id — only that machine's daemon acts.
         machine_id: String,
         shared_memory_id: String,
+    },
+    /// Remote commit acknowledgement for a cross-machine write: the
+    /// mirror daemon publishes this after the mirror segment write
+    /// completed. The origin's `write_memory_pool` reply waits for it,
+    /// so the output notification that follows the write can never
+    /// overtake the tensor data (the receiver would otherwise return
+    /// the previous stable frame).
+    MemoryPoolWriteAck {
+        dataflow_id: DataflowId,
+        shared_memory_id: String,
+        seq: u64,
+        ok: bool,
+        error: Option<String>,
     },
 }

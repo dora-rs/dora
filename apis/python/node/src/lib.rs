@@ -2081,6 +2081,22 @@ impl Node {
         if size == 0 || size > 1024 * 1024 * 1024 {
             eyre::bail!("Invalid size: {} bytes", size);
         }
+        // Cross-machine writes carry the full tensor through the
+        // node→daemon request, whose transport cap is
+        // `dora_message::MAX_MESSAGE_BYTES`. A larger pool would register
+        // fine but every write would fail on the remote side — reject it
+        // here so the failure is a clear registration error instead of a
+        // receiver waiting on a never-arriving frame. (1 KiB margin for
+        // the request framing around the payload.)
+        if cross_machine && size > dora_message::MAX_MESSAGE_BYTES - 1024 {
+            eyre::bail!(
+                "cross-machine pool size {} exceeds the transport limit of {} bytes \
+                 (the node→daemon write path carries the full tensor); \
+                 use a smaller pool or a non-cross-machine deployment",
+                size,
+                dora_message::MAX_MESSAGE_BYTES - 1024
+            );
+        }
         if cfg!(not(target_os = "linux")) {
             eyre::bail!(
                 "memory-pool transport requires Linux (uses /dev/shm). \

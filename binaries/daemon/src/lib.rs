@@ -383,13 +383,15 @@ fn create_cross_pool_shmem(
 /// A 61.44MB mirror write is a 10-30ms synchronous memcpy, so callers
 /// must not run it on the event loop — spawn it (see the MemoryPoolWrite
 /// handler). Not async: there is nothing to await, the work is the copy.
+/// Returns whether the mirror write completed (the caller publishes the
+/// commit ack with this outcome).
 fn write_cross_pool_data(
     dataflow_id: &Uuid,
     machine_id: &str,
     shared_memory_id: &str,
     tensor_data: &[u8],
     size: usize,
-) {
+) -> bool {
     // Serialise concurrent writes to the same pool: two overlapping
     // memcpys would interleave bytes and leave a mixed frame that the
     // seqlock (odd = in-progress) cannot detect once both writers have
@@ -416,21 +418,21 @@ fn write_cross_pool_data(
         shared_memory_id,
     ) else {
         tracing::warn!("memory pool: invalid pool id {shared_memory_id}, dropping frame");
-        return;
+        return false;
     };
     let Ok(shmem) = ShmemConf::new().os_id(&shmem_name).open() else {
         tracing::warn!(
             "memory pool: pool {shared_memory_id} missing at write \
              (sync register should have prevented this), dropping frame"
         );
-        return;
+        return false;
     };
     let shmem_ptr = shmem.as_ptr();
     // Guard against a corrupt/truncated header before any pointer math.
     let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
     if magic != DORADMA_MAGIC {
         tracing::warn!("memory pool: {shared_memory_id} header magic mismatch, dropping frame");
-        return;
+        return false;
     }
     let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
     let copy_len = tensor_data.len().min(size);
@@ -439,7 +441,7 @@ fn write_cross_pool_data(
             "memory pool: {shared_memory_id} data_offset {data_offset} + {copy_len} exceeds shmem size {}, dropping frame",
             shmem.len()
         );
-        return;
+        return false;
     }
     unsafe {
         let gen_ptr = shmem_ptr.add(96) as *mut u64;
@@ -447,6 +449,7 @@ fn write_cross_pool_data(
         std::ptr::copy_nonoverlapping(tensor_data.as_ptr(), shmem_ptr.add(data_offset), copy_len);
         seqlock_end(gen_ptr, pre, true);
     }
+    true
 }
 
 /// Remove a mirrored cross-machine pool's shmem segment. Linux keeps
@@ -604,11 +607,40 @@ async fn release_cross_pool(
     }
 }
 
-/// Pending synchronous register confirmations: pool id -> ack channel.
-type RegisterAckSenders =
-    std::sync::Mutex<std::collections::HashMap<String, tokio::sync::oneshot::Sender<(bool, bool)>>>;
+/// Pending synchronous register confirmations:
+/// (dataflow id, pool id) -> ack channel. Keyed by dataflow too: every
+/// node process restarts its pool counter from zero, so a bare pool id
+/// repeats across concurrently running dataflows and an ack could
+/// satisfy the wrong registration.
+type RegisterAckSenders = std::sync::Mutex<
+    std::collections::HashMap<(Uuid, String), tokio::sync::oneshot::Sender<(bool, bool)>>,
+>;
 static CROSS_REGISTER_PENDING: std::sync::LazyLock<RegisterAckSenders> =
     std::sync::LazyLock::new(RegisterAckSenders::default);
+
+/// Pending cross-machine write replies:
+/// (dataflow id, pool id, write seq) -> the node's reply channel. The
+/// write reply is withheld until the mirror daemon confirms the segment
+/// write (`MemoryPoolWriteAck`), so the output notification that follows
+/// the write can never overtake the tensor data.
+type CrossWriteReplySenders = std::sync::Mutex<
+    std::collections::HashMap<(Uuid, String, u64), tokio::sync::oneshot::Sender<DaemonReply>>,
+>;
+static CROSS_WRITE_PENDING: std::sync::LazyLock<CrossWriteReplySenders> =
+    std::sync::LazyLock::new(CrossWriteReplySenders::default);
+
+/// Per-pool write sequence counters: (dataflow id, pool id) -> next seq.
+/// Assigned at the origin, echoed by the mirror's commit ack, so the
+/// ack can never resolve a reply for a different write.
+static CROSS_WRITE_SEQ: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashMap<(Uuid, String), u64>>,
+> = std::sync::LazyLock::new(std::sync::Mutex::default);
+
+/// How long a cross-machine write waits for the remote commit ack before
+/// failing loudly. Generous: the WAN transfer of a near-limit frame alone
+/// can take tens of seconds; a dead link fails earlier via the publish
+/// error path.
+const CROSS_WRITE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
@@ -798,6 +830,14 @@ pub struct Daemon {
     /// finished, so `log_late_node_output` warns once each instead of
     /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
     pub(crate) warned_late_outputs: HashSet<(DataflowId, NodeId)>,
+    /// Handles of the per-dataflow memory-pool zenoh subscriber tasks.
+    /// Retained so `finish_dataflow` (and the failed-spawn path) can
+    /// abort them: the receive loops have no shutdown branch of their
+    /// own, and a discarded handle would leak the subscriber, its
+    /// session clone, and its event sender for the daemon's lifetime —
+    /// accumulating one task per spawn (and duplicate consumers on
+    /// repeated spawns).
+    pub(crate) memory_pool_subscribers: HashMap<DataflowId, tokio::task::JoinHandle<()>>,
 }
 
 /// Cap on `Daemon::warned_late_outputs`, so a daemon that serves many
@@ -2131,6 +2171,7 @@ impl Daemon {
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
             warned_late_outputs: HashSet::new(),
+            memory_pool_subscribers: HashMap::new(),
             clock,
             ft_stats: Default::default(),
             zenoh_session,
@@ -2795,7 +2836,19 @@ impl Daemon {
                     .await;
                 let (trigger_result, result_task) = match result {
                     Ok(result_task) => (Ok(()), Some(result_task)),
-                    Err(err) => (Err(format!("{err:?}")), None),
+                    Err(err) => {
+                        // The spawn failed after the memory-pool subscriber
+                        // task was started (it is spawned before the node
+                        // build): the dataflow never reaches `self.running`,
+                        // so `finish_dataflow` will not run — terminate the
+                        // subscriber here or it leaks for the daemon's
+                        // lifetime.
+                        if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id)
+                        {
+                            subscriber.abort();
+                        }
+                        (Err(format!("{err:?}")), None)
+                    }
                 };
                 let reply = DaemonCoordinatorReply::TriggerSpawnResult(trigger_result);
                 let _ = reply_tx.send(Some(reply)).map_err(|_| {
@@ -4274,6 +4327,7 @@ impl Daemon {
                 shared_memory_id,
                 tensor_data,
                 size,
+                seq,
             } => {
                 // Cross-machine path: pool mirrored here — write the data
                 // straight into the DORADMA data region under the seqlock
@@ -4284,7 +4338,9 @@ impl Daemon {
                 // a non-mirror daemon sees every frame of every pool. A
                 // genuinely missing mirror still warns inside
                 // `write_cross_pool_data`.
-                let is_cross = self.memory_pool.is_cross(&shared_memory_id);
+                let is_cross = self
+                    .memory_pool
+                    .is_cross(&dataflow_id.to_string(), &shared_memory_id);
                 if !is_cross {
                     tracing::debug!(
                         pool = %shared_memory_id,
@@ -4296,19 +4352,71 @@ impl Daemon {
                 // (10-30ms) — off the event loop or it would stall
                 // heartbeats, node replies and output delivery.
                 let local_machine_id = self.machine_id.clone().unwrap_or_default();
+                let session = self.zenoh_session.clone();
+                let clock = self.clock.clone();
+                let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
                     // `dataflow_id` (Uuid) is Copy; captured by copy.
-                    write_cross_pool_data(
+                    let ok = write_cross_pool_data(
                         &dataflow_id,
                         &local_machine_id,
                         &shared_memory_id,
                         &tensor_data,
                         size,
                     );
+                    // Remote commit ack: the origin's write reply waits
+                    // for this, so its send_output notification cannot
+                    // overtake the mirror write.
+                    if let Err(e) = publish_memory_pool_event(
+                        &session,
+                        &clock,
+                        &dataflow_id,
+                        &InterDaemonEvent::MemoryPoolWriteAck {
+                            dataflow_id,
+                            shared_memory_id,
+                            seq,
+                            ok,
+                            error: (!ok).then(|| {
+                                "remote mirror write failed (missing or invalid segment)"
+                                    .to_string()
+                            }),
+                        },
+                        shm_provider.as_deref(),
+                    )
+                    .await
+                    {
+                        tracing::warn!("memory pool: failed to publish MemoryPoolWriteAck: {e}");
+                    }
                 });
                 Ok(())
             }
+            InterDaemonEvent::MemoryPoolWriteAck {
+                dataflow_id,
+                shared_memory_id,
+                seq,
+                ok,
+                error,
+            } => {
+                // Complete the synchronous cross-machine write: the mirror
+                // daemon confirms the segment write, so the pending reply
+                // (and the send_output notification that follows it) can
+                // only fire after the remote data is visible.
+                if let Some(tx) = CROSS_WRITE_PENDING
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&(dataflow_id, shared_memory_id, seq))
+                {
+                    let result = if ok {
+                        Ok(())
+                    } else {
+                        Err(error.unwrap_or_else(|| "remote mirror write failed".to_string()))
+                    };
+                    let _ = tx.send(DaemonReply::Result(result));
+                }
+                Ok(())
+            }
             InterDaemonEvent::RegisterPoolAck {
+                dataflow_id,
                 shared_memory_id,
                 ok,
                 direct,
@@ -4319,7 +4427,7 @@ impl Daemon {
                 if let Some(tx) = CROSS_REGISTER_PENDING
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .remove(&shared_memory_id)
+                    .remove(&(dataflow_id, shared_memory_id))
                 {
                     let _ = tx.send((ok, direct));
                 }
@@ -4375,9 +4483,9 @@ impl Daemon {
                         // the targeted free reaches it, mirroring the
                         // origin's `{pool -> target}` entry.
                         memory_pool.register_cross_pool(
+                            dataflow_id.to_string(),
                             shared_memory_id.clone(),
                             origin_machine_id,
-                            dataflow_id.to_string(),
                         );
                         // Remote reference: same-host readers resolve the
                         // sender's segment name through this daemon's table
@@ -4445,7 +4553,8 @@ impl Daemon {
                 if machine_id != self.machine_id.as_deref().unwrap_or("") {
                     return Ok(());
                 }
-                self.memory_pool.unregister_cross_pool(&shared_memory_id);
+                self.memory_pool
+                    .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The origin daemon's local pool lives in the
                 // MemoryPoolManager table; the cross-machine free must
                 // release it too, or its /dev/shm segment leaks until
@@ -4652,7 +4761,7 @@ impl Daemon {
             let mp_topic = dataflow_memory_pool_topic(&dataflow_id);
             let mp_session = self.zenoh_session.clone();
             let mp_events_tx = self.events_tx.clone();
-            tokio::spawn(async move {
+            let subscriber = tokio::spawn(async move {
                 let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
                     tracing::warn!(
                         "memory pool: declare_subscriber({mp_topic}) failed; \
@@ -4675,6 +4784,11 @@ impl Daemon {
                     }
                 }
             });
+            // Retain the handle: the loop has no shutdown branch, so an
+            // abandoned task would keep the subscriber, its session clone,
+            // and its event sender alive for the daemon's lifetime.
+            // Aborted in `finish_dataflow` and on the failed-spawn path.
+            self.memory_pool_subscribers.insert(dataflow_id, subscriber);
         }
 
         let mut logger = self
@@ -5635,7 +5749,7 @@ impl Daemon {
                 // not be gated on the table result.
                 let peer = if free {
                     self.memory_pool
-                        .unregister_cross_pool(&shared_memory_id)
+                        .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
                         .map(|(peer, _)| peer)
                 } else {
                     None
@@ -5678,7 +5792,7 @@ impl Daemon {
                 // the /dev/shm mirror and notify the peer.
                 let peer = self
                     .memory_pool
-                    .unregister_cross_pool(&shared_memory_id)
+                    .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
                     .map(|(peer, _)| peer);
                 let was_cross = peer.is_some();
                 if let Some(peer) = &peer {
@@ -5759,7 +5873,10 @@ impl Daemon {
                 // event loop (heartbeats + node replies + output delivery
                 // included), backing up the event channels until the
                 // sender's WritePinnedMemory hangs forever.
-                if !self.memory_pool.is_cross(&shared_memory_id) {
+                if !self
+                    .memory_pool
+                    .is_cross(&dataflow_id.to_string(), &shared_memory_id)
+                {
                     // Reply must stay byte-identical to the forwarded
                     // path below (Result(Ok(()))) — the node cannot
                     // distinguish a gated local write from a forwarded
@@ -5770,25 +5887,71 @@ impl Daemon {
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
                 let shm_provider = self.shm_provider.clone();
+                // Remote commit acknowledgement: the reply is withheld
+                // until the mirror daemon confirms the segment write
+                // (MemoryPoolWriteAck). Otherwise the send_output
+                // notification that follows this write can overtake the
+                // tensor data and the receiver returns the previous
+                // stable frame.
+                let seq = {
+                    let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+                    let counter = seqs
+                        .entry((dataflow_id, shared_memory_id.clone()))
+                        .or_insert(0);
+                    *counter += 1;
+                    *counter
+                };
+                CROSS_WRITE_PENDING
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .insert((dataflow_id, shared_memory_id.clone(), seq), reply_sender);
+                let pending_key = (dataflow_id, shared_memory_id.clone(), seq);
                 tokio::spawn(async move {
+                    let event = InterDaemonEvent::MemoryPoolWrite {
+                        dataflow_id,
+                        shared_memory_id: shared_memory_id.clone(),
+                        tensor_data,
+                        size,
+                        seq,
+                    };
                     if let Err(e) = publish_memory_pool_event(
                         &session,
                         &clock,
                         &dataflow_id,
-                        &InterDaemonEvent::MemoryPoolWrite {
-                            dataflow_id,
-                            shared_memory_id,
-                            tensor_data,
-                            size,
-                        },
+                        &event,
                         shm_provider.as_deref(),
                     )
                     .await
                     {
                         tracing::error!("memory pool: failed to forward WriteMemoryPool: {e}");
+                        // No ack will ever arrive — fail the node's write
+                        // loudly instead of leaving it hanging.
+                        if let Some(tx) = CROSS_WRITE_PENDING
+                            .lock()
+                            .unwrap_or_else(|e| e.into_inner())
+                            .remove(&(dataflow_id, shared_memory_id, seq))
+                        {
+                            let _ = tx.send(DaemonReply::Result(Err(format!(
+                                "cross-machine write failed to reach the remote daemon: {e}"
+                            ))));
+                        }
                     }
                 });
-                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+                // Safety net: if the ack never arrives (peer restart,
+                // lost ack), fail the write rather than hang the node.
+                tokio::spawn(async move {
+                    tokio::time::sleep(CROSS_WRITE_ACK_TIMEOUT).await;
+                    if let Some(tx) = CROSS_WRITE_PENDING
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&pending_key)
+                    {
+                        let _ = tx.send(DaemonReply::Result(Err(
+                            "cross-machine write timed out waiting for the remote commit ack"
+                                .to_string(),
+                        )));
+                    }
+                });
             }
             DaemonNodeEvent::RegisterCrossMachinePool {
                 shared_memory_id,
@@ -5800,6 +5963,25 @@ impl Daemon {
                 machine_id,
                 reply_sender,
             } => {
+                // The cross-machine write path embeds the whole tensor in
+                // a node→daemon request (the push), whose transport cap is
+                // `MAX_MESSAGE_BYTES` — a larger pool would register fine
+                // but every write would silently fail. Reject it here with
+                // a clear error instead of accepting a pool that can never
+                // transfer a frame. (1 KiB margin covers the bincode
+                // framing around the tensor payload.)
+                if size > dora_message::MAX_MESSAGE_BYTES - 1024 {
+                    let _ = reply_sender.send(DaemonReply::CrossMachinePoolRegistered {
+                        result: Err(format!(
+                            "cross-machine pool size {size} exceeds the transport limit of {} bytes \
+                             (the node→daemon write path carries the full tensor); \
+                             use a smaller pool or a non-cross-machine deployment",
+                            dora_message::MAX_MESSAGE_BYTES - 1024
+                        )),
+                        direct: false,
+                    });
+                    return Ok(());
+                }
                 // Resolve the machine via the coordinator, publish
                 // RegisterPool over the memory-pool topic, and await the
                 // remote RegisterPoolAck before replying (sync register).
@@ -5865,7 +6047,7 @@ impl Daemon {
                             CROSS_REGISTER_PENDING
                                 .lock()
                                 .unwrap_or_else(|e| e.into_inner())
-                                .insert(shared_memory_id.clone(), ack_tx);
+                                .insert((dataflow_id, shared_memory_id.clone()), ack_tx);
                             let serialized = match bincode::serialize(&Timestamped {
                                 inner: InterDaemonEvent::RegisterPool {
                                     dataflow_id,
@@ -5947,9 +6129,9 @@ impl Daemon {
                             {
                                 Ok(Ok((true, ack_direct))) => {
                                     memory_pool.register_cross_pool(
+                                        dataflow_id.to_string(),
                                         shared_memory_id,
                                         machine_id,
-                                        dataflow_id.to_string(),
                                     );
                                     reply = Ok(());
                                     direct = ack_direct;
@@ -5990,7 +6172,7 @@ impl Daemon {
                     CROSS_REGISTER_PENDING
                         .lock()
                         .unwrap_or_else(|e| e.into_inner())
-                        .remove(&cleanup_pool_id);
+                        .remove(&(dataflow_id, cleanup_pool_id));
                     if let Err(err) = &reply {
                         tracing::warn!("memory pool: cross-machine register failed: {err}");
                     }
@@ -6712,6 +6894,14 @@ impl Daemon {
             let _ = df.listener_shutdown_tx.send(true);
         }
         self.running.remove(&dataflow_id);
+
+        // The memory-pool subscriber task has no shutdown branch of its
+        // own — terminate it, releasing its session clone and event
+        // sender. Without this, repeated or failed spawns accumulate
+        // tasks and can create duplicate consumers.
+        if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id) {
+            subscriber.abort();
+        }
 
         Ok(())
     }

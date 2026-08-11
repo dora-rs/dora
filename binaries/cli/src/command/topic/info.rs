@@ -198,6 +198,7 @@ fn info(
                         InterDaemonEvent::MemoryPoolWrite { .. } => {}
                         InterDaemonEvent::RegisterPool { .. }
                         | InterDaemonEvent::RegisterPoolAck { .. }
+                        | InterDaemonEvent::MemoryPoolWriteAck { .. }
                         | InterDaemonEvent::FreePool { .. } => {}
                     }
                 }
