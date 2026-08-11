@@ -20,9 +20,10 @@ name: Nightly Regression
 # high-frequency PR loop (ci.yml) depends on. Nightly is a non-blocking
 # once-daily job, so it restores where it can but never saves — trading
 # a slower nightly for a warm PR loop. Do NOT drop these `save-if:
-# false` gates. If nightly build time becomes a problem, move these to a
-# separate cache backend (e.g. `cache-provider: buildjet`, as
-# pip-release.yml does) rather than saving into the GitHub budget.
+# false` gates. If nightly build time becomes a problem, find a cache
+# backend outside the GitHub budget rather than saving into it. Note
+# that BuildJet — the escape hatch pip-release.yml used to use — is
+# shutting down, and rust-cache v2.9.2 removed that provider.
 #
 # Triggers:
 #   - schedule: daily at 06:00 UTC
