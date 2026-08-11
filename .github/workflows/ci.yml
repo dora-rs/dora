@@ -177,7 +177,7 @@ jobs:
       - name: Check examples compile
         run: cargo check --examples
       # ...nor does it build test targets, so the `#[cfg(test)]` modules of
-      # the three PyO3 crates were type-checked nowhere: they're excluded
+      # the PyO3 crates were type-checked nowhere: they're excluded
       # from `cargo test` (see the `test` job) and from clippy above, and
       # `cargo check --all` only covers their lib targets. A syntax error in
       # one of those test modules could ship. This is rmeta-only and `Check`
@@ -189,6 +189,7 @@ jobs:
           -p dora-node-api-python
           -p dora-operator-api-python
           -p dora-ros2-bridge-python
+          -p dora-runtime-python
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.
@@ -239,13 +240,16 @@ jobs:
       # The PyO3 crates stay excluded here — their test binaries link
       # libpython, and this job sets up no interpreter. Their unit tests run
       # in `contract-tests`, which does; keep that step in sync if this list
-      # changes.
+      # changes. `dora-runtime-python` is one of them: it links pyo3 like the
+      # rest, and only its own targets are skipped — the lib still builds
+      # above, as a dependency of dora-cli-api-python.
       - name: Test
         run: >
           cargo test --all
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
 

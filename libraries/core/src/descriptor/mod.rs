@@ -14,9 +14,9 @@ use std::{
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig,
-    Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, RUNTIME_PYTHON, RUNTIME_SHARED_LIBRARY, RUNTIME_WASM,
+    ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
+    Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;

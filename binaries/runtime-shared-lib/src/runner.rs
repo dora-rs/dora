@@ -1,4 +1,3 @@
-use super::{OperatorEvent, StopReason};
 use dora_core::{
     adjust_shared_library_path,
     config::{DataId, NodeId, OperatorId},
@@ -10,6 +9,7 @@ use dora_operator_api_types::{
     DoraDropOperator, DoraInitOperator, DoraInitResult, DoraOnEvent, DoraResult, DoraStatus,
     Metadata, OnEventResult, Output, SendOutput, safer_ffi::closure::ArcDynFn1,
 };
+use dora_runtime_api::{OperatorEvent, StopReason};
 use eyre::{Context, Result, bail, eyre};
 use libloading::Symbol;
 use std::{

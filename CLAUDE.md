@@ -20,7 +20,7 @@ cargo build -p dora-daemon
 cargo check --all
 
 # Test all (excluding Python)
-cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+cargo test --all --exclude dora-runtime-python --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test single package
 cargo test -p dora-core
@@ -58,7 +58,9 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `binaries/cli` | dora-cli | CLI binary (`dora` command) - build, run, stop dataflows |
 | `binaries/daemon` | dora-daemon | Spawns nodes, manages local shared-memory/TCP communication |
 | `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments |
-| `binaries/runtime` | dora-runtime | In-process operator execution runtime |
+| `binaries/runtime-api` | dora-runtime-api | Language-neutral operator runtime SDK (event loop, node harness, `OperatorRunner` trait) |
+| `binaries/runtime-shared-lib` | dora-runtime-shared-lib | Shared-library (C ABI) operator runtime backend; shipped in the `dora` CLI (`dora runtime`) |
+| `binaries/runtime-python` | dora-runtime-python | Python (PyO3) operator runtime backend; shipped in the Python wheel (`dora.start_runtime()`) |
 | `libraries/message` | dora-message | All inter-component message types and protocol definitions |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
@@ -133,6 +135,7 @@ cargo test --all \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \
+  --exclude dora-runtime-python \
   --exclude dora-cli-api-python \
   --exclude dora-examples
 
@@ -142,9 +145,10 @@ cargo test --all \
 cargo check --examples
 
 # 5. Only if you touched a PyO3 crate (apis/python/node, apis/python/operator,
-# libraries/extensions/ros2-bridge/python): their unit tests are excluded from
-# the `cargo test --all` above because the test binaries link libpython, so run
-# them explicitly. CI runs the same command in ci.yml's `contract-tests` job.
+# libraries/extensions/ros2-bridge/python, binaries/runtime-python): their unit
+# tests are excluded from the `cargo test --all` above because the test binaries
+# link libpython, so run them explicitly. CI runs the same command in ci.yml's
+# `contract-tests` job.
 make qa-test-python
 
 # Quick single-crate check while iterating:

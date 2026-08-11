@@ -1,11 +1,11 @@
 use dora_core::{
     config::{DataId, NodeId},
-    descriptor::{Descriptor, OperatorDefinition, OperatorSource},
+    descriptor::{Descriptor, OperatorDefinition},
 };
 use dora_node_api::{
     EncodedSample, Event, MetadataParameters, SampleAllocator, arrow::array::ArrayData,
 };
-use eyre::{Context, Result};
+use eyre::Result;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
 use tokio::sync::{mpsc::Sender, oneshot};
@@ -68,86 +68,51 @@ impl RuntimeHandle {
     }
 }
 
-pub mod channel;
-#[cfg(feature = "python")]
-mod python;
-mod shared_lib;
-
-/// Runs the operator to completion. Returns a shared library that the caller
-/// **must keep alive until after the runtime's main event loop has joined**.
+/// A language/ABI-specific operator backend.
 ///
+/// Each runtime backend (shared-library, Python, WASM, third-party, …)
+/// implements this trait and hands it to [`crate::main`], which drives the
+/// language-neutral event loop. The implementation is invoked once, on the
+/// **main thread** (PyO3 and `libloading` both want a dedicated thread), and is
+/// responsible for loading the operator described by `operator` and running it
+/// until it stops.
+///
+/// The runtime↔operator contract is language-neutral: consume
+/// [`dora_node_api::Event`]s off `incoming_events`, emit outputs and lifecycle
+/// events through `handle`, and signal readiness (or an init failure) exactly
+/// once on `init_done`.
+///
+/// A backend that cannot host `operator`'s source kind must return an `Err`
+/// **without** signalling `init_done`, so the failure surfaces as a spawn error
+/// rather than a runtime hang (dora-rs/dora#2595).
+pub trait OperatorRunner {
+    fn run_operator(
+        &self,
+        node_id: &NodeId,
+        operator: OperatorDefinition,
+        incoming_events: flume::Receiver<Event>,
+        handle: RuntimeHandle,
+        init_done: oneshot::Sender<Result<()>>,
+        dataflow_descriptor: &Descriptor,
+    ) -> eyre::Result<RunnerGuard>;
+}
+
+/// A backend-owned resource that must stay alive until the runtime's event loop
+/// has joined.
+///
+/// The shared-library backend returns its loaded `libloading::Library` here.
 /// Since dora-rs/dora#2742 the main loop no longer holds Arrow arrays exported
 /// by the operator — outputs are encoded into dora-owned samples on the operator
 /// thread (see [`RuntimeHandle::send_output`]) — but other values can still
 /// carry `.so`-resident vtables across the channel, most notably an
 /// [`OperatorEvent::Panic`] payload. Unloading the library while the loop may
-/// still hold one dangles those, so the caller keeps it mapped. See
-/// `shared_lib::run`. Returns `None` for operator kinds with no such library
-/// (Python).
-#[allow(unused_variables)]
-pub fn run_operator(
-    node_id: &NodeId,
-    operator_definition: OperatorDefinition,
-    incoming_events: flume::Receiver<Event>,
-    handle: RuntimeHandle,
-    init_done: oneshot::Sender<Result<()>>,
-    dataflow_descriptor: &Descriptor,
-) -> eyre::Result<Option<libloading::Library>> {
-    let library = match &operator_definition.config.source {
-        OperatorSource::SharedLibrary(source) => {
-            let library = shared_lib::run(
-                node_id,
-                &operator_definition.id,
-                source,
-                handle,
-                incoming_events,
-                init_done,
-            )
-            .wrap_err_with(|| {
-                format!(
-                    "failed to spawn shared library operator for {}",
-                    operator_definition.id
-                )
-            })?;
-            Some(library)
-        }
-        #[allow(unused_variables)]
-        OperatorSource::Python(source) => {
-            #[cfg(feature = "python")]
-            {
-                python::run(
-                    node_id,
-                    &operator_definition.id,
-                    source,
-                    handle,
-                    incoming_events,
-                    init_done,
-                    dataflow_descriptor,
-                )
-                .wrap_err_with(|| {
-                    format!(
-                        "failed to spawn Python operator for {}",
-                        operator_definition.id
-                    )
-                })?;
-                None
-            }
-            #[cfg(not(feature = "python"))]
-            eyre::bail!(
-                "operator `{}` uses a Python source, but this dora-runtime was \
-                 built without the `python` feature",
-                operator_definition.id
-            );
-        }
-        OperatorSource::Wasm(_) => {
-            eyre::bail!(
-                "operator `{}` uses a WASM source, which is not supported yet",
-                operator_definition.id
-            );
-        }
-    };
-    Ok(library)
-}
+/// still hold one dangles those, so [`crate::main`] binds the guard for the
+/// whole run and drops it last.
+///
+/// It is deliberately opaque (`Box<dyn Any>`) so `dora-runtime-api` stays
+/// language-neutral — it never needs to name `libloading` or any other
+/// backend-specific type. Backends with nothing to keep alive return `None`.
+pub type RunnerGuard = Option<Box<dyn Any>>;
 
 #[derive(Debug)]
 #[allow(clippy::large_enum_variant)]
@@ -271,41 +236,6 @@ mod tests {
         assert!(
             err.to_string().contains("before the node is initialized"),
             "unexpected error: {err}"
-        );
-    }
-
-    /// An unsupported operator source must surface a descriptive error from
-    /// `run_operator` rather than returning `Ok(())` while silently dropping
-    /// the `init_done` sender — which would leave the runtime task blocked in
-    /// `init_done.await` until it fails with the misleading "the `init_done`
-    /// channel was closed unexpectedly".
-    #[test]
-    fn wasm_source_returns_descriptive_error() {
-        let operator_definition: OperatorDefinition =
-            serde_yaml::from_str("id: op\nwasm: model.wasm\n").expect("operator definition parses");
-        let dataflow: Descriptor =
-            serde_yaml::from_str("nodes:\n  - id: a\n").expect("descriptor parses");
-        let (_events_in_tx, incoming_events) = flume::unbounded::<Event>();
-        let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
-        let (init_done_tx, mut init_done_rx) = oneshot::channel();
-
-        let err = run_operator(
-            &NodeId::from("node".to_string()),
-            operator_definition,
-            incoming_events,
-            RuntimeHandle::new(events_tx, SharedAllocator::default()),
-            init_done_tx,
-            &dataflow,
-        )
-        .expect_err("WASM operator source must return an error");
-        assert!(
-            err.to_string().contains("WASM"),
-            "expected a descriptive WASM error, got: {err}"
-        );
-        // The init_done sender must not have signalled readiness.
-        assert!(
-            init_done_rx.try_recv().is_err(),
-            "init_done must not receive a value for an unsupported source"
         );
     }
 }

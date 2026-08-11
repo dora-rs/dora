@@ -1646,6 +1646,7 @@ job_test_cross_platform() {
     --exclude dora-node-api-python \
     --exclude dora-operator-api-python \
     --exclude dora-ros2-bridge-python \
+    --exclude dora-runtime-python \
     --exclude dora-cli-api-python \
     --exclude dora-examples
 }
@@ -1966,6 +1967,7 @@ job_cross_check() {
         --exclude dora-node-api-python \
         --exclude dora-operator-api-python \
         --exclude dora-ros2-bridge-python \
+        --exclude dora-runtime-python \
         --exclude dora-cli-api-python
       ;;
     Darwin)
@@ -1977,12 +1979,14 @@ job_cross_check() {
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
+          --exclude dora-runtime-python \
           --exclude dora-cli-api-python
       else
         cargo check --target x86_64-apple-darwin --all \
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
+          --exclude dora-runtime-python \
           --exclude dora-cli-api-python
       fi
       ;;
