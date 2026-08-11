@@ -105,6 +105,7 @@ fn main() -> eyre::Result<()> {
                 InterDaemonEvent::MemoryPoolWrite { .. } => {}
                 InterDaemonEvent::RegisterPool { .. }
                 | InterDaemonEvent::RegisterPoolAck { .. }
+                | InterDaemonEvent::MemoryPoolWriteAck { .. }
                 | InterDaemonEvent::FreePool { .. } => {}
             }
         }
