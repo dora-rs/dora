@@ -154,6 +154,20 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
     Ok(session)
 }
 
+/// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
+///
+/// The peer address is formatted through a [`SocketAddr`] so that IPv6
+/// addresses are bracketed (`tcp/[::1]:5456`), matching zenoh's TCP locator
+/// grammar. Interpolating a bare [`IpAddr`] instead would emit `tcp/::1:5456`
+/// for IPv6 — a malformed locator where the port colon is indistinguishable
+/// from the address colons, which `insert_json5` rejects (#3041). This is the
+/// same bracketing [`reserve_zenoh_endpoint`] already relies on.
+#[cfg(feature = "zenoh")]
+fn coordinator_connect_endpoints(addr: IpAddr) -> String {
+    let peer = SocketAddr::new(addr, 5456);
+    format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
+}
+
 /// Like [`open_zenoh_session`], but also configures the session to listen on
 /// the given endpoint (e.g. `tcp/127.0.0.1:43217`, or a routable address such as
 /// `tcp/10.0.2.100:43217` for a daemon in a cluster). The daemon uses this so
@@ -184,20 +198,6 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 /// shared by the caller (e.g. `dora cluster up`), not per-daemon
 /// state to advertise back to nodes.
 ///
-/// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
-///
-/// The peer address is formatted through a [`SocketAddr`] so that IPv6
-/// addresses are bracketed (`tcp/[::1]:5456`), matching zenoh's TCP locator
-/// grammar. Interpolating a bare [`IpAddr`] instead would emit `tcp/::1:5456`
-/// for IPv6 — a malformed locator where the port colon is indistinguishable
-/// from the address colons, which `insert_json5` rejects (#3041). This is the
-/// same bracketing [`reserve_zenoh_endpoint`] already relies on.
-#[cfg(feature = "zenoh")]
-fn coordinator_connect_endpoints(addr: IpAddr) -> String {
-    let peer = SocketAddr::new(addr, 5456);
-    format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
-}
-
 /// `multicast` lets a caller that establishes every link explicitly opt out of
 /// scouting — see [`DORA_ZENOH_MULTICAST_ENV`], honored in addition to this
 /// argument. It is a request, not a command: it is ignored unless this session
