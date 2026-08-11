@@ -205,13 +205,14 @@ pub struct ParsedUrn {
 /// use dora_core::types::parse_urn;
 ///
 /// // With parameters:
-/// let parsed = parse_urn("std/media/v1/AudioFrame[sample_type=f32,channels=2]").unwrap();
+/// let Some(parsed) = parse_urn("std/media/v1/AudioFrame[sample_type=f32,channels=2]")
+/// else { unreachable!() };
 /// assert_eq!(parsed.base, "std/media/v1/AudioFrame");
 /// assert_eq!(parsed.params.get("sample_type"), Some(&"f32".to_string()));
 /// assert_eq!(parsed.params.get("channels"), Some(&"2".to_string()));
 ///
 /// // No-param URN parses with an empty parameter map:
-/// let plain = parse_urn("std/core/v1/Float32").unwrap();
+/// let Some(plain) = parse_urn("std/core/v1/Float32") else { unreachable!() };
 /// assert_eq!(plain.base, "std/core/v1/Float32");
 /// assert!(plain.params.is_empty());
 ///
