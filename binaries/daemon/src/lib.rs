@@ -616,10 +616,6 @@ impl Daemon {
 /// into the mirror segment's data region (under the per-pool lock and
 /// seqlock) and publish the zenoh commit ack. Returns `Ok(true)` for the
 /// next frame, `Ok(false)` on clean EOF.
-/// Read and serve one direct-TCP data frame: write the payload straight
-/// into the mirror segment's data region (under the per-pool lock and
-/// seqlock) and publish the zenoh commit ack. Returns `Ok(true)` for the
-/// next frame, `Ok(false)` on clean EOF.
 async fn serve_cross_data_frame(
     memory_pool: &MemoryPoolManager,
     machine_id: &str,
@@ -11746,7 +11742,7 @@ mod cross_pool_write_tests {
         let patterns: Vec<Vec<u8>> = (0..WRITERS).map(|w| vec![w; SIZE]).collect();
         for round in 0..200 {
             std::thread::scope(|scope| {
-                for (w, pattern) in patterns.iter().enumerate() {
+                for (_w, pattern) in patterns.iter().enumerate() {
                     let pattern = pattern.as_slice();
                     scope.spawn(move || {
                         write_cross_pool_data(&dataflow_id, "B", pool_id, pattern, SIZE);
@@ -11834,6 +11830,140 @@ mod cross_pool_write_tests {
                 assert_eq!(msg, "mirror segment missing");
             }
             other => panic!("failed-write ack resolved the wrong reply: {other:?}"),
+        }
+    }
+
+    /// The zenoh ack publish itself: the mirror-side publish helper over a
+    /// real zenoh transport (loopback TCP), received and deserialized by
+    /// the origin-side subscriber, resolving the seq-matched pending reply.
+    ///
+    /// `write_ack_resolves_only_seq_matched_pending_reply` pins the
+    /// resolver in isolation; this test covers the publish → transport →
+    /// subscribe → deserialize chain that feeds it — the last uncovered
+    /// link of the commit protocol (only the true two-host transfer still
+    /// needs manual runs). Two sessions are required because the mirror
+    /// publishes with `Locality::Remote`: a same-session subscriber would
+    /// never receive its own put.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn zenoh_ack_publish_resolves_pending_reply() {
+        // Free loopback port for the mirror session's listener.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+
+        let mut mirror_cfg = zenoh::Config::default();
+        let mut origin_cfg = zenoh::Config::default();
+        for cfg in [&mut mirror_cfg, &mut origin_cfg] {
+            // Hermetic: no scouting, so the test can neither touch nor be
+            // touched by other zenoh instances on the host.
+            cfg.insert_json5("scouting/multicast/enabled", "false")
+                .unwrap();
+            cfg.insert_json5("scouting/gossip/enabled", "false")
+                .unwrap();
+        }
+        mirror_cfg
+            .insert_json5(
+                "listen/endpoints",
+                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            )
+            .unwrap();
+        mirror_cfg
+            .insert_json5("listen/exit_on_failure", "false")
+            .unwrap();
+        origin_cfg
+            .insert_json5(
+                "connect/endpoints",
+                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            )
+            .unwrap();
+        let mirror_session = zenoh::open(mirror_cfg).await.unwrap();
+        let origin_session = zenoh::open(origin_cfg).await.unwrap();
+
+        let df = Uuid::new_v4();
+        let pool = "pool_sender_node_1".to_string();
+        let seq = 7u64;
+        let topic = dataflow_memory_pool_topic(&df);
+
+        // Origin-side subscriber, mirroring the daemon's per-dataflow loop.
+        let subscriber = origin_session.declare_subscriber(&topic).await.unwrap();
+
+        // The write this ack commits is pending its reply.
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((df, pool.clone(), seq), tx);
+
+        // Mirror-side publish through the production helper. Retry the put
+        // until the ack arrives: the subscriber interest must propagate to
+        // the mirror session over the fresh link, and a put that precedes
+        // the interest is dropped (Block congestion control never drops, so
+        // retries converge).
+        let clock = Arc::new(HLC::default());
+        let mut ack_received = false;
+        for _ in 0..10 {
+            publish_memory_pool_event(
+                &mirror_session,
+                &clock,
+                &df,
+                &InterDaemonEvent::MemoryPoolWriteAck {
+                    dataflow_id: df,
+                    shared_memory_id: pool.clone(),
+                    seq,
+                    ok: true,
+                    error: None,
+                },
+                None,
+            )
+            .await
+            .unwrap();
+            match tokio::time::timeout(std::time::Duration::from_secs(2), subscriber.recv_async())
+                .await
+            {
+                Ok(Ok(sample)) => {
+                    // Deserialize with the production method and resolve.
+                    let bytes = sample.payload().to_bytes();
+                    let event =
+                        Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
+                            .unwrap();
+                    match event.inner {
+                        InterDaemonEvent::MemoryPoolWriteAck {
+                            dataflow_id,
+                            shared_memory_id,
+                            seq: ack_seq,
+                            ok,
+                            error,
+                        } => {
+                            assert_eq!(dataflow_id, df);
+                            assert_eq!(shared_memory_id, pool);
+                            assert_eq!(ack_seq, seq);
+                            assert!(ok);
+                            assert!(error.is_none());
+                            assert!(resolve_cross_write_ack(
+                                dataflow_id,
+                                shared_memory_id,
+                                ack_seq,
+                                ok,
+                                error,
+                            ));
+                        }
+                        other => panic!("unexpected event on memory-pool topic: {other:?}"),
+                    }
+                    ack_received = true;
+                }
+                Ok(Err(e)) => panic!("memory-pool subscriber closed: {e}"),
+                Err(_) => {} // interest not yet propagated; put again
+            }
+            if ack_received {
+                break;
+            }
+        }
+        assert!(ack_received, "ack never arrived over the zenoh link");
+
+        // The pending write's reply is resolved by the zenoh-delivered ack.
+        match rx.await {
+            Ok(DaemonReply::Result(Ok(()))) => {}
+            other => panic!("pending reply not resolved by the zenoh ack: {other:?}"),
         }
     }
 
