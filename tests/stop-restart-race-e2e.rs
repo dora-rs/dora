@@ -8,15 +8,23 @@
 //! through to `stop_dataflow` and "succeed" against the old UUID, while the
 //! restart went on to spawn a fresh incarnation under a new UUID that kept
 //! running — the caller saw a clean success with no indication the
-//! dataflow was still alive. The fix rejects `Stop`/`StopByName` outright
-//! while `pending_restarts` still holds the UUID.
+//! dataflow was still alive.
+//!
+//! The fix cancels the pending restart (erroring its caller) rather than
+//! rejecting the `Stop` outright: an explicit `Stop` means the caller wants
+//! the dataflow gone, and an outright rejection would otherwise block every
+//! control verb — including `--force` — for the entire
+//! `--grace-duration`/`Event::Stop`-ignoring window a restart can be
+//! in flight for.
 //!
 //! The window between `StopDataflow` being sent and `DataflowFinishedOnDaemon`
 //! arriving is normally just tens of milliseconds (as long as the node takes
 //! to exit), which is too timing-dependent for a deterministic test. This
 //! test widens it on purpose using the shared `stop-delay-node` fixture's
-//! `DORA_TEST_STOP_DELAY_MS` knob, so `stop` reliably lands while the
-//! restart is still pending instead of only doing so most of the time.
+//! `DORA_TEST_STOP_DELAY_MS` knob, and pins the exact moment `stop` is fired
+//! to the coordinator's own "restart pending" log line rather than a fixed
+//! sleep, so it reliably lands while the restart is pending instead of only
+//! doing so most of the time.
 //!
 //! Heavyweight (spawns processes). Run with
 //! `cargo test -p dora-examples --test stop-restart-race-e2e`.
@@ -74,6 +82,12 @@ fn free_port() -> u16 {
 
 fn port_open(port: u16) -> bool {
     TcpStream::connect(("127.0.0.1", port)).is_ok()
+}
+
+fn log_contains(path: &Path, needle: &str) -> bool {
+    std::fs::read_to_string(path)
+        .map(|s| s.contains(needle))
+        .unwrap_or(false)
 }
 
 fn wait_until(mut f: impl FnMut() -> bool, timeout: Duration, what: &str) {
@@ -142,10 +156,11 @@ impl Drop for Cleanup {
     }
 }
 
-/// A `Stop` racing a `Restart` on the same dataflow must be rejected, not
-/// silently reported as successful while a new incarnation keeps running.
+/// A `Stop` racing a `Restart` on the same dataflow must cancel the restart
+/// and actually stop the dataflow — not report success while a new
+/// incarnation keeps running, and not refuse to stop it either.
 #[test]
-fn stop_racing_pending_restart_is_rejected() {
+fn stop_racing_pending_restart_cancels_the_restart() {
     ensure_built();
 
     let dora = bin("dora");
@@ -226,10 +241,6 @@ fn stop_racing_pending_restart_is_rejected() {
     );
     let dataflow_id = list_active(port).expect("list active")[0];
 
-    // Fire `restart` and `stop` on the same UUID: `restart` first (so its
-    // `StopDataflow` send + `pending_restarts` insert — near-instant —
-    // reliably happens before `stop` is issued), then `stop` while the
-    // node's 5s shutdown delay keeps the restart pending.
     let restart_child = Command::new(&dora)
         .arg("restart")
         .arg(dataflow_id.to_string())
@@ -240,7 +251,19 @@ fn stop_racing_pending_restart_is_rejected() {
         .spawn()
         .expect("failed to spawn dora restart");
 
-    std::thread::sleep(Duration::from_millis(300));
+    // Wait for the coordinator's own confirmation that the restart is
+    // registered in `pending_restarts` — deterministic, unlike a fixed
+    // sleep that could flake on a loaded runner.
+    wait_until(
+        || {
+            log_contains(
+                &coord_log,
+                "restart pending; waiting for dataflow to finish stopping",
+            )
+        },
+        Duration::from_secs(10),
+        "coordinator to register the pending restart",
+    );
 
     let stop_output = Command::new(&dora)
         .arg("stop")
@@ -254,41 +277,40 @@ fn stop_racing_pending_restart_is_rejected() {
         .wait_with_output()
         .expect("failed to wait on dora restart");
 
-    if !restart_output.status.success() {
+    // Core assertion 1: `stop` must actually stop the dataflow — the whole
+    // point of cancelling the restart instead of refusing the stop.
+    if !stop_output.status.success() {
         dump_logs(&coord_log, &daemon_log);
         panic!(
-            "dora restart failed: stdout={} stderr={}",
-            String::from_utf8_lossy(&restart_output.stdout),
-            String::from_utf8_lossy(&restart_output.stderr),
+            "dora stop failed while cancelling a pending restart for {dataflow_id}: stdout={} stderr={}",
+            String::from_utf8_lossy(&stop_output.stdout),
+            String::from_utf8_lossy(&stop_output.stderr),
         );
     }
 
-    // Core assertion: `stop` must be rejected, not report success while a
-    // restart is in flight for the same UUID (the silent-loss race).
-    let stop_stderr = String::from_utf8_lossy(&stop_output.stderr);
-    if stop_output.status.success() {
+    // Core assertion 2: the restart must be cancelled, not silently
+    // completed — its caller sees a clear error, not `DataflowRestarted`.
+    let restart_stderr = String::from_utf8_lossy(&restart_output.stderr);
+    if restart_output.status.success() {
         dump_logs(&coord_log, &daemon_log);
         panic!(
-            "dora stop unexpectedly succeeded while a restart was pending for {dataflow_id} \
-             (stdout={:?}); this is the silent-loss race the fix guards against",
-            String::from_utf8_lossy(&stop_output.stdout),
+            "dora restart unexpectedly succeeded for {dataflow_id} after a concurrent stop \
+             (stdout={:?}); the restart should have been cancelled instead",
+            String::from_utf8_lossy(&restart_output.stdout),
         );
     }
     assert!(
-        stop_stderr.contains("is being restarted"),
-        "expected the pending-restart rejection message, got stderr={stop_stderr:?}"
+        restart_stderr.contains("was stopped before the restart could complete"),
+        "expected the restart-cancelled error, got stderr={restart_stderr:?}"
     );
 
-    // The restart itself must still complete normally: exactly one
-    // dataflow running, under a fresh UUID (not the one `stop` targeted).
+    // Core assertion 3: no new incarnation was spawned — the dataflow ends
+    // up genuinely stopped, not replaced by a fresh UUID under a different
+    // name (the silent-loss shape the original bug had).
     wait_until(
-        || {
-            list_active(port)
-                .map(|v| v.len() == 1 && !v.contains(&dataflow_id))
-                .unwrap_or(false)
-        },
+        || list_active(port).map(|v| v.is_empty()).unwrap_or(false),
         Duration::from_secs(30),
-        "restarted dataflow to come back up under a new UUID",
+        "dataflow to be fully stopped with no replacement incarnation",
     );
 
     let _ = Command::new(&dora)

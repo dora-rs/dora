@@ -896,19 +896,23 @@ async fn start_inner(
                             // A pending restart already sent `StopDataflow` to
                             // the daemon(s) and is waiting for
                             // `DataflowFinishedOnDaemon` to spawn the new
-                            // incarnation under a fresh UUID. `running_dataflows`
-                            // still contains the old UUID in the meantime, so
-                            // without this guard `stop_dataflow` below would
-                            // "succeed" against the old UUID while the restart
-                            // silently spawns a new one that keeps running —
-                            // the stop caller would see success but the
-                            // dataflow is still alive under a different UUID.
-                            if pending_restarts.contains_key(&dataflow_uuid) {
-                                let _ = reply_sender.send(Err(eyre!(
-                                    "dataflow `{dataflow_uuid}` is being restarted – cannot stop it until the restart finishes"
-                                )));
-                                continue;
-                            }
+                            // incarnation under a fresh UUID; `running_dataflows`
+                            // still contains the old UUID in the meantime. An
+                            // explicit `Stop` for that UUID means the caller
+                            // wants the dataflow gone, not restarted — cancel
+                            // the pending restart (erroring its caller) rather
+                            // than letting it silently spawn a new incarnation
+                            // after this stop reports success. Last-writer-wins,
+                            // and unlike an outright rejection this doesn't
+                            // block `--force` from ever landing while a
+                            // long-`--grace-duration` restart is in flight.
+                            cancel_pending_restart(
+                                &mut pending_restarts,
+                                dataflow_uuid,
+                                format!(
+                                    "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
+                                ),
+                            );
 
                             // `dataflow_results` is filled incrementally, one
                             // entry per daemon, while a multi-daemon dataflow is
@@ -963,14 +967,15 @@ async fn start_inner(
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
-                                // Same pending-restart guard as `Stop` — see
-                                // the comment there for why this is needed.
-                                if pending_restarts.contains_key(&dataflow_uuid) {
-                                    let _ = reply_sender.send(Err(eyre!(
-                                        "dataflow `{dataflow_uuid}` is being restarted – cannot stop it until the restart finishes"
-                                    )));
-                                    continue;
-                                }
+                                // Same pending-restart cancellation as `Stop`
+                                // — see the comment there for why.
+                                cancel_pending_restart(
+                                    &mut pending_restarts,
+                                    dataflow_uuid,
+                                    format!(
+                                        "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
+                                    ),
+                                );
 
                                 // Same partial-completion guard as `Stop`: a
                                 // still-running multi-daemon dataflow has a
@@ -2129,6 +2134,7 @@ async fn start_inner(
                     &mut archived_dataflows,
                     &mut dataflow_results,
                     &mut daemon_connections,
+                    &mut pending_restarts,
                     &clock,
                     store.as_ref(),
                 )
@@ -3061,6 +3067,21 @@ enum DisconnectAction {
     ReclaimOrphaned(DataflowId),
 }
 
+/// Cancel a pending restart for `uuid`, if one exists: removes it from
+/// `pending_restarts` and replies to the parked restart caller with `Err`
+/// explaining why. No-op if there is no pending restart for `uuid`.
+fn cancel_pending_restart(
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
+    uuid: DataflowId,
+    reason: impl std::fmt::Display,
+) {
+    if let Some(restart) = pending_restarts.remove(&uuid) {
+        let reason = reason.to_string();
+        tracing::warn!(dataflow = %uuid, "cancelling pending restart: {reason}");
+        let _ = restart.reply_sender.send(Err(eyre!("{reason}")));
+    }
+}
+
 fn cleanup_disconnected_daemons_from_running_dataflows(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     disconnected: &BTreeSet<DaemonId>,
@@ -3103,15 +3124,11 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
     // daemon(s) will never send DataflowFinishedOnDaemon, so any caller
     // waiting on a deferred restart would hang indefinitely (#2082 H1).
     for uuid in &affected_uuids {
-        if let Some(restart) = pending_restarts.remove(uuid) {
-            tracing::warn!(
-                dataflow = %uuid,
-                "daemon disconnected while restart was pending; cancelling restart"
-            );
-            let _ = restart.reply_sender.send(Err(eyre!(
-                "daemon disconnected while restart was pending for dataflow `{uuid}`"
-            )));
-        }
+        cancel_pending_restart(
+            pending_restarts,
+            *uuid,
+            format!("daemon disconnected while restart was pending for dataflow `{uuid}`"),
+        );
     }
     actions
 }
@@ -3427,6 +3444,7 @@ async fn check_spawn_timeouts(
     archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
     dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     daemon_connections: &mut DaemonConnections,
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
     clock: &HLC,
     store: &dyn CoordinatorStore,
 ) {
@@ -3507,6 +3525,18 @@ async fn check_spawn_timeouts(
             // reachable from any other code path; defensive.)
             continue;
         };
+        // A restart can be pending for a dataflow whose spawn (the new
+        // incarnation `initiate_restart` kicked off) is itself the one
+        // that got stuck — `running_dataflows` only needs to contain the
+        // UUID, which it does while the spawn is pending. Without this,
+        // the entry would never drain (only `DataflowFinishedOnDaemon`
+        // and the daemon-disconnect path do), permanently wedging both
+        // the parked restart caller and any future `Stop` for this UUID.
+        cancel_pending_restart(
+            pending_restarts,
+            uuid,
+            format!("dataflow `{uuid}`'s spawn timed out while a restart was pending"),
+        );
         let err_msg = format!(
             "spawn timed out after {}s; {} daemon(s) never reported \
              spawn_result; rolled back {} previously-started daemon(s)",
@@ -4734,6 +4764,10 @@ async fn initiate_restart(
             reply_sender,
         },
     );
+    // Logged (rather than left silent) so a test can poll for the exact
+    // moment the restart becomes cancellable via a `Stop`, instead of
+    // guessing a fixed delay.
+    tracing::info!(dataflow = %dataflow_uuid, "restart pending; waiting for dataflow to finish stopping");
 }
 
 #[cfg(test)]
@@ -6585,12 +6619,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -6645,12 +6681,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -6692,12 +6730,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -6778,12 +6818,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7125,12 +7167,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7171,12 +7215,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7232,12 +7278,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7317,11 +7365,13 @@ mod tests {
         }
         assert_eq!(dataflow_results.len(), MAX_DATAFLOW_RESULTS);
 
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7402,12 +7452,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7632,12 +7684,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7703,12 +7757,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7786,11 +7842,13 @@ mod tests {
         // If `NodeId::from("<watchdog>")` is reintroduced, this awaits
         // a panic and the test fails. Currently uses `"watchdog"` which
         // passes validation.
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
