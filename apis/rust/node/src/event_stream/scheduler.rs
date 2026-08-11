@@ -264,9 +264,14 @@ impl Scheduler {
         // `goal_status` correlations whose senders are waiting for them
         // (dora-rs/adora#146). Use the same correlation predicate that the
         // drop_oldest path uses and retain correlated events across the flush.
+        // Also retain the `Stop` shutdown signal (eviction-immune everywhere,
+        // see `is_stop`): flush normally targets a per-input queue and `Stop`
+        // lives under `NON_INPUT_EVENT_ID`, but the two collide if an input is
+        // literally named `dora.non_input_event`, which `validate_data_id`
+        // permits — so guard the flush path too rather than rely on that.
         if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
             let before = queue.len();
-            queue.retain(is_correlated);
+            queue.retain(|e| is_correlated(e) || is_stop(e));
             let drained = before - queue.len();
             if drained > 0 {
                 tracing::debug!(
@@ -750,6 +755,28 @@ mod tests {
         assert!(
             non_input.iter().any(is_stop),
             "an incoming Stop must be admitted into a full non-input queue"
+        );
+    }
+
+    // The flush path (`retain`) is a second eviction site. It normally targets
+    // a per-input queue, but an input literally named `dora.non_input_event`
+    // (which `validate_data_id` permits) collides with the queue where `Stop`
+    // lives. Flush must still preserve the `Stop` shutdown signal there.
+    #[test]
+    fn flush_retains_stop_when_targeting_the_non_input_queue() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_stop());
+        sched.add_event(make_input_closed("x"));
+
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input(NON_INPUT_EVENT, flush_params));
+
+        let non_input = &sched.event_queues[&*NON_INPUT_EVENT_ID].1;
+        assert!(
+            non_input.iter().any(is_stop),
+            "flush must not evict the Stop shutdown signal"
         );
     }
 
