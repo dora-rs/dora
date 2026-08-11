@@ -24,6 +24,15 @@ fn decode_recorded_payload(data: Option<&[u8]>) -> eyre::Result<ArrayData> {
     }
 }
 
+/// Whether a replay pass emitted nothing usable: every matching record was
+/// skipped as undecodable. This is a hard failure (a systematically corrupt or
+/// format-drifted recording), distinct from a pass that legitimately matched no
+/// records at all (`replayed == 0 && skipped == 0` -- the node simply had no
+/// recorded output), which is not a failure.
+fn replay_emitted_nothing_usable(replayed: u64, skipped: u64) -> bool {
+    replayed == 0 && skipped > 0
+}
+
 /// Nanoseconds to sleep before emitting an entry, given the previous entry's
 /// recording offset, this entry's offset, and the replay `speed`.
 ///
@@ -66,6 +75,7 @@ fn main() -> eyre::Result<()> {
         // output — is honored, preserving cross-node alignment on replay.
         let mut prev_offset: u64 = 0;
         let mut replayed = 0u64;
+        let mut skipped = 0u64;
 
         while let Some(entry) = reader.next_entry()? {
             if entry.node_id != replay_node {
@@ -88,6 +98,7 @@ fn main() -> eyre::Result<()> {
                             "warning: failed to deserialize event for {}/{}: {e}",
                             entry.node_id, entry.output_id
                         );
+                        skipped += 1;
                         continue;
                     }
                 };
@@ -115,6 +126,7 @@ fn main() -> eyre::Result<()> {
                                 "warning: skipping undecodable payload for {}/{output_id}: {e:#}",
                                 entry.node_id
                             );
+                            skipped += 1;
                             continue;
                         }
                     };
@@ -128,7 +140,23 @@ fn main() -> eyre::Result<()> {
             }
         }
 
-        eprintln!("dora-replay-node[{replay_node}]: replayed {replayed} messages");
+        eprintln!(
+            "dora-replay-node[{replay_node}]: replayed {replayed} messages ({skipped} skipped)"
+        );
+
+        // A pass that matched records but could decode none of them emitted
+        // nothing. Skipping individual corrupt records keeps replay resilient,
+        // but a *systematically* undecodable recording (format drift like
+        // dora-rs/dora#2366, or a truncated file) would otherwise print
+        // per-record warnings, report `replayed 0`, and exit 0 -- turning a
+        // data-integrity failure into a silent wrong answer. Fail instead.
+        if replay_emitted_nothing_usable(replayed, skipped) {
+            eyre::bail!(
+                "replay of {replay_file} for node `{replay_node}` emitted nothing: \
+                 all {skipped} matching record(s) were undecodable \
+                 (corrupt or format-drifted recording)"
+            );
+        }
 
         if !do_loop {
             break;
@@ -141,7 +169,7 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_recorded_payload, pacing_sleep_nanos};
+    use super::{decode_recorded_payload, pacing_sleep_nanos, replay_emitted_nothing_usable};
     use dora_node_api::arrow::array::{Array, Int32Array};
     use dora_node_api::arrow_utils::encode_arrow_ipc;
 
@@ -191,6 +219,18 @@ mod tests {
         let decoded = decode_recorded_payload(Some(&bytes)).expect("valid IPC must decode");
         assert_eq!(decoded.len(), 3);
         assert_eq!(&decoded, &original.to_data());
+    }
+
+    #[test]
+    fn total_failure_only_when_records_matched_but_none_decoded() {
+        // Emitted something -> not a failure, regardless of skips.
+        assert!(!replay_emitted_nothing_usable(5, 0));
+        assert!(!replay_emitted_nothing_usable(5, 3));
+        // Matched nothing at all (node had no recorded output) -> not a failure.
+        assert!(!replay_emitted_nothing_usable(0, 0));
+        // Matched records but decoded none of them -> hard failure.
+        assert!(replay_emitted_nothing_usable(0, 1));
+        assert!(replay_emitted_nothing_usable(0, 42));
     }
 
     #[test]
