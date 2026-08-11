@@ -2632,13 +2632,13 @@ async fn start_inner(
                                     }
                                 }
                             }
-                            StoreDataflowStatus::Failed { terminal: true, .. } => {
-                                // Terminal failure (watchdog or equivalent
-                                // coordinator-side verdict). Daemon's report
-                                // is ignored to preserve the verdict the
-                                // user already received via wait_for_spawn.
+                            status if status_report_should_stop_orphan(&status) => {
+                                // Terminal state (success, watchdog failure, or
+                                // equivalent coordinator-side verdict). Daemon's
+                                // report is ignored to preserve the verdict the
+                                // user already received.
                                 tracing::warn!(
-                                    "daemon {daemon_id} reports terminally-failed \
+                                    "daemon {daemon_id} reports terminal \
                                      dataflow {df_id} as running; skipping reconcile",
                                 );
                                 // Stop the orphaned nodes the daemon kept alive
@@ -3275,6 +3275,13 @@ fn reestablish_running_dataflow(
     // replay exactly as the relink path does. Returning a flat `false` here is
     // what left orphan-reclaim and coordinator-restart reconnects hanging.
     record.ready_barrier_released
+}
+
+fn status_report_should_stop_orphan(status: &StoreDataflowStatus) -> bool {
+    matches!(
+        status,
+        StoreDataflowStatus::Failed { terminal: true, .. } | StoreDataflowStatus::Succeeded
+    )
 }
 
 /// Tell a single daemon to stop a dataflow the coordinator has terminally given
@@ -8613,6 +8620,17 @@ mod tests {
         assert!(
             !archived_dataflows.contains_key(&unknown),
             "unknown dataflow must NOT be flagged (normal reconcile path applies)"
+        );
+    }
+
+    #[test]
+    fn status_report_reconcile_stops_succeeded_dataflows_reported_as_running() {
+        let status = StoreDataflowStatus::Succeeded;
+
+        assert!(
+            status_report_should_stop_orphan(&status),
+            "a Succeeded store record is terminal; a daemon reporting it as still \
+             running must be stopped rather than ignored"
         );
     }
 
