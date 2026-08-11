@@ -805,18 +805,27 @@ fn rewrite_inputs_map(
 }
 
 fn load_module_file(path: &Path) -> eyre::Result<ModuleFile> {
-    let metadata = std::fs::metadata(path)
-        .with_context(|| format!("failed to stat module file: {}", path.display()))?;
-    if metadata.len() > MAX_MODULE_FILE_SIZE {
+    use std::io::Read as _;
+    // Bound the read itself, not just a `metadata().len()` pre-check: that
+    // check reports 0 for FIFOs/character devices (e.g. `/dev/zero`) and is
+    // racy against a file being appended to, so it would sail past the cap and
+    // then `std::fs::read` unboundedly — exactly the "infinite files" DoS the
+    // limit is meant to prevent. `take(MAX + 1)` caps the read regardless of
+    // what the file claims its size is; if we hit the cap we reject. Mirrors
+    // the manifest loader in `crate::manifest`.
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to read module file: {}", path.display()))?;
+    let mut buf = Vec::new();
+    file.take(MAX_MODULE_FILE_SIZE + 1)
+        .read_to_end(&mut buf)
+        .with_context(|| format!("failed to read module file: {}", path.display()))?;
+    if buf.len() as u64 > MAX_MODULE_FILE_SIZE {
         bail!(
-            "module file too large ({} bytes, limit {}): {}",
-            metadata.len(),
+            "module file too large (limit {} bytes): {}",
             MAX_MODULE_FILE_SIZE,
             path.display()
         );
     }
-    let buf = std::fs::read(path)
-        .with_context(|| format!("failed to read module file: {}", path.display()))?;
     serde_yaml::from_slice(&buf)
         .with_context(|| format!("failed to parse module file: {}", path.display()))
 }
@@ -919,6 +928,36 @@ nodes:
         assert_eq!(descriptor.exit_when_nodes_finish, None);
         let expanded = expand_modules(&descriptor, tmp.path()).unwrap();
         assert_eq!(expanded.exit_when_nodes_finish, None);
+    }
+
+    #[test]
+    fn load_module_file_rejects_oversized_file() {
+        let tmp = TempDir::new().unwrap();
+        // A valid module prefix followed by padding that pushes the file just
+        // over the cap. The read is bounded, so this is rejected before the
+        // whole (potentially unbounded) file is pulled into memory.
+        let mut content = String::from("module:\n  name: big\n  outputs: [x]\nnodes: []\n");
+        content.push_str("# ");
+        content.push_str(&"a".repeat((MAX_MODULE_FILE_SIZE + 16) as usize));
+        let path = write_file(tmp.path(), "big_module.yml", &content);
+
+        let err = load_module_file(&path).unwrap_err().to_string();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn load_module_file_accepts_file_at_limit() {
+        let tmp = TempDir::new().unwrap();
+        // Exactly the cap (padding the comment out to MAX_MODULE_FILE_SIZE
+        // bytes total) must still load — the `+ 1` in `take` is what makes the
+        // boundary inclusive.
+        let prefix = "module:\n  name: ok\n  outputs: [x]\nnodes: []\n# ";
+        let pad = (MAX_MODULE_FILE_SIZE as usize) - prefix.len();
+        let content = format!("{prefix}{}", "a".repeat(pad));
+        assert_eq!(content.len() as u64, MAX_MODULE_FILE_SIZE);
+        let path = write_file(tmp.path(), "ok_module.yml", &content);
+
+        assert!(load_module_file(&path).is_ok());
     }
 
     #[test]
