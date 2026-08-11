@@ -691,15 +691,23 @@ fn prepend_build(build: &mut Option<String>, module_build: &str) {
     });
 }
 
+/// Fill an inner node's `env` with entries from the module node that references
+/// it.
+///
+/// The inner node's own `env` wins on conflict: the module node's entries only
+/// fill keys the inner node did not set. This matches `merge_env`'s "per-node
+/// entries override global ones" and the `deploy` propagation above, which also
+/// only fills when the inner value is unset.
 fn propagate_module_node_env(
     inner_node: &mut Node,
     module_env: Option<&BTreeMap<String, EnvValue>>,
 ) {
-    if let Some(module_env) = module_env {
-        let env = inner_node.env.get_or_insert_with(BTreeMap::new);
-        for (key, value) in module_env {
-            env.insert(key.clone(), value.clone());
-        }
+    let Some(module_env) = module_env.filter(|env| !env.is_empty()) else {
+        return;
+    };
+    let env = inner_node.env.get_or_insert_with(BTreeMap::new);
+    for (key, value) in module_env {
+        env.entry(key.clone()).or_insert_with(|| value.clone());
     }
 }
 
@@ -1900,7 +1908,56 @@ nodes:
             env["WRAPPER_ONLY"],
             EnvValue::String("from-wrapper".to_string())
         );
-        assert_eq!(env["SHARED"], EnvValue::String("wrapper".to_string()));
+        // The inner node's own `env` wins over the module node's, matching
+        // `merge_env` ("per-node entries override global ones") and `deploy`.
+        assert_eq!(env["SHARED"], EnvValue::String("inner".to_string()));
+    }
+
+    #[test]
+    fn expand_module_node_with_empty_env_leaves_inner_env_unset() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "empty_env_module.yml",
+            r#"
+module:
+  name: empty_env_module
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: empty_env_module.yml
+    env: {}
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        assert_eq!(worker.env, None);
     }
 
     #[test]
