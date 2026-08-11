@@ -49,31 +49,61 @@ fn is_correlated(event: &EventItem) -> bool {
     event_parameters(event).is_some_and(carries_pattern_correlation)
 }
 
+/// Returns `true` if the event is the daemon's [`Stop`][NodeEvent::Stop]
+/// shutdown signal.
+///
+/// `Stop` must never be silently evicted from a full queue: dropping it makes
+/// the node miss shutdown entirely and keep running until the daemon's
+/// force-kill grace deadline. Since at most one `Stop` is ever in flight,
+/// making it eviction-immune cannot let the queue grow unbounded.
+fn is_stop(event: &EventItem) -> bool {
+    matches!(
+        event,
+        EventItem::NodeEvent {
+            event: NodeEvent::Stop,
+            ..
+        }
+    )
+}
+
 /// Outcome of `select_eviction`.
 enum Eviction {
     /// Remove event at this index from the queue and push the incoming event.
     RemoveAt(usize),
-    /// The queue is entirely correlated and the incoming event is not —
-    /// drop the incoming event instead of breaking a correlation.
+    /// The queue holds only events that must be preserved (correlated and/or
+    /// the `Stop`) and the incoming event is an ordinary one — drop the
+    /// incoming event instead of breaking a correlation or losing `Stop`.
     DropIncoming,
-    /// The queue is entirely correlated and the incoming event is also
-    /// correlated — drop the oldest (front) event with a loud error log.
-    DropFrontLoud,
+    /// The queue is entirely correlated (plus possibly the `Stop`) and the
+    /// incoming event must also be preserved — drop the oldest *correlated*
+    /// event at this index with a loud error log, never the `Stop`.
+    DropCorrelatedLoud(usize),
 }
 
 /// Choose which event to drop when the queue is at capacity.
 ///
-/// Prefers sacrificing non-correlated events so that service responses and
-/// action results survive. See `is_correlated` for the metadata keys that
-/// mark an event as part of a pattern.
+/// Prefers sacrificing ordinary (non-correlated, non-`Stop`) events so that
+/// service responses, action results, and the shutdown signal survive. See
+/// `is_correlated` for the metadata keys that mark an event as part of a
+/// pattern, and `is_stop` for why `Stop` is eviction-immune.
 fn select_eviction(queue: &VecDeque<EventItem>, incoming: &EventItem) -> Eviction {
-    if let Some(idx) = queue.iter().position(|e| !is_correlated(e)) {
+    // 1. Sacrifice the oldest ordinary event, never a correlation or `Stop`.
+    if let Some(idx) = queue.iter().position(|e| !is_correlated(e) && !is_stop(e)) {
         return Eviction::RemoveAt(idx);
     }
-    if !is_correlated(incoming) {
+    // 2. Nothing ordinary left to sacrifice. If the incoming event is itself
+    //    ordinary, drop it rather than a correlation or the `Stop`.
+    if !is_correlated(incoming) && !is_stop(incoming) {
         return Eviction::DropIncoming;
     }
-    Eviction::DropFrontLoud
+    // 3. Both the queue and the incoming event must be preserved. Drop the
+    //    oldest *correlated* event (loudly), keeping the `Stop` intact. If the
+    //    queue somehow contains no correlated event (only a `Stop`, which is
+    //    at most one), fall back to dropping the incoming event.
+    match queue.iter().position(|e| !is_stop(e)) {
+        Some(idx) => Eviction::DropCorrelatedLoud(idx),
+        None => Eviction::DropIncoming,
+    }
 }
 
 /// Emit a loud error when a correlated event has to be dropped because
@@ -241,9 +271,14 @@ impl Scheduler {
         // `goal_status` correlations whose senders are waiting for them
         // (dora-rs/adora#146). Use the same correlation predicate that the
         // drop_oldest path uses and retain correlated events across the flush.
+        // Also retain the `Stop` shutdown signal (eviction-immune everywhere,
+        // see `is_stop`): flush normally targets a per-input queue and `Stop`
+        // lives under `NON_INPUT_EVENT_ID`, but the two collide if an input is
+        // literally named `dora.non_input_event`, which `validate_data_id`
+        // permits — so guard the flush path too rather than rely on that.
         if should_flush && let Some((_size, queue)) = self.event_queues.get_mut(event_id) {
             let before = queue.len();
-            queue.retain(is_correlated);
+            queue.retain(|e| is_correlated(e) || is_stop(e));
             let drained = before - queue.len();
             if drained > 0 {
                 tracing::debug!(
@@ -304,9 +339,9 @@ impl Scheduler {
                     // by dropping the incoming (non-correlated) event.
                     return;
                 }
-                Eviction::DropFrontLoud => {
-                    if let Some(front) = queue.pop_front() {
-                        log_correlation_drop(event_id, &front);
+                Eviction::DropCorrelatedLoud(idx) => {
+                    if let Some(dropped) = queue.remove(idx) {
+                        log_correlation_drop(event_id, &dropped);
                     }
                 }
             }
@@ -365,6 +400,20 @@ mod tests {
                 id: DataId::from(id.to_string()),
                 metadata: std::sync::Arc::new(metadata),
                 data: None,
+            },
+        }
+    }
+
+    fn make_stop() -> EventItem {
+        EventItem::NodeEvent {
+            event: NodeEvent::Stop,
+        }
+    }
+
+    fn make_input_closed(id: &str) -> EventItem {
+        EventItem::NodeEvent {
+            event: NodeEvent::InputClosed {
+                id: DataId::from(id.to_string()),
             },
         }
     }
@@ -669,6 +718,72 @@ mod tests {
         assert!(
             has_goal,
             "goal-42 was dropped despite having non-correlated events to drop"
+        );
+    }
+
+    // The non-input queue holds every lifecycle event (`Stop`, `InputClosed`,
+    // `Error`, ...) under one cap. Overflow must never evict the `Stop`
+    // shutdown signal: dropping it makes the node miss shutdown and run until
+    // the daemon force-kills it. A `Stop` buffered while the node is busy must
+    // survive a flood of other non-input events that overflows the queue many
+    // times over.
+    #[test]
+    fn stop_survives_non_input_queue_overflow() {
+        // `make_scheduler` gives the non-input queue a cap of 10.
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_stop());
+        for i in 0..100 {
+            sched.add_event(make_input_closed(&format!("in-{i}")));
+        }
+
+        let non_input = &sched.event_queues[&*NON_INPUT_EVENT_ID].1;
+        assert_eq!(non_input.len(), 10, "non-input queue must stay bounded");
+        assert!(
+            non_input.iter().any(is_stop),
+            "the Stop event must survive non-input queue overflow"
+        );
+    }
+
+    // The incoming event is a `Stop` and the queue is already full of ordinary
+    // non-input events: the `Stop` must be admitted (evicting an ordinary
+    // event), not dropped as the overflow victim.
+    #[test]
+    fn incoming_stop_is_admitted_into_a_full_non_input_queue() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        for i in 0..10 {
+            sched.add_event(make_input_closed(&format!("in-{i}")));
+        }
+        sched.add_event(make_stop());
+
+        let non_input = &sched.event_queues[&*NON_INPUT_EVENT_ID].1;
+        assert_eq!(non_input.len(), 10, "non-input queue must stay bounded");
+        assert!(
+            non_input.iter().any(is_stop),
+            "an incoming Stop must be admitted into a full non-input queue"
+        );
+    }
+
+    // The flush path (`retain`) is a second eviction site. It normally targets
+    // a per-input queue, but an input literally named `dora.non_input_event`
+    // (which `validate_data_id` permits) collides with the queue where `Stop`
+    // lives. Flush must still preserve the `Stop` shutdown signal there.
+    #[test]
+    fn flush_retains_stop_when_targeting_the_non_input_queue() {
+        let (mut sched, _id) = make_scheduler(10);
+
+        sched.add_event(make_stop());
+        sched.add_event(make_input_closed("x"));
+
+        let mut flush_params = MetadataParameters::new();
+        flush_params.insert(FLUSH.into(), Parameter::Bool(true));
+        sched.add_event(make_input(NON_INPUT_EVENT, flush_params));
+
+        let non_input = &sched.event_queues[&*NON_INPUT_EVENT_ID].1;
+        assert!(
+            non_input.iter().any(is_stop),
+            "flush must not evict the Stop shutdown signal"
         );
     }
 
