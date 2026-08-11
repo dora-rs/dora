@@ -2139,8 +2139,10 @@ impl DoraNode {
         self.log_with_fields(level, message, target, None);
     }
 
-    /// Maximum total size of log fields before they are dropped (60 KB).
-    /// Matches the downstream 64 KB parse limit with headroom for the message envelope.
+    /// Maximum serialized size of the log `fields` object before it is
+    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
+    /// for the message envelope. Measured on the serialized JSON (see
+    /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
     /// Send a structured log message with optional key-value fields.
@@ -2173,12 +2175,12 @@ impl DoraNode {
             entry["target"] = serde_json::Value::String(target.to_string());
         }
         if let Some(fields) = fields {
-            let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
-            if total <= Self::MAX_LOG_FIELDS_BYTES {
-                entry["fields"] = serde_json::json!(fields);
-            } else {
-                eprintln!("dora log: fields too large ({total} bytes), dropping fields");
-                entry["fields_dropped"] = serde_json::Value::Bool(true);
+            match log_fields_within_budget(fields, Self::MAX_LOG_FIELDS_BYTES) {
+                Some(value) => entry["fields"] = value,
+                None => {
+                    eprintln!("dora log: fields too large, dropping fields");
+                    entry["fields_dropped"] = serde_json::Value::Bool(true);
+                }
             }
         }
         match serde_json::to_string(&entry) {
@@ -2346,6 +2348,35 @@ impl DoraNode {
     pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
         self.control_channel.free_pinned_memory(shared_memory_id)
     }
+}
+
+/// Return the serialized log `fields` object when it fits `limit`, else `None`.
+///
+/// The budget guards a downstream JSON-line parse limit, so it must measure
+/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
+/// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
+/// lengths can pass a map whose serialized form is well over the limit, which
+/// the downstream parser then drops or truncates whole.
+fn log_fields_within_budget(
+    fields: &std::collections::BTreeMap<String, String>,
+    limit: usize,
+) -> Option<serde_json::Value> {
+    // Count the serialized bytes without allocating a throwaway string, then
+    // build the JSON value only when it fits.
+    struct ByteCounter(usize);
+    impl std::io::Write for ByteCounter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, fields).ok()?;
+    (counter.0 <= limit).then(|| serde_json::json!(fields))
 }
 
 /// Builder for initializing a node with custom connection parameters.
@@ -3234,6 +3265,28 @@ mod tests {
             &BTreeSet::from([required_acker(acker.0, acker.1)]),
             Arc::new(AtomicBool::new(false)),
         ))
+    }
+
+    #[test]
+    fn log_fields_budget_measures_serialized_json_not_raw_bytes() {
+        use std::collections::BTreeMap;
+        let limit = DoraNode::MAX_LOG_FIELDS_BYTES;
+
+        // A small map fits.
+        let mut small = BTreeMap::new();
+        small.insert("k".to_string(), "v".to_string());
+        assert!(log_fields_within_budget(&small, limit).is_some());
+
+        // A value that is 20 KB of raw bytes — comfortably under the 60 KB
+        // budget by the old raw-sum measure — but made entirely of control
+        // characters, each of which JSON-escapes to `` (6 bytes). Its
+        // serialized form is ~120 KB, over the budget, so it must be dropped.
+        // The pre-fix raw-byte check would have let it through and blown the
+        // downstream parse limit.
+        let mut big = BTreeMap::new();
+        big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
+        assert!(big.values().map(String::len).sum::<usize>() < limit);
+        assert!(log_fields_within_budget(&big, limit).is_none());
     }
 
     #[test]
