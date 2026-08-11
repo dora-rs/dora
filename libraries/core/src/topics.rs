@@ -154,6 +154,20 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
     Ok(session)
 }
 
+/// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
+///
+/// The peer address is formatted through a [`SocketAddr`] so that IPv6
+/// addresses are bracketed (`tcp/[::1]:5456`), matching zenoh's TCP locator
+/// grammar. Interpolating a bare [`IpAddr`] instead would emit `tcp/::1:5456`
+/// for IPv6 — a malformed locator where the port colon is indistinguishable
+/// from the address colons, which `insert_json5` rejects (#3041). This is the
+/// same bracketing [`reserve_zenoh_endpoint`] already relies on.
+#[cfg(feature = "zenoh")]
+fn coordinator_connect_endpoints(addr: IpAddr) -> String {
+    let peer = SocketAddr::new(addr, 5456);
+    format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
+}
+
 /// Like [`open_zenoh_session`], but also configures the session to listen on
 /// the given endpoint (e.g. `tcp/127.0.0.1:43217`, or a routable address such as
 /// `tcp/10.0.2.100:43217` for a daemon in a cluster). The daemon uses this so
@@ -399,13 +413,8 @@ pub async fn open_zenoh_session_with_listen(
             }
 
             if let Some(addr) = coordinator_addr
-                && let Err(err) = zenoh_config.insert_json5(
-                    "connect/endpoints",
-                    &format!(
-                        r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                        addr
-                    ),
-                )
+                && let Err(err) = zenoh_config
+                    .insert_json5("connect/endpoints", &coordinator_connect_endpoints(addr))
             {
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
@@ -838,6 +847,29 @@ mod tests {
                 ) || e.raw_os_error() == Some(97) => {}
             Err(e) => panic!("unexpected error reserving ::1 endpoint: {e}"),
         }
+    }
+
+    // The coordinator peer endpoint must bracket IPv6 too, or `insert_json5`
+    // rejects the malformed locator and the peer connect-endpoint is silently
+    // dropped (#3041). Pure string formatting — no session is opened.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn coordinator_connect_endpoints_bracket_ipv6() {
+        let v6 = coordinator_connect_endpoints(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+        assert!(
+            v6.contains(r#"peer: ["tcp/[::1]:5456"]"#),
+            "IPv6 coordinator peer must be bracketed, got {v6}"
+        );
+        assert!(
+            !v6.contains("tcp/::1:5456"),
+            "unbracketed IPv6 peer locator is malformed, got {v6}"
+        );
+
+        let v4 = coordinator_connect_endpoints(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(
+            v4.contains(r#"peer: ["tcp/127.0.0.1:5456"]"#),
+            "IPv4 coordinator peer must be unbracketed, got {v4}"
+        );
     }
 
     // The filter behind the routing lookup, tested directly rather than through
