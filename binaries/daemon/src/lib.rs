@@ -1040,6 +1040,36 @@ static CROSS_WRITE_SEQ: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashMap<(Uuid, String), u64>>,
 > = std::sync::LazyLock::new(std::sync::Mutex::default);
 
+/// Pools whose direct-TCP write path is currently degraded to the zenoh
+/// relay. The fallback is the steady state on a broken link, so without
+/// this tracking every frame would warn — flooding the log. Keyed like
+/// [`CROSS_WRITE_PENDING`]: `(dataflow id, pool id)`. Entries survive a
+/// dataflow end (a pool that never recovered) — harmless, keyed by a
+/// fresh UUID per dataflow and bounded by the pool count.
+static CROSS_DIRECT_DEGRADED: std::sync::LazyLock<
+    std::sync::Mutex<std::collections::HashSet<(Uuid, String)>>,
+> = std::sync::LazyLock::new(std::sync::Mutex::default);
+
+/// Mark a pool's direct-TCP path as degraded. Returns `true` only on the
+/// **first** degradation — the caller warns exactly then; repeated
+/// failures while already degraded stay silent.
+fn note_direct_degraded(dataflow_id: Uuid, shared_memory_id: &str) -> bool {
+    CROSS_DIRECT_DEGRADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((dataflow_id, shared_memory_id.to_string()))
+}
+
+/// Mark a pool's direct-TCP path as recovered. Returns `true` only if the
+/// pool was actually degraded — the caller logs the recovery exactly
+/// once, on the first successful direct write after a fallback.
+fn note_direct_recovered(dataflow_id: Uuid, shared_memory_id: &str) -> bool {
+    CROSS_DIRECT_DEGRADED
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(dataflow_id, shared_memory_id.to_string()))
+}
+
 /// How long a cross-machine write waits for the remote commit ack before
 /// failing loudly. Generous: the WAN transfer of a near-limit frame alone
 /// can take tens of seconds; a dead link fails earlier via the publish
@@ -6490,13 +6520,30 @@ impl Daemon {
                         .await
                         {
                             Ok(()) => {
-                                // The commit ack arrives via zenoh.
+                                // The commit ack arrives via zenoh. If this
+                                // pool was degraded, the direct path just
+                                // recovered — report exactly once.
+                                if note_direct_recovered(dataflow_id, &shared_memory_id) {
+                                    tracing::info!(
+                                        "memory pool: direct TCP write to {endpoint} recovered; \
+                                         pool {shared_memory_id} back on the direct path"
+                                    );
+                                }
                                 return;
                             }
                             Err(e) => {
-                                tracing::warn!(
-                                    "memory pool: direct TCP write failed ({e}), falling back to zenoh"
-                                );
+                                // Warn exactly once per pool while degraded:
+                                // the zenoh fallback is the steady state on a
+                                // broken link, and a per-frame warn would
+                                // flood the log. Recovery is reported once by
+                                // the Ok arm above.
+                                if note_direct_degraded(dataflow_id, &shared_memory_id) {
+                                    tracing::warn!(
+                                        "memory pool: direct TCP write failed ({e}); \
+                                         pool {shared_memory_id} degraded to the zenoh relay \
+                                         (warned once; recovery will be logged)"
+                                    );
+                                }
                             }
                         }
                     }
@@ -11831,6 +11878,34 @@ mod cross_pool_write_tests {
             }
             other => panic!("failed-write ack resolved the wrong reply: {other:?}"),
         }
+    }
+
+    /// The direct-TCP fallback warns exactly once per pool: repeated
+    /// failures while degraded stay silent, and recovery is reported once.
+    ///
+    /// A broken link is the steady state for the zenoh fallback — a
+    /// per-frame warn would flood the daemon log for the whole outage.
+    #[test]
+    fn direct_fallback_warns_once_per_pool_and_reports_recovery() {
+        let df = Uuid::new_v4();
+        let pool = "pool_sender_node_1".to_string();
+
+        // First failure: newly degraded, the caller warns.
+        assert!(note_direct_degraded(df, &pool));
+        // Further failures while degraded: silent.
+        assert!(!note_direct_degraded(df, &pool));
+        assert!(!note_direct_degraded(df, &pool));
+        // Recovery: was degraded, the caller logs it once.
+        assert!(note_direct_recovered(df, &pool));
+        // Recovery without being degraded: nothing to report.
+        assert!(!note_direct_recovered(df, &pool));
+
+        // Pools are tracked independently.
+        assert!(note_direct_degraded(df, "pool_sender_node_2"));
+        assert!(!note_direct_degraded(df, "pool_sender_node_2"));
+        assert!(note_direct_recovered(df, "pool_sender_node_2"));
+        // A fresh dataflow never collides (keyed by UUID).
+        assert!(note_direct_degraded(Uuid::new_v4(), &pool));
     }
 
     /// The zenoh ack publish itself: the mirror-side publish helper over a
