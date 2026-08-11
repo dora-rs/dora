@@ -3516,12 +3516,9 @@ impl Node {
                 }
                 None => true,
             };
+            let wait_ms = if is_local { 500 } else { 3_600_000 };
             let deadline = std::time::Instant::now()
-                .checked_add(std::time::Duration::from_millis(if is_local {
-                    500
-                } else {
-                    3_600_000
-                }))
+                .checked_add(std::time::Duration::from_millis(wait_ms))
                 .unwrap_or(std::time::Instant::now());
             loop {
                 // Same-host direct read first: the sender's segment (via
@@ -3684,8 +3681,9 @@ impl Node {
             }
             warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
             eyre::bail!(
-                "memory pool {}: fast path retries exhausted — pool not ready after 3600s",
-                buffer_id
+                "memory pool {}: fast path retries exhausted — pool not ready after {}s",
+                buffer_id,
+                wait_ms / 1000
             );
         }
 

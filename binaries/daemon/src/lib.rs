@@ -674,6 +674,34 @@ static CROSS_WRITE_SEQ: std::sync::LazyLock<
 /// error path.
 const CROSS_WRITE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Resolve the pending cross-machine write reply for a commit ack.
+/// Only the seq-matched pending entry is resolved — an ack for a previous
+/// write can never satisfy a newer pending reply. Returns whether a
+/// matching pending entry existed and was resolved.
+fn resolve_cross_write_ack(
+    dataflow_id: Uuid,
+    shared_memory_id: String,
+    seq: u64,
+    ok: bool,
+    error: Option<String>,
+) -> bool {
+    if let Some(tx) = CROSS_WRITE_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(dataflow_id, shared_memory_id, seq))
+    {
+        let result = if ok {
+            Ok(())
+        } else {
+            Err(error.unwrap_or_else(|| "remote mirror write failed".to_string()))
+        };
+        let _ = tx.send(DaemonReply::Result(result));
+        true
+    } else {
+        false
+    }
+}
+
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
 /// patterns; messages are dropped with a warning when full.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
@@ -4433,18 +4461,7 @@ impl Daemon {
                 // daemon confirms the segment write, so the pending reply
                 // (and the send_output notification that follows it) can
                 // only fire after the remote data is visible.
-                if let Some(tx) = CROSS_WRITE_PENDING
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .remove(&(dataflow_id, shared_memory_id, seq))
-                {
-                    let result = if ok {
-                        Ok(())
-                    } else {
-                        Err(error.unwrap_or_else(|| "remote mirror write failed".to_string()))
-                    };
-                    let _ = tx.send(DaemonReply::Result(result));
-                }
+                resolve_cross_write_ack(dataflow_id, shared_memory_id, seq, ok, error);
                 Ok(())
             }
             InterDaemonEvent::RegisterPoolAck {
@@ -11233,6 +11250,72 @@ mod cross_pool_write_tests {
                 0,
                 "round {round}: odd generation after write"
             );
+        }
+    }
+
+    /// The write-commit ack resolves only the seq-matched pending reply.
+    ///
+    /// The same-host cross-daemon smoke test reads via the `direct ==
+    /// true` path and bypasses the MemoryPoolWrite/MemoryPoolWriteAck
+    /// machinery entirely (only the manual two-host runs exercise it), so
+    /// this test pins the ack semantics directly: a stale ack (a previous
+    /// write's seq) must not resolve anything, the seq-matched ack
+    /// resolves exactly its own pending reply, and a failed mirror write
+    /// surfaces as an error reply.
+    #[test]
+    fn write_ack_resolves_only_seq_matched_pending_reply() {
+        use tokio::sync::oneshot;
+
+        let df = Uuid::new_v4();
+        let pool = "pool_sender_node_1".to_string();
+
+        // Two in-flight writes to the same pool: seq 1 then seq 2.
+        let (tx1, mut rx1) = oneshot::channel();
+        let (tx2, mut rx2) = oneshot::channel();
+        {
+            let mut pending = CROSS_WRITE_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.insert((df, pool.clone(), 1), tx1);
+            pending.insert((df, pool.clone(), 2), tx2);
+        }
+
+        // A stale ack (a previous write's seq) resolves nothing.
+        assert!(!resolve_cross_write_ack(df, pool.clone(), 0, true, None));
+        assert!(matches!(
+            rx1.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            rx2.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        // The seq-matched ack resolves exactly its own pending reply.
+        assert!(resolve_cross_write_ack(df, pool.clone(), 1, true, None));
+        match rx1.try_recv() {
+            Ok(DaemonReply::Result(Ok(()))) => {}
+            other => panic!("seq-1 ack resolved the wrong reply: {other:?}"),
+        }
+        // seq 2 is untouched by the seq-1 ack.
+        assert!(matches!(
+            rx2.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+
+        // A failed mirror write surfaces as an error reply.
+        assert!(resolve_cross_write_ack(
+            df,
+            pool.clone(),
+            2,
+            false,
+            Some("mirror segment missing".to_string()),
+        ));
+        match rx2.try_recv() {
+            Ok(DaemonReply::Result(Err(msg))) => {
+                assert_eq!(msg, "mirror segment missing");
+            }
+            other => panic!("failed-write ack resolved the wrong reply: {other:?}"),
         }
     }
 }
