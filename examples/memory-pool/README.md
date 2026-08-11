@@ -120,12 +120,12 @@ dora build --coordinator-addr <rendezvous-ip> --coordinator-port 6025 examples/m
 dora start --coordinator-addr <rendezvous-ip> --coordinator-port 6025 examples/memory-pool/cpu2cpu_cross.yml --attach
 ```
 
-**Known behavior & measured numbers** (see `design.md` §5 for the full evidence chain):
+**Known behavior** (measured numbers live in `design.md` §5):
 
 - Cross-machine pools accept tensors up to the 1 GiB registration cap. The per-frame write sends only metadata to the daemon (shared-memory reference); the daemon reads the sender's segment and forwards it, so the 64 MiB node→daemon request limit does not apply.
 - Writes are **commit-acknowledged**: `write_memory_pool` returns only after the mirror daemon confirms the segment write, so the `send_output` notification that follows can never overtake the data (the receiver can never return a stale frame). A failed mirror write or a 120 s ack timeout fails the write loudly.
-- Measured on the lab links: **千兆 LAN (5090↔A100, RTT 0.17 ms): ~40 MB/s** (61.44 MB frames, 100-frame handshake); **true WAN (workstation↔server, RTT 4.7 ms, ~7 MB/s link): ~4 MB/s** (≈60% of the link). GPU-involved cross-machine paths stage through CPU pools automatically (GPU_A → DtoH → CPU_A → zenoh TCP → CPU_B → HtoD → GPU_B) at the same link bandwidth.
-- For comparison: native dora's cross-machine relay on the true WAN carries only ≤1 MiB frames (~3.5 MB/s) and hangs at 8 MiB (Drop + express silently drops fragments when the 16-batch TX queue backs up); ROS 2 network DDS on a 38 ms-RTT WAN is RTT-paced at ~1.1 MB/s regardless of frame size. The pool is the only path that moves large frames over the WAN.
+- GPU-involved cross-machine paths stage through CPU pools automatically (GPU_A → DtoH → CPU_A → zenoh TCP → CPU_B → HtoD → GPU_B).
+- Native dora's cross-machine relay carries only small frames and hangs beyond that (Drop + express silently drops fragments when the 16-batch TX queue backs up); ROS 2 network DDS is RTT-paced on high-latency links. The pool is the only path that moves large frames over the WAN.
 - Same-host cross-daemon reads bypass the write/ack machinery entirely (`direct=true`).
 
 **Debugging checklist** for cross-machine runs:
