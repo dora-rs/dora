@@ -6074,44 +6074,65 @@ impl Daemon {
                                         // NodeRestarted is a critical lifecycle event:
                                         // dropping it leaves service/action clients
                                         // blocked on pre-crash correlations forever
-                                        // (dora-rs/adora#148). Use an unconditional
-                                        // backpressure-aware send to guarantee delivery.
+                                        // (dora-rs/adora#148). Guarantee delivery with a
+                                        // backpressure-aware send — but do NOT await it
+                                        // on the daemon main loop.
                                         //
-                                        // This blocks the daemon main loop until the
-                                        // receiver drains one slot. Acceptable because:
-                                        // - NodeRestarted is rare (only on crash+restart)
-                                        // - The receiver (Listener::run_inner) is a tokio
-                                        //   task on the same runtime, so it will make
-                                        //   progress cooperatively
-                                        // - If the receiver is dead the channel is closed
-                                        //   and send() returns Err immediately
+                                        // Awaiting here suspends the single serial event
+                                        // loop until the receiver drains a slot. If that
+                                        // receiver's Listener is itself parked on
+                                        // `daemon_tx.send().await` (the daemon event
+                                        // channel at capacity), it never returns to drain
+                                        // its subscribe channel, so the two block each
+                                        // other forever and the whole daemon hangs
+                                        // (dora-rs/dora#3066). Offload the awaiting send
+                                        // to a detached task holding cloned handles so the
+                                        // main loop keeps draining `dora_events_rx`.
                                         tracing::warn!(
                                             %dataflow_id,
                                             restarted_node = %node_id,
                                             %receiver_id,
                                             "NodeRestarted try_send failed (channel full); \
-                                             awaiting backpressure delivery"
+                                             offloading backpressure delivery to a task"
                                         );
+                                        let channel = channel.clone();
+                                        // Clone the receiver's pending counter so the task
+                                        // can pair the enqueue with `inc_pending` off the
+                                        // main loop. The Listener decrements once per
+                                        // drained event, so the increment must land iff
+                                        // the message is actually enqueued (Ok), exactly
+                                        // as the inline delivery sites do (dora-rs/dora#2827).
+                                        let pending =
+                                            dataflow.pending_messages.get(receiver_id).cloned();
                                         let msg = Timestamped {
                                             inner: NodeEvent::NodeRestarted {
                                                 id: node_id.clone(),
                                             },
                                             timestamp: self.clock.new_timestamp(),
                                         };
-                                        match channel.send(msg).await {
-                                            Ok(()) => {
-                                                dataflow.inc_pending(receiver_id);
+                                        let restarted_node = node_id.clone();
+                                        let receiver = receiver_id.clone();
+                                        tokio::spawn(async move {
+                                            match channel.send(msg).await {
+                                                Ok(()) => {
+                                                    if let Some(counter) = pending {
+                                                        counter.fetch_add(
+                                                            1,
+                                                            std::sync::atomic::Ordering::Relaxed,
+                                                        );
+                                                    }
+                                                }
+                                                Err(_closed) => {
+                                                    tracing::warn!(
+                                                        %dataflow_id,
+                                                        %restarted_node,
+                                                        %receiver,
+                                                        "NodeRestarted delivery failed: \
+                                                         receiver channel closed"
+                                                    );
+                                                }
                                             }
-                                            Err(_closed) => {
-                                                tracing::warn!(
-                                                    %dataflow_id,
-                                                    restarted_node = %node_id,
-                                                    %receiver_id,
-                                                    "NodeRestarted delivery failed: \
-                                                     receiver channel closed"
-                                                );
-                                            }
-                                        }
+                                        });
                                     }
                                     Err(_) => {
                                         tracing::warn!(
