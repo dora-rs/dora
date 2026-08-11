@@ -36,6 +36,9 @@ fn read_from_json_with_schema(
         .context("no record batch in JSON")?
         .context("failed to read record batch")?;
 
+    if batch.num_columns() == 0 {
+        eyre::bail!("JSON record batch has no columns");
+    }
     Ok(batch.column(0).to_data())
 }
 
@@ -67,6 +70,9 @@ pub fn read_json_value_as_arrow(
         .flush()
         .context("failed to read record batch")?
         .context("no record batch in JSON")?;
+    if batch.num_columns() == 0 {
+        eyre::bail!("JSON record batch has no columns");
+    }
     Ok(batch.column(0).to_data())
 }
 
@@ -74,6 +80,7 @@ pub fn read_json_value_as_arrow(
 mod tests {
     use super::*;
     use arrow::array::{StringArray, make_array};
+    use arrow_schema::Schema;
 
     fn as_single_string(data: ArrayData) -> String {
         let array = make_array(data);
@@ -83,6 +90,16 @@ mod tests {
             .expect("expected a string array");
         assert_eq!(strings.len(), 1);
         strings.value(0).to_owned()
+    }
+
+    #[test]
+    fn empty_field_schema_errors_instead_of_panicking() {
+        // A caller-supplied schema with no fields yields a zero-column record
+        // batch; `column(0)` would otherwise index out of bounds and panic.
+        let schema = Arc::new(Schema::empty());
+        let values = [serde_json::json!({})];
+        let result = read_json_value_as_arrow(&values, schema);
+        assert!(result.is_err());
     }
 
     #[test]
