@@ -3305,7 +3305,7 @@ mod tests {
         state.record("sink", "camera");
 
         let start = Instant::now();
-        wait_for_grace(&[state.clone()], Duration::from_secs(30));
+        wait_for_grace(std::slice::from_ref(&state), Duration::from_secs(30));
         wait_for_grace(&[], Duration::from_secs(30));
 
         assert!(!state.is_frozen());
