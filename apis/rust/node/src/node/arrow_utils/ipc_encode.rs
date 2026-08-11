@@ -332,8 +332,47 @@ fn prepare(array: &ArrayData) -> Option<Prepared> {
 /// `None` if `array` is not fast-path eligible (use [`encode_ipc_to_vec`]).
 ///
 /// Lets a caller size the (shared-memory) sample before encoding into it.
+///
+/// Sizing and encoding both call [`prepare`] internally, so a caller that does
+/// `ipc_fast_path_len(a)` then `encode_ipc_into(a, dst)` builds the layout and
+/// both flatbuffer headers twice. On the hot send path prefer [`PreparedIpc`],
+/// which prepares once and reuses the result for both steps.
 pub fn ipc_fast_path_len(array: &ArrayData) -> Option<usize> {
     prepare(array).map(|p| p.total)
+}
+
+/// A prepared Arrow IPC fast-path encode.
+///
+/// Holds the computed layout and both framed message headers so the byte
+/// length ([`byte_len`](Self::byte_len)) and the encode
+/// ([`encode_into`](Self::encode_into)) share the work. A separate
+/// [`ipc_fast_path_len`] + [`encode_ipc_into`] pair, by contrast, runs the
+/// whole layout + flatbuffer build twice — once to size the sample and once to
+/// fill it. On the per-output send path that redundant work is independent of
+/// payload size, so it is a real fraction of the cost for high-frequency
+/// small/medium messages.
+///
+/// The emitted bytes are identical to [`encode_ipc_into`].
+pub struct PreparedIpc(Prepared);
+
+impl PreparedIpc {
+    /// Prepare the fast-path encode for `array`, or `None` if `array` is not
+    /// fast-path eligible (fall back to [`encode_ipc_to_vec`]).
+    pub fn new(array: &ArrayData) -> Option<Self> {
+        prepare(array).map(Self)
+    }
+
+    /// Exact byte length of the IPC stream [`encode_into`](Self::encode_into)
+    /// writes. Use it to size the (shared-memory) destination sample.
+    pub fn byte_len(&self) -> usize {
+        self.0.total
+    }
+
+    /// Encode the complete IPC stream into `dst`, which must be exactly
+    /// [`byte_len`](Self::byte_len) bytes. Copies each array buffer once.
+    pub fn encode_into(&self, dst: &mut [u8]) -> eyre::Result<()> {
+        encode_prepared_into(&self.0, dst)
+    }
 }
 
 /// Frame one IPC message into `dst[at..]`: continuation marker, i32-LE metadata
@@ -360,6 +399,12 @@ fn write_framed_message(dst: &mut [u8], at: usize, flatbuffer: &[u8]) -> usize {
 pub fn encode_ipc_into(array: &ArrayData, dst: &mut [u8]) -> eyre::Result<()> {
     let prepared =
         prepare(array).ok_or_else(|| eyre!("array is not Arrow IPC fast-path eligible"))?;
+    encode_prepared_into(&prepared, dst)
+}
+
+/// Write an already-[`prepare`]d IPC stream into `dst`. Shared by the one-shot
+/// [`encode_ipc_into`] and the prepare-once [`PreparedIpc::encode_into`].
+fn encode_prepared_into(prepared: &Prepared, dst: &mut [u8]) -> eyre::Result<()> {
     if dst.len() != prepared.total {
         bail!(
             "destination size {} does not match required IPC length {}",
@@ -528,8 +573,49 @@ fn uint8_layout(data_len: usize) -> eyre::Result<Uint8Layout> {
 /// Total IPC stream length for a no-null `UInt8` array of `data_len` elements.
 /// Lets a caller size the sample before constructing the message in place via
 /// [`encode_uint8_ipc_header`].
+///
+/// Both this and [`encode_uint8_ipc_header`] call [`uint8_layout`] (which builds
+/// two flatbuffer headers) internally; a caller that does both prefers
+/// [`PreparedUint8Ipc`], which computes the layout once.
 pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
     Ok(uint8_layout(data_len)?.total)
+}
+
+/// A prepared no-null `UInt8` IPC fast-path encode.
+///
+/// The `UInt8` construct-in-place path (used by `send_output_raw` and the
+/// Python buffer-protocol send) sizes the sample from the layout and then
+/// writes the header into it. Both steps need [`uint8_layout`], which builds
+/// the schema + record-batch flatbuffer headers. This handle computes the
+/// layout once and reuses it for both, instead of the double build a separate
+/// [`uint8_ipc_len`] + [`encode_uint8_ipc_header`] pair incurs.
+pub struct PreparedUint8Ipc {
+    layout: Uint8Layout,
+    data_len: usize,
+}
+
+impl PreparedUint8Ipc {
+    /// Prepare the header for a no-null `UInt8` array of `data_len` elements.
+    /// Fails if the resulting stream would exceed the IPC size limit.
+    pub fn new(data_len: usize) -> eyre::Result<Self> {
+        Ok(Self {
+            layout: uint8_layout(data_len)?,
+            data_len,
+        })
+    }
+
+    /// Total IPC stream length. Use it to size the destination sample.
+    pub fn byte_len(&self) -> usize {
+        self.layout.total
+    }
+
+    /// Write the IPC header into `dst` (which must be exactly
+    /// [`byte_len`](Self::byte_len) bytes) and return the offset at which the
+    /// caller must write the `data_len` data bytes. Same contract as
+    /// [`encode_uint8_ipc_header`].
+    pub fn encode_header_into(&self, dst: &mut [u8]) -> eyre::Result<usize> {
+        encode_uint8_prepared_into(&self.layout, self.data_len, dst)
+    }
 }
 
 /// Write a complete no-null `UInt8` IPC stream into `dst` **except the data
@@ -542,6 +628,17 @@ pub fn uint8_ipc_len(data_len: usize) -> eyre::Result<usize> {
 /// copies.
 pub fn encode_uint8_ipc_header(dst: &mut [u8], data_len: usize) -> eyre::Result<usize> {
     let layout = uint8_layout(data_len)?;
+    encode_uint8_prepared_into(&layout, data_len, dst)
+}
+
+/// Write an already-[`uint8_layout`]-computed `UInt8` IPC header into `dst`.
+/// Shared by the one-shot [`encode_uint8_ipc_header`] and the prepare-once
+/// [`PreparedUint8Ipc::encode_header_into`].
+fn encode_uint8_prepared_into(
+    layout: &Uint8Layout,
+    data_len: usize,
+    dst: &mut [u8],
+) -> eyre::Result<usize> {
     if dst.len() != layout.total {
         bail!(
             "destination size {} does not match required UInt8 IPC length {}",
