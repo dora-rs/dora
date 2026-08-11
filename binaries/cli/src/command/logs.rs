@@ -247,10 +247,15 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
         all_messages.extend(read_log_file(path)?);
     }
     all_messages.sort_by_key(|a| a.timestamp);
-    let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-    let grepped = apply_grep(filtered, args.grep.as_deref());
-    let leveled = apply_level_filter(grepped, &config);
-    let display = apply_tail(leveled, args.tail);
+    let display = filter_and_tail(
+        all_messages,
+        args.since,
+        args.until,
+        args.grep.as_deref(),
+        &config,
+        args.tail,
+        now,
+    );
 
     for msg in display {
         print_log_message(msg, &config);
@@ -293,10 +298,15 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         all_messages.extend(read_log_file(path)?);
     }
     all_messages.sort_by_key(|a| a.timestamp);
-    let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-    let grepped = apply_grep(filtered, args.grep.as_deref());
-    let leveled = apply_level_filter(grepped, &config);
-    let display = apply_tail(leveled, args.tail);
+    let display = filter_and_tail(
+        all_messages,
+        args.since,
+        args.until,
+        args.grep.as_deref(),
+        &config,
+        args.tail,
+        now,
+    );
 
     for msg in display {
         print_log_message(msg, &config);
@@ -605,6 +615,29 @@ fn apply_tail(messages: Vec<LogMessage>, tail: Option<usize>) -> Vec<LogMessage>
     }
 }
 
+/// The shared client-side display pipeline used by every non-follow log path:
+/// time filter → grep → level filter → tail, in that order.
+///
+/// `apply_level_filter` MUST come before `apply_tail` so that `--tail N` counts
+/// only lines that will actually be displayed (otherwise the level filter, which
+/// `print_log_message` applies last, can shrink the output below `N` or to
+/// nothing). Routing all four call sites through this single helper keeps that
+/// ordering from drifting apart between them.
+fn filter_and_tail(
+    messages: Vec<LogMessage>,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
+    grep: Option<&str>,
+    config: &LogOutputConfig,
+    tail: Option<usize>,
+    now: DateTime<Utc>,
+) -> Vec<LogMessage> {
+    let filtered = apply_time_filters(messages, since, until, now);
+    let grepped = apply_grep(filtered, grep);
+    let leveled = apply_level_filter(grepped, config);
+    apply_tail(leveled, tail)
+}
+
 fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
     let Some(pattern) = pattern else { return true };
     let pattern_lower = pattern.to_lowercase();
@@ -698,10 +731,15 @@ fn all_nodes_logs_from_coordinator(
     messages.sort_by_key(|msg| msg.timestamp);
 
     let now = Utc::now();
-    let filtered = apply_time_filters(messages, args.since, args.until, now);
-    let grepped = apply_grep(filtered, args.grep.as_deref());
-    let leveled = apply_level_filter(grepped, config);
-    let display = apply_tail(leveled, args.tail);
+    let display = filter_and_tail(
+        messages,
+        args.since,
+        args.until,
+        args.grep.as_deref(),
+        config,
+        args.tail,
+        now,
+    );
     for msg in display {
         print_log_message(msg, config);
     }
@@ -837,10 +875,7 @@ pub fn logs(
     let now = Utc::now();
     let content = String::from_utf8_lossy(&logs);
     let messages: Vec<LogMessage> = content.lines().filter_map(parse_jsonl_line).collect();
-    let filtered = apply_time_filters(messages, since, until, now);
-    let grepped = apply_grep(filtered, grep);
-    let leveled = apply_level_filter(grepped, config);
-    let display = apply_tail(leveled, tail);
+    let display = filter_and_tail(messages, since, until, grep, config, tail, now);
     for msg in display {
         print_log_message(msg, config);
     }
@@ -1266,16 +1301,14 @@ mod tests {
             ..Default::default()
         };
 
-        // Correct order: filter by level first, then tail.
-        let leveled = apply_level_filter(messages.clone(), &config);
-        let shown = apply_tail(leveled, Some(5));
+        // Drive the *production* pipeline that all four log paths route through.
+        // If the level filter ran after the tail (the bug), `--tail 5` over these
+        // 22 lines — whose last 5 are all `info` — would display nothing. The two
+        // errors survive only because `filter_and_tail` levels before it tails, so
+        // this asserts the real ordering rather than an isolated composition.
+        let shown = filter_and_tail(messages, None, None, None, &config, Some(5), Utc::now());
         let shown_msgs: Vec<_> = shown.iter().map(|m| m.message.as_str()).collect();
         assert_eq!(shown_msgs, vec!["err1", "err2"]);
-
-        // The buggy order (tail before filter) would have shown nothing.
-        let tailed_first = apply_tail(messages, Some(5));
-        let then_leveled = apply_level_filter(tailed_first, &config);
-        assert!(then_leveled.is_empty());
     }
 
     #[test]
