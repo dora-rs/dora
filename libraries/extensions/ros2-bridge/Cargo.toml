@@ -26,14 +26,12 @@ serde-big-array = "0.5.1"
 widestring = "1.2.1"
 # Version + ROS distro feature are set in `[workspace.dependencies]`.
 ros2-client = { workspace = true }
-# No longer pinned to `=0.11.4`. RustDDS 0.11.5+ depends unconditionally on
-# `pnet`, whose `pnet_datalink` links `Packet.lib` on Windows, so Windows builds
-# need the Npcap SDK: https://github.com/Atostek/RustDDS/issues/375 (still open
-# as of this bump). Instead of pinning, the crates that pull RustDDS are
-# excluded from the Windows build/test steps in `.github/workflows/nightly.yml`.
-# RustDDS needs `pnet` for a single `pnet::datalink::interfaces()` call, so the
-# durable fix is upstreaming an optional-`pnet` feature.
-rustdds = "0.13.1"
+# No longer pinned to `=0.11.4`. That pin existed because rustdds 0.11.5-0.13.x
+# depended unconditionally on `pnet`, whose `pnet_datalink` links `Packet.lib`
+# on Windows (https://github.com/Atostek/RustDDS/issues/375). 0.14 replaced
+# `pnet` with `netdev`, which uses `windows-sys` and needs no npcap SDK, so the
+# issue is closed and Windows builds the bridge again.
+rustdds = "0.14"
 eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"

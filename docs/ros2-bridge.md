@@ -1043,9 +1043,9 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 - **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
 - **Max 64 pending service requests (server)**: Requests are dropped when the queue is full.
 
-### Platform and distro constraints
+### Distro constraint
 
-These apply to **all** bridge surfaces (YAML and native code APIs).
+This applies to **all** bridge surfaces (YAML and native code APIs).
 
 - **Built for ROS 2 Humble**: The bridge enables `ros2-client`'s `humble`
   distro feature, which selects the **24-byte `Gid`** used by
@@ -1053,14 +1053,6 @@ These apply to **all** bridge surfaces (YAML and native code APIs).
   between Humble and Iron, so graph *discovery* against an Iron-or-newer stack
   will not match. Topic, service, and action **payloads are unaffected** --
   those are ordinary CDR and interoperate across distros regardless.
-- **Not built or tested on Windows**: `rustdds` 0.11.5+ depends unconditionally
-  on `pnet`, whose `pnet_datalink` links `Packet.lib` on Windows
-  ([RustDDS#375](https://github.com/Atostek/RustDDS/issues/375), still open).
-  Building the bridge on Windows requires the
-  [Npcap SDK](https://npcap.com/#download) on the linker path. The bridge
-  crates are therefore excluded from dora's Windows CI build/test steps;
-  Linux and macOS are unaffected. `cargo check` works on Windows without the
-  SDK, since `Packet.lib` is only needed at link time.
 
 ---
 

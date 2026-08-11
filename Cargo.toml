@@ -136,11 +136,10 @@ dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
 # apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
 # `rmw_dds_common` graph discovery (see `ros2-client`'s `src/gid.rs`), matching
 # the distro our ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection
-# became an explicit Cargo feature in 0.10; 0.8 only had a `pre-iron-gid`
-# opt-out. Changing this changes graph-discovery wire compatibility.
-ros2-client = { version = "0.10.0", default-features = false, features = [
-    "humble",
-] }
+# became an explicit Cargo feature in 0.10 (default `jazzy`, i.e. 16-byte Gid);
+# 0.8 only had a `pre-iron-gid` opt-out. Changing this changes graph-discovery
+# wire compatibility.
+ros2-client = { version = "0.10.1", default-features = false, features = ["humble"] }
 # Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
 # workspace resolves a single copy.
 cdr-encoding = "0.11"
