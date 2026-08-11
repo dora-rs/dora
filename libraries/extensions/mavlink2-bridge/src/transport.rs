@@ -10,6 +10,11 @@
 //! | `serial:///dev/path?baud=N` (Unix)    | `serial:/dev/path:N`         | n/a       |
 //! | `serial://COM1?baud=N` (Windows)      | `serial:COM1:N`              | n/a       |
 //!
+//! An optional `?proto=` query selects the MAVLink protocol version and is
+//! honored uniformly across every scheme (see [`parse_proto_query`]): absent
+//! defaults to V2, `v1`/`v2` (and the `1`/`2`/`1.0`/`2.0` spellings) select
+//! that version, and any other value is a hard error.
+//!
 //! ## Known limitations (intentional, not bugs)
 //!
 //! * **`tcp://` is always `tcpout:` (client mode).** There is no way
@@ -85,17 +90,14 @@ fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> +
         )));
     }
     let baud = parse_baud(url).unwrap_or(DEFAULT_SERIAL_BAUD);
-    open_mavlink(&format!("serial:{device}:{baud}"))
+    let version = parse_proto_query(url)?;
+    open_mavlink_versioned(&format!("serial:{device}:{baud}"), version)
 }
 
 fn parse_baud(url: &Url) -> Option<u32> {
     url.query_pairs()
         .find(|(k, _)| k == "baud")
         .and_then(|(_, v)| v.parse::<u32>().ok())
-}
-
-fn open_mavlink(addr: &str) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
-    open_mavlink_versioned(addr, MavlinkVersion::V2)
 }
 
 fn open_mavlink_versioned(
@@ -193,5 +195,22 @@ mod tests {
                 "proto={q:?} should be a Config error, got {err:?}"
             );
         }
+    }
+
+    #[test]
+    fn proto_query_is_scheme_agnostic_for_serial() {
+        // `connect_serial` also routes through `parse_proto_query`, so a serial
+        // URL must honor a valid `?proto=` and reject an unrecognized one, just
+        // like tcp/udp — no silent V2 fallback that ignores the request.
+        let honored = Url::parse("serial:///dev/ttyUSB0?baud=57600&proto=v1").unwrap();
+        assert!(matches!(
+            parse_proto_query(&honored),
+            Ok(MavlinkVersion::V1)
+        ));
+        let rejected = Url::parse("serial:///dev/ttyUSB0?proto=v3").unwrap();
+        assert!(matches!(
+            parse_proto_query(&rejected),
+            Err(BridgeError::Config(_))
+        ));
     }
 }
