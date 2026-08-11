@@ -533,78 +533,83 @@ impl DirectMirrorWriter {
 const CROSS_DATA_PORT_ENV: &str = "DORA_MEMORY_POOL_DATA_PORT";
 const CROSS_DATA_PORT_DEFAULT: u16 = 7410;
 
-/// Start this daemon's direct-TCP data listener (mirror side). Returns
-/// the bound port; the caller records it in `cross_data_listener_port`
-/// and it is reported to origins in `RegisterPoolAck.data_port`. Only
-/// daemons with a machine id run a listener (cross-machine mirrors exist
-/// only there).
-async fn start_cross_data_listener(
-    machine_id: Option<&str>,
-    memory_pool: MemoryPoolManager,
-    session: zenoh::Session,
-    clock: Arc<HLC>,
-    shm_provider: Option<Arc<ShmProvider<PosixShmProviderBackend>>>,
-) -> Option<u16> {
-    machine_id?;
-    let port = std::env::var(CROSS_DATA_PORT_ENV)
-        .ok()
-        .and_then(|p| p.parse().ok())
-        .unwrap_or(CROSS_DATA_PORT_DEFAULT);
-    let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
-        Ok(l) => l,
-        Err(e) => {
-            tracing::warn!("memory pool: direct-TCP data listener bind failed on {port}: {e}");
-            return None;
+impl Daemon {
+    /// Lazily start this daemon's direct-TCP data listener (mirror side):
+    /// the listener opens only when the first `RegisterPool` asks this
+    /// daemon to mirror a pool — daemons that never participate in
+    /// cross-machine pools do not open the port. The bound port is
+    /// reported to origins in `RegisterPoolAck.data_port`.
+    async fn ensure_cross_data_listener(&mut self) {
+        if self.cross_data_listener_port.is_some() {
+            return;
         }
-    };
-    let bound_port = listener.local_addr().ok().map(|a| a.port());
-    tracing::info!("memory pool: direct-TCP data listener on port {bound_port:?}");
+        let port = std::env::var(CROSS_DATA_PORT_ENV)
+            .ok()
+            .and_then(|p| p.parse().ok())
+            .unwrap_or(CROSS_DATA_PORT_DEFAULT);
+        let listener = match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+            Ok(l) => l,
+            Err(e) => {
+                tracing::warn!("memory pool: direct-TCP data listener bind failed on {port}: {e}");
+                return;
+            }
+        };
+        self.cross_data_listener_port = listener.local_addr().ok().map(|a| a.port());
+        tracing::info!(
+            "memory pool: direct-TCP data listener on port {:?}",
+            self.cross_data_listener_port
+        );
 
-    let machine_id = machine_id.unwrap_or_default().to_string();
-    tokio::spawn(async move {
-        loop {
-            let Ok((stream, peer)) = listener.accept().await else {
-                // Transient errors (ECONNABORTED) are fine to retry
-                // immediately, but a persistent one (e.g. EMFILE/ENFILE
-                // fd exhaustion) would otherwise spin at 100% CPU —
-                // bound the retry with a short sleep.
-                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                continue;
-            };
-            tracing::debug!("memory pool: direct-TCP data connection from {peer}");
-            let (memory_pool, machine_id, session, clock, shm_provider) = (
-                memory_pool.clone(),
-                machine_id.clone(),
-                session.clone(),
-                clock.clone(),
-                shm_provider.clone(),
-            );
-            tokio::spawn(async move {
-                let mut stream = stream;
-                loop {
-                    match serve_cross_data_frame(
-                        &memory_pool,
-                        &machine_id,
-                        &session,
-                        &clock,
-                        shm_provider.as_deref(),
-                        &mut stream,
-                    )
-                    .await
-                    {
-                        Ok(true) => continue,
-                        Ok(false) => break, // clean EOF
-                        Err(e) => {
-                            tracing::warn!("memory pool: direct-TCP data connection closed: {e}");
-                            break;
+        let memory_pool = self.memory_pool.clone();
+        let machine_id = self.machine_id.clone().unwrap_or_default();
+        let session = self.zenoh_session.clone();
+        let clock = self.clock.clone();
+        let shm_provider = self.shm_provider.clone();
+        tokio::spawn(async move {
+            loop {
+                let Ok((stream, peer)) = listener.accept().await else {
+                    // Transient errors (ECONNABORTED) are fine to retry
+                    // immediately, but a persistent one (e.g. EMFILE/ENFILE
+                    // fd exhaustion) would otherwise spin at 100% CPU —
+                    // bound the retry with a short sleep.
+                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                    continue;
+                };
+                tracing::debug!("memory pool: direct-TCP data connection from {peer}");
+                let (memory_pool, machine_id, session, clock, shm_provider) = (
+                    memory_pool.clone(),
+                    machine_id.clone(),
+                    session.clone(),
+                    clock.clone(),
+                    shm_provider.clone(),
+                );
+                tokio::spawn(async move {
+                    let mut stream = stream;
+                    loop {
+                        match serve_cross_data_frame(
+                            &memory_pool,
+                            &machine_id,
+                            &session,
+                            &clock,
+                            shm_provider.as_deref(),
+                            &mut stream,
+                        )
+                        .await
+                        {
+                            Ok(true) => continue,
+                            Ok(false) => break, // clean EOF
+                            Err(e) => {
+                                tracing::warn!(
+                                    "memory pool: direct-TCP data connection closed: {e}"
+                                );
+                                break;
+                            }
                         }
                     }
-                }
-            });
-        }
-    });
-
-    bound_port
+                });
+            }
+        });
+    }
 }
 
 /// Read and serve one direct-TCP data frame: write the payload straight
@@ -2601,7 +2606,7 @@ impl Daemon {
             tracing::debug!("zenoh publish drain task exiting");
         });
 
-        let mut daemon = Self {
+        let daemon = Self {
             logger: Logger {
                 destination: log_destination,
                 daemon_id: daemon_id.clone(),
@@ -2639,17 +2644,6 @@ impl Daemon {
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
             machine_id,
         };
-
-        // Direct-TCP cross-machine data plane (mirror side): bind the
-        // data listener once, before any dataflow can register a mirror.
-        daemon.cross_data_listener_port = start_cross_data_listener(
-            daemon.machine_id.as_deref(),
-            daemon.memory_pool.clone(),
-            daemon.zenoh_session.clone(),
-            daemon.clock.clone(),
-            daemon.shm_provider.clone(),
-        )
-        .await;
 
         Ok((daemon, dora_events_rx))
     }
@@ -4907,6 +4901,10 @@ impl Daemon {
                 let clock = self.clock.clone();
                 // The gating above guarantees this daemon IS the target
                 // machine, so its machine id is the mirror's namespace.
+                // Lazily open the direct-TCP data listener now that this
+                // daemon is actually mirroring something (daemons that
+                // never participate in cross-machine pools stay closed).
+                self.ensure_cross_data_listener().await;
                 let local_machine_id = self.machine_id.clone();
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let memory_pool = self.memory_pool.clone();
