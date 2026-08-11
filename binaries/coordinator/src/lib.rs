@@ -893,6 +893,23 @@ async fn start_inner(
                             grace_duration,
                             force,
                         } => {
+                            // A pending restart already sent `StopDataflow` to
+                            // the daemon(s) and is waiting for
+                            // `DataflowFinishedOnDaemon` to spawn the new
+                            // incarnation under a fresh UUID. `running_dataflows`
+                            // still contains the old UUID in the meantime, so
+                            // without this guard `stop_dataflow` below would
+                            // "succeed" against the old UUID while the restart
+                            // silently spawns a new one that keeps running —
+                            // the stop caller would see success but the
+                            // dataflow is still alive under a different UUID.
+                            if pending_restarts.contains_key(&dataflow_uuid) {
+                                let _ = reply_sender.send(Err(eyre!(
+                                    "dataflow `{dataflow_uuid}` is being restarted – cannot stop it until the restart finishes"
+                                )));
+                                continue;
+                            }
+
                             // `dataflow_results` is filled incrementally, one
                             // entry per daemon, while a multi-daemon dataflow is
                             // still running on the others (see
@@ -946,6 +963,15 @@ async fn start_inner(
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
+                                // Same pending-restart guard as `Stop` — see
+                                // the comment there for why this is needed.
+                                if pending_restarts.contains_key(&dataflow_uuid) {
+                                    let _ = reply_sender.send(Err(eyre!(
+                                        "dataflow `{dataflow_uuid}` is being restarted – cannot stop it until the restart finishes"
+                                    )));
+                                    continue;
+                                }
+
                                 // Same partial-completion guard as `Stop`: a
                                 // still-running multi-daemon dataflow has a
                                 // partial `dataflow_results` entry, but must
