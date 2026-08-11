@@ -25,6 +25,7 @@ EXCLUDES=(
   --exclude dora-node-api-python
   --exclude dora-operator-api-python
   --exclude dora-ros2-bridge-python
+  --exclude dora-runtime-python
   --exclude dora-cli-api-python
   --exclude dora-examples
   # C++ bindings: their build.rs fails under llvm-cov instrumentation

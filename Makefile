@@ -145,21 +145,29 @@ qa-test:
 		--exclude dora-node-api-python \
 		--exclude dora-operator-api-python \
 		--exclude dora-ros2-bridge-python \
+		--exclude dora-runtime-python \
 		--exclude dora-cli-api-python \
 		--exclude dora-examples
 
-# The unit tests of the three PyO3 crates `qa-test` excludes. Kept a separate
+# The unit tests of the PyO3 crates `qa-test` excludes. Kept a separate
 # target, not folded into `qa-test`: cargo builds these crates without
 # `pyo3/extension-module` (unlike the maturin wheel), so the test binaries
 # link libpython directly and need an interpreter >= 3.11 with a shared
 # library — a machine set up only for Rust work would start failing the
 # everyday gate. CI runs this same target in ci.yml's `contract-tests` job,
 # which sets Python up explicitly.
+#
+# `dora-runtime-python` is the operator runtime's Python backend. Its tests
+# cover the cross-language arms of the runtime split — above all that a
+# shared-library operator reaching the Python runtime is *delegated* to the
+# shared-lib backend rather than rejected, which is what keeps native
+# operators working under an embedded-Python daemon.
 qa-test-python:
 	@cargo test --lib \
 		-p dora-node-api-python \
 		-p dora-operator-api-python \
-		-p dora-ros2-bridge-python
+		-p dora-ros2-bridge-python \
+		-p dora-runtime-python
 
 qa-coverage:
 	@scripts/qa/coverage.sh
