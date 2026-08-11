@@ -2081,22 +2081,6 @@ impl Node {
         if size == 0 || size > 1024 * 1024 * 1024 {
             eyre::bail!("Invalid size: {} bytes", size);
         }
-        // Cross-machine writes carry the full tensor through the
-        // node→daemon request, whose transport cap is
-        // `dora_message::MAX_MESSAGE_BYTES`. A larger pool would register
-        // fine but every write would fail on the remote side — reject it
-        // here so the failure is a clear registration error instead of a
-        // receiver waiting on a never-arriving frame. (1 KiB margin for
-        // the request framing around the payload.)
-        if cross_machine && size > dora_message::MAX_MESSAGE_BYTES - 1024 {
-            eyre::bail!(
-                "cross-machine pool size {} exceeds the transport limit of {} bytes \
-                 (the node→daemon write path carries the full tensor); \
-                 use a smaller pool or a non-cross-machine deployment",
-                size,
-                dora_message::MAX_MESSAGE_BYTES - 1024
-            );
-        }
         if cfg!(not(target_os = "linux")) {
             eyre::bail!(
                 "memory-pool transport requires Linux (uses /dev/shm). \
@@ -2451,13 +2435,7 @@ impl Node {
                     // push would only feed a mirror nobody reads (same
                     // semantics as should_push_mirror on the write path).
                     if (!receiver_is_cuda || cross_machine) && !ipc_written {
-                        self.push_mirror_update(
-                            &buffer_id,
-                            shmem_ptr,
-                            data_offset,
-                            size,
-                            "register_memory_pool",
-                        );
+                        self.push_mirror_update(&buffer_id, size, "register_memory_pool");
                     }
                 }
                 Ok((Err(msg), _)) | Err(msg) => {
@@ -3163,13 +3141,7 @@ impl Node {
                         // directly; the push would only feed a mirror nobody
                         // reads.
                         if should_push_mirror(&buffer_id, ipc_present) {
-                            self.push_mirror_update(
-                                &buffer_id,
-                                shmem_ptr,
-                                data_offset,
-                                size,
-                                "write_memory_pool",
-                            );
+                            self.push_mirror_update(&buffer_id, size, "write_memory_pool");
                         }
 
                         return Ok(());
@@ -3402,8 +3374,6 @@ impl Node {
                         if should_push_mirror(&buffer_id, ipc_present) {
                             self.push_mirror_update(
                                 &buffer_id,
-                                shmem_ptr,
-                                data_offset,
                                 size,
                                 "write_memory_pool (slow path)",
                             );
@@ -4090,20 +4060,19 @@ impl Node {
     /// Failures are logged loudly — a silent drop strands remote readers
     /// with a stale mirror. `caller` names the calling function in the
     /// error message.
-    fn push_mirror_update(
-        &self,
-        buffer_id: &str,
-        shmem_ptr: *const u8,
-        data_offset: usize,
-        size: usize,
-        caller: &str,
-    ) {
-        let tensor_bytes = unsafe { std::slice::from_raw_parts(shmem_ptr.add(data_offset), size) };
-        if let Err(e) = self.node.get_mut().write_pinned_memory(
-            buffer_id.to_string(),
-            tensor_bytes.to_vec(),
-            size,
-        ) {
+    ///
+    /// Shared-memory reference write: only `(buffer_id, size)` metadata is
+    /// sent — the daemon reads the tensor from this pool's segment itself
+    /// (the name was recorded at registration). Keeping the node→daemon
+    /// request KB-scale removes the transport cap on cross-machine pool
+    /// size (the request previously carried the whole tensor, bounded by
+    /// `dora_message::MAX_MESSAGE_BYTES`).
+    fn push_mirror_update(&self, buffer_id: &str, size: usize, caller: &str) {
+        if let Err(e) =
+            self.node
+                .get_mut()
+                .write_pinned_memory(buffer_id.to_string(), Vec::new(), size)
+        {
             tracing::error!(
                 "[{}] {caller}: daemon push failed for {}: {e}",
                 self.node_id,

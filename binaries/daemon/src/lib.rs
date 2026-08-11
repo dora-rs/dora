@@ -452,6 +452,38 @@ fn write_cross_pool_data(
     true
 }
 
+/// Read a pool's tensor bytes from its local segment — the
+/// shared-memory-reference write path: the node's write request carries
+/// only `(id, size)` metadata, so the daemon opens the sender's segment
+/// (name recorded at registration) and copies `size` bytes from the
+/// DORADMA data region. Keeping the node→daemon request KB-scale removes
+/// the transport cap on cross-machine pool size (the request previously
+/// carried the whole tensor, bounded by `dora_message::MAX_MESSAGE_BYTES`).
+fn read_pool_segment_data(shmem_name: &str, size: usize) -> Result<Vec<u8>, String> {
+    let shmem = ShmemConf::new()
+        .os_id(shmem_name)
+        .open()
+        .map_err(|e| format!("cannot open segment {shmem_name}: {e}"))?;
+    let shmem_ptr = shmem.as_ptr();
+    // Guard against a corrupt/truncated header before any pointer math.
+    let magic = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
+    if magic != DORADMA_MAGIC {
+        return Err(format!("segment {shmem_name} header magic mismatch"));
+    }
+    let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
+    if data_offset + size > shmem.len() {
+        return Err(format!(
+            "segment {shmem_name} data_offset {data_offset} + {size} exceeds shmem size {}",
+            shmem.len()
+        ));
+    }
+    let mut data = vec![0u8; size];
+    unsafe {
+        std::ptr::copy_nonoverlapping(shmem_ptr.add(data_offset), data.as_mut_ptr(), size);
+    }
+    Ok(data)
+}
+
 /// Remove a mirrored cross-machine pool's shmem segment. Linux keeps
 /// pools in /dev/shm; the name is only removable by file unlink because
 /// the mirror handle was dropped owner-less (`set_owner(false)`).
@@ -5884,6 +5916,64 @@ impl Daemon {
                     let _ = reply_sender.send(DaemonReply::Result(Ok(())));
                     return Ok(());
                 }
+                // Shared-memory-reference write: the node sends only
+                // (id, size) metadata; the tensor is read from the
+                // sender's segment here (name recorded at registration).
+                // The request therefore stays KB-scale and cross-machine
+                // pools are no longer bounded by the node→daemon request
+                // cap (MAX_MESSAGE_BYTES). A payload-carrying request is
+                // still honored (older nodes / explicit push).
+                let tensor_data = if tensor_data.is_empty() {
+                    let id = MemoryPoolId {
+                        dataflow_id: dataflow_id.to_string(),
+                        id: shared_memory_id.clone(),
+                    };
+                    // Resolve the sender's segment. The deterministic
+                    // machine-qualified auto-name is tried first: the
+                    // register-time initial push arrives BEFORE the
+                    // python's local registration completes, so the
+                    // daemon table does not hold the entry yet. The table
+                    // lookup covers explicit `name=` pools (whose names
+                    // are not derivable).
+                    let shmem_name = self
+                        .machine_id
+                        .as_deref()
+                        .filter(|m| !m.is_empty())
+                        .and_then(|m| {
+                            MemoryPoolManager::cross_pool_shmem_name(
+                                m,
+                                &dataflow_id.to_string(),
+                                &shared_memory_id,
+                            )
+                        })
+                        .or_else(|| {
+                            self.memory_pool
+                                .read_memory_pool(&id, node_id.as_ref())
+                                .and_then(|m| m.shared_memory_name)
+                                .filter(|n| !n.is_empty())
+                        });
+                    let Some(shmem_name) = shmem_name else {
+                        // Reply to the node rather than propagating: a
+                        // handler error would tear down the node
+                        // connection (and cascade into a daemon
+                        // disconnect) instead of failing this write.
+                        let _ = reply_sender.send(DaemonReply::Result(Err(format!(
+                            "pool {shared_memory_id} has no local segment to read the write from"
+                        ))));
+                        return Ok(());
+                    };
+                    match read_pool_segment_data(&shmem_name, size) {
+                        Ok(data) => data,
+                        Err(e) => {
+                            let _ = reply_sender.send(DaemonReply::Result(Err(format!(
+                                "cross-machine write: failed to read sender segment: {e}"
+                            ))));
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    tensor_data
+                };
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
                 let shm_provider = self.shm_provider.clone();
@@ -5963,25 +6053,6 @@ impl Daemon {
                 machine_id,
                 reply_sender,
             } => {
-                // The cross-machine write path embeds the whole tensor in
-                // a node→daemon request (the push), whose transport cap is
-                // `MAX_MESSAGE_BYTES` — a larger pool would register fine
-                // but every write would silently fail. Reject it here with
-                // a clear error instead of accepting a pool that can never
-                // transfer a frame. (1 KiB margin covers the bincode
-                // framing around the tensor payload.)
-                if size > dora_message::MAX_MESSAGE_BYTES - 1024 {
-                    let _ = reply_sender.send(DaemonReply::CrossMachinePoolRegistered {
-                        result: Err(format!(
-                            "cross-machine pool size {size} exceeds the transport limit of {} bytes \
-                             (the node→daemon write path carries the full tensor); \
-                             use a smaller pool or a non-cross-machine deployment",
-                            dora_message::MAX_MESSAGE_BYTES - 1024
-                        )),
-                        direct: false,
-                    });
-                    return Ok(());
-                }
                 // Resolve the machine via the coordinator, publish
                 // RegisterPool over the memory-pool topic, and await the
                 // remote RegisterPoolAck before replying (sync register).
