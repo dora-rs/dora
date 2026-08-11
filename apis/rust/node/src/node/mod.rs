@@ -3089,6 +3089,43 @@ pub fn init_tracing(
 ///
 /// Manages session/segment IDs and auto-incrementing sequence numbers
 /// for real-time streaming patterns (voice, video, sensor streams).
+///
+/// The state transitions are easy to get subtly wrong, so they are worth
+/// spelling out: [`chunk`](Self::chunk) stamps the current `(segment_id, seq)`
+/// and then auto-increments `seq`; [`next_segment`](Self::next_segment) bumps
+/// `segment_id` and resets `seq` to 0; and [`flush`](Self::flush) advances to a
+/// new segment and emits a chunk marked `flush = true`, `fin = false` (the
+/// prior segment is discarded, not completed, so it intentionally never gets a
+/// `fin = true`).
+///
+/// # Example
+///
+/// ```
+/// use dora_node_api::{
+///     StreamSegment,
+///     metadata::{FIN, FLUSH, SEGMENT_ID, SEQ, get_bool_param, get_integer_param},
+/// };
+///
+/// let mut seg = StreamSegment::with_session_id("session-1".to_string());
+///
+/// // `chunk` stamps the current (segment, seq), then advances seq.
+/// let first = seg.chunk(false);
+/// assert_eq!(get_integer_param(&first, SEGMENT_ID), Some(0));
+/// assert_eq!(get_integer_param(&first, SEQ), Some(0));
+/// assert_eq!(get_bool_param(&first, FIN), Some(false));
+///
+/// let second = seg.chunk(true); // mark this chunk as the end of the segment
+/// assert_eq!(get_integer_param(&second, SEQ), Some(1)); // seq auto-incremented
+/// assert_eq!(get_bool_param(&second, FIN), Some(true));
+///
+/// // `flush` starts a new segment (seq reset to 0) and marks flush=true,
+/// // fin=false: the old queued data is discarded, not completed.
+/// let flushed = seg.flush();
+/// assert_eq!(get_integer_param(&flushed, SEGMENT_ID), Some(1));
+/// assert_eq!(get_integer_param(&flushed, SEQ), Some(0));
+/// assert_eq!(get_bool_param(&flushed, FLUSH), Some(true));
+/// assert_eq!(get_bool_param(&flushed, FIN), Some(false));
+/// ```
 pub struct StreamSegment {
     session_id: String,
     segment_id: i64,
