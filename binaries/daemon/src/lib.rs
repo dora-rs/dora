@@ -564,6 +564,11 @@ async fn start_cross_data_listener(
     tokio::spawn(async move {
         loop {
             let Ok((stream, peer)) = listener.accept().await else {
+                // Transient errors (ECONNABORTED) are fine to retry
+                // immediately, but a persistent one (e.g. EMFILE/ENFILE
+                // fd exhaustion) would otherwise spin at 100% CPU —
+                // bound the retry with a short sleep.
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
                 continue;
             };
             tracing::debug!("memory pool: direct-TCP data connection from {peer}");
@@ -606,6 +611,10 @@ async fn start_cross_data_listener(
 /// into the mirror segment's data region (under the per-pool lock and
 /// seqlock) and publish the zenoh commit ack. Returns `Ok(true)` for the
 /// next frame, `Ok(false)` on clean EOF.
+/// Read and serve one direct-TCP data frame: write the payload straight
+/// into the mirror segment's data region (under the per-pool lock and
+/// seqlock) and publish the zenoh commit ack. Returns `Ok(true)` for the
+/// next frame, `Ok(false)` on clean EOF.
 async fn serve_cross_data_frame(
     memory_pool: &MemoryPoolManager,
     machine_id: &str,
@@ -614,12 +623,44 @@ async fn serve_cross_data_frame(
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
     stream: &mut tokio::net::TcpStream,
 ) -> Result<bool, String> {
+    let Some((dataflow_id, shared_memory_id, seq)) =
+        handle_cross_data_frame(stream, memory_pool, machine_id).await?
+    else {
+        return Ok(false);
+    };
+    // Remote commit ack via zenoh (the origin's pending reply waits on it).
+    publish_memory_pool_event(
+        session,
+        clock,
+        &dataflow_id,
+        &InterDaemonEvent::MemoryPoolWriteAck {
+            dataflow_id,
+            shared_memory_id,
+            seq,
+            ok: true,
+            error: None,
+        },
+        shm_provider,
+    )
+    .await
+    .map_err(|e| format!("failed to publish MemoryPoolWriteAck: {e}"))?;
+    Ok(true)
+}
+
+/// Frame-parse + mirror-write core of the direct-TCP data plane (no zenoh
+/// involved), split out for unit testing. Returns the ack info
+/// `(dataflow id, pool id, seq)`; `Ok(None)` on clean EOF.
+async fn handle_cross_data_frame(
+    stream: &mut tokio::net::TcpStream,
+    memory_pool: &MemoryPoolManager,
+    machine_id: &str,
+) -> Result<Option<(Uuid, String, u64)>, String> {
     use tokio::io::AsyncReadExt;
 
     let mut magic = [0u8; 4];
     match stream.read_exact(&mut magic).await {
         Ok(_) => {}
-        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(false),
+        Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
         Err(e) => return Err(format!("read magic: {e}")),
     }
     if u32::from_be_bytes(magic) != CROSS_DATA_MAGIC {
@@ -716,23 +757,7 @@ async fn serve_cross_data_frame(
         .await
         .map_err(|e| format!("read payload: {e}"))?;
     writer.finish();
-    // Remote commit ack via zenoh (the origin's pending reply waits on it).
-    publish_memory_pool_event(
-        session,
-        clock,
-        &dataflow_id,
-        &InterDaemonEvent::MemoryPoolWriteAck {
-            dataflow_id,
-            shared_memory_id,
-            seq,
-            ok: true,
-            error: None,
-        },
-        shm_provider,
-    )
-    .await
-    .map_err(|e| format!("failed to publish MemoryPoolWriteAck: {e}"))?;
-    Ok(true)
+    Ok(Some((dataflow_id, shared_memory_id, seq)))
 }
 
 /// Send one direct-TCP data frame to a peer's data listener (origin side).
@@ -11781,5 +11806,67 @@ mod cross_pool_write_tests {
             }
             other => panic!("failed-write ack resolved the wrong reply: {other:?}"),
         }
+    }
+
+    /// The direct-TCP data-plane codec: a frame sent via
+    /// `send_cross_data_frame` over a loopback connection is parsed by
+    /// `handle_cross_data_frame` and written straight into the mirror
+    /// segment — payload bytes land in the data region under the seqlock,
+    /// and the returned ack info matches (dataflow, pool, seq). This is
+    /// the new steady-state cross-machine write path, which the same-host
+    /// smoke (direct == true) bypasses entirely.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn direct_tcp_frame_round_trip_writes_mirror() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let dataflow_id = Uuid::new_v4();
+            let pool_id = "pool_node_0";
+            const SIZE: usize = 64 * 1024;
+            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu")
+                .unwrap();
+            let shmem_name =
+                MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                    .unwrap();
+            let _cleanup = ShmemCleanup(shmem_name.clone());
+            let memory_pool = MemoryPoolManager::new();
+            memory_pool.register_cross_pool(
+                dataflow_id.to_string(),
+                pool_id.to_string(),
+                "A".to_string(),
+            );
+
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let addr = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                handle_cross_data_frame(&mut stream, &memory_pool, "B").await
+            });
+            let payload: Vec<u8> = (0..SIZE).map(|i| (i % 251) as u8).collect();
+            let conns = Arc::new(std::sync::Mutex::new(HashMap::new()));
+            send_cross_data_frame(&conns, addr, dataflow_id, pool_id, 42, &payload)
+                .await
+                .unwrap();
+            let ack_info = server.await.unwrap().unwrap().unwrap();
+            assert_eq!(ack_info.0, dataflow_id);
+            assert_eq!(ack_info.1, pool_id);
+            assert_eq!(ack_info.2, 42);
+
+            let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+            let data_offset = unsafe { read_header_u64(shmem.as_ptr().add(16)) } as usize;
+            let data = unsafe { std::slice::from_raw_parts(shmem.as_ptr().add(data_offset), SIZE) };
+            assert_eq!(
+                data,
+                payload.as_slice(),
+                "mirror data region must equal the payload"
+            );
+            // Seqlock: generation is even (complete) after the write.
+            let generation =
+                unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+            assert_eq!(generation % 2, 0, "odd generation after write");
+        });
     }
 }
