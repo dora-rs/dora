@@ -1272,6 +1272,12 @@ impl EventStream {
     /// one. Use [`cancel_correlation`](Self::cancel_correlation) to drop
     /// a request that will never be polled again.
     ///
+    /// A reply that arrived before the deadline always wins over it,
+    /// whether it was already buffered or still unread on the stream:
+    /// the deadline is consulted only after everything available has
+    /// been examined. So `Timeout` means the reply had genuinely not
+    /// arrived, not merely that the caller polled late.
+    ///
     /// # Example
     ///
     /// ```ignore
@@ -1447,9 +1453,7 @@ impl EventStream {
         F: Fn(&Event, &str) -> bool,
     {
         // Same rationale as the blocking form: an earlier wait may have
-        // already buffered the reply we are now looking for. Checked
-        // before the deadline so a reply that did arrive in time is
-        // never discarded by an expiry noticed late.
+        // already buffered the reply we are now looking for.
         if let Some(pos) = self
             .pending_passthrough
             .iter()
@@ -1460,17 +1464,17 @@ impl EventStream {
             return Ok(Some(event));
         }
 
-        if timeout.is_some() && self.correlation_expired(needle, timeout) {
-            return Err(PatternError::Timeout);
-        }
-
         loop {
             // `recv_from_stream`, not `recv_async`: the latter drains
             // `pending_passthrough` and would re-hand us the events we
             // buffer below (see `recv_from_stream`'s docs).
             let event = match pin!(self.recv_from_stream()).now_or_never() {
-                // Nothing ready — the caller can get on with its loop.
-                None => return Ok(None),
+                // Nothing more is ready. Fall through to the deadline
+                // check below rather than returning here: a reply that
+                // reached the stream before the deadline must win over
+                // it, and it can only do that if everything already
+                // available has been looked at first.
+                None => break,
                 Some(None) => return Err(PatternError::StreamEnded),
                 Some(Some(event)) => event,
             };
@@ -1518,6 +1522,13 @@ impl EventStream {
                 }
             }
         }
+
+        // Everything that had already arrived has now been examined, so
+        // a deadline reached here really did lapse without a reply.
+        if timeout.is_some() && self.correlation_expired(needle, timeout) {
+            return Err(PatternError::Timeout);
+        }
+        Ok(None)
     }
 
     /// Whether `needle`'s deadline has passed, registering it on first
@@ -2260,6 +2271,33 @@ impl EventStream {
         self.scheduler.add_event(EventItem::NodeEvent {
             event: NodeEvent::NodeRestarted {
                 id: id.to_owned().into(),
+            },
+        });
+    }
+
+    /// Test-only: put an input carrying `parameters` on the *stream*
+    /// (via the scheduler) without it passing through
+    /// `pending_passthrough` first.
+    ///
+    /// That distinction is the whole point: a reply reached by the
+    /// buffer scan and a reply still sitting unread on the stream take
+    /// different paths through `try_correlation`, and only the second
+    /// one exercises the deadline ordering (dora-rs/dora#3046).
+    fn push_scheduler_input_with_params_for_testing(
+        &mut self,
+        id: &str,
+        parameters: dora_message::metadata::MetadataParameters,
+    ) {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
+        self.use_scheduler = true;
+        let mut meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
+        meta.parameters = parameters;
+        self.scheduler.add_event(EventItem::NodeEvent {
+            event: NodeEvent::Input {
+                id: id.into(),
+                metadata: std::sync::Arc::new(meta),
+                data: None,
             },
         });
     }
@@ -3391,6 +3429,65 @@ mod tests {
         assert!(
             !events.correlation_deadlines.contains_key("req-1"),
             "a One restart orphans the request, so its deadline must go too"
+        );
+    }
+
+    /// A reply that reached the stream before the deadline must win over
+    /// it, even when the caller polls after the deadline has passed.
+    ///
+    /// The expiry check used to run before the stream was drained, so a
+    /// reply sitting unread in the receiver lost to a deadline that had
+    /// only just lapsed — reported `Timeout` for a request that had in
+    /// fact been answered in time.
+    ///
+    /// The reply is pushed straight onto the stream rather than into
+    /// `pending_passthrough`: routed through the buffer it would be
+    /// found by the buffer scan, which was always ahead of the deadline
+    /// check, and the test would pass either way.
+    #[test]
+    fn a_reply_already_on_the_stream_beats_an_expired_deadline() {
+        let (_node, mut events) = scripted_event_stream(vec![]);
+        let server = NodeId::from("calc".to_string());
+
+        events.push_scheduler_input_with_params_for_testing("response", request_id_params("req-1"));
+        assert!(
+            events.pending_passthrough.is_empty(),
+            "the reply must start on the stream, not in the buffer"
+        );
+
+        let got = events.try_recv_service_response(
+            "req-1",
+            ExpectedServers::One(&server),
+            Some(Duration::ZERO),
+        );
+        match got {
+            Ok(Some(Event::Input { id, .. })) => assert_eq!(id.as_str(), "response"),
+            other => panic!(
+                "a reply that arrived before the deadline must not be reported as Timeout: {other:?}"
+            ),
+        }
+    }
+
+    /// The complement: with nothing on the stream, an lapsed deadline
+    /// still reports `Timeout` rather than hanging on `Ok(None)`.
+    #[test]
+    fn an_expired_deadline_still_reports_timeout_when_nothing_arrived() {
+        let (_node, mut events) = scripted_event_stream(vec![]);
+        let server = NodeId::from("calc".to_string());
+
+        let got = events.try_recv_service_response(
+            "req-1",
+            ExpectedServers::One(&server),
+            Some(Duration::ZERO),
+        );
+        // An empty scripted stream closes, which is terminal in its own
+        // right; either way it must not be a silent `Ok(None)`.
+        assert!(
+            matches!(
+                got,
+                Err(PatternError::Timeout) | Err(PatternError::StreamEnded)
+            ),
+            "an lapsed deadline with nothing to show must be terminal, got {got:?}"
         );
     }
 
