@@ -414,6 +414,7 @@ pub struct Daemon {
     pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     pub(crate) exit_when_all_finished: bool,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    pub(crate) pending_finished_dataflows: BTreeMap<Uuid, DataflowDaemonResult>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
@@ -1579,6 +1580,7 @@ impl Daemon {
             exit_when_done,
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
+            pending_finished_dataflows: BTreeMap::new(),
             warned_late_outputs: HashSet::new(),
             clock,
             ft_stats: Default::default(),
@@ -1665,6 +1667,9 @@ impl Daemon {
             .merge();
 
         // Send status report to coordinator so it can reconcile dataflow state.
+        if self.coordinator_sender.is_some() {
+            self.report_pending_finished_dataflows().await?;
+        }
         if let Some(sender) = &self.coordinator_sender {
             let running_dataflows: Vec<_> = self
                 .running
@@ -1971,6 +1976,48 @@ impl Daemon {
         // `run_inner` borrows `&mut self`, so move the accumulated results out
         // (the daemon may be reused for a reconnect, where these are ignored).
         Ok(std::mem::take(&mut self.dataflow_node_results))
+    }
+
+    async fn report_pending_finished_dataflows(&mut self) -> eyre::Result<()> {
+        let Some(sender) = &self.coordinator_sender else {
+            return Ok(());
+        };
+
+        let pending: Vec<_> = self
+            .pending_finished_dataflows
+            .iter()
+            .map(|(dataflow_id, result)| (*dataflow_id, result.clone()))
+            .collect();
+        for (dataflow_id, result) in pending {
+            self.send_all_nodes_finished(sender, dataflow_id, &result)
+                .await
+                .wrap_err("failed to retry dataflow finish report to dora-coordinator")?;
+            self.pending_finished_dataflows.remove(&dataflow_id);
+        }
+
+        Ok(())
+    }
+
+    async fn send_all_nodes_finished(
+        &self,
+        sender: &coordinator::CoordinatorSender,
+        dataflow_id: Uuid,
+        result: &DataflowDaemonResult,
+    ) -> eyre::Result<()> {
+        let msg = serde_json::to_vec(&Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: self.daemon_id.clone(),
+                event: DaemonEvent::AllNodesFinished {
+                    dataflow_id,
+                    result: result.clone(),
+                },
+            },
+            timestamp: self.clock.new_timestamp(),
+        })?;
+        sender
+            .send_event(&msg)
+            .await
+            .wrap_err("failed to report dataflow finish to dora-coordinator")
     }
 
     /// Hold a destroy until this daemon's nodes are gone, or hand the reply
@@ -5435,27 +5482,21 @@ impl Daemon {
             )
             .await;
 
-        if let Some(sender) = &self.coordinator_sender {
-            let msg = serde_json::to_vec(&Timestamped {
-                inner: CoordinatorRequest::Event {
-                    daemon_id: self.daemon_id.clone(),
-                    event: DaemonEvent::AllNodesFinished {
-                        dataflow_id,
-                        result,
-                    },
-                },
-                timestamp: self.clock.new_timestamp(),
-            })?;
-            sender
-                .send_event(&msg)
-                .await
-                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
-        }
         // Signal all listener loops for this dataflow to shut down
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
         }
         self.running.remove(&dataflow_id);
+
+        if let Some(sender) = &self.coordinator_sender
+            && let Err(err) = self
+                .send_all_nodes_finished(sender, dataflow_id, &result)
+                .await
+        {
+            self.pending_finished_dataflows.insert(dataflow_id, result);
+            return Err(err);
+        }
+
         Ok(())
     }
 
@@ -7513,6 +7554,70 @@ mod fault_tolerance_tests {
         assert!(!df.dataflow_started);
         df.start(&events_tx, &clock).await.unwrap();
         assert!(df.dataflow_started);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
+        let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
+        drop(coordinator_rx);
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            Some(coordinator_sender),
+            DaemonId::new(None),
+            None,
+            Arc::new(HLC::default()),
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            ZenohBind::Derived(LOCALHOST),
+            false,
+            false,
+        )
+        .await
+        .expect("daemon should build");
+
+        let dataflow_id = Uuid::new_v4();
+        let dataflow = test_dataflow();
+        let mut listener_shutdown = dataflow.listener_shutdown_tx.subscribe();
+        daemon.running.insert(dataflow_id, dataflow);
+
+        let result = daemon.finish_dataflow(dataflow_id).await;
+
+        assert!(
+            result.is_err(),
+            "closed coordinator sender should still report the send failure"
+        );
+        assert!(
+            !daemon.running.contains_key(&dataflow_id),
+            "finished dataflow must be removed locally even if coordinator reporting fails"
+        );
+        assert!(
+            daemon.pending_finished_dataflows.contains_key(&dataflow_id),
+            "failed finish report must be retained for reconnect retry"
+        );
+        listener_shutdown
+            .changed()
+            .await
+            .expect("finish_dataflow should signal listener shutdown");
+        assert!(*listener_shutdown.borrow());
+
+        let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+        daemon.coordinator_sender = Some(coordinator_sender);
+        daemon
+            .report_pending_finished_dataflows()
+            .await
+            .expect("retrying pending finish report should succeed");
+        assert!(
+            !daemon.pending_finished_dataflows.contains_key(&dataflow_id),
+            "pending finish report should be removed after successful retry"
+        );
+
+        let retried = coordinator_rx
+            .recv()
+            .await
+            .expect("retry should send an event to the coordinator");
+        assert!(retried.contains("AllNodesFinished"), "{retried}");
+        assert!(retried.contains(&dataflow_id.to_string()), "{retried}");
     }
 
     fn test_running_node() -> RunningNode {
