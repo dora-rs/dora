@@ -141,6 +141,12 @@ cargo test --all \
 # can ship silently otherwise. CI gates on this (#1680).
 cargo check --examples
 
+# 5. Only if you touched a PyO3 crate (apis/python/node, apis/python/operator,
+# libraries/extensions/ros2-bridge/python): their unit tests are excluded from
+# the `cargo test --all` above because the test binaries link libpython, so run
+# them explicitly. CI runs the same command in ci.yml's `contract-tests` job.
+make qa-test-python
+
 # Quick single-crate check while iterating:
 # cargo test -p <crate-name>
 ```
@@ -177,8 +183,9 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `cargo fmt --all -- --check`
 - `cargo clippy --all -- -D warnings` (excluding Python packages)
 - `cargo test --all` on **ubuntu-latest only** (excluding Python packages)
+- `cargo check --all-targets` on the three PyO3 crates, so their `#[cfg(test)]` modules are at least type-checked on every PR (`cargo check --all` covers lib targets only)
 - E2E tests: `ws-cli-e2e` + `fault-tolerance-e2e`
-- Semantic contract tests (`tests/example-smoke.rs::contract_*`)
+- Semantic contract tests (`tests/example-smoke.rs::contract_*`), plus the PyO3 crates' unit tests (`make qa-test-python` — this is the one job that sets up a Python interpreter, so it's where those tests run)
 - Benchmark regression check (criterion baseline caching)
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
 - Supply-chain audit (`cargo-audit` + `cargo-deny`)

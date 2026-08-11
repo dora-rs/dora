@@ -52,11 +52,20 @@
 #                                        excludes dora-examples tests to
 #                                        keep per-commit budgets tight.
 #
+#   make qa-test-python      ~1 min warm unit tests of the three PyO3 crates,
+#                                        which every other qa-* target
+#                                        excludes. Needs a Python >= 3.11
+#                                        with a shared libpython; run it
+#                                        after touching apis/python/* or
+#                                        libraries/extensions/ros2-bridge/
+#                                        python. CI runs the same command in
+#                                        ci.yml's contract-tests job.
+#
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
-        qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-coverage qa-mutants qa-semver \
+        qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-test-python qa-coverage qa-mutants qa-semver \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install
 
 qa: qa-fast
@@ -138,6 +147,19 @@ qa-test:
 		--exclude dora-ros2-bridge-python \
 		--exclude dora-cli-api-python \
 		--exclude dora-examples
+
+# The unit tests of the three PyO3 crates `qa-test` excludes. Kept a separate
+# target, not folded into `qa-test`: cargo builds these crates without
+# `pyo3/extension-module` (unlike the maturin wheel), so the test binaries
+# link libpython directly and need an interpreter >= 3.11 with a shared
+# library — a machine set up only for Rust work would start failing the
+# everyday gate. CI runs this same target in ci.yml's `contract-tests` job,
+# which sets Python up explicitly.
+qa-test-python:
+	@cargo test --lib \
+		-p dora-node-api-python \
+		-p dora-operator-api-python \
+		-p dora-ros2-bridge-python
 
 qa-coverage:
 	@scripts/qa/coverage.sh
