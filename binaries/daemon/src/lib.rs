@@ -333,10 +333,17 @@ fn create_cross_pool_shmem(
     // sender relays it in RegisterPool. A GPU receiver ("cuda:0") reads
     // the mirror's CPU data region and stages it HtoD into its own GPU
     // buffer; "cpu" readers consume the data region directly.
-    let json = format!(
-        "{{\"size\":{size},\"dtype\":\"{dtype}\",\"shape\":{:?},\"pinned_type\":\"{device}\"}}",
-        shape
-    );
+    // `dtype`/`device` arrive from the remote RegisterPool event
+    // (untrusted cross-machine strings) — build the header JSON with
+    // serde_json so quotes/backslashes are escaped instead of corrupting
+    // or injecting into the parsed structure.
+    let json = serde_json::to_string(&serde_json::json!({
+        "size": size,
+        "dtype": dtype,
+        "shape": shape,
+        "pinned_type": device,
+    }))
+    .map_err(|e| eyre::eyre!("failed to serialize mirror header JSON: {e}"))?;
     let data_offset = DORADMA_HEADER_SIZE + json.len();
     let make_conf = || ShmemConf::new().os_id(&shmem_name).size(size + data_offset);
     let mut shmem = match make_conf().create() {
@@ -4510,15 +4517,28 @@ impl Daemon {
                 let memory_pool = self.memory_pool.clone();
                 let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
-                    let result = create_cross_pool_shmem(
-                        &dataflow_id,
-                        local_machine_id.as_deref().unwrap_or_default(),
-                        &shared_memory_id,
-                        size,
-                        &dtype,
-                        &shape,
-                        &device,
-                    );
+                    // Mirror allocation cap: the RegisterPool event's
+                    // `size` comes from a remote daemon (untrusted
+                    // cross-machine input). Without a cap, a buggy or
+                    // corrupted peer could drive an unbounded /dev/shm
+                    // allocation here (memory-exhaustion DoS). Matches
+                    // the 1 GiB registration cap enforced on the local
+                    // side; the error flows back through RegisterPoolAck.
+                    let result = if size > 1024 * 1024 * 1024 {
+                        Err(eyre::eyre!(
+                            "cross-machine pool size {size} exceeds the 1 GiB mirror cap"
+                        ))
+                    } else {
+                        create_cross_pool_shmem(
+                            &dataflow_id,
+                            local_machine_id.as_deref().unwrap_or_default(),
+                            &shared_memory_id,
+                            size,
+                            &dtype,
+                            &shape,
+                            &device,
+                        )
+                    };
                     let (ok, error) = match result {
                         Ok(()) => (true, None),
                         Err(e) => (false, Some(e.to_string())),
@@ -5935,12 +5955,16 @@ impl Daemon {
                 }
                 // Shared-memory-reference write: the node sends only
                 // (id, size) metadata; the tensor is read from the
-                // sender's segment here (name recorded at registration).
-                // The request therefore stays KB-scale and cross-machine
+                // sender's segment (name recorded at registration). The
+                // request therefore stays KB-scale and cross-machine
                 // pools are no longer bounded by the node→daemon request
-                // cap (MAX_MESSAGE_BYTES). A payload-carrying request is
-                // still honored (older nodes / explicit push).
-                let tensor_data = if tensor_data.is_empty() {
+                // cap (MAX_MESSAGE_BYTES). Only the cheap name resolution
+                // happens here — the actual read (a full-size allocation
+                // plus copy) runs inside the spawned task below, so a
+                // large frame never blocks the event loop (heartbeats,
+                // node replies, output delivery). A payload-carrying
+                // request is still honored (older nodes / explicit push).
+                let shmem_name = if tensor_data.is_empty() {
                     let id = MemoryPoolId {
                         dataflow_id: dataflow_id.to_string(),
                         id: shared_memory_id.clone(),
@@ -5952,8 +5976,7 @@ impl Daemon {
                     // daemon table does not hold the entry yet. The table
                     // lookup covers explicit `name=` pools (whose names
                     // are not derivable).
-                    let shmem_name = self
-                        .machine_id
+                    self.machine_id
                         .as_deref()
                         .filter(|m| !m.is_empty())
                         .and_then(|m| {
@@ -5968,28 +5991,9 @@ impl Daemon {
                                 .read_memory_pool(&id, node_id.as_ref())
                                 .and_then(|m| m.shared_memory_name)
                                 .filter(|n| !n.is_empty())
-                        });
-                    let Some(shmem_name) = shmem_name else {
-                        // Reply to the node rather than propagating: a
-                        // handler error would tear down the node
-                        // connection (and cascade into a daemon
-                        // disconnect) instead of failing this write.
-                        let _ = reply_sender.send(DaemonReply::Result(Err(format!(
-                            "pool {shared_memory_id} has no local segment to read the write from"
-                        ))));
-                        return Ok(());
-                    };
-                    match read_pool_segment_data(&shmem_name, size) {
-                        Ok(data) => data,
-                        Err(e) => {
-                            let _ = reply_sender.send(DaemonReply::Result(Err(format!(
-                                "cross-machine write: failed to read sender segment: {e}"
-                            ))));
-                            return Ok(());
-                        }
-                    }
+                        })
                 } else {
-                    tensor_data
+                    None
                 };
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
@@ -6014,6 +6018,38 @@ impl Daemon {
                     .insert((dataflow_id, shared_memory_id.clone(), seq), reply_sender);
                 let pending_key = (dataflow_id, shared_memory_id.clone(), seq);
                 tokio::spawn(async move {
+                    // The segment read (a full-size allocation plus copy)
+                    // runs here, off the event loop.
+                    let tensor_data = match shmem_name {
+                        Some(name) => match read_pool_segment_data(&name, size) {
+                            Ok(data) => data,
+                            Err(e) => {
+                                resolve_cross_write_ack(
+                                    dataflow_id,
+                                    shared_memory_id.clone(),
+                                    seq,
+                                    false,
+                                    Some(format!(
+                                        "cross-machine write: failed to read sender segment: {e}"
+                                    )),
+                                );
+                                return;
+                            }
+                        },
+                        None if tensor_data.is_empty() => {
+                            resolve_cross_write_ack(
+                                dataflow_id,
+                                shared_memory_id.clone(),
+                                seq,
+                                false,
+                                Some(format!(
+                                    "pool {shared_memory_id} has no local segment to read the write from"
+                                )),
+                            );
+                            return;
+                        }
+                        None => tensor_data,
+                    };
                     let event = InterDaemonEvent::MemoryPoolWrite {
                         dataflow_id,
                         shared_memory_id: shared_memory_id.clone(),
