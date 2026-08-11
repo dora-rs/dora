@@ -23,6 +23,24 @@ const _: () = assert!(ARROW_BUFFER_ALIGNMENT.is_power_of_two());
 /// The resulting buffer contains a full IPC stream: schema message, one record
 /// batch, and an end-of-stream marker. This is self-describing and can be
 /// decoded without external type information.
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> eyre::Result<()> {
+/// use dora_node_api::arrow::array::{Array, UInt64Array};
+/// use dora_node_api::arrow_utils::{decode_arrow_ipc, encode_arrow_ipc};
+///
+/// let array = UInt64Array::from(vec![1, 2, 3]);
+/// let ipc = encode_arrow_ipc(&array.into_data())?;
+///
+/// // The stream is self-describing: decoding recovers the original data
+/// // without any external type information.
+/// let decoded = decode_arrow_ipc(&ipc)?;
+/// assert_eq!(decoded, UInt64Array::from(vec![1, 2, 3]).into_data());
+/// # Ok(())
+/// # }
+/// ```
 pub fn encode_arrow_ipc(arrow_array: &ArrayData) -> eyre::Result<Vec<u8>> {
     use arrow::ipc::writer::StreamWriter;
     use arrow::record_batch::RecordBatch;
@@ -73,7 +91,23 @@ pub fn encode_arrow_ipc(arrow_array: &ArrayData) -> eyre::Result<Vec<u8>> {
 /// Decode an Arrow IPC stream byte buffer back into [`ArrayData`].
 ///
 /// Expects the buffer to contain exactly one record batch with a single
-/// column named `"data"`, as produced by [`encode_arrow_ipc`].
+/// column named `"data"`, as produced by [`encode_arrow_ipc`]. Returns an
+/// error for an empty, truncated, or otherwise malformed stream, and for any
+/// payload larger than 256 MB.
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> eyre::Result<()> {
+/// use dora_node_api::arrow::array::{Array, StringArray};
+/// use dora_node_api::arrow_utils::{decode_arrow_ipc, encode_arrow_ipc};
+///
+/// let ipc = encode_arrow_ipc(&StringArray::from(vec!["a", "b"]).into_data())?;
+/// let decoded = decode_arrow_ipc(&ipc)?;
+/// assert_eq!(decoded, StringArray::from(vec!["a", "b"]).into_data());
+/// # Ok(())
+/// # }
+/// ```
 pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
     use arrow::ipc::reader::StreamReader;
     use std::io::Cursor;
@@ -120,6 +154,21 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 /// under-aligned input (e.g. an arbitrary heap `Vec`) is handled gracefully by
 /// copying just the misaligned buffers rather than erroring. This keeps the
 /// receive path robust while preserving zero-copy for the common SHM case.
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> eyre::Result<()> {
+/// use dora_node_api::arrow::array::{Array, UInt64Array};
+/// use dora_node_api::arrow::buffer::Buffer;
+/// use dora_node_api::arrow_utils::{decode_arrow_ipc_zero_copy, encode_arrow_ipc};
+///
+/// let ipc = encode_arrow_ipc(&UInt64Array::from(vec![1, 2, 3]).into_data())?;
+/// let decoded = decode_arrow_ipc_zero_copy(Buffer::from_vec(ipc))?;
+/// assert_eq!(decoded, UInt64Array::from(vec![1, 2, 3]).into_data());
+/// # Ok(())
+/// # }
+/// ```
 pub fn decode_arrow_ipc_zero_copy(
     mut buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
