@@ -318,13 +318,27 @@ async fn start_with_events(
     Ok((port, future))
 }
 
+/// Number of *consecutive* heartbeat-send timeouts after which a daemon is
+/// disconnected anyway.
+///
+/// A single timeout is transient command-channel backpressure and must not
+/// disconnect a live daemon. But a channel that stays full indefinitely would
+/// wedge the coordinator's single event loop the next time a command is routed
+/// to that daemon — `DaemonConnection::send_and_receive` awaits the send with
+/// no timeout — and disconnect was previously the only thing that stopped new
+/// commands being routed there. Escalating after N consecutive timeouts keeps
+/// that backstop while still tolerating bursty backpressure. At the 3 s
+/// heartbeat interval this is ~30 s of a continuously-full channel, matching
+/// the 30 s inbound-heartbeat liveness horizon.
+const MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS: u32 = 10;
+
 /// Outcome of the coordinator's periodic heartbeat send to one daemon.
 ///
 /// The heartbeat is written to the daemon's bounded command channel — the
 /// *same* channel that carries every coordinator→daemon command (spawn, stop,
 /// add/remove node, …), not a dedicated heartbeat channel. That makes the two
 /// failure shapes mean very different things, and the disconnect decision must
-/// tell them apart (see [`HeartbeatSendOutcome::should_disconnect`]).
+/// tell them apart (see [`heartbeat_disconnect_decision`]).
 enum HeartbeatSendOutcome {
     /// The heartbeat was enqueued for delivery.
     Delivered,
@@ -333,22 +347,31 @@ enum HeartbeatSendOutcome {
     ChannelClosed,
     /// The send did not complete within the timeout: the bounded command
     /// channel is momentarily full (backpressure from a large spawn or a
-    /// burst of control commands), *not* a dead daemon.
+    /// burst of control commands), *not* necessarily a dead daemon.
     TimedOut,
 }
 
-impl HeartbeatSendOutcome {
-    /// Whether this outcome should tear the daemon down.
-    ///
-    /// Only a closed channel does. A [`TimedOut`](Self::TimedOut) send means
-    /// the command channel is backed up, which says nothing about daemon
-    /// liveness — the daemon reports its own health through *inbound*
-    /// heartbeats (`last_heartbeat`), and the 30 s inbound threshold already
-    /// catches a genuinely dead daemon. Treating a transient send timeout as
-    /// death would let one slow WS write burst falsely disconnect a live
-    /// daemon and tear down all of its dataflows.
-    fn should_disconnect(&self) -> bool {
-        matches!(self, HeartbeatSendOutcome::ChannelClosed)
+/// Fold a heartbeat-send outcome and the running count of consecutive timeouts
+/// into the next count and whether to disconnect the daemon.
+///
+/// - `Delivered` clears the timeout streak and keeps the daemon.
+/// - `ChannelClosed` disconnects immediately (the WS writer task is gone).
+/// - `TimedOut` increments the streak and only disconnects once it reaches
+///   [`MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS`], so transient backpressure is
+///   tolerated but a permanently wedged command channel is still torn down
+///   rather than warning every tick forever and blocking the event loop on the
+///   next command routed to it.
+fn heartbeat_disconnect_decision(
+    outcome: HeartbeatSendOutcome,
+    consecutive_timeouts: u32,
+) -> (u32, bool) {
+    match outcome {
+        HeartbeatSendOutcome::Delivered => (0, false),
+        HeartbeatSendOutcome::ChannelClosed => (0, true),
+        HeartbeatSendOutcome::TimedOut => {
+            let streak = consecutive_timeouts.saturating_add(1);
+            (streak, streak >= MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS)
+        }
     }
 }
 
@@ -2213,10 +2236,41 @@ async fn start_inner(
                 // Bind before iterating: the `join_all` future holds the
                 // `&mut` borrows of `daemon_connections` taken above, and a
                 // temporary in a `for` iterator expression lives for the whole
-                // loop body.
+                // loop body — the streak bookkeeping below needs those borrows
+                // released so it can take its own `&mut` per daemon.
                 let heartbeat_outcomes = join_all(heartbeats).await;
                 for (machine_id, outcome) in heartbeat_outcomes {
-                    if outcome.should_disconnect() {
+                    // The connection can only be gone if something else in
+                    // this tick removed it; nothing to escalate on then.
+                    let Some(connection) = daemon_connections.get_mut(&machine_id) else {
+                        continue;
+                    };
+                    let (streak, disconnect) = heartbeat_disconnect_decision(
+                        outcome,
+                        connection.consecutive_heartbeat_send_timeouts,
+                    );
+                    connection.consecutive_heartbeat_send_timeouts = streak;
+                    // `streak > 0` only for a `TimedOut` outcome; log the
+                    // backpressure here (escalating vs. still-tolerated).
+                    if streak > 0 {
+                        if disconnect {
+                            tracing::error!(
+                                "heartbeat send to daemon at `{machine_id}` timed out {streak} \
+                                 times in a row (command channel persistently full); \
+                                 disconnecting to avoid blocking the coordinator event loop on \
+                                 the next command routed to it"
+                            );
+                        } else {
+                            tracing::warn!(
+                                "heartbeat send to daemon at `{machine_id}` timed out (command \
+                                 channel full, streak {streak}/\
+                                 {MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS}); not disconnecting a \
+                                 live daemon (last inbound heartbeat {:?} ago)",
+                                connection.last_heartbeat.elapsed()
+                            );
+                        }
+                    }
+                    if disconnect {
                         disconnected.insert(machine_id);
                     }
                 }
@@ -3348,22 +3402,14 @@ async fn send_heartbeat_with_timeout(
             tracing::warn!("heartbeat send channel to daemon at `{machine_id}` is closed: {err:?}");
             HeartbeatSendOutcome::ChannelClosed
         }
-        Err(_elapsed) => {
-            // The 500 ms budget elapsed while the *bounded* command channel
-            // was full — backpressure from a large spawn or a burst of
-            // control commands, not a dead daemon. Do not tear the daemon
-            // down: it is proven alive by its recent inbound heartbeat
-            // (checked against the 30 s threshold before this send was even
-            // queued), and disconnecting here would fail all of its
-            // dataflows over transient congestion.
-            tracing::warn!(
-                "heartbeat send to daemon at `{machine_id}` timed out \
-                 (command channel full); not disconnecting a live daemon \
-                 (last inbound heartbeat {:?} ago)",
-                connection.last_heartbeat.elapsed()
-            );
-            HeartbeatSendOutcome::TimedOut
-        }
+        // The 500 ms budget elapsed while the *bounded* command channel was
+        // full — backpressure from a large spawn or a burst of control
+        // commands. A transient streak does not tear the daemon down (it is
+        // proven alive by its recent inbound heartbeat, checked against the
+        // 30 s threshold before this send was even queued), but a persistent
+        // one escalates at the call site so a wedged channel cannot block the
+        // event loop forever.
+        Err(_elapsed) => HeartbeatSendOutcome::TimedOut,
     };
     (machine_id, outcome)
 }
@@ -5567,26 +5613,53 @@ mod tests {
         );
     }
 
-    // A heartbeat that could not be delivered because the *bounded command
-    // channel* was momentarily full (a `TimedOut` outcome) must NOT disconnect
-    // the daemon: the daemon reports its own liveness through inbound
-    // heartbeats, and the 30 s inbound threshold already catches a genuinely
-    // dead one. Only a closed send channel is a real death signal. Regression
-    // for a transient control-command burst falsely tearing down a live
-    // daemon's dataflows.
+    // A closed send channel disconnects immediately; a delivered heartbeat
+    // never does and clears any timeout streak.
     #[test]
-    fn heartbeat_timeout_does_not_disconnect_a_live_daemon() {
-        assert!(
-            HeartbeatSendOutcome::ChannelClosed.should_disconnect(),
+    fn heartbeat_channel_closed_disconnects_delivered_resets() {
+        assert_eq!(
+            heartbeat_disconnect_decision(HeartbeatSendOutcome::ChannelClosed, 0),
+            (0, true),
             "a closed heartbeat send channel must disconnect the daemon"
         );
-        assert!(
-            !HeartbeatSendOutcome::TimedOut.should_disconnect(),
-            "a transient command-channel backpressure timeout must not disconnect a live daemon"
+        assert_eq!(
+            heartbeat_disconnect_decision(HeartbeatSendOutcome::Delivered, 7),
+            (0, false),
+            "a delivered heartbeat must not disconnect and must clear the timeout streak"
         );
+    }
+
+    // A *transient* command-channel backpressure timeout must NOT disconnect a
+    // live daemon (regression for a control-command burst tearing down a live
+    // daemon's dataflows), but a *persistent* streak must escalate to a
+    // disconnect so a wedged channel cannot block the coordinator event loop
+    // on the next command routed to it.
+    #[test]
+    fn heartbeat_timeout_tolerates_transient_but_escalates_persistent() {
+        // First timeout: streak 1, keep the daemon.
+        assert_eq!(
+            heartbeat_disconnect_decision(HeartbeatSendOutcome::TimedOut, 0),
+            (1, false),
+            "a single timeout must not disconnect a live daemon"
+        );
+        // Just below the threshold: still tolerated.
+        assert_eq!(
+            heartbeat_disconnect_decision(
+                HeartbeatSendOutcome::TimedOut,
+                MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS - 2,
+            ),
+            (MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS - 1, false),
+            "timeouts below the threshold must not disconnect"
+        );
+        // Reaching the threshold: disconnect.
+        let (streak, disconnect) = heartbeat_disconnect_decision(
+            HeartbeatSendOutcome::TimedOut,
+            MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS - 1,
+        );
+        assert_eq!(streak, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS);
         assert!(
-            !HeartbeatSendOutcome::Delivered.should_disconnect(),
-            "a delivered heartbeat must not disconnect the daemon"
+            disconnect,
+            "a persistently full command channel must escalate to a disconnect"
         );
     }
 
