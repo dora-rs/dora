@@ -12,6 +12,7 @@
 //! node kinds should accept it and add it to the appropriate whitelist(s)
 //! in this file. Fields not in any whitelist are rejected for all kinds.
 
+use super::{NodeExt, NodeKind};
 use dora_message::descriptor::{GitRepoRev, Node, NodeSource, RestartPolicy};
 use eyre::{Result, bail};
 
@@ -80,64 +81,34 @@ fn standard_source(node: &Node) -> Result<NodeSource> {
     }
 }
 
-/// Detect the node kind from the discriminator fields directly.
-///
-/// This mirrors the match in `NodeExt::kind()` but WITHOUT the hub
-/// pre-check, so the classifier can still report the precise
-/// kind-specific errors for other node types instead of bailing out
-/// early for every node that carries a `hub:` field.
-///
-/// NOTE: hub resolution validation lives in `Node::kind()`'s pre-check
-/// (mod.rs), not here. kind() rejects hub-only nodes (no path, no other
-/// discriminator) early because hub references must be resolved by
-/// `dora build` before descriptor resolution. For nodes with a kind
-/// discriminator (like Standard with path), hub is a valid field and
-/// proceeds through the whitelist normally.
 fn classify_inner(node: &Node) -> Result<NodeClassOrModule> {
-    match (
-        &node.path,
-        &node.operators,
-        &node.custom,
-        &node.operator,
-        &node.ros2,
-        &node.module,
-    ) {
-        (None, None, None, None, None, None) => {
-            bail!(
-                "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
-                node.id
-            )
-        }
-        (None, None, None, Some(_), None, None) => {
+    match node.kind()? {
+        NodeKind::Operator(_) => {
             check_operator(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Operator))
         }
-        (None, None, Some(_), None, None, None) => {
+        NodeKind::Custom(_) => {
             check_custom(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Custom))
         }
-        (None, Some(_), None, None, None, None) => {
+        NodeKind::Runtime(_) => {
             check_runtime(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Runtime))
         }
-        (Some(_), None, None, None, None, None) => {
+        NodeKind::Standard(_) => {
             check_standard(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Standard {
                 source: standard_source(node)?,
             }))
         }
-        (None, None, None, None, Some(_), None) => {
+        NodeKind::Ros2Bridge(_) => {
             check_ros2(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Ros2Bridge))
         }
-        (None, None, None, None, None, Some(_)) => {
+        NodeKind::Module(_) => {
             check_module(node)?;
             Ok(NodeClassOrModule::Module)
         }
-        _ => bail!(
-            "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
-            node.id
-        ),
     }
 }
 
@@ -146,89 +117,147 @@ fn classify_inner(node: &Node) -> Result<NodeClassOrModule> {
 /// Fields shared by ALL node types (consumed at ResolvedNode construction).
 const SHARED_FIELDS: &[&str] = &["id", "name", "description", "env", "deploy"];
 
+struct CheckableField {
+    name: &'static str,
+    is_set: fn(&Node) -> bool,
+}
+
 /// All non-discriminator `Node` fields that are classified per node kind.
 ///
-/// Keep this list exhaustive for `dora_message::descriptor::Node`: a field
+/// Keep this table exhaustive for `dora_message::descriptor::Node`: a field
 /// missing here is never checked against the per-kind whitelists.
-const ALL_CHECKABLE_FIELDS: &[&str] = &[
-    "path",
-    "path_sha256",
-    "args",
-    "build",
-    "git",
-    "hub",
-    "branch",
-    "tag",
-    "rev",
-    "outputs",
-    "output_types",
-    "output_framing",
-    "inputs",
-    "input_types",
-    "output_metadata",
-    "pattern",
-    "send_stdout_as",
-    "send_logs_as",
-    "min_log_level",
-    "max_log_size",
-    "max_rotated_files",
-    "shared_memory_pool_size",
-    "restart_policy",
-    "max_restarts",
-    "restart_delay",
-    "max_restart_delay",
-    "restart_window",
-    "health_check_timeout",
-    "finish_grace_secs",
-    "cpu_affinity",
-    "params",
+const ALL_CHECKABLE_FIELDS: &[CheckableField] = &[
+    CheckableField {
+        name: "path",
+        is_set: |node| node.path.is_some(),
+    },
+    CheckableField {
+        name: "path_sha256",
+        is_set: |node| node.path_sha256.is_some(),
+    },
+    CheckableField {
+        name: "args",
+        is_set: |node| node.args.is_some(),
+    },
+    CheckableField {
+        name: "build",
+        is_set: |node| node.build.is_some(),
+    },
+    CheckableField {
+        name: "git",
+        is_set: |node| node.git.is_some(),
+    },
+    CheckableField {
+        name: "hub",
+        is_set: |node| node.hub.is_some(),
+    },
+    CheckableField {
+        name: "branch",
+        is_set: |node| node.branch.is_some(),
+    },
+    CheckableField {
+        name: "tag",
+        is_set: |node| node.tag.is_some(),
+    },
+    CheckableField {
+        name: "rev",
+        is_set: |node| node.rev.is_some(),
+    },
+    CheckableField {
+        name: "outputs",
+        is_set: |node| !node.outputs.is_empty(),
+    },
+    CheckableField {
+        name: "output_types",
+        is_set: |node| !node.output_types.is_empty(),
+    },
+    CheckableField {
+        name: "output_framing",
+        is_set: |node| !node.output_framing.is_empty(),
+    },
+    CheckableField {
+        name: "inputs",
+        is_set: |node| !node.inputs.is_empty(),
+    },
+    CheckableField {
+        name: "input_types",
+        is_set: |node| !node.input_types.is_empty(),
+    },
+    CheckableField {
+        name: "output_metadata",
+        is_set: |node| !node.output_metadata.is_empty(),
+    },
+    CheckableField {
+        name: "pattern",
+        is_set: |node| node.pattern.is_some(),
+    },
+    CheckableField {
+        name: "send_stdout_as",
+        is_set: |node| node.send_stdout_as.is_some(),
+    },
+    CheckableField {
+        name: "send_logs_as",
+        is_set: |node| node.send_logs_as.is_some(),
+    },
+    CheckableField {
+        name: "min_log_level",
+        is_set: |node| node.min_log_level.is_some(),
+    },
+    CheckableField {
+        name: "max_log_size",
+        is_set: |node| node.max_log_size.is_some(),
+    },
+    CheckableField {
+        name: "max_rotated_files",
+        is_set: |node| node.max_rotated_files.is_some(),
+    },
+    CheckableField {
+        name: "shared_memory_pool_size",
+        is_set: |node| node.shared_memory_pool_size.is_some(),
+    },
+    CheckableField {
+        name: "restart_policy",
+        is_set: |node| !matches!(node.restart_policy, RestartPolicy::Never),
+    },
+    CheckableField {
+        name: "max_restarts",
+        is_set: |node| node.max_restarts != 0,
+    },
+    CheckableField {
+        name: "restart_delay",
+        is_set: |node| node.restart_delay.is_some(),
+    },
+    CheckableField {
+        name: "max_restart_delay",
+        is_set: |node| node.max_restart_delay.is_some(),
+    },
+    CheckableField {
+        name: "restart_window",
+        is_set: |node| node.restart_window.is_some(),
+    },
+    CheckableField {
+        name: "health_check_timeout",
+        is_set: |node| node.health_check_timeout.is_some(),
+    },
+    CheckableField {
+        name: "finish_grace_secs",
+        is_set: |node| node.finish_grace_secs.is_some(),
+    },
+    CheckableField {
+        name: "cpu_affinity",
+        is_set: |node| node.cpu_affinity.is_some(),
+    },
+    CheckableField {
+        name: "params",
+        is_set: |node| !node.params.is_empty(),
+    },
 ];
-
-fn is_set(field: &str, node: &Node) -> bool {
-    match field {
-        "path" => node.path.is_some(),
-        "path_sha256" => node.path_sha256.is_some(),
-        "args" => node.args.is_some(),
-        "build" => node.build.is_some(),
-        "git" => node.git.is_some(),
-        "hub" => node.hub.is_some(),
-        "branch" => node.branch.is_some(),
-        "tag" => node.tag.is_some(),
-        "rev" => node.rev.is_some(),
-        "outputs" => !node.outputs.is_empty(),
-        "output_types" => !node.output_types.is_empty(),
-        "output_framing" => !node.output_framing.is_empty(),
-        "inputs" => !node.inputs.is_empty(),
-        "input_types" => !node.input_types.is_empty(),
-        "output_metadata" => !node.output_metadata.is_empty(),
-        "pattern" => node.pattern.is_some(),
-        "send_stdout_as" => node.send_stdout_as.is_some(),
-        "send_logs_as" => node.send_logs_as.is_some(),
-        "min_log_level" => node.min_log_level.is_some(),
-        "max_log_size" => node.max_log_size.is_some(),
-        "max_rotated_files" => node.max_rotated_files.is_some(),
-        "shared_memory_pool_size" => node.shared_memory_pool_size.is_some(),
-        "restart_policy" => !matches!(node.restart_policy, RestartPolicy::Never),
-        "max_restarts" => node.max_restarts != 0,
-        "restart_delay" => node.restart_delay.is_some(),
-        "max_restart_delay" => node.max_restart_delay.is_some(),
-        "restart_window" => node.restart_window.is_some(),
-        "health_check_timeout" => node.health_check_timeout.is_some(),
-        "finish_grace_secs" => node.finish_grace_secs.is_some(),
-        "cpu_affinity" => node.cpu_affinity.is_some(),
-        "params" => !node.params.is_empty(),
-        // kind discriminator fields — always checked by kind(), never set
-        // alongside a different kind, so they are never "set" here
-        "custom" | "operators" | "operator" | "ros2" | "module" => false,
-        _ => false,
-    }
-}
 
 fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) -> Result<()> {
     let mut unknown: Vec<&str> = Vec::new();
     for field in ALL_CHECKABLE_FIELDS {
-        if is_set(field, node) && !allowed.contains(field) {
-            unknown.push(field);
+        if (field.is_set)(node) && !allowed.contains(&field.name) {
+            unknown.push(field.name);
         }
     }
 
@@ -407,6 +436,126 @@ mod tests {
     }
 
     #[test]
+    fn hub_only_node_keeps_resolution_error() {
+        let error = classify_error(
+            r#"
+id: yolo
+hub: dora-yolo@^0.5
+"#,
+        );
+
+        assert!(error.contains("unresolved `hub:` reference"), "{error}");
+        assert!(error.contains("run `dora build`"), "{error}");
+    }
+
+    #[test]
+    fn every_checkable_field_has_set_detector() {
+        let field_cases = [
+            ("path", "id: x\npath: ./node\n"),
+            ("path_sha256", "id: x\npath: ./node\npath_sha256: abc123\n"),
+            ("args", "id: x\npath: ./node\nargs: --foo\n"),
+            ("build", "id: x\npath: ./node\nbuild: cargo build\n"),
+            (
+                "git",
+                "id: x\npath: ./node\ngit: https://github.com/example/node.git\n",
+            ),
+            ("hub", "id: x\npath: ./node\nhub: dora-yolo@^0.5\n"),
+            (
+                "branch",
+                "id: x\npath: ./node\ngit: https://github.com/example/node.git\nbranch: main\n",
+            ),
+            (
+                "tag",
+                "id: x\npath: ./node\ngit: https://github.com/example/node.git\ntag: v1.0.0\n",
+            ),
+            (
+                "rev",
+                "id: x\npath: ./node\ngit: https://github.com/example/node.git\nrev: abc123\n",
+            ),
+            ("outputs", "id: x\npath: ./node\noutputs: [out]\n"),
+            (
+                "output_types",
+                "id: x\npath: ./node\noutput_types:\n  out: string\n",
+            ),
+            (
+                "output_framing",
+                "id: x\npath: ./node\noutput_framing:\n  out: raw\n",
+            ),
+            ("inputs", "id: x\npath: ./node\ninputs:\n  in: source/out\n"),
+            (
+                "input_types",
+                "id: x\npath: ./node\ninput_types:\n  in: string\n",
+            ),
+            (
+                "output_metadata",
+                "id: x\npath: ./node\noutput_metadata:\n  out: [request_id]\n",
+            ),
+            ("pattern", "id: x\npath: ./node\npattern: service-server\n"),
+            (
+                "send_stdout_as",
+                "id: x\npath: ./node\nsend_stdout_as: stdout\n",
+            ),
+            ("send_logs_as", "id: x\npath: ./node\nsend_logs_as: logs\n"),
+            (
+                "min_log_level",
+                "id: x\npath: ./node\nmin_log_level: INFO\n",
+            ),
+            ("max_log_size", "id: x\npath: ./node\nmax_log_size: 1024\n"),
+            (
+                "max_rotated_files",
+                "id: x\npath: ./node\nmax_rotated_files: 3\n",
+            ),
+            (
+                "shared_memory_pool_size",
+                "id: x\npath: ./node\nshared_memory_pool_size: 1048576\n",
+            ),
+            (
+                "restart_policy",
+                "id: x\npath: ./node\nrestart_policy: on-failure\n",
+            ),
+            ("max_restarts", "id: x\npath: ./node\nmax_restarts: 1\n"),
+            ("restart_delay", "id: x\npath: ./node\nrestart_delay: 1.0\n"),
+            (
+                "max_restart_delay",
+                "id: x\npath: ./node\nmax_restart_delay: 5.0\n",
+            ),
+            (
+                "restart_window",
+                "id: x\npath: ./node\nrestart_window: 60.0\n",
+            ),
+            (
+                "health_check_timeout",
+                "id: x\npath: ./node\nhealth_check_timeout: 10.0\n",
+            ),
+            (
+                "finish_grace_secs",
+                "id: x\npath: ./node\nfinish_grace_secs: 2.5\n",
+            ),
+            ("cpu_affinity", "id: x\npath: ./node\ncpu_affinity: [0]\n"),
+            ("params", "id: x\npath: ./node\nparams:\n  speed: fast\n"),
+        ];
+
+        let expected: BTreeSet<_> = ALL_CHECKABLE_FIELDS
+            .iter()
+            .map(|field| field.name)
+            .collect();
+        let actual: BTreeSet<_> = field_cases.iter().map(|(name, _)| *name).collect();
+        assert_eq!(actual, expected);
+
+        for (field_name, yaml) in field_cases {
+            let node = parse_node(yaml);
+            let field = ALL_CHECKABLE_FIELDS
+                .iter()
+                .find(|field| field.name == field_name)
+                .expect("test field should exist in ALL_CHECKABLE_FIELDS");
+            assert!(
+                (field.is_set)(&node),
+                "field `{field_name}` should be detected as set"
+            );
+        }
+    }
+
+    #[test]
     fn valid_nodes_for_each_kind_pass_field_classification() {
         for yaml in [
             r#"
@@ -569,7 +718,7 @@ build: cargo build
         // YAML surface.
         actual.insert("deploy");
         let mut classified: BTreeSet<_> = SHARED_FIELDS.iter().copied().collect();
-        classified.extend(ALL_CHECKABLE_FIELDS.iter().copied());
+        classified.extend(ALL_CHECKABLE_FIELDS.iter().map(|field| field.name));
         classified.extend(["custom", "operators", "operator", "ros2", "module"]);
 
         assert_eq!(actual, classified);
