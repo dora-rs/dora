@@ -3525,13 +3525,14 @@ async fn check_spawn_timeouts(
             // reachable from any other code path; defensive.)
             continue;
         };
-        // A restart can be pending for a dataflow whose spawn (the new
-        // incarnation `initiate_restart` kicked off) is itself the one
-        // that got stuck — `running_dataflows` only needs to contain the
-        // UUID, which it does while the spawn is pending. Without this,
-        // the entry would never drain (only `DataflowFinishedOnDaemon`
-        // and the daemon-disconnect path do), permanently wedging both
-        // the parked restart caller and any future `Stop` for this UUID.
+        // `PendingRestart` is keyed by this (old) UUID: `initiate_restart`
+        // only requires the UUID to be present in `running_dataflows`,
+        // which it is while this very spawn is stuck — i.e. a restart was
+        // requested for this dataflow while it was still spawning, before
+        // this watchdog gave up on it. Without this, the entry would never
+        // drain (only `DataflowFinishedOnDaemon` and the daemon-disconnect
+        // path do), permanently wedging both the parked restart caller and
+        // any future `Stop` for this UUID.
         cancel_pending_restart(
             pending_restarts,
             uuid,
