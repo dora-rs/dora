@@ -1485,10 +1485,13 @@ impl DoraNode {
         // place: pre-write the UInt8 IPC header into the (shared-memory) sample,
         // then let the caller write their bytes straight into the data region —
         // zero payload copies (and the SHM sample is moved into zenoh's `put`).
-        let total = ipc_encode::uint8_ipc_len(data_len)
+        // Prepare the UInt8 IPC header once, then size and fill the sample from
+        // it — avoids rebuilding the layout + IPC headers for the length query.
+        let prepared = ipc_encode::PreparedUint8Ipc::new(data_len)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-        let mut sample = self.allocate_data_sample(total)?;
-        let offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_len)
+        let mut sample = self.allocate_data_sample(prepared.byte_len())?;
+        let offset = prepared
+            .encode_header_into(&mut sample)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
         data(&mut sample[offset..offset + data_len]);
 
@@ -1945,24 +1948,43 @@ impl DoraNode {
                         .wait()
                     {
                         Ok(mut sbuf) => {
-                            sbuf.as_mut().copy_from_slice(&avec);
-                            if diag {
-                                tracing::warn!(
-                                    "output `{output_id}`: entering zenoh put of a \
-                                     copied SHM buffer (dora-rs/dora#2742 diagnostic)"
-                                );
-                            }
-                            return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
-                            {
-                                Ok(()) => Ok(PublishOutcome::Published),
-                                Err(e) => {
+                            // Mirror the guard in `allocate_data_sample`: only
+                            // copy into the SHM buffer when it is exactly the
+                            // requested size. zenoh 1.8 guarantees the logical
+                            // length matches the request, but `copy_from_slice`
+                            // requires equal lengths and would panic on the
+                            // node's send thread if a future provider ever
+                            // over-allocated. Fall through to the reliable
+                            // daemon path instead of risking that panic.
+                            if sbuf.as_mut().len() == avec.len() {
+                                sbuf.as_mut().copy_from_slice(&avec);
+                                if diag {
                                     tracing::warn!(
-                                        "zenoh SHM publish failed ({e}); \
-                                         falling back to daemon path"
+                                        "output `{output_id}`: entering zenoh put of a \
+                                         copied SHM buffer (dora-rs/dora#2742 diagnostic)"
                                     );
-                                    Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
                                 }
-                            };
+                                return match publisher
+                                    .put(sbuf)
+                                    .attachment(&metadata_bytes[..])
+                                    .wait()
+                                {
+                                    Ok(()) => Ok(PublishOutcome::Published),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "zenoh SHM publish failed ({e}); \
+                                             falling back to daemon path"
+                                        );
+                                        Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                                    }
+                                };
+                            }
+                            tracing::debug!(
+                                "zenoh SHM alloc returned {} bytes for a {}-byte \
+                                 request; using daemon path",
+                                sbuf.as_ref().len(),
+                                avec.len()
+                            );
                         }
                         Err(e) => {
                             tracing::debug!("SHM alloc failed ({e}), using heap buffer");
@@ -2139,8 +2161,10 @@ impl DoraNode {
         self.log_with_fields(level, message, target, None);
     }
 
-    /// Maximum total size of log fields before they are dropped (60 KB).
-    /// Matches the downstream 64 KB parse limit with headroom for the message envelope.
+    /// Maximum serialized size of the log `fields` object before it is
+    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
+    /// for the message envelope. Measured on the serialized JSON (see
+    /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
     /// Send a structured log message with optional key-value fields.
@@ -2173,12 +2197,12 @@ impl DoraNode {
             entry["target"] = serde_json::Value::String(target.to_string());
         }
         if let Some(fields) = fields {
-            let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
-            if total <= Self::MAX_LOG_FIELDS_BYTES {
-                entry["fields"] = serde_json::json!(fields);
-            } else {
-                eprintln!("dora log: fields too large ({total} bytes), dropping fields");
-                entry["fields_dropped"] = serde_json::Value::Bool(true);
+            match log_fields_within_budget(fields, Self::MAX_LOG_FIELDS_BYTES) {
+                Some(value) => entry["fields"] = value,
+                None => {
+                    eprintln!("dora log: fields too large, dropping fields");
+                    entry["fields_dropped"] = serde_json::Value::Bool(true);
+                }
             }
         }
         match serde_json::to_string(&entry) {
@@ -2346,47 +2370,35 @@ impl DoraNode {
     pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
         self.control_channel.free_pinned_memory(shared_memory_id)
     }
+}
 
-    /// Write tensor bytes to a pinned memory pool via the daemon. The
-    /// daemon forwards the payload to remote daemons so the mirror pool
-    /// is updated in place.
-    pub fn write_pinned_memory(
-        &mut self,
-        shared_memory_id: String,
-        tensor_data: Vec<u8>,
-        size: usize,
-    ) -> Result<(), eyre::Error> {
-        self.control_channel
-            .write_pinned_memory(shared_memory_id, tensor_data, size)
+/// Return the serialized log `fields` object when it fits `limit`, else `None`.
+///
+/// The budget guards a downstream JSON-line parse limit, so it must measure
+/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
+/// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
+/// lengths can pass a map whose serialized form is well over the limit, which
+/// the downstream parser then drops or truncates whole.
+fn log_fields_within_budget(
+    fields: &std::collections::BTreeMap<String, String>,
+    limit: usize,
+) -> Option<serde_json::Value> {
+    // Count the serialized bytes without allocating a throwaway string, then
+    // build the JSON value only when it fits.
+    struct ByteCounter(usize);
+    impl std::io::Write for ByteCounter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
     }
-
-    /// Register a memory pool on a remote machine via the daemon. The
-    /// daemon resolves the machine through the coordinator and mirrors
-    /// the pool there with a synchronous confirmation, returning
-    /// `Ok(Ok(()))` on success or `Ok(Err(msg))` when the mirror failed
-    /// (unresolved machine, remote pool creation failure, or ack
-    /// timeout).
-    #[allow(clippy::too_many_arguments)]
-    pub fn register_cross_machine_pool(
-        &mut self,
-        shared_memory_id: String,
-        shmem_name: String,
-        size: usize,
-        dtype: String,
-        shape: Vec<i64>,
-        device: String,
-        machine_id: String,
-    ) -> Result<(Result<(), String>, bool), eyre::Error> {
-        self.control_channel.register_cross_machine_pool(
-            shared_memory_id,
-            shmem_name,
-            size,
-            dtype,
-            shape,
-            device,
-            machine_id,
-        )
-    }
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, fields).ok()?;
+    (counter.0 <= limit).then(|| serde_json::json!(fields))
 }
 
 /// Builder for initializing a node with custom connection parameters.
@@ -2698,10 +2710,13 @@ impl SampleAllocator {
     /// and, when the payload is owned by a foreign runtime, **must** — drop
     /// `array` on its own thread rather than let it travel to the node.
     pub fn encode_arrow(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
-        let sample = match ipc_encode::ipc_fast_path_len(array) {
-            Some(len) => {
-                let mut sample = self.allocate(len)?;
-                ipc_encode::encode_ipc_into(array, &mut sample)
+        let sample = match ipc_encode::PreparedIpc::new(array) {
+            Some(prepared) => {
+                // Prepare once: size the sample from the prepared layout, then
+                // encode into it — avoids rebuilding the layout + IPC headers.
+                let mut sample = self.allocate(prepared.byte_len())?;
+                prepared
+                    .encode_into(&mut sample)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 sample
             }
@@ -3130,6 +3145,43 @@ pub fn init_tracing(
 ///
 /// Manages session/segment IDs and auto-incrementing sequence numbers
 /// for real-time streaming patterns (voice, video, sensor streams).
+///
+/// The state transitions are easy to get subtly wrong, so they are worth
+/// spelling out: [`chunk`](Self::chunk) stamps the current `(segment_id, seq)`
+/// and then auto-increments `seq`; [`next_segment`](Self::next_segment) bumps
+/// `segment_id` and resets `seq` to 0; and [`flush`](Self::flush) advances to a
+/// new segment and emits a chunk marked `flush = true`, `fin = false` (the
+/// prior segment is discarded, not completed, so it intentionally never gets a
+/// `fin = true`).
+///
+/// # Example
+///
+/// ```
+/// use dora_node_api::{
+///     StreamSegment,
+///     metadata::{FIN, FLUSH, SEGMENT_ID, SEQ, get_bool_param, get_integer_param},
+/// };
+///
+/// let mut seg = StreamSegment::with_session_id("session-1".to_string());
+///
+/// // `chunk` stamps the current (segment, seq), then advances seq.
+/// let first = seg.chunk(false);
+/// assert_eq!(get_integer_param(&first, SEGMENT_ID), Some(0));
+/// assert_eq!(get_integer_param(&first, SEQ), Some(0));
+/// assert_eq!(get_bool_param(&first, FIN), Some(false));
+///
+/// let second = seg.chunk(true); // mark this chunk as the end of the segment
+/// assert_eq!(get_integer_param(&second, SEQ), Some(1)); // seq auto-incremented
+/// assert_eq!(get_bool_param(&second, FIN), Some(true));
+///
+/// // `flush` starts a new segment (seq reset to 0) and marks flush=true,
+/// // fin=false: the old queued data is discarded, not completed.
+/// let flushed = seg.flush();
+/// assert_eq!(get_integer_param(&flushed, SEGMENT_ID), Some(1));
+/// assert_eq!(get_integer_param(&flushed, SEQ), Some(0));
+/// assert_eq!(get_bool_param(&flushed, FLUSH), Some(true));
+/// assert_eq!(get_bool_param(&flushed, FIN), Some(false));
+/// ```
 pub struct StreamSegment {
     session_id: String,
     segment_id: i64,
@@ -3241,6 +3293,28 @@ mod tests {
     }
 
     #[test]
+    fn log_fields_budget_measures_serialized_json_not_raw_bytes() {
+        use std::collections::BTreeMap;
+        let limit = DoraNode::MAX_LOG_FIELDS_BYTES;
+
+        // A small map fits.
+        let mut small = BTreeMap::new();
+        small.insert("k".to_string(), "v".to_string());
+        assert!(log_fields_within_budget(&small, limit).is_some());
+
+        // A value that is 20 KB of raw bytes — comfortably under the 60 KB
+        // budget by the old raw-sum measure — but made entirely of control
+        // characters, each of which JSON-escapes to `` (6 bytes). Its
+        // serialized form is ~120 KB, over the budget, so it must be dropped.
+        // The pre-fix raw-byte check would have let it through and blown the
+        // downstream parse limit.
+        let mut big = BTreeMap::new();
+        big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
+        assert!(big.values().map(String::len).sum::<usize>() < limit);
+        assert!(log_fields_within_budget(&big, limit).is_none());
+    }
+
+    #[test]
     fn ack_state_completes_only_when_required_set_is_covered() {
         let ready = Arc::new(AtomicBool::new(false));
         let required = BTreeSet::from([
@@ -3346,7 +3420,7 @@ mod tests {
         state.record("sink", "camera");
 
         let start = Instant::now();
-        wait_for_grace(&[state.clone()], Duration::from_secs(30));
+        wait_for_grace(std::slice::from_ref(&state), Duration::from_secs(30));
         wait_for_grace(&[], Duration::from_secs(30));
 
         assert!(!state.is_frozen());

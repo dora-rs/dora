@@ -208,6 +208,7 @@ impl<T> FFIFromRust for RefFFISeq<T> {
 
 #[cfg(test)]
 mod tests {
+    use super::super::string::OwnedFFIString;
     use super::*;
 
     // `from_rust` deliberately stores a null `data` pointer for an empty
@@ -249,6 +250,25 @@ mod tests {
         };
         assert!(seq.is_empty());
         assert_eq!(seq.as_slice(), &[] as &[i32]);
+    }
+
+    // The `OwnedFFISeq` tests above build the null/empty representation by hand,
+    // because `OwnedFFISeq::from_rust` requires `T: FFIFromRust`. `OwnedFFIString`
+    // satisfies that bound, so this drives the *real* constructor and would catch a
+    // `from_rust` that stopped storing null for the empty case. Run under
+    // `cargo +nightly miri test` to exercise the pointer-validity checks.
+    #[test]
+    fn owned_seq_from_rust_empty_slice_and_drop_without_ub() {
+        let empty: Vec<String> = Vec::new();
+        // SAFETY: `empty` is a valid `Vec<String>` (the `From` type of
+        // `OwnedFFIString`); the produced sequence borrows nothing from it.
+        let seq: OwnedFFISeq<OwnedFFIString> = unsafe { FFIFromRust::from_rust(&empty) };
+        assert!(seq.is_empty());
+        assert_eq!(seq.len(), 0);
+        // `as_slice` on the empty (null-backed) sequence must not deref null.
+        assert!(seq.as_slice().is_empty());
+        // Dropping here must not hit `Vec::from_raw_parts(null, 0, 0)`.
+        drop(seq);
     }
 
     #[test]
