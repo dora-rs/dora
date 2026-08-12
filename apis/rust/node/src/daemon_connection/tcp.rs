@@ -77,9 +77,17 @@ fn tcp_send(connection: &mut (impl Write + Unpin), message: &[u8]) -> std::io::R
             ),
         ));
     }
+    // Concatenate the 8-byte length header and the payload into a single buffer
+    // and write it in one call. The connection has `TCP_NODELAY` enabled (see
+    // `daemon_connection::connect`), so writing the header separately would flush
+    // it as its own tiny TCP segment before the body — an extra syscall and a
+    // runt segment on every request. This mirrors the daemon-side send
+    // (`socket_stream_utils::socket_stream_send`). The wire format is unchanged.
     let len_raw = (message.len() as u64).to_le_bytes();
-    connection.write_all(&len_raw)?;
-    connection.write_all(message)?;
+    let mut buf = Vec::with_capacity(8 + message.len());
+    buf.extend_from_slice(&len_raw);
+    buf.extend_from_slice(message);
+    connection.write_all(&buf)?;
     connection.flush()?;
     Ok(())
 }
