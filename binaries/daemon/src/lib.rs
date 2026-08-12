@@ -210,10 +210,16 @@ static CROSS_POOL_WRITE_LOCKS: std::sync::LazyLock<
 /// `std::sync::MutexGuard` cannot be held across an `.await`, so the
 /// receive-into-mirror path (which reads the stream while holding the
 /// per-pool serialization lock) uses an async mutex instead. Serializes
-/// concurrent direct writes to the same pool across connections.
-static CROSS_POOL_WRITE_LOCKS_ASYNC: std::sync::LazyLock<
-    tokio::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<tokio::sync::Mutex<()>>>>,
-> = std::sync::LazyLock::new(|| tokio::sync::Mutex::new(std::collections::HashMap::new()));
+/// concurrent direct writes to the **same pool of the same dataflow**
+/// across connections. Keyed by `(dataflow id, pool id)` like the other
+/// cross-write state: pool ids repeat across dataflows (each node process
+/// restarts its counter), and a bare pool-id key would needlessly
+/// serialize writes to *different* segments of concurrent dataflows.
+type CrossPoolWriteLocks = tokio::sync::Mutex<
+    std::collections::HashMap<(Uuid, String), std::sync::Arc<tokio::sync::Mutex<()>>>,
+>;
+static CROSS_POOL_WRITE_LOCKS_ASYNC: std::sync::LazyLock<CrossPoolWriteLocks> =
+    std::sync::LazyLock::new(CrossPoolWriteLocks::default);
 
 // DORADMA shmem layout — must match the node API exactly
 // (apis/python/node/src/lib.rs): [magic:8][json_len:8][data_offset:8]
@@ -803,16 +809,18 @@ async fn handle_cross_data_frame(
             seq,
         ));
     };
-    // Serialise concurrent direct writes to the same pool first (async
-    // lock: a std MutexGuard cannot be held across an await), so nothing
-    // non-Send crosses this await.
+    // Serialise concurrent direct writes to the same pool of the same
+    // dataflow first (async lock: a std MutexGuard cannot be held across
+    // an await), so nothing non-Send crosses this await. Keyed by
+    // (dataflow, pool) — a bare pool id would serialize writes to
+    // different segments of concurrent dataflows.
     let write_lock = {
         let mut locks = CROSS_POOL_WRITE_LOCKS_ASYNC.lock().await;
-        match locks.get(&shared_memory_id) {
+        match locks.get(&(dataflow_id, shared_memory_id.clone())) {
             Some(lock) => lock.clone(),
             None => {
                 let lock = std::sync::Arc::new(tokio::sync::Mutex::new(()));
-                locks.insert(shared_memory_id.clone(), lock.clone());
+                locks.insert((dataflow_id, shared_memory_id.clone()), lock.clone());
                 lock
             }
         }
@@ -12012,6 +12020,38 @@ mod cross_pool_write_tests {
             }
             other => panic!("failed-write ack resolved the wrong reply: {other:?}"),
         }
+    }
+
+    /// The direct-write lock is keyed by (dataflow, pool) like the other
+    /// cross-write state: a bare pool id would alias pools of concurrent
+    /// dataflows (each node process restarts its counter) and needlessly
+    /// serialize writes to *different* segments — the same key-scoping
+    /// issue the human review flagged for `cross_pools`.
+    #[tokio::test]
+    async fn write_lock_is_dataflow_scoped() {
+        let df1 = Uuid::new_v4();
+        let df2 = Uuid::new_v4();
+        let pool = "pool_sender_node_1".to_string();
+        let mut locks = CROSS_POOL_WRITE_LOCKS_ASYNC.lock().await;
+        let mut entry = |df, pool: &str| {
+            locks
+                .entry((df, pool.to_string()))
+                .or_insert_with(|| std::sync::Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        // Same pool id in two dataflows → distinct locks (concurrent
+        // dataflows never serialize on each other's segments).
+        let l1 = entry(df1, &pool);
+        let l2 = entry(df2, &pool);
+        assert!(!std::sync::Arc::ptr_eq(&l1, &l2));
+        // Same dataflow, same pool → the same lock (writes to one segment
+        // stay serialized).
+        assert!(std::sync::Arc::ptr_eq(&l1, &entry(df1, &pool)));
+        // Same dataflow, different pool → distinct locks.
+        assert!(!std::sync::Arc::ptr_eq(
+            &l1,
+            &entry(df1, "pool_sender_node_2")
+        ));
     }
 
     /// The direct-TCP fallback warns exactly once per pool: repeated
