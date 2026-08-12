@@ -1468,14 +1468,27 @@ impl EventStream {
             // `recv_from_stream`, not `recv_async`: the latter drains
             // `pending_passthrough` and would re-hand us the events we
             // buffer below (see `recv_from_stream`'s docs).
-            let event = match pin!(self.recv_from_stream()).now_or_never() {
+            // Bound to a local first: the pinned future borrows `self`
+            // for the whole of its enclosing statement, so matching on
+            // it directly would keep that borrow alive across the
+            // arms that need `&mut self`.
+            let polled = pin!(self.recv_from_stream()).now_or_never();
+            let event = match polled {
                 // Nothing more is ready. Fall through to the deadline
                 // check below rather than returning here: a reply that
                 // reached the stream before the deadline must win over
                 // it, and it can only do that if everything already
                 // available has been looked at first.
                 None => break,
-                Some(None) => return Err(PatternError::StreamEnded),
+                // Same cleanup as the `Event::Stop` arm below. The
+                // stream is dead either way, so this costs nothing
+                // today; it exists so both routes to `StreamEnded`
+                // leave the same state behind rather than only one of
+                // them being safe to reason about.
+                Some(None) => {
+                    self.correlation_deadlines.remove(needle);
+                    return Err(PatternError::StreamEnded);
+                }
                 Some(Some(event)) => event,
             };
 
@@ -3488,6 +3501,43 @@ mod tests {
                 Err(PatternError::Timeout) | Err(PatternError::StreamEnded)
             ),
             "an lapsed deadline with nothing to show must be terminal, got {got:?}"
+        );
+    }
+
+    /// Both routes to `StreamEnded` — a buffered `Event::Stop` and a
+    /// closed receiver — must leave the same state behind, so nothing
+    /// downstream has to know which one it came from.
+    #[test]
+    fn a_closed_stream_clears_the_deadline_like_a_stop_does() {
+        let (_node, mut events) = scripted_event_stream(vec![]);
+        let server = NodeId::from("calc".to_string());
+
+        assert!(!events.correlation_expired("req-1", Some(Duration::from_secs(60))));
+        assert!(events.correlation_deadlines.contains_key("req-1"));
+
+        // The stream closes on its own, but not instantly — an early
+        // poll just reports `Ok(None)` because nothing is ready yet.
+        let mut saw_end = false;
+        for _ in 0..2_000 {
+            let polled = events.try_recv_service_response(
+                "req-1",
+                ExpectedServers::One(&server),
+                Some(Duration::from_secs(60)),
+            );
+            if matches!(polled, Err(PatternError::StreamEnded)) {
+                saw_end = true;
+                break;
+            }
+            assert!(
+                matches!(polled, Ok(None)),
+                "an empty stream should only ever be 'not ready' or ended, got {polled:?}"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(saw_end, "an empty scripted stream must close");
+        assert!(
+            !events.correlation_deadlines.contains_key("req-1"),
+            "a closed stream must clear the deadline, as the Stop path does"
         );
     }
 
