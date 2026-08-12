@@ -474,9 +474,18 @@ mod ffi {
         /// the refusal does prevent is the daemon unlinking a segment
         /// mid-write and telling every consumer the pool is gone while its
         /// generation is odd. Free the pool after the guard's scope ends.
+        ///
+        /// Takes the pool by reference rather than consuming it, so a refusal
+        /// leaves the caller holding the handle it needs to act on: close the
+        /// cycle, then free. Consuming it would have made the refusal worse
+        /// than the mistake — the segment would stay in `/dev/shm` and in the
+        /// daemon's table for the rest of the dataflow with no way left to
+        /// release it. After a successful free the handle is spent: the
+        /// segment is unlinked and every accessor on it is meaningless. Let it
+        /// go out of scope.
         fn free_memory_pool(
             output_sender: &mut Box<OutputSender>,
-            pool: Box<DoraMemoryPool>,
+            pool: &mut Box<DoraMemoryPool>,
         ) -> DoraResult;
 
         // -------------------------------------------------------------
@@ -1485,7 +1494,11 @@ fn resolve_transport_with(
         // The override applies to `auto` only: an explicit request is the node
         // author's decision about its own buffer layout, and an operator's
         // environment must not silently rewrite it.
-        "auto" => match env_override {
+        // `FOO=` is set-but-empty, which `std::env::var` reports as `Ok("")`.
+        // Treat it as unset, the same way an empty `requested` means "no
+        // preference" above — otherwise clearing the variable fails the node
+        // instead of restoring the default it was set to override.
+        "auto" => match env_override.filter(|v| !v.is_empty()) {
             None if receiver_is_cuda => Transport::Unified,
             None => Transport::Shmem,
             Some("shmem") => Transport::Shmem,
@@ -1786,10 +1799,11 @@ fn open_write_cycle_refusal(pool: &DoraMemoryPool) -> Option<String> {
     })
 }
 
-#[allow(clippy::boxed_local)]
+// signature dictated by cxx::bridge
+#[allow(clippy::borrowed_box)]
 fn free_memory_pool(
     output_sender: &mut Box<OutputSender>,
-    pool: Box<DoraMemoryPool>,
+    pool: &mut Box<DoraMemoryPool>,
 ) -> ffi::DoraResult {
     // Freeing mid-cycle asks the daemon to unlink a segment this node is
     // halfway through overwriting, and to tell every consumer the pool is
@@ -1797,7 +1811,7 @@ fn free_memory_pool(
     // around: the caller lost track of a cycle it opened, and closing it here
     // would publish whatever half-written bytes are in the payload as a
     // deliberate final frame.
-    if let Some(error) = open_write_cycle_refusal(&pool) {
+    if let Some(error) = open_write_cycle_refusal(pool) {
         return ffi::DoraResult { error };
     }
     // Daemon only, deliberately. `free_pinned_memory` unlinks the segment and
@@ -2915,7 +2929,7 @@ mod tests {
     /// trying to change, with no sign that the variable did nothing.
     #[test]
     fn an_unrecognized_environment_value_is_rejected_by_name() {
-        for value in ["shmemm", "", "ipc"] {
+        for value in ["shmemm", "ipc", " unified"] {
             let err = resolve_transport_with("auto", true, Some(value))
                 .unwrap_err()
                 .to_string();
@@ -2924,6 +2938,21 @@ mod tests {
                 "the error must name the variable that has to change: {err}"
             );
         }
+    }
+
+    /// `DORA_MEMORY_POOL_TRANSPORT=` is set-but-empty, which `std::env::var`
+    /// reports as `Ok("")`. Clearing the variable must restore the default,
+    /// not fail the node with a message about an invalid value.
+    #[test]
+    fn an_empty_environment_value_means_unset() {
+        assert_eq!(
+            resolve_transport_with("auto", true, Some("")).unwrap(),
+            Transport::Unified
+        );
+        assert_eq!(
+            resolve_transport_with("auto", false, Some("")).unwrap(),
+            Transport::Shmem
+        );
     }
 
     /// `ipc` must fail with a message about IPC specifically: a caller asking

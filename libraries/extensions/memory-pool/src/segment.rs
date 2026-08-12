@@ -343,9 +343,19 @@ impl PoolSegment {
         // Two steps so that no `&[u8]` ever covers the payload. The payload is
         // being written by a peer process, and a shared reference to it would
         // alias a concurrent write — UB whether or not anything reads through
-        // the reference. The header+metadata region is safe to reference
-        // because it is written once, before the pool is registered, and a
-        // consumer only learns the pool exists through that registration.
+        // the reference. The magic, the two lengths, the IPC flag and handle,
+        // and the metadata JSON are all written once, before the pool is
+        // registered, and a consumer only learns the pool exists through that
+        // registration — so referencing them races with nothing.
+        //
+        // One field inside the span is NOT write-once: the seqlock generation
+        // at byte 96, which a peer writer stores to on every frame. Nothing
+        // here reads it — `parse_header` deliberately does not decode it, and
+        // every generation access goes through `gen_ptr()` as an `AtomicU64` —
+        // but the reference still covers those 8 bytes. Narrowing it needs the
+        // fixed header and the JSON passed as two slices (all the fixed fields
+        // this parses live below offset 96); that is a follow-up, not a
+        // correctness hole today.
         //
         // `header_region_len` caps the length at `data_offset`, so the slice
         // provably stops at the payload start rather than merely inside the

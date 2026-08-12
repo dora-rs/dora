@@ -70,7 +70,6 @@ pub struct ParsedHeader {
     /// zeroed by `write_header`, but a caller must not treat a zeroed
     /// handle as if it were a real one).
     pub ipc_handle: Option<[u8; IPC_HANDLE_LEN]>,
-    pub write_gen: u64,
     pub metadata: PoolMetadataJson,
 }
 
@@ -383,7 +382,6 @@ pub fn parse_header(buf: &[u8], segment_len: usize) -> Result<ParsedHeader, Stri
         data_offset,
         ipc_present,
         ipc_handle,
-        write_gen: read_u64(buf, OFFSET_WRITE_GEN),
         metadata,
     })
 }
@@ -531,7 +529,6 @@ mod tests {
         assert_eq!(parsed.json_len, json.len());
         assert_eq!(parsed.data_offset, data_offset_for(json.len()));
         assert!(!parsed.ipc_present);
-        assert_eq!(parsed.write_gen, 0);
         assert_eq!(parsed.metadata.size, 64);
         assert_eq!(parsed.metadata.dtype, "uint8");
     }

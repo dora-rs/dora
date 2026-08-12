@@ -56,13 +56,13 @@ namespace dora {
 /// that owns the pool as easily as it outlives nothing at all.
 ///
 /// Do not move the pool while a guard is alive. The guard holds a reference to
-/// the caller's `rust::Box`, so moving the box out from under it — including
-/// the `std::move` that `free_memory_pool` takes — leaves the destructor
-/// closing a cycle on a null box, and no signature here can stop that: the
-/// move happens at your call site, before any Rust code runs. `free_memory_pool`
-/// does refuse the *free* while a cycle is open, so the daemon never unlinks a
-/// segment mid-write; the moved-from box is the part that stays your job.
-/// Free the pool after the guard's scope ends.
+/// the caller's `rust::Box`, so moving the box out from under it leaves the
+/// destructor closing a cycle on a moved-from box, and no signature here can
+/// stop that: the move happens at your call site, before any Rust code runs.
+/// `free_memory_pool` borrows rather than consumes, so it is not itself such a
+/// move, and it refuses outright while a cycle is open — the daemon never
+/// unlinks a segment mid-write, and the refusal leaves you the handle to close
+/// the cycle and free it properly. Free the pool after the guard's scope ends.
 class PoolWriteGuard {
   public:
     /// Opens a write cycle on `pool`.

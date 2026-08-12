@@ -1333,7 +1333,6 @@ jobs:
         timeout-minutes: 20
         run: |
           uv venv --seed -p 3.12
-          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
           source .venv/bin/activate
           uv pip install pyarrow
           uv pip install -e apis/python/node
@@ -1378,6 +1377,10 @@ jobs:
       - name: C++ Memory Pool example
         if: runner.os == 'Linux'
         timeout-minutes: 15
+        # Scoped to this step rather than exported to $GITHUB_ENV, which would
+        # point every later example in this job at the venv as well.
+        env:
+          VIRTUAL_ENV: ${{ github.workspace }}/.venv
         run: cargo run --example cxx-memory-pool
       - name: Install Arrow C++ Library
         timeout-minutes: 10

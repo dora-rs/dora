@@ -115,8 +115,8 @@ Fill fill_slot(rust::Box<DoraMemoryPool> &pool, std::uint8_t slot, std::uint8_t 
 }
 
 /// A pool the node still owns, so that every exit path can hand it back to the
-/// daemon. `free_memory_pool` consumes the box, which is why this is an
-/// `optional` rather than a bare `rust::Box`.
+/// daemon. An `optional` rather than a bare `rust::Box` so that `release` is
+/// idempotent: every exit path calls it, and only the first one frees.
 using OwnedPool = std::optional<rust::Box<DoraMemoryPool>>;
 
 bool release(rust::Box<OutputSender> &sender, OwnedPool &pool, const char *label)
@@ -125,7 +125,9 @@ bool release(rust::Box<OutputSender> &sender, OwnedPool &pool, const char *label
     {
         return true;
     }
-    auto result = free_memory_pool(sender, std::move(*pool));
+    // Borrowed, not consumed: a refusal (a write cycle still open) has to
+    // leave the caller holding the handle, or the segment can never be freed.
+    auto result = free_memory_pool(sender, *pool);
     pool.reset();
     if (!result.error.empty())
     {
