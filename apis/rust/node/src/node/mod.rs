@@ -1663,12 +1663,12 @@ impl DoraNode {
         // OTel Baggage is NOT propagated to avoid leaking sensitive data across
         // node boundaries. If a user explicitly provides this key, it wins.
         #[cfg(feature = "tracing")]
-        if !parameters.contains_key("open_telemetry_context") {
+        if !parameters.contains_key(crate::OPEN_TELEMETRY_CONTEXT) {
             let cx = opentelemetry::Context::current();
             let serialized = dora_tracing::telemetry::serialize_context(&cx);
             if !serialized.is_empty() {
                 parameters.insert(
-                    "open_telemetry_context".to_string(),
+                    crate::OPEN_TELEMETRY_CONTEXT.to_string(),
                     crate::Parameter::String(serialized),
                 );
             }

@@ -213,7 +213,7 @@ pub fn run(
                     let cx = span.context();
                     let string_cx = serialize_context(&cx);
                     metadata.parameters.insert(
-                        "open_telemetry_context".to_string(),
+                        dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
                         Parameter::String(string_cx),
                     );
                 }
@@ -346,7 +346,7 @@ mod callback_impl {
             #[cfg(feature = "telemetry")]
             {
                 let otel = if let Some(dora_node_api::Parameter::String(otel)) =
-                    parameters.get("open_telemetry_context")
+                    parameters.get(dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT)
                 {
                     otel.to_string()
                 } else {

@@ -99,7 +99,7 @@ impl Metadata {
     }
 
     pub fn open_telemetry_context(&self) -> String {
-        get_string_param(&self.parameters, "open_telemetry_context")
+        get_string_param(&self.parameters, OPEN_TELEMETRY_CONTEXT)
             .unwrap_or("")
             .to_string()
     }
@@ -218,6 +218,17 @@ pub const GOAL_STATUS_ABORTED: &str = "aborted";
 
 /// Goal was canceled by the client.
 pub const GOAL_STATUS_CANCELED: &str = "canceled";
+
+// ---------------------------------------------------------------------------
+// Well-known metadata parameter key for distributed tracing
+// ---------------------------------------------------------------------------
+
+/// Metadata key carrying the serialized OpenTelemetry propagation context, so a
+/// trace can be continued across a dora message hop. Read via
+/// [`Metadata::open_telemetry_context`]; stamped by the node and runtime send
+/// paths when tracing is enabled. Keep this the single source of truth so the
+/// write and read sides can never drift.
+pub const OPEN_TELEMETRY_CONTEXT: &str = "open_telemetry_context";
 
 // ---------------------------------------------------------------------------
 // Well-known metadata parameter keys for the streaming pattern

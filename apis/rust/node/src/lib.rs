@@ -93,8 +93,9 @@ pub use dora_message::{
     DataflowId,
     metadata::{
         self, FIN, FLUSH, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
-        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID, SEGMENT_ID,
-        SEQ, SESSION_ID, get_bool_param, get_integer_param, get_string_param,
+        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, OPEN_TELEMETRY_CONTEXT, Parameter,
+        REQUEST_ID, SEGMENT_ID, SEQ, SESSION_ID, get_bool_param, get_integer_param,
+        get_string_param,
     },
 };
 use dora_message::{
