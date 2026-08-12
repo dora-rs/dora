@@ -128,13 +128,20 @@ bool release(rust::Box<OutputSender> &sender, OwnedPool &pool, const char *label
     // Borrowed, not consumed: a refusal (a write cycle still open) has to
     // leave the caller holding the handle, or the segment can never be freed.
     auto result = free_memory_pool(sender, *pool);
-    pool.reset();
     if (!result.error.empty())
     {
+        // Keep the handle. A refusal means a write cycle is still open, and
+        // the daemon has NOT unlinked the segment — dropping the box here
+        // would unmap it locally and leave the segment in /dev/shm and in the
+        // daemon's table with nothing left that could free it. The recovery
+        // is to close the cycle (let the `PoolWriteGuard` go out of scope, or
+        // call `pool_end_write`) and call this again.
         std::cerr << "[sender] failed to free pool `" << label << "`: "
                   << std::string(result.error) << std::endl;
         return false;
     }
+    // Freed: the segment is unlinked and the handle is spent.
+    pool.reset();
     std::cout << "[sender] freed pool `" << label << "`" << std::endl;
     return true;
 }
