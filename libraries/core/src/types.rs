@@ -254,6 +254,20 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
     Some(ParsedUrn { base, params })
 }
 
+/// Parameter-agreement rule shared by [`types_match`] and
+/// [`CompatibilityGraph::is_compatible`]: two parameter maps agree when every
+/// key present in *both* maps has an equal value. An empty map on either side is
+/// a wildcard that matches anything.
+///
+/// Keeping this in one place ensures the two type-compatibility code paths can
+/// never silently diverge on the parameter contract.
+fn params_agree(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    a.iter().all(|(k, va)| b.get(k).is_none_or(|vb| vb == va))
+}
+
 /// Check if two type URNs are compatible (considering parameters).
 ///
 /// Rules:
@@ -271,19 +285,7 @@ pub fn types_match(a: &str, b: &str) -> bool {
     if pa.base != pb.base {
         return false;
     }
-    // If either side has no params, treat as wildcard
-    if pa.params.is_empty() || pb.params.is_empty() {
-        return true;
-    }
-    // Both have params — all shared keys must agree
-    for (k, va) in &pa.params {
-        if let Some(vb) = pb.params.get(k)
-            && va != vb
-        {
-            return false;
-        }
-    }
-    true
+    params_agree(&pa.params, &pb.params)
 }
 
 /// YAML file format for a type package.
@@ -367,21 +369,11 @@ impl CompatibilityGraph {
 
         // Check parameterized match using already-parsed URNs
         if from_base == to_base {
-            // Same base — check params. If either has no params, wildcard match.
-            let from_params = from_parsed.as_ref().map(|p| &p.params);
-            let to_params = to_parsed.as_ref().map(|p| &p.params);
-            match (from_params, to_params) {
-                (Some(fp), Some(tp)) if !fp.is_empty() && !tp.is_empty() => {
-                    // Both have params — all shared keys must agree
-                    for (k, va) in fp {
-                        if let Some(vb) = tp.get(k)
-                            && va != vb
-                        {
-                            return false;
-                        }
-                    }
-                }
-                _ => {}
+            // Same base — check params via the shared agreement rule. An
+            // unparsed side (no params map) is treated as a wildcard, matching
+            // the previous behavior.
+            if let (Some(fp), Some(tp)) = (from_parsed.as_ref(), to_parsed.as_ref()) {
+                return params_agree(&fp.params, &tp.params);
             }
             return true;
         }
