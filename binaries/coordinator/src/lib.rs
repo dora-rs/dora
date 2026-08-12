@@ -2462,35 +2462,88 @@ async fn start_inner(
                 dataflow_id,
                 daemon_id,
                 result,
-            } => match running_dataflows.get_mut(&dataflow_id) {
-                Some(dataflow) => {
-                    dataflow.pending_spawn_results.remove(&daemon_id);
-                    match result {
-                        Ok(()) => {
-                            handle_spawn_result_ok(
-                                dataflow,
-                                dataflow_id,
-                                &daemon_id,
-                                store.as_ref(),
-                            );
-                        }
-                        Err(err) => {
-                            handle_spawn_result_err(
-                                dataflow,
-                                dataflow_id,
-                                &daemon_id,
-                                err,
-                                store.as_ref(),
-                            );
-                        }
-                    };
+            } => {
+                // On an async partial spawn failure — one daemon reports a
+                // spawn error while others have already reported success — we
+                // must roll back the succeeded daemons and tear the dataflow
+                // down. Otherwise their node processes are orphaned and the
+                // dataflow lingers in `running_dataflows`, shown as `Running`
+                // forever despite a terminal `Failed` store record
+                // (dora-rs/dora#3134). `handle_spawn_result_err` already
+                // persists `Failed` + sets `spawn_result`; the rollback and
+                // in-memory teardown are decided here (inside the `get_mut`
+                // borrow) and performed once that borrow ends.
+                let mut teardown: Option<(BTreeSet<DaemonId>, String)> = None;
+                match running_dataflows.get_mut(&dataflow_id) {
+                    Some(dataflow) => {
+                        dataflow.pending_spawn_results.remove(&daemon_id);
+                        match result {
+                            Ok(()) => {
+                                handle_spawn_result_ok(
+                                    dataflow,
+                                    dataflow_id,
+                                    &daemon_id,
+                                    store.as_ref(),
+                                );
+                            }
+                            Err(err) => {
+                                // A failure only tears the dataflow down if it
+                                // transitions it to terminal *now*. If it was
+                                // already terminal (watchdog fired, or an
+                                // earlier daemon already failed it),
+                                // `handle_spawn_result_err`'s guard makes the
+                                // persist a no-op and we must not tear down a
+                                // second time.
+                                let was_pending = dataflow.spawn_result.is_pending();
+                                let err_msg =
+                                    format!("spawn failed on daemon `{daemon_id}`: {err}");
+                                handle_spawn_result_err(
+                                    dataflow,
+                                    dataflow_id,
+                                    &daemon_id,
+                                    err,
+                                    store.as_ref(),
+                                );
+                                if was_pending {
+                                    // Daemons no longer pending a spawn result:
+                                    // those that already succeeded, plus this
+                                    // one (which may have started some nodes
+                                    // before failing). Force-stop them all.
+                                    let rollback_daemons: BTreeSet<DaemonId> = dataflow
+                                        .daemons
+                                        .difference(&dataflow.pending_spawn_results)
+                                        .cloned()
+                                        .collect();
+                                    teardown = Some((rollback_daemons, err_msg));
+                                }
+                            }
+                        };
+                    }
+                    None => {
+                        tracing::warn!(
+                            "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
+                        );
+                    }
                 }
-                None => {
-                    tracing::warn!(
-                        "received DataflowSpawnResult, but no matching dataflow in `running_dataflows` map"
-                    );
+                if let Some((rollback_daemons, err_msg)) = teardown {
+                    // The `get_mut` borrow above has ended; safe to remove and
+                    // hand ownership to the shared rollback/teardown helper.
+                    if let Some(df) = running_dataflows.remove(&dataflow_id) {
+                        rollback_and_teardown_failed_spawn(
+                            dataflow_id,
+                            df,
+                            &rollback_daemons,
+                            err_msg,
+                            &mut running_dataflows,
+                            &mut archived_dataflows,
+                            &mut dataflow_results,
+                            &mut daemon_connections,
+                            &clock,
+                        )
+                        .await;
+                    }
                 }
-            },
+            }
             Event::DaemonStatusReport {
                 daemon_id,
                 running_dataflows: reported_dataflows,
@@ -3530,6 +3583,181 @@ fn cap_dataflow_results(
     }
 }
 
+/// Roll back the daemons that may already be running a doomed dataflow's nodes
+/// and tear down all in-memory state so `dora list`/`stop`/reconcile agree the
+/// dataflow is finished.
+///
+/// Shared by the two paths that abandon a spawn:
+/// - [`check_spawn_timeouts`], when no result arrives before the deadline, and
+/// - the `Event::DataflowSpawnResult` handler, when one daemon reports a spawn
+///   error while others have already reported success (async partial spawn
+///   failure — dora-rs/dora#3134).
+///
+/// The caller is responsible for first setting the terminal `spawn_result`
+/// error and persisting the `Failed` store record (both paths already do this
+/// with their own error message — the watchdog inline, the async path via
+/// [`handle_spawn_result_err`]); this helper only does the compensating
+/// rollback and the in-memory teardown that must follow. Without it on the
+/// async-failure path, the succeeded daemons' node processes are orphaned and
+/// the dataflow lingers in `running_dataflows` (persisted `Failed` but still
+/// shown as `Running` by `dora list`, forever, until a manual `dora stop`).
+///
+/// `df` must already have been removed from `running_dataflows` (it is passed
+/// by value); `running_dataflows` is still needed for the results cap.
+/// `rollback_daemons` is the set to force-stop — the daemons no longer pending
+/// a spawn result, i.e. those that either succeeded or failed after partially
+/// starting. `err_msg` is used for the final log line and the per-node
+/// synthesized `FailedToSpawn` cause.
+#[allow(clippy::too_many_arguments)]
+async fn rollback_and_teardown_failed_spawn(
+    uuid: DataflowId,
+    mut df: RunningDataflow,
+    rollback_daemons: &BTreeSet<DaemonId>,
+    err_msg: String,
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
+    dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
+    daemon_connections: &mut DaemonConnections,
+    clock: &HLC,
+) {
+    // Fire-and-forget rollback: enqueue StopDataflow on each daemon that may
+    // already be running nodes WITHOUT awaiting a reply. This solves two
+    // problems at once:
+    //
+    // 1. Cascade-failure risk: a reply-awaiting rollback (the original
+    //    `run::rollback_spawned_daemons` path) blocks
+    //    `TCP_READ_TIMEOUT = 30s` per wedged daemon. With N wedged
+    //    daemons, the heartbeat handler would block ~N*30s, during
+    //    which heartbeats to *other* healthy daemons aren't dispatched
+    //    and they trip the 30s disconnect threshold.
+    // 2. Cancellation safety: an earlier version wrapped
+    //    `rollback_spawned_daemons` in `tokio::time::timeout`, but
+    //    that future cancels mid-`send_and_receive`, which inserts a
+    //    pending reply *before* registering its own cleanup -- the
+    //    cancellation would leak `pending_replies` entries.
+    //    `connection.send()` is just an mpsc enqueue; no pending state,
+    //    no cleanup needed, fully cancellation-safe.
+    //
+    // Trade-off: we don't get per-daemon ack of "stop succeeded". That is
+    // acceptable -- the user is already getting a clear error, and unstopped
+    // daemons will be reclaimed by daemon-disconnect or operator `dora stop`.
+    let rollback_errors =
+        fire_and_forget_rollback(uuid, rollback_daemons, daemon_connections, clock).await;
+    if !rollback_errors.is_empty() {
+        let rollback_summary = rollback_errors
+            .iter()
+            .map(|(id, e)| format!("  {id}: {e}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        tracing::warn!(
+            dataflow = %uuid,
+            "rollback partial after failed spawn, {} dispatch(es) failed:\n{rollback_summary}",
+            rollback_errors.len(),
+        );
+    }
+
+    // Tear down in-memory state so the dataflow is terminal from every other
+    // handler's point of view (Check, List, reconcile, Clean, ...). The
+    // caller has already set `spawn_result` and persisted the `Failed` record.
+
+    // Final log message to anyone subscribed.
+    send_log_message(
+        &mut df.log_subscribers,
+        &LogMessage {
+            build_id: None,
+            dataflow_id: Some(uuid),
+            node_id: None,
+            daemon_id: None,
+            level: LogLevel::Error.into(),
+            target: Some("coordinator".into()),
+            module_path: None,
+            file: None,
+            line: None,
+            message: err_msg.clone(),
+            timestamp: clock.new_timestamp().get_time().to_system_time().into(),
+            fields: None,
+        },
+    )
+    .await;
+
+    // Close topic subscribers so attached clients see a clean end-of-
+    // stream rather than hanging.
+    close_topic_subscribers_on_finish(&mut df);
+
+    // Synthesize a `dataflow_results` entry so:
+    //   - `dora list` shows the dataflow as Failed (instead of
+    //     disappearing entirely — round-6 Finding 1)
+    //   - `dora stop <uuid>` returns DataflowStopped via the early-
+    //     return at the Stop handler (instead of "no known running
+    //     dataflow" — round-6 Finding 3)
+    //   - Late `DataflowFinishedOnDaemon` events can merge into the
+    //     same entry rather than being silently discarded (round-6
+    //     Finding 2; merge logic lives in that handler's Vacant arm).
+    //
+    // For each daemon that was assigned to this dataflow, emit a
+    // per-daemon `DataflowDaemonResult` with one `Err(NodeError {
+    // cause: FailedToSpawn(..) })` entry per node assigned to that
+    // daemon. This makes
+    // `results.values().all(DataflowDaemonResult::is_ok) == false`,
+    // which classifies the dataflow as `Failed` in
+    // `DataflowList` (lib.rs ~1019).
+    //
+    // **Crucially, iterate `df.node_to_daemon` for the daemon set,
+    // not `df.daemons`**: the daemon-disconnect cleanup path at
+    // `lib.rs:1893-1899` removes disconnected daemons from
+    // `df.daemons` but leaves `df.node_to_daemon` (the original
+    // assignment) intact. If we iterated `df.daemons` here and the
+    // disconnect-mid-spawn case had emptied it, the result map
+    // would be empty and List's classification check
+    // `results.values().all(is_ok)` would be vacuously true,
+    // misclassifying the dataflow as `Finished` (round-7
+    // Finding 2). The original assignment is the right source of
+    // truth for "what daemons should have been running this".
+    let synth_results = synthesize_failed_dataflow_results(&df, uuid, &err_msg, clock);
+    // Insert before draining stop senders so the DataflowResult
+    // they receive carries the synthesized node-level errors.
+    dataflow_results
+        .entry(uuid)
+        .or_default()
+        .extend(synth_results);
+
+    // Drain `stop_reply_senders`. Any in-flight `dora stop` calls were
+    // waiting for the dataflow to stop; that's effectively what just
+    // happened (this path took ownership and the dataflow will not
+    // proceed). Use `dataflow_result` (the helper used by the normal
+    // DataflowFinishedOnDaemon path) over the synthesized entry so
+    // the reply carries the per-node errors that `dora list` /
+    // `dora check` will also surface.
+    let stop_reply = ControlRequestReply::DataflowStopped {
+        uuid,
+        result: dataflow_results
+            .get(&uuid)
+            .map(|r| dataflow_result(r, uuid, clock))
+            .unwrap_or_else(|| DataflowResult::ok_empty(uuid, clock.new_timestamp())),
+    };
+    for sender in df.stop_reply_senders.drain(..) {
+        let _ = sender.send(Ok(stop_reply.clone()));
+    }
+
+    // Archive so `dora list` still surfaces the dataflow's name +
+    // descriptor for users investigating after the fact. Capped to
+    // prevent unbounded growth — uses the same MAX_ARCHIVED_DATAFLOWS
+    // limit as the DataflowFinishedOnDaemon teardown.
+    archived_dataflows
+        .entry(uuid)
+        .or_insert_with(|| ArchivedDataflow::from(&df));
+    while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
+        archived_dataflows.shift_remove_index(0);
+    }
+
+    // Cap LAST: the synthesized entry was just read for the stop reply and
+    // archival above, so evicting it now (if it is over-cap finished
+    // history) can't misreport this dataflow as `ok_empty`. `uuid` is no
+    // longer in `running_dataflows` here.
+    cap_dataflow_results(dataflow_results, running_dataflows);
+    // `df` drops here, releasing all remaining resources.
+}
+
 /// Rescue of [#1593](https://github.com/dora-rs/dora/pull/1593)
 /// (issue [#1592](https://github.com/dora-rs/dora/issues/1592)).
 #[allow(clippy::too_many_arguments)]
@@ -3574,45 +3802,9 @@ async fn check_spawn_timeouts(
             "spawn timeout: releasing waiters and rolling back",
         );
 
-        // Fire-and-forget rollback: enqueue StopDataflow on each succeeded
-        // daemon WITHOUT awaiting a reply. This solves two problems at once:
-        //
-        // 1. Cascade-failure risk: a reply-awaiting rollback (the original
-        //    `run::rollback_spawned_daemons` path) blocks
-        //    `TCP_READ_TIMEOUT = 30s` per wedged daemon. With N wedged
-        //    daemons, the heartbeat handler would block ~N*30s, during
-        //    which heartbeats to *other* healthy daemons aren't dispatched
-        //    and they trip the 30s disconnect threshold.
-        // 2. Cancellation safety: an earlier version wrapped
-        //    `rollback_spawned_daemons` in `tokio::time::timeout`, but
-        //    that future cancels mid-`send_and_receive`, which inserts a
-        //    pending reply *before* registering its own cleanup -- the
-        //    cancellation would leak `pending_replies` entries.
-        //    `connection.send()` is just an mpsc enqueue; no pending state,
-        //    no cleanup needed, fully cancellation-safe.
-        //
-        // Trade-off: we don't get per-daemon ack of "stop succeeded". For
-        // the watchdog this is acceptable -- the user is already getting
-        // a clear timeout error, and unstopped daemons will be reclaimed
-        // by daemon-disconnect or operator `dora stop`.
-        let rollback_errors =
-            fire_and_forget_rollback(uuid, &succeeded_daemons, daemon_connections, clock).await;
-        if !rollback_errors.is_empty() {
-            let rollback_summary = rollback_errors
-                .iter()
-                .map(|(id, e)| format!("  {id}: {e}"))
-                .collect::<Vec<_>>()
-                .join("\n");
-            tracing::warn!(
-                dataflow = %uuid,
-                "rollback partial after spawn timeout, {} dispatch(es) failed:\n{rollback_summary}",
-                rollback_errors.len(),
-            );
-        }
-
-        // Fire the spawn_result error, persist Failed, then tear down
-        // in-memory state so the dataflow is terminal from every other
-        // handler's point of view (Check, List, reconcile, Clean, ...).
+        // Fire the spawn_result error and persist Failed, then delegate the
+        // rollback of `succeeded_daemons` and the in-memory teardown to the
+        // shared helper (also used by the async partial-spawn-failure path).
         let Some(mut df) = running_dataflows.remove(&uuid) else {
             // Concurrent removal — nothing more to do. (Not currently
             // reachable from any other code path; defensive.)
@@ -3642,103 +3834,18 @@ async fn check_spawn_timeouts(
                 "failed to persist spawn timeout: {e}",
             );
         }
-
-        // Final log message to anyone subscribed.
-        send_log_message(
-            &mut df.log_subscribers,
-            &LogMessage {
-                build_id: None,
-                dataflow_id: Some(uuid),
-                node_id: None,
-                daemon_id: None,
-                level: LogLevel::Error.into(),
-                target: Some("coordinator".into()),
-                module_path: None,
-                file: None,
-                line: None,
-                message: err_msg.clone(),
-                timestamp: clock.new_timestamp().get_time().to_system_time().into(),
-                fields: None,
-            },
+        rollback_and_teardown_failed_spawn(
+            uuid,
+            df,
+            &succeeded_daemons,
+            err_msg,
+            running_dataflows,
+            archived_dataflows,
+            dataflow_results,
+            daemon_connections,
+            clock,
         )
         .await;
-
-        // Close topic subscribers so attached clients see a clean end-of-
-        // stream rather than hanging.
-        close_topic_subscribers_on_finish(&mut df);
-
-        // Synthesize a `dataflow_results` entry so:
-        //   - `dora list` shows the dataflow as Failed (instead of
-        //     disappearing entirely — round-6 Finding 1)
-        //   - `dora stop <uuid>` returns DataflowStopped via the early-
-        //     return at the Stop handler (instead of "no known running
-        //     dataflow" — round-6 Finding 3)
-        //   - Late `DataflowFinishedOnDaemon` events can merge into the
-        //     same entry rather than being silently discarded (round-6
-        //     Finding 2; merge logic lives in that handler's Vacant arm).
-        //
-        // For each daemon that was assigned to this dataflow, emit a
-        // per-daemon `DataflowDaemonResult` with one `Err(NodeError {
-        // cause: FailedToSpawn(..) })` entry per node assigned to that
-        // daemon. This makes
-        // `results.values().all(DataflowDaemonResult::is_ok) == false`,
-        // which classifies the dataflow as `Failed` in
-        // `DataflowList` (lib.rs ~1019).
-        //
-        // **Crucially, iterate `df.node_to_daemon` for the daemon set,
-        // not `df.daemons`**: the daemon-disconnect cleanup path at
-        // `lib.rs:1893-1899` removes disconnected daemons from
-        // `df.daemons` but leaves `df.node_to_daemon` (the original
-        // assignment) intact. If we iterated `df.daemons` here and the
-        // disconnect-mid-spawn case had emptied it, the result map
-        // would be empty and List's classification check
-        // `results.values().all(is_ok)` would be vacuously true,
-        // misclassifying the dataflow as `Finished` (round-7
-        // Finding 2). The original assignment is the right source of
-        // truth for "what daemons should have been running this".
-        let synth_results = synthesize_failed_dataflow_results(&df, uuid, &err_msg, clock);
-        // Insert before draining stop senders so the DataflowResult
-        // they receive carries the synthesized node-level errors.
-        dataflow_results
-            .entry(uuid)
-            .or_default()
-            .extend(synth_results);
-
-        // Drain `stop_reply_senders`. Any in-flight `dora stop` calls were
-        // waiting for the dataflow to stop; that's effectively what just
-        // happened (the watchdog took ownership and the dataflow will not
-        // proceed). Use `dataflow_result` (the helper used by the normal
-        // DataflowFinishedOnDaemon path) over the synthesized entry so
-        // the reply carries the per-node errors that `dora list` /
-        // `dora check` will also surface.
-        let stop_reply = ControlRequestReply::DataflowStopped {
-            uuid,
-            result: dataflow_results
-                .get(&uuid)
-                .map(|r| dataflow_result(r, uuid, clock))
-                .unwrap_or_else(|| DataflowResult::ok_empty(uuid, clock.new_timestamp())),
-        };
-        for sender in df.stop_reply_senders.drain(..) {
-            let _ = sender.send(Ok(stop_reply.clone()));
-        }
-
-        // Archive so `dora list` still surfaces the dataflow's name +
-        // descriptor for users investigating after the fact. Capped to
-        // prevent unbounded growth — uses the same MAX_ARCHIVED_DATAFLOWS
-        // limit as the DataflowFinishedOnDaemon teardown.
-        archived_dataflows
-            .entry(uuid)
-            .or_insert_with(|| ArchivedDataflow::from(&df));
-        while archived_dataflows.len() > MAX_ARCHIVED_DATAFLOWS {
-            archived_dataflows.shift_remove_index(0);
-        }
-
-        // Cap LAST: the synthesized entry was just read for the stop reply and
-        // archival above, so evicting it now (if it is over-cap finished
-        // history) can't misreport this dataflow as `ok_empty`. `uuid` is no
-        // longer in `running_dataflows` here.
-        cap_dataflow_results(dataflow_results, running_dataflows);
-        // `df` drops here, releasing all remaining resources.
     }
 }
 
@@ -8116,6 +8223,173 @@ mod tests {
             }
             other => panic!("expected Failed, got: {other:?}"),
         }
+    }
+
+    /// dora-rs/dora#3134: an async partial spawn failure — one daemon reports
+    /// a spawn error while another has already reported success — must roll
+    /// back the succeeded daemon and remove the dataflow from
+    /// `running_dataflows`, not merely record `Failed`. Otherwise the
+    /// succeeded daemon's nodes are orphaned and `dora list` shows the
+    /// dataflow as `Running` forever (in-memory vs. store divergence).
+    ///
+    /// This replays the exact statements the `Event::DataflowSpawnResult`
+    /// handler runs on that path, so a future refactor that drops the
+    /// rollback/teardown would surface here.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn async_partial_spawn_failure_rolls_back_succeeded_daemon_and_tears_down() {
+        #[derive(serde::Deserialize)]
+        struct OutboundRaw {
+            params: Timestamped<DaemonCoordinatorEvent>,
+        }
+
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let clock = HLC::default();
+
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_a = DaemonId::new(Some("daemon-a".to_string())); // already succeeded
+        let daemon_b = DaemonId::new(Some("daemon-b".to_string())); // fails now
+
+        // Mock the succeeded daemon `a` so we can observe the rollback stop.
+        let (tx_a, mut rx_a) = tokio::sync::mpsc::channel::<String>(8);
+        let pending_replies_a = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let conn_a =
+            crate::state::DaemonConnection::new(tx_a, pending_replies_a.clone(), BTreeMap::new());
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_a.clone(), conn_a);
+
+        let stop_seen = Arc::new(tokio::sync::Mutex::new(false));
+        let stop_seen_task = stop_seen.clone();
+        let daemon_a_task = tokio::spawn(async move {
+            while let Some(outbound) = rx_a.recv().await {
+                let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
+                if let DaemonCoordinatorEvent::StopDataflow { .. } = outbound_raw.params.inner {
+                    *stop_seen_task.lock().await = true;
+                }
+            }
+        });
+
+        // `a` succeeded (in `daemons`, not pending); `b` was pending and is
+        // about to report failure. Both have a node assigned so the
+        // synthesized Failed results are non-empty.
+        let mut df =
+            test_running_dataflow(dataflow_id, daemon_a.clone(), "sender".to_string().into());
+        df.daemons.insert(daemon_b.clone());
+        df.pending_spawn_results.insert(daemon_b.clone());
+        df.node_to_daemon
+            .insert("receiver".to_string().into(), daemon_b.clone());
+        assert!(df.spawn_result.is_pending());
+
+        // A `dora stop` caller and a spawn waiter must both be released.
+        let (stop_tx, stop_rx) = tokio::sync::oneshot::channel();
+        df.stop_reply_senders.push(stop_tx);
+        let (waiter_tx, waiter_rx) = tokio::sync::oneshot::channel();
+        df.spawn_result.register(waiter_tx);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(dataflow_id, df);
+        let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
+        let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
+            IndexMap::new();
+
+        // === replay of the Event::DataflowSpawnResult Err arm ===
+        let (rollback_daemons, err_msg) = {
+            let dataflow = running_dataflows.get_mut(&dataflow_id).unwrap();
+            dataflow.pending_spawn_results.remove(&daemon_b);
+            let was_pending = dataflow.spawn_result.is_pending();
+            let err_msg = format!("spawn failed on daemon `{daemon_b}`: boom");
+            handle_spawn_result_err(
+                dataflow,
+                dataflow_id,
+                &daemon_b,
+                eyre!("boom"),
+                store.as_ref(),
+            );
+            assert!(was_pending, "b's failure should be the terminal transition");
+            let rollback_daemons: BTreeSet<DaemonId> = dataflow
+                .daemons
+                .difference(&dataflow.pending_spawn_results)
+                .cloned()
+                .collect();
+            (rollback_daemons, err_msg)
+        };
+        // Both the succeeded `a` and the failed `b` (which may have started
+        // some nodes before failing) are no longer pending, so both roll back.
+        assert!(rollback_daemons.contains(&daemon_a));
+        assert!(rollback_daemons.contains(&daemon_b));
+
+        let df = running_dataflows.remove(&dataflow_id).unwrap();
+        rollback_and_teardown_failed_spawn(
+            dataflow_id,
+            df,
+            &rollback_daemons,
+            err_msg,
+            &mut running_dataflows,
+            &mut archived_dataflows,
+            &mut dataflow_results,
+            &mut daemon_connections,
+            &clock,
+        )
+        .await;
+        // === end replay ===
+
+        // 1. The succeeded daemon must have received a StopDataflow rollback.
+        let saw_stop = timeout(TokioDuration::from_secs(1), async {
+            loop {
+                if *stop_seen.lock().await {
+                    return true;
+                }
+                tokio::time::sleep(TokioDuration::from_millis(5)).await;
+            }
+        })
+        .await
+        .unwrap_or(false);
+        assert!(
+            saw_stop,
+            "rollback must dispatch StopDataflow to the succeeded daemon"
+        );
+
+        // 2. The dataflow must be gone from `running_dataflows` — the core
+        //    #3134 regression (it used to linger, shown as Running forever).
+        assert!(
+            !running_dataflows.contains_key(&dataflow_id),
+            "failed dataflow must be torn down, not left in running_dataflows"
+        );
+
+        // 3. Persisted Failed and archived.
+        let records = store.list_dataflows().expect("store list");
+        let record = records
+            .iter()
+            .find(|r| r.uuid == dataflow_id)
+            .expect("dataflow persisted");
+        assert!(
+            matches!(
+                record.status,
+                dora_coordinator_store::DataflowStatus::Failed { .. }
+            ),
+            "dataflow must be persisted Failed, got: {:?}",
+            record.status
+        );
+        assert!(
+            archived_dataflows.contains_key(&dataflow_id),
+            "dataflow should be archived for post-mortem `dora list`"
+        );
+
+        // 4. In-flight `dora stop` and spawn waiters are released, not hung.
+        let stop_reply = timeout(TokioDuration::from_secs(1), stop_rx)
+            .await
+            .expect("stop waiter should resolve, not hang")
+            .expect("sender alive");
+        assert!(matches!(
+            stop_reply,
+            Ok(ControlRequestReply::DataflowStopped { .. })
+        ));
+        let spawn_reply = timeout(TokioDuration::from_secs(1), waiter_rx)
+            .await
+            .expect("spawn waiter should resolve, not hang")
+            .expect("sender alive");
+        assert!(spawn_reply.is_err(), "aborted spawn must surface as Err");
+
+        daemon_a_task.abort();
     }
 
     // -------------------------------------------------------------------
