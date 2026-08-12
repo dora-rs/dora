@@ -94,10 +94,14 @@ impl ClusterConfig {
             // (e.g. IPv6 literals), and are folded into the ssh *target* rather
             // than the remote command string. `zenoh_peer` *does* land in the
             // remote command, so it is validated (with a wider charset) above.
-            validate_shell_safe(&format!("machine id `{}`", m.id), &m.id)?;
+            validate_shell_safe(&format!("machine id `{}`", m.id), &m.id, true)?;
             for (k, v) in &m.labels {
-                validate_shell_safe(&format!("label key `{k}` on machine `{}`", m.id), k)?;
-                validate_shell_safe(&format!("label value `{v}` on machine `{}`", m.id), v)?;
+                validate_shell_safe(&format!("label key `{k}` on machine `{}`", m.id), k, true)?;
+                validate_shell_safe(
+                    &format!("label value `{v}` on machine `{}`", m.id),
+                    v,
+                    false,
+                )?;
             }
             if !seen.insert(&m.id) {
                 bail!("duplicate machine id: `{}`", m.id);
@@ -119,12 +123,25 @@ impl ClusterConfig {
 /// Reject a value that will be interpolated into the remote SSH command unless
 /// it consists only of the safe identifier charset `[a-zA-Z0-9_.-]`. `what`
 /// names the field for the error message.
-fn validate_shell_safe(what: &str, value: &str) -> eyre::Result<()> {
+///
+/// When `at_token_start` is set, a leading `-` is also rejected. A value that
+/// *begins* a shell token on the remote command line — the id in
+/// `--machine-id {id}`, or the first `{k}=` of `--labels {k}=v,...` — would
+/// otherwise be parsed by clap as an option flag rather than the argument to
+/// the preceding option, so the daemon never starts and the failure surfaces
+/// only later as a confusing "did not register" timeout. A label *value* sits
+/// after `{k}=` inside the token, so a leading `-` there (e.g. `priority: "-1"`)
+/// is harmless and must stay allowed. (Sibling of dora-rs/dora#3135, which
+/// guards the `host`/`user` fields on the ssh-target side.)
+fn validate_shell_safe(what: &str, value: &str, at_token_start: bool) -> eyre::Result<()> {
     if let Some(ch) = value
         .chars()
         .find(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-' && *c != '.')
     {
         bail!("{what} contains invalid character `{ch}` -- only [a-zA-Z0-9_.-] are allowed");
+    }
+    if at_token_start && value.starts_with('-') {
+        bail!("{what} must not start with `-`");
     }
     Ok(())
 }
@@ -291,6 +308,53 @@ mod tests {
             assert!(
                 err.contains("invalid character"),
                 "id `{bad}` should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn reject_id_with_leading_dash() {
+        // A leading `-` passes the charset check but makes the remote
+        // `dora daemon --machine-id {id}` parse the id as an option flag, so the
+        // daemon silently fails to start. Reject it up front.
+        for bad in ["-x", "--help", "-"] {
+            let f = write_yaml(&format!(
+                "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: \"{bad}\"\n    host: h\n"
+            ));
+            let err = ClusterConfig::load(f.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("must not start with `-`"),
+                "id `{bad}` should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn reject_label_key_with_leading_dash() {
+        // A label *key* can begin the `--labels {k}=...` token, so a leading `-`
+        // there is the same option-flag hazard as the machine id.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: h\n    labels:\n      \"-gpu\": \"v\"\n",
+        );
+        let err = ClusterConfig::load(f.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("must not start with `-`") && err.contains("label key"),
+            "label key with leading dash should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn accept_label_value_with_leading_dash() {
+        // A label *value* sits after `{k}=` in the `--labels {k}={v}` token, so a
+        // leading `-` there is never parsed as an option flag and must stay
+        // valid (e.g. a numeric `-1` priority or a `-rc1` version tag).
+        for v in ["-1", "-rc1"] {
+            let f = write_yaml(&format!(
+                "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: h\n    labels:\n      priority: \"{v}\"\n"
+            ));
+            assert!(
+                ClusterConfig::load(f.path()).is_ok(),
+                "label value `{v}` should be accepted"
             );
         }
     }
