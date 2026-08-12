@@ -871,10 +871,11 @@ async fn handle_cross_data_frame(
     };
     let dst = writer.data_slice_mut();
     if let Err(e) = stream.read_exact(dst).await {
-        // The writer drops here with `finished == false`: the seqlock
-        // generation rolls back to `pre` (readers see the previous stable
-        // frame, not a torn one). The ack info lets the caller fail the
-        // origin's pending write instead of stranding it for the timeout.
+        // The writer drops without `finish`: the seqlock generation stays
+        // odd (in-progress) — readers reject the torn frame and the next
+        // full write self-heals (see the NOTE on `DirectMirrorWriter`).
+        // The ack info lets the caller fail the origin's pending write
+        // instead of stranding it for the timeout.
         return Err(CrossFrameError::with_ack(
             format!("read payload: {e}"),
             dataflow_id,
