@@ -1185,9 +1185,8 @@ static CROSS_WRITE_SEQ: std::sync::LazyLock<
 /// Pools whose direct-TCP write path is currently degraded to the zenoh
 /// relay. The fallback is the steady state on a broken link, so without
 /// this tracking every frame would warn — flooding the log. Keyed like
-/// [`CROSS_WRITE_PENDING`]: `(dataflow id, pool id)`. Entries survive a
-/// dataflow end (a pool that never recovered) — harmless, keyed by a
-/// fresh UUID per dataflow and bounded by the pool count.
+/// [`CROSS_WRITE_PENDING`]: `(dataflow id, pool id)`. Drained per
+/// dataflow in `finish_dataflow`.
 static CROSS_DIRECT_DEGRADED: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<(Uuid, String)>>,
 > = std::sync::LazyLock::new(std::sync::Mutex::default);
@@ -7692,6 +7691,28 @@ impl Daemon {
         // tasks and can create duplicate consumers.
         if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id) {
             subscriber.abort();
+        }
+
+        // Drain this dataflow's per-(dataflow, pool) cross-write state:
+        // these maps are keyed by a fresh per-dataflow UUID and are never
+        // touched again after finish, so without this a long-lived daemon
+        // cycling many cross-machine dataflows accumulates one entry per
+        // (dataflow, pool) forever. The direct-write lock map and the
+        // write-seq counters; the degradation set is drained too (a pool
+        // that never recovered would otherwise linger).
+        {
+            let mut locks = CROSS_POOL_WRITE_LOCKS_ASYNC.lock().await;
+            locks.retain(|(df, _), _| *df != dataflow_id);
+        }
+        {
+            let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+            seqs.retain(|(df, _), _| *df != dataflow_id);
+        }
+        {
+            let mut degraded = CROSS_DIRECT_DEGRADED
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            degraded.retain(|(df, _)| *df != dataflow_id);
         }
 
         Ok(())
