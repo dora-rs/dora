@@ -452,7 +452,15 @@ fn write_cross_pool_data(
     }
     let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
     let copy_len = tensor_data.len().min(size);
-    if data_offset + copy_len > shmem.len() {
+    // Checked add: a corrupt header's data_offset could otherwise wrap
+    // `data_offset + copy_len` past the bounds check.
+    let Some(end) = data_offset.checked_add(copy_len) else {
+        tracing::warn!(
+            "memory pool: {shared_memory_id} data_offset {data_offset} + {copy_len} overflows usize, dropping frame"
+        );
+        return false;
+    };
+    if end > shmem.len() {
         tracing::warn!(
             "memory pool: {shared_memory_id} data_offset {data_offset} + {copy_len} exceeds shmem size {}, dropping frame",
             shmem.len()
@@ -526,6 +534,16 @@ impl DirectMirrorWriter {
         unsafe { seqlock_end(self.gen_addr as *mut u64, self.pre, true) };
     }
 }
+
+// NOTE on the failed-write path (no `Drop` rollback here): a payload
+// read that fails mid-frame leaves the generation odd (in-progress).
+// That is deliberate — readers reject the torn frame (they never see
+// half-written data), and the next full write self-heals the segment
+// (`seqlock_begin_if_even` finds the odd generation, keeps it, writes
+// the full frame, and publishes the even one). Rolling the generation
+// back to `pre` instead would *mark the torn bytes as a complete frame*,
+// which is worse than blocking. The origin fails fast through
+// `MemoryPoolWriteAck { ok: false }` (see `serve_cross_data_frame`).
 
 /// Port for the mirror daemon's direct-TCP data listener. Overridable for
 /// deployment (e.g. the rendezvous machine must publish this port to the
@@ -624,28 +642,88 @@ async fn serve_cross_data_frame(
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
     stream: &mut tokio::net::TcpStream,
 ) -> Result<bool, String> {
-    let Some((dataflow_id, shared_memory_id, seq)) =
-        handle_cross_data_frame(stream, memory_pool, machine_id).await?
-    else {
-        return Ok(false);
-    };
-    // Remote commit ack via zenoh (the origin's pending reply waits on it).
-    publish_memory_pool_event(
-        session,
-        clock,
-        &dataflow_id,
-        &InterDaemonEvent::MemoryPoolWriteAck {
-            dataflow_id,
-            shared_memory_id,
-            seq,
-            ok: true,
-            error: None,
-        },
-        shm_provider,
-    )
-    .await
-    .map_err(|e| format!("failed to publish MemoryPoolWriteAck: {e}"))?;
-    Ok(true)
+    match handle_cross_data_frame(stream, memory_pool, machine_id).await {
+        Ok(Some((dataflow_id, shared_memory_id, seq))) => {
+            // Remote commit ack via zenoh (the origin's pending reply
+            // waits on it).
+            publish_memory_pool_event(
+                session,
+                clock,
+                &dataflow_id,
+                &InterDaemonEvent::MemoryPoolWriteAck {
+                    dataflow_id,
+                    shared_memory_id,
+                    seq,
+                    ok: true,
+                    error: None,
+                },
+                shm_provider,
+            )
+            .await
+            .map_err(|e| format!("failed to publish MemoryPoolWriteAck: {e}"))?;
+            Ok(true)
+        }
+        Ok(None) => Ok(false),
+        Err(err) => {
+            // The frame's identity is known: fail the origin's pending
+            // write fast (mirror could not write the frame — read error,
+            // segment missing, bounds violation) instead of making it
+            // wait out the commit-ack timeout.
+            if let Some((dataflow_id, shared_memory_id, seq)) = err.ack
+                && let Err(e) = publish_memory_pool_event(
+                    session,
+                    clock,
+                    &dataflow_id,
+                    &InterDaemonEvent::MemoryPoolWriteAck {
+                        dataflow_id,
+                        shared_memory_id,
+                        seq,
+                        ok: false,
+                        error: Some(err.message.clone()),
+                    },
+                    shm_provider,
+                )
+                .await
+            {
+                tracing::warn!(
+                    "memory pool: failed to publish failed-write MemoryPoolWriteAck: {e}"
+                );
+            }
+            Err(err.message)
+        }
+    }
+}
+
+/// Frame-level error from [`handle_cross_data_frame`]. Carries the
+/// frame's identity `(dataflow id, pool id, seq)` once the header has
+/// been parsed, so the caller can publish `MemoryPoolWriteAck { ok: false }`
+/// and let the origin fail fast instead of waiting out the commit-ack
+/// timeout. Errors before the header is complete carry no ack info.
+#[derive(Debug)]
+struct CrossFrameError {
+    message: String,
+    ack: Option<(Uuid, String, u64)>,
+}
+
+impl CrossFrameError {
+    fn new(message: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            ack: None,
+        }
+    }
+
+    fn with_ack(
+        message: impl Into<String>,
+        dataflow_id: Uuid,
+        shared_memory_id: String,
+        seq: u64,
+    ) -> Self {
+        Self {
+            message: message.into(),
+            ack: Some((dataflow_id, shared_memory_id, seq)),
+        }
+    }
 }
 
 /// Frame-parse + mirror-write core of the direct-TCP data plane (no zenoh
@@ -655,63 +733,75 @@ async fn handle_cross_data_frame(
     stream: &mut tokio::net::TcpStream,
     memory_pool: &MemoryPoolManager,
     machine_id: &str,
-) -> Result<Option<(Uuid, String, u64)>, String> {
+) -> Result<Option<(Uuid, String, u64)>, CrossFrameError> {
     use tokio::io::AsyncReadExt;
 
     let mut magic = [0u8; 4];
     match stream.read_exact(&mut magic).await {
         Ok(_) => {}
         Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(e) => return Err(format!("read magic: {e}")),
+        Err(e) => return Err(CrossFrameError::new(format!("read magic: {e}"))),
     }
     if u32::from_be_bytes(magic) != CROSS_DATA_MAGIC {
-        return Err("bad frame magic (not a memory-pool data connection?)".to_string());
+        return Err(CrossFrameError::new(
+            "bad frame magic (not a memory-pool data connection?)",
+        ));
     }
     let mut df_bytes = [0u8; 16];
     stream
         .read_exact(&mut df_bytes)
         .await
-        .map_err(|e| format!("read dataflow id: {e}"))?;
+        .map_err(|e| CrossFrameError::new(format!("read dataflow id: {e}")))?;
     let dataflow_id = Uuid::from_bytes(df_bytes);
     let mut pool_len = [0u8; 4];
     stream
         .read_exact(&mut pool_len)
         .await
-        .map_err(|e| format!("read pool id length: {e}"))?;
+        .map_err(|e| CrossFrameError::new(format!("read pool id length: {e}")))?;
     let pool_len = u32::from_be_bytes(pool_len) as usize;
     if pool_len > 1024 {
-        return Err(format!("pool id too long ({pool_len} bytes)"));
+        return Err(CrossFrameError::new(format!(
+            "pool id too long ({pool_len} bytes)"
+        )));
     }
     let mut pool_bytes = vec![0u8; pool_len];
     stream
         .read_exact(&mut pool_bytes)
         .await
-        .map_err(|e| format!("read pool id: {e}"))?;
+        .map_err(|e| CrossFrameError::new(format!("read pool id: {e}")))?;
     let shared_memory_id =
-        String::from_utf8(pool_bytes).map_err(|_| "pool id not UTF-8".to_string())?;
+        String::from_utf8(pool_bytes).map_err(|_| CrossFrameError::new("pool id not UTF-8"))?;
     let mut seq_bytes = [0u8; 8];
     stream
         .read_exact(&mut seq_bytes)
         .await
-        .map_err(|e| format!("read seq: {e}"))?;
+        .map_err(|e| CrossFrameError::new(format!("read seq: {e}")))?;
     let seq = u64::from_be_bytes(seq_bytes);
     let mut size_bytes = [0u8; 8];
     stream
         .read_exact(&mut size_bytes)
         .await
-        .map_err(|e| format!("read size: {e}"))?;
+        .map_err(|e| CrossFrameError::new(format!("read size: {e}")))?;
     let size = u64::from_be_bytes(size_bytes) as usize;
 
     let dataflow_str = dataflow_id.to_string();
     if !memory_pool.is_cross(&dataflow_str, &shared_memory_id) {
-        return Err(format!(
-            "write for a pool without a cross-machine entry: {shared_memory_id}"
+        return Err(CrossFrameError::with_ack(
+            format!("write for a pool without a cross-machine entry: {shared_memory_id}"),
+            dataflow_id,
+            shared_memory_id.clone(),
+            seq,
         ));
     }
     let Some(shmem_name) =
         MemoryPoolManager::cross_pool_shmem_name(machine_id, &dataflow_str, &shared_memory_id)
     else {
-        return Err(format!("invalid pool id {shared_memory_id}"));
+        return Err(CrossFrameError::with_ack(
+            format!("invalid pool id {shared_memory_id}"),
+            dataflow_id,
+            shared_memory_id.clone(),
+            seq,
+        ));
     };
     // Serialise concurrent direct writes to the same pool first (async
     // lock: a std MutexGuard cannot be held across an await), so nothing
@@ -734,29 +824,64 @@ async fn handle_cross_data_frame(
     // lives inside a block so the `Shmem` local (with its drop flag) is
     // consumed before the read await.
     let mut writer = {
-        let shmem = ShmemConf::new()
-            .os_id(&shmem_name)
-            .open()
-            .map_err(|e| format!("cannot open mirror {shmem_name}: {e}"))?;
+        let shmem = ShmemConf::new().os_id(&shmem_name).open().map_err(|e| {
+            CrossFrameError::with_ack(
+                format!("cannot open mirror {shmem_name}: {e}"),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
+            )
+        })?;
         let shmem_ptr = shmem.as_ptr();
         let magic8 = unsafe { std::slice::from_raw_parts(shmem_ptr, 8) };
         if magic8 != DORADMA_MAGIC {
-            return Err(format!("{shared_memory_id} header magic mismatch"));
+            return Err(CrossFrameError::with_ack(
+                format!("{shared_memory_id} header magic mismatch"),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
+            ));
         }
         let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
-        if data_offset + size > shmem.len() {
-            return Err(format!(
-                "{shared_memory_id} data_offset {data_offset} + {size} exceeds shmem size {}",
-                shmem.len()
+        // Checked add: `size` is wire-controlled (u64 read straight off
+        // the socket), so `data_offset + size` can wrap to a small value
+        // and pass the bounds check — then a `size`-byte slice would be
+        // constructed past the mapping (UB; a remote-triggerable abort in
+        // debug builds). Reject the overflow explicitly.
+        let Some(end) = data_offset.checked_add(size) else {
+            return Err(CrossFrameError::with_ack(
+                format!("{shared_memory_id} data_offset {data_offset} + {size} overflows usize"),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
+            ));
+        };
+        if end > shmem.len() {
+            return Err(CrossFrameError::with_ack(
+                format!(
+                    "{shared_memory_id} data_offset {data_offset} + {size} exceeds shmem size {}",
+                    shmem.len()
+                ),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
             ));
         }
         DirectMirrorWriter::new(shmem, data_offset, size)
     };
     let dst = writer.data_slice_mut();
-    stream
-        .read_exact(dst)
-        .await
-        .map_err(|e| format!("read payload: {e}"))?;
+    if let Err(e) = stream.read_exact(dst).await {
+        // The writer drops here with `finished == false`: the seqlock
+        // generation rolls back to `pre` (readers see the previous stable
+        // frame, not a torn one). The ack info lets the caller fail the
+        // origin's pending write instead of stranding it for the timeout.
+        return Err(CrossFrameError::with_ack(
+            format!("read payload: {e}"),
+            dataflow_id,
+            shared_memory_id,
+            seq,
+        ));
+    }
     writer.finish();
     Ok(Some((dataflow_id, shared_memory_id, seq)))
 }
@@ -840,7 +965,15 @@ fn read_pool_segment_data(shmem_name: &str, size: usize) -> Result<Vec<u8>, Stri
         return Err(format!("segment {shmem_name} header magic mismatch"));
     }
     let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
-    if data_offset + size > shmem.len() {
+    // Checked add: same wrapping concern as the direct-TCP frame path
+    // (size comes from the node request, not the socket, but a corrupt
+    // header's data_offset must not wrap the bounds check either).
+    let Some(end) = data_offset.checked_add(size) else {
+        return Err(format!(
+            "segment {shmem_name} data_offset {data_offset} + {size} overflows usize"
+        ));
+    };
+    if end > shmem.len() {
         return Err(format!(
             "segment {shmem_name} data_offset {data_offset} + {size} exceeds shmem size {}",
             shmem.len()
@@ -11906,6 +12039,180 @@ mod cross_pool_write_tests {
         assert!(note_direct_recovered(df, "pool_sender_node_2"));
         // A fresh dataflow never collides (keyed by UUID).
         assert!(note_direct_degraded(Uuid::new_v4(), &pool));
+    }
+
+    /// Build a direct-TCP frame header (magic + dataflow + pool + seq +
+    /// size) with no payload bytes.
+    fn build_frame_header(dataflow_id: Uuid, pool_id: &str, seq: u64, size: u64) -> Vec<u8> {
+        let mut frame = Vec::new();
+        frame.extend_from_slice(&CROSS_DATA_MAGIC.to_be_bytes());
+        frame.extend_from_slice(dataflow_id.as_bytes());
+        let pool_bytes = pool_id.as_bytes();
+        frame.extend_from_slice(&(pool_bytes.len() as u32).to_be_bytes());
+        frame.extend_from_slice(pool_bytes);
+        frame.extend_from_slice(&seq.to_be_bytes());
+        frame.extend_from_slice(&size.to_be_bytes());
+        frame
+    }
+
+    /// A wire-controlled `size` near `u64::MAX` must be rejected, not
+    /// wrap `data_offset + size` past the bounds check (which would
+    /// construct a `size`-byte slice past the mapping — UB, and a
+    /// remote-triggerable abort in debug builds).
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn wire_size_overflow_is_rejected_not_aborted() {
+        use tokio::io::AsyncWriteExt;
+
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 64 * 1024;
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        let shmem_name =
+            MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                .unwrap();
+        let _cleanup = ShmemCleanup(shmem_name.clone());
+        let memory_pool = MemoryPoolManager::new();
+        memory_pool.register_cross_pool(
+            dataflow_id.to_string(),
+            pool_id.to_string(),
+            "A".to_string(),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            handle_cross_data_frame(&mut stream, &memory_pool, "B").await
+        });
+
+        // data_offset + u64::MAX wraps to a small value without the
+        // checked add — the frame must be rejected with the ack info.
+        let frame = build_frame_header(dataflow_id, pool_id, 1, u64::MAX);
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        client.write_all(&frame).await.unwrap();
+
+        let err = server.await.unwrap().unwrap_err();
+        assert!(
+            err.ack == Some((dataflow_id, pool_id.to_string(), 1)),
+            "overflow rejection must carry the ack info: {err:?}"
+        );
+        assert!(
+            err.message.contains("overflow"),
+            "expected overflow rejection, got: {}",
+            err.message
+        );
+        // The mirror's seqlock generation is untouched: no writer began,
+        // so it stays at the initial odd (in-progress) value 1.
+        let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        assert_eq!(
+            generation, 1,
+            "generation must be untouched (no write began)"
+        );
+    }
+
+    /// A payload read that fails mid-frame (TCP drop) leaves the seqlock
+    /// generation odd — readers reject the torn frame and never see
+    /// half-written bytes; the next full write self-heals — and the
+    /// error carries the ack info so the origin fails fast instead of
+    /// waiting out the commit-ack timeout.
+    #[tokio::test]
+    #[cfg(target_os = "linux")]
+    async fn payload_read_failure_stays_odd_and_carries_ack() {
+        use tokio::io::AsyncWriteExt;
+
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 64 * 1024;
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        let shmem_name =
+            MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                .unwrap();
+        let _cleanup = ShmemCleanup(shmem_name.clone());
+        let memory_pool = MemoryPoolManager::new();
+        memory_pool.register_cross_pool(
+            dataflow_id.to_string(),
+            pool_id.to_string(),
+            "A".to_string(),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let memory_pool_1 = memory_pool.clone();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            handle_cross_data_frame(&mut stream, &memory_pool_1, "B").await
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+
+        // Frame 1: a full, valid write — the generation advances to an
+        // even baseline (2) that the failure must leave odd-on-top-of.
+        let mut frame1 = build_frame_header(dataflow_id, pool_id, 1, SIZE as u64);
+        frame1.extend(std::iter::repeat_n(7u8, SIZE));
+        client.write_all(&frame1).await.unwrap();
+        let ack1 = server.await.unwrap().unwrap().unwrap();
+        assert_eq!(ack1.2, 1);
+        let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        assert_eq!(
+            generation, 2,
+            "frame 1 must complete the write (even gen 2)"
+        );
+
+        // Frame 2: header + half the payload, then the connection drops —
+        // the read fails mid-frame.
+        let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr2 = listener2.local_addr().unwrap();
+        let memory_pool_2 = memory_pool.clone();
+        let server2 = tokio::spawn(async move {
+            let (mut stream, _) = listener2.accept().await.unwrap();
+            handle_cross_data_frame(&mut stream, &memory_pool_2, "B").await
+        });
+        let mut client2 = tokio::net::TcpStream::connect(addr2).await.unwrap();
+        let mut frame2 = build_frame_header(dataflow_id, pool_id, 2, SIZE as u64);
+        frame2.extend(std::iter::repeat_n(9u8, SIZE / 2));
+        client2.write_all(&frame2).await.unwrap();
+        // Drop the connection: the mirror's read_exact fails with EOF.
+        drop(client2);
+
+        let err = server2.await.unwrap().unwrap_err();
+        assert!(
+            err.ack == Some((dataflow_id, pool_id.to_string(), 2)),
+            "mid-frame read failure must carry the ack info: {err:?}"
+        );
+        assert!(err.message.contains("read payload"), "got: {}", err.message);
+
+        // The generation stays odd (in-progress) — the fail-safe: readers
+        // reject the torn frame rather than reading half-written bytes.
+        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        assert_eq!(generation, 3, "generation must stay odd on the torn frame");
+        // A subsequent full write self-heals: begin keeps the odd
+        // generation, writes the frame, and publishes the even one.
+        let listener3 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr3 = listener3.local_addr().unwrap();
+        let memory_pool_3 = memory_pool.clone();
+        let server3 = tokio::spawn(async move {
+            let (mut stream, _) = listener3.accept().await.unwrap();
+            handle_cross_data_frame(&mut stream, &memory_pool_3, "B").await
+        });
+        let mut client3 = tokio::net::TcpStream::connect(addr3).await.unwrap();
+        let mut frame3 = build_frame_header(dataflow_id, pool_id, 3, SIZE as u64);
+        frame3.extend(std::iter::repeat_n(11u8, SIZE));
+        client3.write_all(&frame3).await.unwrap();
+        let ack3 = server3.await.unwrap().unwrap().unwrap();
+        assert_eq!(ack3.2, 3);
+        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        assert_eq!(
+            generation, 4,
+            "the next full write must self-heal to an even generation"
+        );
+        let data_offset = unsafe { read_header_u64(shmem.as_ptr().add(16)) } as usize;
+        let data = unsafe { std::slice::from_raw_parts(shmem.as_ptr().add(data_offset), SIZE) };
+        assert!(
+            data.iter().all(|b| *b == 11),
+            "self-healed frame must be fully visible"
+        );
     }
 
     /// The zenoh ack publish itself: the mirror-side publish helper over a
