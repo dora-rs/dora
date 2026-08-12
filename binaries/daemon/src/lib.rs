@@ -12174,6 +12174,143 @@ mod cross_pool_write_tests {
         );
     }
 
+    /// The direct-TCP serve layer fails the origin fast on a bad frame:
+    /// `serve_cross_data_frame` publishes `MemoryPoolWriteAck { ok: false }`
+    /// over zenoh when the frame's identity is parsed but the write cannot
+    /// proceed. This closes the last untested half of the standing
+    /// non-blocker — the codec round-trip covers the happy path, this
+    /// covers the error path's zenoh ack publish (only the true two-host
+    /// transfer remains manual).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    #[cfg(target_os = "linux")]
+    async fn serve_error_publishes_failed_write_ack() {
+        use tokio::io::AsyncWriteExt;
+
+        // Hermetic zenoh pair: mirror listens, origin dials; no scouting.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener);
+        let mut mirror_cfg = zenoh::Config::default();
+        let mut origin_cfg = zenoh::Config::default();
+        for cfg in [&mut mirror_cfg, &mut origin_cfg] {
+            cfg.insert_json5("scouting/multicast/enabled", "false")
+                .unwrap();
+            cfg.insert_json5("scouting/gossip/enabled", "false")
+                .unwrap();
+        }
+        mirror_cfg
+            .insert_json5(
+                "listen/endpoints",
+                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            )
+            .unwrap();
+        mirror_cfg
+            .insert_json5("listen/exit_on_failure", "false")
+            .unwrap();
+        origin_cfg
+            .insert_json5(
+                "connect/endpoints",
+                &format!(r#"{{ peer: ["tcp/127.0.0.1:{port}"] }}"#),
+            )
+            .unwrap();
+        let mirror_session = zenoh::open(mirror_cfg).await.unwrap();
+        let origin_session = zenoh::open(origin_cfg).await.unwrap();
+
+        // Mirror pool the frame will target.
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 64 * 1024;
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        let shmem_name =
+            MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                .unwrap();
+        let _cleanup = ShmemCleanup(shmem_name.clone());
+        let memory_pool = MemoryPoolManager::new();
+        memory_pool.register_cross_pool(
+            dataflow_id.to_string(),
+            pool_id.to_string(),
+            "A".to_string(),
+        );
+
+        // Data listener served by the mirror session's process context.
+        let data_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let data_addr = data_listener.local_addr().unwrap();
+        let clock = Arc::new(HLC::default());
+        let serve = tokio::spawn(async move {
+            let (mut stream, _) = data_listener.accept().await.unwrap();
+            serve_cross_data_frame(
+                &memory_pool,
+                "B",
+                &mirror_session,
+                &clock,
+                None,
+                &mut stream,
+            )
+            .await
+        });
+
+        // Origin-side subscriber on the memory-pool topic (the daemon's
+        // per-dataflow loop in miniature).
+        let topic = dataflow_memory_pool_topic(&dataflow_id);
+        let subscriber = origin_session.declare_subscriber(&topic).await.unwrap();
+        // The serve layer publishes the failed-write ack exactly once
+        // (event-driven, no retry — fine in production, where the
+        // subscription is established long before any write). Give the
+        // subscription interest time to propagate to the mirror session,
+        // or the single ack put would be dropped into the void.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        // A bad frame (size near u64::MAX → checked-add rejection) with a
+        // parsed identity: the serve layer must publish ok=false.
+        let mut client = tokio::net::TcpStream::connect(data_addr).await.unwrap();
+        let frame = build_frame_header(dataflow_id, pool_id, 1, u64::MAX);
+        client.write_all(&frame).await.unwrap();
+
+        let serve_result = serve.await.unwrap();
+        assert!(serve_result.is_err(), "serve must report the frame error");
+
+        // The origin receives the failed-write ack with matching identity.
+        let mut ack_received = false;
+        for _ in 0..10 {
+            match tokio::time::timeout(std::time::Duration::from_secs(2), subscriber.recv_async())
+                .await
+            {
+                Ok(Ok(sample)) => {
+                    let bytes = sample.payload().to_bytes();
+                    let event =
+                        Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
+                            .unwrap();
+                    match event.inner {
+                        InterDaemonEvent::MemoryPoolWriteAck {
+                            dataflow_id: df,
+                            shared_memory_id,
+                            seq,
+                            ok,
+                            error,
+                        } => {
+                            assert_eq!(df, dataflow_id);
+                            assert_eq!(shared_memory_id, pool_id);
+                            assert_eq!(seq, 1);
+                            assert!(!ok, "failed write must ack ok=false");
+                            assert!(
+                                error.is_some() && error.as_deref().unwrap().contains("overflow"),
+                                "failed write ack must carry the error: {error:?}"
+                            );
+                            ack_received = true;
+                        }
+                        other => panic!("unexpected event: {other:?}"),
+                    }
+                }
+                Ok(Err(e)) => panic!("subscriber closed: {e}"),
+                Err(_) => {} // interest not yet propagated; keep waiting
+            }
+            if ack_received {
+                break;
+            }
+        }
+        assert!(ack_received, "failed-write ack never arrived over zenoh");
+    }
+
     /// A payload read that fails mid-frame (TCP drop) leaves the seqlock
     /// generation odd — readers reject the torn frame and never see
     /// half-written bytes; the next full write self-heals — and the
