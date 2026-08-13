@@ -138,7 +138,6 @@ pub fn expand_modules_with_boundaries(
     Ok(ExpandedDescriptor {
         descriptor: Descriptor {
             nodes: flat_nodes,
-            communication: descriptor.communication.clone(),
             deploy: descriptor.deploy.clone(),
             debug: descriptor.debug.clone(),
             health_check_interval: descriptor.health_check_interval,
@@ -356,9 +355,6 @@ fn node_input_maps(node: &Node) -> Vec<&BTreeMap<DataId, Input>> {
     if let Some(ref operator) = node.operator {
         maps.push(&operator.config.inputs);
     }
-    if let Some(ref custom) = node.custom {
-        maps.push(&custom.run_config.inputs);
-    }
     maps
 }
 
@@ -377,9 +373,6 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
     if let Some(ref mut operator) = node.operator {
         maps.push(&mut operator.config.inputs);
     }
-    if let Some(ref mut custom) = node.custom {
-        maps.push(&mut custom.run_config.inputs);
-    }
     maps
 }
 
@@ -388,8 +381,8 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
 ///
 /// The two differ only for multi-operator runtime nodes: their outputs live in
 /// `operators[].config.outputs` and must be referenced as
-/// `<operator_id>/<output>`. Node-level `outputs`, legacy `custom:`
-/// `run_config.outputs`, and single `operator:` outputs are all referenced by
+/// `<operator_id>/<output>`. Node-level `outputs` and single `operator:`
+/// outputs are both referenced by
 /// their bare name — for `operator:` the `op/` prefix is injected later by
 /// `resolve_aliases_and_set_defaults`, so adding it here would double it up.
 ///
@@ -414,9 +407,6 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     }
     if let Some(ref operator) = node.operator {
         refs.extend(bare(&operator.config.outputs));
-    }
-    if let Some(ref custom) = node.custom {
-        refs.extend(bare(&custom.run_config.outputs));
     }
     refs
 }
@@ -703,9 +693,6 @@ fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
     if let Some(ref mut operator) = node.operator {
         prepend_build(&mut operator.config.build, module_build);
     }
-    if let Some(ref mut custom) = node.custom {
-        prepend_build(&mut custom.build, module_build);
-    }
 }
 
 fn prepend_build(build: &mut Option<String>, module_build: &str) {
@@ -852,9 +839,6 @@ fn rewrite_external_refs(
         }
         if let Some(ref mut operator) = node.operator {
             rewrite_inputs_map(&mut operator.config.inputs, output_maps, &node.id)?;
-        }
-        if let Some(ref mut custom) = node.custom {
-            rewrite_inputs_map(&mut custom.run_config.inputs, output_maps, &node.id)?;
         }
     }
     Ok(())
@@ -1968,7 +1952,7 @@ nodes:
 module:
   name: inner_kind_builds
   inputs: [data]
-  outputs: [from_runtime, from_operator, from_custom]
+  outputs: [from_runtime, from_operator]
 
 build: pip install shared
 
@@ -1991,16 +1975,6 @@ nodes:
         data: _mod/data
       outputs:
         - from_operator
-
-  - id: runner
-    custom:
-      path: runner.py
-      source: Local
-      build: pip install runner
-      inputs:
-        data: _mod/data
-      outputs:
-        - from_custom
 "#,
         );
 
@@ -2038,14 +2012,6 @@ nodes:
             .unwrap();
         let single_build = single.operator.as_ref().unwrap().config.build.as_deref();
         assert_eq!(single_build, Some("pip install shared\npip install single"));
-
-        let runner = expanded
-            .nodes
-            .iter()
-            .find(|n| n.id.to_string() == "m.runner")
-            .unwrap();
-        let custom_build = runner.custom.as_ref().unwrap().build.as_deref();
-        assert_eq!(custom_build, Some("pip install shared\npip install runner"));
     }
 
     // ---- Feature 1: boundaries metadata ----
@@ -2796,80 +2762,6 @@ nodes:
         assert!(err.to_string().contains("_mod/nonexistent"));
     }
 
-    /// Regression test for #2441: legacy `custom:` inner nodes have the same
-    /// blind spot as operator nodes — their inputs live in
-    /// `run_config.inputs`, not the node-level `inputs` map.
-    #[test]
-    fn expand_rewrites_custom_node_inputs() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-
-        write_file(
-            base,
-            "custom_module.yml",
-            r#"
-module:
-  name: legacy
-  inputs: [data]
-
-nodes:
-  - id: stage_a
-    path: a.py
-    outputs: [aux]
-
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        x: _mod/data
-        y: stage_a/aux
-      outputs:
-        - result
-"#,
-        );
-
-        let desc = parse_descriptor(
-            r#"
-nodes:
-  - id: src
-    path: src.py
-    outputs: [val]
-  - id: m
-    module: custom_module.yml
-    inputs:
-      data: src/val
-"#,
-        );
-
-        let expanded = expand_modules(&desc, base).unwrap();
-
-        let runner = expanded
-            .nodes
-            .iter()
-            .find(|n| n.id.to_string() == "m.runner")
-            .unwrap();
-        let custom = runner.custom.as_ref().unwrap();
-
-        let x = &custom.run_config.inputs[&DataId::from("x".to_string())];
-        match &x.mapping {
-            InputMapping::User(m) => {
-                assert_eq!(m.source.to_string(), "src");
-                assert_eq!(m.output.to_string(), "val");
-            }
-            _ => panic!("expected user mapping"),
-        }
-
-        let y = &custom.run_config.inputs[&DataId::from("y".to_string())];
-        match &y.mapping {
-            InputMapping::User(m) => {
-                assert_eq!(m.source.to_string(), "m.stage_a");
-                assert_eq!(m.output.to_string(), "aux");
-            }
-            _ => panic!("expected user mapping"),
-        }
-    }
-
     /// Expand a dataflow whose single module node `m` re-exports `result`, and
     /// return the mapping the downstream `sink` node ends up with. Also asserts
     /// that the expanded dataflow passes wiring validation, which is what
@@ -2975,44 +2867,11 @@ nodes:
         assert_eq!(mapping.output.to_string(), "result");
     }
 
-    /// Regression test for #2817: same for a legacy `custom:` inner node, whose
-    /// outputs live in `run_config.outputs`.
-    #[test]
-    fn expand_resolves_custom_produced_module_output() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-
-        write_file(
-            base,
-            "mod.yml",
-            r#"
-module:
-  name: legacy
-  inputs: [data]
-  outputs: [result]
-
-nodes:
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        x: _mod/data
-      outputs:
-        - result
-"#,
-        );
-
-        let mapping = expand_and_resolve_sink_input(base);
-        assert_eq!(mapping.source.to_string(), "m.runner");
-        assert_eq!(mapping.output.to_string(), "result");
-    }
-
     /// Regression test for #2817: `check_module_file` must accept a declared
-    /// output produced by an operator or legacy custom inner node, and still
-    /// reject one nothing produces.
+    /// output produced by an operator inner node, and still reject one nothing
+    /// produces.
     #[test]
-    fn check_module_file_accepts_operator_and_custom_produced_outputs() {
+    fn check_module_file_accepts_operator_produced_outputs() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
 
@@ -3023,7 +2882,7 @@ nodes:
 module:
   name: mixed
   inputs: [data]
-  outputs: [from_operator, from_custom]
+  outputs: [from_operator]
 
 nodes:
   - id: runtime
@@ -3034,15 +2893,6 @@ nodes:
           x: _mod/data
         outputs:
           - from_operator
-
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        y: _mod/data
-      outputs:
-        - from_custom
 "#,
         );
         check_module_file(&path).unwrap();

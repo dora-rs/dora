@@ -4338,7 +4338,6 @@ fn resolve_single_node(
 ) -> eyre::Result<(NodeId, ResolvedNode)> {
     let tmp_desc = Descriptor {
         nodes: vec![node],
-        communication: Default::default(),
         deploy: None,
         debug: Default::default(),
         health_check_interval: None,

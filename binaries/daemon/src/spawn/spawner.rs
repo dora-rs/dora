@@ -488,7 +488,6 @@ impl Spawner {
             &node_id,
             generation_counter.clone(),
             &self.daemon_tx,
-            self.dataflow_descriptor.communication.local,
             self.clock.clone(),
             last_activity.clone(),
             self.shutdown.clone(),

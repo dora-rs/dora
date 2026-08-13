@@ -1610,10 +1610,9 @@ mod tests {
     }
 
     fn empty_descriptor() -> Descriptor {
-        use dora_message::{config::CommunicationConfig, descriptor::Debug as DescriptorDebug};
+        use dora_message::descriptor::Debug as DescriptorDebug;
         Descriptor {
             nodes: vec![],
-            communication: CommunicationConfig::default(),
             deploy: None,
             debug: DescriptorDebug::default(),
             health_check_interval: None,
