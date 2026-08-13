@@ -17,7 +17,6 @@ members = [
     "binaries/runtime-api",
     "binaries/runtime-shared-lib",
     "binaries/runtime-python",
-    "binaries/mavlink2-bridge-node",
     "binaries/ros2-bridge-node",
     "examples/rust-dataflow/node",
     "examples/rust-dataflow/status-node",
@@ -52,9 +51,6 @@ members = [
     "examples/validated-pipeline/sink",
     "examples/error-propagation/producer",
     "examples/error-propagation/consumer",
-    "examples/mavlink2-bridge/heartbeat-emitter",
-    "examples/mavlink2-bridge/mavlink-sim",
-    "examples/mavlink2-bridge/telemetry-printer-rust",
     "libraries/arrow-convert",
     "libraries/log-utils",
     "libraries/coordinator-store",
@@ -66,7 +62,6 @@ members = [
     "binaries/record-node",
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
-    "libraries/extensions/mavlink2-bridge",
     "libraries/extensions/memory-pool",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
@@ -90,6 +85,15 @@ members = [
     "tests/fault_tolerance/timed_burst_source_node",
     "tests/fault_tolerance/timer_tick_recorder_node",
     "xtask",
+]
+# Parked for extraction into its own repository — not built by dora.
+# See external/dora-mavlink2/README.md.
+exclude = [
+    "external/dora-mavlink2/bridge",
+    "external/dora-mavlink2/bridge-node",
+    "external/dora-mavlink2/examples/heartbeat-emitter",
+    "external/dora-mavlink2/examples/mavlink-sim",
+    "external/dora-mavlink2/examples/telemetry-printer-rust",
 ]
 
 [workspace.package]
@@ -133,7 +137,6 @@ dora-coordinator = { version = "1.0.0-rc.4", path = "binaries/coordinator" }
 dora-ros2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
 dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
 dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
 # Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
@@ -190,7 +193,6 @@ bincode = "1.3.3"
 flume = "0.12.0"
 tempfile = "3.27.0"
 proptest = "1.11"
-mavlink = { version = "0.18", default-features = false, features = ["std", "serde", "dialect-common", "transport-tcp", "transport-udp", "transport-direct-serial"] }
 serialport = "4.9"
 url = "2.5"
 
@@ -264,10 +266,6 @@ path = "examples/c++-arrow-dataflow/run.rs"
 [[example]]
 name = "cxx-service-action"
 path = "examples/c++-service-action/run.rs"
-
-[[example]]
-name = "mavlink2-bridge-cxx"
-path = "examples/mavlink2-bridge/run-cxx.rs"
 
 [[example]]
 name = "python-dataflow"

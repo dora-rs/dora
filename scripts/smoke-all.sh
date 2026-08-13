@@ -141,13 +141,6 @@ cleanup_stale() {
     # and concurrent smoke runs already contend on port 6013 anyway.
     pkill -f "$TARGET_DIR/debug/dora .*(coordinator|daemon)" > /dev/null 2>&1 || true
     pkill -f "$TARGET_DIR/debug/dora-(coordinator|daemon|runtime)" > /dev/null 2>&1 || true
-    # Reap orphan example nodes that bind a FIXED port -- e.g. the MAVLink bridge
-    # on udp:14550. If one lingers (hard-killed local run, or not self-exiting on
-    # coordinator loss), the next mavlink example dies with "Address already in
-    # use". These patterns only match the mavlink example binaries, so they're
-    # no-ops for every other example.
-    pkill -f "$TARGET_DIR/(debug|release)/dora-mavlink2-bridge-node" > /dev/null 2>&1 || true
-    pkill -f "$TARGET_DIR/(debug|release)/mavlink2-bridge-example" > /dev/null 2>&1 || true
     sleep 0.5
 }
 
@@ -411,20 +404,6 @@ if [ "$RUN_RUST" = true ]; then
         2>&1 | tail -1
 fi
 
-# mavlink2-bridge example: Rust variant runs in --rust-only mode; Python
-# variant adds the python printer; C++ variant is its own cargo example.
-# Build the Rust nodes (sim + emitter + bridge + rust printer) whenever
-# RUN_RUST is on; they're shared across the rust + python YAML variants.
-if [ "$RUN_RUST" = true ]; then
-    echo "Building mavlink2-bridge example nodes..."
-    cargo build \
-        -p dora-mavlink2-bridge-node \
-        -p mavlink2-bridge-example-mavlink-sim \
-        -p mavlink2-bridge-example-heartbeat-emitter \
-        -p mavlink2-bridge-example-telemetry-printer-rust \
-        2>&1 | tail -1
-fi
-
 # ---------------------------------------------------------------------------
 # Rust examples
 # ---------------------------------------------------------------------------
@@ -594,22 +573,8 @@ if [ "$RUN_RUST" = true ] && [ "$RUN_PYTHON" = true ]; then
     echo "=== Cross-language examples (local) ==="
     run_local "local-cross-language-rust-to-python" "examples/cross-language/rust-to-python.yml" 15
     run_local "local-cross-language-python-to-rust" "examples/cross-language/python-to-rust.yml" 15
-
-    echo ""
-    echo "=== MAVLink 2 bridge — Python variant ==="
-    run_networked "mavlink2-bridge-python"       "examples/mavlink2-bridge/dataflow-python.yml" 30
-    run_local     "local-mavlink2-bridge-python" "examples/mavlink2-bridge/dataflow-python.yml" 10
 else
     log_skip "cross-language"          "requires both Rust and Python"
-    log_skip "mavlink2-bridge-python"  "requires both Rust and Python"
-fi
-
-# MAVLink 2 bridge — Rust variant runs without Python at all.
-if [ "$RUN_RUST" = true ]; then
-    echo ""
-    echo "=== MAVLink 2 bridge — Rust variant ==="
-    run_networked "mavlink2-bridge-rust"       "examples/mavlink2-bridge/dataflow-rust.yml" 30
-    run_local     "local-mavlink2-bridge-rust" "examples/mavlink2-bridge/dataflow-rust.yml" 10
 fi
 
 # ---------------------------------------------------------------------------
@@ -634,12 +599,10 @@ log_skip "dynamic-add-remove" "interactive dynamic topology CLI"
 log_skip "dynamic-agent-tools" "interactive dynamic topology CLI"
 log_skip "rust-dynamic-add-remove" "dynamic topology lifecycle (covered by node-lifecycle-e2e)"
 log_skip "cxx-dynamic-add-remove" "C++/CMake + dynamic topology (covered by node-lifecycle-e2e)"
-log_skip "mavlink2-bridge-cxx" "C++ + Arrow C++ libs (covered by cxx examples job)"
 log_skip "cpu-affinity-probe" "Linux-only cpu_affinity (covered by example-smoke.rs + nightly)"
 log_skip "error-propagation" "deliberate node failure demo (success == nonzero exit)"
 log_skip "python-parquet-recorder" "webcam + opencv"
 log_skip "python-yolo-detection" "webcam + YOLO + torch"
-log_skip "mavlink2-bridge-sitl-mission" "external ArduPilot SITL on udp:14550"
 log_skip "ros2-comparison" "ROS2 rclpy comparison (and dataflow.yml node paths are stale, see #issue)"
 
 # ---------------------------------------------------------------------------

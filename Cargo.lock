@@ -1295,12 +1295,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "crc-any"
-version = "2.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "46db9f663dfb869b80fcf59e32d7a80fc6c464a4f6328f3f06a00f5e36d05f8c"
-
-[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2207,38 +2201,6 @@ dependencies = [
  "dora-message",
  "eyre",
  "serde_json",
-]
-
-[[package]]
-name = "dora-mavlink2-bridge"
-version = "1.0.0-rc.4"
-dependencies = [
- "arrow",
- "eyre",
- "mavlink",
- "num-traits",
- "serde",
- "thiserror 2.0.20",
- "tokio",
- "tracing",
- "url",
-]
-
-[[package]]
-name = "dora-mavlink2-bridge-node"
-version = "1.0.0-rc.4"
-dependencies = [
- "arrow",
- "dora-mavlink2-bridge",
- "dora-node-api",
- "eyre",
- "mavlink",
- "serde",
- "serde_yaml",
- "tempfile",
- "tracing",
- "tracing-subscriber",
- "url",
 ]
 
 [[package]]
@@ -3869,16 +3831,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "io-kit-sys"
-version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "617ee6cf8e3f66f3b4ea67a4058564628cde41901316e19f559e14c7c72c5e7b"
-dependencies = [
- "core-foundation-sys",
- "mach2",
-]
-
-[[package]]
 name = "iovec"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4463,15 +4415,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "mach2"
-version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d640282b302c0bb0a2a8e0233ead9035e3bed871f0b7e81fe4a1ec829765db44"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "macro_rules_attribute"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4501,81 +4444,6 @@ name = "matchit"
 version = "0.8.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
-
-[[package]]
-name = "mavlink"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef539c358c31f69d47816dac709eebbcb733166ae1bcdeeb4463383c042e3e7c"
-dependencies = [
- "bitflags 2.13.1",
- "mavlink-bindgen",
- "mavlink-core",
- "num-derive",
- "num-traits",
- "serde",
- "serde_arrays",
-]
-
-[[package]]
-name = "mavlink-bindgen"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "055c957f9fe541226e5b6f0a8aef09b81b9ac865bfc2d083bd6440ed1692602f"
-dependencies = [
- "crc-any",
- "proc-macro2",
- "quick-xml 0.39.4",
- "quote",
- "regex",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "mavlink-core"
-version = "0.18.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b31cc9f930c7edce0c1933659d405a330a28346cdf087bd283a56a6d72eb3d85"
-dependencies = [
- "byteorder",
- "crc-any",
- "serde",
- "serde_arrays",
- "serialport",
-]
-
-[[package]]
-name = "mavlink2-bridge-example-heartbeat-emitter"
-version = "1.0.0-rc.4"
-dependencies = [
- "arrow",
- "dora-mavlink2-bridge",
- "dora-node-api",
- "eyre",
- "tracing",
-]
-
-[[package]]
-name = "mavlink2-bridge-example-mavlink-sim"
-version = "1.0.0-rc.4"
-dependencies = [
- "dora-mavlink2-bridge",
- "dora-node-api",
- "eyre",
- "mavlink",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "mavlink2-bridge-example-telemetry-printer-rust"
-version = "1.0.0-rc.4"
-dependencies = [
- "arrow",
- "dora-mavlink2-bridge",
- "dora-node-api",
- "eyre",
-]
 
 [[package]]
 name = "md5"
@@ -5943,15 +5811,6 @@ dependencies = [
 
 [[package]]
 name = "quick-xml"
-version = "0.39.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
-dependencies = [
- "memchr",
-]
-
-[[package]]
-name = "quick-xml"
 version = "0.41.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e660451e55124f798a69a5af3f49ccfbefbd41910eefd25caf2393e1f3473ec1"
@@ -6975,15 +6834,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serde_arrays"
-version = "0.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94a16b99c5ea4fe3daccd14853ad260ec00ea043b2708d1fd1da3106dcd8d9df"
-dependencies = [
- "serde",
-]
-
-[[package]]
 name = "serde_assert"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7124,24 +6974,6 @@ dependencies = [
  "ryu",
  "serde",
  "unsafe-libyaml",
-]
-
-[[package]]
-name = "serialport"
-version = "4.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a4d91116f97173694f1642263b2ff837f80d933aa837e2314969f6728f661df3"
-dependencies = [
- "bitflags 2.13.1",
- "cfg-if 1.0.4",
- "core-foundation",
- "core-foundation-sys",
- "io-kit-sys",
- "mach2",
- "nix 0.26.4",
- "scopeguard",
- "unescaper",
- "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8413,15 +8245,6 @@ name = "unarray"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eaea85b334db583fe3274d12b4cd1880032beab409c0d774be044d4480ab9a94"
-
-[[package]]
-name = "unescaper"
-version = "0.1.10"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7285e83a80ce76f5e7bce79fa41f68d78ba62d1003cf27bf748ab24413808cf4"
-dependencies = [
- "thiserror 2.0.20",
-]
 
 [[package]]
 name = "unicode-ident"
