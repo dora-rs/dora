@@ -339,6 +339,11 @@ fn check_internal_wiring(
                     }
                 }
             }
+        }
+    }
+    Ok(())
+}
+
 fn validate_module_header(module: &ModuleHeader) -> eyre::Result<()> {
     reject_duplicate_ports(&module.name, "inputs", &module.inputs)?;
     reject_duplicate_ports(&module.name, "inputs_optional", &module.inputs_optional)?;
