@@ -651,6 +651,104 @@ async fn collect_and_send_metrics_bg(
     Ok(())
 }
 
+/// Release the memory pools that nothing can reach now that `exited_node`'s
+/// incarnation is gone.
+///
+/// Which pools those are is decided by the rest of the dataflow: see
+/// [`MemoryPoolManager::reclaim_unreachable`] for why an exited node's pools
+/// cannot simply be dropped (dora-rs/dora#2881).
+///
+/// Every path that ends an incarnation calls this: `RemoveNode`,
+/// `ReplaceNode` (whose outgoing exit event the generation guard drops), and
+/// `SpawnedNodeResult` for a crash, a clean exit or a restart. `exited_node`
+/// is excluded from the live set explicitly, because the last of those runs
+/// before the node leaves `running_nodes` — and because a replacement or
+/// restart under the same id never touched its predecessor's pools.
+///
+/// Takes its two fields separately rather than `&self` so callers can hold a
+/// logger (which borrows `self.logger`) across it.
+fn reclaim_memory_pools_after_exit(
+    memory_pool: &MemoryPoolManager,
+    running: &HashMap<DataflowId, RunningDataflow>,
+    dataflow_id: Uuid,
+    exited_node: &NodeId,
+) {
+    // No dataflow left means `finish_dataflow` already released its pools
+    // unconditionally.
+    let Some(dataflow) = running.get(&dataflow_id) else {
+        return;
+    };
+    let released = memory_pool.reclaim_unreachable(&dataflow_id.to_string(), |node| {
+        dataflow
+            .running_nodes
+            .keys()
+            .any(|id| id != exited_node && id.as_ref() == node)
+    });
+    if !released.is_empty() {
+        tracing::info!(
+            %dataflow_id,
+            node_id = %exited_node,
+            "released {} memory pool(s) that no live node can reach any more",
+            released.len(),
+        );
+    }
+}
+
+/// Widen the reader set of every pool the new edge `source` -> `target`
+/// exposes, so reclamation cannot outrun a rewiring of a running dataflow.
+///
+/// Whoever can reach a pool can forward its id along a new outgoing edge, so
+/// `target` — and everything downstream of it — joins the pools `source`
+/// could already reach. `source` registering the pool itself is the case
+/// that bites: it is in its own reader set, so without this an exiting
+/// `source` would take the pool with it while the freshly connected
+/// consumer still holds the id (dora-rs/dora#2881).
+///
+/// Must run *after* the edge is recorded, so the closure sees it.
+fn extend_pool_readers_for_new_edge(
+    memory_pool: &MemoryPoolManager,
+    dataflow: &RunningDataflow,
+    source: &NodeId,
+    target: &NodeId,
+) {
+    memory_pool.extend_potential_readers(
+        &dataflow.id.to_string(),
+        source.as_ref(),
+        &dataflow.downstream_closure(target),
+    );
+}
+
+/// Release everything this daemon still holds for a dataflow that just
+/// finished here: its pool table entries, plus the `/dev/shm` segments of
+/// `owned_nodes` that no table entry covers.
+///
+/// A daemon that outlives the dataflow (`dora up`) would otherwise carry
+/// every unfreed pool — table entry and segment alike — until it exits
+/// (dora-rs/dora#2881). Releasing the table entries is unconditional,
+/// deliberately: a dynamic node can outlive the finish (`should_finish`
+/// ignores them), but the dataflow's routing, channels and listeners are gone
+/// by now, so it can no longer send or receive anything a pool would serve,
+/// and no later event would ever reach [`reclaim_memory_pools_after_exit`]
+/// for this dataflow.
+///
+/// This is a *per-daemon* finish and `/dev/shm` is host-wide, so the sweep is
+/// restricted to this daemon's own nodes — see
+/// [`MemoryPoolManager::cleanup_orphans`].
+///
+/// A free function rather than a method so it can be exercised without a
+/// whole `Daemon`.
+fn release_memory_pools_of_finished_dataflow(
+    memory_pool: &MemoryPoolManager,
+    dataflow_id: Uuid,
+    owned_nodes: &BTreeSet<NodeId>,
+) {
+    let dataflow_id = dataflow_id.to_string();
+    memory_pool.cleanup_dataflow(&dataflow_id);
+    MemoryPoolManager::cleanup_orphans(&dataflow_id, |node| {
+        owned_nodes.iter().any(|id| id.as_ref() == node)
+    });
+}
+
 /// Convert MemoryPoolMetadata into daemon-protocol MetadataParameters.
 fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
     use dora_message::metadata::Parameter;
@@ -2773,6 +2871,20 @@ impl Daemon {
                         }
                     }
 
+                    // Same as `AddMapping`: each input the new node declares
+                    // is a new edge, so the pools its source can reach must
+                    // now count this node as a possible reader.
+                    for input in inputs.values() {
+                        if let InputMapping::User(mapping) = &input.mapping {
+                            extend_pool_readers_for_new_edge(
+                                &self.memory_pool,
+                                dataflow,
+                                &mapping.source,
+                                &node_id,
+                            );
+                        }
+                    }
+
                     if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
                     }
@@ -2792,6 +2904,9 @@ impl Daemon {
                     // entry is registered.
                     running_node.mark_registered();
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
+                    // Added after the spawn cohort, so it is not in
+                    // `spawn_nodes` — record it as ours for the orphan sweep.
+                    dataflow.owned_nodes.insert(node_id.clone());
 
                     // Update the daemon's stored descriptor so
                     // descriptor-based lookups (e.g. AllInputsClosed
@@ -2956,6 +3071,17 @@ impl Daemon {
                     dataflow.descriptor.nodes.retain(|n| n.id != node_id);
                     Ok(())
                 })();
+
+                // Without this, repeated add/remove cycles walk the daemon
+                // into its pool cap (dora-rs/dora#2881).
+                if result.is_ok() {
+                    reclaim_memory_pools_after_exit(
+                        &self.memory_pool,
+                        &self.running,
+                        dataflow_id,
+                        &node_id,
+                    );
+                }
 
                 // Outside the closure because it is async. Why removal
                 // has to drive the barrier at all: see
@@ -3340,6 +3466,15 @@ impl Daemon {
                     // The outgoing (or an even earlier) incarnation's stale
                     // result must not be attributed to the replacement.
                     clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                    // The outgoing incarnation's exit event is dropped by
+                    // the generation guard, so this is the only place its
+                    // pools can be reclaimed (dora-rs/dora#2881).
+                    reclaim_memory_pools_after_exit(
+                        &self.memory_pool,
+                        &self.running,
+                        dataflow_id,
+                        &node_id,
+                    );
                 }
                 let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
@@ -3362,7 +3497,20 @@ impl Daemon {
                 // explicit `AddMappingResult` so the coordinator can pattern-
                 // match the outcome (same class as #1682's AddNodeResult).
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    dataflow.add_mapping(source_node, source_output, target_node, target_input);
+                    dataflow.add_mapping(
+                        source_node.clone(),
+                        source_output,
+                        target_node.clone(),
+                        target_input,
+                    );
+                    // The new edge gives `target_node` a path to the source's
+                    // pools — including any the source registered itself.
+                    extend_pool_readers_for_new_edge(
+                        &self.memory_pool,
+                        dataflow,
+                        &source_node,
+                        &target_node,
+                    );
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
@@ -3939,10 +4087,13 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
-        // Sweep orphaned /dev/shm segments from a previous crash of the
-        // same dataflow (keyed by dataflow_id, a UUID — safe in multi-
-        // daemon setups).
-        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+        // Sweep orphaned /dev/shm segments left by a previous crash of this
+        // dataflow's nodes, scoped to the nodes this daemon spawns — a
+        // co-located daemon may be spawning the other half of the same
+        // dataflow right now (see `cleanup_orphans`).
+        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string(), |node| {
+            spawn_nodes.iter().any(|id| id.as_ref() == node)
+        });
 
         let mut logger = self
             .logger
@@ -3955,6 +4106,7 @@ impl Daemon {
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
+        dataflow.owned_nodes = spawn_nodes.clone();
         // Read from the descriptor, which is the one copy that survives
         // everything a dataflow outlives: auto-recovery re-spawn,
         // coordinator restart with state reconstruction, and `dora
@@ -4072,9 +4224,17 @@ impl Daemon {
                         }
                     }
                 } else if let InputMapping::User(mapping) = input.mapping {
+                    let output_id = OutputId(mapping.source, mapping.output);
+                    // This daemon does not deliver the edge, but it still
+                    // needs to know it exists: the receiver's own consumers
+                    // may be local again, and a memory-pool id can travel
+                    // the whole chain (`downstream_closure`).
                     dataflow
-                        .open_external_mappings
-                        .insert(OutputId(mapping.source, mapping.output));
+                        .remote_edges
+                        .entry(output_id.clone())
+                        .or_default()
+                        .insert(node.id.clone());
+                    dataflow.open_external_mappings.insert(output_id);
                 }
             }
         }
@@ -4832,6 +4992,16 @@ impl Daemon {
                         ));
                     }
 
+                    // Snapshot who may still ask for this pool without
+                    // having opened it yet, so that reclaiming the pools of
+                    // an exited node cannot cut off a transfer that is still
+                    // on its way (dora-rs/dora#2881).
+                    let potential_readers = self
+                        .running
+                        .get(&dataflow_id)
+                        .map(|dataflow| dataflow.downstream_closure(&node_id))
+                        .unwrap_or_default();
+
                     self.memory_pool.register_memory_pool(
                         MemoryPoolId {
                             dataflow_id: dataflow_id.to_string(),
@@ -4839,6 +5009,7 @@ impl Daemon {
                         },
                         pool_metadata,
                         node_id.to_string(),
+                        potential_readers,
                     )
                 })();
                 let _ = reply_sender.send(DaemonReply::Result(result));
@@ -5632,7 +5803,13 @@ impl Daemon {
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
         }
-        self.running.remove(&dataflow_id);
+        let owned_nodes = self
+            .running
+            .remove(&dataflow_id)
+            .map(|dataflow| dataflow.owned_nodes)
+            .unwrap_or_default();
+
+        release_memory_pools_of_finished_dataflow(&self.memory_pool, dataflow_id, &owned_nodes);
 
         Ok(())
     }
@@ -6054,6 +6231,15 @@ impl Daemon {
                     // mid-startup (dora-rs/dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                 }
+
+                // This incarnation is gone — crash, clean exit, or a restart
+                // about to spawn a fresh one (dora-rs/dora#2881).
+                reclaim_memory_pools_after_exit(
+                    &self.memory_pool,
+                    &self.running,
+                    dataflow_id,
+                    &node_id,
+                );
 
                 logger
                     .log(
@@ -8044,7 +8230,14 @@ mod fault_tolerance_tests {
 
         let id = test_pool_id("pool-1");
         pools
-            .register_memory_pool(id.clone(), test_pool_metadata(), registrar.to_string())
+            .register_memory_pool(
+                id.clone(),
+                test_pool_metadata(),
+                registrar.to_string(),
+                // No edges in this fixture, so no downstream consumer can
+                // learn the id; the free path ignores the set either way.
+                Default::default(),
+            )
             .unwrap();
         pools
             .read_memory_pool(&id, reader.as_ref())
@@ -8183,7 +8376,12 @@ mod fault_tolerance_tests {
         let pools = MemoryPoolManager::new();
         let id = test_pool_id("pool-1");
         pools
-            .register_memory_pool(id.clone(), test_pool_metadata(), "registrar".into())
+            .register_memory_pool(
+                id.clone(),
+                test_pool_metadata(),
+                "registrar".into(),
+                Default::default(),
+            )
             .unwrap();
 
         free_pool_and_notify(&pools, None, &id, "registrar", &clock).expect("free should succeed");
@@ -9610,6 +9808,208 @@ mod fault_tolerance_tests {
             &mut deadline,
             window
         ));
+    }
+
+    // -- dora#2881: memory pools must be reclaimed once nothing can reach them --
+
+    /// A dataflow whose `sender` registered one pool, with `edges` wired up
+    /// and every node of `running` marked as running.
+    fn dataflow_with_pool(
+        edges: &[(&str, &str)],
+        running: &[&str],
+    ) -> (HashMap<DataflowId, RunningDataflow>, MemoryPoolManager) {
+        let mut df = test_dataflow();
+        for (from, to) in edges {
+            df.add_mapping(
+                NodeId::from(from.to_string()),
+                DataId::from("out".to_string()),
+                NodeId::from(to.to_string()),
+                DataId::from("in".to_string()),
+            );
+        }
+        for node in running {
+            df.running_nodes
+                .insert(NodeId::from(node.to_string()), test_running_node());
+        }
+
+        let memory_pool = MemoryPoolManager::new();
+        let sender = NodeId::from("sender".to_string());
+        memory_pool
+            .register_memory_pool(
+                MemoryPoolId {
+                    dataflow_id: Uuid::nil().to_string(),
+                    id: "pool-1".to_string(),
+                },
+                MemoryPoolMetadata::default(),
+                sender.to_string(),
+                df.downstream_closure(&sender),
+            )
+            .unwrap();
+
+        (HashMap::from([(Uuid::nil(), df)]), memory_pool)
+    }
+
+    #[test]
+    fn a_pool_is_reclaimed_on_node_exit_exactly_when_nothing_can_reach_it() {
+        // (case, edges, still-running nodes, exiting node, pools left)
+        let cases = [
+            // The receiver has not read the pool yet — it only learns the id
+            // from the message the sender put in flight before exiting.
+            // Freeing here would break that transfer, which is why
+            // reclamation is reachability-based rather than eager.
+            (
+                "consumer still running",
+                &[("sender", "recv")][..],
+                &["recv"][..],
+                "sender",
+                1,
+            ),
+            // ...and once that consumer is gone too, nothing can reach it.
+            (
+                "last consumer gone",
+                &[("sender", "recv")][..],
+                &[][..],
+                "recv",
+                0,
+            ),
+            // Callers run before the node leaves `running_nodes`, so its own
+            // stale entry must not count as a live reference — otherwise a
+            // sender with no consumers could never be reclaimed.
+            (
+                "exiting node is not itself live",
+                &[][..],
+                &["sender"][..],
+                "sender",
+                0,
+            ),
+            // Liveness is checked against the pool's own reference set, not
+            // the dataflow as a whole: a node that is neither downstream of
+            // the sender nor has ever opened the pool cannot reach it, so a
+            // long-lived unrelated node must not pin it (the leak this fixes).
+            (
+                "unrelated node running",
+                &[("other_source", "other_sink")][..],
+                &["other_sink"][..],
+                "sender",
+                0,
+            ),
+        ];
+
+        for (case, edges, running_nodes, exiting, expected) in cases {
+            let (running, memory_pool) = dataflow_with_pool(edges, running_nodes);
+
+            reclaim_memory_pools_after_exit(
+                &memory_pool,
+                &running,
+                Uuid::nil(),
+                &NodeId::from(exiting.to_string()),
+            );
+
+            assert_eq!(memory_pool.table_size(), expected, "case: {case}");
+        }
+    }
+
+    /// `potential_readers` is captured at registration time, so rewiring a
+    /// running dataflow would otherwise leave it stale. The registrar is in
+    /// its own reader set and reclamation fires on its exit, so without the
+    /// update the pool — and its `/dev/shm` segment — would go away while a
+    /// consumer connected a moment ago still had its id in flight
+    /// (dora-rs/dora#2881 review).
+    #[test]
+    fn a_consumer_connected_after_registration_still_pins_the_pool() {
+        let sender = NodeId::from("sender".to_string());
+        let consumer = NodeId::from("consumer".to_string());
+
+        let mut df = test_dataflow();
+        df.running_nodes.insert(sender.clone(), test_running_node());
+
+        // Registered while `sender` has no consumers at all.
+        let memory_pool = MemoryPoolManager::new();
+        memory_pool
+            .register_memory_pool(
+                MemoryPoolId {
+                    dataflow_id: Uuid::nil().to_string(),
+                    id: "pool-1".to_string(),
+                },
+                MemoryPoolMetadata::default(),
+                sender.to_string(),
+                df.downstream_closure(&sender),
+            )
+            .unwrap();
+
+        // `dora graph connect sender/out consumer/in`.
+        df.add_mapping(
+            sender.clone(),
+            DataId::from("out".to_string()),
+            consumer.clone(),
+            DataId::from("in".to_string()),
+        );
+        df.running_nodes
+            .insert(consumer.clone(), test_running_node());
+        extend_pool_readers_for_new_edge(&memory_pool, &df, &sender, &consumer);
+
+        // The sender sends the pool id along the new edge and exits.
+        let mut running = HashMap::from([(Uuid::nil(), df)]);
+        reclaim_memory_pools_after_exit(&memory_pool, &running, Uuid::nil(), &sender);
+        assert_eq!(
+            memory_pool.table_size(),
+            1,
+            "the newly connected consumer can still read the pool"
+        );
+
+        // ...and it is reclaimed once that consumer is gone too.
+        let df = running.get_mut(&Uuid::nil()).expect("dataflow is present");
+        df.running_nodes.remove(&sender);
+        reclaim_memory_pools_after_exit(&memory_pool, &running, Uuid::nil(), &consumer);
+        assert_eq!(memory_pool.table_size(), 0);
+    }
+
+    #[test]
+    fn finishing_a_dataflow_releases_every_pool_it_still_holds() {
+        let (_running, memory_pool) = dataflow_with_pool(&[("sender", "recv")], &["recv"]);
+
+        // Owned nodes only scope the /dev/shm sweep; the table release is
+        // unconditional. `recv` was still running and could still have
+        // reached this pool, but the dataflow is over and no later event
+        // would ever reclaim it.
+        release_memory_pools_of_finished_dataflow(&memory_pool, Uuid::nil(), &BTreeSet::new());
+
+        assert_eq!(memory_pool.table_size(), 0);
+    }
+
+    /// `finish_dataflow` is a *per-daemon* finish, but `/dev/shm` is
+    /// host-wide: with two daemons serving one dataflow on one machine, the
+    /// first to finish must not unlink the segments of the second daemon's
+    /// still-running nodes (dora-rs/dora#2881 review). `cleanup_orphans` has
+    /// its own test for which names it matches; this one pins the wiring —
+    /// that the finish path passes its own nodes and not something wider.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finishing_a_dataflow_sweeps_only_this_daemons_segments() {
+        let dataflow_id = Uuid::new_v4();
+        let segment = |node: &str| {
+            std::path::PathBuf::from(format!("/dev/shm/dora_pool_{dataflow_id}_{node}_0"))
+        };
+        // `ours` never registered its pool — a crash between creating the
+        // segment and registering it is exactly what the orphan sweep is
+        // for. `theirs` belongs to the co-located daemon.
+        for node in ["ours", "theirs"] {
+            std::fs::write(segment(node), b"x").unwrap();
+        }
+
+        let owned_nodes = BTreeSet::from([NodeId::from("ours".to_string())]);
+        release_memory_pools_of_finished_dataflow(
+            &MemoryPoolManager::new(),
+            dataflow_id,
+            &owned_nodes,
+        );
+
+        let (ours, theirs) = (segment("ours").exists(), segment("theirs").exists());
+        for node in ["ours", "theirs"] {
+            let _ = std::fs::remove_file(segment(node));
+        }
+        assert!(!ours, "this daemon's orphaned segment must be swept");
+        assert!(theirs, "the co-located daemon's live segment must survive");
     }
 }
 
