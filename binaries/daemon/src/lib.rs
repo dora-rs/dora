@@ -456,6 +456,30 @@ fn write_cross_pool_data(
         tracing::warn!("memory pool: {shared_memory_id} header magic mismatch, dropping frame");
         return false;
     }
+    // The payload must cover the registered pool size recorded in the
+    // mirror header — a short payload would otherwise publish an even
+    // generation over a truncated tensor whose tail `[copy_len..]` is
+    // stale, and readers accept it as complete (the same gap the direct
+    // path's registered-size check closes; the zenoh relay is the active
+    // data plane whenever the direct endpoint is unavailable, not just a
+    // fallback).
+    let registered_size = {
+        let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) } as usize;
+        let json_bytes =
+            unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
+        serde_json::from_slice::<serde_json::Value>(json_bytes)
+            .ok()
+            .and_then(|v| v.get("size").and_then(|s| s.as_u64()))
+            .unwrap_or(0) as usize
+    };
+    if tensor_data.len() != registered_size || size != registered_size {
+        tracing::warn!(
+            "memory pool: {shared_memory_id} payload {} bytes / declared {size} \
+             != registered pool size {registered_size}, dropping frame",
+            tensor_data.len()
+        );
+        return false;
+    }
     let data_offset = unsafe { read_header_u64(shmem_ptr.add(16)) } as usize;
     let copy_len = tensor_data.len().min(size);
     // Checked add: a corrupt header's data_offset could otherwise wrap
