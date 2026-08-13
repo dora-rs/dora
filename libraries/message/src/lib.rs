@@ -43,6 +43,25 @@ pub fn encode_presized<T: serde::Serialize>(
     )
 }
 
+/// [`encode_presized`], reusing `buf` rather than allocating a new one.
+///
+/// Returns the buffer so a caller holding a long-lived connection can keep it
+/// and hand it back on the next message, trading one allocation per message for
+/// one retained buffer per connection. `buf`'s existing contents are discarded.
+///
+/// Callers should bound what they retain — see `MAX_RETAINED_SEND_BUF` in the
+/// daemon's TCP connection — or one outsized message pins that much memory for
+/// the life of the connection.
+pub fn encode_into<T: serde::Serialize>(
+    value: &T,
+    bulk_bytes: usize,
+    mut buf: Vec<u8>,
+) -> postcard::Result<Vec<u8>> {
+    buf.clear();
+    buf.reserve(bulk_bytes.saturating_add(ENVELOPE_SIZE_HINT));
+    postcard::to_extend(value, buf)
+}
+
 /// Decode `bytes` in dora's binary wire format, requiring the value to consume
 /// the **entire** slice.
 ///
@@ -215,5 +234,30 @@ mod encoding_tests {
             format!("{err:#}").contains("trailing bytes"),
             "error should name the cause, got: {err:#}"
         );
+    }
+
+    /// A reused buffer must not leak any of its previous contents into the next
+    /// message — the failure mode would be a silently corrupt frame on a
+    /// long-lived connection, not a crash.
+    #[test]
+    fn encode_into_ignores_the_buffers_previous_contents() {
+        let value = Metadata::new(uhlc::HLC::default().new_timestamp());
+        let expected = crate::encode(&value).expect("baseline");
+
+        let recycled = [
+            Vec::new(),
+            vec![0xAA; 1],
+            vec![0xAA; expected.len()],
+            // Longer than the new message, so a missing `clear()` would leave a
+            // tail behind rather than being overwritten.
+            vec![0xAA; expected.len() * 4],
+            Vec::with_capacity(64 * 1024),
+        ];
+
+        for (i, buf) in recycled.into_iter().enumerate() {
+            let out = crate::encode_into(&value, 0, buf).expect("encode_into");
+            assert_eq!(out, expected, "recycled buffer {i} changed the encoding");
+            crate::decode::<Metadata>(&out).expect("result must still decode");
+        }
     }
 }

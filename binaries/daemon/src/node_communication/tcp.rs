@@ -78,7 +78,10 @@ async fn handle_connection_loop(
     }
 
     Listener::run(
-        TcpConnection(connection),
+        TcpConnection {
+            stream: connection,
+            send_buf: Vec::new(),
+        },
         generation,
         daemon_tx,
         clock,
@@ -87,13 +90,25 @@ async fn handle_connection_loop(
     .await
 }
 
-struct TcpConnection(TcpStream);
+/// Upper bound on the send buffer retained between replies.
+///
+/// The buffer exists to avoid an allocation per reply, which only needs enough
+/// room for an ordinary message. Without a cap, one outsized reply would pin its
+/// full size (up to `MAX_MESSAGE_BYTES`, 64 MiB) for the life of the connection
+/// — and the daemon holds one connection per node.
+const MAX_RETAINED_SEND_BUF: usize = 256 * 1024;
+
+struct TcpConnection {
+    stream: TcpStream,
+    /// Reused across replies; see [`dora_message::encode_into`].
+    send_buf: Vec<u8>,
+}
 
 impl Connection for TcpConnection {
     async fn receive_message(&mut self) -> eyre::Result<Option<Timestamped<DaemonRequest>>> {
         // No header timeout: a node connection may legitimately stay idle
         // between requests, so only mid-frame (body) stalls are faults.
-        let raw = match socket_stream_receive_with_header_timeout(&mut self.0, None).await {
+        let raw = match socket_stream_receive_with_header_timeout(&mut self.stream, None).await {
             Ok(raw) => raw,
             Err(err) => match err.kind() {
                 ErrorKind::UnexpectedEof
@@ -115,11 +130,21 @@ impl Connection for TcpConnection {
             // don't send empty replies
             return Ok(());
         }
-        let serialized = dora_message::encode_presized(&message, message.encode_size_hint())
-            .wrap_err("failed to serialize DaemonReply")?;
-        socket_stream_send(&mut self.0, &serialized)
-            .await
-            .wrap_err("failed to send DaemonReply")?;
+        let mut buf = dora_message::encode_into(
+            &message,
+            message.encode_size_hint(),
+            std::mem::take(&mut self.send_buf),
+        )
+        .wrap_err("failed to serialize DaemonReply")?;
+
+        let sent = socket_stream_send(&mut self.stream, &buf).await;
+
+        // Take the buffer back on the failure path too, so a transient send
+        // error doesn't quietly drop the reuse for the rest of the connection.
+        buf.shrink_to(MAX_RETAINED_SEND_BUF);
+        self.send_buf = buf;
+
+        sent.wrap_err("failed to send DaemonReply")?;
         Ok(())
     }
 }
