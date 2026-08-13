@@ -81,6 +81,7 @@ pub const MAX_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub const TCP_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub mod auth;
+pub(crate) mod bulk_bytes;
 pub mod common;
 pub mod config;
 /// Dataflow descriptor types for YAML-based dataflow specifications.

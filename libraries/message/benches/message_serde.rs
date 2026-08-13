@@ -30,9 +30,16 @@ fn bench_encode(c: &mut Criterion) {
                 black_box(dora_message::encode_presized(msg, msg.encode_size_hint()).unwrap());
             });
         });
-        // The same encoding into a buffer that grows from empty. Keeps the
-        // pre-sizing win measurable in-tree: if this arm stops being slower,
-        // `encode_presized` has stopped earning its complexity.
+        // The same encoding into a buffer that grows from empty, so the value of
+        // pre-sizing stays measurable in-tree.
+        //
+        // Since payloads became a bulk copy, this arm is only meaningfully
+        // slower at the small sizes (~2.3x at 64 B, ~1.4x at 4 KB) — that is
+        // where `encode_presized` earns its keep, and it is also the range the
+        // daemon<->node TCP path lives in, since anything above
+        // `ZERO_COPY_THRESHOLD` goes via shared memory. At 64 KB and above this
+        // arm is in fact marginally *faster*: `Vec::extend` reserves the payload
+        // exactly once, so pre-sizing only costs the envelope overshoot.
         group.bench_with_input(BenchmarkId::new("grow_from_empty", size), &msg, |b, msg| {
             b.iter(|| black_box(postcard::to_stdvec(black_box(msg)).unwrap()));
         });
