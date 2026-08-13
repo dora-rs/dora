@@ -67,7 +67,6 @@ members = [
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/mavlink2-bridge",
-    "libraries/extensions/memory-pool",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
@@ -91,6 +90,10 @@ members = [
     "tests/fault_tolerance/timer_tick_recorder_node",
     "xtask",
 ]
+
+# Parked, not built: the memory-pool transport extracted from the tree.
+# See external/dora-pool/README.md.
+exclude = ["external/dora-pool/daemon-side"]
 
 [workspace.package]
 edition = "2024"
@@ -134,7 +137,6 @@ dora-ros2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-b
 dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
-dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
 dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
 # Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
 # apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by

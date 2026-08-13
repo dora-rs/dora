@@ -39,9 +39,9 @@ python -c "import torch; assert torch.cuda.is_available()"
 ### Positive throughput scenarios
 
 ```bash
-dora run examples/memory-pool/cpu2cpu.yml
-dora run examples/memory-pool/cpu2cuda.yml
-dora run examples/memory-pool/cuda2cpu.yml
+dora run examples/cpu2cpu.yml
+dora run examples/cpu2cuda.yml
+dora run examples/cuda2cpu.yml
 ```
 
 Expected behavior:
@@ -53,10 +53,10 @@ Expected behavior:
 ### Negative-path scenarios
 
 ```bash
-dora run examples/memory-pool/duplicate_free.yml
-dora run examples/memory-pool/read_after_free.yml
-dora run examples/memory-pool/write_after_free.yml
-dora run examples/memory-pool/auto_cleanup.yml
+dora run examples/duplicate_free.yml
+dora run examples/read_after_free.yml
+dora run examples/write_after_free.yml
+dora run examples/auto_cleanup.yml
 ```
 
 Expected warnings/info:

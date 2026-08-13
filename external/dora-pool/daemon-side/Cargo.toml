@@ -1,0 +1,18 @@
+# Standalone: deliberately its own workspace root so this directory can be
+# lifted into `dora-rs/dora-pool` with `git subtree` / `cp -r` and build
+# unchanged. It is also listed in the dora workspace's `exclude` so the
+# parked code is never compiled as part of a dora build.
+[workspace]
+
+[package]
+name = "dora-memory-pool"
+version = "1.0.0-rc.4"
+edition = "2024"
+rust-version = "1.88"  # HashMap::extract_if (1.87) + let-chains (1.88)
+description = "Daemon-side memory-pool registry: pool metadata, lifecycle, reachability and orphan cleanup. Parked out of dora-rs/dora — see ../README.md."
+license = "Apache-2.0"
+repository = "https://github.com/dora-rs/dora-pool"
+publish = false
+
+[dependencies]
+tracing = "0.1.44"

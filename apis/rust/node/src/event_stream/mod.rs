@@ -40,8 +40,6 @@ mod data_conversion;
 mod event;
 /// Tracks input health (timeouts, liveness) for circuit-breaker recovery.
 pub mod input_tracker;
-/// Cross-process memory-pool cleanup coordination via daemon broadcast.
-pub mod memory_pool;
 /// Merged event streams combining internal and external event sources.
 pub mod merged;
 mod scheduler;

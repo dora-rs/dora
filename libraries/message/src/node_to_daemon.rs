@@ -29,17 +29,6 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: Metadata,
-    },
-    ReadPinnedMemory {
-        shared_memory_id: String,
-        free: bool,
-    },
-    FreePinnedMemory {
-        shared_memory_id: String,
-    },
 }
 
 impl DaemonRequest {
@@ -78,10 +67,7 @@ impl DaemonRequest {
             | DaemonRequest::CloseOutputs(_)
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
-            | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => true,
+            | DaemonRequest::EventStreamDropped => true,
         }
     }
 
@@ -96,10 +82,7 @@ impl DaemonRequest {
             | DaemonRequest::NextEvent
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
-            | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => false,
+            | DaemonRequest::EventStreamDropped => false,
         }
     }
 }

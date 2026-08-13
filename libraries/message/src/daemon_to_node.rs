@@ -93,7 +93,6 @@ pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
     NodeConfig { result: Result<NodeConfig, String> },
-    PinnedMemoryMetadata { metadata: Metadata },
     Empty,
 }
 
@@ -176,15 +175,6 @@ pub enum NodeEvent {
         affected_input_ids: Vec<DataId>,
         error: String,
         source_node_id: NodeId,
-    },
-    /// A memory pool has been freed by another node in the dataflow.
-    ///
-    /// When any node calls `free_memory_pool`, the daemon broadcasts this
-    /// event to every node so that per-process GPU/transit buffers and
-    /// shmem mappings are released regardless of which node initiated the
-    /// free.
-    FreeMemoryPool {
-        shared_memory_id: String,
     },
 }
 
