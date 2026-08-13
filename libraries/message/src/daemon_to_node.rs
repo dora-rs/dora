@@ -88,6 +88,7 @@ pub enum DaemonCommunication {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),

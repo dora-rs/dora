@@ -137,6 +137,12 @@ fn main() -> eyre::Result<()> {
                 InterDaemonEvent::OutputClosed { .. } => {
                     // Skip close events during replay
                 }
+                // `InterDaemonEvent` is `#[non_exhaustive]`: a recording made by a
+                // newer dora may carry events this replay node predates. Skip them
+                // rather than aborting an otherwise-replayable recording.
+                _ => {
+                    skipped += 1;
+                }
             }
         }
 

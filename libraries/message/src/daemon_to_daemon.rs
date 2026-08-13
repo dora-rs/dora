@@ -8,6 +8,7 @@ use crate::{
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum InterDaemonEvent {
     Output {
         dataflow_id: DataflowId,

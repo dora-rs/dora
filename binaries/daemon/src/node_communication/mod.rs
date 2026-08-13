@@ -404,6 +404,16 @@ impl Listener {
                 )
                 .await?;
             }
+            // `DaemonRequest` is `#[non_exhaustive]`: a node built against a newer
+            // dora-node-api may send a request this daemon predates. Answer with an
+            // explicit error so the node fails loudly instead of hanging on a reply
+            // that never comes.
+            other => {
+                let reply = DaemonReply::Result(Err(format!(
+                    "unsupported request from node (node is likely newer than this daemon): {other:?}"
+                )));
+                self.send_reply(reply, connection).await?;
+            }
         }
         Ok(())
     }

@@ -337,6 +337,8 @@ fn run_hz(
                     }
                 }
                 InterDaemonEvent::OutputClosed { .. } => {}
+                // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+                _ => {}
             }
         }
     });

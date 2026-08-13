@@ -138,6 +138,9 @@ impl IntegrationTestingEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            // `DaemonRequest` is `#[non_exhaustive]`: reject an unknown
+            // request explicitly rather than silently answering `Ok`.
+            other => eyre::bail!("unsupported daemon request: {other:?}"),
         };
         Ok(reply)
     }

@@ -3805,6 +3805,13 @@ impl Daemon {
                 }
                 Ok(())
             }
+            // `InterDaemonEvent` is `#[non_exhaustive]`: a peer daemon running a
+            // newer dora may send an event this one predates. Warn and continue —
+            // tearing down the dataflow over an unknown peer message would be worse.
+            other => {
+                tracing::warn!("ignoring unrecognized inter-daemon event: {other:?}");
+                Ok(())
+            }
         }
     }
 
