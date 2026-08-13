@@ -155,7 +155,7 @@ pub fn expand_modules_with_boundaries(
 /// Validate a module file in isolation without expanding it into a dataflow.
 ///
 /// Checks:
-/// - Module header is well-formed (name, inputs, outputs)
+/// - Module header is well-formed (required name, optional inputs/outputs)
 /// - All inner nodes are parseable
 /// - All `_mod/X` references point to declared inputs or optional inputs
 /// - All declared outputs are produced by some inner node (or nested module)

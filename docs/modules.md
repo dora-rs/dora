@@ -63,6 +63,9 @@ A module file has two sections:
 | `inputs_optional` | list | no | Optional input ports (silently skipped if not wired) |
 | `outputs` | list | no | Output port names exposed to the parent dataflow |
 
+Unknown fields in the module header are rejected whenever Dora loads the
+module, including `dora expand`, `dora build`, and `dora run`.
+
 ### `nodes:` list
 
 Standard node definitions, with one special syntax: **`_mod/port_name`** references a module input port. When expanded, `_mod/port_name` is replaced with whatever the parent wired to that port.
@@ -151,7 +154,7 @@ Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MOD
 2. Prefix all internal node IDs with `{module_id}.` (e.g., `nav_stack.planner`)
 3. Replace `_mod/port_name` references with the actual sources from the parent's input map
 4. Rewrite internal cross-references (e.g., `planner/path` becomes `nav_stack.planner/path`)
-5. Map module-declared outputs to internal node outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. An inner node may produce a declared output from its node-level `outputs:`, from an `operator:`/`operators:` block, or from a legacy `custom:` block. For an output produced by one operator of a multi-operator `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
+5. Map module-declared outputs to direct child outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. A direct child may be a standard node, a runtime `operator:`/`operators:` node, a legacy `custom:` node, or a nested module. For an output produced by one operator of a multi-operator `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
 6. Replace the module node with the expanded flat nodes
 7. Substitute `params:` values in `args:` fields and inject as env vars
 
@@ -187,6 +190,11 @@ nodes:
 ```
 
 After expansion, node IDs are fully qualified: `outer.inner.some_node`.
+
+Only outputs declared by a nested module are visible to its parent. A parent
+module can wire or re-export `inner/processed` from the example above because
+`processed` is listed in `inner_module.yml`'s `module.outputs`; it cannot reach
+private outputs produced by nodes inside `inner_module.yml`.
 
 ## Optional Inputs
 
@@ -229,11 +237,10 @@ dora expand --module modules/transform_module.yml
 
 This checks:
 - Valid YAML structure
-- Module header is present with `name`, `inputs`, `outputs`
+- Module header is present with required `name`, optional `inputs`/`outputs`, and no unknown header fields
 - All `_mod/` references correspond to declared inputs or optional inputs
-- Every declared output is produced by some inner node (counting `operator:`/`operators:` and legacy `custom:` outputs)
-- No duplicate node IDs
-- Internal wiring is consistent
+- Every declared output is produced by a direct child node or by a nested module's declared output (counting `operator:`/`operators:` and legacy `custom:` outputs)
+- Nested module files exist, are relative paths, are acyclic, and stay within the nesting depth limit
 
 ## Security
 
