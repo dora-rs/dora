@@ -12166,6 +12166,63 @@ mod cross_pool_write_tests {
         }
     }
 
+    /// The zenoh-relay write path must reject a payload that does not
+    /// cover the registered pool size — a short payload would otherwise
+    /// publish an even (complete) generation over stale tail bytes that
+    /// readers accept as a valid frame. Mirrors the direct-TCP
+    /// registered-size check; the same-host smoke bypasses it via the
+    /// `direct == true` branch, so this pins the guard directly.
+    #[test]
+    #[cfg(target_os = "linux")] // /dev/shm mirror
+    fn zenoh_relay_rejects_short_payload_against_registered_size() {
+        let dataflow_id = Uuid::new_v4();
+        let pool_id = "pool_node_0";
+        const SIZE: usize = 4 * 1024 * 1024;
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        let shmem_name =
+            MemoryPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
+                .unwrap();
+        let _cleanup = ShmemCleanup(shmem_name.clone());
+
+        // Payload and declared size both short: dropped.
+        let short = vec![0xABu8; SIZE / 2];
+        assert!(!write_cross_pool_data(
+            &dataflow_id,
+            "B",
+            pool_id,
+            &short,
+            SIZE / 2
+        ));
+        // Declared size right but payload short: also dropped.
+        let short2 = vec![0xCDu8; SIZE - 1];
+        assert!(!write_cross_pool_data(
+            &dataflow_id,
+            "B",
+            pool_id,
+            &short2,
+            SIZE
+        ));
+
+        // Nothing was published: the generation stays odd (in-progress).
+        let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
+        let generation = unsafe { std::ptr::read_volatile(shmem.as_ptr().add(96) as *const u64) };
+        assert_eq!(
+            generation % 2,
+            1,
+            "short payload published an even (complete) generation"
+        );
+
+        // A full-size payload goes through and publishes the even gen.
+        let full = vec![0xEFu8; SIZE];
+        assert!(write_cross_pool_data(
+            &dataflow_id,
+            "B",
+            pool_id,
+            &full,
+            SIZE
+        ));
+    }
+
     /// The write-commit ack resolves only the seq-matched pending reply.
     ///
     /// The same-host cross-daemon smoke test reads via the `direct ==
