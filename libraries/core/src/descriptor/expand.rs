@@ -394,6 +394,56 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     refs
 }
 
+/// Reject source/kind fields on a module node that are mutually exclusive with
+/// the module reference itself.
+fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
+    let mut conflicts = Vec::new();
+
+    if node.path.is_some() {
+        conflicts.push("path");
+    }
+    if node.path_sha256.is_some() {
+        conflicts.push("path_sha256");
+    }
+    if node.git.is_some() {
+        conflicts.push("git");
+    }
+    if node.hub.is_some() {
+        conflicts.push("hub");
+    }
+    if node.branch.is_some() {
+        conflicts.push("branch");
+    }
+    if node.tag.is_some() {
+        conflicts.push("tag");
+    }
+    if node.rev.is_some() {
+        conflicts.push("rev");
+    }
+    if node.operators.is_some() {
+        conflicts.push("operators");
+    }
+    if node.operator.is_some() {
+        conflicts.push("operator");
+    }
+    if node.custom.is_some() {
+        conflicts.push("custom");
+    }
+    if node.ros2.is_some() {
+        conflicts.push("ros2");
+    }
+
+    if !conflicts.is_empty() {
+        bail!(
+            "module node `{}` has fields that are mutually exclusive with `module`: {}",
+            node.id,
+            conflicts.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 /// Expand a single module node into its constituent flat nodes.
 ///
 /// Returns `(expanded_nodes, output_map)`; see [`ModuleOutputMap`].
@@ -411,6 +461,8 @@ fn expand_module_node(
             node.id
         );
     }
+
+    validate_module_node_fields(node)?;
 
     let module_path_str = node
         .module
@@ -2357,6 +2409,118 @@ nodes:
             msg.contains("resolves outside the project directory"),
             "got: {msg}"
         );
+    }
+
+    #[test]
+    fn reject_module_node_with_source_fields() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "simple_module.yml",
+            r#"
+module:
+  name: simple
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        for (field, snippet) in [
+            ("path", "    path: unexpected.py\n"),
+            ("path_sha256", "    path_sha256: abc123\n"),
+            ("git", "    git: https://github.com/example/repo.git\n"),
+            ("hub", "    hub: dora-yolo@^0.5\n"),
+            ("branch", "    branch: main\n"),
+            ("tag", "    tag: v1.0.0\n"),
+            ("rev", "    rev: abc123\n"),
+            ("operator", "    operator:\n      python: op.py\n"),
+            (
+                "operators",
+                "    operators:\n      - id: op\n        python: op.py\n",
+            ),
+            (
+                "custom",
+                "    custom:\n      path: node.py\n      source: Local\n",
+            ),
+            (
+                "ros2",
+                "    ros2:\n      topic: /data\n      message_type: std_msgs/String\n",
+            ),
+        ] {
+            let desc = parse_descriptor(&format!(
+                r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: simple_module.yml
+{snippet}    inputs:
+      x: src/v
+"#,
+            ));
+            let err = expand_modules(&desc, base).unwrap_err().to_string();
+            assert!(
+                err.contains("mutually exclusive with `module`"),
+                "got: {err}"
+            );
+            assert!(err.contains(field), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn allow_module_node_env_and_build_fields() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "simple_module.yml",
+            r#"
+build: echo module-build
+
+module:
+  name: simple
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [v]
+  - id: m
+    module: simple_module.yml
+    build: echo outer-build
+    env:
+      LOCAL_ONLY: ignored
+    inputs:
+      x: src/v
+"#,
+        );
+
+        expand_modules(&desc, base).unwrap();
     }
 
     #[test]
