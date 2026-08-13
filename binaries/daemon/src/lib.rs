@@ -7741,6 +7741,17 @@ impl Daemon {
                 .unwrap_or_else(|e| e.into_inner());
             degraded.retain(|(df, _)| *df != dataflow_id);
         }
+        // `cross_data_endpoints` is keyed by the same fresh per-dataflow
+        // UUID (register-ack path); drain it here too so a long-lived
+        // daemon does not accumulate one `SocketAddr` per (dataflow,
+        // pool) forever.
+        {
+            let mut endpoints = self
+                .cross_data_endpoints
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            endpoints.retain(|(df, _), _| *df != dataflow_id);
+        }
 
         Ok(())
     }
