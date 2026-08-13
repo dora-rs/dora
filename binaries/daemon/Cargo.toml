@@ -40,7 +40,6 @@ serde_yaml = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
 shared_memory_extended = "0.13.0"
-bincode = { workspace = true }
 aligned-vec = "0.6.4"
 ctrlc = "3.5.2"
 which = "8"

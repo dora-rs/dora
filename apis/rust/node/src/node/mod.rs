@@ -406,7 +406,7 @@ fn declare_ack_subscribers(
                 let Some(attachment) = sample.attachment() else {
                     return;
                 };
-                let Ok(metadata) = bincode::deserialize::<Metadata>(&attachment.to_bytes()) else {
+                let Ok(metadata) = dora_message::decode::<Metadata>(&attachment.to_bytes()) else {
                     // Not a dora ack (foreign publisher on the ack key): ignore.
                     return;
                 };
@@ -524,7 +524,7 @@ impl StartupHandshake {
                             continue;
                         };
                         let metadata = Metadata::startup_marker(clock.new_timestamp());
-                        let attachment = match bincode::serialize(&metadata) {
+                        let attachment = match dora_message::encode(&metadata) {
                             Ok(bytes) => bytes,
                             Err(e) => {
                                 debug!(output = %state.output_id, "failed to serialize startup marker ({e})");
@@ -1880,7 +1880,7 @@ impl DoraNode {
             .expect("a declared publisher implies a zenoh session");
 
         // Serialize metadata as zenoh attachment.
-        let metadata_bytes = match bincode::serialize(metadata) {
+        let metadata_bytes = match dora_message::encode(metadata) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
@@ -3005,7 +3005,7 @@ fn publish_schema_once(
             metadata
                 .parameters
                 .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
-            bincode::serialize(&metadata).ok()
+            dora_message::encode(&metadata).ok()
         }
     }
 }

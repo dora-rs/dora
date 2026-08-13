@@ -399,7 +399,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         .as_nanos() as u64;
 
     let header = RecordingHeader {
-        version: 1,
+        version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id,
         descriptor_yaml: yaml_bytes,
@@ -456,7 +456,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
         match data_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(Ok(payload)) => {
-                // The payload is already `Timestamped<InterDaemonEvent>` bincode bytes.
+                // The payload is already `Timestamped<InterDaemonEvent>` postcard bytes.
                 // Parse it to extract node_id and output_id for the recording entry.
                 let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
                     Ok(e) => e,

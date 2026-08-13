@@ -96,6 +96,28 @@ pub enum DaemonReply {
     Empty,
 }
 
+impl DaemonReply {
+    /// Bulk bytes this reply will contribute to its encoding, for
+    /// [`crate::encode_presized`].
+    ///
+    /// `NextEvents` is a batch, so this sums the per-event hints rather than
+    /// relying on the single flat envelope allowance `encode_presized` adds:
+    /// the daemon drains up to `NODE_EVENT_CHANNEL_CAPACITY` events into one
+    /// reply, and a batch of a few dozen would otherwise realloc several times
+    /// on envelopes alone.
+    pub fn encode_size_hint(&self) -> usize {
+        match self {
+            DaemonReply::NextEvents(events) => {
+                events.iter().map(|e| e.inner.encode_size_hint()).sum()
+            }
+            DaemonReply::Result(_)
+            | DaemonReply::NodeConfig { .. }
+            | DaemonReply::PinnedMemoryMetadata { .. }
+            | DaemonReply::Empty => 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[allow(clippy::large_enum_variant)]
@@ -132,9 +154,9 @@ pub enum NodeEvent {
     /// Sent when `dora param set` changes a parameter for this node.
     ///
     /// `value_json` carries JSON-encoded bytes rather than `serde_json::Value`:
-    /// this message is serialized with bincode on the daemon↔node TCP channel,
+    /// this message is serialized with postcard on the daemon↔node TCP channel,
     /// and `serde_json::Value::deserialize` uses `deserialize_any`, which
-    /// bincode does not support.
+    /// postcard (like any non-self-describing format) does not support.
     ParamUpdate {
         key: String,
         value_json: Vec<u8>,
@@ -163,4 +185,34 @@ pub enum NodeEvent {
     FreeMemoryPool {
         shared_memory_id: String,
     },
+}
+
+impl NodeEvent {
+    /// Bulk bytes this event will contribute to the encoding of the
+    /// [`DaemonReply`] that wraps it.
+    ///
+    /// Includes a flat per-event allowance for the `Timestamped` wrapper,
+    /// `Metadata` and ids, because these are batched: see
+    /// [`DaemonReply::encode_size_hint`].
+    pub fn encode_size_hint(&self) -> usize {
+        /// Measured at ~72 bytes for a typical `Input` (timestamp 25 +
+        /// `Metadata` 27 + tags and ids); rounded up so a batch of small events
+        /// still lands in one allocation.
+        const PER_EVENT_ENVELOPE: usize = 128;
+
+        let payload = match self {
+            NodeEvent::Input { data, .. } => data.as_ref().map_or(0, |d| d.len()),
+            NodeEvent::Stop
+            | NodeEvent::Reload { .. }
+            | NodeEvent::InputClosed { .. }
+            | NodeEvent::InputRecovered { .. }
+            | NodeEvent::NodeRestarted { .. }
+            | NodeEvent::AllInputsClosed
+            | NodeEvent::ParamUpdate { .. }
+            | NodeEvent::ParamDeleted { .. }
+            | NodeEvent::NodeFailed { .. }
+            | NodeEvent::FreeMemoryPool { .. } => 0,
+        };
+        payload.saturating_add(PER_EVENT_ENVELOPE)
+    }
 }
