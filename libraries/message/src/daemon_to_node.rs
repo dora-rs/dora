@@ -92,8 +92,14 @@ pub enum DaemonCommunication {
 pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
-    PinnedMemoryMetadata { metadata: Metadata },
+    NodeConfig {
+        result: Result<NodeConfig, String>,
+    },
+    /// Reply to [`DaemonRequest::ExtensionLoad`]. `None` means the key is not
+    /// in the table — either never stored, or already dropped.
+    ExtensionValue {
+        value: Option<Vec<u8>>,
+    },
     Empty,
 }
 
@@ -111,10 +117,10 @@ impl DaemonReply {
             DaemonReply::NextEvents(events) => {
                 events.iter().map(|e| e.inner.encode_size_hint()).sum()
             }
-            DaemonReply::Result(_)
-            | DaemonReply::NodeConfig { .. }
-            | DaemonReply::PinnedMemoryMetadata { .. }
-            | DaemonReply::Empty => 0,
+            // The extension value is opaque bytes handed straight back, so
+            // its own length is the whole hint.
+            DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
+            DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
         }
     }
 }
@@ -177,14 +183,15 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
-    /// A memory pool has been freed by another node in the dataflow.
+    /// An extension key this node stored or loaded has been dropped, by
+    /// another node or by the daemon reclaiming it.
     ///
-    /// When any node calls `free_memory_pool`, the daemon broadcasts this
-    /// event to every node so that per-process GPU/transit buffers and
-    /// shmem mappings are released regardless of which node initiated the
-    /// free.
-    FreeMemoryPool {
-        shared_memory_id: String,
+    /// Delivered out of band: the event stream consumes it rather than
+    /// surfacing it to user code, so a language binding polls
+    /// `drain_dropped_extension_keys()` instead.
+    ExtensionDropped {
+        namespace: String,
+        key: String,
     },
 }
 
@@ -211,8 +218,8 @@ impl NodeEvent {
             | NodeEvent::AllInputsClosed
             | NodeEvent::ParamUpdate { .. }
             | NodeEvent::ParamDeleted { .. }
-            | NodeEvent::NodeFailed { .. }
-            | NodeEvent::FreeMemoryPool { .. } => 0,
+            | NodeEvent::NodeFailed { .. } => 0,
+            NodeEvent::ExtensionDropped { namespace, key } => namespace.len() + key.len(),
         };
         payload.saturating_add(PER_EVENT_ENVELOPE)
     }

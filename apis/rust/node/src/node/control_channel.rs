@@ -138,14 +138,16 @@ impl ControlChannel {
         }
     }
 
-    pub fn register_pinned_memory(
+    pub fn extension_store(
         &mut self,
-        shared_memory_id: String,
-        metadata: Metadata,
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
     ) -> eyre::Result<()> {
-        let request = DaemonRequest::RegisterPinnedMemory {
-            shared_memory_id,
-            metadata,
+        let request = DaemonRequest::ExtensionStore {
+            namespace,
+            key,
+            value,
         };
         let reply = self
             .channel
@@ -153,22 +155,24 @@ impl ControlChannel {
                 inner: request,
                 timestamp: self.clock.new_timestamp(),
             })
-            .wrap_err("failed to send RegisterPinnedMemory request to dora-daemon")?;
+            .wrap_err("failed to send ExtensionStore request to dora-daemon")?;
         match reply {
             DaemonReply::Result(Ok(())) => Ok(()),
             DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected RegisterPinnedMemory reply: {other:?}"),
+            other => bail!("unexpected ExtensionStore reply: {other:?}"),
         }
     }
 
-    pub fn read_pinned_memory(
+    pub fn extension_load(
         &mut self,
-        shared_memory_id: String,
-        free: bool,
-    ) -> eyre::Result<Metadata> {
-        let request = DaemonRequest::ReadPinnedMemory {
-            shared_memory_id,
-            free,
+        namespace: String,
+        key: String,
+        remove: bool,
+    ) -> eyre::Result<Option<Vec<u8>>> {
+        let request = DaemonRequest::ExtensionLoad {
+            namespace,
+            key,
+            remove,
         };
         let reply = self
             .channel
@@ -176,27 +180,27 @@ impl ControlChannel {
                 inner: request,
                 timestamp: self.clock.new_timestamp(),
             })
-            .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
+            .wrap_err("failed to send ExtensionLoad request to dora-daemon")?;
         match reply {
-            DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
+            DaemonReply::ExtensionValue { value } => Ok(value),
             DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
+            other => bail!("unexpected ExtensionLoad reply: {other:?}"),
         }
     }
 
-    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> eyre::Result<()> {
-        let request = DaemonRequest::FreePinnedMemory { shared_memory_id };
+    pub fn extension_drop(&mut self, namespace: String, key: String) -> eyre::Result<()> {
+        let request = DaemonRequest::ExtensionDrop { namespace, key };
         let reply = self
             .channel
             .request(&Timestamped {
                 inner: request,
                 timestamp: self.clock.new_timestamp(),
             })
-            .wrap_err("failed to send FreePinnedMemory request to dora-daemon")?;
+            .wrap_err("failed to send ExtensionDrop request to dora-daemon")?;
         match reply {
             DaemonReply::Result(Ok(())) => Ok(()),
             DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
+            other => bail!("unexpected ExtensionDrop reply: {other:?}"),
         }
     }
 }

@@ -29,16 +29,31 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: Metadata,
+    /// Store an opaque value in the daemon's dataflow-scoped extension table.
+    ///
+    /// dora attaches no meaning to `namespace`, `key` or `value`: this is the
+    /// out-of-band channel for transports that live outside the tree (see
+    /// `docs/extensions.md`). The daemon tracks who stored a key and who has
+    /// read it, so it can notify readers on removal and reclaim the entry when
+    /// the dataflow ends.
+    ExtensionStore {
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
     },
-    ReadPinnedMemory {
-        shared_memory_id: String,
-        free: bool,
+    /// Read an opaque value back. `remove: true` drops it in the same round
+    /// trip, so a consume-once handoff needs one request rather than two.
+    ExtensionLoad {
+        namespace: String,
+        key: String,
+        remove: bool,
     },
-    FreePinnedMemory {
-        shared_memory_id: String,
+    /// Drop an opaque value. Every node that stored or loaded the key is sent
+    /// [`NodeEvent::ExtensionDropped`] so it can release whatever the value
+    /// referred to.
+    ExtensionDrop {
+        namespace: String,
+        key: String,
     },
 }
 
@@ -60,10 +75,10 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => 0,
+            | DaemonRequest::NodeConfig { .. } => 0,
+            // The stored value dominates; the namespace and key are short.
+            DaemonRequest::ExtensionStore { value, .. } => value.len(),
+            DaemonRequest::ExtensionLoad { .. } | DaemonRequest::ExtensionDrop { .. } => 0,
         }
     }
 
@@ -79,9 +94,9 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => true,
+            | DaemonRequest::ExtensionStore { .. }
+            | DaemonRequest::ExtensionLoad { .. }
+            | DaemonRequest::ExtensionDrop { .. } => true,
         }
     }
 
@@ -97,9 +112,9 @@ impl DaemonRequest {
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => false,
+            | DaemonRequest::ExtensionStore { .. }
+            | DaemonRequest::ExtensionLoad { .. }
+            | DaemonRequest::ExtensionDrop { .. } => false,
         }
     }
 }

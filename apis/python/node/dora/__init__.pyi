@@ -215,58 +215,64 @@ class Node:
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
         ```"""
 
-    def register_memory_pool(
+    def register_tensor_pool(
         self, tensor_info: dict, device: str = "cpu"
     ) -> pyarrow.Array:
-        """Register a tensor's pinned memory as a shared memory pool and
-        return a persistent buffer_id (pyarrow string array).
+        """Register a tensor's memory as a shared pool for zero-copy transfer.
 
-        The tensor data is copied into page-locked shared memory (via DMA
-        if CUDA).  The returned buffer_id can be sent to another node,
-        which can call read_memory_pool() to get a zero-copy tensor_info
-        pointing to the same shared memory.
-
-        Args:
-            tensor_info: dict with keys "ptr", "size", "dtype", "shape", "device"
-            device: "cpu" or "cuda" — the receiver's device (controls DMA path)
-
-        Returns:
-            pyarrow string array containing the buffer_id
+        Only present when the wheel was built with the `tensor-pool` feature.
+        NOT covered by dora's 1.0 compatibility guarantees — see
+        libraries/extensions/tensor-pool/README.md.
         """
 
-    def write_memory_pool(
-        self, memory_pool_id: pyarrow.Array, tensor_info: dict
+    def write_tensor_pool(
+        self, tensor_pool_id: pyarrow.Array, tensor_info: dict
     ) -> None:
-        """Write new tensor data into an existing memory pool.
+        """Write tensor data into an existing tensor pool.
 
-        Fast path: DORADMA header read from shmem, then memcpy data.
-        Slow path: falls back to daemon RPC.
-
-        Args:
-            memory_pool_id: pyarrow string array from register_memory_pool
-            tensor_info: dict with keys "ptr", "size", "dtype", "shape", "device"
+        Extension method; see register_tensor_pool.
         """
 
-    def read_memory_pool(self, memory_pool_id: pyarrow.Array) -> dict:
-        """Read tensor metadata from a memory pool.
+    def read_tensor_pool(self, tensor_pool_id: pyarrow.Array) -> dict:
+        """Read tensor metadata from a tensor pool (zero-copy).
 
-        Fast path: DORADMA header read from shmem (zero-copy, no daemon).
-        Slow path: falls back to daemon RPC.
-
-        Returns a tensor_info dict with keys:
-            "ptr": int — pointer to the data
-            "size": int — data size in bytes
-            "dtype": str — e.g. "float32"
-            "shape": list[int] — tensor shape
-            "device": str — "cpu" or "cuda"
+        Extension method; see register_tensor_pool.
         """
 
-    def free_memory_pool(self, memory_pool_id: pyarrow.Array) -> None:
-        """Free a memory pool by removing it from the daemon's tracking table.
+    def free_tensor_pool(self, tensor_pool_id: pyarrow.Array) -> None:
+        """Free a tensor pool, releasing it for every node that touched it.
 
-        Args:
-            memory_pool_id: pyarrow string array from register_memory_pool
+        Extension method; see register_tensor_pool.
         """
+
+    def extension_store(self, namespace: str, key: str, value: bytes) -> None:
+        """Store an opaque value in the daemon's dataflow-scoped extension table.
+
+        The seam for transports maintained outside the dora tree. dora brokers
+        the value's lifetime and nothing else — it never interprets namespace,
+        key or value.
+
+        The daemon reclaims the entry when this node exits or the dataflow
+        finishes, and notifies every node that stored or read the key when it
+        is dropped (see drain_dropped_extension_keys).
+        """
+
+    def extension_load(
+        self, namespace: str, key: str, remove: bool = False
+    ) -> bytes | None:
+        """Read an opaque value back, or None if the key is absent.
+
+        With remove=True the entry is dropped in the same round trip.
+        """
+
+    def extension_drop(self, namespace: str, key: str) -> None:
+        """Drop an opaque value, notifying every node that stored or read it.
+
+        Dropping an absent key succeeds, so a retry is safe.
+        """
+
+    def drain_dropped_extension_keys(self, namespace: str) -> list[str]:
+        """Take the keys in `namespace` dropped since the last call."""
 
     def __iter__(self) -> typing.Any:
         """Implement iter(self)."""

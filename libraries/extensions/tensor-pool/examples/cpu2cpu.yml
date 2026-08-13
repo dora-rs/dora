@@ -1,9 +1,10 @@
-# Negative-path test: receiver reads from a freed memory pool.
+# CPU-only throughput test: CPU sender, CPU receiver, explicit pool release.
+# This scenario can run on GPU-less CI runners and exercises the daemon pool path.
 env:
   sender_device: cpu
   receiver_device: cpu
-  message_num: 2
-  memory_pool_scenario: read_after_free
+  message_num: 100
+  tensor_pool_scenario: throughput
 nodes:
   - id: sender_node
     build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy

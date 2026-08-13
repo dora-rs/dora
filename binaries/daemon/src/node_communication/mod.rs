@@ -360,15 +360,17 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::RegisterPinnedMemory {
-                shared_memory_id,
-                metadata,
+            DaemonRequest::ExtensionStore {
+                namespace,
+                key,
+                value,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::RegisterPinnedMemory {
-                        shared_memory_id,
-                        metadata,
+                    DaemonNodeEvent::ExtensionStore {
+                        namespace,
+                        key,
+                        value,
                         reply_sender,
                     },
                     Some(reply),
@@ -376,15 +378,17 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::ReadPinnedMemory {
-                shared_memory_id,
-                free,
+            DaemonRequest::ExtensionLoad {
+                namespace,
+                key,
+                remove,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::ReadPinnedMemory {
-                        shared_memory_id,
-                        free,
+                    DaemonNodeEvent::ExtensionLoad {
+                        namespace,
+                        key,
+                        remove,
                         reply_sender,
                     },
                     Some(reply),
@@ -392,11 +396,12 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::FreePinnedMemory { shared_memory_id } => {
+            DaemonRequest::ExtensionDrop { namespace, key } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::FreePinnedMemory {
-                        shared_memory_id,
+                    DaemonNodeEvent::ExtensionDrop {
+                        namespace,
+                        key,
                         reply_sender,
                     },
                     Some(reply),

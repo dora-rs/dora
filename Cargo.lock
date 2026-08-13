@@ -2093,9 +2093,9 @@ dependencies = [
  "dora-arrow-convert",
  "dora-core",
  "dora-download",
- "dora-memory-pool",
  "dora-message",
  "dora-node-api",
+ "dora-tensor-pool",
  "dora-tracing",
  "dunce",
  "eyre",
@@ -2228,13 +2228,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "dora-memory-pool"
-version = "1.0.0-rc.4"
-dependencies = [
- "tracing",
-]
-
-[[package]]
 name = "dora-message"
 version = "1.0.0-rc.4"
 dependencies = [
@@ -2352,6 +2345,7 @@ dependencies = [
  "dora-operator-api-python",
  "dora-ros2-bridge-python",
  "dora-runtime-python",
+ "dora-tensor-pool-python",
  "eyre",
  "flume 0.12.0",
  "futures",
@@ -2360,7 +2354,6 @@ dependencies = [
  "pythonize",
  "serde_json",
  "serde_yaml",
- "shared_memory_extended",
  "tokio",
  "tracing",
 ]
@@ -2628,6 +2621,27 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-opentelemetry",
+]
+
+[[package]]
+name = "dora-tensor-pool"
+version = "1.0.0-rc.4"
+dependencies = [
+ "tracing",
+]
+
+[[package]]
+name = "dora-tensor-pool-python"
+version = "1.0.0-rc.4"
+dependencies = [
+ "arrow",
+ "dora-message",
+ "dora-node-api",
+ "eyre",
+ "pyo3",
+ "serde_json",
+ "shared_memory_extended",
+ "tracing",
 ]
 
 [[package]]
