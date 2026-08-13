@@ -8,24 +8,10 @@ use eyre::{Context, bail};
 use serde::Deserialize;
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
-    path::{Component, Path, PathBuf},
+    path::{Path, PathBuf},
 };
 
-/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
-/// the filesystem — the executable may not be built yet when this is called.
-fn normalize_path(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
-}
+use super::normalize_path;
 
 /// Check if a path string is absolute on any platform.
 /// On Windows, `Path::is_absolute()` returns false for Unix-style `/foo` paths,
@@ -183,6 +169,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         .canonicalize()
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
     let module_file = load_module_file(&canonical)?;
+    validate_module_header(&module_file.module)?;
     let module_dir = canonical
         .parent()
         .expect("module file must have a parent directory");
@@ -269,6 +256,36 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn validate_module_header(module: &ModuleHeader) -> eyre::Result<()> {
+    reject_duplicate_ports(&module.name, "inputs", &module.inputs)?;
+    reject_duplicate_ports(&module.name, "inputs_optional", &module.inputs_optional)?;
+    reject_duplicate_ports(&module.name, "outputs", &module.outputs)?;
+
+    let required: BTreeSet<_> = module.inputs.iter().collect();
+    if let Some(overlap) = module
+        .inputs_optional
+        .iter()
+        .find(|input| required.contains(input))
+    {
+        bail!(
+            "module `{}` input `{}` is declared as both required and optional",
+            module.name,
+            overlap
+        );
+    }
+    Ok(())
+}
+
+fn reject_duplicate_ports(module_name: &str, field: &str, ports: &[DataId]) -> eyre::Result<()> {
+    let mut seen = BTreeSet::new();
+    for port in ports {
+        if !seen.insert(port) {
+            bail!("module `{module_name}` has duplicate `{field}` entry `{port}`");
+        }
+    }
     Ok(())
 }
 
@@ -438,6 +455,7 @@ fn expand_module_node(
     }
 
     let module_file = load_module_file(&canonical)?;
+    validate_module_header(&module_file.module)?;
     let module_id = node.id.to_string();
     let module_dir = canonical
         .parent()
@@ -467,6 +485,30 @@ fn expand_module_node(
         .iter()
         .map(|d| d.to_string())
         .collect();
+    let declared_inputs: BTreeSet<String> = module_file
+        .module
+        .inputs
+        .iter()
+        .chain(module_file.module.inputs_optional.iter())
+        .map(|d| d.to_string())
+        .collect();
+    for provided_input in node.inputs.keys() {
+        let provided = provided_input.to_string();
+        if !declared_inputs.contains(&provided) {
+            bail!(
+                "module `{}` does not declare input `{}` provided by node `{}`\n\
+                 hint: declared inputs are: {}",
+                module_file.module.name,
+                provided_input,
+                node.id,
+                declared_inputs
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(", "),
+            );
+        }
+    }
 
     // Validate and collect params
     let mut seen_upper: BTreeMap<String, &String> = BTreeMap::new();
@@ -558,11 +600,7 @@ fn expand_module_node(
 
         // Prepend module-level build command to inner node builds
         if let Some(ref module_build) = module_file.build {
-            let inner_build = inner_node.build.take();
-            inner_node.build = Some(match inner_build {
-                Some(existing) => format!("{module_build}\n{existing}"),
-                None => module_build.clone(),
-            });
+            prepend_module_build_to_node(&mut inner_node, module_build);
         }
 
         prefixed_nodes.push(inner_node);
@@ -583,11 +621,7 @@ fn expand_module_node(
             // mirroring how `deploy` is propagated through recursion.
             if let Some(ref outer_build) = accumulated_build {
                 for nested_node in &mut nested {
-                    let inner_build = nested_node.build.take();
-                    nested_node.build = Some(match inner_build {
-                        Some(existing) => format!("{outer_build}\n{existing}"),
-                        None => outer_build.clone(),
-                    });
+                    prepend_module_build_to_node(nested_node, outer_build);
                 }
             }
             nested_output_maps.insert(nested_id, nested_omap);
@@ -635,6 +669,29 @@ fn expand_module_node(
     seen.remove(&canonical);
 
     Ok((final_nodes, output_map))
+}
+
+fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
+    prepend_build(&mut node.build, module_build);
+    if let Some(ref mut operators) = node.operators {
+        for op in &mut operators.operators {
+            prepend_build(&mut op.config.build, module_build);
+        }
+    }
+    if let Some(ref mut operator) = node.operator {
+        prepend_build(&mut operator.config.build, module_build);
+    }
+    if let Some(ref mut custom) = node.custom {
+        prepend_build(&mut custom.build, module_build);
+    }
+}
+
+fn prepend_build(build: &mut Option<String>, module_build: &str) {
+    let existing = build.take();
+    *build = Some(match existing {
+        Some(existing) => format!("{module_build}\n{existing}"),
+        None => module_build.to_string(),
+    });
 }
 
 /// Substitute `${_param.name}` references in a node's args and inject params
@@ -824,18 +881,27 @@ fn rewrite_inputs_map(
 }
 
 fn load_module_file(path: &Path) -> eyre::Result<ModuleFile> {
-    let metadata = std::fs::metadata(path)
-        .with_context(|| format!("failed to stat module file: {}", path.display()))?;
-    if metadata.len() > MAX_MODULE_FILE_SIZE {
+    use std::io::Read as _;
+    // Bound the read itself, not just a `metadata().len()` pre-check: that
+    // check reports 0 for FIFOs/character devices (e.g. `/dev/zero`) and is
+    // racy against a file being appended to, so it would sail past the cap and
+    // then `std::fs::read` unboundedly — exactly the "infinite files" DoS the
+    // limit is meant to prevent. `take(MAX + 1)` caps the read regardless of
+    // what the file claims its size is; if we hit the cap we reject. Mirrors
+    // the manifest loader in `crate::manifest`.
+    let file = std::fs::File::open(path)
+        .with_context(|| format!("failed to read module file: {}", path.display()))?;
+    let mut buf = Vec::new();
+    file.take(MAX_MODULE_FILE_SIZE + 1)
+        .read_to_end(&mut buf)
+        .with_context(|| format!("failed to read module file: {}", path.display()))?;
+    if buf.len() as u64 > MAX_MODULE_FILE_SIZE {
         bail!(
-            "module file too large ({} bytes, limit {}): {}",
-            metadata.len(),
+            "module file too large (limit {} bytes): {}",
             MAX_MODULE_FILE_SIZE,
             path.display()
         );
     }
-    let buf = std::fs::read(path)
-        .with_context(|| format!("failed to read module file: {}", path.display()))?;
     serde_yaml::from_slice(&buf)
         .with_context(|| format!("failed to parse module file: {}", path.display()))
 }
@@ -938,6 +1004,36 @@ nodes:
         assert_eq!(descriptor.exit_when_nodes_finish, None);
         let expanded = expand_modules(&descriptor, tmp.path()).unwrap();
         assert_eq!(expanded.exit_when_nodes_finish, None);
+    }
+
+    #[test]
+    fn load_module_file_rejects_oversized_file() {
+        let tmp = TempDir::new().unwrap();
+        // A valid module prefix followed by padding that pushes the file just
+        // over the cap. The read is bounded, so this is rejected before the
+        // whole (potentially unbounded) file is pulled into memory.
+        let mut content = String::from("module:\n  name: big\n  outputs: [x]\nnodes: []\n");
+        content.push_str("# ");
+        content.push_str(&"a".repeat((MAX_MODULE_FILE_SIZE + 16) as usize));
+        let path = write_file(tmp.path(), "big_module.yml", &content);
+
+        let err = load_module_file(&path).unwrap_err().to_string();
+        assert!(err.contains("too large"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn load_module_file_accepts_file_at_limit() {
+        let tmp = TempDir::new().unwrap();
+        // Exactly the cap (padding the comment out to MAX_MODULE_FILE_SIZE
+        // bytes total) must still load — the `+ 1` in `take` is what makes the
+        // boundary inclusive.
+        let prefix = "module:\n  name: ok\n  outputs: [x]\nnodes: []\n# ";
+        let pad = (MAX_MODULE_FILE_SIZE as usize) - prefix.len();
+        let content = format!("{prefix}{}", "a".repeat(pad));
+        assert_eq!(content.len() as u64, MAX_MODULE_FILE_SIZE);
+        let path = write_file(tmp.path(), "ok_module.yml", &content);
+
+        assert!(load_module_file(&path).is_ok());
     }
 
     #[test]
@@ -1245,6 +1341,51 @@ nodes:
     }
 
     #[test]
+    fn expand_rejects_duplicate_module_header_inputs() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "dup_header_module.yml",
+            r#"
+module:
+  name: dup_header
+  inputs: [data, data]
+  outputs: [out]
+
+nodes:
+  - id: inner
+    path: inner.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: dup_header_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("inputs"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+    }
+
+    #[test]
     fn expand_undefined_output_port() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -1541,6 +1682,54 @@ nodes:
         );
     }
 
+    #[test]
+    fn expand_rejects_module_input_not_declared_required_or_optional() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "strict_inputs_module.yml",
+            r#"
+module:
+  name: strict_inputs
+  inputs: [required]
+  inputs_optional: [config]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/required
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [data, extra]
+  - id: m
+    module: strict_inputs_module.yml
+    inputs:
+      required: src/data
+      typo: src/extra
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("does not declare input"), "got: {msg}");
+        assert!(msg.contains("typo"), "got: {msg}");
+        assert!(msg.contains("required"), "got: {msg}");
+        assert!(msg.contains("config"), "got: {msg}");
+    }
+
     // ---- Feature 4: params substitution ----
 
     #[test]
@@ -1745,6 +1934,98 @@ nodes:
         assert_eq!(proc.build.as_deref(), Some("make all"));
     }
 
+    #[test]
+    fn expand_module_build_prepended_to_operator_and_custom_builds() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "inner_kind_build_module.yml",
+            r#"
+module:
+  name: inner_kind_builds
+  inputs: [data]
+  outputs: [from_runtime, from_operator, from_custom]
+
+build: pip install shared
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: libproc.so
+        build: make proc
+        inputs:
+          data: _mod/data
+        outputs:
+          - from_runtime
+
+  - id: single
+    operator:
+      python: single.py
+      build: pip install single
+      inputs:
+        data: _mod/data
+      outputs:
+        - from_operator
+
+  - id: runner
+    custom:
+      path: runner.py
+      source: Local
+      build: pip install runner
+      inputs:
+        data: _mod/data
+      outputs:
+        - from_custom
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: inner_kind_build_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        let runtime_build = runtime.operators.as_ref().unwrap().operators[0]
+            .config
+            .build
+            .as_deref()
+            .unwrap();
+        assert_eq!(runtime_build, "pip install shared\nmake proc");
+
+        let single = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.single")
+            .unwrap();
+        let single_build = single.operator.as_ref().unwrap().config.build.as_deref();
+        assert_eq!(single_build, Some("pip install shared\npip install single"));
+
+        let runner = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runner")
+            .unwrap();
+        let custom_build = runner.custom.as_ref().unwrap().build.as_deref();
+        assert_eq!(custom_build, Some("pip install shared\npip install runner"));
+    }
+
     // ---- Feature 1: boundaries metadata ----
 
     #[test]
@@ -1847,6 +2128,87 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("nonexistent"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_duplicate_header_ports() {
+        let tmp = TempDir::new().unwrap();
+
+        let duplicate_inputs = write_file(
+            tmp.path(),
+            "duplicate_inputs.yml",
+            r#"
+module:
+  name: duplicate_inputs
+  inputs: [data, data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+        let msg = check_module_file(&duplicate_inputs)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("inputs"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+
+        let duplicate_optional = write_file(
+            tmp.path(),
+            "duplicate_optional.yml",
+            r#"
+module:
+  name: duplicate_optional
+  inputs: [data]
+  inputs_optional: [cfg, cfg]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+        let msg = check_module_file(&duplicate_optional)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("inputs_optional"), "got: {msg}");
+        assert!(msg.contains("cfg"), "got: {msg}");
+
+        let duplicate_outputs = write_file(
+            tmp.path(),
+            "duplicate_outputs.yml",
+            r#"
+module:
+  name: duplicate_outputs
+  inputs: [data]
+  outputs: [out, out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+        let msg = check_module_file(&duplicate_outputs)
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("duplicate"), "got: {msg}");
+        assert!(msg.contains("outputs"), "got: {msg}");
+        assert!(msg.contains("out"), "got: {msg}");
     }
 
     #[test]

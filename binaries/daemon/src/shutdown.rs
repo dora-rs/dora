@@ -275,9 +275,19 @@ mod tests {
 
         // A group leader that spawns a child into its group and exits, like
         // a wrapper dying while the interpreter it launched keeps running.
+        //
+        // The wrapper blocks on `read` rather than `exit 0` so its lifetime is
+        // controlled by the test, not by a race: nothing ordered the first
+        // `poll` before a bare `exit 0`, so on a loaded machine the wrapper
+        // could already be a reaped-later zombie by then, `is_live_child`
+        // returns false, and — being the first poll — the `confirmed`-group
+        // fallback does not yet apply, so `poll` returned `Done` and the
+        // "wrapper is alive" assertion flaked (#3023). Closing stdin below makes
+        // `read` hit EOF, so the wrapper exits exactly where the test wants it.
         let mut wrapper = Command::new("sh")
             .arg("-c")
-            .arg("sleep 300 & exit 0")
+            .arg("sleep 300 & read line")
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
@@ -292,7 +302,9 @@ mod tests {
             "the wrapper is alive, so this is an ordinary wait"
         );
 
-        // The wrapper exits and is reaped; its child lives on.
+        // Close stdin so the wrapper's `read` hits EOF and it exits; its child
+        // lives on. The wrapper is reaped by the `wait()` below.
+        drop(wrapper.stdin.take());
         wrapper.wait().expect("failed to wait for wrapper");
         assert_eq!(
             wait.poll(&[pid]),

@@ -2,6 +2,9 @@
 set -euo pipefail
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+# shellcheck source=cargo-target-dir.sh
+source "$ROOT/scripts/cargo-target-dir.sh"
+TARGET_DIR="$(cargo_target_dir "$ROOT")"
 COMPOSE=(docker compose -f "$ROOT/docker-compose.ros2-zenoh.yml" --profile)
 CASES=(topic-pub topic-sub service-client service-server action-client action-server graph domain namespace qos-transient-local)
 DISTRO=${1:-}
@@ -44,7 +47,7 @@ timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status
   "source /opt/ros/$DISTRO/setup.bash; dpkg-query -W 'ros-${DISTRO}-rmw-zenoh-cpp'; ros2 pkg executables rmw_zenoh_cpp"
 
 container="${PROJECT}-${service}-1"
-export DORA_ROS2_ZENOH_ARTIFACTS="$ROOT/target/ros2-zenoh-logs/$PROJECT"
+export DORA_ROS2_ZENOH_ARTIFACTS="$TARGET_DIR/ros2-zenoh-logs/$PROJECT"
 export DORA_ROS2_ZENOH_PYTHON="$DORA_ROS2_ZENOH_ARTIFACTS/python"
 export DORA_ROS2_ZENOH_AMENT="$DORA_ROS2_ZENOH_ARTIFACTS/ament"
 if [[ -z "${DORA_ROS2_ZENOH_PYTHON_EXECUTABLE:-}" ]]; then
@@ -59,7 +62,7 @@ if [[ -z "${DORA_ROS2_ZENOH_PYTHON_EXECUTABLE:-}" ]]; then
 fi
 : "${DORA_ROS2_ZENOH_PYTHON_EXECUTABLE:?Python 3.11 or newer is required}"
 export DORA_ROS2_ZENOH_PYTHON_EXECUTABLE
-WHEEL_DIR="${CARGO_TARGET_DIR:-$ROOT/target}/wheels"
+WHEEL_DIR="$TARGET_DIR/wheels"
 mkdir -p "$DORA_ROS2_ZENOH_PYTHON" "$DORA_ROS2_ZENOH_AMENT"
 docker cp "$container:/opt/ros/$DISTRO/share" "$DORA_ROS2_ZENOH_AMENT/"
 maturin build --release --manifest-path "$ROOT/libraries/extensions/ros2-bridge/python/Cargo.toml"

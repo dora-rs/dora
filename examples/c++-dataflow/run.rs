@@ -92,7 +92,7 @@ fn main() -> eyre::Result<()> {
         ],
     )?;
 
-    build_package("dora-runtime")?;
+    build_package("dora-runtime-shared-lib")?;
 
     // Bound the run so a wedged node fails fast via the daemon's stop
     // escalation instead of hanging until the CI step timeout (#2152).

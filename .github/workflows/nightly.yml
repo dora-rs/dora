@@ -20,9 +20,10 @@ name: Nightly Regression
 # high-frequency PR loop (ci.yml) depends on. Nightly is a non-blocking
 # once-daily job, so it restores where it can but never saves — trading
 # a slower nightly for a warm PR loop. Do NOT drop these `save-if:
-# false` gates. If nightly build time becomes a problem, move these to a
-# separate cache backend (e.g. `cache-provider: buildjet`, as
-# pip-release.yml does) rather than saving into the GitHub budget.
+# false` gates. If nightly build time becomes a problem, find a cache
+# backend outside the GitHub budget rather than saving into it. Note
+# that BuildJet — the escape hatch pip-release.yml used to use — is
+# shutting down, and rust-cache v2.9.2 removed that provider.
 #
 # Triggers:
 #   - schedule: daily at 06:00 UTC
@@ -43,6 +44,15 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/nightly.yml"
+
+# A newer nightly makes older ones obsolete, so don't let them pile up.
+# Scheduled runs share `github.ref` (refs/heads/main), so a fresh run
+# cancels a still-queued/running earlier one instead of competing with it
+# (and with the merge queue) for the runner pool. Nightly is not a
+# merge-queue required status, so cancelling a run cannot wedge the queue.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -1198,6 +1208,7 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
 
@@ -1838,6 +1849,7 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
       - name: Check (cross)
         if: matrix.cross
@@ -1846,6 +1858,7 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
 
   # ===== ROS2 bridge basic checks =====

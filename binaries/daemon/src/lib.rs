@@ -936,6 +936,27 @@ fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -
     Ok(())
 }
 
+/// Extract a finished dataflow's collected node results out of
+/// `dataflow_node_results` for its terminal [`DataflowDaemonResult`].
+///
+/// When `keep_entry` is `false` (a persistent, coordinator-managed daemon) the
+/// entry is removed, because nothing reads it again after the result is
+/// reported — leaving it in place makes the map grow without bound over the
+/// daemon's lifetime. When `keep_entry` is `true` (the run-once `dora run`
+/// path) the entry is cloned and left in place, because `run_inner` drains the
+/// whole map via [`std::mem::take`] *after* `finish_dataflow` returns.
+fn extract_node_results(
+    results: &mut BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    dataflow_id: Uuid,
+    keep_entry: bool,
+) -> BTreeMap<NodeId, Result<(), NodeError>> {
+    if keep_entry {
+        results.get(&dataflow_id).cloned().unwrap_or_default()
+    } else {
+        results.remove(&dataflow_id).unwrap_or_default()
+    }
+}
+
 impl Daemon {
     /// Runs the daemon. `zenoh_listen_addr` overrides the address this
     /// daemon's zenoh listener binds, and therefore the locator its peers are
@@ -5555,11 +5576,17 @@ impl Daemon {
         // in dataflow_node_results. An empty map means all dynamic nodes handled stop successfully.
         let result = DataflowDaemonResult {
             timestamp: self.clock.new_timestamp(),
-            node_results: self
-                .dataflow_node_results
-                .get(&dataflow_id)
-                .cloned()
-                .unwrap_or_default(),
+            // On a persistent, coordinator-managed daemon (`exit_when_done` is
+            // `None`) nothing reads this dataflow's entry again after we report
+            // it, so remove it to avoid `dataflow_node_results` growing without
+            // bound across the daemon's lifetime. In the run-once (`dora run`)
+            // path `run_inner` drains the whole map via `std::mem::take` *after*
+            // `finish_dataflow` returns, so the entry must survive until then.
+            node_results: extract_node_results(
+                &mut self.dataflow_node_results,
+                dataflow_id,
+                self.exit_when_done.is_some(),
+            ),
         };
 
         self.git_manager
@@ -6074,44 +6101,65 @@ impl Daemon {
                                         // NodeRestarted is a critical lifecycle event:
                                         // dropping it leaves service/action clients
                                         // blocked on pre-crash correlations forever
-                                        // (dora-rs/adora#148). Use an unconditional
-                                        // backpressure-aware send to guarantee delivery.
+                                        // (dora-rs/adora#148). Guarantee delivery with a
+                                        // backpressure-aware send — but do NOT await it
+                                        // on the daemon main loop.
                                         //
-                                        // This blocks the daemon main loop until the
-                                        // receiver drains one slot. Acceptable because:
-                                        // - NodeRestarted is rare (only on crash+restart)
-                                        // - The receiver (Listener::run_inner) is a tokio
-                                        //   task on the same runtime, so it will make
-                                        //   progress cooperatively
-                                        // - If the receiver is dead the channel is closed
-                                        //   and send() returns Err immediately
+                                        // Awaiting here suspends the single serial event
+                                        // loop until the receiver drains a slot. If that
+                                        // receiver's Listener is itself parked on
+                                        // `daemon_tx.send().await` (the daemon event
+                                        // channel at capacity), it never returns to drain
+                                        // its subscribe channel, so the two block each
+                                        // other forever and the whole daemon hangs
+                                        // (dora-rs/dora#3066). Offload the awaiting send
+                                        // to a detached task holding cloned handles so the
+                                        // main loop keeps draining `dora_events_rx`.
                                         tracing::warn!(
                                             %dataflow_id,
                                             restarted_node = %node_id,
                                             %receiver_id,
                                             "NodeRestarted try_send failed (channel full); \
-                                             awaiting backpressure delivery"
+                                             offloading backpressure delivery to a task"
                                         );
+                                        let channel = channel.clone();
+                                        // Clone the receiver's pending counter so the task
+                                        // can pair the enqueue with `inc_pending` off the
+                                        // main loop. The Listener decrements once per
+                                        // drained event, so the increment must land iff
+                                        // the message is actually enqueued (Ok), exactly
+                                        // as the inline delivery sites do (dora-rs/dora#2827).
+                                        let pending =
+                                            dataflow.pending_messages.get(receiver_id).cloned();
                                         let msg = Timestamped {
                                             inner: NodeEvent::NodeRestarted {
                                                 id: node_id.clone(),
                                             },
                                             timestamp: self.clock.new_timestamp(),
                                         };
-                                        match channel.send(msg).await {
-                                            Ok(()) => {
-                                                dataflow.inc_pending(receiver_id);
+                                        let restarted_node = node_id.clone();
+                                        let receiver = receiver_id.clone();
+                                        tokio::spawn(async move {
+                                            match channel.send(msg).await {
+                                                Ok(()) => {
+                                                    if let Some(counter) = pending {
+                                                        counter.fetch_add(
+                                                            1,
+                                                            std::sync::atomic::Ordering::Relaxed,
+                                                        );
+                                                    }
+                                                }
+                                                Err(_closed) => {
+                                                    tracing::warn!(
+                                                        %dataflow_id,
+                                                        %restarted_node,
+                                                        %receiver,
+                                                        "NodeRestarted delivery failed: \
+                                                         receiver channel closed"
+                                                    );
+                                                }
                                             }
-                                            Err(_closed) => {
-                                                tracing::warn!(
-                                                    %dataflow_id,
-                                                    restarted_node = %node_id,
-                                                    %receiver_id,
-                                                    "NodeRestarted delivery failed: \
-                                                     receiver channel closed"
-                                                );
-                                            }
-                                        }
+                                        });
                                     }
                                     Err(_) => {
                                         tracing::warn!(
@@ -9665,6 +9713,59 @@ mod announce_zenoh_bind_tests {
             sock(REMOTE_COORDINATOR),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod node_results_cleanup_tests {
+    use super::{NodeId, extract_node_results};
+    use std::collections::BTreeMap;
+    use uuid::Uuid;
+
+    fn populated() -> (
+        Uuid,
+        BTreeMap<Uuid, BTreeMap<NodeId, Result<(), super::NodeError>>>,
+    ) {
+        let id = Uuid::new_v4();
+        let mut inner = BTreeMap::new();
+        inner.insert(NodeId::from("node".to_string()), Ok(()));
+        let mut map = BTreeMap::new();
+        map.insert(id, inner);
+        (id, map)
+    }
+
+    #[test]
+    fn persistent_daemon_removes_the_entry() {
+        let (id, mut map) = populated();
+        let results = extract_node_results(&mut map, id, false);
+        assert_eq!(
+            results.len(),
+            1,
+            "the reported results must still be returned"
+        );
+        assert!(
+            !map.contains_key(&id),
+            "a coordinator-managed daemon must drop the entry to avoid unbounded growth"
+        );
+    }
+
+    #[test]
+    fn run_once_daemon_keeps_the_entry() {
+        let (id, mut map) = populated();
+        let results = extract_node_results(&mut map, id, true);
+        assert_eq!(results.len(), 1);
+        assert!(
+            map.contains_key(&id),
+            "the run-once path relies on run_inner's later mem::take, so the entry must survive"
+        );
+    }
+
+    #[test]
+    fn missing_entry_yields_empty_results() {
+        let mut map: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), super::NodeError>>> =
+            BTreeMap::new();
+        assert!(extract_node_results(&mut map, Uuid::new_v4(), false).is_empty());
+        assert!(extract_node_results(&mut map, Uuid::new_v4(), true).is_empty());
     }
 }
 

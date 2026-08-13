@@ -37,11 +37,9 @@ async fn connect_control(
 
 /// Build a daemon Register WsRequest JSON string.
 ///
-/// Constructs the full JSON string directly (bypassing `serde_json::Value`)
-/// because `uhlc::ID(NonZeroU128)` can be serialized to a JSON string via
-/// `serde_json::to_string` but not via `serde_json::to_value` (u128 out of range
-/// for the `Value::Number` type). The coordinator deserializes from the raw
-/// JSON text (`serde_json::from_str`), so this matches the real wire format.
+/// Constructs the full JSON string directly, exactly as the daemon does in
+/// `dora_daemon::coordinator::register`, so the test exercises the real wire
+/// format rather than a `serde_json::Value` re-encoding of it.
 fn make_register_request() -> (Uuid, String) {
     let id = Uuid::new_v4();
     let register = CoordinatorRequest::Register(DaemonRegisterRequest::new(
@@ -53,7 +51,7 @@ fn make_register_request() -> (Uuid, String) {
         timestamp: dora_message::uhlc::HLC::default().new_timestamp(),
     };
     // Build WsRequest-shaped JSON manually, embedding the Timestamped params
-    // as a raw JSON fragment to preserve u128 fidelity.
+    // as a raw JSON fragment.
     let params_json = serde_json::to_string(&timestamped).unwrap();
     let full_json = format!(r#"{{"id":"{id}","method":"daemon_request","params":{params_json}}}"#,);
     (id, full_json)

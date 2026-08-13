@@ -176,6 +176,20 @@ jobs:
       # surface and deserve their own compile gate.
       - name: Check examples compile
         run: cargo check --examples
+      # ...nor does it build test targets, so the `#[cfg(test)]` modules of
+      # the PyO3 crates were type-checked nowhere: they're excluded
+      # from `cargo test` (see the `test` job) and from clippy above, and
+      # `cargo check --all` only covers their lib targets. A syntax error in
+      # one of those test modules could ship. This is rmeta-only and `Check`
+      # above already checked the whole dependency graph with the same
+      # features, so it costs seconds. contract-tests actually *runs* them.
+      - name: Check PyO3 crate test targets compile
+        run: >
+          cargo check --all-targets
+          -p dora-node-api-python
+          -p dora-operator-api-python
+          -p dora-ros2-bridge-python
+          -p dora-runtime-python
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.
@@ -223,12 +237,19 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+      # The PyO3 crates stay excluded here — their test binaries link
+      # libpython, and this job sets up no interpreter. Their unit tests run
+      # in `contract-tests`, which does; keep that step in sync if this list
+      # changes. `dora-runtime-python` is one of them: it links pyo3 like the
+      # rest, and only its own targets are skipped — the lib still builds
+      # above, as a dependency of dora-cli-api-python.
       - name: Test
         run: >
           cargo test --all
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
 
@@ -362,7 +383,16 @@ jobs:
       - name: Run E2E tests
         run: >
           cargo test --test ws-cli-e2e -- --test-threads=1
-        timeout-minutes: 10
+        # First dev-profile cargo invocation in this job, so it absorbs the
+        # entire cold-cache compile: ~6m30 of actual tests on a warm runner,
+        # plus ~4m35 of dependency codegen and ~3m20 of nested fixture
+        # `cargo build` calls on top when rust-cache misses. Cold misses are
+        # not hypothetical — the floating `Swatinem/rust-cache@v2` tag moving
+        # to 2.9.2 rotated the environment hash and stranded every entry at
+        # once, and the old 10-minute cap turned that into a timeout here
+        # (#3030's merge-queue run). Budget for the cold path; a warm run
+        # still finishes in well under half of this.
+        timeout-minutes: 25
       - name: Run fault-tolerance tests
         run: >
           cargo test --test fault-tolerance-e2e -- --test-threads=1
@@ -493,6 +523,28 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      # The three PyO3 crates are excluded from the workspace `cargo test`
+      # in the `test` job, so until this step their `#[cfg(test)]` modules
+      # ran nowhere at all — pure-Rust logic tests (seqlock generation
+      # counters, transport classification, pinning thresholds, the
+      # `FREED_POOL_IDS` cap) that carried no enforcement. They run here
+      # because this is the one job with a Python interpreter set up.
+      #
+      # Deliberately BEFORE the maturin install below. A test binary is an
+      # executable and has to link libpython, so this build must NOT enable
+      # `pyo3/extension-module` (which suppresses that link — right for a
+      # wheel, a link error for anything else). `[tool.maturin] features`
+      # in apis/python/node/pyproject.toml enables it for the wheel, so the
+      # two builds can't share pyo3 artifacts either way; running the tests
+      # first keeps a unit-test failure from waiting behind the wheel build.
+      - name: Test PyO3 crates (unit tests)
+        run: make qa-test-python
+        # These binaries link libpython dynamically, so the loader needs the
+        # tool-cache CPython's lib dir. setup-python exports exactly this
+        # already; restating it keeps the step from depending on that
+        # implementation detail (LD_LIBRARY_PATH only adds a search path).
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true

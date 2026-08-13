@@ -20,7 +20,7 @@ cargo build -p dora-daemon
 cargo check --all
 
 # Test all (excluding Python)
-cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+cargo test --all --exclude dora-runtime-python --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test single package
 cargo test -p dora-core
@@ -58,7 +58,9 @@ dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 | `binaries/cli` | dora-cli | CLI binary (`dora` command) - build, run, stop dataflows |
 | `binaries/daemon` | dora-daemon | Spawns nodes, manages local shared-memory/TCP communication |
 | `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments |
-| `binaries/runtime` | dora-runtime | In-process operator execution runtime |
+| `binaries/runtime-api` | dora-runtime-api | Language-neutral operator runtime SDK (event loop, node harness, `OperatorRunner` trait) |
+| `binaries/runtime-shared-lib` | dora-runtime-shared-lib | Shared-library (C ABI) operator runtime backend; shipped in the `dora` CLI (`dora runtime`) |
+| `binaries/runtime-python` | dora-runtime-python | Python (PyO3) operator runtime backend; shipped in the Python wheel (`dora.start_runtime()`) |
 | `libraries/message` | dora-message | All inter-component message types and protocol definitions |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
 | `apis/rust/node` | dora-node-api | Rust API for writing custom nodes |
@@ -133,6 +135,7 @@ cargo test --all \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \
+  --exclude dora-runtime-python \
   --exclude dora-cli-api-python \
   --exclude dora-examples
 
@@ -140,6 +143,13 @@ cargo test --all \
 # targets, so signature breaks in `dora_cli::build` / `dora_cli::run`
 # can ship silently otherwise. CI gates on this (#1680).
 cargo check --examples
+
+# 5. Only if you touched a PyO3 crate (apis/python/node, apis/python/operator,
+# libraries/extensions/ros2-bridge/python, binaries/runtime-python): their unit
+# tests are excluded from the `cargo test --all` above because the test binaries
+# link libpython, so run them explicitly. CI runs the same command in ci.yml's
+# `contract-tests` job.
+make qa-test-python
 
 # Quick single-crate check while iterating:
 # cargo test -p <crate-name>
@@ -177,8 +187,9 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `cargo fmt --all -- --check`
 - `cargo clippy --all -- -D warnings` (excluding Python packages)
 - `cargo test --all` on **ubuntu-latest only** (excluding Python packages)
+- `cargo check --all-targets` on the three PyO3 crates, so their `#[cfg(test)]` modules are at least type-checked on every PR (`cargo check --all` covers lib targets only)
 - E2E tests: `ws-cli-e2e` + `fault-tolerance-e2e`
-- Semantic contract tests (`tests/example-smoke.rs::contract_*`)
+- Semantic contract tests (`tests/example-smoke.rs::contract_*`), plus the PyO3 crates' unit tests (`make qa-test-python` — this is the one job that sets up a Python interpreter, so it's where those tests run)
 - Benchmark regression check (criterion baseline caching)
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
 - Supply-chain audit (`cargo-audit` + `cargo-deny`)

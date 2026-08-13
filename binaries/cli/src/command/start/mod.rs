@@ -47,19 +47,6 @@ pub struct Start {
     /// Enable debug mode (publishes all messages to Zenoh for topic echo/hz/info)
     #[clap(long, action)]
     debug: bool,
-    /// Set an environment variable for every node of this dataflow
-    /// (repeatable). Merges into the dataflow-level `env:` block;
-    /// node-level `env:` entries still win on conflict.
-    ///
-    /// Nodes started via `dora start` are spawned by the DAEMON and do
-    /// NOT inherit this CLI invocation's environment — `--env` is the
-    /// supported way to parameterize a run without editing the YAML.
-    /// Applies at spawn time only; `build:` commands are unaffected.
-    /// Values must survive the descriptor encoding verbatim: a literal
-    /// `$` is refused (the receiving process would expand it) and so are
-    /// numeric-looking values that would be coerced. They are also
-    /// persisted with the dataflow in the coordinator's state store and
-    /// visible in `ps` — prefer a node `env:` block for secrets.
     /// Exit once every node has finished, treating `dora/timer/...`
     /// inputs as a clock rather than as work.
     ///
@@ -84,6 +71,19 @@ pub struct Start {
         value_name = "BOOL"
     )]
     pub exit_when_nodes_finish: Option<bool>,
+    /// Set an environment variable for every node of this dataflow
+    /// (repeatable). Merges into the dataflow-level `env:` block;
+    /// node-level `env:` entries still win on conflict.
+    ///
+    /// Nodes started via `dora start` are spawned by the DAEMON and do
+    /// NOT inherit this CLI invocation's environment — `--env` is the
+    /// supported way to parameterize a run without editing the YAML.
+    /// Applies at spawn time only; `build:` commands are unaffected.
+    /// Values must survive the descriptor encoding verbatim: a literal
+    /// `$` is refused (the receiving process would expand it) and so are
+    /// numeric-looking values that would be coerced. They are also
+    /// persisted with the dataflow in the coordinator's state store and
+    /// visible in `ps` — prefer a node `env:` block for secrets.
     #[clap(long = "env", value_name = "KEY=VALUE")]
     env: Vec<String>,
 }
