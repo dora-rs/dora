@@ -292,6 +292,11 @@ pub struct RunningDataflow {
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    /// Edges whose receiver lives on another daemon, which `mappings` (this
+    /// daemon's delivery table) does not record. Only `downstream_closure`
+    /// reads them, to follow a chain that leaves this daemon and returns to
+    /// it (dora-rs/dora#2881).
+    pub(crate) remote_edges: HashMap<OutputId, BTreeSet<NodeId>>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
@@ -402,6 +407,7 @@ impl RunningDataflow {
             subscribe_channels: HashMap::new(),
             pending_messages: HashMap::new(),
             mappings: HashMap::new(),
+            remote_edges: HashMap::new(),
             timers: BTreeMap::new(),
             log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
@@ -1024,20 +1030,32 @@ impl RunningDataflow {
     /// cannot see pool ids inside payloads, so the whole downstream closure
     /// counts as a potential reader (dora-rs/dora#2881).
     ///
+    /// Remote receivers are followed too, via `remote_edges`: `mappings`
+    /// holds only edges this daemon delivers, so a chain that leaves the
+    /// daemon and comes back — `local -> remote -> local` — would otherwise
+    /// stop at the first hop and lose the local node at its end. A remote
+    /// node never counts as live (pools are host-local), so including it
+    /// costs nothing; reaching *past* it is the point.
+    ///
     /// Returns node ids as `String` because that is how the pool table keys
     /// them.
     pub(crate) fn downstream_closure(&self, source: &NodeId) -> HashSet<String> {
         let mut reachable = HashSet::from([source.to_string()]);
         let mut queue = vec![source.clone()];
         while let Some(node) = queue.pop() {
-            for (output_id, receivers) in &self.mappings {
-                if output_id.0 != node {
-                    continue;
-                }
-                for (receiver, _input) in receivers {
-                    if reachable.insert(receiver.to_string()) {
-                        queue.push(receiver.clone());
-                    }
+            let local = self
+                .mappings
+                .iter()
+                .filter(|(output_id, _)| output_id.0 == node)
+                .flat_map(|(_, receivers)| receivers.iter().map(|(receiver, _input)| receiver));
+            let remote = self
+                .remote_edges
+                .iter()
+                .filter(|(output_id, _)| output_id.0 == node)
+                .flat_map(|(_, receivers)| receivers.iter());
+            for receiver in local.chain(remote) {
+                if reachable.insert(receiver.to_string()) {
+                    queue.push(receiver.clone());
                 }
             }
         }
@@ -1678,6 +1696,30 @@ mod tests {
 
         // A direct consumer may forward a pool id further down, so the whole
         // downstream chain counts — and nothing outside it does.
+        assert_eq!(
+            df.downstream_closure(&node_id("sender")),
+            HashSet::from([
+                "sender".to_string(),
+                "middle".to_string(),
+                "sink".to_string(),
+            ]),
+        );
+    }
+
+    #[test]
+    fn downstream_closure_follows_a_chain_through_another_daemon() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        // `sender -> middle` leaves this daemon, so it is not in `mappings`;
+        // `middle -> sink` comes back to a local node. A pool id can travel
+        // the whole chain, so `sink` must count as a potential reader even
+        // though the only path to it runs through the other daemon.
+        df.remote_edges
+            .entry(OutputId(node_id("sender"), data_id("out")))
+            .or_default()
+            .insert(node_id("middle"));
+        edge(&mut df, "middle", "sink");
+
         assert_eq!(
             df.downstream_closure(&node_id("sender")),
             HashSet::from([

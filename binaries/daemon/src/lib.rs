@@ -694,6 +694,30 @@ fn reclaim_memory_pools_after_exit(
     }
 }
 
+/// Widen the reader set of every pool the new edge `source` -> `target`
+/// exposes, so reclamation cannot outrun a rewiring of a running dataflow.
+///
+/// Whoever can reach a pool can forward its id along a new outgoing edge, so
+/// `target` — and everything downstream of it — joins the pools `source`
+/// could already reach. `source` registering the pool itself is the case
+/// that bites: it is in its own reader set, so without this an exiting
+/// `source` would take the pool with it while the freshly connected
+/// consumer still holds the id (dora-rs/dora#2881).
+///
+/// Must run *after* the edge is recorded, so the closure sees it.
+fn extend_pool_readers_for_new_edge(
+    memory_pool: &MemoryPoolManager,
+    dataflow: &RunningDataflow,
+    source: &NodeId,
+    target: &NodeId,
+) {
+    memory_pool.extend_potential_readers(
+        &dataflow.id.to_string(),
+        source.as_ref(),
+        &dataflow.downstream_closure(target),
+    );
+}
+
 /// Release everything this daemon still holds for a dataflow that just
 /// finished here: its pool table entries, plus the `/dev/shm` segments of
 /// `owned_nodes` that no table entry covers.
@@ -2847,6 +2871,20 @@ impl Daemon {
                         }
                     }
 
+                    // Same as `AddMapping`: each input the new node declares
+                    // is a new edge, so the pools its source can reach must
+                    // now count this node as a possible reader.
+                    for input in inputs.values() {
+                        if let InputMapping::User(mapping) = &input.mapping {
+                            extend_pool_readers_for_new_edge(
+                                &self.memory_pool,
+                                dataflow,
+                                &mapping.source,
+                                &node_id,
+                            );
+                        }
+                    }
+
                     if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
                     }
@@ -3459,7 +3497,20 @@ impl Daemon {
                 // explicit `AddMappingResult` so the coordinator can pattern-
                 // match the outcome (same class as #1682's AddNodeResult).
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    dataflow.add_mapping(source_node, source_output, target_node, target_input);
+                    dataflow.add_mapping(
+                        source_node.clone(),
+                        source_output,
+                        target_node.clone(),
+                        target_input,
+                    );
+                    // The new edge gives `target_node` a path to the source's
+                    // pools — including any the source registered itself.
+                    extend_pool_readers_for_new_edge(
+                        &self.memory_pool,
+                        dataflow,
+                        &source_node,
+                        &target_node,
+                    );
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
@@ -4166,9 +4217,17 @@ impl Daemon {
                         }
                     }
                 } else if let InputMapping::User(mapping) = input.mapping {
+                    let output_id = OutputId(mapping.source, mapping.output);
+                    // This daemon does not deliver the edge, but it still
+                    // needs to know it exists: the receiver's own consumers
+                    // may be local again, and a memory-pool id can travel
+                    // the whole chain (`downstream_closure`).
                     dataflow
-                        .open_external_mappings
-                        .insert(OutputId(mapping.source, mapping.output));
+                        .remote_edges
+                        .entry(output_id.clone())
+                        .or_default()
+                        .insert(node.id.clone());
+                    dataflow.open_external_mappings.insert(output_id);
                 }
             }
         }
@@ -9841,6 +9900,61 @@ mod fault_tolerance_tests {
 
             assert_eq!(memory_pool.table_size(), expected, "case: {case}");
         }
+    }
+
+    /// `potential_readers` is captured at registration time, so rewiring a
+    /// running dataflow would otherwise leave it stale. The registrar is in
+    /// its own reader set and reclamation fires on its exit, so without the
+    /// update the pool — and its `/dev/shm` segment — would go away while a
+    /// consumer connected a moment ago still had its id in flight
+    /// (dora-rs/dora#2881 review).
+    #[test]
+    fn a_consumer_connected_after_registration_still_pins_the_pool() {
+        let sender = NodeId::from("sender".to_string());
+        let consumer = NodeId::from("consumer".to_string());
+
+        let mut df = test_dataflow();
+        df.running_nodes.insert(sender.clone(), test_running_node());
+
+        // Registered while `sender` has no consumers at all.
+        let memory_pool = MemoryPoolManager::new();
+        memory_pool
+            .register_memory_pool(
+                MemoryPoolId {
+                    dataflow_id: Uuid::nil().to_string(),
+                    id: "pool-1".to_string(),
+                },
+                MemoryPoolMetadata::default(),
+                sender.to_string(),
+                df.downstream_closure(&sender),
+            )
+            .unwrap();
+
+        // `dora graph connect sender/out consumer/in`.
+        df.add_mapping(
+            sender.clone(),
+            DataId::from("out".to_string()),
+            consumer.clone(),
+            DataId::from("in".to_string()),
+        );
+        df.running_nodes
+            .insert(consumer.clone(), test_running_node());
+        extend_pool_readers_for_new_edge(&memory_pool, &df, &sender, &consumer);
+
+        // The sender sends the pool id along the new edge and exits.
+        let mut running = HashMap::from([(Uuid::nil(), df)]);
+        reclaim_memory_pools_after_exit(&memory_pool, &running, Uuid::nil(), &sender);
+        assert_eq!(
+            memory_pool.table_size(),
+            1,
+            "the newly connected consumer can still read the pool"
+        );
+
+        // ...and it is reclaimed once that consumer is gone too.
+        let df = running.get_mut(&Uuid::nil()).expect("dataflow is present");
+        df.running_nodes.remove(&sender);
+        reclaim_memory_pools_after_exit(&memory_pool, &running, Uuid::nil(), &consumer);
+        assert_eq!(memory_pool.table_size(), 0);
     }
 
     #[test]

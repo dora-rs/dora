@@ -56,9 +56,11 @@ pub struct MemoryPoolEntry {
     pub touched_by: HashSet<String>,
     /// Nodes that have not opened this pool (yet) but could still learn its
     /// id from a message in flight — the registering node's downstream
-    /// consumers as of registration time. Together with `touched_by` this is
-    /// the set of nodes that may still reference the pool; see
-    /// [`MemoryPoolManager::reclaim_unreachable`].
+    /// consumers. Together with `touched_by` this is the set of nodes that
+    /// may still reference the pool; see
+    /// [`MemoryPoolManager::reclaim_unreachable`]. Rewiring a running
+    /// dataflow adds to it, via
+    /// [`MemoryPoolManager::extend_potential_readers`].
     pub potential_readers: HashSet<String>,
 }
 
@@ -69,6 +71,11 @@ impl MemoryPoolEntry {
             .iter()
             .chain(&self.potential_readers)
             .any(|node| is_live(node))
+    }
+
+    /// Whether `node` is one of the nodes that may reference this pool.
+    fn references(&self, node: &str) -> bool {
+        self.touched_by.contains(node) || self.potential_readers.contains(node)
     }
 }
 
@@ -284,6 +291,33 @@ impl MemoryPoolManager {
         is_live: impl Fn(&str) -> bool,
     ) -> Vec<MemoryPoolId> {
         self.release_matching(dataflow_id, |entry| !entry.reachable(&is_live))
+    }
+
+    /// Record that `new_readers` can now reach every pool of `dataflow_id`
+    /// that `via` can already reach.
+    ///
+    /// Reachability is otherwise fixed at registration time, which
+    /// under-approximates the moment a running dataflow is rewired. A new
+    /// edge out of `via` — `dora graph connect`, or a node added with an
+    /// input from `via` — hands its target a path to every pool `via` can
+    /// reach, the ones `via` registered itself included. Without this the
+    /// pool would be released when `via` exits, while the new consumer still
+    /// has its id in flight and the segment unlinked under it.
+    ///
+    /// Callers pass the target's *downstream closure*, not just the target:
+    /// the pool id can be forwarded on from there like any other.
+    pub fn extend_potential_readers(
+        &self,
+        dataflow_id: &str,
+        via: &str,
+        new_readers: &HashSet<String>,
+    ) {
+        let mut table = self.lock_table();
+        for (id, entry) in table.iter_mut() {
+            if id.dataflow_id == dataflow_id && entry.references(via) {
+                entry.potential_readers.extend(new_readers.iter().cloned());
+            }
+        }
     }
 
     /// Release every pool of a finished dataflow, and return the released
@@ -787,6 +821,36 @@ mod tests {
         assert!(
             mgr.read_memory_pool(&other, "sender").is_some(),
             "a same-named pool of another dataflow must not be touched"
+        );
+    }
+
+    #[test]
+    fn extending_the_reader_set_only_touches_pools_the_source_can_reach() {
+        let mgr = MemoryPoolManager::new();
+        let mine = make_id("pool-1");
+        mgr.register_memory_pool(mine.clone(), make_metadata(), "sender".into(), readers(&[]))
+            .unwrap();
+        let other = make_id("pool-2");
+        mgr.register_memory_pool(
+            other.clone(),
+            make_metadata(),
+            "stranger".into(),
+            readers(&[]),
+        )
+        .unwrap();
+
+        // `sender` is wired to a new consumer after registering `pool-1`.
+        mgr.extend_potential_readers("test_df", "sender", &readers(&["late_consumer"]));
+
+        let released = mgr.reclaim_unreachable("test_df", |node| node == "late_consumer");
+        assert_eq!(
+            released,
+            vec![other],
+            "only the pool `sender` can reach may gain the new reader"
+        );
+        assert!(
+            mgr.read_memory_pool(&mine, "late_consumer").is_some(),
+            "the consumer wired to `sender` must keep `pool-1` alive"
         );
     }
 
