@@ -191,14 +191,6 @@ const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
 /// patterns; a full channel is recorded as publish backpressure and dropped so
 /// the daemon event loop does not stall.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
-/// Control-plane queue for lifecycle events such as `OutputClosed`. This queue
-/// is separate from the data-plane publish channel so regular output bursts do
-/// not starve close notifications.
-const ZENOH_CONTROL_CHANNEL_CAPACITY: usize = 1024;
-/// Pending control events admitted by the daemon event loop. A background
-/// forwarder waits for capacity in the control publish queue; the event loop
-/// itself never waits.
-const ZENOH_CONTROL_PENDING_CHANNEL_CAPACITY: usize = 4096;
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -353,7 +345,6 @@ pub struct Daemon {
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
-    pub(crate) zenoh_control_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
     pub(crate) logger: DaemonLogger,
@@ -1637,44 +1628,14 @@ impl Daemon {
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
-        // Zenoh publish drain tasks: offload `.put().await` from the main event
-        // loop. Regular outputs use a best-effort data queue; lifecycle control
-        // events first enter a bounded pending queue, then a background
-        // forwarder waits for capacity in a dedicated control publish queue.
+        // Zenoh publish drain task: offload `.put().await` from the main event
+        // loop. All events for a given output, including `OutputClosed`, share
+        // this FIFO so close cannot pass data that was produced earlier.
         let (zenoh_publish_tx, mut zenoh_publish_rx) =
             mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
-        let (zenoh_control_publish_tx, mut zenoh_control_publish_rx) =
-            mpsc::channel::<ZenohOutbound>(ZENOH_CONTROL_CHANNEL_CAPACITY);
-        let (zenoh_control_tx, mut zenoh_control_rx) =
-            mpsc::channel::<ZenohOutbound>(ZENOH_CONTROL_PENDING_CHANNEL_CAPACITY);
-        let _zenoh_control_forwarder_handle = tokio::spawn(async move {
-            while let Some(msg) = zenoh_control_rx.recv().await {
-                if zenoh_control_publish_tx.send(msg).await.is_err() {
-                    tracing::debug!("zenoh control publish queue closed");
-                    break;
-                }
-            }
-            tracing::debug!("zenoh control forwarder task exiting");
-        });
         let _zenoh_drain_handle = tokio::spawn(async move {
-            let mut control_open = true;
-            let mut data_open = true;
-            while control_open || data_open {
-                tokio::select! {
-                    biased;
-                    msg = zenoh_control_publish_rx.recv(), if control_open => {
-                        match msg {
-                            Some(msg) => publish_zenoh_outbound(msg).await,
-                            None => control_open = false,
-                        }
-                    }
-                    msg = zenoh_publish_rx.recv(), if data_open => {
-                        match msg {
-                            Some(msg) => publish_zenoh_outbound(msg).await,
-                            None => data_open = false,
-                        }
-                    }
-                }
+            while let Some(msg) = zenoh_publish_rx.recv().await {
+                publish_zenoh_outbound(msg).await;
             }
             tracing::debug!("zenoh publish drain task exiting");
         });
@@ -1704,7 +1665,6 @@ impl Daemon {
             bind_nodes_to_parent,
             pending_destroy: None,
             zenoh_publish_tx,
-            zenoh_control_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
             memory_pool: MemoryPoolManager::new(),
@@ -5144,10 +5104,13 @@ impl Daemon {
             net_messages_sent: dataflow.net_messages_sent.clone(),
             net_publish_failures: dataflow.net_publish_failures.clone(),
         };
-        handle_control_enqueue_result(
-            dataflow,
-            try_enqueue_zenoh_outbound(&self.zenoh_control_tx, outbound),
-        )
+        enqueue_required_zenoh_outbound(
+            &self.zenoh_publish_tx,
+            outbound,
+            dataflow.net_publish_failures.clone(),
+            "inter-daemon output-closed event",
+        );
+        Ok(())
     }
 
     async fn try_send_to_remote_receivers(
@@ -5191,24 +5154,11 @@ impl Daemon {
             net_messages_sent: dataflow.net_messages_sent.clone(),
             net_publish_failures: dataflow.net_publish_failures.clone(),
         };
-        match try_enqueue_zenoh_outbound(&self.zenoh_publish_tx, outbound) {
-            ZenohEnqueueResult::Queued => {}
-            ZenohEnqueueResult::Full => {
-                dataflow
-                    .net_publish_failures
-                    .fetch_add(1, atomic::Ordering::Relaxed);
-                tracing::warn!(
-                    "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}); \
-                     dropping regular inter-daemon output"
-                );
-            }
-            ZenohEnqueueResult::Closed => {
-                dataflow
-                    .net_publish_failures
-                    .fetch_add(1, atomic::Ordering::Relaxed);
-                tracing::error!("zenoh drain task is gone; inter-daemon publish channel closed");
-            }
-        }
+        handle_publish_enqueue_result(
+            dataflow,
+            try_enqueue_zenoh_outbound(&self.zenoh_publish_tx, outbound),
+            "regular inter-daemon output",
+        );
         Ok(())
     }
 
@@ -7333,25 +7283,51 @@ async fn publish_zenoh_outbound(msg: ZenohOutbound) {
         .fetch_add(1, atomic::Ordering::Relaxed);
 }
 
-fn handle_control_enqueue_result(
+fn handle_publish_enqueue_result(
     dataflow: &RunningDataflow,
     result: ZenohEnqueueResult,
-) -> eyre::Result<()> {
+    event_kind: &'static str,
+) {
     match result {
-        ZenohEnqueueResult::Queued => Ok(()),
+        ZenohEnqueueResult::Queued => {}
         ZenohEnqueueResult::Full => {
             dataflow
                 .net_publish_failures
                 .fetch_add(1, atomic::Ordering::Relaxed);
             tracing::warn!(
-                "zenoh control pending queue full ({ZENOH_CONTROL_PENDING_CHANNEL_CAPACITY}); \
-                 dropping inter-daemon control event"
+                "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}); dropping {event_kind}"
             );
-            Ok(())
         }
-        ZenohEnqueueResult::Closed => Err(eyre!(
-            "zenoh control forwarder is gone — inter-daemon control channel closed"
-        )),
+        ZenohEnqueueResult::Closed => {
+            dataflow
+                .net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+        }
+    }
+}
+
+fn enqueue_required_zenoh_outbound<T: Send + 'static>(
+    tx: &mpsc::Sender<T>,
+    outbound: T,
+    net_publish_failures: Arc<AtomicU64>,
+    event_kind: &'static str,
+) {
+    match tx.try_send(outbound) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(outbound)) => {
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                if tx.send(outbound).await.is_err() {
+                    net_publish_failures.fetch_add(1, atomic::Ordering::Relaxed);
+                    tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+                }
+            });
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => {
+            net_publish_failures.fetch_add(1, atomic::Ordering::Relaxed);
+            tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+        }
     }
 }
 
@@ -8080,36 +8056,101 @@ mod fault_tolerance_tests {
     }
 
     #[test]
-    fn data_queue_full_does_not_block_control_enqueue() {
-        let (data_tx, _data_rx) = mpsc::channel(1);
-        data_tx.try_send("data-occupied").unwrap();
-        let (control_tx, mut control_rx) = mpsc::channel(1);
+    fn output_closed_uses_the_same_fifo_as_regular_output() {
+        let (publish_tx, mut publish_rx) = mpsc::channel(3);
 
-        let data_result = try_enqueue_zenoh_outbound(&data_tx, "regular-output");
-        let control_result = try_enqueue_zenoh_outbound(&control_tx, "output-closed");
+        let data_1 = try_enqueue_zenoh_outbound(&publish_tx, "data-1");
+        let data_2 = try_enqueue_zenoh_outbound(&publish_tx, "data-2");
+        let close = try_enqueue_zenoh_outbound(&publish_tx, "close");
 
-        assert_eq!(data_result, ZenohEnqueueResult::Full);
-        assert_eq!(control_result, ZenohEnqueueResult::Queued);
-        assert_eq!(control_rx.try_recv().unwrap(), "output-closed");
+        assert_eq!(data_1, ZenohEnqueueResult::Queued);
+        assert_eq!(data_2, ZenohEnqueueResult::Queued);
+        assert_eq!(close, ZenohEnqueueResult::Queued);
+        assert_eq!(publish_rx.try_recv().unwrap(), "data-1");
+        assert_eq!(publish_rx.try_recv().unwrap(), "data-2");
+        assert_eq!(publish_rx.try_recv().unwrap(), "close");
     }
 
     #[test]
-    fn control_pending_enqueue_full_is_recorded_without_error() {
+    fn zenoh_publish_drain_preserves_output_closed_ordering() {
+        let (publish_tx, mut publish_rx) = mpsc::channel(4);
+
+        publish_tx.try_send("data-1").unwrap();
+        publish_tx.try_send("data-2").unwrap();
+        publish_tx.try_send("close").unwrap();
+
+        let mut published = Vec::new();
+        while let Ok(msg) = publish_rx.try_recv() {
+            published.push(msg);
+        }
+
+        assert_eq!(
+            published,
+            ["data-1", "data-2", "close"],
+            "OutputClosed must not pass earlier Output messages for the same output"
+        );
+    }
+
+    #[tokio::test]
+    async fn output_closed_waits_for_publish_capacity_without_dropping() {
+        let (publish_tx, mut publish_rx) = mpsc::channel(1);
+        publish_tx.try_send("data").unwrap();
+        let failures = Arc::new(AtomicU64::new(0));
+
+        enqueue_required_zenoh_outbound(
+            &publish_tx,
+            "close",
+            failures.clone(),
+            "inter-daemon output-closed event",
+        );
+
+        assert_eq!(
+            publish_rx.try_recv().unwrap(),
+            "data",
+            "queued data must stay ahead of the close event"
+        );
+        tokio::task::yield_now().await;
+        assert_eq!(
+            publish_rx.try_recv().unwrap(),
+            "close",
+            "OutputClosed must be retained until publish capacity is available"
+        );
+        assert_eq!(failures.load(atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn regular_publish_queue_full_is_recorded_without_error() {
         let dataflow = test_dataflow();
 
-        let result = handle_control_enqueue_result(&dataflow, ZenohEnqueueResult::Full);
-
-        assert!(
-            result.is_ok(),
-            "a full control pending queue for OutputClosed must not bubble up as a coordinator disconnect"
+        handle_publish_enqueue_result(
+            &dataflow,
+            ZenohEnqueueResult::Full,
+            "regular inter-daemon output",
         );
+
         assert_eq!(
             dataflow
                 .net_publish_failures
                 .load(atomic::Ordering::Relaxed),
             1,
-            "dropping a control event must be visible in network metrics"
+            "dropping a regular output must be visible in network metrics"
         );
+    }
+
+    #[test]
+    fn required_publish_channel_closed_is_recorded() {
+        let (publish_tx, publish_rx) = mpsc::channel::<&'static str>(1);
+        drop(publish_rx);
+        let failures = Arc::new(AtomicU64::new(0));
+
+        enqueue_required_zenoh_outbound(
+            &publish_tx,
+            "close",
+            failures.clone(),
+            "inter-daemon output-closed event",
+        );
+
+        assert_eq!(failures.load(atomic::Ordering::Relaxed), 1);
     }
 
     fn drain_events(rx: &mut mpsc::Receiver<Timestamped<NodeEvent>>) -> Vec<NodeEvent> {
