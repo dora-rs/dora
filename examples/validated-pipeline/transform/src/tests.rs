@@ -1,5 +1,5 @@
 use dora_node_api::{
-    DoraNode, flume,
+    DoraNode,
     integration_testing::{
         IntegrationTestInput,
         integration_testing_format::{IncomingEvent, InputData, TimedIncomingEvent},
@@ -25,14 +25,14 @@ fn run_transform(events: Vec<TimedIncomingEvent>) -> eyre::Result<Vec<serde_json
     let inputs = dora_node_api::integration_testing::TestingInput::Input(
         IntegrationTestInput::new("transform".parse().unwrap(), events),
     );
-    let (tx, rx) = flume::unbounded();
+    let (tx, mut rx) = dora_node_api::integration_testing::unbounded_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 
     crate::run(node, events)?;
 
-    Ok(rx
-        .try_iter()
+    Ok(dora_node_api::integration_testing::drain_outputs(&mut rx)
+        .into_iter()
         .map(serde_json::Value::Object)
         .collect::<Vec<_>>())
 }

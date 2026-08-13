@@ -77,6 +77,37 @@ impl std::fmt::Display for InvalidId {
 
 impl std::error::Error for InvalidId {}
 
+/// A validated node identifier.
+///
+/// A `NodeId` may contain only `[a-zA-Z0-9_.-]`, must be non-empty, and must
+/// not start with `.` (dot-segments like `.` or `..` could traverse into a
+/// parent directory when the id is joined into a filesystem path). Unlike
+/// [`DataId`], a `NodeId` may **not** contain `/`, which separates
+/// `<node_id>/<output_id>` in input-mapping syntax.
+///
+/// # Parsing vs. conversion (panic footgun)
+///
+/// Use [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it
+/// returns `Result<NodeId, InvalidId>`. The `From<String>` conversion — and
+/// therefore `.into()` and the auto-derived `TryFrom<String>` — **panics** on
+/// an invalid id.
+///
+/// ```
+/// use dora_message::id::NodeId;
+///
+/// // Fallible path — always safe for untrusted input:
+/// assert!("camera_node".parse::<NodeId>().is_ok());
+/// assert!("node/out".parse::<NodeId>().is_err()); // '/' is not allowed in a NodeId
+/// assert!("".parse::<NodeId>().is_err());         // empty is rejected
+/// assert!(".hidden".parse::<NodeId>().is_err());  // leading '.' is rejected
+/// ```
+///
+/// The infallible-looking conversion panics on the same invalid input:
+///
+/// ```should_panic
+/// use dora_message::id::NodeId;
+/// let _ = NodeId::from("node/out".to_string()); // panics — prefer .parse()
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
 pub struct NodeId(pub(crate) String);
 
@@ -163,6 +194,37 @@ impl AsRef<str> for OperatorId {
     }
 }
 
+/// A validated data (output) identifier.
+///
+/// A `DataId` may contain only `[a-zA-Z0-9_./-]` and must be non-empty. Unlike
+/// [`NodeId`], a `DataId` **may** contain `/` (runtime-operator outputs are
+/// namespaced as `<operator-id>/<output-name>`), but leading, trailing, or
+/// consecutive slashes — which would produce empty path segments — are
+/// rejected.
+///
+/// # Parsing vs. conversion (panic footgun)
+///
+/// Use [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it
+/// returns `Result<DataId, InvalidId>`. The `From<String>` / `From<&str>`
+/// conversions — and therefore `.into()` and the auto-derived `TryFrom` —
+/// **panic** on an invalid id.
+///
+/// ```
+/// use dora_message::id::DataId;
+///
+/// assert!("image".parse::<DataId>().is_ok());
+/// assert!("op/status".parse::<DataId>().is_ok()); // '/' is allowed in a DataId
+/// assert!("a//b".parse::<DataId>().is_err());     // empty path segment rejected
+/// assert!("/out".parse::<DataId>().is_err());     // leading '/' rejected
+/// assert!("bad id".parse::<DataId>().is_err());   // space rejected
+/// ```
+///
+/// The infallible-looking conversion panics on the same invalid input:
+///
+/// ```should_panic
+/// use dora_message::id::DataId;
+/// let _ = DataId::from("a//b".to_string()); // panics — prefer .parse()
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, JsonSchema)]
 pub struct DataId(String);
 

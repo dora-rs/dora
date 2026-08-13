@@ -100,47 +100,68 @@ impl InputBuffer {
     fn add_event(&mut self, event: Event) {
         self.queue.push_back(Some(event));
 
-        // drop oldest input events to maintain max queue length queue
+        // Cap the queue after *every* single push. `drop_oldest_inputs` relies
+        // on this cadence — it only re-checks the just-pushed input — so exactly
+        // one event must be enqueued between calls.
         self.drop_oldest_inputs();
     }
 
     fn drop_oldest_inputs(&mut self) {
-        let mut remaining: BTreeMap<&DataId, usize> = self
-            .effective_caps
-            .iter()
-            .map(|(k, (cap, _))| (k, *cap))
-            .collect();
-        let mut dropped = 0;
+        // Only the input of the just-pushed event can now exceed its cap: every
+        // other input was already within cap before this push (the invariant
+        // this method maintains on every `add_event`), and pushing a single
+        // event leaves their counts unchanged. So there is no need to allocate
+        // and populate a per-input map over *every* configured input on each
+        // message — we only look at the newest event's input.
+        let Some(Some(Event::Input { id, .. })) = self.queue.back() else {
+            // Newest event isn't an input (e.g. `InputClosed`) — nothing to cap.
+            return;
+        };
+        let (cap, policy) = match self.effective_caps.get(id) {
+            Some((cap, policy)) => (*cap, *policy),
+            None => {
+                tracing::warn!("no queue size known for received operator input `{id}`");
+                return;
+            }
+        };
 
-        // iterate over queued events, newest first
-        for event in self.queue.iter_mut().rev() {
-            let Some(Event::Input { id: input_id, .. }) = event.as_mut() else {
-                continue;
-            };
-            match remaining.get_mut(input_id) {
-                Some(0) => {
-                    dropped += 1;
-                    if let Some((_, QueuePolicy::Backpressure)) = self.effective_caps.get(input_id)
-                    {
-                        tracing::error!(
-                            "backpressure input `{input_id}` hit hard cap, dropping oldest to prevent OOM"
-                        );
-                    }
-                    *event = None;
-                }
-                Some(rem) => {
-                    *rem = rem.saturating_sub(1);
-                }
-                None => {
-                    tracing::warn!("no queue size known for received operator input `{input_id}`");
-                }
+        // Count this input's live events. In steady state (consumer keeping up)
+        // the deque is near-empty, so this is a handful of comparisons and no
+        // allocation — the common path never touches the heap.
+        let live = self
+            .queue
+            .iter()
+            .filter(|event| matches!(event, Some(Event::Input { id: other, .. }) if other == id))
+            .count();
+        if live <= cap {
+            return;
+        }
+
+        // Over cap (rare overflow path). Clone the id once so the immutable
+        // borrow of `self.queue` above is released before we mutate it, then
+        // drop the oldest surplus occurrences (front to back), keeping the
+        // newest `cap`. `effective_cap` is always >= 1, so a single push can
+        // only put us one over, but stay robust to any surplus.
+        let id = id.clone();
+        let to_drop = live - cap;
+        if let QueuePolicy::Backpressure = policy {
+            tracing::error!(
+                "backpressure input `{id}` hit hard cap, dropping oldest to prevent OOM"
+            );
+        }
+        let mut dropped = 0;
+        for event in self.queue.iter_mut() {
+            if dropped == to_drop {
+                break;
+            }
+            if matches!(event, Some(Event::Input { id: other, .. }) if *other == id) {
+                *event = None;
+                dropped += 1;
             }
         }
 
-        if dropped > 0 {
-            self.compact();
-            tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
-        }
+        self.compact();
+        tracing::warn!("dropped {dropped} operator inputs because event queue was too full");
     }
 
     /// Physically remove the `None` tombstones left by [`Self::drop_oldest_inputs`].
@@ -257,6 +278,48 @@ mod tests {
         assert!(
             buffer.queue.iter().all(Option::is_some),
             "no `None` tombstones may remain after compaction"
+        );
+    }
+
+    // Each input must be capped independently: pushing many events of one input
+    // must drop only *that* input's oldest surplus, never another input's
+    // events, and must keep the newest `cap` of the offending input in FIFO
+    // order. This pins the optimized `drop_oldest_inputs` (which now inspects
+    // only the just-pushed input instead of scanning a map over all inputs) to
+    // the same observable behavior as a full per-input scan.
+    #[test]
+    fn drop_oldest_inputs_caps_each_input_independently() {
+        let mut caps = BTreeMap::new();
+        caps.insert(
+            DataId::from("a".to_string()),
+            (1usize, QueuePolicy::DropOldest),
+        );
+        caps.insert(
+            DataId::from("b".to_string()),
+            (2usize, QueuePolicy::DropOldest),
+        );
+        let mut buffer = InputBuffer::new(caps);
+
+        // Interleave inputs without ever draining the queue.
+        for id in ["a", "b", "a", "b", "b", "a", "b"] {
+            buffer.add_event(input_event(id));
+        }
+
+        let ids: Vec<String> = buffer
+            .queue
+            .iter()
+            .map(|e| match e {
+                Some(Event::Input { id, .. }) => id.to_string(),
+                _ => panic!("unexpected queue entry"),
+            })
+            .collect();
+
+        // `a` capped to 1, `b` capped to 2 — independently — with no tombstones,
+        // and the surviving events keep their FIFO order (newest per input kept).
+        assert_eq!(
+            ids,
+            ["b", "a", "b"],
+            "each input must be capped independently, keeping the newest in FIFO order"
         );
     }
 }

@@ -121,7 +121,7 @@ fn stop_dataflow_interactive(
     Ok(())
 }
 
-fn stop_dataflow(
+pub(crate) fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,

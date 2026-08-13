@@ -41,7 +41,7 @@ use local_listener::DynamicNodeEventWrapper;
 use log::{CoordinatorLogTarget, DaemonLogger, DataflowLogger, Logger};
 use spawn::Spawner;
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     env::current_dir,
     future::Future,
     io,
@@ -94,6 +94,7 @@ pub mod bench_support {
             debug: dora_message::descriptor::Debug::default(),
             health_check_interval: None,
             strict_types: None,
+            exit_when_nodes_finish: None,
             type_rules: vec![],
             env: None,
         };
@@ -167,6 +168,7 @@ mod node_communication;
 mod output_routing;
 mod pending;
 pub(crate) mod running_dataflow;
+mod shutdown;
 mod socket_stream_utils;
 mod spawn;
 
@@ -265,6 +267,50 @@ fn deliver_param_delete_strict(
 /// message routing. Fields are `pub(crate)` to enable `impl Daemon` blocks in
 /// submodules (e.g., `node_events.rs`, `dataflow_lifecycle.rs`) as part of the
 /// ongoing daemon module split.
+/// Optional behavior for [`Daemon::run_dataflow_with`].
+///
+/// A struct rather than more positional parameters so that adding an
+/// option later is not a breaking change for the published crate.
+#[derive(Debug, Clone, Default)]
+#[non_exhaustive]
+pub struct RunDataflowOptions {
+    /// Let the dataflow finish once every node has, treating
+    /// `dora/timer/...` inputs as a clock rather than as work.
+    ///
+    /// `None` leaves the descriptor's own `exit_when_nodes_finish`
+    /// setting alone; `Some(v)` overrides it in either direction, so a
+    /// caller can force the policy off for a descriptor that asks for
+    /// it.
+    ///
+    /// A timer input never closes, so by default a node consuming one is
+    /// never told its inputs are done and the graph cannot end on its own
+    /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
+    /// timer is exactly what keeps it alive.
+    pub exit_when_nodes_finish: Option<bool>,
+}
+
+impl RunDataflowOptions {
+    /// Sets [`Self::exit_when_nodes_finish`].
+    ///
+    /// A setter rather than a struct literal because the type is
+    /// `#[non_exhaustive]`: callers outside this crate cannot construct it
+    /// directly, which is what lets a future option be added without
+    /// breaking them.
+    pub fn exit_when_nodes_finish(mut self, exit_when_nodes_finish: bool) -> Self {
+        self.exit_when_nodes_finish = Some(exit_when_nodes_finish);
+        self
+    }
+}
+
+/// A destroy waiting for the daemon's nodes to exit before it replies.
+///
+/// Holding the reply is what gives the coordinator — and therefore
+/// `dora down` — its synchronization: `destroy_daemons` awaits it.
+pub(crate) struct PendingDestroy {
+    reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
+    wait: shutdown::DestroyWait,
+}
+
 pub struct Daemon {
     pub(crate) running: HashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
@@ -287,6 +333,16 @@ pub struct Daemon {
     /// scouting. Forwarded to spawned nodes so they discover the same way the
     /// daemon does (see `DORA_ZENOH_MULTICAST`).
     pub(crate) disable_multicast: bool,
+    /// Whether this daemon runs in-process with whoever started it (the
+    /// `run_dataflow` shape), making that process's death the end of the
+    /// dataflow. Forwarded to spawned nodes via `DORA_RUN_PARENT_PID` so a
+    /// `SIGKILL`ed parent does not strand them (dora-rs/dora#2856). False for
+    /// the `dora up` daemon, whose nodes are deliberately decoupled from it
+    /// (#2029).
+    pub(crate) bind_nodes_to_parent: bool,
+    /// A `Destroy` that is holding its reply until this daemon's node
+    /// processes are gone (#2980).
+    pub(crate) pending_destroy: Option<PendingDestroy>,
     pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
@@ -296,9 +352,73 @@ pub struct Daemon {
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
     pub(crate) memory_pool: MemoryPoolManager,
+    /// Nodes already warned about for sending after their dataflow
+    /// finished, so `log_late_node_output` warns once each instead of
+    /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
+    pub(crate) warned_late_outputs: HashSet<(DataflowId, NodeId)>,
 }
 
+/// Cap on `Daemon::warned_late_outputs`, so a daemon that serves many
+/// dataflows cannot accumulate an entry per (dataflow, node) forever.
+/// Reaching it clears the set rather than freezing it: a daemon is meant
+/// to run indefinitely, and simply refusing new entries would silence
+/// the warning permanently after ~1024 dataflows — including for the
+/// stale-node case that is the reason it is a warning at all.
+const MAX_WARNED_LATE_OUTPUT_NODES: usize = 1024;
+
 type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
+
+/// Whether a node-connection event belongs to a superseded incarnation.
+///
+/// Strictly-older comparison, deliberately not equality: generations are
+/// globally monotonic, and the restart loop publishes a successor's
+/// generation to the listener BEFORE spawning it, so a fast successor's
+/// events can carry a generation NEWER than the entry until its
+/// `ProcessHandleReplaced` is processed. Dropping those would eat the
+/// successor's one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
+fn event_generation_is_stale(entry_generation: u64, event_generation: u64) -> bool {
+    event_generation < entry_generation
+}
+
+/// Patch a stored descriptor entry with a replacement node's definition
+/// (dora-rs/dora#2988 review, finding 2). The stored descriptor is
+/// serialized into every spawned process's `DORA_NODE_CONFIG`, so the
+/// replacement must not receive the outgoing incarnation's path, env, or
+/// restart configuration through `DoraNode::dataflow_descriptor()`.
+/// Only `CoreNodeKind::Custom` reaches here — ReplaceNode's v1 scope
+/// rejects other kinds up front.
+fn patch_descriptor_entry(
+    entry: &mut dora_message::descriptor::Node,
+    resolved: &dora_core::descriptor::ResolvedNode,
+) {
+    if let CoreNodeKind::Custom(custom) = &resolved.kind {
+        entry.path = Some(custom.path.clone());
+        entry.args = custom.args.clone();
+        entry.env = resolved.env.clone();
+        entry.inputs = custom.run_config.inputs.clone();
+        entry.outputs = custom.run_config.outputs.clone();
+        entry.restart_policy = custom.restart_policy;
+        entry.max_restarts = custom.max_restarts;
+        entry.restart_delay = custom.restart_delay;
+        entry.max_restart_delay = custom.max_restart_delay;
+        entry.restart_window = custom.restart_window;
+        entry.health_check_timeout = custom.health_check_timeout;
+        entry.finish_grace_secs = custom.finish_grace_secs;
+        entry.send_stdout_as = custom.send_stdout_as.clone();
+        entry.send_logs_as = custom.send_logs_as.clone();
+        entry.min_log_level = custom.min_log_level.clone();
+    }
+}
+
+fn clear_node_result(results: &mut DaemonRunResult, dataflow_id: Uuid, node_id: &NodeId) {
+    let remove_dataflow = results.get_mut(&dataflow_id).is_some_and(|node_results| {
+        node_results.remove(node_id);
+        node_results.is_empty()
+    });
+    if remove_dataflow {
+        results.remove(&dataflow_id);
+    }
+}
 
 struct NodeBuildTask<F> {
     node_id: NodeId,
@@ -608,6 +728,91 @@ fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata 
     }
 }
 
+/// Release a memory pool and tell every other node that touched it to drop
+/// its per-process view of that pool.
+///
+/// Both daemon entry points that release a pool must go through here: the
+/// explicit `FreePinnedMemory` request and `ReadPinnedMemory { free: true }`.
+/// The read-with-free path used to free the pool without notifying anyone,
+/// so every other node kept its GPU buffer, pinned host buffer, IPC handle
+/// and shmem mapping for the rest of its life (#2935).
+fn free_pool_and_notify(
+    memory_pool: &MemoryPoolManager,
+    dataflow: Option<&RunningDataflow>,
+    id: &MemoryPoolId,
+    initiator: &str,
+    clock: &HLC,
+) -> Result<(), String> {
+    let (_metadata, touched) = memory_pool.free_memory_pool(id, initiator)?;
+
+    // Without a running dataflow there are no subscribe channels to notify;
+    // the pool table entry and its shmem segment are released either way.
+    let Some(dataflow) = dataflow else {
+        return Ok(());
+    };
+
+    let undelivered = notify_memory_pool_freed(dataflow, &id.id, &touched, initiator, clock);
+    if !undelivered.is_empty() {
+        tracing::error!(
+            pool = %id.id,
+            nodes = ?undelivered,
+            "FreeMemoryPool notification dropped (event channel full); these \
+             nodes hold their GPU/host/IPC/shmem resources for the pool until \
+             they exit"
+        );
+    }
+    Ok(())
+}
+
+/// Send `NodeEvent::FreeMemoryPool` to every node that registered or read
+/// the pool, except the node that initiated the free — it releases its own
+/// resources synchronously.
+///
+/// Returns the nodes whose notification could not be enqueued because their
+/// event channel was full. Those nodes leak the pool's per-process
+/// resources, so the caller surfaces them. Delivery is not retried: this
+/// runs on the daemon main loop with the freeing node blocked on its reply,
+/// so awaiting a backed-up receiver would stall every dataflow on the daemon.
+fn notify_memory_pool_freed(
+    dataflow: &RunningDataflow,
+    shared_memory_id: &str,
+    touched: &HashSet<String>,
+    initiator: &str,
+    clock: &HLC,
+) -> BTreeSet<NodeId> {
+    let mut undelivered = BTreeSet::new();
+    for (node, channel) in &dataflow.subscribe_channels {
+        if !touched.contains(node.as_ref()) || node.as_ref() == initiator {
+            continue;
+        }
+        let event = NodeEvent::FreeMemoryPool {
+            shared_memory_id: shared_memory_id.to_owned(),
+        };
+        match send_with_timestamp(channel, event, clock) {
+            Ok(true) => {
+                // The listener decrements `pending_messages` for every event
+                // it drains, so an enqueue without the matching increment
+                // underflows the reported count to `u64::MAX` (#2827).
+                dataflow.inc_pending(node);
+            }
+            // A full channel is reported as `Ok(false)`, not `Err` — the
+            // original loop inspected only `Err` and dropped this case
+            // silently (#2935).
+            Ok(false) => {
+                undelivered.insert(node.clone());
+            }
+            // Channel closed: the node is gone, so the OS already reclaimed
+            // the resources the notification would have released.
+            Err(_) => tracing::debug!(
+                node_id = %node,
+                pool = %shared_memory_id,
+                "skipping FreeMemoryPool notification: node disconnected"
+            ),
+        }
+    }
+    undelivered
+}
+
 #[cfg(test)]
 mod metadata_roundtrip_tests {
     use super::*;
@@ -729,6 +934,27 @@ fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -
         );
     }
     Ok(())
+}
+
+/// Extract a finished dataflow's collected node results out of
+/// `dataflow_node_results` for its terminal [`DataflowDaemonResult`].
+///
+/// When `keep_entry` is `false` (a persistent, coordinator-managed daemon) the
+/// entry is removed, because nothing reads it again after the result is
+/// reported — leaving it in place makes the map grow without bound over the
+/// daemon's lifetime. When `keep_entry` is `true` (the run-once `dora run`
+/// path) the entry is cloned and left in place, because `run_inner` drains the
+/// whole map via [`std::mem::take`] *after* `finish_dataflow` returns.
+fn extract_node_results(
+    results: &mut BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    dataflow_id: Uuid,
+    keep_entry: bool,
+) -> BTreeMap<NodeId, Result<(), NodeError>> {
+    if keep_entry {
+        results.get(&dataflow_id).cloned().unwrap_or_default()
+    } else {
+        results.remove(&dataflow_id).unwrap_or_default()
+    }
 }
 
 impl Daemon {
@@ -916,6 +1142,10 @@ impl Daemon {
                                 inter_daemon_peer.clone(),
                                 zenoh_bind,
                                 disable_multicast,
+                                // A standalone daemon outlives nothing its
+                                // nodes depend on: they survive coordinator
+                                // drops and reconnects on purpose (#2029).
+                                false,
                             )
                             .await?;
                             daemon = Some(built);
@@ -1005,6 +1235,13 @@ impl Daemon {
     }
 
     #[allow(clippy::too_many_arguments)]
+    /// Runs a single dataflow to completion with the default options.
+    ///
+    /// Signature deliberately unchanged: `dora-daemon` is published, so
+    /// adding a parameter here would break every downstream caller. New
+    /// options belong on [`RunDataflowOptions`], which is passed to
+    /// [`Daemon::run_dataflow_with`] and can grow without breaking anyone.
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_dataflow(
         dataflow_path: &Path,
         build_id: Option<BuildId>,
@@ -1018,6 +1255,42 @@ impl Daemon {
         working_dir_override: Option<PathBuf>,
         descriptor_override: Option<Descriptor>,
     ) -> eyre::Result<DataflowResult> {
+        Self::run_dataflow_with(
+            dataflow_path,
+            build_id,
+            local_build,
+            session_id,
+            uv,
+            log_destination,
+            write_events_to,
+            stop_after,
+            debug,
+            working_dir_override,
+            descriptor_override,
+            RunDataflowOptions::default(),
+        )
+        .await
+    }
+
+    /// Runs a single dataflow to completion with explicit options.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn run_dataflow_with(
+        dataflow_path: &Path,
+        build_id: Option<BuildId>,
+        local_build: Option<BuildInfo>,
+        session_id: SessionId,
+        uv: bool,
+        log_destination: LogDestination,
+        write_events_to: Option<PathBuf>,
+        stop_after: Option<Duration>,
+        debug: bool,
+        working_dir_override: Option<PathBuf>,
+        descriptor_override: Option<Descriptor>,
+        options: RunDataflowOptions,
+    ) -> eyre::Result<DataflowResult> {
+        let RunDataflowOptions {
+            exit_when_nodes_finish,
+        } = options;
         let working_dir = match working_dir_override {
             Some(p) => p
                 .canonicalize()
@@ -1045,6 +1318,13 @@ impl Daemon {
         if debug {
             descriptor.debug.enable_debug_inspection = true;
         }
+        // Fold the option into the descriptor, which is what the daemon
+        // actually reads. `dora start` sets the same field from its own
+        // flag, so both entry points converge on one source of truth
+        // rather than each carrying the setting separately (#2920).
+        // Set explicitly, so it overrides the descriptor either way; left
+        // unset, the descriptor's own setting stands.
+        descriptor.apply_exit_when_nodes_finish(exit_when_nodes_finish);
         if let Some(node) = descriptor.nodes.iter().find(|n| n.deploy.is_some()) {
             eyre::bail!(
                 "node {} has a `deploy` section, which is not supported in `dora run`\n\n
@@ -1095,6 +1375,7 @@ impl Daemon {
         let clock = Arc::new(HLC::default());
 
         let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
+        let termination_events = ReceiverStream::new(set_up_termination_handler(clock.clone()));
 
         // Set up optional timeout for --stop-after
         let timeout_events = if let Some(duration) = stop_after {
@@ -1137,6 +1418,7 @@ impl Daemon {
         let events = (
             coordinator_events,
             ctrlc_events,
+            termination_events,
             timeout_events,
             dynamic_node_events,
         )
@@ -1229,6 +1511,11 @@ impl Daemon {
         // `dora run` is single-machine by construction: the daemon, its nodes
         // and the in-process coordinator all live on this host, so loopback is
         // both sufficient and the least exposed choice.
+        //
+        // Being that single process is also why the nodes are bound to it: it
+        // is their parent, and its death — `SIGKILL` included, which no
+        // teardown code of ours survives — is the end of the dataflow (#2856).
+        let bind_nodes_to_parent = true;
         let (mut daemon, mut dora_events_rx) = Self::build_daemon(
             coordinator_sender,
             daemon_id,
@@ -1240,6 +1527,7 @@ impl Daemon {
             inter_daemon_peer,
             ZenohBind::Derived(LOCALHOST),
             disable_multicast,
+            bind_nodes_to_parent,
         )
         .await?;
         daemon
@@ -1272,7 +1560,16 @@ impl Daemon {
         inter_daemon_peer: Option<String>,
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
+        bind_nodes_to_parent: bool,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
+        // Fold in `DORA_ZENOH_MULTICAST` so this is the daemon's *effective*
+        // decision, not just its flag. The zenoh session honors the variable on
+        // its own, but the spawner forwards this field to nodes — and nodes no
+        // longer inherit the variable — so a daemon started with the variable
+        // instead of `--zenoh-no-multicast` would otherwise leave its nodes
+        // scouting by multicast (#2991 review).
+        let disable_multicast = dora_core::topics::multicast_disabled(disable_multicast);
+
         // Reserve a port and have zenoh listen on it. The endpoint is injected
         // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
         // without multicast (#1778).
@@ -1390,11 +1687,14 @@ impl Daemon {
             exit_when_done,
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
+            warned_late_outputs: HashSet::new(),
             clock,
             ft_stats: Default::default(),
             zenoh_session,
             zenoh_listen_endpoint,
             disable_multicast,
+            bind_nodes_to_parent,
+            pending_destroy: None,
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
@@ -1449,13 +1749,19 @@ impl Daemon {
         });
 
         let health_check_clock = self.clock.clone();
-        let health_check_interval = tokio_stream::wrappers::IntervalStream::new(
-            tokio::time::interval(health_check_interval_duration.unwrap_or(Duration::from_secs(5))),
-        )
-        .map(move |_| Timestamped {
-            inner: Event::NodeHealthCheckInterval,
-            timestamp: health_check_clock.new_timestamp(),
-        });
+        // `tokio::time::interval` panics on a zero period. Descriptor validation
+        // already rejects a zero `health_check_interval` (see `check_dataflow`),
+        // but guard here as well so a stray `Duration::ZERO` falls back to the
+        // default rather than crashing the daemon (defense-in-depth for #2752).
+        let health_check_period = health_check_interval_duration
+            .filter(|d| !d.is_zero())
+            .unwrap_or(Duration::from_secs(5));
+        let health_check_interval =
+            tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(health_check_period))
+                .map(move |_| Timestamped {
+                    inner: Event::NodeHealthCheckInterval,
+                    timestamp: health_check_clock.new_timestamp(),
+                });
 
         let mut events = (
             external_events,
@@ -1527,10 +1833,47 @@ impl Daemon {
                 Event::Node {
                     dataflow_id: dataflow,
                     node_id,
+                    generation,
                     event,
-                } => self.handle_node_event(event, dataflow, node_id).await?,
+                } => {
+                    // Drop control events from a superseded incarnation: a
+                    // replaced or re-added id's old connection must not
+                    // mutate the current entry (close its outputs, remove
+                    // its subscription, ...) — dora-rs/dora#2926, #2927.
+                    // STRICTLY older only: the restart loop publishes the
+                    // successor's generation before spawning it, so a fast
+                    // successor can connect (and Subscribe) while the entry
+                    // still holds the predecessor's generation — a NEWER
+                    // event generation is that successor racing its own
+                    // `ProcessHandleReplaced` and must not be dropped, or
+                    // its one-shot Subscribe is lost and the incarnation
+                    // stays disconnected. Entry-absent passes through:
+                    // during startup a node can register before its
+                    // RunningNode is inserted, and the pending-nodes
+                    // barrier owns that window.
+                    let superseded = self
+                        .running
+                        .get(&dataflow)
+                        .and_then(|df| df.running_nodes.get(&node_id))
+                        .is_some_and(|node| event_generation_is_stale(node.generation, generation));
+                    if superseded {
+                        tracing::debug!(
+                            %dataflow,
+                            %node_id,
+                            generation,
+                            "dropping node event from superseded incarnation"
+                        );
+                    } else {
+                        self.handle_node_event(event, dataflow, node_id).await?
+                    }
+                }
                 Event::Dora(event) => self.handle_dora_event(event).await?,
                 Event::DynamicNode(event) => self.handle_dynamic_node_event(event).await?,
+                Event::DestroyTick => {
+                    if self.handle_destroy_tick().await {
+                        break;
+                    }
+                }
                 Event::HeartbeatInterval => {
                     if let Some(sender) = &self.coordinator_sender {
                         let msg = serde_json::to_vec(&Timestamped {
@@ -1614,9 +1957,14 @@ impl Daemon {
                     dynamic_node,
                     result,
                 } => match result {
-                    Ok(running_node) => {
+                    Ok(mut running_node) => {
                         if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                            dataflow.running_nodes.insert(node_id, running_node);
+                            // Open the restart-loop gate before the insert:
+                            // the loop's first events are queued behind this
+                            // handler on the same event loop, so they cannot
+                            // be processed before the entry is registered.
+                            running_node.mark_registered();
+                            dataflow.running_nodes.insert(node_id.clone(), running_node);
                         } else {
                             tracing::error!(
                                 "failed to handle SpawnNodeResult: no running dataflow with ID {dataflow_id}"
@@ -1738,6 +2086,120 @@ impl Daemon {
         // `run_inner` borrows `&mut self`, so move the accumulated results out
         // (the daemon may be reused for a reconnect, where these are ignored).
         Ok(std::mem::take(&mut self.dataflow_node_results))
+    }
+
+    /// Hold a destroy until this daemon's nodes are gone, or hand the reply
+    /// channel back when there is nothing to wait for.
+    ///
+    /// Returning the channel means "reply and exit now"; keeping it means the
+    /// event loop stays alive, serving the shutdown handshakes of nodes that
+    /// are on their way out, until [`Self::handle_destroy_tick`] decides.
+    fn begin_pending_destroy(
+        &mut self,
+        reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
+    ) -> Option<oneshot::Sender<Option<DaemonCoordinatorReply>>> {
+        if self.pending_destroy.is_some() {
+            // A second destroy while the first is still waiting: answer it,
+            // but let the original wait finish rather than exiting on top of
+            // it and orphaning the nodes it is still watching.
+            tokio::spawn(Self::finish_destroy(reply_tx));
+            return None;
+        }
+        if self.running_node_pids().is_empty() {
+            return Some(reply_tx);
+        }
+
+        self.pending_destroy = Some(PendingDestroy {
+            reply_tx,
+            wait: shutdown::DestroyWait::new(),
+        });
+        // Nothing else wakes the loop once the dataflows are stopping, so the
+        // wait needs its own tick. The task ends with the daemon, when the
+        // event channel closes.
+        let events_tx = self.events_tx.clone();
+        let clock = self.clock.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(shutdown::POLL_INTERVAL).await;
+                let tick = Timestamped {
+                    inner: Event::DestroyTick,
+                    timestamp: clock.new_timestamp(),
+                };
+                if events_tx.send(tick).await.is_err() {
+                    break;
+                }
+            }
+        });
+        None
+    }
+
+    /// Re-check a pending destroy. Returns true when the daemon may exit.
+    async fn handle_destroy_tick(&mut self) -> bool {
+        if self.pending_destroy.is_none() {
+            return false;
+        }
+        let pids = self.running_node_pids();
+        let progress = self
+            .pending_destroy
+            .as_mut()
+            .expect("checked above")
+            .wait
+            .poll(&pids);
+
+        let survivors = match progress {
+            shutdown::DestroyProgress::Waiting => return false,
+            shutdown::DestroyProgress::Done => Vec::new(),
+            shutdown::DestroyProgress::Abandoned(survivors) => survivors,
+        };
+
+        let pending = self.pending_destroy.take().expect("checked above");
+        if !pending.wait.killed_pids.is_empty() {
+            tracing::warn!(
+                "killed {} node process(es) that were still running at destroy: {:?}",
+                pending.wait.killed_pids.len(),
+                pending.wait.killed_pids
+            );
+        }
+        if !survivors.is_empty() {
+            tracing::error!(
+                "{} node process(es) survived the destroy kill and are now orphaned: {survivors:?}",
+                survivors.len(),
+            );
+        }
+        Self::finish_destroy(pending.reply_tx).await;
+        true
+    }
+
+    /// Pids of every node process this daemon currently has running.
+    ///
+    /// Dynamic nodes have none: the daemon did not spawn them, so they are
+    /// not its children and it cannot reap them.
+    fn running_node_pids(&self) -> Vec<u32> {
+        self.running
+            .values()
+            .flat_map(|dataflow| dataflow.running_nodes.values())
+            .filter_map(|node| node.pid.as_ref())
+            // Zero means the entry exists but its process has not reported a
+            // pid yet (`prepared.rs` stores it right after spawn).
+            .map(|pid| pid.load(atomic::Ordering::Acquire))
+            .filter(|pid| *pid != 0)
+            .collect()
+    }
+
+    /// Send the destroy reply and wait for it to go out.
+    async fn finish_destroy(reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>) {
+        let (notify_tx, notify_rx) = oneshot::channel();
+        let reply = DaemonCoordinatorReply::DestroyResult {
+            result: Ok(()),
+            notify: Some(notify_tx),
+        };
+        let _ = reply_tx
+            .send(Some(reply))
+            .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
+        // wait until the reply is sent out
+        if notify_rx.await.is_err() {
+            tracing::warn!("no confirmation received for DestroyReply");
+        }
     }
 
     async fn trigger_manual_stop(&mut self) -> eyre::Result<()> {
@@ -2129,19 +2591,25 @@ impl Daemon {
             }
             DaemonCoordinatorEvent::Destroy => {
                 tracing::info!("received destroy command -> exiting");
-                let (notify_tx, notify_rx) = oneshot::channel();
-                let reply = DaemonCoordinatorReply::DestroyResult {
-                    result: Ok(()),
-                    notify: Some(notify_tx),
-                };
-                let _ = reply_tx
-                    .send(Some(reply))
-                    .map_err(|_| error!("could not send destroy reply from daemon to coordinator"));
-                // wait until the reply is sent out
-                if notify_rx.await.is_err() {
-                    tracing::warn!("no confirmation received for DestroyReply");
+                // Anything still running when this process ends is orphaned
+                // to `ppid 1`: the per-node supervision tasks that would
+                // deliver a kill are never polled again. So hold the reply
+                // until the nodes are gone (#2980) — the coordinator's
+                // destroy completes when it lands, which is what makes
+                // `dora down` mean what it documents.
+                //
+                // Deferred rather than awaited here: a node shutting down
+                // cooperatively ends by asking this very event loop to close
+                // its outputs, so blocking the loop would deadlock every
+                // well-behaved node against the wait and turn its clean exit
+                // into a signal kill.
+                match self.begin_pending_destroy(reply_tx) {
+                    Some(reply_tx) => {
+                        Self::finish_destroy(reply_tx).await;
+                        RunStatus::Exit
+                    }
+                    None => RunStatus::Continue,
                 }
-                RunStatus::Exit
             }
             DaemonCoordinatorEvent::Heartbeat => {
                 self.last_coordinator_heartbeat = Instant::now();
@@ -2215,6 +2683,7 @@ impl Daemon {
                         zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
+                        bind_nodes_to_parent: self.bind_nodes_to_parent,
                     };
                     let mut logger = self
                         .logger
@@ -2241,7 +2710,7 @@ impl Daemon {
                         .await
                         .wrap_err("failed to prepare node")?;
                     let prepared = task.await.wrap_err("failed to build node")?;
-                    let running_node = prepared
+                    let mut running_node = prepared
                         .spawn(logger)
                         .await
                         .wrap_err("failed to spawn node")?;
@@ -2259,6 +2728,15 @@ impl Daemon {
                             .entry(node_id.clone())
                             .or_default()
                             .insert(input_id.clone());
+                        // See the spawn path: only `User` inputs can ever
+                        // close, so only they gate the drain (#2920).
+                        if matches!(input.mapping, InputMapping::User(_)) {
+                            dataflow
+                                .data_inputs
+                                .entry(node_id.clone())
+                                .or_default()
+                                .insert(input_id.clone());
+                        }
                         match &input.mapping {
                             InputMapping::User(mapping) => {
                                 if let Some(timeout) = input.input_timeout {
@@ -2295,14 +2773,24 @@ impl Daemon {
                         }
                     }
 
-                    // Mark as pending
                     if is_dynamic {
                         dataflow.dynamic_nodes.insert(node_id.clone());
-                    } else {
-                        dataflow.pending_nodes.insert(node_id.clone());
                     }
+                    // Deliberately NOT enrolled in `pending_nodes`: this
+                    // node is not part of the descriptor the dataflow
+                    // started from, so it must neither gate that
+                    // cohort's barrier nor inherit its failures.
+                    // Enrolling it meant a crash here was broadcast as
+                    // the subscribe result of unrelated nodes, and a
+                    // node that never subscribed could stall startup
+                    // outright (dora-rs/dora#2917).
 
-                    // Insert the running node
+                    // Open the restart-loop gate and insert the running
+                    // node. Marking before the insert is safe: the loop's
+                    // first events queue behind this handler on the same
+                    // event loop, so they cannot be processed before the
+                    // entry is registered.
+                    running_node.mark_registered();
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
 
                     // Update the daemon's stored descriptor so
@@ -2388,6 +2876,9 @@ impl Daemon {
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "AddNode failed: {err:?}");
                 }
+                if result.is_ok() {
+                    clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                }
                 // Return a specific `AddNodeResult` variant so the
                 // coordinator can validate the reply against its
                 // expected request, instead of treating any non-error
@@ -2444,6 +2935,7 @@ impl Daemon {
                     // Clean up remaining state for this node.
                     dataflow.running_nodes.remove(&node_id);
                     dataflow.open_inputs.remove(&node_id);
+                    dataflow.data_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
@@ -2465,10 +2957,391 @@ impl Daemon {
                     Ok(())
                 })();
 
+                // Outside the closure because it is async. Why removal
+                // has to drive the barrier at all: see
+                // `PendingNodes::handle_node_removal`.
+                let result = match result {
+                    Err(err) => Err(err),
+                    Ok(()) => {
+                        let mut logger = self.logger.for_dataflow(dataflow_id);
+                        // The closure above already resolved this id, and
+                        // nothing awaits in between, so a miss here is a
+                        // bug rather than a race — report it instead of
+                        // returning success like the closure's own
+                        // `no running dataflow` arm would.
+                        match self.running.get_mut(&dataflow_id) {
+                            Some(dataflow) => {
+                                let status = dataflow
+                                    .pending_nodes
+                                    .handle_node_removal(
+                                        &node_id,
+                                        &mut self.coordinator_sender,
+                                        &self.clock,
+                                        &mut dataflow.cascading_error_causes,
+                                        &mut logger,
+                                    )
+                                    .await;
+                                match status {
+                                    Ok(DataflowStatus::AllNodesReady)
+                                        if !dataflow.dataflow_started =>
+                                    {
+                                        logger
+                                            .log(
+                                                LogLevel::Info,
+                                                None,
+                                                Some("daemon".into()),
+                                                "all nodes are ready after node removal, \
+                                                 starting dataflow",
+                                            )
+                                            .await;
+                                        dataflow.start(&self.events_tx, &self.clock).await
+                                    }
+                                    Ok(_) => Ok(()),
+                                    Err(err) => Err(err),
+                                }
+                            }
+                            None => Err(eyre!(
+                                "dataflow `{dataflow_id}` disappeared while removing `{node_id}`"
+                            )),
+                        }
+                    }
+                };
+
                 if let Err(err) = &result {
                     tracing::error!(%dataflow_id, %node_id, "RemoveNode failed: {err:?}");
                 }
                 let reply = DaemonCoordinatorReply::RemoveNodeResult(
+                    result.map_err(|err| format!("{err:?}")),
+                );
+                let _ = reply_tx.send(Some(reply));
+                RunStatus::Continue
+            }
+            DaemonCoordinatorEvent::ReplaceNode {
+                dataflow_id,
+                node,
+                uv,
+                grace_duration,
+            } => {
+                let node_id = node.id.clone();
+                tracing::info!(%dataflow_id, %node_id, "replacing node in running dataflow");
+
+                let result: eyre::Result<()> = async {
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("no running dataflow with ID `{dataflow_id}`"))?;
+                    // Replace must not swap a node the startup barrier is
+                    // still waiting on: the barrier tracks the original
+                    // incarnation's subscription, and a mid-barrier swap
+                    // would let the replacement inherit or corrupt that
+                    // cohort's state (cf. AddNode's deliberate
+                    // non-enrollment, dora-rs/dora#2917). Deliberately NOT
+                    // gated on `dataflow_started`: that flag is set by the
+                    // all-daemons-ready roundtrip, which can lag seconds
+                    // behind this node being visibly Running — the precise
+                    // hazard is this id gating the barrier, nothing more.
+                    eyre::ensure!(
+                        !dataflow.pending_nodes.is_pending(&node_id),
+                        "node `{node_id}` is still starting (startup barrier); \
+                         retry once the dataflow is ready"
+                    );
+                    eyre::ensure!(
+                        dataflow.running_nodes.contains_key(&node_id),
+                        "no running node `{node_id}` to replace; use `dora node add`"
+                    );
+                    // v1 scope (dora-rs/dora#2927): spawned custom nodes
+                    // only. A dynamic replacement spawns no process (the
+                    // command would kill the old node and leave nothing
+                    // running behind the id), an outgoing dynamic node has
+                    // no handle for the grace-kill escalation, and
+                    // runtime/operator nodes keep their inputs in a
+                    // different descriptor location than the node-level
+                    // comparison below.
+                    eyre::ensure!(
+                        !node.kind.dynamic()
+                            && matches!(node.kind, dora_core::descriptor::CoreNodeKind::Custom(_)),
+                        "`dora node replace` currently supports spawned custom nodes only; \
+                         the replacement definition for `{node_id}` is a {} node — use \
+                         `dora node remove` + `dora node add` instead",
+                        if node.kind.dynamic() {
+                            "dynamic"
+                        } else {
+                            "runtime/operator"
+                        }
+                    );
+                    eyre::ensure!(
+                        !dataflow.dynamic_nodes.contains(&node_id),
+                        "node `{node_id}` is a dynamic node; `dora node replace` currently \
+                         supports spawned custom nodes only — use `dora node remove` + \
+                         `dora node add` instead"
+                    );
+
+                    // --- same-edges validation -------------------------------
+                    // A replace is a swap, not a topology edit
+                    // (dora-rs/dora#2927): the replacement must keep the
+                    // node's LIVE input edges exactly and still produce
+                    // every output a consumer (local or on a remote
+                    // daemon) is mapped to. The live edge state
+                    // (mappings/timers/log subscriptions) is the source of
+                    // truth rather than the stored descriptor entry: entry
+                    // input locations vary by node kind and by how the
+                    // node entered the dataflow (spawn vs AddNode), while
+                    // the live maps are uniformly keyed and already
+                    // reflect `dora node connect`/`disconnect` edits.
+                    let new_inputs = node_inputs(&node);
+                    let mut current_edges: BTreeMap<DataId, InputMapping> = BTreeMap::new();
+                    for (output_id, receivers) in &dataflow.mappings {
+                        for (receiver, input_id) in receivers {
+                            if receiver == &node_id {
+                                current_edges.insert(
+                                    input_id.clone(),
+                                    InputMapping::User(dora_message::config::UserInputMapping {
+                                        source: output_id.0.clone(),
+                                        output: output_id.1.clone(),
+                                    }),
+                                );
+                            }
+                        }
+                    }
+                    for (interval, receivers) in &dataflow.timers {
+                        for (receiver, input_id) in receivers {
+                            if receiver == &node_id {
+                                current_edges.insert(
+                                    input_id.clone(),
+                                    InputMapping::Timer {
+                                        interval: *interval,
+                                    },
+                                );
+                            }
+                        }
+                    }
+                    for subscriber in &dataflow.log_subscribers {
+                        if subscriber.node_id == node_id {
+                            current_edges.insert(
+                                subscriber.input_id.clone(),
+                                InputMapping::Logs(subscriber.filter.clone()),
+                            );
+                        }
+                    }
+                    const EDGE_HINT: &str = "`dora node replace` keeps the node's edges — use \
+                         `dora node remove`/`add` or `dora node connect`/`disconnect` for \
+                         topology changes";
+                    for (input_id, input) in &new_inputs {
+                        match current_edges.remove(input_id) {
+                            Some(mapping) if mapping == input.mapping => {}
+                            Some(_) => {
+                                eyre::bail!("replacement remaps input `{input_id}`; {EDGE_HINT}")
+                            }
+                            None => {
+                                eyre::bail!("replacement adds input `{input_id}`; {EDGE_HINT}")
+                            }
+                        }
+                    }
+                    if let Some((input_id, _)) = current_edges.into_iter().next() {
+                        eyre::bail!("replacement drops input `{input_id}`; {EDGE_HINT}");
+                    }
+                    // `node_output_ids` chains local mappings AND
+                    // `open_external_mappings`, so outputs consumed only by
+                    // nodes on other daemons are covered too.
+                    let new_outputs = node.kind.run_config().outputs;
+                    for output_id in dataflow.node_output_ids(&node_id) {
+                        eyre::ensure!(
+                            new_outputs.contains(&output_id),
+                            "replacement does not declare output `{output_id}`, which \
+                             downstream nodes consume"
+                        );
+                    }
+
+                    // --- spawn the replacement (old incarnation untouched) ---
+                    // Any failure up to and including the spawn leaves the
+                    // current incarnation running (dora-rs/dora#2927).
+                    // NOTE: this block deliberately mirrors the AddNode
+                    // arm's spawn sequence above — keep the two in sync
+                    // when adding Spawner fields or spawn parameters.
+                    let base_working_dir = self
+                        .working_dir
+                        .get(&dataflow_id)
+                        .cloned()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."));
+                    let is_dynamic = node.kind.dynamic();
+                    let output_routing = output_routing::added_node_output_routing(
+                        &node_id,
+                        node.kind.run_config().outputs,
+                        &dataflow.mappings,
+                        &dataflow.open_external_mappings,
+                        &dataflow.dynamic_nodes,
+                    );
+                    // Fresh stderr buffer for the new incarnation; installed
+                    // into the map only after the spawn succeeds.
+                    let node_stderr = Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX));
+                    // Patch the descriptor CLONE handed to the spawner with
+                    // the replacement's definition before it is serialized
+                    // into the child's DORA_NODE_CONFIG — the stored
+                    // descriptor still describes the outgoing incarnation
+                    // at this point (state mutations are deferred until the
+                    // spawn succeeds).
+                    let mut descriptor = dataflow.descriptor.clone();
+                    if let Some(entry) = descriptor.nodes.iter_mut().find(|n| n.id == node_id) {
+                        patch_descriptor_entry(entry, &node);
+                    }
+                    let spawner = Spawner {
+                        dataflow_id,
+                        daemon_tx: self.events_tx.clone(),
+                        dataflow_descriptor: descriptor,
+                        clock: self.clock.clone(),
+                        uv,
+                        ft_stats: self.ft_stats.clone(),
+                        shutdown: dataflow.listener_shutdown_rx.clone(),
+                        zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
+                        zenoh_peering: dataflow.zenoh_peering.clone(),
+                        disable_multicast: self.disable_multicast,
+                        bind_nodes_to_parent: self.bind_nodes_to_parent,
+                    };
+                    let mut logger = self
+                        .logger
+                        .for_dataflow(dataflow_id)
+                        .for_node(node_id.clone())
+                        .try_clone()
+                        .await
+                        .context("failed to clone logger")?;
+                    let python_env_dir =
+                        dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let task = spawner
+                        .spawn_node(
+                            node.clone(),
+                            base_working_dir,
+                            python_env_dir,
+                            false,
+                            node_stderr.clone(),
+                            None,
+                            output_routing,
+                            &mut logger,
+                        )
+                        .await
+                        .wrap_err("failed to prepare replacement node")?;
+                    let prepared = task.await.wrap_err("failed to build replacement node")?;
+                    let mut running_node = prepared
+                        .spawn(logger)
+                        .await
+                        .wrap_err("failed to spawn replacement node")?;
+
+                    // --- commit: swap entries and stop the outgoing one ------
+                    let dataflow = self
+                        .running
+                        .get_mut(&dataflow_id)
+                        .ok_or_else(|| eyre!("dataflow disappeared during replacement spawn"))?;
+                    // If the entry vanished mid-spawn (concurrent remove),
+                    // dropping `running_node` kills the fresh process via
+                    // its ProcessHandle Drop and cancels its (ungated)
+                    // restart loop — no orphan.
+                    let mut outgoing =
+                        dataflow.running_nodes.remove(&node_id).ok_or_else(|| {
+                            eyre!("node `{node_id}` was removed during the replacement spawn")
+                        })?;
+                    outgoing.disable_restart();
+                    let outgoing_generation = outgoing.generation;
+                    let outgoing_process = outgoing.process.take();
+                    // Stop the outgoing incarnation while its subscribe
+                    // channel is still installed so the graceful `Stop`
+                    // reaches it; its later exit event carries
+                    // `outgoing_generation` and is dropped by the
+                    // generation guard instead of being attributed to the
+                    // replacement (dora-rs/dora#2926).
+                    dataflow.stop_replaced_incarnation(
+                        &node_id,
+                        outgoing_generation,
+                        outgoing_process,
+                        &self.clock,
+                        grace_duration,
+                    );
+
+                    // Per-incarnation state reset. Three deliberate
+                    // NON-resets:
+                    // - mappings/timers/log subscriptions are keyed by
+                    //   (node id, input id) and the edges are validated
+                    //   identical, so they carry over unchanged;
+                    // - `open_inputs`/`data_inputs` record DATAFLOW-level
+                    //   input closure (an upstream that already finished),
+                    //   which is delivered exactly once and afterwards
+                    //   reconstructed from these maps by the subscribe-time
+                    //   replay — resetting them would make a replacement
+                    //   installed after an upstream finished wait forever
+                    //   on a dead input and hang dataflow completion;
+                    // - the descriptor entry keeps the outgoing
+                    //   definition's other fields (path/env/...) — stale
+                    //   metadata the daemon itself never consults (only
+                    //   `id` and `inputs` are read; the coordinator's
+                    //   descriptor holds the authoritative new definition).
+                    dataflow.subscribe_channels.remove(&node_id);
+                    dataflow.pending_messages.remove(&node_id);
+                    dataflow.all_inputs_closed_at.remove(&node_id);
+                    dataflow.connected_nodes.remove(&node_id);
+                    dataflow.finish_escalated.remove(&node_id);
+                    dataflow.cascading_error_causes.forget(&node_id);
+                    dataflow.forget_node_bookkeeping(&node_id);
+                    dataflow
+                        .node_stderr_most_recent
+                        .insert(node_id.clone(), node_stderr);
+
+                    // Re-register input deadlines, but only for inputs that
+                    // are still open — a deadline on an already-closed
+                    // input would be re-scanned forever without ever
+                    // arming.
+                    let still_open = dataflow.open_inputs.get(&node_id).cloned();
+                    for (input_id, input) in &new_inputs {
+                        if matches!(input.mapping, InputMapping::User(_))
+                            && let Some(timeout) = input.input_timeout
+                            && still_open
+                                .as_ref()
+                                .is_some_and(|open| open.contains(input_id))
+                        {
+                            dataflow.input_deadlines.insert(
+                                (node_id.clone(), input_id.clone()),
+                                InputDeadline {
+                                    timeout: Duration::from_secs_f64(timeout),
+                                    last_received: None,
+                                },
+                            );
+                        }
+                    }
+
+                    // Update the stored descriptor entry to the
+                    // replacement's definition — the same patch applied to
+                    // the spawn-time clone, so later spawns (and restart
+                    // respawns of OTHER nodes) serialize the replacement,
+                    // not the outgoing incarnation.
+                    if let Some(entry) = dataflow
+                        .descriptor
+                        .nodes
+                        .iter_mut()
+                        .find(|n| n.id == node_id)
+                    {
+                        patch_descriptor_entry(entry, &node);
+                    }
+
+                    running_node.mark_registered();
+                    dataflow.running_nodes.insert(node_id.clone(), running_node);
+
+                    tracing::info!(
+                        %dataflow_id,
+                        %node_id,
+                        outgoing_generation,
+                        dynamic = is_dynamic,
+                        "node replaced successfully"
+                    );
+                    Ok(())
+                }
+                .await;
+
+                if let Err(err) = &result {
+                    tracing::error!(%dataflow_id, %node_id, "ReplaceNode failed: {err:?}");
+                }
+                if result.is_ok() {
+                    // The outgoing (or an even earlier) incarnation's stale
+                    // result must not be attributed to the replacement.
+                    clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                }
+                let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
                 );
                 let _ = reply_tx.send(Some(reply));
@@ -2489,21 +3362,7 @@ impl Daemon {
                 // explicit `AddMappingResult` so the coordinator can pattern-
                 // match the outcome (same class as #1682's AddNodeResult).
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    let output_id = OutputId(source_node, source_output);
-                    dataflow
-                        .mappings
-                        .entry(output_id)
-                        .or_default()
-                        .insert((target_node.clone(), target_input.clone()));
-                    // Reopening an input ends any drain: clear the stale clock so
-                    // the selector does not treat the node as drained-and-eligible
-                    // on a timestamp from before the mapping was re-added (#2270).
-                    dataflow.all_inputs_closed_at.remove(&target_node);
-                    dataflow
-                        .open_inputs
-                        .entry(target_node)
-                        .or_default()
-                        .insert(target_input);
+                    dataflow.add_mapping(source_node, source_output, target_node, target_input);
                     Ok(())
                 } else {
                     Err(format!("no running dataflow with ID `{dataflow_id}`"))
@@ -2699,22 +3558,28 @@ impl Daemon {
                     continue;
                 };
                 let last = node.last_activity.load(atomic::Ordering::Acquire);
-                if last == 0 {
-                    continue; // not yet connected
+                // The health-check watchdog only monitors *post-connection*
+                // liveness. `last_activity` is seeded to the spawn timestamp
+                // (not 0), so a node that has not yet sent its first
+                // `DaemonRequest` would be measured as silent from spawn and
+                // SIGKILLed mid-startup — e.g. a node whose cold start (Python
+                // imports + model-weight load) legitimately exceeds
+                // `health_check_timeout`. Gate the kill on the node having
+                // connected, mirroring the finish-straggler watchdog (#2937).
+                let connected = dataflow.connected_nodes.contains(node_id);
+                if !health_check_should_kill(connected, last, now_millis, timeout) {
+                    continue;
                 }
                 let elapsed_ms = now_millis.saturating_sub(last);
-                let timeout_ms = timeout.as_millis() as u64;
-                if elapsed_ms > timeout_ms {
-                    tracing::warn!(
-                        "node `{node_id}` unresponsive for {}ms (timeout: {timeout:?}), killing",
-                        elapsed_ms,
-                    );
-                    self.ft_stats
-                        .health_check_kills
-                        .fetch_add(1, atomic::Ordering::Relaxed);
-                    if let Some(process) = &node.process {
-                        process.submit(ProcessOperation::Kill);
-                    }
+                tracing::warn!(
+                    "node `{node_id}` unresponsive for {}ms (timeout: {timeout:?}), killing",
+                    elapsed_ms,
+                );
+                self.ft_stats
+                    .health_check_kills
+                    .fetch_add(1, atomic::Ordering::Relaxed);
+                if let Some(process) = &node.process {
+                    process.submit(ProcessOperation::Kill);
                 }
             }
         }
@@ -3083,6 +3948,13 @@ impl Daemon {
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
+        // Read from the descriptor, which is the one copy that survives
+        // everything a dataflow outlives: auto-recovery re-spawn,
+        // coordinator restart with state reconstruction, and `dora
+        // restart`. A daemon serving a coordinator hosts many dataflows
+        // and only some are batch-style, so this is necessarily
+        // per-dataflow rather than daemon-wide (#2920).
+        dataflow.timers_gate_drain = !dataflow.descriptor.exit_when_nodes_finish.unwrap_or(false);
         // Decide who dials whom before anything spawns: zenoh 1.9 peers do not
         // relay, so a producer/consumer pair that never forms a direct link can
         // never exchange data. Assign the links explicitly instead of leaving
@@ -3145,6 +4017,17 @@ impl Daemon {
                         .entry(node.id.clone())
                         .or_default()
                         .insert(input_id.clone());
+                    // Record which inputs can ever close. Timer and Logs
+                    // inputs are fed by the daemon and have no upstream
+                    // node, so they never close; only a `User` mapping is
+                    // a real data dependency (#2920).
+                    if matches!(input.mapping, InputMapping::User(_)) {
+                        dataflow
+                            .data_inputs
+                            .entry(node.id.clone())
+                            .or_default()
+                            .insert(input_id.clone());
+                    }
                     match input.mapping {
                         InputMapping::User(mapping) => {
                             if let Some(timeout) = input.input_timeout {
@@ -3364,6 +4247,7 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
             disable_multicast: self.disable_multicast,
+            bind_nodes_to_parent: self.bind_nodes_to_parent,
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):
@@ -3970,7 +4854,13 @@ impl Daemon {
                         })?;
 
                     if free
-                        && let Err(err) = self.memory_pool.free_memory_pool(&id, node_id.as_ref())
+                        && let Err(err) = free_pool_and_notify(
+                            &self.memory_pool,
+                            self.running.get(&dataflow_id),
+                            &id,
+                            node_id.as_ref(),
+                            &self.clock,
+                        )
                     {
                         tracing::warn!(
                             "Failed to free memory pool {} after reading: {}",
@@ -4007,39 +4897,15 @@ impl Daemon {
             } => {
                 let id = MemoryPoolId {
                     dataflow_id: dataflow_id.to_string(),
-                    id: shared_memory_id.clone(),
+                    id: shared_memory_id,
                 };
-                let result: Result<(), String> =
-                    match self.memory_pool.free_memory_pool(&id, node_id.as_ref()) {
-                        Ok((_meta, touched)) => {
-                            // Send targeted cleanup to every node that
-                            // registered or read this pool — a single
-                            // free_memory_pool call by any node releases
-                            // per-process resources in all relevant nodes.
-                            // The initiator already released synchronously;
-                            // exclude it to avoid redundant work.
-                            if let Some(dataflow) = self.running.get(&dataflow_id) {
-                                let event = NodeEvent::FreeMemoryPool {
-                                    shared_memory_id: shared_memory_id.clone(),
-                                };
-                                for (node, channel) in &dataflow.subscribe_channels {
-                                    if touched.contains(node.as_ref())
-                                        && node.as_ref() != node_id.as_ref()
-                                        && let Err(e) =
-                                            send_with_timestamp(channel, event.clone(), &self.clock)
-                                    {
-                                        tracing::warn!(
-                                            node_id = %node,
-                                            pool = %shared_memory_id,
-                                            "failed to deliver FreeMemoryPool: {e}"
-                                        );
-                                    }
-                                }
-                            }
-                            Ok(())
-                        }
-                        Err(e) => Err(e),
-                    };
+                let result = free_pool_and_notify(
+                    &self.memory_pool,
+                    self.running.get(&dataflow_id),
+                    &id,
+                    node_id.as_ref(),
+                    &self.clock,
+                );
                 let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
@@ -4069,6 +4935,72 @@ impl Daemon {
         Ok(())
     }
 
+    /// Record an output event that named a dataflow the daemon no longer
+    /// runs, and drop it.
+    ///
+    /// Usually this means the dataflow finished while the node still had
+    /// traffic in flight. Two ways in, both normal:
+    ///
+    /// * a node's exit and its already-transmitted outputs reach the
+    ///   daemon's event loop on independent paths, so a burst sent just
+    ///   before exit can be queued behind the `SpawnedNodeResult` that
+    ///   finished the dataflow (the intermittent nightly `smoke-suite`
+    ///   failure in dora-rs/dora#2742);
+    /// * `should_finish` ignores still-running *dynamic* nodes, so a
+    ///   dynamic node is expected to outlive `finish_dataflow` and may
+    ///   keep sending for as long as it likes afterwards.
+    ///
+    /// It can also mean a stale or misconfigured node: registration takes
+    /// `dataflow_id` from the node's own `Register` request and only
+    /// version-checks it, so an id the daemon never ran reaches here too.
+    /// That is why this warns rather than logging at `debug`.
+    ///
+    /// Fatal it must not be: neither `SendOut` nor `OutputSent` carries a
+    /// reply channel, so `handle_node_event` cannot report the error back
+    /// to the node the way every sibling arm does — it can only return
+    /// `Err`, which unwinds the daemon's main loop and drops its
+    /// coordinator connection — which loses this message *and* every
+    /// other dataflow's connection with it.
+    ///
+    /// Dropping it is not always free, though: `should_finish` only looks
+    /// at this daemon's non-dynamic nodes, so a still-running local
+    /// dynamic consumer, or a consumer on another daemon reached through
+    /// `open_external_mappings`, can still have been waiting for it. That
+    /// is a pre-existing finish-ordering gap, strictly better than taking
+    /// the daemon down for it, and why this is a warning rather than a
+    /// silent drop.
+    ///
+    /// Warns once per node, then falls to `debug`: the dynamic-node case
+    /// above is unbounded, and a node sending at 1 kHz would otherwise
+    /// emit 1000 warn lines a second for as long as it stayed alive.
+    fn log_late_node_output(
+        &mut self,
+        dataflow_id: &Uuid,
+        node_id: &NodeId,
+        output_id: &DataId,
+        what: &'static str,
+    ) {
+        if self.warned_late_outputs.len() >= MAX_WARNED_LATE_OUTPUT_NODES {
+            self.warned_late_outputs.clear();
+        }
+        if self
+            .warned_late_outputs
+            .insert((*dataflow_id, node_id.clone()))
+        {
+            tracing::warn!(
+                %dataflow_id, %node_id, %output_id,
+                "ignoring `{what}` for a dataflow that already finished \
+                 (node outlived its dataflow); further such messages from \
+                 this node are logged at debug level"
+            );
+        } else {
+            tracing::debug!(
+                %dataflow_id, %node_id, %output_id,
+                "ignoring `{what}` for a dataflow that already finished"
+            );
+        }
+    }
+
     async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -4077,9 +5009,10 @@ impl Daemon {
         metadata: dora_message::metadata::Metadata,
         data: Option<DataMessage>,
     ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
+        let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+            self.log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
+            return Ok(());
+        };
         let output_id_key = OutputId(node_id.clone(), output_id.clone());
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
@@ -4145,9 +5078,10 @@ impl Daemon {
         output_id: DataId,
         _metadata: dora_message::metadata::Metadata,
     ) -> Result<(), eyre::ErrReport> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("output sent failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
+        let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
+            self.log_late_node_output(&dataflow_id, &node_id, &output_id, "output sent");
+            return Ok(());
+        };
         note_output_sent_to_local_receivers(
             node_id,
             output_id,
@@ -4357,22 +5291,45 @@ impl Daemon {
                 dataflow.inc_pending(&node_id);
             }
         }
-        if dataflow.open_inputs(&node_id).is_empty() {
-            if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
-                node.disable_restart();
-            }
-            if let Some(node) = dataflow.descriptor.nodes.iter().find(|n| n.id == node_id) {
-                if node.inputs.is_empty() {
-                    // do not send AllInputsClosed for source nodes
-                } else if send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
-                    == Some(true)
-                {
-                    dataflow.inc_pending(&node_id);
-                    dataflow
-                        .all_inputs_closed_at
-                        .insert(node_id.clone(), Instant::now());
-                }
-            }
+        // Restart bookkeeping needs BOTH conditions, and they diverge under
+        // the drain opt-in:
+        //   - "nothing left open" keeps the pre-existing behavior. Other
+        //     code depends on it firing at subscribe time for source nodes
+        //     (see the `grace_duration_kill` comment in `handle_node_stop`),
+        //     and `is_drained` deliberately reports false for a source.
+        //     Dropping it would let a source with `restart_policy: always`
+        //     respawn forever, so its outputs never close and the graph
+        //     hangs — the failure #2920 exists to prevent.
+        //   - "is drained" covers the node we are about to tell to finish.
+        //     Without it, such a node exits, gets restarted, is told to
+        //     finish again, and loops until `max_restarts`.
+        // In the default mode the two are the same predicate. A node with a
+        // circuit-broken input is excluded either way: the input is
+        // recoverable, so the node is not done and must keep its restart
+        // policy — `disable_restart` is one-way, with no re-enable on
+        // recovery. This matches `signal_all_inputs_closed_if_drained`.
+        if (dataflow.open_inputs(&node_id).is_empty() || dataflow.is_drained(&node_id))
+            && !dataflow.has_broken_input(&node_id)
+            && let Some(node) = dataflow.running_nodes.get_mut(&node_id)
+        {
+            node.disable_restart();
+        }
+        // Sources are not told to finish. The check reads the recorded data
+        // inputs rather than the descriptor: `descriptor.nodes[].inputs` is
+        // empty for a runtime (`operators:`) node, whose inputs live under
+        // `operators[].config.inputs`, so the descriptor calls every operator
+        // node a source and skips the event — the hang this issue is about
+        // (#2920). Under the opt-in `is_drained` already excludes sources;
+        // this still matters in the default mode, where a source has no open
+        // inputs and so looks drained.
+        if dataflow.is_finished_non_source(&node_id)
+            && send_with_timestamp(&event_sender, NodeEvent::AllInputsClosed, clock).ok()
+                == Some(true)
+        {
+            dataflow.inc_pending(&node_id);
+            dataflow
+                .all_inputs_closed_at
+                .insert(node_id.clone(), Instant::now());
         }
 
         // if a stop event was already sent for the dataflow, send it to
@@ -4477,12 +5434,27 @@ impl Daemon {
                 );
                 return Ok(());
             }
-            None => eyre::bail!(
-                "failed to get downstream nodes: no running dataflow with ID `{dataflow_id}`"
-            ),
+            None => {
+                // The dataflow finished before this non-dynamic node's stop
+                // event was processed. A node's exit and its `SpawnNodeResult`
+                // arrive on independent paths, so `should_finish` can conclude
+                // the dataflow is done (every remaining `running_nodes` entry is
+                // dynamic) and `finish_dataflow` can run before this stop lands
+                // — the same "two independent paths" ordering that produced the
+                // late-output race fixed in #2742, just narrower. Bailing here
+                // returns `Err` up through the daemon's main loop, unwinding
+                // `run()` and tearing down the coordinator connection (or
+                // failing the whole `dora run`). Treat the missing dataflow as
+                // benign — matching the `dynamic_node` arm above and the
+                // late-output handling in `send_out`/`output_sent`. Kept at
+                // `warn` rather than `debug` because a non-dynamic node arriving
+                // late is less expected than a dynamic one (#2986).
+                tracing::warn!("node {dataflow_id}/{node_id} stopped after dataflow was done");
+                return Ok(());
+            }
         };
 
-        dataflow
+        let status = dataflow
             .pending_nodes
             .handle_node_stop(
                 node_id,
@@ -4492,6 +5464,25 @@ impl Daemon {
                 &mut logger,
             )
             .await?;
+
+        // If this death completed the startup barrier (the dying node was the
+        // last cohort member yet to subscribe), the barrier resolves to
+        // `AllNodesReady` just as a final subscribe or a `RemoveNode` would —
+        // and both of those callers start the dataflow here. Do the same, so a
+        // non-cohort survivor that was answered `Ok(())` (since #2933) isn't
+        // left parked on a dataflow that never starts and never tears down
+        // (#2967). `start()` is idempotent and guarded by `dataflow_started`.
+        if matches!(status, DataflowStatus::AllNodesReady) && !dataflow.dataflow_started {
+            logger
+                .log(
+                    LogLevel::Info,
+                    None,
+                    Some("daemon".into()),
+                    "startup barrier completed by a node exit, starting dataflow",
+                )
+                .await;
+            dataflow.start(&self.events_tx, &self.clock).await?;
+        }
 
         // node only reaches here if it will not be restarted
         let might_restart = false;
@@ -4585,11 +5576,17 @@ impl Daemon {
         // in dataflow_node_results. An empty map means all dynamic nodes handled stop successfully.
         let result = DataflowDaemonResult {
             timestamp: self.clock.new_timestamp(),
-            node_results: self
-                .dataflow_node_results
-                .get(&dataflow_id)
-                .cloned()
-                .unwrap_or_default(),
+            // On a persistent, coordinator-managed daemon (`exit_when_done` is
+            // `None`) nothing reads this dataflow's entry again after we report
+            // it, so remove it to avoid `dataflow_node_results` growing without
+            // bound across the daemon's lifetime. In the run-once (`dora run`)
+            // path `run_inner` drains the whole map via `std::mem::take` *after*
+            // `finish_dataflow` returns, so the entry must survive until then.
+            node_results: extract_node_results(
+                &mut self.dataflow_node_results,
+                dataflow_id,
+                self.exit_when_done.is_some(),
+            ),
         };
 
         self.git_manager
@@ -4839,6 +5836,7 @@ impl Daemon {
             DoraEvent::SpawnedNodeResult {
                 dataflow_id,
                 node_id,
+                generation,
                 dynamic_node,
                 exit_status,
                 restart,
@@ -4857,27 +5855,34 @@ impl Daemon {
                     )
                     .await;
 
-                if !restart
-                    && self
-                        .running
-                        .get(&dataflow_id)
-                        .and_then(|dataflow| dataflow.running_nodes.get(&node_id))
-                        .and_then(|node| node.pid.as_ref())
-                        .is_some_and(|current_pid| {
-                            current_pid.load(atomic::Ordering::Acquire) != pid
-                        })
-                {
+                let current_generation = self
+                    .running
+                    .get(&dataflow_id)
+                    .and_then(|dataflow| dataflow.running_nodes.get(&node_id));
+                // Deliberate semantics of the entry-absent case: an exit
+                // arriving after `RemoveNode` took the entry out is dropped
+                // here WITHOUT running the finish accounting below. That
+                // means removing the last non-dynamic node leaves the
+                // dataflow alive (zero running nodes) until an explicit stop
+                // or a re-add — live-editing keep-alive, chosen over the
+                // pre-generation behavior where such a stale exit could both
+                // record a bogus result (dora-rs/dora#2926) and finish a
+                // dataflow out from under a concurrent re-add of the same id.
+                if !current_generation.is_some_and(|node| node.matches_generation(generation)) {
                     logger
                         .log(
                             LogLevel::Debug,
                             Some("daemon".into()),
                             format!(
-                                "ignoring stale exit from pid {pid}; `{node_id}` has already been re-added"
+                                "ignoring stale exit from pid {pid} (generation {generation}); \
+                                 `{node_id}` has been removed or replaced"
                             ),
                         )
                         .await;
                     if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                        dataflow.grace_duration_kills.remove(&node_id);
+                        dataflow
+                            .grace_duration_kills
+                            .remove(&(node_id.clone(), generation));
                     }
                     return Ok(());
                 }
@@ -4892,7 +5897,10 @@ impl Daemon {
                             })
                             .cloned();
                         let grace_duration_kill = dataflow
-                            .map(|d| d.grace_duration_kills.contains(&node_id))
+                            .map(|d| {
+                                d.grace_duration_kills
+                                    .contains(&(node_id.clone(), generation))
+                            })
                             .unwrap_or_default();
                         // Killed by the finish-straggler watchdog
                         // (dora-rs/dora#2152): the node blocked an
@@ -5016,22 +6024,23 @@ impl Daemon {
                     }
                 };
 
-                // Clear the per-incarnation kill marker so it doesn't
-                // leak into the next incarnation. `grace_duration_kills`
-                // is keyed only by `node_id`; if `restart=true` and we
-                // didn't clear here, a later external SIGTERM or
-                // unrelated 143 exit from the restarted process would
-                // still see `grace_duration_kill=true` and be
-                // misreported as `Ok(())`. The marker has done its job
-                // for this exit — drop it. Same for the drain clock: a
-                // respawned node under the same id must start fresh.
+                // Drop the consumed kill marker. `grace_duration_kills` is
+                // keyed by `(node_id, generation)`, so a successor can no
+                // longer inherit its predecessor's marker structurally —
+                // removal here is hygiene for this incarnation's own entry
+                // (it was consumed classifying this exit), not the
+                // cross-incarnation leak protection it used to be. Same for
+                // the drain clock: a respawned node under the same id must
+                // start fresh.
                 // (`finish_escalated` is NOT cleared here — it is read
                 // and consumed by `handle_node_stop_inner` below to keep
                 // the coordinator-facing `clean_stop` flag honest; an
                 // escalated node never restarts, so it cannot leak into
                 // a next incarnation.)
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    dataflow.grace_duration_kills.remove(&node_id);
+                    dataflow
+                        .grace_duration_kills
+                        .remove(&(node_id.clone(), generation));
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     // a respawned node must re-subscribe before it counts as
                     // connected, else a slow restart could be silence-escalated
@@ -5092,44 +6101,65 @@ impl Daemon {
                                         // NodeRestarted is a critical lifecycle event:
                                         // dropping it leaves service/action clients
                                         // blocked on pre-crash correlations forever
-                                        // (dora-rs/adora#148). Use an unconditional
-                                        // backpressure-aware send to guarantee delivery.
+                                        // (dora-rs/adora#148). Guarantee delivery with a
+                                        // backpressure-aware send — but do NOT await it
+                                        // on the daemon main loop.
                                         //
-                                        // This blocks the daemon main loop until the
-                                        // receiver drains one slot. Acceptable because:
-                                        // - NodeRestarted is rare (only on crash+restart)
-                                        // - The receiver (Listener::run_inner) is a tokio
-                                        //   task on the same runtime, so it will make
-                                        //   progress cooperatively
-                                        // - If the receiver is dead the channel is closed
-                                        //   and send() returns Err immediately
+                                        // Awaiting here suspends the single serial event
+                                        // loop until the receiver drains a slot. If that
+                                        // receiver's Listener is itself parked on
+                                        // `daemon_tx.send().await` (the daemon event
+                                        // channel at capacity), it never returns to drain
+                                        // its subscribe channel, so the two block each
+                                        // other forever and the whole daemon hangs
+                                        // (dora-rs/dora#3066). Offload the awaiting send
+                                        // to a detached task holding cloned handles so the
+                                        // main loop keeps draining `dora_events_rx`.
                                         tracing::warn!(
                                             %dataflow_id,
                                             restarted_node = %node_id,
                                             %receiver_id,
                                             "NodeRestarted try_send failed (channel full); \
-                                             awaiting backpressure delivery"
+                                             offloading backpressure delivery to a task"
                                         );
+                                        let channel = channel.clone();
+                                        // Clone the receiver's pending counter so the task
+                                        // can pair the enqueue with `inc_pending` off the
+                                        // main loop. The Listener decrements once per
+                                        // drained event, so the increment must land iff
+                                        // the message is actually enqueued (Ok), exactly
+                                        // as the inline delivery sites do (dora-rs/dora#2827).
+                                        let pending =
+                                            dataflow.pending_messages.get(receiver_id).cloned();
                                         let msg = Timestamped {
                                             inner: NodeEvent::NodeRestarted {
                                                 id: node_id.clone(),
                                             },
                                             timestamp: self.clock.new_timestamp(),
                                         };
-                                        match channel.send(msg).await {
-                                            Ok(()) => {
-                                                dataflow.inc_pending(receiver_id);
+                                        let restarted_node = node_id.clone();
+                                        let receiver = receiver_id.clone();
+                                        tokio::spawn(async move {
+                                            match channel.send(msg).await {
+                                                Ok(()) => {
+                                                    if let Some(counter) = pending {
+                                                        counter.fetch_add(
+                                                            1,
+                                                            std::sync::atomic::Ordering::Relaxed,
+                                                        );
+                                                    }
+                                                }
+                                                Err(_closed) => {
+                                                    tracing::warn!(
+                                                        %dataflow_id,
+                                                        %restarted_node,
+                                                        %receiver,
+                                                        "NodeRestarted delivery failed: \
+                                                         receiver channel closed"
+                                                    );
+                                                }
                                             }
-                                            Err(_closed) => {
-                                                tracing::warn!(
-                                                    %dataflow_id,
-                                                    restarted_node = %node_id,
-                                                    %receiver_id,
-                                                    "NodeRestarted delivery failed: \
-                                                     receiver channel closed"
-                                                );
-                                            }
-                                        }
+                                        });
                                     }
                                     Err(_) => {
                                         tracing::warn!(
@@ -5166,6 +6196,8 @@ impl Daemon {
             DoraEvent::ProcessHandleReplaced {
                 dataflow_id,
                 node_id,
+                previous_generation,
+                new_generation,
                 new_handle,
             } => {
                 // The per-node restart_loop just spawned a replacement
@@ -5175,11 +6207,36 @@ impl Daemon {
                 // predecessor's channel (dora-rs/adora#152).
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     if let Some(node) = dataflow.running_nodes.get_mut(&node_id) {
-                        // Overwriting the previous Some(old_handle)
-                        // drops it, which currently fires its `Kill`
-                        // send on the already-closed old op_rx — a
-                        // no-op.
-                        node.process = Some(new_handle);
+                        match node.replace_process_handle(
+                            previous_generation,
+                            new_generation,
+                            new_handle,
+                        ) {
+                            running_dataflow::HandleReplacement::Replaced => {}
+                            running_dataflow::HandleReplacement::RejectedTeardown(new_handle) => {
+                                dataflow.stop_rejected_replacement(
+                                    &node_id,
+                                    new_generation,
+                                    new_handle,
+                                );
+                                tracing::info!(
+                                    %dataflow_id,
+                                    %node_id,
+                                    new_generation,
+                                    "teardown won the respawn race: stopping the replacement \
+                                     process with the active dataflow stop policy"
+                                );
+                            }
+                            running_dataflow::HandleReplacement::RejectedStale => {
+                                tracing::warn!(
+                                    %dataflow_id,
+                                    %node_id,
+                                    previous_generation,
+                                    current_generation = node.generation,
+                                    "ignoring stale ProcessHandleReplaced event"
+                                );
+                            }
+                        }
                     } else {
                         tracing::warn!(
                             %dataflow_id,
@@ -5730,6 +6787,16 @@ fn close_input(
         .remove(&(receiver_id.clone(), input_id.clone()))
         .is_some();
 
+    // Drop any armed deadline for this input. A closed input can never
+    // meaningfully time out, and leaving the entry behind lets
+    // `check_input_timeouts` fire on it later, insert a `broken_inputs`
+    // record, and then no-op in `break_input` (the input is already gone from
+    // `open_inputs`) — orphaning that record so `has_broken_input` stays true
+    // forever and the drained node is never sent `AllInputsClosed` (#2968).
+    dataflow
+        .input_deadlines
+        .remove(&(receiver_id.clone(), input_id.clone()));
+
     let was_open = dataflow
         .open_inputs
         .get_mut(receiver_id)
@@ -5758,8 +6825,12 @@ fn close_input(
     signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
 }
 
-/// If `receiver_id` has no remaining open inputs (and none are circuit-broken),
-/// disable its restart policy and notify it that all inputs are closed.
+/// If `receiver_id` has finished, disable its restart policy and notify it
+/// that all inputs are closed.
+///
+/// "Finished" is [`RunningDataflow::should_signal_all_inputs_closed`], which
+/// under `--exit-when-nodes-finish` means its data inputs have closed even
+/// while a timer keeps ticking.
 ///
 /// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
 /// no-op if the node still has open/broken inputs or has no subscribe channel.
@@ -5771,20 +6842,22 @@ fn signal_all_inputs_closed_if_drained(
     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
         return;
     };
-    let has_broken = dataflow
-        .broken_inputs
-        .keys()
-        .any(|(nid, _)| nid == receiver_id);
-    if dataflow.open_inputs(receiver_id).is_empty() && !has_broken {
-        if let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
-            node.disable_restart();
-        }
-        if send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true) {
-            dataflow.inc_pending(receiver_id);
-            dataflow
-                .all_inputs_closed_at
-                .insert(receiver_id.clone(), Instant::now());
-        }
+    // As at the subscribe site: either "nothing left open" (pre-existing
+    // behavior, and true for a source) or "drained" (the node we are about
+    // to tell to finish) disables restart.
+    if (dataflow.open_inputs(receiver_id).is_empty() || dataflow.is_drained(receiver_id))
+        && !dataflow.has_broken_input(receiver_id)
+        && let Some(node) = dataflow.running_nodes.get_mut(receiver_id)
+    {
+        node.disable_restart();
+    }
+    if dataflow.is_finished(receiver_id)
+        && send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true)
+    {
+        dataflow.inc_pending(receiver_id);
+        dataflow
+            .all_inputs_closed_at
+            .insert(receiver_id.clone(), Instant::now());
     }
 }
 
@@ -5799,6 +6872,14 @@ fn break_input(
     if let Some(open_inputs) = dataflow.open_inputs.get_mut(receiver_id)
         && !open_inputs.remove(input_id)
     {
+        // The input already left `open_inputs` (e.g. it was closed before this
+        // timeout fired). The caller inserted a `broken_inputs` record before
+        // calling us; a no-op break would orphan it, permanently pinning
+        // `has_broken_input` true. Roll that insert back so we don't leave the
+        // node undrainable (#2968).
+        dataflow
+            .broken_inputs
+            .remove(&(receiver_id.clone(), input_id.clone()));
         return;
     }
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
@@ -5857,6 +6938,31 @@ fn is_sigterm_like_exit(exit_status: &NodeExitStatus) -> bool {
             | NodeExitStatus::ExitCode(130)
             | NodeExitStatus::ExitCode(STATUS_CONTROL_C_EXIT)
     )
+}
+
+/// Decide whether the health-check watchdog should kill a node.
+///
+/// Returns `true` only once the node has **connected** at least once (sent its
+/// first `DaemonRequest`) and has then been silent for longer than `timeout`.
+///
+/// A node that has not yet connected is still starting up and must never be
+/// killed by this watchdog: `last_activity` is seeded to the spawn timestamp
+/// (see `spawner.rs` / `prepared.rs`), so without the `connected` gate the
+/// timeout clock would start ticking at spawn — before the node has had any
+/// chance to communicate — and a node whose legitimate cold start exceeds
+/// `health_check_timeout` would be SIGKILLed mid-startup, mirroring the trap
+/// the finish-straggler watchdog was explicitly fixed for (#2937).
+fn health_check_should_kill(
+    connected: bool,
+    last_activity_millis: u64,
+    now_millis: u64,
+    timeout: Duration,
+) -> bool {
+    if !connected {
+        return false;
+    }
+    let elapsed_ms = now_millis.saturating_sub(last_activity_millis);
+    elapsed_ms > timeout.as_millis() as u64
 }
 
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
@@ -5955,6 +7061,114 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
 
 // RunningDataflow and related types are in running_dataflow.rs
 // FaultToleranceStats and CascadingErrorCauses are in fault_tolerance.rs
+
+/// Treat SIGTERM/SIGHUP like Ctrl-C, but ONLY for the run-a-single-
+/// dataflow modes (`dora run`, `dora daemon --run-dataflow`).
+///
+/// Without this, killing the CLI runs no teardown at all and every node
+/// it spawned is orphaned: nodes are deliberately spawned as
+/// process-group leaders (so a terminal Ctrl-C cannot kill them out from
+/// under the daemon), which leaves an orphan with `ppid=1` and its own
+/// pgid — unreachable by both inherited signal delivery and a group-kill
+/// of the CLI. Only this teardown can reap them (dora-rs/dora#2920).
+///
+/// Deliberately scoped here rather than enabling `ctrlc`'s `termination`
+/// feature. `dora run`, `dora daemon` and `dora coordinator` are
+/// subcommands of ONE binary, and cargo unifies features, so that flag
+/// would change signal handling process-wide — making SIGTERM a graceful
+/// request everywhere. That is wrong for the long-lived services: a
+/// `pkill -TERM` of the coordinator would gracefully destroy its daemons
+/// instead of crashing (which the nightly crash-recovery jobs rely on),
+/// and it would override the `SIG_IGN` that `nohup` installs for
+/// `dora cluster up`'s remote daemons.
+///
+/// Escalates on the same ladder as the ctrl-c handler below, and for the
+/// same reason: aborting on the SECOND signal would kill the process
+/// while the first signal's teardown is still running, orphaning exactly
+/// the node processes this exists to reap. So the second signal takes
+/// the `SecondCtrlC` path — an early but still unwinding exit, which
+/// drops the `RunningDataflow` and with it every `ProcessHandle` — and
+/// only a third aborts outright.
+///
+/// Delivery uses `try_send` rather than an await so a wedged event loop
+/// cannot swallow the escalation. A failure to deliver the FIRST signal
+/// is not fatal by itself (the operator can signal again); by the second
+/// there is nothing left to wait for.
+fn set_up_termination_handler(clock: Arc<HLC>) -> tokio::sync::mpsc::Receiver<Timestamped<Event>> {
+    // Room for both rungs of the ladder, so a queued `CtrlC` cannot make
+    // the follow-up `SecondCtrlC` undeliverable.
+    let (tx, rx) = mpsc::channel(2);
+
+    #[cfg(unix)]
+    tokio::spawn(async move {
+        use tokio::signal::unix::{SignalKind, signal};
+        let (mut sigterm, mut sighup) = match (
+            signal(SignalKind::terminate()),
+            signal(SignalKind::hangup()),
+        ) {
+            (Ok(term), Ok(hup)) => (term, hup),
+            _ => {
+                tracing::warn!(
+                    "failed to install SIGTERM/SIGHUP handler; killing this process \
+                         will leak its node processes"
+                );
+                return;
+            }
+        };
+
+        let mut signals_seen = 0_u32;
+        loop {
+            tokio::select! {
+                _ = sigterm.recv() => {}
+                _ = sighup.recv() => {}
+            }
+            signals_seen += 1;
+            let event = match signals_seen {
+                1 => {
+                    tracing::info!("received termination signal -> stopping dataflow");
+                    Event::CtrlC
+                }
+                2 => {
+                    tracing::warn!("received second termination signal -> exiting early");
+                    Event::SecondCtrlC
+                }
+                _ => {
+                    tracing::warn!("received third termination signal -> aborting immediately");
+                    std::process::abort();
+                }
+            };
+            if tx
+                .try_send(Timestamped {
+                    inner: event,
+                    timestamp: clock.new_timestamp(),
+                })
+                .is_err()
+            {
+                // The event loop is not consuming. On the first signal
+                // that is worth reporting but not worth killing over —
+                // teardown may still be in flight, and a kill here would
+                // orphan the nodes. A second undeliverable signal means
+                // nothing is going to drain it.
+                if signals_seen >= 2 {
+                    tracing::warn!("could not deliver termination event -> aborting immediately");
+                    std::process::abort();
+                }
+                tracing::warn!("could not deliver termination event; signal again to force exit");
+            }
+        }
+    });
+
+    #[cfg(not(unix))]
+    {
+        // No SIGTERM/SIGHUP on Windows; console close is already covered
+        // by the ctrl-c handler. Keep the sender alive so the receiver
+        // pends forever instead of reading as an immediate event.
+        let _ = &clock;
+        std::mem::forget(tx);
+    }
+
+    rx
+}
 
 fn set_up_ctrlc_handler(
     clock: Arc<HLC>,
@@ -6339,6 +7553,7 @@ mod debug_topic_tests {
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
+    use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
 
     use dora_message::{
@@ -6356,6 +7571,7 @@ mod fault_tolerance_tests {
             debug: DescriptorDebug::default(),
             health_check_interval: None,
             strict_types: None,
+            exit_when_nodes_finish: None,
             type_rules: vec![],
             env: None,
         };
@@ -6462,6 +7678,9 @@ mod fault_tolerance_tests {
     fn test_running_node() -> RunningNode {
         RunningNode {
             process: None,
+            restart_loop_start: None,
+            _listener_shutdown: None,
+            generation: 7,
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
@@ -6491,6 +7710,237 @@ mod fault_tolerance_tests {
         }
     }
 
+    /// dora-rs/dora#2988 review, finding 1: the Event::Node gate must be
+    /// STRICTLY-older, not exact-match. The restart loop publishes a
+    /// successor's generation before spawning it, so the successor's
+    /// connection can emit its one-shot Subscribe with a generation NEWER
+    /// than the entry — dropping that leaves the incarnation disconnected
+    /// forever.
+    #[test]
+    fn node_event_gate_drops_only_strictly_older_generations() {
+        // Predecessor's connection after a swap advanced the entry: stale.
+        assert!(event_generation_is_stale(8, 7));
+        // The entry's current incarnation: current.
+        assert!(!event_generation_is_stale(8, 8));
+        // Successor racing its own ProcessHandleReplaced: must pass.
+        assert!(
+            !event_generation_is_stale(8, 9),
+            "a successor's early events must not be dropped while the \
+             entry still holds the predecessor's generation"
+        );
+    }
+
+    #[test]
+    fn running_node_rejects_stale_generation() {
+        let mut node = test_running_node();
+        let reused_pid = Arc::new(AtomicU32::new(42));
+        node.pid = Some(reused_pid);
+
+        assert!(node.matches_generation(7));
+        assert!(
+            !node.matches_generation(6),
+            "a reused PID must not make an older generation current"
+        );
+    }
+
+    // The registration gate itself is tested through `restart_loop` in
+    // `spawn::prepared::tests` (`restart_loop_aborts_when_registration_never_happens`
+    // and `cancelled_restart_settles_terminal_exit`), which drive the real
+    // loop rather than restating oneshot-channel semantics here.
+
+    #[test]
+    fn planned_stop_markers_are_scoped_to_generation() {
+        let dataflow = test_dataflow();
+        let node_id: NodeId = "readded".to_string().into();
+
+        dataflow.grace_duration_kills.insert((node_id.clone(), 7));
+
+        assert!(
+            dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 7))
+        );
+        assert!(
+            !dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 8)),
+            "a successor must not inherit its predecessor's planned-stop marker"
+        );
+        dataflow.grace_duration_kills.remove(&(node_id.clone(), 6));
+        assert!(
+            dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 7)),
+            "cleaning a stale event must not clear another generation's marker"
+        );
+    }
+
+    #[test]
+    fn successful_readd_clears_only_the_previous_node_result() {
+        let dataflow_id = Uuid::new_v4();
+        let other_dataflow_id = Uuid::new_v4();
+        let single_result_dataflow_id = Uuid::new_v4();
+        let node_id: NodeId = "readded".to_string().into();
+        let other_node_id: NodeId = "other".to_string().into();
+        let mut results = BTreeMap::from([
+            (
+                dataflow_id,
+                BTreeMap::from([(node_id.clone(), Ok(())), (other_node_id.clone(), Ok(()))]),
+            ),
+            (
+                other_dataflow_id,
+                BTreeMap::from([(node_id.clone(), Ok(()))]),
+            ),
+            (
+                single_result_dataflow_id,
+                BTreeMap::from([(node_id.clone(), Ok(()))]),
+            ),
+        ]);
+
+        clear_node_result(&mut results, dataflow_id, &node_id);
+
+        assert!(!results[&dataflow_id].contains_key(&node_id));
+        assert!(results[&dataflow_id].contains_key(&other_node_id));
+        assert!(results[&other_dataflow_id].contains_key(&node_id));
+
+        clear_node_result(&mut results, single_result_dataflow_id, &node_id);
+        assert!(!results.contains_key(&single_result_dataflow_id));
+    }
+
+    #[test]
+    fn stale_handle_replacement_preserves_live_process() {
+        let mut node = test_running_node();
+        let (live_tx, live_rx) = flume::bounded(2);
+        node.process = Some(ProcessHandle::new(live_tx));
+
+        let (stale_tx, stale_rx) = flume::bounded(2);
+        let outcome = node.replace_process_handle(6, 8, ProcessHandle::new(stale_tx));
+
+        assert!(
+            matches!(outcome, HandleReplacement::RejectedStale),
+            "a dead incarnation must not replace a live handle"
+        );
+        assert!(
+            node.matches_generation(7),
+            "a stale rejection must leave the live generation untouched"
+        );
+        assert!(
+            live_rx.try_recv().is_err(),
+            "rejecting a stale replacement must not kill the live successor"
+        );
+        assert!(
+            matches!(stale_rx.try_recv(), Ok(ProcessOperation::Kill)),
+            "the orphan process owned by the stale event should be killed"
+        );
+
+        // Avoid sending a drop-time Kill into `live_rx` after the assertions.
+        let _ = node.process.take();
+    }
+
+    #[test]
+    fn teardown_rejects_matching_handle_replacement() {
+        let mut node = test_running_node();
+        let (live_tx, live_rx) = flume::bounded(2);
+        node.process = Some(ProcessHandle::new(live_tx));
+        node.disable_restart();
+
+        let (replacement_tx, replacement_rx) = flume::bounded(2);
+        let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
+
+        let HandleReplacement::RejectedTeardown(replacement) = outcome else {
+            panic!("teardown must win a race with process replacement");
+        };
+        assert!(
+            replacement_rx.try_recv().is_err(),
+            "the caller must retain the replacement for planned-stop routing"
+        );
+        drop(replacement);
+        assert!(
+            matches!(replacement_rx.try_recv(), Ok(ProcessOperation::Kill)),
+            "teardown must win a race with process replacement"
+        );
+        // The generation must still advance: the restart loop now speaks
+        // generation 8, and its terminal SpawnedNodeResult has to match this
+        // entry or the node would stay registered forever and the dataflow
+        // could never finish.
+        assert!(node.matches_generation(8));
+        assert!(!node.matches_generation(7));
+        assert!(
+            node.process.is_some(),
+            "teardown rejection must not install the replacement handle"
+        );
+        assert!(live_rx.try_recv().is_err());
+        let _ = node.process.take();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn teardown_replacement_uses_configured_grace_period() {
+        let mut dataflow = test_dataflow();
+        dataflow.stop_process_policy = Some(StopProcessPolicy::Graceful(Duration::from_secs(4)));
+        let mut node = test_running_node();
+        node.disable_restart();
+
+        let (replacement_tx, replacement_rx) = flume::bounded(4);
+        let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
+        let HandleReplacement::RejectedTeardown(replacement) = outcome else {
+            panic!("teardown must retain ownership of the replacement handle");
+        };
+
+        let node_id: NodeId = "test".to_string().into();
+        dataflow.stop_rejected_replacement(&node_id, 8, replacement);
+        tokio::task::yield_now().await;
+
+        assert!(
+            replacement_rx.try_recv().is_err(),
+            "a racing replacement must not be killed immediately"
+        );
+        tokio::time::advance(Duration::from_secs(3)).await;
+        assert!(replacement_rx.try_recv().is_err());
+
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            replacement_rx.try_recv(),
+            Ok(ProcessOperation::SoftKill)
+        ));
+        assert!(
+            dataflow
+                .grace_duration_kills
+                .contains(&(node_id.clone(), 8)),
+            "the replacement stop must be classified as daemon-initiated"
+        );
+
+        tokio::time::advance(Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert!(matches!(
+            replacement_rx.try_recv(),
+            Ok(ProcessOperation::Kill)
+        ));
+    }
+
+    #[test]
+    fn current_handle_replacement_advances_generation() {
+        let mut node = test_running_node();
+        let (old_tx, old_rx) = flume::bounded(2);
+        node.process = Some(ProcessHandle::new(old_tx));
+
+        let (new_tx, new_rx) = flume::bounded(2);
+        let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(new_tx));
+
+        assert!(matches!(outcome, HandleReplacement::Replaced));
+        assert!(node.matches_generation(8));
+        assert!(
+            matches!(old_rx.try_recv(), Ok(ProcessOperation::Kill)),
+            "replacing the current incarnation should retire its old handle"
+        );
+        assert!(
+            new_rx.try_recv().is_err(),
+            "the replacement process must remain live"
+        );
+
+        let _ = node.process.take();
+    }
+
     fn test_clock() -> HLC {
         HLC::default()
     }
@@ -6511,6 +7961,226 @@ mod fault_tolerance_tests {
             (NodeEvent::Input { .. }, "Input") => true,
             _ => false,
         }
+    }
+
+    // ---- cross-process memory-pool cleanup (#2935) ----
+
+    /// Subscribe `node` to `df` with a channel of `capacity` slots and a
+    /// pending-message counter, mirroring what `DaemonNodeEvent::Subscribe`
+    /// installs for a live node.
+    fn subscribe_test_node(
+        df: &mut RunningDataflow,
+        node: &NodeId,
+        capacity: usize,
+    ) -> (
+        mpsc::Receiver<Timestamped<NodeEvent>>,
+        Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        let (tx, rx) = mpsc::channel(capacity);
+        df.subscribe_channels.insert(node.clone(), tx);
+        let counter = Arc::new(AtomicU64::new(0));
+        df.pending_messages.insert(node.clone(), counter.clone());
+        (rx, counter)
+    }
+
+    fn test_pool_id(name: &str) -> MemoryPoolId {
+        MemoryPoolId {
+            dataflow_id: Uuid::nil().to_string(),
+            id: name.to_string(),
+        }
+    }
+
+    /// Metadata without a backing segment, so `free_memory_pool` skips the
+    /// Linux-only `/dev/shm` unlink and the tests stay cross-platform.
+    fn test_pool_metadata() -> MemoryPoolMetadata {
+        MemoryPoolMetadata {
+            size: 1024,
+            dtype: "float32".into(),
+            shape: vec![256],
+            ..Default::default()
+        }
+    }
+
+    fn freed_pool_ids(events: &[NodeEvent]) -> Vec<&str> {
+        events
+            .iter()
+            .filter_map(|event| match event {
+                NodeEvent::FreeMemoryPool { shared_memory_id } => Some(shared_memory_id.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The cleanup broadcast must reach every node that registered or read
+    /// the pool, and nobody else: not the node that initiated the free (it
+    /// released synchronously) and not a subscriber that never touched the
+    /// pool.
+    ///
+    /// `free_pool_and_notify` is the single entry point behind both
+    /// `FreePinnedMemory` and `ReadPinnedMemory { free: true }` — before
+    /// #2935 the read-with-free path freed the pool without notifying
+    /// anyone, so every other node kept its GPU/host/IPC/shmem resources.
+    #[test]
+    fn free_pool_notifies_touched_nodes_only() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+        let pools = MemoryPoolManager::new();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let reader: NodeId = "reader".to_string().into();
+        let bystander: NodeId = "bystander".to_string().into();
+        let (mut registrar_rx, registrar_pending) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+        let (mut reader_rx, _) = subscribe_test_node(&mut df, &reader, NODE_EVENT_CHANNEL_CAPACITY);
+        let (mut bystander_rx, _) =
+            subscribe_test_node(&mut df, &bystander, NODE_EVENT_CHANNEL_CAPACITY);
+
+        let id = test_pool_id("pool-1");
+        pools
+            .register_memory_pool(id.clone(), test_pool_metadata(), registrar.to_string())
+            .unwrap();
+        pools
+            .read_memory_pool(&id, reader.as_ref())
+            .expect("pool should exist");
+
+        // The reader frees the pool it just read — the normal lifecycle.
+        free_pool_and_notify(&pools, Some(&df), &id, reader.as_ref(), &clock)
+            .expect("free should succeed");
+
+        assert_eq!(
+            freed_pool_ids(&drain_events(&mut registrar_rx)),
+            vec!["pool-1"],
+            "the registering node must be told to release its pool resources"
+        );
+        assert!(
+            drain_events(&mut reader_rx).is_empty(),
+            "the initiator released synchronously and must not be notified"
+        );
+        assert!(
+            drain_events(&mut bystander_rx).is_empty(),
+            "a node that never touched the pool must not be notified"
+        );
+
+        // Every delivery site pairs an enqueue with `inc_pending`; the
+        // listener decrements unconditionally, so a missing increment
+        // underflows the reported count to `u64::MAX` (#2827).
+        assert_eq!(registrar_pending.load(atomic::Ordering::Relaxed), 1);
+    }
+
+    /// `send_with_timestamp` reports a full channel as `Ok(false)`, not
+    /// `Err`. The original broadcast matched only on `Err`, so a full
+    /// channel silently skipped the cleanup (#2935). The undelivered node
+    /// must be reported so the leak is visible.
+    #[test]
+    fn notify_pool_freed_reports_nodes_with_full_channels() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let backed_up: NodeId = "backed-up".to_string().into();
+        let (mut registrar_rx, registrar_pending) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+        // A one-slot channel, already full: the next send is dropped.
+        let (_backed_up_rx, backed_up_pending) = subscribe_test_node(&mut df, &backed_up, 1);
+        assert!(
+            send_with_timestamp(&df.subscribe_channels[&backed_up], NodeEvent::Stop, &clock)
+                .expect("channel is open")
+        );
+
+        let touched = HashSet::from([
+            registrar.to_string(),
+            backed_up.to_string(),
+            "initiator".to_string(),
+        ]);
+        let undelivered = notify_memory_pool_freed(&df, "pool-1", &touched, "initiator", &clock);
+
+        assert_eq!(
+            undelivered,
+            BTreeSet::from([backed_up.clone()]),
+            "a node whose channel is full must be reported as undelivered"
+        );
+        assert_eq!(
+            backed_up_pending.load(atomic::Ordering::Relaxed),
+            0,
+            "a dropped event must not increment the pending counter"
+        );
+        assert_eq!(
+            freed_pool_ids(&drain_events(&mut registrar_rx)),
+            vec!["pool-1"],
+            "one full channel must not stop the broadcast to the other nodes"
+        );
+        assert_eq!(registrar_pending.load(atomic::Ordering::Relaxed), 1);
+    }
+
+    /// A closed channel means the node is gone and the OS reclaimed its
+    /// resources — benign, and it must not abort the rest of the broadcast
+    /// or be reported as a leak.
+    #[test]
+    fn notify_pool_freed_skips_disconnected_nodes() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let gone: NodeId = "gone".to_string().into();
+        let (mut registrar_rx, _) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+        let (gone_rx, _) = subscribe_test_node(&mut df, &gone, NODE_EVENT_CHANNEL_CAPACITY);
+        drop(gone_rx);
+
+        let touched = HashSet::from([registrar.to_string(), gone.to_string()]);
+        let undelivered = notify_memory_pool_freed(&df, "pool-1", &touched, "third-party", &clock);
+
+        assert!(
+            undelivered.is_empty(),
+            "a closed channel is benign, not an undelivered notification"
+        );
+        assert_eq!(
+            freed_pool_ids(&drain_events(&mut registrar_rx)),
+            vec!["pool-1"],
+            "a disconnected peer must not abort the rest of the broadcast"
+        );
+    }
+
+    /// Freeing an unknown pool must surface the manager's error to the
+    /// requesting node and broadcast nothing.
+    #[test]
+    fn free_pool_propagates_unknown_pool_error_without_notifying() {
+        let clock = test_clock();
+        let mut df = test_dataflow();
+        let pools = MemoryPoolManager::new();
+
+        let registrar: NodeId = "registrar".to_string().into();
+        let (mut registrar_rx, _) =
+            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
+
+        let err = free_pool_and_notify(
+            &pools,
+            Some(&df),
+            &test_pool_id("never-registered"),
+            registrar.as_ref(),
+            &clock,
+        )
+        .expect_err("freeing an unknown pool must fail");
+        assert!(
+            err.contains("memory pool not found"),
+            "unexpected error: {err}"
+        );
+        assert!(drain_events(&mut registrar_rx).is_empty());
+    }
+
+    /// A dataflow that is no longer running has no subscribe channels; the
+    /// pool must still be released rather than the free failing.
+    #[test]
+    fn free_pool_without_running_dataflow_still_releases_the_entry() {
+        let clock = test_clock();
+        let pools = MemoryPoolManager::new();
+        let id = test_pool_id("pool-1");
+        pools
+            .register_memory_pool(id.clone(), test_pool_metadata(), "registrar".into())
+            .unwrap();
+
+        free_pool_and_notify(&pools, None, &id, "registrar", &clock).expect("free should succeed");
+        assert_eq!(pools.table_size(), 0);
     }
 
     // -- Test 1: close_input removes input, sends InputClosed, no AllInputsClosed with remaining inputs --
@@ -6856,6 +8526,94 @@ mod fault_tolerance_tests {
         assert!(disable_restart.load(atomic::Ordering::Acquire));
     }
 
+    /// dora-rs/dora#2920: under `--exit-when-nodes-finish` a node drains
+    /// once its DATA inputs close, even with a timer still open — and it
+    /// must have restart disabled at the same moment. Otherwise it exits,
+    /// gets restarted, is told to finish again, and loops until
+    /// `max_restarts`.
+    #[test]
+    fn opt_in_drains_node_with_open_timer_and_disables_its_restart() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let data_in: DataId = "value".to_string().into();
+        let timer_in: DataId = "tick".to_string().into();
+
+        df.timers_gate_drain = false;
+        for input in [&data_in, &timer_in] {
+            df.open_inputs
+                .entry(node_a.clone())
+                .or_default()
+                .insert(input.clone());
+        }
+        // Only `value` is a real data dependency; `tick` is daemon-fed.
+        df.data_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(data_in.clone());
+        df.timers
+            .entry(Duration::from_millis(100))
+            .or_default()
+            .insert((node_a.clone(), timer_in.clone()));
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        close_input(&mut df, &node_a, &data_in, &clock);
+
+        assert!(
+            df.open_inputs(&node_a).contains(&timer_in),
+            "the timer is still open — that is the whole point of the opt-in"
+        );
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches_event(e, "AllInputsClosed")),
+            "node should be told to finish once its data inputs closed, got {events:?}"
+        );
+        assert!(
+            disable_restart.load(atomic::Ordering::Acquire),
+            "a node told to finish must not be restarted into a finish/exit loop"
+        );
+    }
+
+    /// The opt-in must not stop disabling restart for SOURCE nodes.
+    /// `is_drained` reports false for them by design, so keying the
+    /// restart decision on it alone would let a source with
+    /// `restart_policy: always` respawn forever.
+    #[test]
+    fn opt_in_still_disables_restart_for_source_nodes() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.timers_gate_drain = false;
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+        // No `data_inputs` entry: as far as the drain rule is concerned
+        // this node has nothing that can finish, i.e. it is a source.
+        assert!(!df.is_drained(&node_a));
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        assert!(
+            disable_restart.load(atomic::Ordering::Acquire),
+            "source nodes must still have restart disabled once nothing is \
+             open, independent of the drain opt-in"
+        );
+    }
+
     #[test]
     fn forget_node_bookkeeping_purges_only_that_node() {
         // Regression: RemoveNode must drop the removed node's per-node
@@ -6976,6 +8734,100 @@ mod fault_tolerance_tests {
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "AllInputsClosed"));
         assert!(disable_restart.load(atomic::Ordering::Acquire));
+    }
+
+    // -- #2968: a closed input's armed deadline must not orphan a broken record --
+
+    #[test]
+    fn close_input_drops_armed_deadline() {
+        // Regression (#2968): `close_input` must drop the input's
+        // `input_deadlines` entry. Otherwise the stale, still-armed deadline
+        // keeps counting after the input has closed; `check_input_timeouts`
+        // then fires on the already-closed input, inserting a `broken_inputs`
+        // record that `break_input` can never clear.
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+        // Armed (a message was received), so it would time out if left behind.
+        df.input_deadlines.insert(
+            (node_a.clone(), input_x.clone()),
+            InputDeadline {
+                timeout: Duration::from_millis(1),
+                last_received: Some(Instant::now() - Duration::from_secs(10)),
+            },
+        );
+
+        close_input(&mut df, &node_a, &input_x, &clock);
+
+        assert!(
+            !df.input_deadlines
+                .contains_key(&(node_a.clone(), input_x.clone())),
+            "close_input must drop the input's deadline so it can't time out later"
+        );
+    }
+
+    #[test]
+    fn drained_node_finishes_despite_stale_deadline_timeout() {
+        // End-to-end of #2968: a node with two inputs, one carrying an
+        // `input_timeout`. The timed input's producer exits first, then the
+        // stale deadline "fires" (as `check_input_timeouts` would), then the
+        // second producer exits. The node must still be told `AllInputsClosed`
+        // — not left with an orphaned `broken_inputs` record that pins
+        // `has_broken_input` true forever and gets it SIGKILLed as a straggler.
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_c: NodeId = "node_c".to_string().into();
+        let input_a: DataId = "input_a".to_string().into();
+        let input_b: DataId = "input_b".to_string().into();
+
+        df.open_inputs
+            .entry(node_c.clone())
+            .or_default()
+            .extend([input_a.clone(), input_b.clone()]);
+        // input_a has an armed deadline (producer sent messages before exiting).
+        df.input_deadlines.insert(
+            (node_c.clone(), input_a.clone()),
+            InputDeadline {
+                timeout: Duration::from_millis(1),
+                last_received: Some(Instant::now() - Duration::from_secs(10)),
+            },
+        );
+
+        let running = test_running_node();
+        df.running_nodes.insert(node_c.clone(), running);
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_c.clone(), tx);
+
+        // 1. Producer of input_a exits.
+        close_input(&mut df, &node_c, &input_a, &clock);
+
+        // 2. Simulate the stale-deadline timeout firing as `check_input_timeouts`
+        //    would: it inserts a broken record then calls break_input. With the
+        //    fix, close_input already dropped the deadline, so this loop finds
+        //    nothing; we force the worst case anyway to prove break_input does
+        //    not leave an orphan even if it is reached on a closed input.
+        df.broken_inputs
+            .insert((node_c.clone(), input_a.clone()), Duration::from_millis(1));
+        break_input(&mut df, &node_c, &input_a, &clock);
+        assert!(
+            !df.has_broken_input(&node_c),
+            "break_input on an already-closed input must not orphan a broken record"
+        );
+
+        // 3. Producer of input_b exits — node is now fully drained.
+        close_input(&mut df, &node_c, &input_b, &clock);
+
+        let events = drain_events(&mut rx);
+        assert!(
+            events.iter().any(|e| matches_event(e, "AllInputsClosed")),
+            "a cleanly-drained node must be told AllInputsClosed, got {events:?}"
+        );
     }
 
     // -- Circuit-breaker recovery must be gated on receiver backpressure (#2627) --
@@ -7861,5 +9713,110 @@ mod announce_zenoh_bind_tests {
             sock(REMOTE_COORDINATOR),
         )
         .unwrap();
+    }
+}
+
+#[cfg(test)]
+mod node_results_cleanup_tests {
+    use super::{NodeId, extract_node_results};
+    use std::collections::BTreeMap;
+    use uuid::Uuid;
+
+    fn populated() -> (
+        Uuid,
+        BTreeMap<Uuid, BTreeMap<NodeId, Result<(), super::NodeError>>>,
+    ) {
+        let id = Uuid::new_v4();
+        let mut inner = BTreeMap::new();
+        inner.insert(NodeId::from("node".to_string()), Ok(()));
+        let mut map = BTreeMap::new();
+        map.insert(id, inner);
+        (id, map)
+    }
+
+    #[test]
+    fn persistent_daemon_removes_the_entry() {
+        let (id, mut map) = populated();
+        let results = extract_node_results(&mut map, id, false);
+        assert_eq!(
+            results.len(),
+            1,
+            "the reported results must still be returned"
+        );
+        assert!(
+            !map.contains_key(&id),
+            "a coordinator-managed daemon must drop the entry to avoid unbounded growth"
+        );
+    }
+
+    #[test]
+    fn run_once_daemon_keeps_the_entry() {
+        let (id, mut map) = populated();
+        let results = extract_node_results(&mut map, id, true);
+        assert_eq!(results.len(), 1);
+        assert!(
+            map.contains_key(&id),
+            "the run-once path relies on run_inner's later mem::take, so the entry must survive"
+        );
+    }
+
+    #[test]
+    fn missing_entry_yields_empty_results() {
+        let mut map: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), super::NodeError>>> =
+            BTreeMap::new();
+        assert!(extract_node_results(&mut map, Uuid::new_v4(), false).is_empty());
+        assert!(extract_node_results(&mut map, Uuid::new_v4(), true).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod health_check_tests {
+    use super::health_check_should_kill;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn not_connected_is_never_killed_even_when_long_silent() {
+        // Regression for #2937: `last_activity` is seeded to the spawn
+        // timestamp, so a node in a slow cold start (imports + model-weight
+        // load) reads as long-silent well before it ever connects. The
+        // watchdog must not kill it while it is still starting up — even if
+        // the elapsed time since spawn already exceeds the timeout.
+        let spawn = 1_000u64;
+        let now = spawn + 10_000; // 10s after spawn, timeout is 5s
+        assert!(!health_check_should_kill(false, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_and_silent_past_timeout_is_killed() {
+        let last = 1_000u64;
+        let now = last + 6_000; // 6s of post-connection silence, timeout 5s
+        assert!(health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_and_recently_active_is_not_killed() {
+        let last = 1_000u64;
+        let now = last + 4_000; // 4s < 5s timeout
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn exactly_at_timeout_is_not_killed() {
+        // The comparison is strictly greater-than, so a node silent for
+        // exactly the timeout is given the benefit of the doubt.
+        let last = 1_000u64;
+        let now = last + 5_000;
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+
+    #[test]
+    fn clock_skew_does_not_underflow() {
+        // `now` before `last` (clock went backwards) must not panic via
+        // subtraction underflow, and must not be treated as elapsed time.
+        let last = 10_000u64;
+        let now = 1_000u64;
+        assert!(!health_check_should_kill(true, last, now, TIMEOUT));
     }
 }

@@ -114,6 +114,38 @@ pub struct Descriptor {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict_types: Option<bool>,
 
+    /// Finish the dataflow once every node has, treating
+    /// `dora/timer/...` inputs as a clock rather than as work.
+    ///
+    /// A timer input has no upstream node, so it never closes. By default
+    /// a node consuming one is therefore never told its inputs are done
+    /// and the graph cannot end on its own, even after every node doing
+    /// real work has exited (dora-rs/dora#2920).
+    ///
+    /// Off by default: for a long-lived dataflow the timer is precisely
+    /// what keeps it alive. Nodes with no data inputs at all (timer-only
+    /// sources, or no inputs) are unaffected either way -- they have no
+    /// dependency that could finish, so they are treated as sources.
+    ///
+    /// Set by `dora run --exit-when-nodes-finish` and `dora start
+    /// --exit-when-nodes-finish`, and settable directly in YAML. It lives
+    /// on the descriptor rather than on the wire so that it survives the
+    /// events a dataflow outlives: auto-recovery re-spawn, coordinator
+    /// restart with state reconstruction, and `dora restart`.
+    ///
+    /// ## Example
+    ///
+    /// ```yaml
+    /// exit_when_nodes_finish: true
+    /// nodes:
+    ///   - id: worker
+    ///     path: ./worker
+    ///     inputs:
+    ///       tick: dora/timer/millis/100
+    /// ```
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub exit_when_nodes_finish: Option<bool>,
+
     /// Custom type compatibility rules.
     ///
     /// Each rule declares that a source type can be implicitly converted to
@@ -785,9 +817,15 @@ pub struct Node {
 
     /// Health check timeout in seconds.
     ///
-    /// When set, the daemon monitors this node for activity. If the node does not
-    /// communicate with the daemon within this timeout, it is killed and the restart
-    /// policy is evaluated.
+    /// When set, the daemon monitors this node for activity **once it has
+    /// connected** (i.e. subscribed to events during `Node::init`). If the
+    /// connected node then does not communicate with the daemon within this
+    /// timeout, it is killed and the restart policy is evaluated.
+    ///
+    /// This bounds post-connection liveness only, not startup time: a node
+    /// still in a slow cold start has not connected yet and is never killed by
+    /// this watchdog. A node that hangs before it ever subscribes is therefore
+    /// not reaped here either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
@@ -1051,6 +1089,28 @@ impl From<PythonSourceDef> for PythonSource {
     }
 }
 
+/// Built-in runtime name for shared-library operators.
+pub const RUNTIME_SHARED_LIBRARY: &str = "shared-library";
+/// Built-in runtime name for Python operators.
+pub const RUNTIME_PYTHON: &str = "python";
+/// Built-in runtime name for WebAssembly operators.
+pub const RUNTIME_WASM: &str = "wasm";
+
+impl OperatorSource {
+    /// The name of the runtime that hosts operators declared with this source.
+    ///
+    /// This mapping is the single source of truth for "which runtime hosts this
+    /// operator": the daemon's spawn logic and the CLI's build hashing key on
+    /// the name rather than matching each variant.
+    pub fn runtime_name(&self) -> &'static str {
+        match self {
+            OperatorSource::SharedLibrary(_) => RUNTIME_SHARED_LIBRARY,
+            OperatorSource::Python(_) => RUNTIME_PYTHON,
+            OperatorSource::Wasm(_) => RUNTIME_WASM,
+        }
+    }
+}
+
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
@@ -1117,9 +1177,15 @@ pub struct CustomNode {
 
     /// Health check timeout in seconds.
     ///
-    /// When set, the daemon monitors this node for activity. If the node does not
-    /// communicate with the daemon within this timeout, it is killed and the restart
-    /// policy is evaluated.
+    /// When set, the daemon monitors this node for activity **once it has
+    /// connected** (i.e. subscribed to events during `Node::init`). If the
+    /// connected node then does not communicate with the daemon within this
+    /// timeout, it is killed and the restart policy is evaluated.
+    ///
+    /// This bounds post-connection liveness only, not startup time: a node
+    /// still in a slow cold start has not connected yet and is never killed by
+    /// this watchdog. A node that hangs before it ever subscribes is therefore
+    /// not reaped here either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
@@ -1506,5 +1572,53 @@ _unstable_debug:
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
         assert!(desc.debug.enable_debug_inspection);
+    }
+
+    #[test]
+    fn operator_source_shared_library_names_its_runtime() {
+        let cfg: OperatorConfig = serde_yaml::from_str("shared-library: build/op").unwrap();
+        assert!(matches!(&cfg.source, OperatorSource::SharedLibrary(s) if s == "build/op"));
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_SHARED_LIBRARY);
+        assert_eq!(cfg.source.runtime_name(), "shared-library");
+    }
+
+    #[test]
+    fn operator_source_python_source_only_names_its_runtime() {
+        let cfg: OperatorConfig = serde_yaml::from_str("python: op.py").unwrap();
+        assert!(matches!(&cfg.source, OperatorSource::Python(py) if py.source == "op.py"));
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_PYTHON);
+    }
+
+    #[test]
+    fn operator_source_python_with_conda_env_names_its_runtime() {
+        let cfg: OperatorConfig =
+            serde_yaml::from_str("python:\n  source: op.py\n  conda_env: my-env").unwrap();
+        match &cfg.source {
+            OperatorSource::Python(py) => {
+                assert_eq!(py.source, "op.py");
+                assert_eq!(py.conda_env.as_deref(), Some("my-env"));
+            }
+            other => panic!("expected python source, got {other:?}"),
+        }
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_PYTHON);
+    }
+
+    #[test]
+    fn operator_source_wasm_names_its_runtime() {
+        let cfg: OperatorConfig = serde_yaml::from_str("wasm: op.wasm").unwrap();
+        assert!(matches!(&cfg.source, OperatorSource::Wasm(s) if s == "op.wasm"));
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_WASM);
+    }
+
+    /// The runtime a node is spawned with must survive a descriptor round-trip:
+    /// the daemon re-parses the serialized descriptor before spawning.
+    #[test]
+    fn operator_source_runtime_survives_a_serde_roundtrip() {
+        for yaml in ["shared-library: build/op", "python: op.py", "wasm: op.wasm"] {
+            let cfg: OperatorConfig = serde_yaml::from_str(yaml).unwrap();
+            let serialized = serde_yaml::to_string(&cfg).unwrap();
+            let reparsed: OperatorConfig = serde_yaml::from_str(&serialized).unwrap();
+            assert_eq!(cfg.source.runtime_name(), reparsed.source.runtime_name());
+        }
     }
 }

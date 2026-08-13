@@ -83,6 +83,8 @@ fn seed_dataflow_record(store: &dyn CoordinatorStore, dataflow_id: uuid::Uuid, n
         daemon_ids: Vec::new(),
         node_to_daemon: BTreeMap::new(),
         uv: false,
+        ready_barrier_released: false,
+        barrier_exited_before_subscribe: Vec::new(),
         generation: 1,
         created_at: 0,
         updated_at: 0,
@@ -1016,11 +1018,14 @@ mod real_dataflow {
     use dora_message::{
         cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
     };
+    use fs2::FileExt as _;
+    use redb::{Database, ReadableDatabase, TableDefinition};
     use std::net::SocketAddr;
     use std::path::Path;
     use std::process::{Command, Stdio};
     use std::sync::Once;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
+    use tempfile::tempdir;
     use uuid::Uuid;
 
     static BUILD: Once = Once::new();
@@ -1063,6 +1068,379 @@ mod real_dataflow {
                 .expect("failed to build");
             assert!(status.success());
         });
+    }
+
+    fn write_incompatible_coordinator_store(home: &Path) {
+        let path = home.join(".dora").join("coordinator.redb");
+        std::fs::create_dir_all(path.parent().expect("store parent"))
+            .expect("create store directory");
+        let db = Database::create(path).expect("create redb store");
+        let txn = db.begin_write().expect("begin redb transaction");
+        {
+            let mut meta: redb::Table<'_, &str, u32> = txn
+                .open_table(TableDefinition::new("meta"))
+                .expect("open metadata table");
+            meta.insert("schema_version", u32::MAX)
+                .expect("write incompatible schema version");
+        }
+        txn.commit().expect("commit incompatible store");
+    }
+
+    fn unused_port() -> u16 {
+        std::net::TcpListener::bind(("127.0.0.1", 0))
+            .expect("bind ephemeral port")
+            .local_addr()
+            .expect("read ephemeral port")
+            .port()
+    }
+
+    fn run_dora_isolated(
+        dora: &str,
+        home: &Path,
+        port: u16,
+        args: &[&str],
+    ) -> (std::process::ExitStatus, String, String) {
+        let capture_name = args.join("-");
+        let (child, stdout_path, stderr_path) =
+            spawn_dora_isolated(dora, home, port, args, &capture_name);
+        wait_for_dora_isolated(child, stdout_path, stderr_path)
+    }
+
+    fn spawn_dora_isolated(
+        dora: &str,
+        home: &Path,
+        port: u16,
+        args: &[&str],
+        capture_name: &str,
+    ) -> (std::process::Child, std::path::PathBuf, std::path::PathBuf) {
+        // Files avoid waiting for pipe EOF on Windows when a detached child
+        // inherits a standard-stream handle from `dora up`.
+        let stdout_path = home.join(format!("{capture_name}-stdout.txt"));
+        let stderr_path = home.join(format!("{capture_name}-stderr.txt"));
+        let stdout = std::fs::File::create(&stdout_path).expect("create stdout capture");
+        let stderr = std::fs::File::create(&stderr_path).expect("create stderr capture");
+        let child = Command::new(dora)
+            .args(args)
+            .env("HOME", home)
+            .env("USERPROFILE", home)
+            .env("DORA_COORDINATOR_PORT", port.to_string())
+            // Complete the isolation: an inherited coordinator address would
+            // make these tests poll a foreign host after mutating the store.
+            .env_remove("DORA_COORDINATOR_ADDR")
+            .env_remove("DORA_COORDINATOR_INTERFACE")
+            .stdout(stdout)
+            .stderr(stderr)
+            .spawn()
+            .expect("spawn isolated dora command");
+        (child, stdout_path, stderr_path)
+    }
+
+    /// Kills the wrapped `dora` CLI process on drop so assertion failures
+    /// cannot leak children blocked on the recreation lock — once the test's
+    /// lock is released by the panic, such a child would spawn a detached
+    /// coordinator + daemon pointing at the already-deleted temp HOME and
+    /// pollute the rest of the serially-run suite.
+    struct KillOnDrop(Option<std::process::Child>);
+
+    impl KillOnDrop {
+        fn child(&mut self) -> &mut std::process::Child {
+            self.0.as_mut().expect("child already taken")
+        }
+
+        fn into_inner(mut self) -> std::process::Child {
+            self.0.take().expect("child already taken")
+        }
+    }
+
+    impl Drop for KillOnDrop {
+        fn drop(&mut self) {
+            if let Some(mut child) = self.0.take() {
+                let _ = child.kill();
+                let _ = child.wait();
+            }
+        }
+    }
+
+    fn wait_for_dora_isolated(
+        mut child: std::process::Child,
+        stdout_path: std::path::PathBuf,
+        stderr_path: std::path::PathBuf,
+    ) -> (std::process::ExitStatus, String, String) {
+        let deadline = Instant::now() + Duration::from_secs(15);
+        let status = loop {
+            if let Some(status) = child.try_wait().expect("poll isolated dora command") {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("isolated dora command did not exit within 15 seconds");
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        };
+        let stdout = std::fs::read_to_string(stdout_path).unwrap_or_default();
+        let stderr = std::fs::read_to_string(stderr_path).unwrap_or_default();
+        (status, stdout, stderr)
+    }
+
+    #[test]
+    fn e2e_up_reports_incompatible_coordinator_store() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_incompatible_coordinator_store(home.path());
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), unused_port(), &["up"]);
+
+        assert!(
+            !status.success(),
+            "dora up unexpectedly succeeded; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("redb schema version mismatch"),
+            "coordinator startup error was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            stderr.contains("dora up --recreate-store"),
+            "recovery hint was not surfaced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+    }
+
+    #[test]
+    fn e2e_up_recreate_store_archives_incompatible_store() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_incompatible_coordinator_store(home.path());
+        let port = unused_port();
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up", "--recreate-store"]);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            status.success(),
+            "dora up --recreate-store failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+        assert!(
+            stdout.contains("archived coordinator store"),
+            "store archive was not announced; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let store_dir = home.path().join(".dora");
+        assert!(
+            !backup_files(&store_dir).is_empty(),
+            "incompatible store was not archived"
+        );
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "fresh coordinator store was not created"
+        );
+    }
+
+    /// All `coordinator.redb.backup*` files in the store directory (the
+    /// naming scheme of `available_backup_path` in dora-cli).
+    fn backup_files(store_dir: &Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(store_dir)
+            .expect("read store directory")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name().is_some_and(|name| {
+                    name.to_string_lossy()
+                        .starts_with("coordinator.redb.backup")
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn e2e_concurrent_up_recreate_store_preserves_original_backup() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        write_incompatible_coordinator_store(home.path());
+        let port = unused_port();
+        let store_dir = home.path().join(".dora");
+        let lock_path = store_dir.join("coordinator.redb.recreate.lock");
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .expect("open recreation lock");
+        lock.lock_exclusive().expect("hold recreation lock");
+
+        let (first, first_stdout, first_stderr) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["up", "--recreate-store"],
+            "first-recreate",
+        );
+        let mut first = KillOnDrop(Some(first));
+        let (second, second_stdout, second_stderr) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["up", "--recreate-store"],
+            "second-recreate",
+        );
+        let mut second = KillOnDrop(Some(second));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(
+            first
+                .child()
+                .try_wait()
+                .expect("poll first recreation")
+                .is_none(),
+            "first recreation ignored the held store lock"
+        );
+        assert!(
+            second
+                .child()
+                .try_wait()
+                .expect("poll second recreation")
+                .is_none(),
+            "second recreation ignored the held store lock"
+        );
+        // Neither invocation may touch the store before holding the lock; if
+        // the lock acquisition is ever removed from `up()`, these assertions
+        // fail deterministically (the liveness checks above pass either way,
+        // and the final single-backup count is reachable without locking).
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "a recreation archived the store without holding the lock"
+        );
+        assert!(
+            backup_files(&store_dir).is_empty(),
+            "backup created while the external lock was held"
+        );
+        fs2::FileExt::unlock(&lock).expect("release recreation lock");
+
+        let (first_status, first_stdout, first_stderr) =
+            wait_for_dora_isolated(first.into_inner(), first_stdout, first_stderr);
+        let (second_status, second_stdout, second_stderr) =
+            wait_for_dora_isolated(second.into_inner(), second_stdout, second_stderr);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            first_status.success(),
+            "first recreation failed; stdout:\n{first_stdout}\nstderr:\n{first_stderr}"
+        );
+        assert!(
+            second_status.success(),
+            "second recreation failed; stdout:\n{second_stdout}\nstderr:\n{second_stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+
+        let backups = backup_files(&store_dir);
+        assert_eq!(
+            backups.len(),
+            1,
+            "concurrent recreation should archive the original store exactly once"
+        );
+        let backup = Database::open(&backups[0]).expect("open archived store");
+        let txn = backup.begin_read().expect("read archived store");
+        let meta = txn
+            .open_table::<&str, u32>(TableDefinition::new("meta"))
+            .expect("open archived metadata table");
+        let archived_version = meta
+            .get("schema_version")
+            .expect("read archived schema version")
+            .expect("archived schema version exists")
+            .value();
+        assert_eq!(
+            archived_version,
+            u32::MAX,
+            "the original incompatible store backup was overwritten"
+        );
+    }
+
+    #[test]
+    fn e2e_up_recreate_store_skips_archive_when_coordinator_running() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+
+        let (up_status, up_stdout, up_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up"]);
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up", "--recreate-store"]);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            up_status.success(),
+            "initial dora up failed; stdout:\n{up_stdout}\nstderr:\n{up_stderr}"
+        );
+        assert!(
+            status.success(),
+            "recreate against a running coordinator failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+        assert!(
+            stdout.contains("--recreate-store skipped"),
+            "skip notice was not printed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let store_dir = home.path().join(".dora");
+        assert!(
+            backup_files(&store_dir).is_empty(),
+            "live store was archived despite a running coordinator"
+        );
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "live coordinator store went missing"
+        );
+    }
+
+    #[test]
+    fn e2e_up_recreate_store_with_no_existing_store_succeeds() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+
+        let (status, stdout, stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["up", "--recreate-store"]);
+        let (down_status, down_stdout, down_stderr) =
+            run_dora_isolated(&dora, home.path(), port, &["down"]);
+
+        assert!(
+            status.success(),
+            "dora up --recreate-store failed on an empty home; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        assert!(
+            down_status.success(),
+            "failed to stop isolated coordinator; stdout:\n{down_stdout}\nstderr:\n{down_stderr}"
+        );
+        assert!(
+            stdout.contains("nothing to archive"),
+            "missing-store notice was not printed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let store_dir = home.path().join(".dora");
+        assert!(
+            backup_files(&store_dir).is_empty(),
+            "backup created although no store existed"
+        );
+        assert!(
+            store_dir.join("coordinator.redb").exists(),
+            "fresh coordinator store was not created"
+        );
     }
 
     fn cleanup(dora: &str) {
@@ -1162,6 +1540,699 @@ mod real_dataflow {
                 other => panic!("set failed for key `{key}`: {other:?}"),
             }
         }
+    }
+
+    /// dora-rs/dora#2919: `dora start --env KEY=VAL` must reach
+    /// daemon-spawned nodes with the documented precedence:
+    /// node `env:` > `--env` > dataflow-level `env:`.
+    ///
+    /// Under `dora start` nodes inherit the DAEMON's environment, not
+    /// the CLI invocation's, so `--env` is the only run-parameterization
+    /// channel that doesn't require editing the YAML. One probe pins the
+    /// whole chain: the dataflow YAML sets `E2919_VAR: from-yaml`
+    /// (--env must beat it) and the node sets `E2919_NODE: node-wins`
+    /// (--env must lose to it).
+    ///
+    /// The probe is a plain python script, not a dora node — it writes
+    /// the two variables to a marker and idles. It never subscribes, so
+    /// the dataflow sits in startup; the marker is written at spawn,
+    /// which is all this test observes, and `ClusterGuard` tears the
+    /// dataflow down. The idle is bounded (120s) so a probe orphaned by
+    /// teardown ordering self-reaps.
+    ///
+    /// Unix-only: relies on `python3` on PATH and on direct exec of a
+    /// shebang-less `.py` probe, both of which differ on Windows.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_start_env_flag_reaches_daemon_spawned_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        // pid-suffixed artifacts are never reused — reclaim stale ones
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-env-2919-")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let stem = format!("dora-env-2919-{}", std::process::id());
+        let probe = target.join(format!("{stem}-probe.py"));
+        let marker = target.join(format!("{stem}-out.txt"));
+        let yaml = target.join(format!("{stem}.yml"));
+        // concat!, not a `\`-continued literal: Rust's line continuation
+        // strips leading whitespace, which would flatten the indented
+        // python block and crash the probe with an IndentationError.
+        std::fs::write(
+            &probe,
+            concat!(
+                "import os, time\n",
+                "out = os.environ['PROBE_OUT']\n",
+                // write-then-rename: the poller checks existence, so the
+                // final name must never be observable half-written
+                "with open(out + '.tmp', 'w') as f:\n",
+                "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
+                "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "os.replace(out + '.tmp', out)\n",
+                "time.sleep(120)\n",
+            ),
+        )
+        .expect("failed to write probe");
+        std::fs::write(
+            &yaml,
+            format!(
+                "env:\n  \
+                   E2919_VAR: from-yaml\n\
+                 nodes:\n  \
+                 - id: probe\n    \
+                   path: {probe}\n    \
+                   env:\n      \
+                     PROBE_OUT: {marker}\n      \
+                     E2919_NODE: node-wins\n    \
+                   outputs:\n      - value\n",
+                probe = probe.display(),
+                marker = marker.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        let status = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--env",
+                "E2919_VAR=from-cli",
+                "--env",
+                "E2919_NODE=cli-loses",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(status.success(), "dora start --env failed");
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "probe never wrote its marker — the node was not spawned \
+                 (is `python3` installed? the probe is a python script the \
+                 daemon spawns)"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let content = std::fs::read_to_string(&marker).expect("failed to read marker");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("from-cli"),
+            "--env must override the dataflow-level env: block; got {content:?}"
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("node-wins"),
+            "node-level env: must still win over --env; got {content:?}"
+        );
+    }
+
+    /// dora-rs/dora#2920: `dora run --exit-when-nodes-finish` must let a
+    /// timer-driven graph terminate once its work is done.
+    ///
+    /// A timer input is registered like any other but never closes —
+    /// there is no upstream node to finish — so by default a node
+    /// consuming `dora/timer/...` is never told its inputs are closed
+    /// and never exits. The reported shape: every worker finished, and
+    /// the dataflow still sat for 9+ minutes because one node was
+    /// discarding timer ticks.
+    ///
+    /// `producer` emits once on its first tick and exits; `consumer` has
+    /// that data input plus a timer of its own. Without the flag this
+    /// run never returns (asserted first, with a bounded wait); with it,
+    /// the dataflow completes on its own.
+    ///
+    /// Local-only: no coordinator, no daemon process, no port 6013.
+    /// Unix-only for the same reasons as the sibling run tests.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_run_exit_when_nodes_finish_terminates_timer_driven_graph() {
+        ensure_built();
+        let dora = dora_bin();
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "emit-then-exit-source-node",
+                "-p",
+                "drain-recording-node",
+            ])
+            .status()
+            .expect("failed to build fixtures");
+        assert!(status.success(), "failed to build fixtures");
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        // Sweep stale artifacts from earlier runs, as the sibling tests do.
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                let name = entry.file_name();
+                if name.to_string_lossy().starts_with("dora-timer-2920-") {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let yaml = target.join(format!("dora-timer-2920-{}.yml", std::process::id()));
+        let record = target.join(format!("dora-timer-2920-{}.record", std::process::id()));
+        let _ = std::fs::remove_file(&record);
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: producer\n    \
+                   path: {producer}\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n    \
+                   outputs:\n      - value\n  \
+                 - id: consumer\n    \
+                   path: {consumer}\n    \
+                   env:\n      \
+                     DORA_TEST_DRAIN_RECORD: {record}\n    \
+                   inputs:\n      \
+                     value: producer/value\n      \
+                     tick: dora/timer/millis/200\n",
+                producer = target.join("debug/emit-then-exit-source-node").display(),
+                consumer = target.join("debug/drain-recording-node").display(),
+                record = record.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        // Premise: without the flag this graph does not terminate. Bound
+        // it so a regression that makes it exit on its own shows up here
+        // rather than silently making the flag look unnecessary.
+        let mut without = Command::new(&dora)
+            .args(["run", yaml.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn dora run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(20);
+        let exited_on_its_own = loop {
+            match without.try_wait().expect("try_wait failed") {
+                Some(_) => break true,
+                None if std::time::Instant::now() >= deadline => break false,
+                None => std::thread::sleep(Duration::from_millis(200)),
+            }
+        };
+        // SIGTERM, not `kill()`. `Child::kill` sends SIGKILL, which
+        // `dora run` cannot handle, so its spawned nodes are orphaned and
+        // keep running for the rest of the CI job — verified: the
+        // consumer survives indefinitely. SIGTERM gives the run a chance
+        // to tear its nodes down (dora-rs/dora#2949), and we only escalate
+        // if it ignores that.
+        let _ = Command::new("kill")
+            .args(["-TERM", &without.id().to_string()])
+            .status();
+        let term_deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            match without.try_wait().expect("try_wait failed") {
+                Some(_) => break,
+                None if std::time::Instant::now() >= term_deadline => {
+                    let _ = without.kill();
+                    break;
+                }
+                None => std::thread::sleep(Duration::from_millis(100)),
+            }
+        }
+        let _ = without.wait();
+        assert!(
+            !exited_on_its_own,
+            "test premise broken: this graph terminated WITHOUT \
+             --exit-when-nodes-finish, so the flag is not what this test thinks \
+             it is measuring"
+        );
+
+        // With the flag it must finish on its own, and cleanly. Bounded
+        // rather than a plain `.output()`: if the flag regresses, this
+        // run never returns, and a hanging test is far worse in CI than a
+        // failing one — it burns the job's whole budget and reports
+        // nothing useful.
+        // Clear the record the premise run may have written: its consumer
+        // can outlive the `dora run` we just reaped, and a late write of
+        // its own result would otherwise be read as this run's.
+        let _ = std::fs::remove_file(&record);
+        let mut with = Command::new(&dora)
+            .args(["run", yaml.to_str().unwrap(), "--exit-when-nodes-finish"])
+            .stdout(Stdio::null())
+            // Null, not piped: nothing reads this pipe, and a `dora run`
+            // that fills the buffer would then block on write and look
+            // like the hang this test is trying to detect.
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("failed to spawn dora run");
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let status = loop {
+            match with.try_wait().expect("try_wait failed") {
+                Some(status) => break Some(status),
+                None if std::time::Instant::now() >= deadline => break None,
+                None => std::thread::sleep(Duration::from_millis(200)),
+            }
+        };
+        let Some(status) = status else {
+            let _ = with.kill();
+            let _ = with.wait();
+            panic!(
+                "`dora run --exit-when-nodes-finish` never terminated — the timer \
+                 input is still gating the drain (#2920)"
+            );
+        };
+        assert!(
+            status.success(),
+            "`dora run --exit-when-nodes-finish` exited with {status}"
+        );
+
+        // Terminating is necessary but not sufficient: draining the
+        // consumer at startup, before the producer ever sent anything,
+        // would also terminate and also exit 0. Assert it did its work
+        // first, and that it left because it was told all inputs were
+        // closed rather than because its event stream happened to end.
+        let recorded = std::fs::read_to_string(&record).unwrap_or_else(|e| {
+            panic!(
+                "consumer wrote no drain record at {} ({e}) — it did not reach \
+                 a clean exit",
+                record.display()
+            )
+        });
+        let (inputs, drained) = recorded
+            .split_once(' ')
+            .unwrap_or_else(|| panic!("malformed drain record {recorded:?}"));
+        assert_eq!(
+            drained, "true",
+            "consumer exited without receiving AllInputsClosed (record: {recorded:?}) \
+             — the dataflow ended for some other reason, so this test would pass \
+             even if the drain opt-in did nothing"
+        );
+        assert!(
+            inputs.parse::<u64>().expect("input count") > 0,
+            "consumer drained without ever receiving `value` (record: {recorded:?}) \
+             — it was stopped at startup, not after finishing its work"
+        );
+
+        let _ = std::fs::remove_file(&yaml);
+        let _ = std::fs::remove_file(&record);
+    }
+
+    /// dora-rs/dora#2920: `dora start --exit-when-nodes-finish` must let
+    /// a timer-driven dataflow finish on its own.
+    ///
+    /// The `dora run` half of this shipped first; `start` goes through a
+    /// completely different path — CLI to coordinator to daemon — so it
+    /// needs its own proof. The setting travels on the descriptor rather
+    /// than the wire precisely so it survives that trip (and later,
+    /// auto-recovery and restart), which is exactly what this checks.
+    ///
+    /// Status, not absence: a finished dataflow REMAINS in `dora list`
+    /// with status `Finished`, so "no longer listed" would never become
+    /// true and would make this pass for the wrong reason.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_start_exit_when_nodes_finish_terminates_timer_driven_graph() {
+        ensure_built();
+        let dora = dora_bin();
+        let status = Command::new("cargo")
+            .args([
+                "build",
+                "-p",
+                "emit-then-exit-source-node",
+                "-p",
+                "drain-recording-node",
+            ])
+            .status()
+            .expect("failed to build fixtures");
+        assert!(status.success(), "failed to build fixtures");
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let yaml = target.join(format!("dora-start-2920-{}.yml", std::process::id()));
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: producer\n    \
+                   path: {producer}\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n    \
+                   outputs:\n      - value\n  \
+                 - id: consumer\n    \
+                   path: {consumer}\n    \
+                   inputs:\n      \
+                     value: producer/value\n      \
+                     tick: dora/timer/millis/200\n",
+                producer = target.join("debug/emit-then-exit-source-node").display(),
+                consumer = target.join("debug/drain-recording-node").display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        start_cluster(&dora);
+        // Tear the cluster down on EVERY exit path. The premise assertion
+        // below fires before the explicit cleanup, so without this a
+        // broken premise would strand a coordinator, a daemon and this
+        // dataflow's nodes for the rest of the suite.
+        let _guard = ClusterGuard(&dora);
+
+        let status_of = |name: &str| -> String {
+            let out = Command::new(&dora)
+                .arg("list")
+                .output()
+                .expect("failed to run dora list");
+            String::from_utf8_lossy(&out.stdout)
+                .lines()
+                .find(|l| l.split_whitespace().nth(1) == Some(name))
+                .and_then(|l| l.split_whitespace().nth(2).map(str::to_owned))
+                .unwrap_or_default()
+        };
+        let settle = |name: &str, secs: u64| -> String {
+            let deadline = std::time::Instant::now() + Duration::from_secs(secs);
+            loop {
+                let s = status_of(name);
+                if s == "Finished" || std::time::Instant::now() >= deadline {
+                    break s;
+                }
+                std::thread::sleep(Duration::from_millis(500));
+            }
+        };
+
+        // Premise: without the flag this graph does not finish on its own.
+        let started = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--name",
+                "e2e2920noflag",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(started.success(), "dora start (no flag) failed");
+        let without = settle("e2e2920noflag", 15);
+        let _ = Command::new(&dora)
+            .args(["stop", "--name", "e2e2920noflag"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        assert_ne!(
+            without, "Finished",
+            "test premise broken: this graph finished WITHOUT \
+             --exit-when-nodes-finish, so the flag is not what this test \
+             thinks it is measuring"
+        );
+
+        // With the flag it must reach `Finished` on its own.
+        let started = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--name",
+                "e2e2920flag",
+                "--exit-when-nodes-finish",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(started.success(), "dora start (with flag) failed");
+        let with = settle("e2e2920flag", 60);
+
+        let _ = Command::new(&dora)
+            .args(["stop", "--name", "e2e2920flag"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status();
+        let _ = std::fs::remove_file(&yaml);
+
+        assert_eq!(
+            with, "Finished",
+            "`dora start --exit-when-nodes-finish` left the dataflow in state \
+             `{with}` — the timer is still gating the drain across the \
+             coordinator path (#2920)"
+        );
+    }
+
+    /// #2919 P2: a node added to a RUNNING dataflow must inherit that
+    /// dataflow's env, including anything set via `dora start --env`.
+    ///
+    /// `dora node add` resolves the incoming node through a temporary
+    /// single-node descriptor in the coordinator; that descriptor was
+    /// built with `env: None`, so the dataflow-into-node merge had
+    /// nothing to merge and an added node silently saw none of the
+    /// dataflow's environment. Reproduced as `<unset>` before the fix.
+    ///
+    /// Unix-only for the same reasons as the sibling env tests.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_dynamically_added_node_inherits_dataflow_env() {
+        ensure_built();
+        let dora = dora_bin();
+        start_cluster(&dora);
+        let _guard = ClusterGuard(&dora);
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-addenv-2919-")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let stem = format!("dora-addenv-2919-{}", std::process::id());
+        let probe = target.join(format!("{stem}-probe.py"));
+        let base_marker = target.join(format!("{stem}-base.txt"));
+        let added_marker = target.join(format!("{stem}-added.txt"));
+        let yaml = target.join(format!("{stem}.yml"));
+        let added_yaml = target.join(format!("{stem}-added.yml"));
+        std::fs::write(
+            &probe,
+            concat!(
+                "import os, time\n",
+                "out = os.environ['PROBE_OUT']\n",
+                "with open(out + '.tmp', 'w') as f:\n",
+                "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
+                "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "os.replace(out + '.tmp', out)\n",
+                "time.sleep(120)\n",
+            ),
+        )
+        .expect("failed to write probe");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: base\n    \
+                   path: {probe}\n    \
+                   env:\n      \
+                     PROBE_OUT: {base_marker}\n    \
+                   outputs:\n      - value\n",
+                probe = probe.display(),
+                base_marker = base_marker.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+        // The added node sets its own E2919_NODE, so this also pins that
+        // node-level env still wins for dynamically added nodes.
+        std::fs::write(
+            &added_yaml,
+            format!(
+                "id: added\n\
+                 path: {probe}\n\
+                 env:\n  \
+                   PROBE_OUT: {added_marker}\n  \
+                   E2919_NODE: node-wins\n\
+                 outputs:\n  - value\n",
+                probe = probe.display(),
+                added_marker = added_marker.display(),
+            ),
+        )
+        .expect("failed to write added node yaml");
+
+        let status = Command::new(&dora)
+            .args([
+                "start",
+                yaml.to_str().unwrap(),
+                "--detach",
+                "--name",
+                "addenv",
+                "--env",
+                "E2919_VAR=from-cli",
+                "--env",
+                "E2919_NODE=cli-loses",
+            ])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("failed to run dora start");
+        assert!(status.success(), "dora start --env failed");
+
+        // Wait for the base node so the dataflow is up before adding.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !base_marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "base node never spawned (is `python3` installed?)"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+
+        let output = Command::new(&dora)
+            .args([
+                "node",
+                "add",
+                "--dataflow",
+                "addenv",
+                "--from-yaml",
+                added_yaml.to_str().unwrap(),
+            ])
+            .output()
+            .expect("failed to run dora node add");
+        assert!(
+            output.status.success(),
+            "dora node add failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while !added_marker.exists() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "added node never spawned"
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        }
+        let content = std::fs::read_to_string(&added_marker).expect("failed to read marker");
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("from-cli"),
+            "a node added to a running dataflow must inherit its env \
+             (including `--env`); got {content:?}"
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("node-wins"),
+            "node-level env: must still win for added nodes; got {content:?}"
+        );
+    }
+
+    /// The `dora run` half of #2919, which reaches the daemon by a
+    /// different route: `run` builds a `descriptor_override` and hands it
+    /// to the in-process `Daemon::run_dataflow`, rather than serializing
+    /// a `ControlRequest::Start`. That wiring — the empty-env
+    /// passthrough, the hub-resolved-vs-disk base, and the merge itself —
+    /// is not touched by the `start` test above.
+    ///
+    /// Runs local-only: no coordinator, no daemon process, no port 6013,
+    /// so it cannot contend with the networked tests in this file.
+    /// `--stop-after` bounds it; the probe writes its marker at spawn and
+    /// then idles until stopped.
+    ///
+    /// Unix-only for the same reasons as the `start` test.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_run_env_flag_reaches_locally_spawned_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-runenv-2919-")
+                {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+        let stem = format!("dora-runenv-2919-{}", std::process::id());
+        let probe = target.join(format!("{stem}-probe.py"));
+        let marker = target.join(format!("{stem}-out.txt"));
+        let yaml = target.join(format!("{stem}.yml"));
+        std::fs::write(
+            &probe,
+            concat!(
+                "import os, time\n",
+                "out = os.environ['PROBE_OUT']\n",
+                "with open(out + '.tmp', 'w') as f:\n",
+                "    f.write(os.environ.get('E2919_VAR', '<unset>') + '\\n')\n",
+                "    f.write(os.environ.get('E2919_NODE', '<unset>') + '\\n')\n",
+                "os.replace(out + '.tmp', out)\n",
+                "time.sleep(120)\n",
+            ),
+        )
+        .expect("failed to write probe");
+        std::fs::write(
+            &yaml,
+            format!(
+                "env:\n  \
+                   E2919_VAR: from-yaml\n\
+                 nodes:\n  \
+                 - id: probe\n    \
+                   path: {probe}\n    \
+                   env:\n      \
+                     PROBE_OUT: {marker}\n      \
+                     E2919_NODE: node-wins\n    \
+                   outputs:\n      - value\n",
+                probe = probe.display(),
+                marker = marker.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        let output = Command::new(&dora)
+            .args([
+                "run",
+                yaml.to_str().unwrap(),
+                "--stop-after",
+                "12s",
+                "--env",
+                "E2919_VAR=from-cli",
+                "--env",
+                "E2919_NODE=cli-loses",
+            ])
+            .output()
+            .expect("failed to run dora run");
+
+        let content = std::fs::read_to_string(&marker).unwrap_or_else(|e| {
+            panic!(
+                "probe never wrote its marker ({e}) — is `python3` installed? \
+                 dora run stderr:\n{}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+        });
+        let lines: Vec<&str> = content.lines().collect();
+        assert_eq!(
+            lines.first().copied(),
+            Some("from-cli"),
+            "--env must override the dataflow-level env: block under `dora run`; got {content:?}"
+        );
+        assert_eq!(
+            lines.get(1).copied(),
+            Some("node-wins"),
+            "node-level env: must still win over --env under `dora run`; got {content:?}"
+        );
     }
 
     /// Full lifecycle: start -> list (shows dataflow) -> stop -> destroy
@@ -1626,5 +2697,359 @@ mod real_dataflow {
         }
 
         cleanup(&dora);
+    }
+
+    /// dora-rs/dora#2980: `Destroy` must not outrun the stop it just asked
+    /// for.
+    ///
+    /// `handle_destroy` stops every dataflow and then tears the daemons down
+    /// ~200ms later, but `stop_dataflow` returns once the daemons acknowledge
+    /// the *request* — the grace → SIGTERM → SIGKILL ladder runs afterwards,
+    /// inside the daemon. A node that ignores the cooperative `Stop`
+    /// therefore used to survive the teardown with `ppid 1`, holding whatever
+    /// it held, while the command reported success.
+    ///
+    /// Driven over the raw control protocol rather than `dora down`: the
+    /// #2924 guard makes the CLI stop each dataflow through a path that
+    /// already waits, which masks this. `Destroy` is also reached by
+    /// `dora cluster down`, by Ctrl-C on the coordinator, and by any direct
+    /// control-protocol client — this is that route.
+    ///
+    /// The fixture ignores both the cooperative `Stop` and SIGTERM, so only a
+    /// SIGKILL can end it; a node that died to SIGTERM would be cleaned up
+    /// either way and could not tell a working teardown from a broken one.
+    ///
+    /// Unix-only: it inspects process state.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_destroy_does_not_orphan_a_node_that_ignores_stop() {
+        ensure_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "sigterm-ignoring-node"])
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .expect("failed to build sigterm-ignoring-node");
+        assert!(status.success(), "failed to build sigterm-ignoring-node");
+
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let pid_file = home.path().join("stubborn.pid");
+        let yaml = home.path().join("stubborn.yml");
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: stubborn\n    \
+                   path: \"{node}\"\n    \
+                   env:\n      \
+                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n",
+                node = target.join("debug/sigterm-ignoring-node").display(),
+                pid_file = pid_file.display(),
+            ),
+        )
+        .expect("write dataflow yaml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        // Explicit capture name: the default is the joined argv, and this
+        // command's argv holds a path, which cannot be a file name.
+        let (child, out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--detach"],
+            "start",
+        );
+        let (status, stdout, stderr) = wait_for_dora_isolated(child, out_path, err_path);
+        assert!(
+            status.success(),
+            "dora start failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        // The fixture publishes its own pid, so the assertions below are about
+        // THIS process rather than a pattern match on the process table, which
+        // would also catch a leftover from an earlier run.
+        let node_pid = wait_for_pid_file(&pid_file, Duration::from_secs(30));
+
+        // RAII: the fixture ignores SIGTERM and outlives a failed assertion by
+        // design, so every bail-out path must still clear it off the runner.
+        struct Reaper(u32);
+        impl Drop for Reaper {
+            fn drop(&mut self) {
+                if fixture_alive(self.0) {
+                    let _ = Command::new("kill")
+                        .args(["-9", &self.0.to_string()])
+                        .status();
+                }
+            }
+        }
+        let _reaper = Reaper(node_pid);
+        assert!(
+            fixture_alive(node_pid),
+            "fixture {node_pid} was not running before destroy"
+        );
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let session = WsSession::connect(addr).expect("failed to connect WsSession");
+        let reply =
+            super::send_request(&session, &ControlRequest::Destroy).expect("destroy request");
+        assert!(
+            matches!(reply, ControlRequestReply::DestroyOk),
+            "expected DestroyOk, got {reply:?}"
+        );
+
+        // No polling window: the point of the fix is that `Destroy` does not
+        // return until the daemon has dealt with its children, so the node
+        // must already be gone when the reply lands.
+        assert!(
+            !fixture_alive(node_pid),
+            "node {node_pid} outlived the destroy that reported success \
+             — it is now orphaned to ppid 1"
+        );
+    }
+
+    /// #3004 review: the same orphan, one level down.
+    ///
+    /// A node's tracked process is often a wrapper — `uv run python node.py`,
+    /// a shell launcher — and the ladder's SIGTERM kills the wrapper while
+    /// the process it spawned ignores the signal and carries on in its
+    /// process group. Watching only the tracked pid calls the node gone and
+    /// lets the destroy finish, orphaning the real one.
+    ///
+    /// Unix-only: it uses process groups and inspects process state.
+    #[test]
+    #[cfg(unix)]
+    fn e2e_destroy_does_not_orphan_a_node_behind_an_exiting_wrapper() {
+        ensure_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let status = Command::new("cargo")
+            .args(["build", "-p", "sigterm-ignoring-node"])
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .expect("failed to build sigterm-ignoring-node");
+        assert!(status.success(), "failed to build sigterm-ignoring-node");
+
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let pid_file = home.path().join("stubborn.pid");
+        let yaml = home.path().join("wrapped.yml");
+        // `sh` waits, so the daemon's entry stays while the real node runs.
+        // On SIGTERM `sh` dies and the fixture — which ignores it — does not.
+        std::fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: wrapped\n    \
+                   path: /bin/sh\n    \
+                   args: \"-c '{node} & wait'\"\n    \
+                   env:\n      \
+                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n",
+                node = target.join("debug/sigterm-ignoring-node").display(),
+                pid_file = pid_file.display(),
+            ),
+        )
+        .expect("write dataflow yaml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let (child, out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--detach"],
+            "start",
+        );
+        let (status, stdout, stderr) = wait_for_dora_isolated(child, out_path, err_path);
+        assert!(
+            status.success(),
+            "dora start failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        let node_pid = wait_for_pid_file(&pid_file, Duration::from_secs(30));
+        struct Reaper(u32);
+        impl Drop for Reaper {
+            fn drop(&mut self) {
+                if fixture_alive(self.0) {
+                    let _ = Command::new("kill")
+                        .args(["-9", &self.0.to_string()])
+                        .status();
+                }
+            }
+        }
+        let _reaper = Reaper(node_pid);
+        assert!(
+            fixture_alive(node_pid),
+            "fixture {node_pid} was not running before destroy"
+        );
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let session = WsSession::connect(addr).expect("failed to connect WsSession");
+        let reply = super::send_request(&session, &ControlRequest::Destroy).expect("destroy");
+        assert!(
+            matches!(reply, ControlRequestReply::DestroyOk),
+            "expected DestroyOk, got {reply:?}"
+        );
+
+        assert!(
+            !fixture_alive(node_pid),
+            "node {node_pid} outlived the destroy behind its wrapper — the \
+             wrapper's exit must not be mistaken for the node's"
+        );
+    }
+
+    /// A destroy must not make a healthy shutdown slower or dirtier.
+    ///
+    /// The wait added for #2980 cannot be taken inline in the daemon's event
+    /// loop: a node on its way out ends by asking that same loop to close its
+    /// outputs and report them done, so a loop parked in the wait deadlocks
+    /// every well-behaved node against it until the deadline, and they get
+    /// signal-killed instead of exiting. That regression is invisible to the
+    /// orphan test above — its fixture never talks to the daemon — so this
+    /// pins the other side: real nodes, and a destroy that returns in about
+    /// the time it took before the wait existed.
+    #[test]
+    fn e2e_destroy_does_not_delay_healthy_nodes() {
+        ensure_built();
+        let dora = dora_bin();
+        let home = tempdir().expect("create isolated home");
+        let port = unused_port();
+        let yaml = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/node-lifecycle.yml");
+
+        let (status, stdout, stderr) = run_dora_isolated(&dora, home.path(), port, &["up"]);
+        assert!(
+            status.success(),
+            "dora up failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+        let (child, out_path, err_path) = spawn_dora_isolated(
+            &dora,
+            home.path(),
+            port,
+            &["start", yaml.to_str().unwrap(), "--detach"],
+            "start",
+        );
+        let (status, stdout, stderr) = wait_for_dora_isolated(child, out_path, err_path);
+        assert!(
+            status.success(),
+            "dora start failed; stdout:\n{stdout}\nstderr:\n{stderr}"
+        );
+
+        let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+        let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+        // Destroying mid-startup is a different scenario with its own timing:
+        // a node that has not subscribed yet cannot answer the cooperative
+        // stop, so the teardown waits out the startup barrier. This test is
+        // about the steady state, so let the dataflow reach it first.
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            let reply = super::send_request(&session, &ControlRequest::List).expect("list");
+            if let ControlRequestReply::DataflowList(list) = reply
+                && list.0.iter().any(|entry| {
+                    matches!(
+                        entry.status,
+                        dora_message::coordinator_to_cli::DataflowStatus::Running
+                    )
+                })
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "dataflow never reached Running within 30s"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+
+        let reply = super::send_request(&session, &ControlRequest::Destroy).expect("destroy");
+        assert!(
+            matches!(reply, ControlRequestReply::DestroyOk),
+            "expected DestroyOk, got {reply:?}"
+        );
+
+        // The signal, rather than wall-clock timing: the daemon only kills
+        // what is left when its deadline expires, and it says so. A healthy
+        // node reaches that deadline exactly when the loop it needs was
+        // parked in the wait — so this line appearing IS the regression,
+        // whatever the machine's timing.
+        let killed = daemon_log_lines(home.path())
+            .into_iter()
+            .find(|line| line.contains("still running at destroy"));
+        assert!(
+            killed.is_none(),
+            "nodes that answer the cooperative stop must exit on their own, \
+             but the daemon had to kill them: {killed:?}"
+        );
+    }
+
+    /// Everything the daemon logged, across the isolated home's log files.
+    fn daemon_log_lines(home: &Path) -> Vec<String> {
+        let mut lines = Vec::new();
+        let mut dirs = vec![home.join(".dora")];
+        while let Some(dir) = dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    dirs.push(path);
+                } else if let Ok(contents) = std::fs::read_to_string(&path) {
+                    lines.extend(contents.lines().map(str::to_owned));
+                }
+            }
+        }
+        lines
+    }
+
+    /// Read the pid the fixture published, waiting for it to appear.
+    #[cfg(unix)]
+    fn wait_for_pid_file(path: &Path, timeout: Duration) -> u32 {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Ok(contents) = std::fs::read_to_string(path)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                return pid;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "node never reported its pid at {}",
+                path.display()
+            );
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+
+    /// Whether `pid` is still the fixture.
+    ///
+    /// Matches the binary path, not merely liveness: once the node exits its
+    /// pid is free for reuse, and a bare liveness check would eventually
+    /// report an unrelated process as the surviving node. `args=`, not
+    /// `comm=`, because Linux caps `comm` at 15 characters and the fixture
+    /// name is longer (dora-rs/dora#2961).
+    #[cfg(unix)]
+    fn fixture_alive(pid: u32) -> bool {
+        Command::new("ps")
+            .args(["-ww", "-o", "args=", "-p", &pid.to_string()])
+            .output()
+            .ok()
+            .is_some_and(|out| {
+                String::from_utf8_lossy(&out.stdout).contains("/sigterm-ignoring-node")
+            })
     }
 }

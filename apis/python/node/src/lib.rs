@@ -1050,12 +1050,14 @@ unsafe fn seqlock_begin_write(gen_ptr: *mut u64) -> u64 {
 /// `seqlock_end`'s `pre + 2` always produces an even generation,
 /// avoiding a permanent parity inversion.
 unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
-    let cur = std::ptr::read_volatile(gen_ptr);
-    if cur % 2 == 0 {
-        std::ptr::write_volatile(gen_ptr, cur + 1);
-        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+    unsafe {
+        let cur = std::ptr::read_volatile(gen_ptr);
+        if cur.is_multiple_of(2) {
+            std::ptr::write_volatile(gen_ptr, cur + 1);
+            std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+        }
+        cur & !1 // always return the even baseline
     }
-    cur & !1 // always return the even baseline
 }
 
 /// Closes a memory-pool seqlock write (header offset 96).
@@ -1068,12 +1070,14 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 /// contract but is dead code in production — see the leave-gen-odd blocks
 /// in `write_memory_pool`.
 unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
-    if copy_ok {
-        std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
-    } else {
-        std::ptr::write_volatile(gen_ptr, pre_write_gen);
+    unsafe {
+        if copy_ok {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
+        } else {
+            std::ptr::write_volatile(gen_ptr, pre_write_gen);
+        }
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
-    std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
 }
 
 #[cfg(test)]
@@ -1287,9 +1291,15 @@ impl Node {
                             let _ = bound.call_method1("_ipc_close", (slot.gpu_buf,));
                         }
                     } else if slot.gpu_va != 0 {
+                        // Host-registered mapping (effective_as_cuda branch):
+                        // must cudaHostUnregister before munmap.  _unregister_host
+                        // requires the original host pointer (shmem base), not the
+                        // device VA returned by cudaHostGetDevicePointer — passing
+                        // the device VA makes cudaHostUnregister fail and leaks the
+                        // pin over an address range that then gets munmap'd.
                         if let Ok(helpers) = get_cuda_helpers(py) {
                             let bound = helpers.bind(py);
-                            let _ = bound.call_method1("_unregister_host", (slot.gpu_va,));
+                            let _ = bound.call_method1("_unregister_host", (slot.host_base,));
                         }
                     }
                     // Drop slot → munmap
@@ -1409,6 +1419,13 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+        // Same cleanup contract as `next`/`drain`/`try_recv`: release the
+        // per-process resources of pools that other nodes freed before
+        // yielding the next user-visible event.  Done *before* the await so
+        // that it also runs on the `None` (stream closed) path, and so the
+        // scoped `attach` drops the GIL before the suspend point.
+        Python::attach(|py| self.process_pending_memory_pool_frees(py));
+
         let timeout = timeout_to_duration(timeout)?;
         let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
@@ -2013,11 +2030,9 @@ impl Node {
         // (CPU receivers).  GPU receivers never touch the shmem data
         // region, and the header-only shmem is too small (< 1 page) to
         // benefit from pinning.
-        if !receiver_is_cuda {
-            if let Ok(helpers) = get_cuda_helpers(py) {
-                let bound = helpers.bind(py);
-                let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
-            }
+        if !receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+            let bound = helpers.bind(py);
+            let _ = bound.call_method1("_register_host", (shmem_ptr as u64, total_size));
         }
 
         shmem.set_owner(false);
@@ -2074,11 +2089,13 @@ impl Node {
                     dtoh_copy_ok = false;
                 }
                 if !dtoh_copy_ok {
-                    if !is_pinned {
-                        if let Ok(helpers) = get_cuda_helpers(py) {
-                            let bound = helpers.bind(py);
-                            let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
-                        }
+                    // The matching `_register_host` above is unconditional (it
+                    // runs whenever `!receiver_is_cuda`), so the unregister must
+                    // be too — gating it on `!is_pinned` would leak the pin if
+                    // `should_pin` is ever tuned to pin CUDA sources.
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (shmem_ptr as u64,));
                     }
                     shmem.set_owner(true);
                     eyre::bail!(
@@ -3031,19 +3048,18 @@ impl Node {
                     .node
                     .get_mut()
                     .read_pinned_memory(buffer_id.clone(), false)
-                {
-                    if let Some(size) = metadata.parameters.get("size").and_then(|p| {
+                    && let Some(size) = metadata.parameters.get("size").and_then(|p| {
                         if let Parameter::Integer(v) = p {
                             Some(*v)
                         } else {
                             None
                         }
-                    }) {
-                        GPU_BUF_SIZES
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .insert(buffer_id.clone(), size as u64);
-                    }
+                    })
+                {
+                    GPU_BUF_SIZES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .insert(buffer_id.clone(), size as u64);
                 }
             }
         }
@@ -3337,6 +3353,71 @@ impl Node {
              which only became part of the stable C API in 3.11. \
              Upgrade Python or use send_output() instead (1 copy)."
         )))
+    }
+}
+
+#[cfg(test)]
+mod memory_pool_free_drain_tests {
+    /// Every user-visible receive path must drain the pending
+    /// memory-pool free set — that drain is the only thing that releases
+    /// this process's GPU IPC handles, transit buffers and shmem mappings
+    /// for pools that *another* node freed
+    /// (see `dora_node_api::event_stream::memory_pool`).
+    ///
+    /// Regression guard for #2958, where `recv_async` was the one path of
+    /// four that skipped it, so `await`-only nodes leaked every pool until
+    /// process exit. The leak is silent: it surfaces later as a CUDA OOM
+    /// somewhere unrelated, which is exactly why it needs a guard.
+    ///
+    /// Asserted on the source rather than on behaviour because `Node` can
+    /// only be constructed against a live daemon connection, so no unit
+    /// test can call these methods.
+    #[test]
+    fn every_receive_path_drains_pending_memory_pool_frees() {
+        const DRAIN: &str = "self.process_pending_memory_pool_frees(py)";
+        let src = include_str!("lib.rs");
+
+        for signature in [
+            "pub fn next(&self, py: Python",
+            "pub fn drain(&self, py: Python",
+            "pub fn try_recv(&mut self, py: Python",
+            "pub async fn recv_async(&self,",
+        ] {
+            assert!(
+                method_body(src, signature).contains(DRAIN),
+                "`{signature}` does not call `{DRAIN}`: pools freed by other \
+                 nodes stay mapped in this process forever (#2958)"
+            );
+        }
+
+        // `__next__` is exempt only for as long as it delegates to `next`.
+        assert!(
+            method_body(src, "pub fn __next__(&self, py: Python").contains("self.next(py,"),
+            "`__next__` no longer delegates to `next`, so it needs its own \
+             `{DRAIN}` call (#2958)"
+        );
+    }
+
+    /// Returns the `{ .. }` block that follows `signature` in `src`.
+    fn method_body<'a>(src: &'a str, signature: &str) -> &'a str {
+        let start = src
+            .find(signature)
+            .unwrap_or_else(|| panic!("method `{signature}` not found — update this test"));
+        let open = start + src[start..].find('{').expect("method has a body");
+        let mut depth = 0usize;
+        for (offset, c) in src[open..].char_indices() {
+            match c {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return &src[open..=open + offset];
+                    }
+                }
+                _ => {}
+            }
+        }
+        panic!("unbalanced braces in the body of `{signature}`");
     }
 }
 
@@ -3803,7 +3884,7 @@ impl Node {
 /// :rtype: None
 #[pyfunction]
 pub fn start_runtime() -> eyre::Result<()> {
-    dora_runtime::main().wrap_err("Dora Runtime raised an error.")
+    dora_runtime_python::main().wrap_err("Dora Runtime raised an error.")
 }
 
 /// Build a Dataflow, exactly the same way as `dora build` command line tool.

@@ -337,3 +337,66 @@ node.send_output("response", result, metadata=event["metadata"])
 > **Note**: `uuid.uuid7()` requires Python 3.13+. On older versions, use the
 > `uuid_utils` package or `uuid.uuid4()` (random v4 also works for correlation,
 > but loses time-ordering).
+
+## 8. C++ compatibility
+
+The C++ node binding exposes the same primitives as the Rust API, generated
+into `dora-node-api.h` (dora-rs/dora#2686).
+
+| Rust | C++ |
+|------|-----|
+| `DoraNode::new_request_id` / `new_goal_id` | `new_request_id()` / `new_goal_id()` |
+| `DoraNode::send_service_request` | `send_service_request(...)` / `send_arrow_service_request(...)` |
+| `DoraNode::send_service_response` | `send_service_response(...)` |
+| `EventStream::recv_service_response` | `recv_service_response(...)` |
+| `EventStream::recv_action_result` | `recv_action_result(...)` |
+| `GOAL_STATUS_SUCCEEDED` / `_ABORTED` / `_CANCELED` | `goal_status_succeeded()` / `_aborted()` / `_canceled()` |
+| `PatternError` | `DoraPatternStatus` |
+
+Reading correlation keys off an incoming message needs
+`event_as_input_with_metadata` — the older `event_as_input` returns the
+payload only, which is not enough for the server side of an exchange.
+
+```cpp
+// Client: send and await the correlated reply.
+auto request = send_service_request(
+    node.send_output, "request", payload, new_metadata());
+if (!std::string(request.error).empty()) { /* send failed */ }
+
+auto reply = recv_service_response(
+    node.events, std::string(request.request_id), "server", 5000);
+switch (reply.status) {
+case DoraPatternStatus::Matched:
+    handle(event_as_input(std::move(reply.event)));
+    break;
+case DoraPatternStatus::Timeout:
+    fallback_path();
+    break;
+case DoraPatternStatus::ServerRestarted:
+    // in-flight request_id is orphaned; retry against the new instance
+    retry_with_new_instance();
+    break;
+default:
+    std::cerr << std::string(reply.error) << std::endl;
+}
+
+// Server: echo the request's metadata back so request_id survives.
+auto input = event_as_input_with_metadata(std::move(event));
+send_service_response(
+    node.send_output, "response", result, std::move(input.metadata));
+```
+
+For actions, set `goal_id` on the metadata (`metadata->set_goal_id(...)`),
+send with `send_output_with_metadata`, and wait with `recv_action_result`.
+The server tags feedback with `goal_id` only, and the terminal message with
+`goal_id` plus `goal_status`. As in Rust, feedback buffered during a
+`recv_action_result` wait is replayed by later `next_event` calls, so the
+main event loop still sees it.
+
+Both helpers return `DoraPatternResult`, whose `event` field also carries a
+matching `DoraEventType` (`Timeout` / `AllInputsClosed` / `Empty`), so code
+can branch on either `status` or the event type. A malformed
+`server_node_id` yields `DoraPatternStatus::InvalidArgument` rather
+than aborting the process.
+
+**Example**: `examples/c++-service-action/`
