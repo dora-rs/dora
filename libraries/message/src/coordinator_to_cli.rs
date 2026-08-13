@@ -96,6 +96,10 @@ pub enum ControlRequestReply {
         dataflow_id: Uuid,
         node_id: NodeId,
     },
+    NodeReplaced {
+        dataflow_id: Uuid,
+        node_id: NodeId,
+    },
     MappingAdded {
         dataflow_id: Uuid,
         source_node: NodeId,

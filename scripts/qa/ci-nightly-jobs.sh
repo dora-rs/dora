@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 21 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 27 test jobs
+# (re-counted in #2999: the previous 23 counted neither hub-smoke nor the two
+# ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new)
 # (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
-# This script covers the other 17, with
+# This script covers 20 of the rest -- memory-pool-smoke and hub-smoke have
+# no entry here, and one local cli-tests run covers both cli-tests halves -- with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
 #
@@ -25,6 +28,8 @@
 #   - cpu-affinity-smoke        Linux-only. sched_getaffinity regression (#252).
 #   - redb-backend-smoke        coord restart reads daemon records back (#253).
 #   - daemon-reconnect-smoke    Linux-only. SIGSTOP+watchdog+SIGCONT reconnect (#254).
+#   - multi-daemon-late-subscriber  node added after startup on a 2-daemon
+#                                   dataflow is answered, not parked (#2999).
 #   - state-reconstruction-smoke Running -> Recovering on coord restart (#255, partial).
 #
 #   Moved from ci.yml in #1716 (now only run in nightly):
@@ -68,6 +73,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+# shellcheck source=../cargo-target-dir.sh
+source scripts/cargo-target-dir.sh
+TARGET_DIR="$(cargo_target_dir "$PWD")"
 
 # -----------------------------------------------------------------------------
 # Platform + env setup
@@ -125,7 +134,7 @@ assert_clean_dataflow_run() {
 
 known_job() {
   case "$1" in
-    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|kani-proofs)
+    record-replay|cluster-smoke|cluster-e2e|cluster-record-replay|topic-and-top-smoke|cpu-affinity-smoke|redb-backend-smoke|daemon-reconnect-smoke|state-reconstruction-smoke|multi-daemon-late-subscriber|test-cross-platform|examples|cli-tests|bench-example|msrv|cross-check|ros2-bridge|ros2-zenoh-humble|ros2-zenoh-kilted|kani-proofs)
       return 0
       ;;
     *)
@@ -151,6 +160,7 @@ Supported jobs:
   redb-backend-smoke
   daemon-reconnect-smoke
   state-reconstruction-smoke
+  multi-daemon-late-subscriber
   test-cross-platform
   examples
   cli-tests
@@ -196,7 +206,12 @@ if ! command -v timeout > /dev/null 2>&1; then
     echo "      Jobs will run UNBOUNDED until they complete or you Ctrl-C."
     echo
     timeout() {
-      # Silently drop the duration arg and run the command unbounded.
+      # Silently drop the leading duration args and run the command unbounded.
+      # Handle the optional `-k <kill-after>` prefix the call sites use, so the
+      # kill-after flag isn't left in place and executed as a command.
+      if [ "$1" = "-k" ]; then
+        shift 2
+      fi
       shift
       "$@"
     }
@@ -412,7 +427,7 @@ job_record_replay() {
   # record-replay job (.github/workflows/nightly.yml:261, tuned in
   # #1705 for cold-cache rebuild variance). Replay is normally ~2s;
   # 120s is generous but still bounded.
-  if ! timeout 300s dora record examples/rust-dataflow/dataflow.yml -o "$DREC"; then
+  if ! timeout -k 30s 300s dora record examples/rust-dataflow/dataflow.yml -o "$DREC"; then
     echo "ERROR: dora record failed or exceeded 300s"
     return 1
   fi
@@ -422,7 +437,7 @@ job_record_replay() {
   fi
   echo "OK: recording size: $(wc -c < "$DREC") bytes"
 
-  if ! timeout 120s dora replay "$DREC"; then
+  if ! timeout -k 30s 120s dora replay "$DREC"; then
     echo "ERROR: dora replay failed or exceeded 120s"
     rm -f "$DREC"
     return 1
@@ -868,14 +883,12 @@ job_cluster_e2e() {
       exit 1
     fi
 
-    local REPO_ROOT
-    REPO_ROOT="$(pwd)"
     cat > "$WORK/dataflow.yml" <<EOF
 nodes:
   - id: rust-node
     _unstable_deploy:
       machine: m1
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -885,7 +898,7 @@ nodes:
   - id: rust-status-node
     _unstable_deploy:
       machine: m2
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
@@ -898,7 +911,7 @@ nodes:
   - id: rust-sink
     _unstable_deploy:
       machine: m3
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    path: $TARGET_DIR/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
     input_types:
@@ -1056,9 +1069,6 @@ job_cluster_record_replay() {
 
     cluster_up_and_verify || exit 1
 
-    local REPO_ROOT
-    REPO_ROOT="$(pwd)"
-
     # plain.yml: the deploy-free, build-free, absolute-path descriptor. This
     # is what gets embedded in the .drec and replayed locally, so it must NOT
     # carry `_unstable_deploy` (local `dora run` rejects it) or `build:`
@@ -1067,7 +1077,7 @@ job_cluster_record_replay() {
     cat > "$WORK/plain.yml" <<EOF
 nodes:
   - id: rust-node
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -1075,7 +1085,7 @@ nodes:
     output_types:
       random: std/core/v1/UInt64
   - id: rust-status-node
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
@@ -1086,7 +1096,7 @@ nodes:
     output_types:
       status: std/core/v1/String
   - id: rust-sink
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    path: $TARGET_DIR/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
     input_types:
@@ -1173,7 +1183,7 @@ EOF
   # $WORK/out/.
   echo "=== dora replay $DREC (local single-daemon run) ==="
   rm -rf "$WORK/out"
-  if ! timeout 120s dora replay "$DREC" --speed 0; then
+  if ! timeout -k 30s 120s dora replay "$DREC" --speed 0; then
     echo "ERROR: dora replay failed or exceeded 120s"
     rm -rf "$WORK"
     return 1
@@ -1294,7 +1304,7 @@ job_topic_and_top() {
     || { echo "ERROR: trace view missing prefix-error message"; return 1; }
 
   # self update --check-only read path
-  out=$(timeout 30 dora self update --check-only 2>&1) || true
+  out=$(timeout -k 30s 30 dora self update --check-only 2>&1) || true
   echo "$out" | grep -q "Checking for updates" \
     || { echo "ERROR: --check-only didn't enter update-check path"; return 1; }
   # "up to date" covers the #2512 reworded up-to-date message.
@@ -1335,7 +1345,7 @@ assert any(r.get('node') == 'ticker' and r.get('name') == 'count' for r in rows)
 
   # topic echo --count 5
   local echo_out
-  echo_out=$(timeout 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json 2>&1)
+  echo_out=$(timeout -k 30s 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json 2>&1)
   local lines
   lines=$(echo "$echo_out" | grep -c '"name":"ticker/count"' || echo 0)
   if [ "$lines" -lt 5 ]; then
@@ -1410,10 +1420,10 @@ job_redb_backend() {
   rm -f "$STORE"
 
   # Inline dataflow fixture
-  cat > examples/rust-dataflow/redb-smoke.yml <<'EOF'
+  cat > examples/rust-dataflow/redb-smoke.yml <<EOF
 nodes:
   - id: source
-    path: ../../target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/500
     outputs:
@@ -1526,6 +1536,26 @@ job_daemon_reconnect() {
   echo "OK: daemon reconnected and re-registered ($report_count reports)"
 }
 
+# ---------------------------------------------------------------------------
+# Job: multi-daemon-late-subscriber
+#
+# Mirrors the `multi-daemon-late-subscriber` job in nightly.yml. The test
+# spawns its own coordinator and two named daemons on free ports, so nothing
+# needs installing or tearing down here.
+# ---------------------------------------------------------------------------
+job_multi_daemon_late_subscriber() {
+  # Linux-only, mirroring the Ubuntu-only GHA job: a local pass has to predict
+  # the nightly result, not exercise a combination CI never runs.
+  if [ "$OS" != "Linux" ]; then
+    echo "SKIP: multi-daemon-late-subscriber runs on Linux in nightly CI"
+    # Recorded, not just printed: `run_job` prints PASS for a function that
+    # returns 0, so a silent skip would report coverage that never ran.
+    SKIPPED+=("multi-daemon-late-subscriber: non-Linux ($OS)")
+    return 0
+  fi
+  timeout 2400s cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
+}
+
 # -----------------------------------------------------------------------------
 # Job 6: state-reconstruction-smoke
 # -----------------------------------------------------------------------------
@@ -1537,10 +1567,10 @@ job_state_reconstruction() {
   local STORE=/tmp/state-reconstruct.db
   rm -f "$STORE"
 
-  cat > examples/rust-dataflow/long-running.yml <<'EOF'
+  cat > examples/rust-dataflow/long-running.yml <<EOF
 nodes:
   - id: source
-    path: ../../target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/500
     outputs:
@@ -1616,6 +1646,7 @@ job_test_cross_platform() {
     --exclude dora-node-api-python \
     --exclude dora-operator-api-python \
     --exclude dora-ros2-bridge-python \
+    --exclude dora-runtime-python \
     --exclude dora-cli-api-python \
     --exclude dora-examples
 }
@@ -1636,9 +1667,9 @@ job_examples() {
   # would end up at target/debug/dora, which `terminate_our_dora_children`
   # (scoped to $CLI_ROOT/bin/dora via pgrep) can't see -> leaked procs.
 
-  timeout 600s cargo run --example rust-dataflow
-  timeout 600s cargo run --example rust-dataflow-git
-  timeout 600s cargo run --example multiple-daemons
+  timeout -k 30s 600s cargo run --example rust-dataflow
+  timeout -k 30s 600s cargo run --example rust-dataflow-git
+  timeout -k 30s 600s cargo run --example multiple-daemons
 
   case "$OS" in
     MINGW*|CYGWIN*|MSYS*|Windows_NT)
@@ -1647,14 +1678,14 @@ job_examples() {
       ;;
     *)
       # C / C++ examples need a working C/C++ toolchain reachable by cargo.
-      timeout 600s cargo run --example c-dataflow
-      timeout 600s cargo run --example cxx-dataflow
+      timeout -k 30s 600s cargo run --example c-dataflow
+      timeout -k 30s 600s cargo run --example cxx-dataflow
 
       # Arrow C++ library: detect via pkg-config or brew. Skip if neither.
       if command -v pkg-config > /dev/null 2>&1 && pkg-config --exists arrow 2>/dev/null; then
-        timeout 600s cargo run --example cxx-arrow-dataflow
+        timeout -k 30s 600s cargo run --example cxx-arrow-dataflow
       elif [ "$OS" = "Darwin" ] && command -v brew > /dev/null 2>&1 && brew list apache-arrow > /dev/null 2>&1; then
-        timeout 600s cargo run --example cxx-arrow-dataflow
+        timeout -k 30s 600s cargo run --example cxx-arrow-dataflow
       else
         echo "SKIP cxx-arrow-dataflow: arrow C++ library not found (install libarrow-dev or 'brew install apache-arrow')"
         SKIPPED+=("examples: cxx-arrow-dataflow (arrow C++ missing)")
@@ -1663,7 +1694,7 @@ job_examples() {
   esac
 
   if [ "$OS" = "Linux" ]; then
-    timeout 600s cargo run --example cmake-dataflow
+    timeout -k 30s 600s cargo run --example cmake-dataflow
   else
     echo "SKIP cmake-dataflow: GHA runs this on Linux only"
     SKIPPED+=("examples: cmake-dataflow (non-Linux)")
@@ -1691,7 +1722,7 @@ job_cli_tests() {
     dora new test_rust_project --internal-create-with-path-dependencies
     cd test_rust_project
     cargo build --all
-    timeout 120s dora run dataflow.yml --stop-after 10s
+    timeout -k 30s 120s dora run dataflow.yml --stop-after 10s
     # Assert no per-node failures hid behind dora-run's 10s timer (#1863).
     assert_clean_dataflow_run "out"
   )
@@ -1727,7 +1758,7 @@ job_cli_tests() {
   # Error Event Example
   dora build examples/error-propagation/dataflow.yml
   local err_out
-  err_out=$(timeout 60s dora run examples/error-propagation/dataflow.yml 2>&1 || true)
+  err_out=$(timeout -k 30s 60s dora run examples/error-propagation/dataflow.yml 2>&1 || true)
   echo "$err_out" | grep -q "Received error from node" \
     || { echo "ERROR: error-propagation did not receive NodeFailed event"; return 1; }
 
@@ -1762,7 +1793,7 @@ job_cli_tests() {
       uv run pytest
       export OPERATING_MODE=SAVE
       dora build dataflow.yml --uv
-      timeout 120s dora run dataflow.yml --uv --stop-after 10s
+      timeout -k 30s 120s dora run dataflow.yml --uv --stop-after 10s
       # Assert no per-node failures hid behind dora-run's 10s timer (#1863).
       assert_clean_dataflow_run "out"
     )
@@ -1774,7 +1805,7 @@ job_cli_tests() {
     # this invocation's per-node behavior (#1863).
     rm -rf examples/python-dataflow/out
     dora build examples/python-dataflow/dataflow.yml --uv
-    timeout 60s dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
+    timeout -k 30s 60s dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
     assert_clean_dataflow_run examples/python-dataflow/out
 
     # Python Dynamic Node example
@@ -1785,7 +1816,7 @@ job_cli_tests() {
     dora up
     sleep 2
     dora start examples/python-dataflow/dataflow_dynamic.yml --name ci-python-dynamic --detach --uv
-    timeout 60s uv run opencv-plot || true
+    timeout -k 30s 60s uv run opencv-plot || true
     sleep 10
     dora stop --name ci-python-dynamic --grace-duration 30s 2>/dev/null || true
     dora destroy 2>/dev/null || true
@@ -1795,13 +1826,13 @@ job_cli_tests() {
     rm -rf examples/python-operator-dataflow/out
     dora build examples/python-operator-dataflow/dataflow.yml --uv
     uv pip install --quiet -e apis/python/node
-    timeout 120s dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
+    timeout -k 30s 120s dora run examples/python-operator-dataflow/dataflow.yml --uv --stop-after 20s
     assert_clean_dataflow_run examples/python-operator-dataflow/out
 
     # Python Multiple Arrays
     rm -rf examples/python-multiple-arrays/out
     dora build examples/python-multiple-arrays/dataflow.yml --uv
-    timeout 120s dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
+    timeout -k 30s 120s dora run examples/python-multiple-arrays/dataflow.yml --uv --stop-after 30s
     assert_clean_dataflow_run examples/python-multiple-arrays/out
 
     # Python Async example (5-min run; skipped on Windows per GHA)
@@ -1811,12 +1842,12 @@ job_cli_tests() {
         SKIPPED+=("cli-tests: python-async on Windows")
         ;;
       *)
-        timeout 360s dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
+        timeout -k 30s 360s dora run examples/python-async/dataflow.yaml --uv --stop-after 5m
         ;;
     esac
 
     # Python Drain example
-    OTEL_SDK_DISABLED=true timeout 120s dora run examples/python-drain/dataflow.yaml --uv
+    OTEL_SDK_DISABLED=true timeout -k 30s 120s dora run examples/python-drain/dataflow.yaml --uv
 
     # Python Dataflow Builder API (YAML generation contract test)
     # `simple_example.py` itself can't run here -- its build: directives
@@ -1824,17 +1855,17 @@ job_cli_tests() {
     # which pull PyPI `dora-rs` 0.5.0 and clobber the local workspace version.
     # Exercise the builder API itself via the hub-package-free YAML
     # generation contract test (matches GHA's #1654 approach).
-    timeout 60s uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
+    timeout -k 30s 60s uv run --with PyYAML python examples/python-dataflow-builder/test_builder_api.py
 
     # Python Queue Latency Test
-    timeout 120s dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
+    timeout -k 30s 120s dora run tests/queue_size_latest_data_python/dataflow.yaml --uv
 
     # Python Queue Latency + Timeout Test
-    timeout 120s dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
+    timeout -k 30s 120s dora run tests/queue_size_and_timeout_python/dataflow.yaml --uv
 
     # Rust Queue Latency Test
     dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
-    timeout 120s dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
+    timeout -k 30s 120s dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
     deactivate 2>/dev/null || true
     rm -rf "$venv_dir"
@@ -1851,7 +1882,7 @@ job_cli_tests() {
       cmake -B build
       cmake --build build
       cmake --install build
-      timeout 120s dora run dataflow.yml --stop-after 10s
+      timeout -k 30s 120s dora run dataflow.yml --stop-after 10s
     )
     rm -rf "$tmpd3"
 
@@ -1864,7 +1895,7 @@ job_cli_tests() {
       cmake -B build
       cmake --build build
       cmake --install build
-      timeout 120s dora run dataflow.yml --stop-after 10s
+      timeout -k 30s 120s dora run dataflow.yml --stop-after 10s
     )
     rm -rf "$tmpd4"
   else
@@ -1878,7 +1909,7 @@ job_cli_tests() {
 # Mirrors nightly.yml `bench-example`.
 # -----------------------------------------------------------------------------
 job_bench_example() {
-  timeout 2700s cargo run --example benchmark --release
+  timeout -k 30s 2700s cargo run --example benchmark --release
 }
 
 # -----------------------------------------------------------------------------
@@ -1936,6 +1967,7 @@ job_cross_check() {
         --exclude dora-node-api-python \
         --exclude dora-operator-api-python \
         --exclude dora-ros2-bridge-python \
+        --exclude dora-runtime-python \
         --exclude dora-cli-api-python
       ;;
     Darwin)
@@ -1947,12 +1979,14 @@ job_cross_check() {
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
+          --exclude dora-runtime-python \
           --exclude dora-cli-api-python
       else
         cargo check --target x86_64-apple-darwin --all \
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
+          --exclude dora-runtime-python \
           --exclude dora-cli-api-python
       fi
       ;;
@@ -1979,8 +2013,8 @@ job_ros2_bridge() {
     return 0
   fi
   # Basic checks -- mirror nightly.yml `ros2-bridge` (no ROS distro required).
-  timeout 600s cargo check -p dora-ros2-bridge --no-default-features
-  timeout 600s cargo test -p dora-ros2-bridge-msg-gen
+  timeout -k 30s 600s cargo check -p dora-ros2-bridge --no-default-features
+  timeout -k 30s 600s cargo test -p dora-ros2-bridge-msg-gen
   # dora-ros2-bridge-python's test_utils.py imports numpy + pyarrow. The
   # workflow installs them (`pip install pyarrow numpy`); do the same here in a
   # throwaway venv so this runs cleanly on a Linux box without ROS2 instead of
@@ -1991,7 +2025,7 @@ job_ros2_bridge() {
   # shellcheck disable=SC1091
   source "$ros2_basic_venv/bin/activate"
   uv pip install --quiet pyarrow numpy
-  timeout 600s cargo test -p dora-ros2-bridge-python
+  timeout -k 30s 600s cargo test -p dora-ros2-bridge-python
   deactivate 2>/dev/null || true
   rm -rf "$ros2_basic_venv"
 
@@ -2003,11 +2037,11 @@ job_ros2_bridge() {
   fi
   # shellcheck disable=SC1091
   source /opt/ros/humble/setup.bash
-  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
+  timeout -k 30s 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow
   # Self-contained parameter example: declares + exercises ROS2 parameters via
   # the local API (no discovery), so it runs on every platform incl. arm64.
-  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-parameter
-  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
+  timeout -k 30s 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example rust-ros2-dataflow-parameter
+  timeout -k 30s 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow --features ros2-examples
 
   # C++ service server, driven by the rclcpp minimal client. Mirrors the
   # nightly.yml "C++ ROS2 Bridge service-server example" step. The example peer
@@ -2025,7 +2059,7 @@ job_ros2_bridge() {
     fi
   fi
   if ros2 pkg executables examples_rclcpp_minimal_client 2>/dev/null | grep -q client_main; then
-    timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
+    timeout -k 30s 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example cxx-ros2-dataflow-service-server --features ros2-examples
   else
     echo "SKIP cxx-ros2-dataflow-service-server: examples_rclcpp_minimal_client not installed (apt-get install ros-humble-examples-rclcpp-minimal-client)"
     SKIPPED+=("ros2-bridge: cxx-service-server (examples_rclcpp_minimal_client missing)")
@@ -2043,17 +2077,17 @@ job_ros2_bridge() {
   # shellcheck disable=SC1091
   source .venv-ros2-bridge/bin/activate
   uv pip install -q -e apis/python/node pyarrow
-  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-client
-  timeout 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-server
+  timeout -k 30s 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-client
+  timeout -k 30s 1800s env QT_QPA_PLATFORM=offscreen cargo run -p dora-ros2-bridge --example python-ros2-dataflow-service-server
   deactivate
 }
 
 job_ros2_zenoh_humble() {
-  timeout 3600s scripts/ros2-zenoh-interop.sh humble all
+  timeout -k 30s 3600s scripts/ros2-zenoh-interop.sh humble all
 }
 
 job_ros2_zenoh_kilted() {
-  timeout 3600s scripts/ros2-zenoh-interop.sh kilted all
+  timeout -k 30s 3600s scripts/ros2-zenoh-interop.sh kilted all
 }
 
 # -----------------------------------------------------------------------------
@@ -2069,6 +2103,7 @@ run_job "cpu-affinity-smoke"        job_cpu_affinity
 run_job "redb-backend-smoke"        job_redb_backend
 run_job "daemon-reconnect-smoke"    job_daemon_reconnect
 run_job "state-reconstruction-smoke" job_state_reconstruction
+run_job "multi-daemon-late-subscriber" job_multi_daemon_late_subscriber
 run_job "test-cross-platform"       job_test_cross_platform
 run_job "examples"                  job_examples
 run_job "cli-tests"                 job_cli_tests

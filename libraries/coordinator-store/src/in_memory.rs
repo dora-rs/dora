@@ -278,6 +278,8 @@ mod tests {
             updated_at: 0,
             node_to_daemon: Default::default(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
         };
 
         store.put_dataflow(&record).unwrap();

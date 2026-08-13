@@ -1,13 +1,14 @@
 //! Register as a dora node, pull one event to advance the daemon's
-//! `last_activity` past its unarmed-zero state, write an incarnation
-//! marker, then block without draining further events.
+//! `last_activity`, write an incarnation marker, then block without
+//! draining further events.
 //!
-//! The daemon's health check skips nodes whose `last_activity == 0`
-//! ("not yet connected" — binaries/daemon/src/lib.rs:1925), so a node
-//! that registers and immediately hangs is invisible to the health
-//! check. Pumping one event first guarantees `last_activity` holds a
-//! real timestamp, after which the watchdog clock can legitimately
-//! fire when we go silent.
+//! The daemon's health check only monitors nodes that have **connected**
+//! — i.e. subscribed to events (`health_check_should_kill`,
+//! binaries/daemon/src/lib.rs) — so a node that hangs before it ever
+//! subscribes is invisible to the health check. Subscribing and pumping
+//! one event first puts this node in `connected_nodes` and gives
+//! `last_activity` a real post-connection timestamp, after which the
+//! watchdog clock can legitimately fire when we go silent.
 //!
 //! Each incarnation writes a new marker line, so the test can count
 //! how many times the daemon had to kill-and-respawn the node.

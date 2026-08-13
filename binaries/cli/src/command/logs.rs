@@ -12,8 +12,8 @@ use crate::{
         send_control_request,
     },
     output::{
-        LogFormat, LogOutputConfig, parse_jsonl_line, parse_log_filter, parse_log_level_str,
-        print_log_message,
+        LogFormat, LogOutputConfig, level_filter_is_active, message_passes_level_filter,
+        parse_jsonl_line, parse_log_filter, parse_log_level_str, print_log_message,
     },
     ws_client::WsSession,
 };
@@ -66,6 +66,8 @@ pub struct LogsArgs {
     #[arg(value_parser = parse_log_level_str)]
     pub level: dora_core::build::LogLevelOrStdout,
     /// Output format for log messages
+    ///
+    /// `json` emits JSON Lines (one object per log message).
     #[clap(long, default_value = "pretty", env = "DORA_LOG_FORMAT")]
     pub log_format: LogFormat,
     /// Per-node log level filter (e.g. "sensor=debug,processor=warn")
@@ -247,9 +249,15 @@ fn read_local_logs(args: &LogsArgs) -> Result<()> {
         all_messages.extend(read_log_file(path)?);
     }
     all_messages.sort_by_key(|a| a.timestamp);
-    let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-    let grepped = apply_grep(filtered, args.grep.as_deref());
-    let display = apply_tail(grepped, args.tail);
+    let display = filter_and_tail(
+        all_messages,
+        args.since,
+        args.until,
+        args.grep.as_deref(),
+        &config,
+        args.tail,
+        now,
+    );
 
     for msg in display {
         print_log_message(msg, &config);
@@ -292,9 +300,15 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         all_messages.extend(read_log_file(path)?);
     }
     all_messages.sort_by_key(|a| a.timestamp);
-    let filtered = apply_time_filters(all_messages, args.since, args.until, now);
-    let grepped = apply_grep(filtered, args.grep.as_deref());
-    let display = apply_tail(grepped, args.tail);
+    let display = filter_and_tail(
+        all_messages,
+        args.since,
+        args.until,
+        args.grep.as_deref(),
+        &config,
+        args.tail,
+        now,
+    );
 
     for msg in display {
         print_log_message(msg, &config);
@@ -577,6 +591,18 @@ fn apply_grep(messages: Vec<LogMessage>, pattern: Option<&str>) -> Vec<LogMessag
         .collect()
 }
 
+/// Drop messages that the configured minimum-level / per-node level filters
+/// would suppress. This must run *before* `apply_tail` so that `--tail N`
+/// counts only lines that will actually be displayed; otherwise `print_log_message`
+/// applies the level filter after tailing and the visible output can be shorter
+/// than `N` (or empty), even when far more matching lines exist.
+fn apply_level_filter(messages: Vec<LogMessage>, config: &LogOutputConfig) -> Vec<LogMessage> {
+    messages
+        .into_iter()
+        .filter(|msg| message_passes_level_filter(msg, config))
+        .collect()
+}
+
 fn apply_tail(messages: Vec<LogMessage>, tail: Option<usize>) -> Vec<LogMessage> {
     match tail {
         Some(n) => messages
@@ -589,6 +615,29 @@ fn apply_tail(messages: Vec<LogMessage>, tail: Option<usize>) -> Vec<LogMessage>
             .collect(),
         None => messages,
     }
+}
+
+/// The shared client-side display pipeline used by every non-follow log path:
+/// time filter → grep → level filter → tail, in that order.
+///
+/// `apply_level_filter` MUST come before `apply_tail` so that `--tail N` counts
+/// only lines that will actually be displayed (otherwise the level filter, which
+/// `print_log_message` applies last, can shrink the output below `N` or to
+/// nothing). Routing all four call sites through this single helper keeps that
+/// ordering from drifting apart between them.
+fn filter_and_tail(
+    messages: Vec<LogMessage>,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
+    grep: Option<&str>,
+    config: &LogOutputConfig,
+    tail: Option<usize>,
+    now: DateTime<Utc>,
+) -> Vec<LogMessage> {
+    let filtered = apply_time_filters(messages, since, until, now);
+    let grepped = apply_grep(filtered, grep);
+    let leveled = apply_level_filter(grepped, config);
+    apply_tail(leveled, tail)
 }
 
 fn matches_grep(msg: &LogMessage, pattern: Option<&str>) -> bool {
@@ -684,9 +733,15 @@ fn all_nodes_logs_from_coordinator(
     messages.sort_by_key(|msg| msg.timestamp);
 
     let now = Utc::now();
-    let filtered = apply_time_filters(messages, args.since, args.until, now);
-    let grepped = apply_grep(filtered, args.grep.as_deref());
-    let display = apply_tail(grepped, args.tail);
+    let display = filter_and_tail(
+        messages,
+        args.since,
+        args.until,
+        args.grep.as_deref(),
+        config,
+        args.tail,
+        now,
+    );
     for msg in display {
         print_log_message(msg, config);
     }
@@ -799,8 +854,16 @@ pub fn logs(
                 uuid: Some(uuid),
                 name: None,
                 node: node.to_string(),
-                tail: if since.is_some() || until.is_some() || grep.is_some() {
-                    // Fetch all logs when filtering client-side, apply tail after
+                tail: if since.is_some()
+                    || until.is_some()
+                    || grep.is_some()
+                    || level_filter_is_active(config)
+                {
+                    // Fetch all logs when filtering client-side, apply tail after.
+                    // The level filter counts here too: pre-tailing at the
+                    // coordinator would trim older matching lines before the
+                    // level filter runs, so `--tail N --level error` could show
+                    // fewer than N (or zero) errors even when many exist.
                     None
                 } else {
                     tail
@@ -814,9 +877,7 @@ pub fn logs(
     let now = Utc::now();
     let content = String::from_utf8_lossy(&logs);
     let messages: Vec<LogMessage> = content.lines().filter_map(parse_jsonl_line).collect();
-    let filtered = apply_time_filters(messages, since, until, now);
-    let grepped = apply_grep(filtered, grep);
-    let display = apply_tail(grepped, tail);
+    let display = filter_and_tail(messages, since, until, grep, config, tail, now);
     for msg in display {
         print_log_message(msg, config);
     }
@@ -1210,5 +1271,55 @@ mod tests {
         assert_eq!(msgs[0].message, "ok");
         // The dangling partial byte is left unconsumed.
         assert_eq!(new_pos, complete.len() as u64);
+    }
+
+    // --- level filter is applied before tail ---
+
+    fn msg_with_level(message: &str, level: log::Level, ts_secs: i64) -> LogMessage {
+        let mut m = make_msg(
+            message,
+            Some("n"),
+            None,
+            DateTime::from_timestamp(ts_secs, 0).unwrap(),
+        );
+        m.level = LogLevelOrStdout::LogLevel(level);
+        m
+    }
+
+    #[test]
+    fn tail_counts_only_level_filtered_lines() {
+        // A few early errors, then many later info lines — the classic case
+        // where a naive "tail then filter" drops every error.
+        let mut messages = vec![
+            msg_with_level("err1", log::Level::Error, 1),
+            msg_with_level("err2", log::Level::Error, 2),
+        ];
+        for i in 0..20 {
+            messages.push(msg_with_level("info", log::Level::Info, 100 + i));
+        }
+
+        let config = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Error),
+            ..Default::default()
+        };
+
+        // Drive the *production* pipeline that all four log paths route through.
+        // If the level filter ran after the tail (the bug), `--tail 5` over these
+        // 22 lines — whose last 5 are all `info` — would display nothing. The two
+        // errors survive only because `filter_and_tail` levels before it tails, so
+        // this asserts the real ordering rather than an isolated composition.
+        let shown = filter_and_tail(messages, None, None, None, &config, Some(5), Utc::now());
+        let shown_msgs: Vec<_> = shown.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(shown_msgs, vec!["err1", "err2"]);
+    }
+
+    #[test]
+    fn level_filter_active_predicate() {
+        assert!(!level_filter_is_active(&LogOutputConfig::default()));
+        let restrictive = LogOutputConfig {
+            min_level: LogLevelOrStdout::LogLevel(log::Level::Error),
+            ..Default::default()
+        };
+        assert!(level_filter_is_active(&restrictive));
     }
 }

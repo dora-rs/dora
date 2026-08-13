@@ -4,7 +4,7 @@ use std::{
 };
 
 use dora_node_api::{
-    DoraNode, flume,
+    DoraNode,
     integration_testing::{
         self, IntegrationTestInput, TestingOptions,
         integration_testing_format::{IncomingEvent, InputData, TimedIncomingEvent},
@@ -118,13 +118,13 @@ fn test_tick_counter_and_random_round_trip() -> eyre::Result<()> {
         IntegrationTestInput::new("rust-status-node".parse().unwrap(), events),
     );
 
-    let (tx, rx) = flume::unbounded();
+    let (tx, mut rx) = dora_node_api::integration_testing::unbounded_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 
     crate::run(node, events)?;
 
-    let outputs = rx.try_iter().collect::<Vec<_>>();
+    let outputs = dora_node_api::integration_testing::drain_outputs(&mut rx);
     let expected_messages = [
         "operator received random value 0xaa after 0 ticks",
         "operator received random value 0xbb after 1 ticks",
@@ -165,7 +165,7 @@ fn test_non_uint64_random_input_errors() -> eyre::Result<()> {
         IntegrationTestInput::new("rust-status-node".parse().unwrap(), events),
     );
 
-    let (tx, _rx) = flume::unbounded();
+    let (tx, _rx) = dora_node_api::integration_testing::unbounded_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 

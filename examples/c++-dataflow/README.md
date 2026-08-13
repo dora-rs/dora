@@ -43,15 +43,17 @@ For a manual build, follow these steps:
     ```
     Omit the `-fPIC` argument on Windows. Replace the `liboperator_c_api.so` name with the shared library standard library prefix/extensions used on your OS, e.g. `.dll` on Windows.
 
-**Build the dora coordinator and runtime:**
+**Build the dora CLI:**
 
-- Build the `dora-coordinator` executable using `cargo build -p dora-coordinator --release`
-- Build the `dora-runtime` executable using `cargo build -p dora-runtime --release`
+- Build the `dora` executable using `cargo build -p dora-cli --release`
+  - This is the only dora binary you need: it embeds the coordinator and the
+    daemon, and hosts shared-library operators like the one above through its
+    `dora runtime` subcommand, which the daemon spawns for you.
 
 **Run the dataflow:**
 
-- Start the `dora-coordinator`, passing the paths to the dataflow file and the `dora-runtime` as arguments:
+- Run the dataflow with the CLI built above:
 
   ```
-  ../../target/release/dora-daemon --run-dataflow dataflow.yml ../../target/release/dora-runtime
+  ../../target/release/dora run dataflow.yml
   ```

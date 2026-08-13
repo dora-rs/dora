@@ -12,8 +12,9 @@ use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
 
 /// Helper for deserializing incoming WS frames without going through
-/// `serde_json::Value` for the result/payload fields. This preserves
-/// u128 fidelity for uhlc::ID inside timestamps.
+/// `serde_json::Value` for the result/payload fields: they are handed to the
+/// caller as raw bytes to be parsed into their real type, so they are never
+/// re-serialized from an intermediate `Value`.
 #[derive(serde::Deserialize)]
 struct IncomingFrame {
     #[serde(default)]
@@ -494,7 +495,8 @@ fn handle_response(
             let err_reply = dora_message::coordinator_to_cli::ControlRequestReply::Error(error);
             Ok(serde_json::to_vec(&err_reply).unwrap_or_default())
         } else if let Some(raw) = result {
-            // Preserve raw JSON bytes to maintain u128 fidelity for uhlc::ID
+            // Hand the raw JSON bytes to the caller, which parses them into the
+            // concrete reply type.
             Ok(raw.get().as_bytes().to_vec())
         } else {
             Err(eyre!("empty WS response"))

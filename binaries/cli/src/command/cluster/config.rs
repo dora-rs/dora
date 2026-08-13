@@ -70,10 +70,34 @@ impl ClusterConfig {
         if self.machines.is_empty() {
             bail!("cluster config must define at least one machine");
         }
+        // `zenoh_peer` is interpolated verbatim into the same remote command
+        // (`dora daemon --zenoh-peer {ep}`), so it needs the same guard as the
+        // id/labels below — but with a charset wide enough for endpoint syntax
+        // (`tcp/1.2.3.4:7447`, IPv6 literals), which the id charset would reject.
+        if let Some(ep) = &self.zenoh_peer {
+            validate_endpoint_shell_safe(&format!("zenoh_peer `{ep}`"), ep)?;
+        }
         let mut seen = HashSet::new();
         for m in &self.machines {
             if m.id.is_empty() {
                 bail!("machine id must not be empty");
+            }
+            // `machine.id` and every label key/value are interpolated verbatim
+            // into the shell command that `dora cluster up` runs over SSH
+            // (`dora daemon --machine-id {id} --labels {k}={v},... >
+            // /tmp/dora-daemon-{id}.log`). A value containing whitespace or shell
+            // metacharacters would corrupt that command (or, for the id, the log
+            // path), so restrict these fields to the same safe identifier charset
+            // dora uses for node/data ids (`libraries/message/src/id.rs`).
+            // `host`/`user` are deliberately left unrestricted: they are network
+            // addresses that legitimately carry characters outside this set
+            // (e.g. IPv6 literals), and are folded into the ssh *target* rather
+            // than the remote command string. `zenoh_peer` *does* land in the
+            // remote command, so it is validated (with a wider charset) above.
+            validate_shell_safe(&format!("machine id `{}`", m.id), &m.id)?;
+            for (k, v) in &m.labels {
+                validate_shell_safe(&format!("label key `{k}` on machine `{}`", m.id), k)?;
+                validate_shell_safe(&format!("label value `{v}` on machine `{}`", m.id), v)?;
             }
             if !seen.insert(&m.id) {
                 bail!("duplicate machine id: `{}`", m.id);
@@ -90,6 +114,35 @@ impl ClusterConfig {
         }
         Ok(())
     }
+}
+
+/// Reject a value that will be interpolated into the remote SSH command unless
+/// it consists only of the safe identifier charset `[a-zA-Z0-9_.-]`. `what`
+/// names the field for the error message.
+fn validate_shell_safe(what: &str, value: &str) -> eyre::Result<()> {
+    if let Some(ch) = value
+        .chars()
+        .find(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-' && *c != '.')
+    {
+        bail!("{what} contains invalid character `{ch}` -- only [a-zA-Z0-9_.-] are allowed");
+    }
+    Ok(())
+}
+
+/// Like [`validate_shell_safe`], but also permits the extra characters a Zenoh
+/// endpoint string carries — `/` and `:` in `tcp/1.2.3.4:7447`, and the
+/// `[`/`]` around an IPv6 literal like `tcp/[::1]:7447`. It still rejects
+/// whitespace and shell metacharacters (`;`, `|`, `$`, backtick, ...), so the
+/// value cannot break out of the remote command.
+fn validate_endpoint_shell_safe(what: &str, value: &str) -> eyre::Result<()> {
+    if let Some(ch) = value.chars().find(|c| {
+        !c.is_ascii_alphanumeric() && !matches!(c, '_' | '-' | '.' | '/' | ':' | '[' | ']')
+    }) {
+        bail!(
+            "{what} contains invalid character `{ch}` -- only [a-zA-Z0-9_.:/] and `[`/`]` are allowed"
+        );
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -221,6 +274,84 @@ mod tests {
             write_yaml("coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: \"\"\n    host: a\n");
         let err = ClusterConfig::load(f.path()).unwrap_err();
         assert!(err.to_string().contains("must not be empty"));
+    }
+
+    #[test]
+    fn reject_id_with_shell_metacharacters() {
+        // An id with a space or shell metacharacter would corrupt the remote
+        // `dora daemon --machine-id {id} ...` command run over SSH.
+        for bad in ["a b", "a;rm -rf /", "a$(whoami)", "a/b", "a`id`"] {
+            let f = write_yaml(&format!(
+                "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: \"{bad}\"\n    host: h\n"
+            ));
+            let err = ClusterConfig::load(f.path())
+                .unwrap_err()
+                .to_string()
+                .to_lowercase();
+            assert!(
+                err.contains("invalid character"),
+                "id `{bad}` should be rejected, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn reject_label_with_shell_metacharacters() {
+        // Label keys/values are interpolated into `--labels k=v` on the remote
+        // shell, so a metacharacter there is the same injection vector as the id.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: h\n    labels:\n      gpu: \"x;rm -rf /\"\n",
+        );
+        let err = ClusterConfig::load(f.path())
+            .unwrap_err()
+            .to_string()
+            .to_lowercase();
+        assert!(
+            err.contains("invalid character") && err.contains("label value"),
+            "malicious label value should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_zenoh_peer_with_shell_metacharacters() {
+        // `zenoh_peer` is interpolated into `dora daemon --zenoh-peer {ep}` on
+        // the remote shell, so a metacharacter there is an injection vector too.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nzenoh_peer: \"tcp/1.2.3.4:7447;rm -rf /\"\nmachines:\n  - id: a\n    host: h\n",
+        );
+        let err = ClusterConfig::load(f.path())
+            .unwrap_err()
+            .to_string()
+            .to_lowercase();
+        assert!(
+            err.contains("invalid character") && err.contains("zenoh_peer"),
+            "malicious zenoh_peer should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn accept_ipv6_zenoh_peer() {
+        // The endpoint charset must still permit a legitimate IPv6 literal
+        // endpoint, whose `[`/`]`/`:` the id charset would reject.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nzenoh_peer: \"tcp/[::1]:7447\"\nmachines:\n  - id: a\n    host: h\n",
+        );
+        let cfg = ClusterConfig::load(f.path()).unwrap();
+        assert_eq!(cfg.zenoh_peer.as_deref(), Some("tcp/[::1]:7447"));
+    }
+
+    #[test]
+    fn accept_conventional_ids() {
+        // Hostname-style ids (alphanumerics plus `.`, `_`, `-`) stay valid.
+        for good in ["arm", "jetson-01", "node_2", "gpu.host-1"] {
+            let f = write_yaml(&format!(
+                "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: {good}\n    host: h\n"
+            ));
+            assert!(
+                ClusterConfig::load(f.path()).is_ok(),
+                "id `{good}` should be accepted"
+            );
+        }
     }
 
     #[test]
