@@ -648,7 +648,26 @@ async fn serve_cross_data_frame(
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
     stream: &mut tokio::net::TcpStream,
 ) -> Result<bool, String> {
-    match handle_cross_data_frame(stream, memory_pool, machine_id).await {
+    // Bound the whole frame read: a peer that sends a header with a large
+    // `size` and then stalls would otherwise hold the per-pool lock and
+    // leave the seqlock odd indefinitely, wedging every subsequent write
+    // to that pool. On timeout the connection is dropped; the lock guard
+    // drops with the cancelled future, and the odd generation marks the
+    // frame torn (next write self-heals).
+    let frame = match tokio::time::timeout(
+        CROSS_DATA_READ_TIMEOUT,
+        handle_cross_data_frame(stream, memory_pool, machine_id),
+    )
+    .await
+    {
+        Ok(frame) => frame,
+        Err(_) => {
+            return Err(
+                "memory pool: direct-TCP data connection stalled (frame read timeout)".to_string(),
+            );
+        }
+    };
+    match frame {
         Ok(Some((dataflow_id, shared_memory_id, seq))) => {
             // Remote commit ack via zenoh (the origin's pending reply
             // waits on it).
@@ -845,6 +864,30 @@ async fn handle_cross_data_frame(
         if magic8 != DORADMA_MAGIC {
             return Err(CrossFrameError::with_ack(
                 format!("{shared_memory_id} header magic mismatch"),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
+            ));
+        }
+        // The frame `size` must equal the registered pool size recorded
+        // in the mirror header: a short frame would otherwise publish an
+        // even generation over a truncated tensor that readers accept as
+        // complete (the segment-length bound alone cannot catch it, since
+        // the segment is created at the registered size + header).
+        let registered_size = {
+            let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) } as usize;
+            let json_bytes =
+                unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
+            serde_json::from_slice::<serde_json::Value>(json_bytes)
+                .ok()
+                .and_then(|v| v.get("size").and_then(|s| s.as_u64()))
+                .unwrap_or(0) as usize
+        };
+        if size != registered_size {
+            return Err(CrossFrameError::with_ack(
+                format!(
+                    "{shared_memory_id} frame size {size} != registered pool size {registered_size}"
+                ),
                 dataflow_id,
                 shared_memory_id.clone(),
                 seq,
@@ -1216,6 +1259,14 @@ fn note_direct_recovered(dataflow_id: Uuid, shared_memory_id: &str) -> bool {
 /// can take tens of seconds; a dead link fails earlier via the publish
 /// error path.
 const CROSS_WRITE_ACK_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+/// Upper bound for reading one direct-TCP data frame (header + payload).
+/// A peer that sends a header with a large `size` and then stalls would
+/// otherwise hold the per-pool lock and leave the seqlock odd
+/// indefinitely, wedging every subsequent write to that pool. 300s covers
+/// a 1 GiB frame on a ~5 MB/s slow WAN link; on timeout the connection is
+/// dropped, the lock guard drops, and the odd generation marks the frame
+/// torn (next write self-heals).
+const CROSS_DATA_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
 
 /// Resolve the pending cross-machine write reply for a commit ack.
 /// Only the seq-matched pending entry is resolved — an ack for a previous
@@ -12003,6 +12054,7 @@ mod cross_pool_write_tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // /dev/shm 段名（mirror 创建/校验）仅 Linux 有效
     fn mirror_json_records_receiver_device() {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
@@ -12045,6 +12097,7 @@ mod cross_pool_write_tests {
     }
 
     #[test]
+    #[cfg(target_os = "linux")] // /dev/shm 段（含 remove_file("/dev/shm/…")）仅 Linux 有效
     fn concurrent_mirror_writes_never_interleave_bytes() {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
@@ -12271,9 +12324,13 @@ mod cross_pool_write_tests {
             err.ack == Some((dataflow_id, pool_id.to_string(), 1)),
             "overflow rejection must carry the ack info: {err:?}"
         );
+        // Rejection can come from the registered-size check (newer,
+        // fires first: u64::MAX != registered size) or the checked-add
+        // overflow guard — either way the wire-controlled size is
+        // refused without aborting.
         assert!(
-            err.message.contains("overflow"),
-            "expected overflow rejection, got: {}",
+            err.message.contains("overflow") || err.message.contains("registered pool size"),
+            "expected size rejection, got: {}",
             err.message
         );
         // The mirror's seqlock generation is untouched: no writer began,
@@ -12405,7 +12462,12 @@ mod cross_pool_write_tests {
                             assert_eq!(seq, 1);
                             assert!(!ok, "failed write must ack ok=false");
                             assert!(
-                                error.is_some() && error.as_deref().unwrap().contains("overflow"),
+                                error.is_some()
+                                    && (error.as_deref().unwrap().contains("overflow")
+                                        || error
+                                            .as_deref()
+                                            .unwrap()
+                                            .contains("registered pool size")),
                                 "failed write ack must carry the error: {error:?}"
                             );
                             ack_received = true;
