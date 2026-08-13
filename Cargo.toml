@@ -186,7 +186,7 @@ uuid = { version = "1.23", features = ["serde", "v7"] }
 futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
 fs2 = "0.4.3"
 redb = "4.1"
-bincode = "1.3.3"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 flume = "0.12.0"
 tempfile = "3.27.0"
 proptest = "1.11"

@@ -4321,13 +4321,11 @@ impl Daemon {
                                 future::Either::Right((sample, f)) => {
                                     finished = f;
                                     let Ok(sample) = sample else { break };
-                                    // Node publishes raw payload + bincode metadata
+                                    // Node publishes raw payload + encoded metadata
                                     // attachment (see `DoraNode::zenoh_publish`).
+                                    use dora_message::metadata::Metadata;
                                     let Some(mut metadata) = sample.attachment().and_then(|a| {
-                                        bincode::deserialize::<dora_message::metadata::Metadata>(
-                                            &a.to_bytes(),
-                                        )
-                                        .ok()
+                                        dora_message::decode::<Metadata>(&a.to_bytes()).ok()
                                     }) else {
                                         continue;
                                     };

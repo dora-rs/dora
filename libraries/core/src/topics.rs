@@ -655,7 +655,7 @@ fn local_address_toward(target: SocketAddr) -> Option<IpAddr> {
 
 /// Zenoh key for node output data.
 ///
-/// Payload format: raw Arrow bytes with bincode `Metadata` in the Zenoh
+/// Payload format: raw Arrow bytes with postcard `Metadata` in the Zenoh
 /// attachment. This topic is published by nodes and consumed directly by
 /// downstream nodes (plus debug-inspection subscribers). Daemon control frames
 /// must not be published here; use [`zenoh_daemon_control_topic`] instead.
@@ -741,7 +741,7 @@ pub fn zenoh_output_ack_topic(
 
 /// Zenoh key for control frames associated with a node output.
 ///
-/// Payload format: bincode `Timestamped<InterDaemonEvent>` with no Zenoh
+/// Payload format: postcard `Timestamped<InterDaemonEvent>` with no Zenoh
 /// attachment. Published by daemons for inter-daemon control (for example
 /// `OutputClosed`) and by the coordinator for explicit topic injection. Keeping
 /// this separate from [`zenoh_output_publish_topic`] avoids mixing control frames
@@ -931,7 +931,7 @@ mod tests {
 
     // Node raw output and daemon control frames MUST live on distinct Zenoh
     // keys: they share neither format nor consumer, and merging them caused the
-    // #1992 crossover (daemon bincode-decoding node output). Guard the split.
+    // #1992 crossover (daemon postcard-decoding node output). Guard the split.
     #[cfg(feature = "zenoh")]
     #[test]
     fn output_and_control_topics_are_distinct() {

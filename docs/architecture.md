@@ -69,7 +69,7 @@ independently.
 |------|-------|------|
 | `libraries/message` | dora-message | All inter-component message types, protocol definitions, Arrow metadata |
 | `libraries/core` | dora-core | Dataflow descriptor parsing, build utilities, Zenoh config |
-| `libraries/recording` | dora-recording | Recording format (.drec): bincode header + entries + footer |
+| `libraries/recording` | dora-recording | Recording format (.drec): binary header + entries + footer |
 | `libraries/arrow-convert` | dora-arrow-convert | Arrow type conversions (numeric, datetime) |
 | `libraries/coordinator-store` | dora-coordinator-store | State persistence for coordinator (in-memory or redb backend) |
 
@@ -231,7 +231,7 @@ Nodes are standalone processes that communicate with the daemon.
 | Default port | 6013 |
 | Auth | Bearer token in `Authorization` header |
 | Control messages | JSON text frames (request/response/event) |
-| Topic data | Binary frames: `[16-byte UUID][bincode payload]` |
+| Topic data | Binary frames: `[16-byte UUID][postcard payload]` |
 | Rate limit | 20 connections per IP per 60s |
 | Max connections | 256 |
 
@@ -304,7 +304,7 @@ Three transport options, configured via `LocalCommunicationConfig`:
 | Router port | 7447 |
 | Peer port | 5456 |
 | Routing | linkstate |
-| Serialization | bincode |
+| Serialization | postcard |
 
 **Topic pattern:**
 ```
@@ -727,7 +727,7 @@ _unstable_deploy:
 ├─ output_id: [u8; output_id_len]
 ├─ timestamp_offset_nanos: u64 LE
 ├─ event_bytes_len: u32 LE
-└─ event_bytes: [u8; event_bytes_len]    (bincode InterDaemonEvent)
+└─ event_bytes: [u8; event_bytes_len]    (postcard InterDaemonEvent)
 
 [FOOTER] (optional, written on clean finish)
 ├─ FOOTER_MAGIC: 8 bytes ("DORAEND")
@@ -814,7 +814,7 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `DORA_COORDINATOR_PORT_WS_DEFAULT` | 6013 | Coordinator WebSocket port |
 | `DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT` | 53291 | Daemon TCP listener port |
 | `ZERO_COPY_THRESHOLD` | 4096 bytes | Shared memory activation |
-| `MAX_MESSAGE_BYTES` | 64 MiB | Max TCP/bincode message |
+| `MAX_MESSAGE_BYTES` | 64 MiB | Max TCP/postcard message |
 | `MAX_CONTROL_MESSAGE_BYTES` | 1 MiB | Max control plane JSON message |
 | `TCP_READ_TIMEOUT` | 30 seconds | Socket read timeout |
 | `MAX_WS_CONNECTIONS` | 256 | Concurrent WebSocket limit |
@@ -873,7 +873,7 @@ pub enum NodeStatus {
 |---------|--------|-------|
 | CLI ↔ Coordinator | JSON text frames | Preserves u128 for HLC timestamps |
 | Coordinator ↔ Daemon | JSON text frames | Direct string serialization |
-| Daemon ↔ Node (TCP) | bincode over length-prefixed frames | 8-byte LE length prefix |
-| Daemon ↔ Node (shmem) | bincode via shared memory | Atomic synchronization |
-| Daemon ↔ Daemon | bincode over Zenoh | Apache Arrow data format |
-| Recording | bincode entries in .drec | Custom binary container |
+| Daemon ↔ Node (TCP) | postcard over length-prefixed frames | 8-byte LE length prefix |
+| Daemon ↔ Node (shmem) | postcard via shared memory | Atomic synchronization |
+| Daemon ↔ Daemon | postcard over Zenoh | Apache Arrow data format |
+| Recording | postcard entries in .drec | Custom binary container |

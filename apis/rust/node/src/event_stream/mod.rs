@@ -159,7 +159,7 @@ fn spawn_startup_acker(
                     node_id.as_ref(),
                     input_id.as_ref(),
                 );
-                let attachment = match bincode::serialize(&metadata) {
+                let attachment = match dora_message::encode(&metadata) {
                     Ok(bytes) => bytes,
                     Err(e) => {
                         tracing::debug!(input = %input_id, "failed to serialize startup ack ({e})");
@@ -490,7 +490,7 @@ impl EventStream {
                                     use dora_message::metadata::Metadata;
                                     let metadata = match sample.attachment() {
                                         Some(att) => {
-                                            match bincode::deserialize::<Metadata>(&att.to_bytes())
+                                            match dora_message::decode::<Metadata>(&att.to_bytes())
                                             {
                                                 // A version mismatch that still happens
                                                 // to deserialize: reject with a clear
@@ -514,7 +514,7 @@ impl EventStream {
                                                     // A pre-1.0 peer (old ArrowTypeInfo
                                                     // sidecar layout) misaligns here; name
                                                     // the likely cause so the failure isn't
-                                                    // a bare bincode error.
+                                                    // a bare deserialization error.
                                                     tracing::warn!(
                                                         "zenoh metadata deserialization failed \
                                                      (possibly a peer using an incompatible \
@@ -1921,14 +1921,14 @@ mod tests {
     }
 
     /// Regression test for the daemon↔node wire protocol: `NodeEvent`
-    /// is sent over TCP with bincode, so any field type that uses
+    /// is sent over TCP with postcard, so any field type that uses
     /// `Deserializer::deserialize_any` (like `serde_json::Value`)
     /// breaks the channel and kills the node at the next receive.
     /// `NodeEvent::ParamUpdate` carries its value as JSON-encoded
     /// bytes for that reason. This test pins the invariant so we
     /// don't regress back to a `deserialize_any` field.
     #[test]
-    fn node_event_param_update_round_trips_through_bincode() {
+    fn node_event_param_update_round_trips_through_postcard() {
         let cases = [
             serde_json::json!(42),
             serde_json::json!(1.5),
@@ -1942,8 +1942,8 @@ mod tests {
                 key: "rate".into(),
                 value_json: serde_json::to_vec(&value).unwrap(),
             };
-            let bytes = bincode::serialize(&event).expect("bincode serialize");
-            let back: NodeEvent = bincode::deserialize(&bytes).expect("bincode deserialize");
+            let bytes = dora_message::encode(&event).expect("serialize");
+            let back: NodeEvent = dora_message::decode(&bytes).expect("deserialize");
             match back {
                 NodeEvent::ParamUpdate { key, value_json } => {
                     assert_eq!(key, "rate");

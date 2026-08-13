@@ -19,28 +19,34 @@ fn make_send_message(payload_size: usize) -> DaemonRequest {
     }
 }
 
-fn bench_bincode_serialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("bincode_serialize");
+fn bench_encode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("encode");
     for &size in &[64, 4096, 65536, 1_048_576] {
         let msg = make_send_message(size);
-        group.bench_with_input(BenchmarkId::new("SendMessage", size), &msg, |b, msg| {
+        // The production path (`daemon_connection::tcp`): pre-sized buffer.
+        group.bench_with_input(BenchmarkId::new("presized", size), &msg, |b, msg| {
             b.iter(|| {
-                let bytes = bincode::serialize(black_box(msg)).unwrap();
-                black_box(bytes);
+                let msg = black_box(msg);
+                black_box(dora_message::encode_presized(msg, msg.encode_size_hint()).unwrap());
             });
+        });
+        // The same encoding into a buffer that grows from empty. Keeps the
+        // pre-sizing win measurable in-tree: if this arm stops being slower,
+        // `encode_presized` has stopped earning its complexity.
+        group.bench_with_input(BenchmarkId::new("grow_from_empty", size), &msg, |b, msg| {
+            b.iter(|| black_box(postcard::to_stdvec(black_box(msg)).unwrap()));
         });
     }
     group.finish();
 }
 
-fn bench_bincode_deserialize(c: &mut Criterion) {
-    let mut group = c.benchmark_group("bincode_deserialize");
+fn bench_decode(c: &mut Criterion) {
+    let mut group = c.benchmark_group("decode");
     for &size in &[64, 4096, 65536, 1_048_576] {
-        let msg = make_send_message(size);
-        let bytes = bincode::serialize(&msg).unwrap();
+        let bytes = dora_message::encode(&make_send_message(size)).unwrap();
         group.bench_with_input(BenchmarkId::new("SendMessage", size), &bytes, |b, bytes| {
             b.iter(|| {
-                let msg: DaemonRequest = bincode::deserialize(black_box(bytes)).unwrap();
+                let msg: DaemonRequest = dora_message::decode(black_box(bytes)).unwrap();
                 black_box(msg);
             });
         });
@@ -62,10 +68,5 @@ fn bench_metadata_clone(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(
-    benches,
-    bench_bincode_serialize,
-    bench_bincode_deserialize,
-    bench_metadata_clone,
-);
+criterion_group!(benches, bench_encode, bench_decode, bench_metadata_clone,);
 criterion_main!(benches);
