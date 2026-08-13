@@ -468,6 +468,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                         node_id, output_id, ..
                     } => (node_id.to_string(), output_id.to_string()),
                     InterDaemonEvent::OutputClosed { .. } => continue,
+                    // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+                    _ => continue,
                 };
 
                 let now_nanos = SystemTime::now()

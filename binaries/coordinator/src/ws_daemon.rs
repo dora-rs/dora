@@ -209,6 +209,15 @@ async fn handle_daemon_request(
                 true
             }
         }
+        // `CoordinatorRequest` is `#[non_exhaustive]`: a newer daemon may send a
+        // variant this coordinator predates. Keep the connection open and drop
+        // the request rather than tearing down a daemon over an unknown message.
+        _ => {
+            tracing::warn!(
+                "ignoring unrecognized request from daemon (daemon is likely newer than this coordinator)"
+            );
+            true
+        }
     }
 }
 
@@ -297,6 +306,13 @@ fn translate_daemon_event(
             node_id,
             clean_stop,
         }),
+        // `DaemonEvent` is `#[non_exhaustive]`: a newer daemon may report an
+        // event this coordinator has no translation for. `None` is already the
+        // "nothing to forward" signal, so an unknown event is dropped quietly.
+        _ => {
+            tracing::debug!("ignoring unrecognized daemon event from `{daemon_id}`");
+            None
+        }
     }
 }
 

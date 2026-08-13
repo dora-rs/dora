@@ -16,6 +16,7 @@ pub struct DataflowStatusEntry {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
     Event {
@@ -157,6 +158,7 @@ mod register_version_tests {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum DaemonEvent {
     BuildResult {
         build_id: BuildId,
