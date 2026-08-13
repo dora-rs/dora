@@ -290,6 +290,27 @@ fn reject_duplicate_ports(module_name: &str, field: &str, ports: &[DataId]) -> e
     Ok(())
 }
 
+fn check_nested_module_required_inputs(
+    module_name: &str,
+    node_id: &NodeId,
+    nested_module: &ModuleHeader,
+    node_inputs: &BTreeMap<DataId, Input>,
+) -> eyre::Result<()> {
+    for declared_input in &nested_module.inputs {
+        if !node_inputs.contains_key(declared_input) {
+            bail!(
+                "module `{}`: nested module `{}` declares required input `{}` \
+                 but node `{}` does not provide it",
+                module_name,
+                nested_module.name,
+                declared_input,
+                node_id,
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Check that every `_mod/X` reference in `inputs` points to a declared
 /// module input (or optional input). Shared by the node-level `inputs`
 /// check and the operator/custom `config.inputs` / `run_config.inputs`
