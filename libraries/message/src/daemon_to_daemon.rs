@@ -14,6 +14,7 @@ pub enum InterDaemonEvent {
         node_id: NodeId,
         output_id: DataId,
         metadata: Metadata,
+        #[serde(with = "crate::bulk_bytes::option")]
         data: Option<AVec<u8, ConstAlign<128>>>,
     },
     OutputClosed {

@@ -257,7 +257,7 @@ pub type SharedMemoryId = String;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum DataMessage {
-    Vec(AVec<u8, ConstAlign<128>>),
+    Vec(#[serde(with = "crate::bulk_bytes")] AVec<u8, ConstAlign<128>>),
 }
 
 impl DataMessage {
