@@ -714,6 +714,8 @@ fn resolve_module_relative_path(
     })?;
     *path = relative.to_string_lossy().into_owned();
     Ok(())
+}
+
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
     prepend_build(&mut node.build, module_build);
     if let Some(ref mut operators) = node.operators {
