@@ -26,12 +26,17 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 /// reference points to a declared output on the source node.
 pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    check_wiring_resolved(&nodes)
+}
 
+/// [`check_wiring`] on an already-resolved node map, so callers that have
+/// resolved the descriptor can avoid re-resolving it.
+fn check_wiring_resolved(nodes: &BTreeMap<NodeId, ResolvedNode>) -> eyre::Result<()> {
     for node in nodes.values() {
         match &node.kind {
             descriptor::CoreNodeKind::Custom(custom_node) => {
                 for (input_id, input) in &custom_node.run_config.inputs {
-                    check_input(input, &nodes, &format!("{}/{input_id}", node.id))?;
+                    check_input(input, nodes, &format!("{}/{input_id}", node.id))?;
                 }
             }
             descriptor::CoreNodeKind::Runtime(runtime_node) => {
@@ -39,7 +44,7 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
                     for (input_id, input) in &operator_definition.config.inputs {
                         check_input(
                             input,
-                            &nodes,
+                            nodes,
                             &format!("{}/{}/{input_id}", node.id, operator_definition.id),
                         )?;
                     }
@@ -59,14 +64,31 @@ pub fn check_wiring(dataflow: &Descriptor) -> eyre::Result<()> {
 /// step and adds source-path existence and Python runtime checks on top.
 pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
     // validate ROS2 bridge configs before resolution
+    validate_ros2_configs(dataflow)?;
+
+    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    check_dataflow_static_resolved(dataflow, &nodes)
+}
+
+/// Validate all ROS2 bridge configs on the *unresolved* descriptor.
+///
+/// Run before [`Descriptor::resolve_aliases_and_set_defaults`] so a ROS2
+/// misconfiguration is reported ahead of any alias-resolution error.
+fn validate_ros2_configs(dataflow: &Descriptor) -> eyre::Result<()> {
     for node in &dataflow.nodes {
         if let Some(ros2) = &node.ros2 {
             validate_ros2_config(&node.id, ros2, &node.inputs, &node.outputs)?;
         }
     }
+    Ok(())
+}
 
-    let nodes = dataflow.resolve_aliases_and_set_defaults()?;
-
+/// The resolution-dependent part of [`check_dataflow_static`], operating on an
+/// already-resolved node map so callers don't re-resolve the descriptor.
+fn check_dataflow_static_resolved(
+    dataflow: &Descriptor,
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+) -> eyre::Result<()> {
     // reject negative / non-finite / overflowing timing values before they
     // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
     for node in nodes.values() {
@@ -81,19 +103,23 @@ pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
                 &format!("input `{input_id}` of node `{}`", node.id),
                 "input_timeout",
                 input.input_timeout,
+                true,
             )?;
         }
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
-    // in the same way (`binaries/daemon/src/lib.rs`).
+    // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
+    // be rejected: it is fed to `tokio::time::interval`, which panics on a zero
+    // period.
     check_seconds_field(
         "dataflow",
         "health_check_interval",
         dataflow.health_check_interval,
+        false,
     )?;
 
     // check that all inputs mappings point to an existing output
-    check_wiring(dataflow)?;
+    check_wiring_resolved(nodes)?;
 
     // Check that nodes can resolve `send_stdout_as`, `send_logs_as`, `min_log_level`
     for node in nodes.values() {
@@ -113,9 +139,13 @@ pub fn check_dataflow_static(dataflow: &Descriptor) -> eyre::Result<()> {
 }
 
 pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result<()> {
-    check_dataflow_static(dataflow)?;
-
+    // Resolve the descriptor once and share the result across every check
+    // (static validation + path/runtime existence) instead of re-resolving it
+    // for each, which clones the whole node topology on every call.
+    validate_ros2_configs(dataflow)?;
     let nodes = dataflow.resolve_aliases_and_set_defaults()?;
+    check_dataflow_static_resolved(dataflow, &nodes)?;
+
     let mut has_python_operator = false;
 
     // check that nodes and operators exist
@@ -208,7 +238,7 @@ fn check_timing_fields(
         ("max_restart_delay", custom.max_restart_delay),
         ("restart_window", custom.restart_window),
     ] {
-        check_seconds_field(&owner, field, value)?;
+        check_seconds_field(&owner, field, value, true)?;
     }
     Ok(())
 }
@@ -221,13 +251,27 @@ fn check_timing_fields(
 /// values too large to fit in a `Duration` (> `Duration::MAX`, ≈ 1.8e19 s). We
 /// probe the exact same boundary with its non-panicking twin
 /// `try_from_secs_f64`, so a value accepted here can never panic the daemon.
-fn check_seconds_field(owner: &str, field: &str, value: Option<f64>) -> eyre::Result<()> {
+///
+/// When `allow_zero` is `false`, `0.0` is also rejected. This is required for
+/// fields that reach `tokio::time::interval` (e.g. `health_check_interval`),
+/// which panics on a zero period.
+fn check_seconds_field(
+    owner: &str,
+    field: &str,
+    value: Option<f64>,
+    allow_zero: bool,
+) -> eyre::Result<()> {
     if let Some(value) = value
-        && std::time::Duration::try_from_secs_f64(value).is_err()
+        && (std::time::Duration::try_from_secs_f64(value).is_err() || (!allow_zero && value == 0.0))
     {
+        let requirement = if allow_zero {
+            "non-negative"
+        } else {
+            "positive"
+        };
         bail!(
             "{owner} has invalid `{field}`: {value} \
-             (must be a finite, non-negative number of seconds smaller than {})",
+             (must be a finite, {requirement} number of seconds smaller than {})",
             std::time::Duration::MAX.as_secs_f64()
         );
     }
@@ -1413,15 +1457,15 @@ operators:
 
     #[test]
     fn seconds_field_accepts_none_zero_and_positive() {
-        check_seconds_field("owner", "field", None).unwrap();
-        check_seconds_field("owner", "field", Some(0.0)).unwrap();
-        check_seconds_field("owner", "field", Some(3600.0)).unwrap();
+        check_seconds_field("owner", "field", None, true).unwrap();
+        check_seconds_field("owner", "field", Some(0.0), true).unwrap();
+        check_seconds_field("owner", "field", Some(3600.0), true).unwrap();
     }
 
     #[test]
     fn seconds_field_rejects_negative_and_non_finite() {
         for bad in [-1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-            let err = check_seconds_field("owner", "field", Some(bad))
+            let err = check_seconds_field("owner", "field", Some(bad), true)
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -1441,7 +1485,7 @@ operators:
         for bad in [1e20, Duration::MAX.as_secs_f64()] {
             // Confirms the value genuinely trips the daemon's conversion.
             assert!(Duration::try_from_secs_f64(bad).is_err());
-            let err = check_seconds_field("owner", "field", Some(bad))
+            let err = check_seconds_field("owner", "field", Some(bad), true)
                 .unwrap_err()
                 .to_string();
             assert!(
@@ -1455,12 +1499,32 @@ operators:
     #[test]
     fn seconds_field_accepts_large_representable_value() {
         assert!(Duration::try_from_secs_f64(1e18).is_ok());
-        check_seconds_field("owner", "field", Some(1e18)).unwrap();
+        check_seconds_field("owner", "field", Some(1e18), true).unwrap();
+    }
+
+    // With `allow_zero: false`, `0.0` must be rejected (in addition to the
+    // negative / non-finite cases) because such a field reaches
+    // `tokio::time::interval`, which panics on a zero period.
+    #[test]
+    fn seconds_field_rejects_zero_when_positive_required() {
+        check_seconds_field("owner", "field", None, false).unwrap();
+        check_seconds_field("owner", "field", Some(3600.0), false).unwrap();
+        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let err = check_seconds_field("owner", "field", Some(bad), false)
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("field") && err.contains("positive"),
+                "{bad} should be rejected with a field/constraint message, got: {err}"
+            );
+        }
     }
 
     // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
-    // in the daemon just like the per-node timing fields, so `check_dataflow`
-    // must reject a non-finite / negative value rather than let the daemon panic.
+    // and then `tokio::time::interval` in the daemon, so `check_dataflow` must
+    // reject a non-finite / negative / zero value rather than let the daemon
+    // panic. A zero interval additionally panics `tokio::time::interval`, so it
+    // is rejected with a `positive` constraint.
     #[test]
     fn check_dataflow_rejects_negative_health_check_interval() {
         let dataflow = parse_dataflow(
@@ -1478,7 +1542,32 @@ nodes:
             .unwrap_err()
             .to_string();
         assert!(
-            err.contains("health_check_interval") && err.contains("non-negative"),
+            err.contains("health_check_interval") && err.contains("positive"),
+            "error should name the field and constraint, got: {err}"
+        );
+    }
+
+    // A zero `health_check_interval` passes `Duration::from_secs_f64` (yielding
+    // `Duration::ZERO`) but then panics `tokio::time::interval`, so it must be
+    // rejected up front (regression test for #2752).
+    #[test]
+    fn check_dataflow_rejects_zero_health_check_interval() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: 0.0
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("health_check_interval") && err.contains("positive"),
             "error should name the field and constraint, got: {err}"
         );
     }

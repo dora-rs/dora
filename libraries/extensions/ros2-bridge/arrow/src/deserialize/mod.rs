@@ -217,7 +217,15 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
             ));
         }
 
-        let struct_array: StructArray = fields.into();
+        // A message type with zero fields (e.g. `std_msgs/msg/Empty`) yields an
+        // empty `fields` vec. `StructArray::from(Vec<..>)` panics on an empty vec
+        // because the array length is ambiguous, so build a length-1 empty-fields
+        // struct explicitly instead.
+        let struct_array: StructArray = if fields.is_empty() {
+            StructArray::new_empty_fields(1, None)
+        } else {
+            fields.into()
+        };
 
         Ok(struct_array.into())
     }
@@ -329,5 +337,44 @@ mod tests {
         // ...but the child type is the correct `Point` struct.
         assert!(matches!(inner.data_type(), DataType::Struct(fields)
             if fields.len() == 1 && fields[0].name() == "x"));
+    }
+
+    /// Regression test for #2804: a message type with zero fields (e.g.
+    /// `std_msgs/msg/Empty`) must not panic the deserializer. Previously
+    /// `StructArray::from(Vec<..>)` panicked on the empty field vec because the
+    /// array length was ambiguous, which poisoned the DDS cache lock held on the
+    /// take path and killed the whole participant.
+    #[test]
+    fn empty_message_deserializes() {
+        let empty = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("Empty".to_string(), empty);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".to_string(), package);
+
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_pkg"),
+            message_name: Cow::Borrowed("Empty"),
+            messages: Arc::new(messages),
+        };
+
+        // An empty message has no fields, so the CDR body is empty.
+        let bytes: Vec<u8> = Vec::new();
+
+        let seed = StructDeserializer::new(Cow::Owned(type_info));
+        let mut deserializer = cdr_encoding::CdrDeserializer::<LittleEndian>::new(&bytes);
+        let data = serde::de::DeserializeSeed::deserialize(seed, &mut deserializer)
+            .expect("empty message must deserialize successfully");
+
+        let array = make_array(data);
+        let empty = array.as_struct();
+        // One struct row with no columns.
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty.num_columns(), 0);
     }
 }

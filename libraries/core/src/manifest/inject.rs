@@ -12,7 +12,9 @@
 //! first-message type check or `dora graph`, which read the descriptor
 //! through paths that don't inject (deliberate for now; see plan §6.2).
 
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+
+use crate::descriptor::normalize_path;
 
 use dora_message::{descriptor::Descriptor, id::NodeId};
 
@@ -191,7 +193,7 @@ fn find_manifest_for(
             // manifests are written once and consumed on any platform —
             // treat `\` in the entrypoint as a separator everywhere
             let entrypoint = manifest.entrypoint.replace('\\', "/");
-            if normalize(&dir.join(entrypoint)) == full {
+            if normalize_path(&dir.join(entrypoint)) == full {
                 return Some((candidate, manifest));
             }
             // A bare `path:` (console script) commonly shares its working dir
@@ -222,33 +224,17 @@ fn find_manifest_for(
 /// silently dropped instead of detected as escapes.
 fn containment_roots(path: &str, working_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let working_dir = if working_dir.is_absolute() {
-        normalize(working_dir)
+        normalize_path(working_dir)
     } else {
         let cwd = std::env::current_dir().ok()?;
-        normalize(&cwd.join(working_dir))
+        normalize_path(&cwd.join(working_dir))
     };
-    let full = normalize(&working_dir.join(path));
+    let full = normalize_path(&working_dir.join(path));
     if full.starts_with(&working_dir) {
         Some((full, working_dir))
     } else {
         None
     }
-}
-
-/// Lexically normalize a path (collapse `.` and resolve `..`) without
-/// touching the filesystem — the executable may not be built yet.
-fn normalize(path: &Path) -> PathBuf {
-    let mut out = PathBuf::new();
-    for component in path.components() {
-        match component {
-            Component::CurDir => {}
-            Component::ParentDir => {
-                out.pop();
-            }
-            other => out.push(other),
-        }
-    }
-    out
 }
 
 /// Apply a manifest's contracts to a descriptor node: validate the

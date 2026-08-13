@@ -113,7 +113,8 @@ pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
 pub use node::{
-    DataSample, DoraNode, DoraNodeBuilder, StreamSegment, ZERO_COPY_THRESHOLD, arrow_utils,
+    DataSample, DoraNode, DoraNodeBuilder, EncodedSample, SampleAllocator, StreamSegment,
+    ZERO_COPY_THRESHOLD, arrow_utils,
 };
 pub use uuid;
 
@@ -122,9 +123,11 @@ use tokio::sync::oneshot;
 
 mod daemon_connection;
 mod error;
-mod event_stream;
+/// Asynchronous event stream, daemon communication, and memory-pool coordination.
+pub mod event_stream;
 pub mod integration_testing;
 mod node;
+mod orphan_guard;
 
 pub use error::{NodeError, NodeResult, PatternError};
 
