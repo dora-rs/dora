@@ -360,6 +360,55 @@ impl Listener {
                 )
                 .await?;
             }
+            DaemonRequest::ExtensionStore {
+                namespace,
+                key,
+                value,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::ExtensionStore {
+                        namespace,
+                        key,
+                        value,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::ExtensionLoad {
+                namespace,
+                key,
+                remove,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::ExtensionLoad {
+                        namespace,
+                        key,
+                        remove,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::ExtensionDrop { namespace, key } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::ExtensionDrop {
+                        namespace,
+                        key,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
             // `DaemonRequest` is `#[non_exhaustive]`: a node built against a newer
             // dora-node-api may send a request this daemon predates. Answer with an
             // explicit error so the node fails loudly instead of hanging on a reply

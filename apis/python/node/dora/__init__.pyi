@@ -215,6 +215,35 @@ class Node:
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
         ```"""
 
+    def extension_store(self, namespace: str, key: str, value: bytes) -> None:
+        """Store an opaque value in the daemon's dataflow-scoped extension table.
+
+        The seam for transports maintained outside the dora tree. dora brokers
+        the value's lifetime and nothing else — it never interprets namespace,
+        key or value.
+
+        The daemon reclaims the entry when this node exits or the dataflow
+        finishes, and notifies every node that stored or read the key when it
+        is dropped (see drain_dropped_extension_keys).
+        """
+
+    def extension_load(
+        self, namespace: str, key: str, remove: bool = False
+    ) -> bytes | None:
+        """Read an opaque value back, or None if the key is absent.
+
+        With remove=True the entry is dropped in the same round trip.
+        """
+
+    def extension_drop(self, namespace: str, key: str) -> None:
+        """Drop an opaque value, notifying every node that stored or read it.
+
+        Dropping an absent key succeeds, so a retry is safe.
+        """
+
+    def drain_dropped_extension_keys(self, namespace: str) -> list[str]:
+        """Take the keys in `namespace` dropped since the last call."""
+
     def __iter__(self) -> typing.Any:
         """Implement iter(self)."""
 

@@ -159,6 +159,7 @@ pub mod bench_support {
 
 mod coordinator;
 pub(crate) mod event_types;
+mod extension_table;
 mod extract_err_from_stderr;
 pub(crate) mod fault_tolerance;
 mod local_listener;
@@ -181,7 +182,11 @@ pub(crate) use running_dataflow::{
     RunningNode,
 };
 
-use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowStatus};
+use crate::{
+    extension_table::{ExtensionKey, ExtensionTable},
+    extract_err_from_stderr::extract_err_from_stderr,
+    pending::DataflowStatus,
+};
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
@@ -239,6 +244,95 @@ fn deliver_param_update_strict(
         }
         Ok(false) => Err(eyre!("node `{node_id}` channel full")),
         Err(_) => Err(eyre!("node `{node_id}` channel closed")),
+    }
+}
+
+/// Tell every node that touched `key` that it is gone.
+///
+/// Returns the nodes that could not be reached. A full or closed channel is
+/// reported rather than retried: the entry is already out of the table, so the
+/// alternative to a warning is a silent resource leak in that node
+/// (dora-rs/dora#2935 is what that looks like in practice).
+fn notify_extension_dropped(
+    dataflow: &RunningDataflow,
+    namespace: &str,
+    key: &str,
+    touched_by: &BTreeSet<NodeId>,
+    clock: &HLC,
+) -> Vec<NodeId> {
+    let mut undelivered = Vec::new();
+    for node_id in touched_by {
+        let Some(channel) = dataflow.subscribe_channels.get(node_id) else {
+            // Not connected: it has either exited (nothing to release) or has
+            // not subscribed yet (it cannot hold the key either).
+            continue;
+        };
+        let event = NodeEvent::ExtensionDropped {
+            namespace: namespace.to_owned(),
+            key: key.to_owned(),
+        };
+        match send_with_timestamp(channel, event, clock) {
+            Ok(true) => dataflow.inc_pending(node_id),
+            Ok(false) | Err(_) => undelivered.push(node_id.clone()),
+        }
+    }
+    undelivered
+}
+
+/// Drop `key` from the table and notify its readers, logging any that could
+/// not be reached. Shared by the explicit drop request and by reclamation.
+fn drop_extension_and_notify(
+    extensions: &mut ExtensionTable,
+    dataflow: Option<&RunningDataflow>,
+    key: &ExtensionKey,
+    clock: &HLC,
+) -> bool {
+    let Some(touched_by) = extensions.drop_key(key) else {
+        return false;
+    };
+    if let Some(dataflow) = dataflow {
+        let undelivered =
+            notify_extension_dropped(dataflow, &key.namespace, &key.key, &touched_by, clock);
+        if !undelivered.is_empty() {
+            tracing::warn!(
+                namespace = %key.namespace,
+                key = %key.key,
+                nodes = ?undelivered,
+                "extension drop notification undelivered; these nodes keep whatever \
+                 they derived from the value until they exit"
+            );
+        }
+    }
+    true
+}
+
+/// Drop every extension entry owned by an exited node, notifying readers.
+fn reclaim_extensions_of_exited_node(
+    extensions: &mut ExtensionTable,
+    dataflow: Option<&RunningDataflow>,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    clock: &HLC,
+) {
+    let reclaimed = extensions.reclaim_owner(&dataflow_id.to_string(), node_id);
+    for (key, touched_by) in reclaimed {
+        if let Some(dataflow) = dataflow {
+            let undelivered =
+                notify_extension_dropped(dataflow, &key.namespace, &key.key, &touched_by, clock);
+            if !undelivered.is_empty() {
+                tracing::warn!(
+                    namespace = %key.namespace,
+                    key = %key.key,
+                    nodes = ?undelivered,
+                    "extension reclaim notification undelivered after node `{node_id}` exited"
+                );
+            }
+        }
+        tracing::debug!(
+            namespace = %key.namespace,
+            key = %key.key,
+            "reclaimed extension entry of exited node `{node_id}`"
+        );
     }
 }
 
@@ -350,6 +444,9 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
+    /// Opaque, dataflow-scoped store for out-of-tree extensions. See
+    /// `extension_table` and `docs/extensions.md`.
+    pub(crate) extensions: ExtensionTable,
     /// Nodes already warned about for sending after their dataflow
     /// finished, so `log_late_node_output` warns once each instead of
     /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
@@ -1493,6 +1590,7 @@ impl Daemon {
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
+            extensions: ExtensionTable::new(),
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
@@ -4552,6 +4650,64 @@ impl Daemon {
             } => self
                 .output_sent(dataflow_id, node_id, output_id, metadata)
                 .context("failed to mark output sent")?,
+            DaemonNodeEvent::ExtensionStore {
+                namespace,
+                key,
+                value,
+                reply_sender,
+            } => {
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace,
+                    key,
+                };
+                let result = self.extensions.store(ext_key, value, &node_id);
+                let _ = reply_sender.send(DaemonReply::Result(result));
+            }
+            DaemonNodeEvent::ExtensionLoad {
+                namespace,
+                key,
+                remove,
+                reply_sender,
+            } => {
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace,
+                    key,
+                };
+                let value = self.extensions.load(&ext_key, &node_id);
+                // Remove only after a hit: a miss must not broadcast a drop
+                // for a key that was never there.
+                if remove && value.is_some() {
+                    drop_extension_and_notify(
+                        &mut self.extensions,
+                        self.running.get(&dataflow_id),
+                        &ext_key,
+                        &self.clock,
+                    );
+                }
+                let _ = reply_sender.send(DaemonReply::ExtensionValue { value });
+            }
+            DaemonNodeEvent::ExtensionDrop {
+                namespace,
+                key,
+                reply_sender,
+            } => {
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace,
+                    key,
+                };
+                drop_extension_and_notify(
+                    &mut self.extensions,
+                    self.running.get(&dataflow_id),
+                    &ext_key,
+                    &self.clock,
+                );
+                // Idempotent: dropping an absent key is success, so a retry
+                // after a lost reply does not surface as an error.
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+            }
             DaemonNodeEvent::EventStreamDropped { reply_sender } => {
                 let inner = async {
                     let dataflow = self
@@ -5253,6 +5409,14 @@ impl Daemon {
                 dataflows.remove(&dataflow_id);
             });
 
+        // Whatever survived node-exit reclamation goes now: the dataflow's
+        // channels and listeners are gone, so nothing can reach these entries
+        // and no later event would reclaim them.
+        let dropped = self.extensions.reclaim_dataflow(&dataflow_id.to_string());
+        if dropped > 0 {
+            tracing::debug!(%dataflow_id, dropped, "released extension entries of finished dataflow");
+        }
+
         logger
             .log(
                 LogLevel::Info,
@@ -5703,6 +5867,17 @@ impl Daemon {
                     // mid-startup (dora-rs/dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                 }
+
+                // A node that crashed cannot withdraw its own descriptors.
+                // Reclaiming here is the reason the extension table lives in
+                // the daemon at all (dora-rs/dora#2881).
+                reclaim_extensions_of_exited_node(
+                    &mut self.extensions,
+                    self.running.get(&dataflow_id),
+                    dataflow_id,
+                    &node_id,
+                    &self.clock,
+                );
 
                 logger
                     .log(

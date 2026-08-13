@@ -92,7 +92,14 @@ pub enum DaemonCommunication {
 pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
+    NodeConfig {
+        result: Result<NodeConfig, String>,
+    },
+    /// Reply to [`DaemonRequest::ExtensionLoad`]. `None` means the key is not
+    /// in the table — either never stored, or already dropped.
+    ExtensionValue {
+        value: Option<Vec<u8>>,
+    },
     Empty,
 }
 
@@ -175,6 +182,16 @@ pub enum NodeEvent {
         affected_input_ids: Vec<DataId>,
         error: String,
         source_node_id: NodeId,
+    },
+    /// An extension key this node stored or loaded has been dropped, by
+    /// another node or by the daemon reclaiming it.
+    ///
+    /// Delivered out of band: the event stream consumes it rather than
+    /// surfacing it to user code, so a language binding polls
+    /// `drain_dropped_extension_keys()` instead.
+    ExtensionDropped {
+        namespace: String,
+        key: String,
     },
 }
 

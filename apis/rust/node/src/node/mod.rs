@@ -2340,6 +2340,50 @@ impl DoraNode {
             ))),
         }
     }
+
+    /// Store an opaque value in the daemon's dataflow-scoped extension table.
+    ///
+    /// This is the seam for transports that live outside the dora tree: dora
+    /// brokers the value's lifetime and nothing else — it never interprets
+    /// `namespace`, `key` or `value`. See `docs/extensions.md`.
+    ///
+    /// The daemon remembers which nodes touched a key so that dropping it
+    /// notifies them, and reclaims the entry when the dataflow ends or the
+    /// storing node exits. Drain the notifications with
+    /// [`event_stream::extensions::drain_dropped_keys`](crate::event_stream::extensions::drain_dropped_keys).
+    pub fn extension_store(
+        &mut self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        value: Vec<u8>,
+    ) -> Result<(), eyre::Error> {
+        self.control_channel
+            .extension_store(namespace.into(), key.into(), value)
+    }
+
+    /// Read an opaque value back, optionally removing it in the same round trip.
+    ///
+    /// Returns `None` if the key is not in the table — never stored, or
+    /// already dropped.
+    pub fn extension_load(
+        &mut self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        remove: bool,
+    ) -> Result<Option<Vec<u8>>, eyre::Error> {
+        self.control_channel
+            .extension_load(namespace.into(), key.into(), remove)
+    }
+
+    /// Drop an opaque value, notifying every node that stored or loaded it.
+    pub fn extension_drop(
+        &mut self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<(), eyre::Error> {
+        self.control_channel
+            .extension_drop(namespace.into(), key.into())
+    }
 }
 
 /// Return the serialized log `fields` object when it fits `limit`, else `None`.

@@ -22,20 +22,44 @@ reclamation logic in `binaries/daemon/src/lib.rs`, five wire-protocol variants,
 and plumbing in six more files. That is the shape to avoid, and it is why this
 was parked rather than maintained.
 
-### What dora may gain
+### The seam already exists — use it
 
-A seam, in this order of preference:
+dora ships a generic **extension channel**: a dataflow-scoped table of opaque
+byte values that the daemon brokers the *lifetime* of and nothing else. See
+[`docs/extensions.md`](../../docs/extensions.md) in dora.
 
-1. **Nothing.** Check first whether the transport can be built entirely on
-   dora's existing public API (`DoraNode`, `send_output`, shared memory).
-   #1872 Q1 asks exactly this and was never answered — see below.
-2. **One accessor**, if step 1 fails. Something shaped like
-   `node._pool_handle() -> PoolHandle`, where `PoolHandle` is an opaque
-   capability object the external package drives. Target: **under 100 lines in
-   dora, zero `unsafe`, no CUDA symbols, no knowledge of the DORADMA layout.**
-3. **A generic extension point**, if a second consumer ever justifies it —
-   e.g. a registered side-channel over the existing daemon connection, with
-   dora carrying no pool-specific vocabulary at all.
+```python
+node.extension_store(namespace, key, value)          # bytes in
+node.extension_load(namespace, key, remove=False)    # bytes out, or None
+node.extension_drop(namespace, key)                  # withdraw + notify
+node.drain_dropped_extension_keys(namespace)         # what went away
+```
+
+Rust nodes get the same on `DoraNode`, plus
+`event_stream::extensions::drain_dropped_keys`.
+
+It carries no pool vocabulary at all — no CUDA, no DORADMA, no shared-memory
+helpers. That is deliberate: a transport-shaped API in dora would freeze this
+package's architecture into the framework, which is exactly what #1872
+declined to do.
+
+**How this package maps onto it**
+
+| Old in-tree call | Now |
+|---|---|
+| `register_pinned_memory(id, metadata)` | `extension_store("dora-pool", id, serialized_metadata)` |
+| `read_pinned_memory(id, free)` | `extension_load("dora-pool", id, remove=free)` |
+| `free_pinned_memory(id)` | `extension_drop("dora-pool", id)` |
+| `drain_freed_pools()` | `drain_dropped_extension_keys("dora-pool")` |
+| daemon-side registry, reachability, orphan sweep | the daemon's own reclamation — a crashed owner's entries are dropped and its readers notified |
+
+Everything else — the shared-memory segment, the DORADMA header, the seqlock,
+the CUDA transport selection — stays on this side. The metadata that used to
+travel as `MetadataParameters` becomes whatever bytes this package chooses;
+the daemon does not look at them.
+
+If the seam turns out to be insufficient, the fix is to make it *more generic*,
+not to add a pool-shaped API to dora.
 
 ### What must NOT go back into dora
 
@@ -55,9 +79,11 @@ unmaintainable:
 **Litmus test:** if `grep -ri 'cuda\|doradma\|pinned\|seqlock' ` over the dora
 tree returns anything outside a docs file, the seam is wrong.
 
-**Budget:** a correct reinstatement should touch **under 200 lines of dora**,
-across no more than two or three files, with no new `unsafe`. For scale: the
-integration this replaces touched 4,356 lines across 17 files.
+**Budget:** reinstating this package should touch **zero lines of dora** — the
+extension channel above is already there. If it genuinely cannot carry some
+requirement, widen the *generic* channel rather than adding anything
+pool-shaped, and keep it under a couple of hundred lines with no new `unsafe`.
+For scale: the integration this replaces touched 4,356 lines across 17 files.
 
 No patch file is shipped here, deliberately — a ready-to-apply re-integration
 sitting next to this contract would invite exactly the outcome it argues

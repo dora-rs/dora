@@ -144,6 +144,14 @@ fn event_stream_loop(
                 close_tx = true;
             }
 
+            // Out-of-band: an extension's bookkeeping, not a dataflow input.
+            // Consume it so user code never has to match on an event it did
+            // not ask for; the extension drains the queue on its own schedule.
+            if let NodeEvent::ExtensionDropped { namespace, key } = &inner {
+                crate::event_stream::extensions::push_dropped(namespace.clone(), key.clone());
+                continue;
+            }
+
             if let Some(tx) = tx.as_ref() {
                 // `blocking_send` is used because this function runs on a
                 // dedicated `std::thread` (not a tokio worker). Using

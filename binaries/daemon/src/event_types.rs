@@ -147,6 +147,23 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    ExtensionStore {
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    ExtensionLoad {
+        namespace: String,
+        key: String,
+        remove: bool,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    ExtensionDrop {
+        namespace: String,
+        key: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
 }
 
 #[derive(Debug)]

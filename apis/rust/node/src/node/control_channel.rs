@@ -137,4 +137,70 @@ impl ControlChannel {
             other => bail!("unexpected OutputSent reply: {other:?}"),
         }
     }
+
+    pub fn extension_store(
+        &mut self,
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::ExtensionStore {
+            namespace,
+            key,
+            value,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send ExtensionStore request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected ExtensionStore reply: {other:?}"),
+        }
+    }
+
+    pub fn extension_load(
+        &mut self,
+        namespace: String,
+        key: String,
+        remove: bool,
+    ) -> eyre::Result<Option<Vec<u8>>> {
+        let request = DaemonRequest::ExtensionLoad {
+            namespace,
+            key,
+            remove,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send ExtensionLoad request to dora-daemon")?;
+        match reply {
+            DaemonReply::ExtensionValue { value } => Ok(value),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected ExtensionLoad reply: {other:?}"),
+        }
+    }
+
+    pub fn extension_drop(&mut self, namespace: String, key: String) -> eyre::Result<()> {
+        let request = DaemonRequest::ExtensionDrop { namespace, key };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send ExtensionDrop request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected ExtensionDrop reply: {other:?}"),
+        }
+    }
 }

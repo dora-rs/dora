@@ -696,6 +696,79 @@ impl Node {
         self.dataflow_id.to_string()
     }
 
+    /// Store an opaque value in the daemon's dataflow-scoped extension table.
+    ///
+    /// The seam for transports maintained outside the dora tree. dora brokers
+    /// the value's lifetime and nothing else — it never interprets
+    /// ``namespace``, ``key`` or ``value``.
+    ///
+    /// The daemon reclaims the entry when this node exits or the dataflow
+    /// finishes, and notifies every node that stored or read the key when it
+    /// is dropped. Collect those with :meth:`drain_dropped_extension_keys`.
+    ///
+    /// ```python
+    /// node.extension_store("my-transport", "frame-7", descriptor_bytes)
+    /// ```
+    ///
+    /// :type namespace: str
+    /// :type key: str
+    /// :type value: bytes
+    /// :rtype: None
+    pub fn extension_store(
+        &mut self,
+        namespace: String,
+        key: String,
+        value: &Bound<'_, PyBytes>,
+    ) -> eyre::Result<()> {
+        self.node
+            .get_mut()
+            .extension_store(namespace, key, value.as_bytes().to_vec())
+    }
+
+    /// Read an opaque value back, returning ``None`` if the key is absent.
+    ///
+    /// With ``remove=True`` the entry is dropped in the same round trip, which
+    /// is what a consume-once handoff wants.
+    ///
+    /// :type namespace: str
+    /// :type key: str
+    /// :type remove: bool, optional
+    /// :rtype: bytes | None
+    #[pyo3(signature = (namespace, key, remove=false))]
+    pub fn extension_load(
+        &mut self,
+        namespace: String,
+        key: String,
+        remove: bool,
+        py: Python<'_>,
+    ) -> eyre::Result<Option<Py<PyBytes>>> {
+        let value = self.node.get_mut().extension_load(namespace, key, remove)?;
+        Ok(value.map(|bytes| PyBytes::new(py, &bytes).unbind()))
+    }
+
+    /// Drop an opaque value, notifying every node that stored or read it.
+    ///
+    /// Dropping an absent key succeeds, so a retry after a lost reply is safe.
+    ///
+    /// :type namespace: str
+    /// :type key: str
+    /// :rtype: None
+    pub fn extension_drop(&mut self, namespace: String, key: String) -> eyre::Result<()> {
+        self.node.get_mut().extension_drop(namespace, key)
+    }
+
+    /// Take the keys in ``namespace`` that have been dropped since the last
+    /// call, so the extension can release whatever it derived from them.
+    ///
+    /// Notifications arrive out of band and are not delivered as events, so
+    /// poll this wherever the extension next runs.
+    ///
+    /// :type namespace: str
+    /// :rtype: list[str]
+    pub fn drain_dropped_extension_keys(&self, namespace: &str) -> Vec<String> {
+        dora_node_api::event_stream::extensions::drain_dropped_keys(namespace)
+    }
+
     /// Returns True if this node was restarted after a previous exit or failure.
     ///
     /// Nodes can use this to decide whether to restore saved state or start fresh.

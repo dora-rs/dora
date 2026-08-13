@@ -11,11 +11,14 @@
 //
 // >>> READ ../README.md "The seam contract" BEFORE TOUCHING THIS FILE. <<<
 //
-// Short version: dora may gain one opaque accessor (<100 lines, no `unsafe`,
-// no CUDA symbols, no DORADMA knowledge). Everything below — the seqlock, the
-// header pointer arithmetic, the `unsafe impl Send`/`Sync` slots, the embedded
-// libcudart ctypes module, the transport selection — stays on this side of
-// the seam. What the old integration touched is recoverable as the reverse of
+// Short version: dora already ships the seam — a generic extension channel
+// (`extension_store` / `extension_load` / `extension_drop` /
+// `drain_dropped_extension_keys`, see dora's `docs/extensions.md`). The three
+// `*_pinned_memory` calls and `drain_freed_pools` below map onto it directly;
+// the README has the table. Everything else — the seqlock, the header pointer
+// arithmetic, the `unsafe impl Send`/`Sync` slots, the embedded libcudart
+// ctypes module, the transport selection — stays on this side of the seam.
+// What the old integration touched is recoverable as the reverse of
 // dora-rs/dora#3152 — no patch file is shipped here on purpose.
 //
 // Open correctness bugs against this code when it was parked: #3015, #2935,
