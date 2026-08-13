@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Receive tensors through the memory-pool example dataflow."""
+"""Receive tensors through the tensor-pool example dataflow."""
 
 import os
 import time
@@ -13,7 +13,7 @@ from tqdm import tqdm
 node = Node("receiver_node")
 MESSAGE_COUNT = int(os.getenv("message_num", "100"))
 RECEIVER_DEVICE = os.getenv("receiver_device", "cpu")
-SCENARIO = os.getenv("memory_pool_scenario", "throughput")
+SCENARIO = os.getenv("tensor_pool_scenario", "throughput")
 
 if RECEIVER_DEVICE.startswith("cuda") and not torch.cuda.is_available():
     raise RuntimeError("CUDA is not available for the configured receiver device.")
@@ -23,7 +23,7 @@ if RECEIVER_DEVICE.startswith("cuda"):
 
 pbar = tqdm(total=MESSAGE_COUNT)
 velocities = []
-memory_pool_id = None
+tensor_pool_id = None
 torch_tensor = None
 
 for i in range(MESSAGE_COUNT):
@@ -31,12 +31,12 @@ for i in range(MESSAGE_COUNT):
     t_send = event["metadata"]["t_send"]
 
     if i == 0:
-        memory_pool_id = event["value"]
-        tensor_info = node.read_memory_pool(memory_pool_id)
+        tensor_pool_id = event["value"]
+        tensor_info = node.read_tensor_pool(tensor_pool_id)
         torch_tensor = tensor_from_info(tensor_info)
         print(f"Receiver preview: {torch_tensor[:5]}")
 
-    # The tensor is zero-copy — write_memory_pool on the sender overwrites
+    # The tensor is zero-copy — write_tensor_pool on the sender overwrites
     # the shmem bytes in place, so the receiver's existing tensor object
     # automatically reflects new data.  Turn-based signaling ensures the
     # sender has finished writing before the receiver accesses the tensor.
@@ -56,16 +56,16 @@ for i in range(MESSAGE_COUNT):
     velocities.append(velocity)
 
     if SCENARIO == "duplicate_free" and i == MESSAGE_COUNT - 1:
-        node.free_memory_pool(memory_pool_id)
-        node.free_memory_pool(memory_pool_id)
+        node.free_tensor_pool(tensor_pool_id)
+        node.free_tensor_pool(tensor_pool_id)
     elif SCENARIO == "read_after_free" and i == MESSAGE_COUNT - 1:
-        node.free_memory_pool(memory_pool_id)
+        node.free_tensor_pool(tensor_pool_id)
         try:
-            node.read_memory_pool(memory_pool_id)
+            node.read_tensor_pool(tensor_pool_id)
         except Exception:
             pass  # Expected: pool was freed, read should fail
     elif SCENARIO != "auto_cleanup" and i == MESSAGE_COUNT - 1:
-        node.free_memory_pool(memory_pool_id)
+        node.free_tensor_pool(tensor_pool_id)
 
     node.send_output("next_require", pa.array([]))
     pbar.update(1)

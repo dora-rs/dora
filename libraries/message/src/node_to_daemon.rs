@@ -75,10 +75,10 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::NodeConfig { .. }
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => 0,
+            | DaemonRequest::NodeConfig { .. } => 0,
+            // The stored value dominates; the namespace and key are short.
+            DaemonRequest::ExtensionStore { value, .. } => value.len(),
+            DaemonRequest::ExtensionLoad { .. } | DaemonRequest::ExtensionDrop { .. } => 0,
         }
     }
 

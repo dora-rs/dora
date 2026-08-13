@@ -1,12 +1,15 @@
-# Extensions: the out-of-tree transport seam
+# Extensions: the transport seam
 
-Some transports do not belong in dora. A CUDA memory-pool needs `libcudart`,
+Some transports do not belong in dora's stable core — whether or not they ship
+in this repository. A CUDA tensor-pool needs `libcudart`,
 hand-parsed shared-memory headers, a seqlock and GPU-specific transport
 selection — none of which the framework should carry, and none of which it can
 usefully test without GPU runners. But such a transport still needs one thing
 only the daemon can provide: **someone to clean up after a node that crashed.**
 
-The extension seam is that one thing and nothing more.
+The extension seam is that one thing and nothing more. It lets a transport ship
+in-tree and be built (behind a feature flag) without any part of it entering
+the 1.0 compatibility surface.
 
 ## What dora provides
 
@@ -77,14 +80,19 @@ mode with a real transport attached.
 Use dataflow messages to hand the key around; use the extension table for the
 descriptor whose lifetime has to outlive a crash.
 
-## Prior art in this repo
+## The first consumer
 
-The pinned/CUDA memory-pool transport was built *inside* dora and removed
-before 1.0 — it had grown to 3,000 lines in the Python binding with 64 `unsafe`
-sites, plus 950 lines of daemon-side lifecycle logic, and no CI could exercise
-its GPU paths. It now lives in `external/dora-pool`, whose README records both
-the design questions it never answered (dora-rs/dora#1872) and the constraints
-on bringing it back.
+The pinned/CUDA tensor-pool transport lives at
+[`libraries/extensions/tensor-pool`](../libraries/extensions/tensor-pool) and
+uses exactly these four operations. It is opt-in (`--features tensor-pool`, off
+by default) and **outside the 1.0 compatibility guarantees** — that combination
+is the point: a transport can ship in-tree, be built and used, and still not
+freeze anything into dora's stable surface.
 
-That is the shape this seam exists to prevent: a transport should be a package
-that uses these four operations, not a fork of the framework.
+It was previously integrated directly: ~3,000 lines inside the Python binding
+with 64 `unsafe` sites, 950 lines of daemon lifecycle logic, and pool-specific
+wire-protocol variants. Reworking it onto this channel removed all of that from
+dora proper while keeping the feature usable.
+
+That is the shape this seam exists to produce: an extension is a package that
+uses these four operations, not a fork of the framework.

@@ -239,6 +239,9 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub fn next(&self, py: Python, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+        // Release pools other nodes freed before yielding the next event.
+        // Compiles away entirely without the `tensor-pool` feature.
+        self.process_pending_tensor_pool_frees(py);
         let timeout = timeout_to_duration(timeout)?;
         let event = py.detach(|| self.events.recv(timeout));
         if let Some(event) = event {
@@ -263,6 +266,9 @@ impl Node {
     /// :rtype: list[dict]
     #[allow(clippy::should_implement_trait)]
     pub fn drain(&self, py: Python) -> PyResult<Vec<Py<PyDict>>> {
+        // Release pools other nodes freed before yielding the next event.
+        // Compiles away entirely without the `tensor-pool` feature.
+        self.process_pending_tensor_pool_frees(py);
         let events = self
             .events
             .drain()
@@ -292,6 +298,9 @@ impl Node {
     /// :rtype: dict
     #[allow(clippy::should_implement_trait)]
     pub fn try_recv(&mut self, py: Python) -> Option<Py<PyDict>> {
+        // Release pools other nodes freed before yielding the next event.
+        // Compiles away entirely without the `tensor-pool` feature.
+        self.process_pending_tensor_pool_frees(py);
         match self.events.try_recv() {
             Ok(event) => event.to_py_dict(py).ok(),
             Err(_) => None,
@@ -326,6 +335,9 @@ impl Node {
     #[pyo3(signature = (timeout=None))]
     #[allow(clippy::should_implement_trait)]
     pub async fn recv_async(&self, timeout: Option<f32>) -> PyResult<Option<Py<PyDict>>> {
+        // Same contract as next/drain/try_recv. Before the await so it runs
+        // on the `None` path too, and so the guard drops before suspending.
+        Python::attach(|py| self.process_pending_tensor_pool_frees(py));
         let timeout = timeout_to_duration(timeout)?;
         let event = self.events.recv_async_timeout(timeout).await;
         if let Some(event) = event {
@@ -696,6 +708,72 @@ impl Node {
         self.dataflow_id.to_string()
     }
 
+    /// Register a tensor's memory as a shared pool for zero-copy transfer.
+    ///
+    /// **Opt-in extension, outside the 1.0 compatibility guarantees.** Only
+    /// present when this wheel was built with the `tensor-pool` feature; see
+    /// `libraries/extensions/tensor-pool/README.md`.
+    ///
+    /// :type tensor_info: dict
+    /// :type device: str, optional
+    /// :rtype: pyarrow.Array
+    #[cfg(feature = "tensor-pool")]
+    #[pyo3(signature = (tensor_info, device="cpu".to_string()))]
+    pub fn register_tensor_pool(
+        &self,
+        tensor_info: &Bound<'_, PyDict>,
+        device: String,
+        py: Python,
+    ) -> eyre::Result<Py<PyAny>> {
+        self.with_pool(|pool| pool.register_tensor_pool(tensor_info, device, py))
+    }
+
+    /// Write tensor data into an existing tensor pool.
+    ///
+    /// **Opt-in extension, outside the 1.0 compatibility guarantees.**
+    ///
+    /// :type tensor_pool_id: pyarrow.Array
+    /// :type tensor_info: dict
+    /// :rtype: None
+    #[cfg(feature = "tensor-pool")]
+    #[pyo3(signature = (tensor_pool_id, tensor_info))]
+    pub fn write_tensor_pool(
+        &self,
+        tensor_pool_id: Py<PyAny>,
+        tensor_info: &Bound<'_, PyDict>,
+        py: Python,
+    ) -> eyre::Result<()> {
+        self.with_pool(|pool| pool.write_tensor_pool(tensor_pool_id, tensor_info, py))
+    }
+
+    /// Read tensor metadata from a tensor pool (zero-copy).
+    ///
+    /// **Opt-in extension, outside the 1.0 compatibility guarantees.**
+    ///
+    /// :type tensor_pool_id: pyarrow.Array
+    /// :rtype: dict
+    #[cfg(feature = "tensor-pool")]
+    #[pyo3(signature = (tensor_pool_id))]
+    pub fn read_tensor_pool(
+        &self,
+        tensor_pool_id: Py<PyAny>,
+        py: Python,
+    ) -> eyre::Result<Py<PyAny>> {
+        self.with_pool(|pool| pool.read_tensor_pool(tensor_pool_id, py))
+    }
+
+    /// Free a tensor pool, releasing it for every node that touched it.
+    ///
+    /// **Opt-in extension, outside the 1.0 compatibility guarantees.**
+    ///
+    /// :type tensor_pool_id: pyarrow.Array
+    /// :rtype: None
+    #[cfg(feature = "tensor-pool")]
+    #[pyo3(signature = (tensor_pool_id))]
+    pub fn free_tensor_pool(&self, tensor_pool_id: Py<PyAny>, py: Python) -> eyre::Result<()> {
+        self.with_pool(|pool| pool.free_tensor_pool(tensor_pool_id, py))
+    }
+
     /// Store an opaque value in the daemon's dataflow-scoped extension table.
     ///
     /// The seam for transports maintained outside the dora tree. dora brokers
@@ -1013,6 +1091,33 @@ impl Node {
     pub fn id(&self) -> String {
         self.node_id.to_string()
     }
+
+    /// Borrow this node as the tensor-pool extension's context.
+    ///
+    /// Built per call rather than stored: PyO3 cannot let another crate add
+    /// `#[pymethods]` to `Node`, so the extension takes what it needs by
+    /// reference and the wrappers above stay thin.
+    #[cfg(feature = "tensor-pool")]
+    fn with_pool<R>(&self, f: impl FnOnce(&mut dora_tensor_pool_python::Pool<'_>) -> R) -> R {
+        let node_id = self.node_id.clone();
+        let dataflow_id = self.dataflow_id;
+        let mut guard = self.node.get_mut();
+        let mut pool = dora_tensor_pool_python::Pool {
+            node_id,
+            dataflow_id,
+            node: &mut guard,
+        };
+        f(&mut pool)
+    }
+
+    /// Release pools that other nodes freed. No-op without the extension.
+    #[cfg(feature = "tensor-pool")]
+    fn process_pending_tensor_pool_frees(&self, py: Python) {
+        self.with_pool(|pool| pool.process_pending_tensor_pool_frees(py));
+    }
+
+    #[cfg(not(feature = "tensor-pool"))]
+    fn process_pending_tensor_pool_frees(&self, _py: Python) {}
 }
 
 /// Start a runtime for Operators

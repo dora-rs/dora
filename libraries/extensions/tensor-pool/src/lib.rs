@@ -1,16 +1,16 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
-/// Identifier for a memory pool buffer, scoped by dataflow.
+/// Identifier for a tensor pool buffer, scoped by dataflow.
 #[derive(Debug, Clone, Hash, PartialEq, Eq)]
-pub struct MemoryPoolId {
+pub struct TensorPoolId {
     /// The dataflow that owns this pool.
     pub dataflow_id: String,
     /// The per-node buffer identifier.
     pub id: String,
 }
 
-/// Metadata for a memory pool tensor.
+/// Metadata for a tensor pool tensor.
 ///
 /// # Cross-process safety
 ///
@@ -19,7 +19,7 @@ pub struct MemoryPoolId {
 /// retrieve the data pointer via `shared_memory_name` (opening the shmem
 /// file and reading the DORADMA header for `data_offset`), not via `ptr`.
 #[derive(Debug, Clone, Default)]
-pub struct MemoryPoolMetadata {
+pub struct TensorPoolMetadata {
     /// Raw pointer to tensor data in the registering process's address space.
     /// Only valid in the registering process; cross-process consumers must
     /// use `shared_memory_name` instead.
@@ -44,11 +44,11 @@ pub struct MemoryPoolMetadata {
     pub pinned_type: Option<String>,
 }
 
-/// Entry in the memory pool table.
+/// Entry in the tensor pool table.
 #[derive(Debug, Clone)]
-pub struct MemoryPoolEntry {
+pub struct TensorPoolEntry {
     /// Metadata about the tensor.
-    pub metadata: MemoryPoolMetadata,
+    pub metadata: TensorPoolMetadata,
     /// Node that registered this memory.
     pub registered_by: String,
     /// All nodes that have accessed this pool (registered or read).
@@ -58,13 +58,13 @@ pub struct MemoryPoolEntry {
     /// id from a message in flight — the registering node's downstream
     /// consumers. Together with `touched_by` this is the set of nodes that
     /// may still reference the pool; see
-    /// [`MemoryPoolManager::reclaim_unreachable`]. Rewiring a running
+    /// [`TensorPoolManager::reclaim_unreachable`]. Rewiring a running
     /// dataflow adds to it, via
-    /// [`MemoryPoolManager::extend_potential_readers`].
+    /// [`TensorPoolManager::extend_potential_readers`].
     pub potential_readers: HashSet<String>,
 }
 
-impl MemoryPoolEntry {
+impl TensorPoolEntry {
     /// Whether any node that could still reference this pool is alive.
     fn reachable(&self, is_live: &impl Fn(&str) -> bool) -> bool {
         self.touched_by
@@ -86,17 +86,17 @@ pub struct CleanupSummary {
     pub released_count: usize,
 }
 
-/// Manager for memory pool allocations.
+/// Manager for tensor pool allocations.
 #[derive(Clone)]
-pub struct MemoryPoolManager {
-    /// Table mapping memory pool IDs to their entries.
-    memory_pool_table: Arc<Mutex<HashMap<MemoryPoolId, MemoryPoolEntry>>>,
+pub struct TensorPoolManager {
+    /// Table mapping tensor pool IDs to their entries.
+    tensor_pool_table: Arc<Mutex<HashMap<TensorPoolId, TensorPoolEntry>>>,
 }
 
-impl MemoryPoolManager {
+impl TensorPoolManager {
     pub fn new() -> Self {
         Self {
-            memory_pool_table: Arc::new(Mutex::new(HashMap::new())),
+            tensor_pool_table: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -105,22 +105,22 @@ impl MemoryPoolManager {
     /// Poisoning should never happen in practice (no panics inside lock
     /// guards), but degrading gracefully is preferable to crashing the
     /// daemon on an edge case.
-    fn lock_table(&self) -> std::sync::MutexGuard<'_, HashMap<MemoryPoolId, MemoryPoolEntry>> {
-        self.memory_pool_table
+    fn lock_table(&self) -> std::sync::MutexGuard<'_, HashMap<TensorPoolId, TensorPoolEntry>> {
+        self.tensor_pool_table
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
 
-    /// Register a memory pool with the given ID and metadata.
+    /// Register a tensor pool with the given ID and metadata.
     ///
     /// `potential_readers` lists the nodes that may still ask for this pool
     /// without having opened it yet (the registrar's downstream consumers).
     /// It keeps the pool alive until none of them can use it any more — see
     /// [`Self::reclaim_unreachable`].
-    pub fn register_memory_pool(
+    pub fn register_tensor_pool(
         &self,
-        id: MemoryPoolId,
-        metadata: MemoryPoolMetadata,
+        id: TensorPoolId,
+        metadata: TensorPoolMetadata,
         registered_by: String,
         potential_readers: HashSet<String>,
     ) -> Result<(), String> {
@@ -134,7 +134,7 @@ impl MemoryPoolManager {
         touched.insert(registered_by.clone());
         table.insert(
             id,
-            MemoryPoolEntry {
+            TensorPoolEntry {
                 metadata,
                 registered_by,
                 touched_by: touched,
@@ -145,27 +145,27 @@ impl MemoryPoolManager {
         Ok(())
     }
 
-    /// Get the current number of entries in the memory pool table.
+    /// Get the current number of entries in the tensor pool table.
     pub fn table_size(&self) -> usize {
         let table = self.lock_table();
         table.len()
     }
 
-    /// Read memory pool metadata by ID.
+    /// Read tensor pool metadata by ID.
     ///
     /// `requested_by` is the node ID of the caller, used for audit logging.
     /// Cross-node reads are allowed (receivers must read senders' pools)
     /// but logged at debug level for diagnostics.
-    pub fn read_memory_pool(
+    pub fn read_tensor_pool(
         &self,
-        id: &MemoryPoolId,
+        id: &TensorPoolId,
         requested_by: &str,
-    ) -> Option<MemoryPoolMetadata> {
+    ) -> Option<TensorPoolMetadata> {
         let mut table = self.lock_table();
         table.get_mut(id).map(|entry| {
             if entry.registered_by != requested_by {
                 tracing::debug!(
-                    "memory pool {} (registered by {}) read by {}",
+                    "tensor pool {} (registered by {}) read by {}",
                     id.id,
                     entry.registered_by,
                     requested_by,
@@ -176,7 +176,7 @@ impl MemoryPoolManager {
         })
     }
 
-    /// Free memory pool by ID.
+    /// Free tensor pool by ID.
     ///
     /// Any node may free a pool — the normal lifecycle is that the
     /// registering (sender) node creates the pool and a reading
@@ -184,11 +184,11 @@ impl MemoryPoolManager {
     ///
     /// Removes the entry from the table and attempts to clean up the
     /// underlying shared memory.
-    pub fn free_memory_pool(
+    pub fn free_tensor_pool(
         &self,
-        id: &MemoryPoolId,
+        id: &TensorPoolId,
         requested_by: &str,
-    ) -> Result<(MemoryPoolMetadata, HashSet<String>), String> {
+    ) -> Result<(TensorPoolMetadata, HashSet<String>), String> {
         // Only the table removal needs the lock. Releasing it before the
         // shared-memory unlink below keeps the `remove_file` syscall out of the
         // critical section, so concurrent `register`/`read`/`free` calls on
@@ -197,12 +197,12 @@ impl MemoryPoolManager {
             let mut table = self.lock_table();
             table
                 .remove(id)
-                .ok_or_else(|| "memory pool not found".to_string())?
+                .ok_or_else(|| "tensor pool not found".to_string())?
         };
 
         if entry.registered_by != requested_by {
             tracing::debug!(
-                "memory pool {} (registered by {}) freed by {}",
+                "tensor pool {} (registered by {}) freed by {}",
                 id.id,
                 entry.registered_by,
                 requested_by,
@@ -215,7 +215,7 @@ impl MemoryPoolManager {
     }
 
     /// Unlink an entry's backing segment, if it has one.
-    fn release_segment(&self, metadata: &MemoryPoolMetadata) -> Result<(), String> {
+    fn release_segment(&self, metadata: &TensorPoolMetadata) -> Result<(), String> {
         match &metadata.shared_memory_name {
             Some(name) if !name.is_empty() => self.free_shared_memory(name),
             _ => Ok(()),
@@ -253,7 +253,7 @@ impl MemoryPoolManager {
         #[cfg(not(target_os = "linux"))]
         {
             Err(format!(
-                "memory-pool transport is unavailable on this platform; cannot clean up shared memory `{}`",
+                "tensor-pool transport is unavailable on this platform; cannot clean up shared memory `{}`",
                 shm_name
             ))
         }
@@ -275,8 +275,8 @@ impl MemoryPoolManager {
     /// is gone instead of only at dataflow teardown (dora-rs/dora#2881).
     ///
     /// Because a released pool has no live node in `touched_by`, there is
-    /// nobody left to send a `FreeMemoryPool` notification to — unlike
-    /// `free_memory_pool`, which must tell the other holders to drop their
+    /// nobody left to send a `FreeTensorPool` notification to — unlike
+    /// `free_tensor_pool`, which must tell the other holders to drop their
     /// per-process buffers.
     ///
     /// `is_live` reports whether a node is still running **on this daemon**.
@@ -289,7 +289,7 @@ impl MemoryPoolManager {
         &self,
         dataflow_id: &str,
         is_live: impl Fn(&str) -> bool,
-    ) -> Vec<MemoryPoolId> {
+    ) -> Vec<TensorPoolId> {
         self.release_matching(dataflow_id, |entry| !entry.reachable(&is_live))
     }
 
@@ -327,11 +327,11 @@ impl MemoryPoolManager {
     /// the dataflow is over, so none of its nodes can ask for a pool any
     /// more. Without it a daemon that outlives the dataflow (`dora up`)
     /// would hold every unfreed pool until it exits (dora-rs/dora#2881).
-    pub fn cleanup_dataflow(&self, dataflow_id: &str) -> Vec<MemoryPoolId> {
+    pub fn cleanup_dataflow(&self, dataflow_id: &str) -> Vec<TensorPoolId> {
         let released = self.release_matching(dataflow_id, |_| true);
         if !released.is_empty() {
             tracing::info!(
-                "Detected {} unreleased memory pool of finished dataflow {dataflow_id}, releasing...",
+                "Detected {} unreleased tensor pool of finished dataflow {dataflow_id}, releasing...",
                 released.len(),
             );
         }
@@ -342,14 +342,14 @@ impl MemoryPoolManager {
     /// unlink their segments, returning the released ids.
     ///
     /// The table lock is released before the unlinks, matching
-    /// `free_memory_pool`: the `remove_file` syscalls must not serialize
+    /// `free_tensor_pool`: the `remove_file` syscalls must not serialize
     /// unrelated pool operations.
     fn release_matching(
         &self,
         dataflow_id: &str,
-        mut should_release: impl FnMut(&MemoryPoolEntry) -> bool,
-    ) -> Vec<MemoryPoolId> {
-        let released: Vec<(MemoryPoolId, MemoryPoolEntry)> = {
+        mut should_release: impl FnMut(&TensorPoolEntry) -> bool,
+    ) -> Vec<TensorPoolId> {
+        let released: Vec<(TensorPoolId, TensorPoolEntry)> = {
             let mut table = self.lock_table();
             table
                 .extract_if(|id, entry| id.dataflow_id == dataflow_id && should_release(entry))
@@ -360,7 +360,7 @@ impl MemoryPoolManager {
             .into_iter()
             .map(|(id, entry)| {
                 if let Err(err) = self.release_segment(&entry.metadata) {
-                    tracing::warn!("failed to release memory pool {}: {err}", id.id);
+                    tracing::warn!("failed to release tensor pool {}: {err}", id.id);
                 }
                 id
             })
@@ -371,7 +371,7 @@ impl MemoryPoolManager {
     /// one of *this daemon's* nodes.
     ///
     /// Catches what the pool table cannot: a segment whose creator died
-    /// between `shm_open` and `register_memory_pool` has no entry to release.
+    /// between `shm_open` and `register_tensor_pool` has no entry to release.
     ///
     /// Ownership matters because `/dev/shm` is host-wide while the segment
     /// name carries only the *dataflow* id: sweeping by dataflow id alone
@@ -430,7 +430,7 @@ impl MemoryPoolManager {
         }
     }
 
-    /// Cleanup all memory pools on shutdown.
+    /// Cleanup all tensor pools on shutdown.
     pub fn cleanup_all(&self) -> Result<CleanupSummary, Vec<String>> {
         // Drain the table in one move instead of cloning every key into a
         // `Vec` only to look each one back up and remove it, and release the
@@ -441,7 +441,7 @@ impl MemoryPoolManager {
 
         if unreleased_count > 0 {
             tracing::info!(
-                "Detected {} unreleased memory pool, releasing...",
+                "Detected {} unreleased tensor pool, releasing...",
                 unreleased_count
             );
         }
@@ -457,7 +457,7 @@ impl MemoryPoolManager {
         if errors.is_empty() {
             if unreleased_count > 0 {
                 tracing::info!(
-                    "Successfully released {} unreleased memory pools!",
+                    "Successfully released {} unreleased tensor pools!",
                     released_count
                 );
             }
@@ -467,7 +467,7 @@ impl MemoryPoolManager {
             })
         } else {
             tracing::warn!(
-                "Released {} of {} unreleased memory pools; {} failed",
+                "Released {} of {} unreleased tensor pools; {} failed",
                 released_count,
                 unreleased_count,
                 errors.len()
@@ -477,7 +477,7 @@ impl MemoryPoolManager {
     }
 }
 
-impl Default for MemoryPoolManager {
+impl Default for TensorPoolManager {
     fn default() -> Self {
         Self::new()
     }
@@ -487,8 +487,8 @@ impl Default for MemoryPoolManager {
 mod tests {
     use super::*;
 
-    fn make_metadata() -> MemoryPoolMetadata {
-        MemoryPoolMetadata {
+    fn make_metadata() -> TensorPoolMetadata {
+        TensorPoolMetadata {
             ptr: 0,
             size: 1024,
             dtype: "float32".into(),
@@ -501,8 +501,8 @@ mod tests {
         }
     }
 
-    fn make_id(name: &str) -> MemoryPoolId {
-        MemoryPoolId {
+    fn make_id(name: &str) -> TensorPoolId {
+        TensorPoolId {
             dataflow_id: "test_df".to_string(),
             id: name.to_string(),
         }
@@ -515,14 +515,14 @@ mod tests {
 
     #[test]
     fn register_and_read() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into(), readers(&[]))
+        mgr.register_tensor_pool(id.clone(), meta.clone(), "node_a".into(), readers(&[]))
             .unwrap();
         let read = mgr
-            .read_memory_pool(&id, "node_a")
+            .read_tensor_pool(&id, "node_a")
             .expect("pool should exist");
 
         assert_eq!(read.ptr, meta.ptr);
@@ -533,14 +533,14 @@ mod tests {
 
     #[test]
     fn double_register_fails() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta.clone(), "node_a".into(), readers(&[]))
+        mgr.register_tensor_pool(id.clone(), meta.clone(), "node_a".into(), readers(&[]))
             .unwrap();
         let err = mgr
-            .register_memory_pool(id, meta, "node_a".into(), readers(&[]))
+            .register_tensor_pool(id, meta, "node_a".into(), readers(&[]))
             .unwrap_err();
 
         assert!(err.contains("already registered"));
@@ -550,43 +550,43 @@ mod tests {
     fn cross_owner_free_succeeds() {
         // Cross-node free is the normal lifecycle: sender registers,
         // receiver frees. Both operations must succeed.
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta, "node_a".into(), readers(&[]))
+        mgr.register_tensor_pool(id.clone(), meta, "node_a".into(), readers(&[]))
             .unwrap();
         // A different node frees the pool — this must succeed.
-        mgr.free_memory_pool(&id, "node_b").unwrap();
+        mgr.free_tensor_pool(&id, "node_b").unwrap();
 
         // Pool should be gone after successful free.
-        assert!(mgr.read_memory_pool(&id, "node_b").is_none());
+        assert!(mgr.read_tensor_pool(&id, "node_b").is_none());
     }
 
     #[test]
     fn double_free_second_fails() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
         let meta = make_metadata();
 
-        mgr.register_memory_pool(id.clone(), meta, "node_a".into(), readers(&[]))
+        mgr.register_tensor_pool(id.clone(), meta, "node_a".into(), readers(&[]))
             .unwrap();
-        mgr.free_memory_pool(&id, "node_a").unwrap();
+        mgr.free_tensor_pool(&id, "node_a").unwrap();
 
-        let err = mgr.free_memory_pool(&id, "node_a").unwrap_err();
-        assert!(err.contains("memory pool not found"));
+        let err = mgr.free_tensor_pool(&id, "node_a").unwrap_err();
+        assert!(err.contains("tensor pool not found"));
     }
 
     #[test]
     fn concurrent_frees_across_pools_all_succeed() {
-        // `free_memory_pool` only holds the table lock for the removal, not
+        // `free_tensor_pool` only holds the table lock for the removal, not
         // across the shared-memory unlink. Frees on distinct pools must proceed
         // independently and leave the table empty. Metadata carries no backing
         // segment (`shared_memory_name: None`) so the test stays cross-platform.
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let n = 16;
         for i in 0..n {
-            mgr.register_memory_pool(
+            mgr.register_tensor_pool(
                 make_id(&format!("pool-{i}")),
                 make_metadata(),
                 "node_a".into(),
@@ -599,7 +599,7 @@ mod tests {
             .map(|i| {
                 let mgr = mgr.clone();
                 std::thread::spawn(move || {
-                    mgr.free_memory_pool(&make_id(&format!("pool-{i}")), "node_b")
+                    mgr.free_tensor_pool(&make_id(&format!("pool-{i}")), "node_b")
                 })
             })
             .collect();
@@ -611,10 +611,10 @@ mod tests {
 
     #[test]
     fn cleanup_all_tracks_counts() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
 
         for i in 0..3 {
-            mgr.register_memory_pool(
+            mgr.register_tensor_pool(
                 make_id(&format!("pool-{}", i)),
                 make_metadata(),
                 "node_a".into(),
@@ -631,10 +631,10 @@ mod tests {
 
     #[test]
     fn cleanup_all_reports_partial_release_on_failure() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
 
         // One entry frees cleanly (no backing shmem name)...
-        mgr.register_memory_pool(
+        mgr.register_tensor_pool(
             make_id("ok"),
             make_metadata(),
             "node_a".into(),
@@ -645,7 +645,7 @@ mod tests {
         // in `free_shared_memory`, so its release errors.
         let mut bad_meta = make_metadata();
         bad_meta.shared_memory_name = Some("invalid_name".to_string());
-        mgr.register_memory_pool(make_id("bad"), bad_meta, "node_a".into(), readers(&[]))
+        mgr.register_tensor_pool(make_id("bad"), bad_meta, "node_a".into(), readers(&[]))
             .unwrap();
 
         // cleanup_all must surface the failure (rather than silently claiming
@@ -657,21 +657,21 @@ mod tests {
 
     #[test]
     fn table_size_tracks_entries() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         assert_eq!(mgr.table_size(), 0);
 
         let id = make_id("pool-1");
-        mgr.register_memory_pool(id.clone(), make_metadata(), "node_a".into(), readers(&[]))
+        mgr.register_tensor_pool(id.clone(), make_metadata(), "node_a".into(), readers(&[]))
             .unwrap();
         assert_eq!(mgr.table_size(), 1);
 
-        mgr.free_memory_pool(&id, "node_a").unwrap();
+        mgr.free_tensor_pool(&id, "node_a").unwrap();
         assert_eq!(mgr.table_size(), 0);
     }
 
     #[test]
     fn poison_recovery_lock_table() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         // lock_table is private but accessible from a child test module.
         // Verify it returns a guard, and that operations work after release.
         {
@@ -684,7 +684,7 @@ mod tests {
     #[test]
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
-        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid", |_| true);
+        TensorPoolManager::cleanup_orphans("test-dataflow-uuid", |_| true);
     }
 
     /// Two daemons on one host serve one dataflow, so both see the other's
@@ -718,7 +718,7 @@ mod tests {
             std::fs::write(segment(file), b"x").unwrap();
         }
 
-        MemoryPoolManager::cleanup_orphans(&dataflow_id, |node| {
+        TensorPoolManager::cleanup_orphans(&dataflow_id, |node| {
             matches!(node, "local" | "local_with_underscore")
         });
 
@@ -742,9 +742,9 @@ mod tests {
         // downstream and exits. The receiver has not opened the pool yet,
         // so `touched_by` is still just the sender — freeing here would
         // break the in-flight transfer.
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
-        mgr.register_memory_pool(
+        mgr.register_tensor_pool(
             id.clone(),
             make_metadata(),
             "sender".into(),
@@ -758,14 +758,14 @@ mod tests {
             released.is_empty(),
             "pool must survive: `recv` can still read it"
         );
-        assert!(mgr.read_memory_pool(&id, "recv").is_some());
+        assert!(mgr.read_tensor_pool(&id, "recv").is_some());
     }
 
     #[test]
     fn pool_is_released_once_no_live_node_can_reach_it() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
-        mgr.register_memory_pool(
+        mgr.register_tensor_pool(
             id.clone(),
             make_metadata(),
             "sender".into(),
@@ -785,11 +785,11 @@ mod tests {
         // `potential_readers` is a snapshot of the topology at registration
         // time; a node that actually opened the pool must keep it alive on
         // its own, even if it is not in that snapshot.
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let id = make_id("pool-1");
-        mgr.register_memory_pool(id.clone(), make_metadata(), "sender".into(), readers(&[]))
+        mgr.register_tensor_pool(id.clone(), make_metadata(), "sender".into(), readers(&[]))
             .unwrap();
-        mgr.read_memory_pool(&id, "late_reader").unwrap();
+        mgr.read_tensor_pool(&id, "late_reader").unwrap();
 
         let released = mgr.reclaim_unreachable("test_df", |node| node == "late_reader");
 
@@ -799,15 +799,15 @@ mod tests {
 
     #[test]
     fn reclaim_is_scoped_to_one_dataflow() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let mine = make_id("pool-1");
-        let other = MemoryPoolId {
+        let other = TensorPoolId {
             dataflow_id: "other_df".to_string(),
             id: "pool-1".to_string(),
         };
-        mgr.register_memory_pool(mine.clone(), make_metadata(), "sender".into(), readers(&[]))
+        mgr.register_tensor_pool(mine.clone(), make_metadata(), "sender".into(), readers(&[]))
             .unwrap();
-        mgr.register_memory_pool(
+        mgr.register_tensor_pool(
             other.clone(),
             make_metadata(),
             "sender".into(),
@@ -819,19 +819,19 @@ mod tests {
 
         assert_eq!(released, vec![mine]);
         assert!(
-            mgr.read_memory_pool(&other, "sender").is_some(),
+            mgr.read_tensor_pool(&other, "sender").is_some(),
             "a same-named pool of another dataflow must not be touched"
         );
     }
 
     #[test]
     fn extending_the_reader_set_only_touches_pools_the_source_can_reach() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         let mine = make_id("pool-1");
-        mgr.register_memory_pool(mine.clone(), make_metadata(), "sender".into(), readers(&[]))
+        mgr.register_tensor_pool(mine.clone(), make_metadata(), "sender".into(), readers(&[]))
             .unwrap();
         let other = make_id("pool-2");
-        mgr.register_memory_pool(
+        mgr.register_tensor_pool(
             other.clone(),
             make_metadata(),
             "stranger".into(),
@@ -849,16 +849,16 @@ mod tests {
             "only the pool `sender` can reach may gain the new reader"
         );
         assert!(
-            mgr.read_memory_pool(&mine, "late_consumer").is_some(),
+            mgr.read_tensor_pool(&mine, "late_consumer").is_some(),
             "the consumer wired to `sender` must keep `pool-1` alive"
         );
     }
 
     #[test]
     fn cleanup_dataflow_releases_every_pool_of_that_dataflow() {
-        let mgr = MemoryPoolManager::new();
+        let mgr = TensorPoolManager::new();
         for i in 0..3 {
-            mgr.register_memory_pool(
+            mgr.register_tensor_pool(
                 make_id(&format!("pool-{i}")),
                 make_metadata(),
                 "sender".into(),
@@ -866,11 +866,11 @@ mod tests {
             )
             .unwrap();
         }
-        let other = MemoryPoolId {
+        let other = TensorPoolId {
             dataflow_id: "other_df".to_string(),
             id: "pool-1".to_string(),
         };
-        mgr.register_memory_pool(
+        mgr.register_tensor_pool(
             other.clone(),
             make_metadata(),
             "sender".into(),

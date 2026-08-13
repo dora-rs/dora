@@ -117,10 +117,10 @@ impl DaemonReply {
             DaemonReply::NextEvents(events) => {
                 events.iter().map(|e| e.inner.encode_size_hint()).sum()
             }
-            DaemonReply::Result(_)
-            | DaemonReply::NodeConfig { .. }
-            | DaemonReply::PinnedMemoryMetadata { .. }
-            | DaemonReply::Empty => 0,
+            // The extension value is opaque bytes handed straight back, so
+            // its own length is the whole hint.
+            DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
+            DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
         }
     }
 }
@@ -218,8 +218,8 @@ impl NodeEvent {
             | NodeEvent::AllInputsClosed
             | NodeEvent::ParamUpdate { .. }
             | NodeEvent::ParamDeleted { .. }
-            | NodeEvent::NodeFailed { .. }
-            | NodeEvent::FreeMemoryPool { .. } => 0,
+            | NodeEvent::NodeFailed { .. } => 0,
+            NodeEvent::ExtensionDropped { namespace, key } => namespace.len() + key.len(),
         };
         payload.saturating_add(PER_EVENT_ENVELOPE)
     }

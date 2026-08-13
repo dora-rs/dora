@@ -1,29 +1,29 @@
-// PARKED CODE — DOES NOT COMPILE STANDALONE. DO NOT ADD TO A CARGO TARGET.
-//
-// The memory-pool transport lifted verbatim out of
-// `apis/python/node/src/lib.rs` in dora-rs/dora before the 1.0 release
-// (3,043 lines, ~70% of that file). Sections appear in their original order,
-// separated by `// ==== <name> ====` markers.
-//
-// It references `self.node_id`, `self.dataflow_id` and `self.node` from the
-// `#[pyclass] Node` it used to live inside. Reinstating it means building a
-// seam, NOT restoring the original integration.
-//
-// >>> READ ../README.md "The seam contract" BEFORE TOUCHING THIS FILE. <<<
-//
-// Short version: dora already ships the seam — a generic extension channel
-// (`extension_store` / `extension_load` / `extension_drop` /
-// `drain_dropped_extension_keys`, see dora's `docs/extensions.md`). The three
-// `*_pinned_memory` calls and `drain_freed_pools` below map onto it directly;
-// the README has the table. Everything else — the seqlock, the header pointer
-// arithmetic, the `unsafe impl Send`/`Sync` slots, the embedded libcudart
-// ctypes module, the transport selection — stays on this side of the seam.
-// What the old integration touched is recoverable as the reverse of
-// dora-rs/dora#3152 — no patch file is shipped here on purpose.
-//
-// Open correctness bugs against this code when it was parked: #3015, #2935,
-// #2890. (#2881 is fixed here — PR #3014 is included.)
+//! The tensor-pool transport: segment layout, seqlock, CUDA helpers and the
+//! four operations exposed to Python.
+//!
+//! **Not covered by dora's 1.0 compatibility guarantees** — opt-in extension,
+//! known open defects, no GPU coverage in CI. See `../../README.md`.
+//!
+//! Reaches dora only through the generic extension channel (see [`crate::seam`]
+//! and dora's `docs/extensions.md`). Everything in this file — the `unsafe`
+//! pointer arithmetic over the DORADMA header, the seqlock, the embedded
+//! `libcudart` ctypes module, the transport selection — stays on this side of
+//! that boundary. If a change here seems to need a dora request named after
+//! this transport, widen the generic channel instead.
 
+use std::collections::{HashMap, HashSet};
+use std::sync::LazyLock;
+
+use eyre::Context;
+
+use arrow::array::{Array, BinaryArray, StringArray};
+use arrow::pyarrow::{FromPyArrow, ToPyArrow};
+use dora_message::metadata::Parameter;
+use dora_node_api::dora_core::config::NodeId;
+use dora_node_api::{DataflowId, DoraNode};
+use pyo3::prelude::*;
+use pyo3::types::{PyBytes, PyDict, PyModule};
+use shared_memory_extended::ShmemConf;
 
 // ==================== pool_prelude ====================
 /// Pre-compiled CUDA DMA helper module. Compiled once (at first use) and reused
@@ -52,7 +52,7 @@ const FREED_POOL_IDS_CAP: usize = 4096;
 /// own next free (e.g. a 60Hz peer can cycle the whole cap in ~68s,
 /// evicting a 1Hz peer's entries long before they'd naturally expire). An
 /// evicted tombstone is harmless — it just makes a stale fast-path read
-/// fall back to the existing `warn_missing_memory_pool`/daemon path
+/// fall back to the existing `warn_missing_tensor_pool`/daemon path
 /// instead of being caught here.
 static FREED_POOL_IDS: LazyLock<std::sync::Mutex<FreedPoolIds>> =
     LazyLock::new(|| std::sync::Mutex::new(FreedPoolIds::default()));
@@ -155,7 +155,7 @@ mod freed_pool_ids_tests {
 
 /// Per-pool persistent state.
 /// Keeping Shmem alive prevents munmap, preserving stable mmap addresses
-/// for pool-hit detection across `register_memory_pool` calls.
+/// for pool-hit detection across `register_tensor_pool` calls.
 ///
 /// # Safety
 /// `Shmem` is not `Send + Sync` due to raw pointer fields, but `PoolSlot`
@@ -184,8 +184,8 @@ static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
 /// Persistent transit-buffer metadata for GPU pools.
 /// Survives `PINNED_POOL` cache-miss so the write fast path can recover
 /// `transit_ptr` and `pool_device` even when the `PoolSlot` has been evicted.
-/// Keyed by counter, populated during `register_memory_pool`, cleared in
-/// `free_memory_pool`.  `transit_ptr=0` means no transit buffer (same-device
+/// Keyed by counter, populated during `register_tensor_pool`, cleared in
+/// `free_tensor_pool`.  `transit_ptr=0` means no transit buffer (same-device
 /// or P2P path).
 static TRANSIT_META: LazyLock<std::sync::Mutex<HashMap<u64, (u64, i32)>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
@@ -253,7 +253,7 @@ const DORADMA_METADATA_ALIGN: usize = 256;
 /// Crossover where pinned-DMA bandwidth overtakes pageable copy +
 /// cudaHostRegister/unregister fixed cost (~100 µs).  Determined by
 /// ablation study (2026-06-27): pageable faster below, pinned faster
-/// above.  Shared by `register_memory_pool` and `write_memory_pool`.
+/// above.  Shared by `register_tensor_pool` and `write_tensor_pool`.
 const DMA_PIN_THRESHOLD_BYTES: usize = 25 * 1024 * 1024;
 
 /// Returns `true` when the source tensor should be pinned before DMA.
@@ -359,7 +359,7 @@ fn classify_transport(
     TransportPath::HostStagingTransit
 }
 
-/// Which write path `write_memory_pool` dispatches to for a given frame.
+/// Which write path `write_tensor_pool` dispatches to for a given frame.
 ///
 /// The fast and slow write paths both branch on the same 2×2×2 matrix
 /// (`ipc_present` × `is_cuda` × `transit_ptr`); extracting the
@@ -851,7 +851,7 @@ def _cuda_memcpy(dst, src, size, kind):
 
 def _cuda_memcpy_gpu_buf(slot, src_ptr, size):
     """Copy *size* bytes from *src_ptr* (GPU) into the pool's pinned GPU buffer
-    identified by *slot*.  Used by write_memory_pool when both source and pool
+    identified by *slot*.  Used by write_tensor_pool when both source and pool
     buffer are GPU-resident (same-device DtoD copy)."""
     if slot not in _gpu_bufs:
         raise RuntimeError(f"GPU pool buffer for slot {slot} not initialised")
@@ -983,8 +983,8 @@ fn read_header_u64(p: *const u8) -> u64 {
     u64::from_le_bytes(buf)
 }
 
-fn parse_memory_pool_id(memory_pool_id: Py<PyAny>, py: Python<'_>) -> eyre::Result<String> {
-    let array_data = arrow::array::ArrayData::from_pyarrow_bound(memory_pool_id.bind(py))?;
+fn parse_tensor_pool_id(tensor_pool_id: Py<PyAny>, py: Python<'_>) -> eyre::Result<String> {
+    let array_data = arrow::array::ArrayData::from_pyarrow_bound(tensor_pool_id.bind(py))?;
     let array = arrow::array::make_array(array_data);
 
     if let Some(string_array) = array.as_any().downcast_ref::<StringArray>() {
@@ -1005,37 +1005,23 @@ fn parse_memory_pool_id(memory_pool_id: Py<PyAny>, py: Python<'_>) -> eyre::Resu
         Ok(String::from_utf8(binary_array.value(0).to_vec())?)
     } else {
         eyre::bail!(
-            "memory_pool_id must be a string or binary array, got {:?}",
+            "tensor_pool_id must be a string or binary array, got {:?}",
             array.data_type()
         )
     }
 }
 
-fn warn_missing_memory_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
+fn warn_missing_tensor_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
     tracing::warn!(
-        "[{}] Attempt to {} memory pool [{}] failed - reason: pool does not exist. Operation aborted.",
+        "[{}] Attempt to {} tensor pool [{}] failed - reason: pool does not exist. Operation aborted.",
         node_id,
         action,
         buffer_id
     );
 }
 
-
 // ==================== seqlock ====================
-/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96):
-/// marks the generation "writing" (even -> odd) and returns the pre-write
-/// (even) value so the matching [`seqlock_end_write`] call can either
-/// publish the next generation or roll back to this one.
-unsafe fn seqlock_begin_write(gen_ptr: *mut u64) -> u64 {
-    unsafe {
-        let pre_write_gen = std::ptr::read_volatile(gen_ptr);
-        std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(1));
-        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
-        pre_write_gen
-    }
-}
-
-/// Begins a memory-pool seqlock write at `gen_ptr` (header offset 96)
+/// Begins a tensor-pool seqlock write at `gen_ptr` (header offset 96)
 /// **if the generation is even**.  Returns the **even** pre-write
 /// generation — i.e., the generation value before the write cycle
 /// began, which is always even.
@@ -1056,7 +1042,7 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
     }
 }
 
-/// Closes a memory-pool seqlock write (header offset 96).
+/// Closes a tensor-pool seqlock write (header offset 96).
 ///
 /// Advances the generation to `pre_write_gen + 2` (even = "complete").
 /// The caller must only invoke this on a successful copy.  GPU pool write
@@ -1064,7 +1050,7 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 /// clean previous frame; double-buffering is deferred to a follow-up PR).
 /// The `copy_ok == false` rollback branch is retained for the helper's
 /// contract but is dead code in production — see the leave-gen-odd blocks
-/// in `write_memory_pool`.
+/// in `write_tensor_pool`.
 unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
     unsafe {
         if copy_ok {
@@ -1151,10 +1137,24 @@ mod seqlock_tests {
     }
 }
 
-// ==================== process_pending_frees ====================
-    /// Process any memory pools that were freed by another node.
-    fn process_pending_memory_pool_frees(&self, py: Python) {
-        for shared_memory_id in dora_node_api::event_stream::memory_pool::drain_freed_pools() {
+// ==================== the transport ====================
+
+/// One node's view of the pool transport.
+///
+/// Holds what the methods below need from dora — nothing more. Constructed
+/// per call by the thin `#[pymethods]` wrappers in `dora-node-api-python`,
+/// because PyO3 cannot add methods to its `Node` from another crate.
+pub struct Pool<'a> {
+    pub node: &'a mut DoraNode,
+    pub node_id: NodeId,
+    pub dataflow_id: DataflowId,
+}
+
+impl Pool<'_> {
+    // ==================== process_pending_frees ====================
+    /// Process any tensor pools that were freed by another node.
+    pub fn process_pending_tensor_pool_frees(&mut self, py: Python) {
+        for shared_memory_id in crate::seam::drain_dropped(crate::seam::NAMESPACE) {
             let buffer_id = shared_memory_id;
             // Receiver-side cleanup (IPC handles, shmem mappings).
             {
@@ -1220,34 +1220,32 @@ mod seqlock_tests {
         }
     }
 
+    // ==================== pool_api_methods ====================
 
-// ==================== pool_api_methods ====================
+    // === Tensor Pool API ===
 
-    // === Memory Pool API ===
-
-    /// Register a shared memory pool for zero-copy tensor transfer.
+    /// Register a shared tensor pool for zero-copy tensor transfer.
     ///
     /// The returned pool ID can be shared across nodes (e.g. via a Dora output)
-    /// so that a receiver can call [`read_memory_pool`] and [`free_memory_pool`]
+    /// so that a receiver can call [`read_tensor_pool`] and [`free_tensor_pool`]
     /// on it.
     ///
     /// # Concurrency / safety
     ///
     /// **This pool provides no internal mutual exclusion for data bytes.**
-    /// The writer must not begin a new [`write_memory_pool`] while a receiver is
+    /// The writer must not begin a new [`write_tensor_pool`] while a receiver is
     /// still consuming the previous tensor. Callers that share a pool across
     /// nodes MUST enforce a **turn-based discipline** — for example, by waiting
     /// for a `next_require` round-trip from the receiver before writing again.
-    /// The bundled `examples/memory-pool/` dataflows demonstrate this pattern.
+    /// The bundled `examples/tensor-pool/` dataflows demonstrate this pattern.
     ///
     /// The on-segment seqlock guards metadata integrity (header fields written
     /// once at registration) and detects in-flight overwrites, but it does
     /// **not** block the writer from starting a new write while a consumer
     /// holds a zero-copy tensor. Skipping the turn-based discipline risks
     /// torn data at the consumer.
-    #[pyo3(signature = (tensor_info, device))]
-    pub fn register_memory_pool(
-        &self,
+    pub fn register_tensor_pool(
+        &mut self,
         tensor_info: &Bound<'_, PyDict>,
         device: String,
         py: Python,
@@ -1290,7 +1288,7 @@ mod seqlock_tests {
         }
         if cfg!(not(target_os = "linux")) {
             eyre::bail!(
-                "memory-pool transport requires Linux (uses /dev/shm). \
+                "tensor-pool transport requires Linux (uses /dev/shm). \
                  This platform is not supported."
             );
         }
@@ -1397,19 +1395,20 @@ mod seqlock_tests {
             // region or nothing — uninitialized shmem exposed as a valid
             // frame is data corruption.  Both a failed cudaMemcpy and a
             // missing CUDA helper module are treated as copy failures.
-            let mut dtoh_copy_ok = true;
             if is_cuda {
-                if let Ok(helpers) = get_cuda_helpers(py) {
+                // A missing CUDA helper module counts as a failed copy: the
+                // consumer must see the whole region or nothing.
+                let dtoh_copy_ok = if let Ok(helpers) = get_cuda_helpers(py) {
                     let bound = helpers.bind(py);
-                    dtoh_copy_ok = bound
+                    bound
                         .call_method1(
                             "_cuda_memcpy",
                             (shmem_ptr as u64 + data_offset as u64, ptr_val, size, 2u32),
                         )
-                        .is_ok();
+                        .is_ok()
                 } else {
-                    dtoh_copy_ok = false;
-                }
+                    false
+                };
                 if !dtoh_copy_ok {
                     // The matching `_register_host` above is unconditional (it
                     // runs whenever `!receiver_is_cuda`), so the unregister must
@@ -1421,7 +1420,7 @@ mod seqlock_tests {
                     }
                     shmem.set_owner(true);
                     eyre::bail!(
-                        "[{}] register_memory_pool: DtoH copy failed ({} → CPU shmem, {} bytes)",
+                        "[{}] register_tensor_pool: DtoH copy failed ({} → CPU shmem, {} bytes)",
                         self.node_id,
                         tensor_device,
                         size
@@ -1643,7 +1642,7 @@ mod seqlock_tests {
             }
             shmem.set_owner(true);
             eyre::bail!(
-                "[{}] register_memory_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`",
+                "[{}] register_tensor_pool: failed to set up GPU pool buffer / IPC handle for CUDA receiver `{}`",
                 self.node_id,
                 tensor_device
             );
@@ -1724,12 +1723,8 @@ mod seqlock_tests {
             );
 
             let meta = dora_node_api::Metadata::from_parameters(ts, params);
-            if let Err(e) = self
-                .node
-                .get_mut()
-                .register_pinned_memory(buffer_id.clone(), meta)
-            {
-                tracing::warn!("[{}] failed to register memory pool: {:#}", self.node_id, e);
+            if let Err(e) = crate::seam::store(self.node, &buffer_id, &meta) {
+                tracing::warn!("[{}] failed to register tensor pool: {:#}", self.node_id, e);
             }
         }
 
@@ -1738,7 +1733,7 @@ mod seqlock_tests {
         Ok(buf_py)
     }
 
-    /// Write tensor data to an existing memory pool.
+    /// Write tensor data to an existing tensor pool.
     ///
     /// Overwrites the data region of a previously-registered pool without
     /// re-registering, enabling memory reuse across iterations.
@@ -1756,17 +1751,16 @@ mod seqlock_tests {
     /// A writer that ignores the turn-based contract will produce torn
     /// (partially updated) data at the consumer.
     ///
-    /// The bundled `examples/memory-pool/` dataflows demonstrate correct
+    /// The bundled `examples/tensor-pool/` dataflows demonstrate correct
     /// turn-based usage: the sender writes, outputs the pool ID, and waits
     /// for the next input event before writing again.
-    #[pyo3(signature = (memory_pool_id, tensor_info))]
-    pub fn write_memory_pool(
-        &self,
-        memory_pool_id: Py<PyAny>,
+    pub fn write_tensor_pool(
+        &mut self,
+        tensor_pool_id: Py<PyAny>,
         tensor_info: &Bound<'_, PyDict>,
         py: Python,
     ) -> eyre::Result<()> {
-        let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
+        let buffer_id = parse_tensor_pool_id(tensor_pool_id, py)?;
 
         let ptr_val: u64 = tensor_info
             .get_item("ptr")?
@@ -1785,7 +1779,7 @@ mod seqlock_tests {
         {
             let freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
             if freed.contains(&buffer_id) {
-                warn_missing_memory_pool(&self.node_id, "write", &buffer_id);
+                warn_missing_tensor_pool(&self.node_id, "write", &buffer_id);
                 return Ok(());
             }
         }
@@ -1803,7 +1797,7 @@ mod seqlock_tests {
                 && let Ok(counter) = counter_str.parse::<u64>()
             {
                 // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
-                // register_memory_pool already stored the Shmem here; taking it
+                // register_tensor_pool already stored the Shmem here; taking it
                 // prevents munmap, and storing it back keeps the mapping alive.
                 let pool_slot = {
                     PINNED_POOL
@@ -1879,7 +1873,7 @@ mod seqlock_tests {
                                 && size > shmem_capacity.saturating_sub(data_offset))
                         {
                             tracing::warn!(
-                                "[{}] write_memory_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
+                                "[{}] write_tensor_pool: size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
                                 self.node_id,
                                 size,
                                 data_offset,
@@ -1908,7 +1902,7 @@ mod seqlock_tests {
                                 {
                                     copy_ok = false;
                                     tracing::error!(
-                                        "[{}] write_memory_pool: DMA copy failed: {}",
+                                        "[{}] write_tensor_pool: DMA copy failed: {}",
                                         self.node_id,
                                         e
                                     );
@@ -1928,7 +1922,7 @@ mod seqlock_tests {
                                 // retries until the next successful write.
                             }
                             if !copy_ok {
-                                // Re-insert the slot so free_memory_pool
+                                // Re-insert the slot so free_tensor_pool
                                 // can clean up the GPU buffer and transit
                                 // allocation (mirrors the is_cuda branch).
                                 if let Some(slot_data) = store_back.take() {
@@ -1938,7 +1932,7 @@ mod seqlock_tests {
                                         .insert(counter, slot_data);
                                 }
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool: DMA copy failed",
+                                    "[{}] write_tensor_pool: DMA copy failed",
                                     self.node_id
                                 ));
                             }
@@ -2035,7 +2029,7 @@ mod seqlock_tests {
                                 if let Err(e) = res {
                                     copy_ok = false;
                                     tracing::error!(
-                                        "[{}] write_memory_pool: GPU pool copy failed: {}",
+                                        "[{}] write_tensor_pool: GPU pool copy failed: {}",
                                         self.node_id,
                                         e
                                     );
@@ -2062,7 +2056,7 @@ mod seqlock_tests {
                                         .insert(counter, slot_data);
                                 }
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool: GPU pool copy failed",
+                                    "[{}] write_tensor_pool: GPU pool copy failed",
                                     self.node_id
                                 ));
                             }
@@ -2102,11 +2096,7 @@ mod seqlock_tests {
         }
 
         // Slow path: query daemon for pool metadata
-        match self
-            .node
-            .get_mut()
-            .read_pinned_memory(buffer_id.clone(), false)
-        {
+        match crate::seam::load_metadata(self.node, &buffer_id, false) {
             Ok(metadata) => {
                 let shmem_name = metadata.parameters.get("shared_memory_name").and_then(|p| {
                     if let Parameter::String(s) = p {
@@ -2143,7 +2133,7 @@ mod seqlock_tests {
                             || (ipc_present != 1 && size > shmem_len.saturating_sub(data_offset))
                         {
                             tracing::warn!(
-                                "[{}] write_memory_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
+                                "[{}] write_tensor_pool (slow path): size {} exceeds available pool capacity (data_offset={}, total={}), operation aborted",
                                 self.node_id,
                                 size,
                                 data_offset,
@@ -2168,7 +2158,7 @@ mod seqlock_tests {
                                 {
                                     copy_ok = false;
                                     tracing::error!(
-                                        "[{}] write_memory_pool (slow path): DMA copy failed: {}",
+                                        "[{}] write_tensor_pool (slow path): DMA copy failed: {}",
                                         self.node_id,
                                         e
                                     );
@@ -2189,7 +2179,7 @@ mod seqlock_tests {
                             }
                             if !copy_ok {
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool (slow path): DMA copy failed",
+                                    "[{}] write_tensor_pool (slow path): DMA copy failed",
                                     self.node_id
                                 ));
                             }
@@ -2274,7 +2264,7 @@ mod seqlock_tests {
                                 if let Err(e) = res {
                                     copy_ok = false;
                                     tracing::error!(
-                                        "[{}] write_memory_pool (slow path): GPU pool copy failed: {}",
+                                        "[{}] write_tensor_pool (slow path): GPU pool copy failed: {}",
                                         self.node_id,
                                         e
                                     );
@@ -2295,7 +2285,7 @@ mod seqlock_tests {
                             }
                             if !copy_ok {
                                 return Err(eyre::eyre!(
-                                    "[{}] write_memory_pool (slow path): GPU pool copy failed",
+                                    "[{}] write_tensor_pool (slow path): GPU pool copy failed",
                                     self.node_id
                                 ));
                             }
@@ -2323,14 +2313,14 @@ mod seqlock_tests {
                 }
             }
             Err(_) => {
-                warn_missing_memory_pool(&self.node_id, "write", &buffer_id);
+                warn_missing_tensor_pool(&self.node_id, "write", &buffer_id);
             }
         }
 
         Ok(())
     }
 
-    /// Read tensor info from an existing memory pool (zero-copy).
+    /// Read tensor info from an existing tensor pool (zero-copy).
     ///
     /// Returns a `tensor_info` dict compatible with `tensor_from_info`.
     /// The returned tensor shares the underlying shared-memory mapping —
@@ -2341,7 +2331,7 @@ mod seqlock_tests {
     ///
     /// **The returned tensor is a zero-copy view into shared memory.**
     /// Its data bytes can be overwritten at any time by a concurrent (or
-    /// subsequent) [`write_memory_pool`] on the sender. The seqlock
+    /// subsequent) [`write_tensor_pool`] on the sender. The seqlock
     /// re-check at end-of-read detects whether an overwrite occurred
     /// mid-consumption, but it is the **caller's responsibility** to
     /// ensure the tensor is not used after the writer is allowed to write
@@ -2350,14 +2340,14 @@ mod seqlock_tests {
     /// Correct consumers follow a **turn-based discipline**: read the
     /// pool, consume the tensor fully, then signal the sender (e.g. via
     /// the dataflow graph's `next_require` round-trip) that it is safe to
-    /// write the next frame. The bundled `examples/memory-pool/` dataflows
+    /// write the next frame. The bundled `examples/tensor-pool/` dataflows
     /// demonstrate this pattern.
-    pub fn read_memory_pool(
-        &self,
-        memory_pool_id: Py<PyAny>,
+    pub fn read_tensor_pool(
+        &mut self,
+        tensor_pool_id: Py<PyAny>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
-        let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
+        let buffer_id = parse_tensor_pool_id(tensor_pool_id, py)?;
 
         // Populate the trusted GPU buffer size from daemon metadata
         // on the first read.  Subsequent reads (if any) reuse the
@@ -2366,10 +2356,7 @@ mod seqlock_tests {
             let trusted = GPU_BUF_SIZES.lock().unwrap_or_else(|e| e.into_inner());
             if !trusted.contains_key(&buffer_id) {
                 drop(trusted);
-                if let Ok(metadata) = self
-                    .node
-                    .get_mut()
-                    .read_pinned_memory(buffer_id.clone(), false)
+                if let Ok(metadata) = crate::seam::load_metadata(self.node, &buffer_id, false)
                     && let Some(size) = metadata.parameters.get("size").and_then(|p| {
                         if let Parameter::Integer(v) = p {
                             Some(*v)
@@ -2409,17 +2396,13 @@ mod seqlock_tests {
                     }
                     Ok(None) => break,
                     Err(e) => {
-                        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-                        eyre::bail!("memory pool {}: fast path failed: {}", buffer_id, e);
+                        warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
+                        eyre::bail!("tensor pool {}: fast path failed: {}", buffer_id, e);
                     }
                 }
             }
             // Retries exhausted — fall back to the daemon for CPU pools.
-            if let Ok(metadata) = self
-                .node
-                .get_mut()
-                .read_pinned_memory(buffer_id.clone(), false)
-            {
+            if let Ok(metadata) = crate::seam::load_metadata(self.node, &buffer_id, false) {
                 let size = metadata
                     .parameters
                     .get("size")
@@ -2466,9 +2449,9 @@ mod seqlock_tests {
                     })
                     .unwrap_or(false);
                 if ipc_present {
-                    warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                    warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
                     eyre::bail!(
-                        "memory pool {}: fast path retries exhausted for GPU pool \
+                        "tensor pool {}: fast path retries exhausted for GPU pool \
                          (daemon fallback cannot provide a GPU pointer)",
                         buffer_id
                     );
@@ -2492,9 +2475,9 @@ mod seqlock_tests {
                         if data_offset > shmem.len()
                             || (size as usize) > shmem.len().saturating_sub(data_offset)
                         {
-                            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                            warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
                             eyre::bail!(
-                                "memory pool {}: header bounds exceeded: \
+                                "tensor pool {}: header bounds exceeded: \
                                  data_offset {} + size {} > shmem_len {}",
                                 buffer_id,
                                 data_offset,
@@ -2509,9 +2492,9 @@ mod seqlock_tests {
                         let read_gen =
                             unsafe { std::ptr::read_volatile(shmem_ptr.add(96) as *const u64) };
                         if read_gen % 2 != 0 {
-                            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+                            warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
                             eyre::bail!(
-                                "memory pool {}: daemon fallback: seqlock write in progress \
+                                "tensor pool {}: daemon fallback: seqlock write in progress \
                                  (generation={}, odd)",
                                 buffer_id,
                                 read_gen
@@ -2546,27 +2529,23 @@ mod seqlock_tests {
                     }
                 }
             }
-            warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
+            warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
             eyre::bail!(
-                "memory pool {}: fast path retries exhausted — pool not ready after 500ms",
+                "tensor pool {}: fast path retries exhausted — pool not ready after 500ms",
                 buffer_id
             );
         }
 
-        warn_missing_memory_pool(&self.node_id, "read", &buffer_id);
-        eyre::bail!("memory pool {} not found", buffer_id);
+        warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
+        eyre::bail!("tensor pool {} not found", buffer_id);
     }
 
-    /// Free a memory pool.
-    #[pyo3(signature = (memory_pool_id))]
-    pub fn free_memory_pool(&self, memory_pool_id: Py<PyAny>, py: Python) -> eyre::Result<()> {
-        let buffer_id = parse_memory_pool_id(memory_pool_id, py)?;
+    /// Free a tensor pool.
+    pub fn free_tensor_pool(&mut self, tensor_pool_id: Py<PyAny>, py: Python) -> eyre::Result<()> {
+        let buffer_id = parse_tensor_pool_id(tensor_pool_id, py)?;
 
-        match self.node.get_mut().free_pinned_memory(buffer_id.clone()) {
-            Ok(_) => {}
-            Err(_) => {
-                warn_missing_memory_pool(&self.node_id, "release", &buffer_id);
-            }
+        if crate::seam::drop_key(self.node, &buffer_id).is_err() {
+            warn_missing_tensor_pool(&self.node_id, "release", &buffer_id);
         }
 
         // Clean up sender-side pinned pool mapping (Shmem + CUDA host register).
@@ -2643,7 +2622,7 @@ mod seqlock_tests {
         {
             let mut freed = FREED_POOL_IDS.lock().unwrap_or_else(|e| e.into_inner());
             tracing::debug!(
-                "[{}] free_memory_pool: adding {} to FREED_POOL_IDS (set size={})",
+                "[{}] free_tensor_pool: adding {} to FREED_POOL_IDS (set size={})",
                 self.node_id,
                 buffer_id,
                 freed.len()
@@ -2654,76 +2633,9 @@ mod seqlock_tests {
         Ok(())
     }
 
-// ==================== drain_test_module ====================
+    // ==================== try_doradma_read ====================
 
-#[cfg(test)]
-mod memory_pool_free_drain_tests {
-    /// Every user-visible receive path must drain the pending
-    /// memory-pool free set — that drain is the only thing that releases
-    /// this process's GPU IPC handles, transit buffers and shmem mappings
-    /// for pools that *another* node freed
-    /// (see `dora_node_api::event_stream::memory_pool`).
-    ///
-    /// Regression guard for #2958, where `recv_async` was the one path of
-    /// four that skipped it, so `await`-only nodes leaked every pool until
-    /// process exit. The leak is silent: it surfaces later as a CUDA OOM
-    /// somewhere unrelated, which is exactly why it needs a guard.
-    ///
-    /// Asserted on the source rather than on behaviour because `Node` can
-    /// only be constructed against a live daemon connection, so no unit
-    /// test can call these methods.
-    #[test]
-    fn every_receive_path_drains_pending_memory_pool_frees() {
-        const DRAIN: &str = "self.process_pending_memory_pool_frees(py)";
-        let src = include_str!("lib.rs");
-
-        for signature in [
-            "pub fn next(&self, py: Python",
-            "pub fn drain(&self, py: Python",
-            "pub fn try_recv(&mut self, py: Python",
-            "pub async fn recv_async(&self,",
-        ] {
-            assert!(
-                method_body(src, signature).contains(DRAIN),
-                "`{signature}` does not call `{DRAIN}`: pools freed by other \
-                 nodes stay mapped in this process forever (#2958)"
-            );
-        }
-
-        // `__next__` is exempt only for as long as it delegates to `next`.
-        assert!(
-            method_body(src, "pub fn __next__(&self, py: Python").contains("self.next(py,"),
-            "`__next__` no longer delegates to `next`, so it needs its own \
-             `{DRAIN}` call (#2958)"
-        );
-    }
-
-    /// Returns the `{ .. }` block that follows `signature` in `src`.
-    fn method_body<'a>(src: &'a str, signature: &str) -> &'a str {
-        let start = src
-            .find(signature)
-            .unwrap_or_else(|| panic!("method `{signature}` not found — update this test"));
-        let open = start + src[start..].find('{').expect("method has a body");
-        let mut depth = 0usize;
-        for (offset, c) in src[open..].char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        return &src[open..=open + offset];
-                    }
-                }
-                _ => {}
-            }
-        }
-        panic!("unbalanced braces in the body of `{signature}`");
-    }
-}
-
-// ==================== try_doradma_read ====================
-
-    /// DORADMA fast path for read_memory_pool: reads metadata directly from
+    /// DORADMA fast path for read_tensor_pool: reads metadata directly from
     /// the shmem header, bypassing the daemon for zero-copy metadata retrieval.
     ///
     /// Buffer ID format: `"pool_{node_id}_{counter}"` →
@@ -2732,7 +2644,7 @@ mod memory_pool_free_drain_tests {
     /// # Synchronization model
     ///
     /// The seqlock (write_gen at header offset 96) guards **data-byte**
-    /// consistency across `write_memory_pool` overwrites — the end-of-read
+    /// consistency across `write_tensor_pool` overwrites — the end-of-read
     /// generation re-check detects if a write occurred mid-read.  Header
     /// fields (json_len, data_offset) are written once at registration and
     /// never change, so they are not subject to torn-read risk.
@@ -2740,12 +2652,16 @@ mod memory_pool_free_drain_tests {
     /// The seqlock does NOT protect the tensor data bytes from being
     /// overwritten while a consumer is iterating the zero-copy tensor.
     /// Callers must enforce a **turn-based** discipline: the writer must
-    /// not begin a new `write_memory_pool` until the receiver has finished
+    /// not begin a new `write_tensor_pool` until the receiver has finished
     /// consuming the previous tensor. The example dataflow enforces this
     /// via `next_require` round-trip signaling.
     ///
     /// Returns `Ok(Some(tensor_info_dict))` on success, `Ok(None)` to fall back to daemon.
-    fn try_doradma_read(&self, buffer_id: &str, py: Python<'_>) -> eyre::Result<Option<Py<PyAny>>> {
+    fn try_doradma_read(
+        &mut self,
+        buffer_id: &str,
+        py: Python<'_>,
+    ) -> eyre::Result<Option<Py<PyAny>>> {
         // Format: "pool_{node_id}_{counter}".
         // Use rsplit to extract the counter from the end — the node_id
         // portion may itself contain underscores (legal in dora node ids).
@@ -2835,7 +2751,7 @@ mod memory_pool_free_drain_tests {
         // Parse JSON to Python dict
         let metadata_dict: Bound<'_, PyDict> = match py.import("json") {
             Ok(m) => match m.call_method1("loads", (json_str,)) {
-                Ok(v) => match v.downcast_into::<PyDict>() {
+                Ok(v) => match v.cast_into::<PyDict>() {
                     Ok(d) => d,
                     Err(_) => return Ok(None),
                 },
@@ -3053,7 +2969,7 @@ mod memory_pool_free_drain_tests {
         // A successful fast-path read means the pool is alive.  Clear
         // any stale tombstone so that the fast path re-engages after a
         // sender restart re-creates the same buffer_id (FREED_POOL_IDS
-        // is per-process and free_memory_pool inserts there).
+        // is per-process and free_tensor_pool inserts there).
         {
             FREED_POOL_IDS
                 .lock()
@@ -3063,27 +2979,4 @@ mod memory_pool_free_drain_tests {
 
         Ok(Some(dict.into()))
     }
-
-// ==================== next_drain ====================
-        // Drain any daemon-broadcast FreeMemoryPool events before
-        // yielding the next user-visible event — this ensures that
-        // a single free_memory_pool call by any node releases
-        // per-process resources (GPU buffers, transit buffers, shmem
-        // mappings) in every process.
-        self.process_pending_memory_pool_frees(py);
-
-
-// ==================== drain_drain ====================
-        self.process_pending_memory_pool_frees(py);
-
-// ==================== try_recv_drain ====================
-        self.process_pending_memory_pool_frees(py);
-
-// ==================== recv_async_drain ====================
-        // Same cleanup contract as `next`/`drain`/`try_recv`: release the
-        // per-process resources of pools that other nodes freed before
-        // yielding the next user-visible event.  Done *before* the await so
-        // that it also runs on the `None` (stream closed) path, and so the
-        // scoped `attach` drops the GIL before the suspend point.
-        Python::attach(|py| self.process_pending_memory_pool_frees(py));
-
+}

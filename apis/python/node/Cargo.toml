@@ -14,6 +14,10 @@ publish = false  # PyO3 cdylib, shipped via PyPI as `dora-rs`, not crates.io
 
 [features]
 default = ["tracing", "metrics", "async"]
+# Opt-in tensor-pool transport. NOT covered by dora's 1.0 compatibility
+# guarantees — see libraries/extensions/tensor-pool/README.md. Off by default
+# so a standard wheel neither builds nor exposes it.
+tensor-pool = ["dep:dora-tensor-pool-python"]
 tracing = ["dora-node-api/tracing"]
 metrics = ["dora-node-api/metrics"]
 async = ["pyo3/experimental-async"]
@@ -35,6 +39,7 @@ pythonize = { workspace = true }
 futures = { workspace = true }
 dora-ros2-bridge-python = { workspace = true }
 dora-download = { workspace = true }
+dora-tensor-pool-python = { workspace = true, optional = true }
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "macros"] }
 tracing = { workspace = true }
 

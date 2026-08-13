@@ -215,6 +215,36 @@ class Node:
         node.send_output("string", b"string", {"open_telemetry_context": "7632e76"})
         ```"""
 
+    def register_tensor_pool(
+        self, tensor_info: dict, device: str = "cpu"
+    ) -> pyarrow.Array:
+        """Register a tensor's memory as a shared pool for zero-copy transfer.
+
+        Only present when the wheel was built with the `tensor-pool` feature.
+        NOT covered by dora's 1.0 compatibility guarantees — see
+        libraries/extensions/tensor-pool/README.md.
+        """
+
+    def write_tensor_pool(
+        self, tensor_pool_id: pyarrow.Array, tensor_info: dict
+    ) -> None:
+        """Write tensor data into an existing tensor pool.
+
+        Extension method; see register_tensor_pool.
+        """
+
+    def read_tensor_pool(self, tensor_pool_id: pyarrow.Array) -> dict:
+        """Read tensor metadata from a tensor pool (zero-copy).
+
+        Extension method; see register_tensor_pool.
+        """
+
+    def free_tensor_pool(self, tensor_pool_id: pyarrow.Array) -> None:
+        """Free a tensor pool, releasing it for every node that touched it.
+
+        Extension method; see register_tensor_pool.
+        """
+
     def extension_store(self, namespace: str, key: str, value: bytes) -> None:
         """Store an opaque value in the daemon's dataflow-scoped extension table.
 

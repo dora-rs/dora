@@ -3824,6 +3824,15 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
+        // Opt-in extension: reclaim `/dev/shm` segments a previous crash of
+        // this dataflow's nodes left behind. Scoped to the nodes this daemon
+        // spawns, since a co-located daemon may be starting the other half of
+        // the same dataflow right now. Compiles away without the feature.
+        #[cfg(feature = "tensor-pool")]
+        dora_tensor_pool::TensorPoolManager::cleanup_orphans(&dataflow_id.to_string(), |node| {
+            spawn_nodes.iter().any(|id| id.as_ref() == node)
+        });
+
         let mut logger = self
             .logger
             .for_dataflow(dataflow_id)

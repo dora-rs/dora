@@ -1,7 +1,7 @@
 """Pool-side tensor helpers, parked out of `dora/cuda.py`.
 
 `get_tensor_info` / `tensor_from_info` were the documented way to feed the
-removed `register_memory_pool` / `write_memory_pool` / `read_memory_pool`
+removed `register_tensor_pool` / `write_tensor_pool` / `read_tensor_pool`
 methods, and the two dtype maps existed only to serve them. They have no
 other caller in dora, so they travelled with the transport.
 
@@ -55,7 +55,7 @@ _TORCH_TO_NUMPY_DTYPE_MAP = {
 
 
 # ---------------------------------------------------------------------------
-# Tensor info helpers for memory-pool operations
+# Tensor info helpers for tensor-pool operations
 # ---------------------------------------------------------------------------
 
 
@@ -77,8 +77,8 @@ def get_tensor_info(tensor: torch.Tensor) -> dict:
     """Serialize a tensor into a ``tensor_info`` dict containing pointer,
     size, dtype, shape, and device.
 
-    This is the canonical way to pass tensor metadata to memory-pool
-    operations such as ``register_memory_pool`` and ``write_memory_pool``.
+    This is the canonical way to pass tensor metadata to tensor-pool
+    operations such as ``register_tensor_pool`` and ``write_tensor_pool``.
     """
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()
@@ -96,7 +96,7 @@ def tensor_from_info(tensor_info: dict) -> torch.Tensor:
 
     The returned tensor shares the same underlying memory as the original
     tensor that produced the ``tensor_info``.  Used by consumers that read
-    a memory pool via ``read_memory_pool``.
+    a tensor pool via ``read_tensor_pool``.
     """
     ptr = tensor_info.get('ptr', 0)
     if ptr == 0:

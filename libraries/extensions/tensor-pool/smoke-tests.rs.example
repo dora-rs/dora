@@ -1,33 +1,40 @@
-// PARKED — not wired to any test harness.
+// Smoke tests for the tensor-pool extension — NOT a cargo test target.
 //
-// The eight smoke tests removed from `tests/example-smoke.rs` in dora-rs/dora
-// when the memory-pool transport was parked. Paths have been rewritten to this
-// package's `examples/`; the `run_smoke_test` / `run_smoke_test_local` helpers
-// they call live in dora's test harness and would need reproducing here.
+// They need two things the default build does not provide: a Python wheel
+// built with `--features tensor-pool`, and `torch` + `tqdm` in the
+// environment. Wiring them into `tests/example-smoke.rs` unconditionally
+// would give a confusing failure to anyone running the standard suite
+// without a feature-built wheel, so they live here as a `.example` and are
+// copied in deliberately.
 //
-// The `memory-pool-smoke` nightly job referenced below no longer exists in
-// dora's nightly.yml — it was removed with the transport.
+// To run them: install the wheel with the feature, then paste this into
+// `tests/example-smoke.rs` (which provides `run_smoke_test` /
+// `run_smoke_test_local`) and
+//
+//     cargo test -p dora-examples --test example-smoke -- --ignored tensor_pool
+//
+// This is a real coverage gap while the extension is opt-in — see the README.
 
 // ---------------------------------------------------------------------------
-// Memory-pool CPU transport (#2168)
+// Tensor-pool CPU transport (#2168)
 //
 // Requires `torch` and `tqdm`, so these are `#[ignore]`-gated and skipped by
 // the main `smoke-suite` nightly job. They run in their own nightly job —
-// `memory-pool-smoke` in .github/workflows/nightly.yml — which executes them
+// `tensor-pool-smoke` in .github/workflows/nightly.yml — which executes them
 // with `--ignored`; the per-node `build:` steps pip-install CPU torch, so no
 // GPU is needed. Run all six locally with the same filter CI uses:
-//   cargo test --test example-smoke -- --ignored memory_pool
-// (`memory_pool` matches both `smoke_memory_pool_*` and
-// `smoke_local_memory_pool_*`; `smoke_memory_pool` would miss the latter).
+//   cargo test --test example-smoke -- --ignored tensor_pool
+// (`tensor_pool` matches both `smoke_tensor_pool_*` and
+// `smoke_local_tensor_pool_*`; `smoke_tensor_pool` would miss the latter).
 // Or via `scripts/smoke-all.sh` which gates on `python3 -c "import torch"`
 // and skips gracefully when download.pytorch.org is unreachable.
 // ---------------------------------------------------------------------------
 
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
-fn smoke_memory_pool_cpu2cpu() {
+fn smoke_tensor_pool_cpu2cpu() {
     run_smoke_test(
-        "memory-pool-cpu2cpu",
+        "tensor-pool-cpu2cpu",
         "examples/cpu2cpu.yml",
         Duration::from_secs(60),
     );
@@ -35,20 +42,16 @@ fn smoke_memory_pool_cpu2cpu() {
 
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
-fn smoke_local_memory_pool_cpu2cpu() {
-    run_smoke_test_local(
-        "local-memory-pool-cpu2cpu",
-        "examples/cpu2cpu.yml",
-        60,
-    );
+fn smoke_local_tensor_pool_cpu2cpu() {
+    run_smoke_test_local("local-tensor-pool-cpu2cpu", "examples/cpu2cpu.yml", 60);
 }
 
 // Negative-lifecycle scenarios validate the "warn, don't crash" contract.
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
-fn smoke_local_memory_pool_auto_cleanup() {
+fn smoke_local_tensor_pool_auto_cleanup() {
     run_smoke_test_local(
-        "local-memory-pool-auto-cleanup",
+        "local-tensor-pool-auto-cleanup",
         "examples/auto_cleanup.yml",
         10,
     );
@@ -56,9 +59,9 @@ fn smoke_local_memory_pool_auto_cleanup() {
 
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
-fn smoke_local_memory_pool_duplicate_free() {
+fn smoke_local_tensor_pool_duplicate_free() {
     run_smoke_test_local(
-        "local-memory-pool-duplicate-free",
+        "local-tensor-pool-duplicate-free",
         "examples/duplicate_free.yml",
         10,
     );
@@ -66,9 +69,9 @@ fn smoke_local_memory_pool_duplicate_free() {
 
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
-fn smoke_local_memory_pool_read_after_free() {
+fn smoke_local_tensor_pool_read_after_free() {
     run_smoke_test_local(
-        "local-memory-pool-read-after-free",
+        "local-tensor-pool-read-after-free",
         "examples/read_after_free.yml",
         10,
     );
@@ -76,24 +79,24 @@ fn smoke_local_memory_pool_read_after_free() {
 
 #[test]
 #[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
-fn smoke_local_memory_pool_write_after_free() {
+fn smoke_local_tensor_pool_write_after_free() {
     run_smoke_test_local(
-        "local-memory-pool-write-after-free",
+        "local-tensor-pool-write-after-free",
         "examples/write_after_free.yml",
         10,
     );
 }
 
-// GPU memory-pool tests: require CUDA-capable GPU(s).
+// GPU tensor-pool tests: require CUDA-capable GPU(s).
 // cuda_inner needs at least 1 GPU; cuda2cuda needs ≥2 distinct GPUs.
 // Both are `#[ignore]`-gated because standard CI runners lack GPUs.
 // Run locally:
 //   cargo test --test example-smoke -- --ignored cuda
 #[test]
 #[ignore = "requires CUDA GPU(s)"]
-fn smoke_memory_pool_cuda_inner() {
+fn smoke_tensor_pool_cuda_inner() {
     run_smoke_test(
-        "memory-pool-cuda-inner",
+        "tensor-pool-cuda-inner",
         "examples/cuda_inner.yml",
         Duration::from_secs(60),
     );
@@ -101,11 +104,10 @@ fn smoke_memory_pool_cuda_inner() {
 
 #[test]
 #[ignore = "requires CUDA GPU(s) — ≥2 GPUs"]
-fn smoke_memory_pool_cuda2cuda() {
+fn smoke_tensor_pool_cuda2cuda() {
     run_smoke_test(
-        "memory-pool-cuda2cuda",
+        "tensor-pool-cuda2cuda",
         "examples/cuda2cuda.yml",
         Duration::from_secs(60),
     );
 }
-
