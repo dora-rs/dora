@@ -221,8 +221,16 @@ fn is_live_child(process: &sysinfo::Process, own_pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // The `#[cfg(unix)]` tests below drive a real process through the Unix
+    // process model: `/bin/sleep`, process groups, `CommandExt::process_group`.
+    // They are compiled out rather than `ignore`d because `ignore` only skips
+    // a test at *runtime* — the body still has to compile, and the Unix-only
+    // APIs it uses do not exist on Windows (dora-rs/dora#2742).
+    #[cfg(unix)]
     use std::process::{Command, Stdio};
 
+    #[cfg(unix)]
     fn spawn_sleeper() -> std::process::Child {
         Command::new("sleep")
             .arg("300")
@@ -234,8 +242,8 @@ mod tests {
 
     /// A node that will not exit is killed once the deadline passes — the
     /// case #2980 is about.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "spawns `sleep`")]
     async fn a_node_that_outlives_the_deadline_is_killed() {
         let mut child = spawn_sleeper();
         let pid = child.id();
@@ -260,16 +268,26 @@ mod tests {
     /// carries on in its process group, the node is not gone. Following only
     /// the leader would end the destroy there and orphan the child, which is
     /// the very leak this module exists to close, one level down.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "process groups are a unix concept")]
     async fn a_wrapper_that_exits_does_not_hide_its_surviving_child() {
         use std::os::unix::process::CommandExt as _;
 
         // A group leader that spawns a child into its group and exits, like
         // a wrapper dying while the interpreter it launched keeps running.
+        //
+        // The wrapper blocks on `read` rather than `exit 0` so its lifetime is
+        // controlled by the test, not by a race: nothing ordered the first
+        // `poll` before a bare `exit 0`, so on a loaded machine the wrapper
+        // could already be a reaped-later zombie by then, `is_live_child`
+        // returns false, and — being the first poll — the `confirmed`-group
+        // fallback does not yet apply, so `poll` returned `Done` and the
+        // "wrapper is alive" assertion flaked (#3023). Closing stdin below makes
+        // `read` hit EOF, so the wrapper exits exactly where the test wants it.
         let mut wrapper = Command::new("sh")
             .arg("-c")
-            .arg("sleep 300 & exit 0")
+            .arg("sleep 300 & read line")
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .process_group(0)
@@ -284,7 +302,9 @@ mod tests {
             "the wrapper is alive, so this is an ordinary wait"
         );
 
-        // The wrapper exits and is reaped; its child lives on.
+        // Close stdin so the wrapper's `read` hits EOF and it exits; its child
+        // lives on. The wrapper is reaped by the `wait()` below.
+        drop(wrapper.stdin.take());
         wrapper.wait().expect("failed to wait for wrapper");
         assert_eq!(
             wait.poll(&[pid]),
@@ -319,8 +339,8 @@ mod tests {
     /// The common case must stay free: a node that exits on its own is never
     /// killed, and the destroy completes as soon as it is gone rather than
     /// sitting out the deadline.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "spawns `sleep`")]
     async fn a_node_that_exits_on_its_own_is_not_killed() {
         let mut child = spawn_sleeper();
         let pid = child.id();
@@ -340,8 +360,8 @@ mod tests {
 
     /// A pid the OS recycled after the node exited belongs to a stranger.
     /// Killing it would be worse than the leak this module exists to fix.
+    #[cfg(unix)]
     #[tokio::test(start_paused = true)]
-    #[cfg_attr(not(unix), ignore = "spawns `sleep`")]
     async fn a_process_that_is_not_our_child_is_left_alone() {
         let mut child = spawn_sleeper();
         let pid = child.id();

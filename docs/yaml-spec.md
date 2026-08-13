@@ -280,6 +280,7 @@ Some names are reserved and are dropped (with a warning in the daemon log) when 
 |----------|-----|
 | `DORA_NODE_CONFIG`, `DORA_RUNTIME_CONFIG` | The daemon's own handle to the node — dataflow id, node id, and how to reach the daemon |
 | `DORA_ZENOH_LISTEN`, `DORA_ZENOH_CONNECT`, `DORA_ZENOH_MULTICAST`, `ZENOH_CONFIG` | Node-to-node wiring. Overriding these produces a dataflow that starts cleanly and then exchanges nothing. Set `ZENOH_CONFIG` in the daemon's own environment instead — nodes inherit it |
+| `DORA_RUN_PARENT_PID` | Names the process whose death ends the node. `dora run` sets it so a hard-killed CLI cannot strand nodes; a descriptor-supplied value would be an arbitrary self-destruct trigger |
 | `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `DYLD_INSERT_LIBRARIES`, `DYLD_LIBRARY_PATH` | Loader hijacking |
 | `DORA_AUTH_TOKEN`, `DORA_ALLOW_SHELL_NODES` | Daemon-level security settings |
 
@@ -324,7 +325,7 @@ For a complete guide to all logging features, see [Logging](logging.md).
 | `restart_delay` | float | -- | Initial backoff in seconds. Doubles each attempt |
 | `max_restart_delay` | float | -- | Cap for exponential backoff |
 | `restart_window` | float | -- | Time window for counting restarts. The counter resets after this many seconds since the first restart in the current window. Enables "N restarts per M seconds" semantics with `max_restarts` |
-| `health_check_timeout` | float | -- | If the node does not communicate with the daemon (send outputs, subscribe, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy` |
+| `health_check_timeout` | float | -- | Once the node has connected (subscribed to events), if it then does not communicate with the daemon (send outputs, acknowledge ticks, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy`. Covers **post-connection** liveness only -- it does not bound startup time, so a node that hangs before it ever subscribes is not killed |
 
 Restart policies:
 

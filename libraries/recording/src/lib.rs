@@ -7,12 +7,12 @@
 //! files as well as in-memory buffers.
 //!
 //! ```
-//! use dora_recording::{RecordEntry, RecordingHeader, RecordingReader, RecordingWriter};
+//! use dora_recording::{FORMAT_VERSION, RecordEntry, RecordingHeader, RecordingReader, RecordingWriter};
 //! use std::io::Cursor;
 //!
 //! # fn main() -> eyre::Result<()> {
 //! let header = RecordingHeader {
-//!     version: 1,
+//!     version: FORMAT_VERSION,
 //!     start_nanos: 0,
 //!     dataflow_id: uuid::Uuid::nil(),
 //!     descriptor_yaml: b"nodes: []".to_vec(),
@@ -50,7 +50,26 @@ use uuid::Uuid;
 
 const MAGIC: &[u8; 8] = b"DORAREC\x00";
 const FOOTER_MAGIC: &[u8; 8] = b"DORAEND\x00";
-const FORMAT_VERSION: u16 = 1;
+/// Version stamped into the header of newly written `.drec` files.
+///
+/// Bumped from 1 to 2 when `event_bytes` moved from bincode to postcard: the
+/// container framing is unchanged, but every entry's payload is a
+/// `Timestamped<InterDaemonEvent>` in the new encoding.
+///
+/// Writers must stamp [`RecordingHeader::version`] with this rather than a
+/// literal, or they produce files their own reader rejects.
+pub const FORMAT_VERSION: u16 = 2;
+/// Oldest `.drec` version this build can read.
+///
+/// The entry payloads are opaque to the container, so a version that only the
+/// *payload* encoding changed still has to be rejected here — otherwise the
+/// header check passes and every entry fails to decode further downstream,
+/// surfacing as "corrupt or format-drifted recording" instead of a clear
+/// version error naming the dora release that wrote the file.
+const MIN_SUPPORTED_FORMAT_VERSION: u16 = 2;
+/// A bump that leaves the writers stamping a version below the reader's floor
+/// would make every freshly written recording unreadable by the same build.
+const _: () = assert!(FORMAT_VERSION >= MIN_SUPPORTED_FORMAT_VERSION);
 /// Maximum size for a single record or YAML descriptor in a `.drec` file.
 /// Guards against OOM from crafted files with `u32::MAX` length fields.
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
@@ -310,6 +329,13 @@ fn read_header<R: Read>(r: &mut R) -> eyre::Result<RecordingHeader> {
             "unsupported recording format version {version} (max supported: {FORMAT_VERSION})"
         );
     }
+    if version < MIN_SUPPORTED_FORMAT_VERSION {
+        eyre::bail!(
+            "recording format version {version} is no longer supported (min supported: \
+             {MIN_SUPPORTED_FORMAT_VERSION}); it was written by a dora release that encoded \
+             events with bincode. Re-record with this version of dora."
+        );
+    }
 
     let mut nanos_buf = [0u8; 8];
     r.read_exact(&mut nanos_buf)?;
@@ -368,6 +394,31 @@ mod tests {
         let mut cursor = std::io::Cursor::new(&buf);
         let read_back = read_header(&mut cursor).unwrap();
         assert_eq!(header, read_back);
+    }
+
+    /// A v1 `.drec` holds bincode-encoded `event_bytes`, which this build
+    /// cannot decode. The container framing is identical, so nothing downstream
+    /// would notice until every entry failed to deserialize and got skipped as
+    /// "corrupt" — the reader must reject the file up front and say why.
+    #[test]
+    fn pre_postcard_recordings_are_rejected_with_a_version_error() {
+        let mut buf = Vec::new();
+        write_header(
+            &mut buf,
+            &RecordingHeader {
+                version: 1,
+                ..sample_header()
+            },
+        )
+        .unwrap();
+
+        let err = read_header(&mut std::io::Cursor::new(&buf))
+            .expect_err("a bincode-era recording must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no longer supported"),
+            "error must name the version problem, got: {msg}"
+        );
     }
 
     #[test]

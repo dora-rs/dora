@@ -243,7 +243,7 @@ async fn start_with_events(
     // Start WS server
     #[cfg(feature = "metrics")]
     let _meter_provider = {
-        let provider = dora_metrics::init_metrics();
+        let provider = dora_metrics::init_metrics()?;
         opentelemetry::global::set_meter_provider(provider.clone());
         provider
     };
@@ -894,6 +894,27 @@ async fn start_inner(
                             grace_duration,
                             force,
                         } => {
+                            // A pending restart already sent `StopDataflow` to
+                            // the daemon(s) and is waiting for
+                            // `DataflowFinishedOnDaemon` to spawn the new
+                            // incarnation under a fresh UUID; `running_dataflows`
+                            // still contains the old UUID in the meantime. An
+                            // explicit `Stop` for that UUID means the caller
+                            // wants the dataflow gone, not restarted — cancel
+                            // the pending restart (erroring its caller) rather
+                            // than letting it silently spawn a new incarnation
+                            // after this stop reports success. Last-writer-wins,
+                            // and unlike an outright rejection this doesn't
+                            // block `--force` from ever landing while a
+                            // long-`--grace-duration` restart is in flight.
+                            cancel_pending_restart(
+                                &mut pending_restarts,
+                                dataflow_uuid,
+                                format!(
+                                    "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
+                                ),
+                            );
+
                             // `dataflow_results` is filled incrementally, one
                             // entry per daemon, while a multi-daemon dataflow is
                             // still running on the others (see
@@ -947,6 +968,16 @@ async fn start_inner(
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
+                                // Same pending-restart cancellation as `Stop`
+                                // — see the comment there for why.
+                                cancel_pending_restart(
+                                    &mut pending_restarts,
+                                    dataflow_uuid,
+                                    format!(
+                                        "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
+                                    ),
+                                );
+
                                 // Same partial-completion guard as `Stop`: a
                                 // still-running multi-daemon dataflow has a
                                 // partial `dataflow_results` entry, but must
@@ -2163,6 +2194,7 @@ async fn start_inner(
                     &mut archived_dataflows,
                     &mut dataflow_results,
                     &mut daemon_connections,
+                    &mut pending_restarts,
                     &clock,
                     store.as_ref(),
                 )
@@ -2370,6 +2402,15 @@ async fn start_inner(
                         use opentelemetry::KeyValue;
                         let df_id = dataflow_id.to_string();
                         for (node_id, node_metrics) in &metrics {
+                            // Same authority as the in-memory table above: a
+                            // finalized node's delayed metrics push is a stale
+                            // pre-exit snapshot. Skip it here too, so OTEL does
+                            // not record a fresh data point that resurrects the
+                            // node's CPU/memory time series one push past its
+                            // death.
+                            if dataflow.node_finalized.contains(node_id) {
+                                continue;
+                            }
                             let daemon = dataflow
                                 .node_to_daemon
                                 .get(node_id)
@@ -2623,13 +2664,13 @@ async fn start_inner(
                                     }
                                 }
                             }
-                            StoreDataflowStatus::Failed { terminal: true, .. } => {
-                                // Terminal failure (watchdog or equivalent
-                                // coordinator-side verdict). Daemon's report
-                                // is ignored to preserve the verdict the
-                                // user already received via wait_for_spawn.
+                            status if status_report_should_stop_orphan(&status) => {
+                                // Terminal state (success, watchdog failure, or
+                                // equivalent coordinator-side verdict). Daemon's
+                                // report is ignored to preserve the verdict the
+                                // user already received.
                                 tracing::warn!(
-                                    "daemon {daemon_id} reports terminally-failed \
+                                    "daemon {daemon_id} reports terminal \
                                      dataflow {df_id} as running; skipping reconcile",
                                 );
                                 // Stop the orphaned nodes the daemon kept alive
@@ -3145,6 +3186,21 @@ enum DisconnectAction {
     ReclaimOrphaned(DataflowId),
 }
 
+/// Cancel a pending restart for `uuid`, if one exists: removes it from
+/// `pending_restarts` and replies to the parked restart caller with `Err`
+/// explaining why. No-op if there is no pending restart for `uuid`.
+fn cancel_pending_restart(
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
+    uuid: DataflowId,
+    reason: impl std::fmt::Display,
+) {
+    if let Some(restart) = pending_restarts.remove(&uuid) {
+        let reason = reason.to_string();
+        tracing::warn!(dataflow = %uuid, "cancelling pending restart: {reason}");
+        let _ = restart.reply_sender.send(Err(eyre!("{reason}")));
+    }
+}
+
 fn cleanup_disconnected_daemons_from_running_dataflows(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     disconnected: &BTreeSet<DaemonId>,
@@ -3187,15 +3243,11 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
     // daemon(s) will never send DataflowFinishedOnDaemon, so any caller
     // waiting on a deferred restart would hang indefinitely (#2082 H1).
     for uuid in &affected_uuids {
-        if let Some(restart) = pending_restarts.remove(uuid) {
-            tracing::warn!(
-                dataflow = %uuid,
-                "daemon disconnected while restart was pending; cancelling restart"
-            );
-            let _ = restart.reply_sender.send(Err(eyre!(
-                "daemon disconnected while restart was pending for dataflow `{uuid}`"
-            )));
-        }
+        cancel_pending_restart(
+            pending_restarts,
+            *uuid,
+            format!("daemon disconnected while restart was pending for dataflow `{uuid}`"),
+        );
     }
     actions
 }
@@ -3266,6 +3318,13 @@ fn reestablish_running_dataflow(
     // replay exactly as the relink path does. Returning a flat `false` here is
     // what left orphan-reclaim and coordinator-restart reconnects hanging.
     record.ready_barrier_released
+}
+
+fn status_report_should_stop_orphan(status: &StoreDataflowStatus) -> bool {
+    matches!(
+        status,
+        StoreDataflowStatus::Failed { terminal: true, .. } | StoreDataflowStatus::Succeeded
+    )
 }
 
 /// Tell a single daemon to stop a dataflow the coordinator has terminally given
@@ -3522,6 +3581,7 @@ async fn check_spawn_timeouts(
     archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
     dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     daemon_connections: &mut DaemonConnections,
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
     clock: &HLC,
     store: &dyn CoordinatorStore,
 ) {
@@ -3602,6 +3662,19 @@ async fn check_spawn_timeouts(
             // reachable from any other code path; defensive.)
             continue;
         };
+        // `PendingRestart` is keyed by this (old) UUID: `initiate_restart`
+        // only requires the UUID to be present in `running_dataflows`,
+        // which it is while this very spawn is stuck — i.e. a restart was
+        // requested for this dataflow while it was still spawning, before
+        // this watchdog gave up on it. Without this, the entry would never
+        // drain (only `DataflowFinishedOnDaemon` and the daemon-disconnect
+        // path do), permanently wedging both the parked restart caller and
+        // any future `Stop` for this UUID.
+        cancel_pending_restart(
+            pending_restarts,
+            uuid,
+            format!("dataflow `{uuid}`'s spawn timed out while a restart was pending"),
+        );
         let err_msg = format!(
             "spawn timed out after {}s; {} daemon(s) never reported \
              spawn_result; rolled back {} previously-started daemon(s)",
@@ -4679,15 +4752,28 @@ async fn broadcast_all_nodes_ready(
         tracing::warn!(dataflow = %uuid, "failed to persist ready-barrier release: {e}");
     }
 
-    // notify all machines that run parts of the dataflow
+    // notify all machines that run parts of the dataflow.
+    //
+    // This is best-effort per daemon: a broken (but not yet dropped)
+    // connection makes `send` fail, but that must not tear down coordination
+    // for every other dataflow and daemon. `ready_barrier_released` was
+    // already set and persisted above, so a daemon that misses this frame is
+    // replayed on reconnect (#2998) -- a dropped send is recoverable. Log and
+    // move on instead of aborting the coordinator's event loop (the same
+    // best-effort posture the multi-daemon stop path already takes), and keep
+    // notifying the remaining daemons rather than stopping at the first
+    // failure. A fully-gone daemon takes the `None` branch above.
     for daemon_id in &dataflow.daemons {
         let Some(connection) = daemon_connections.get_mut(daemon_id) else {
             tracing::warn!("no daemon connection found for machine `{daemon_id}`");
             continue;
         };
-        connection.send(&message).await.wrap_err_with(|| {
-            format!("failed to send AllNodesReady({uuid}) message to machine {daemon_id}")
-        })?;
+        if let Err(err) = connection.send(&message).await {
+            tracing::warn!(
+                "failed to send AllNodesReady({uuid}) message to machine {daemon_id}: {err} \
+                 (will be replayed on reconnect)"
+            );
+        }
     }
 
     schedule_param_replay_for_ready_dataflow(
@@ -5011,6 +5097,10 @@ async fn initiate_restart(
             reply_sender,
         },
     );
+    // Logged (rather than left silent) so a test can poll for the exact
+    // moment the restart becomes cancellable via a `Stop`, instead of
+    // guessing a fixed delay.
+    tracing::info!(dataflow = %dataflow_uuid, "restart pending; waiting for dataflow to finish stopping");
 }
 
 #[cfg(test)]
@@ -5552,6 +5642,52 @@ mod tests {
             .await
             .expect("daemon did not receive both halves of the release")
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn ready_broadcast_is_best_effort_when_a_daemon_send_fails() {
+        // A broken (but not yet dropped) daemon connection makes the
+        // per-daemon `send` fail. That must not abort the coordinator's event
+        // loop: `broadcast_all_nodes_ready` returns `Ok` and relies on the
+        // persisted release being replayed when the daemon reconnects (#2998).
+        // Before this fix the send error propagated with `?` and tore down the
+        // whole coordinator -- every dataflow and daemon -- over one transient
+        // per-daemon failure.
+        let store: Arc<dyn CoordinatorStore> = Arc::new(InMemoryStore::new());
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "camera".to_string().into();
+
+        // A connection whose receive half is already gone, so `send` errors.
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(8);
+        drop(rx);
+        let connection = crate::state::DaemonConnection::new(
+            tx,
+            Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        );
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(daemon_id.clone(), connection);
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id);
+        assert!(!dataflow.ready_barrier_released);
+
+        let result = broadcast_all_nodes_ready(
+            dataflow_id,
+            &mut dataflow,
+            &mut daemon_connections,
+            &store,
+            &Arc::new(HLC::default()),
+        )
+        .await;
+
+        assert!(
+            result.is_ok(),
+            "a single daemon send failure must not fail the broadcast: {result:?}"
+        );
+        // The barrier is still recorded as released, so the daemon that missed
+        // the frame is replayed on reconnect rather than parked forever.
+        assert!(dataflow.ready_barrier_released);
     }
 
     #[test]
@@ -7537,12 +7673,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7597,12 +7735,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7644,12 +7784,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7730,12 +7872,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8077,12 +8221,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8123,12 +8269,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8184,12 +8332,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8269,11 +8419,13 @@ mod tests {
         }
         assert_eq!(dataflow_results.len(), MAX_DATAFLOW_RESULTS);
 
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8354,12 +8506,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8548,6 +8702,17 @@ mod tests {
         );
     }
 
+    #[test]
+    fn status_report_reconcile_stops_succeeded_dataflows_reported_as_running() {
+        let status = StoreDataflowStatus::Succeeded;
+
+        assert!(
+            status_report_should_stop_orphan(&status),
+            "a Succeeded store record is terminal; a daemon reporting it as still \
+             running must be stopped rather than ignored"
+        );
+    }
+
     /// Round-7 Finding 2: if all daemons disconnected before the watchdog
     /// fired (so `df.daemons` is empty by the disconnect cleanup at
     /// `lib.rs:1893-1899`), the watchdog's synthesis must STILL produce
@@ -8584,12 +8749,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8655,12 +8822,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8738,11 +8907,13 @@ mod tests {
         // If `NodeId::from("<watchdog>")` is reintroduced, this awaits
         // a panic and the test fails. Currently uses `"watchdog"` which
         // passes validation.
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )

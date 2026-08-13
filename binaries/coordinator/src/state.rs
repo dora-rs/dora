@@ -150,8 +150,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon and wait for a reply.
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
@@ -206,8 +206,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon without waiting for a reply (fire-and-forget).
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send(&self, message: &[u8]) -> eyre::Result<()> {
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
@@ -512,7 +512,9 @@ impl RunningDataflow {
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {
-                result: Ok(ControlRequestReply::DataflowSpawned { uuid: record.uuid }),
+                result: Box::new(Ok(ControlRequestReply::DataflowSpawned {
+                    uuid: record.uuid,
+                })),
             },
             stop_reply_senders: Vec::new(),
             buffered_log_messages: Vec::new(),
@@ -573,8 +575,11 @@ pub(crate) enum CachedResult {
     Pending {
         result_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
     },
+    // Boxed because `ControlRequestReply` is large: without the box the
+    // `Cached` variant dwarfs `Pending`, which trips clippy's
+    // `large_enum_variant` on some targets (e.g. Windows) but not others (#2979).
     Cached {
-        result: eyre::Result<ControlRequestReply>,
+        result: Box<eyre::Result<ControlRequestReply>>,
     },
 }
 
@@ -605,7 +610,9 @@ impl CachedResult {
                 for sender in result_senders.drain(..) {
                     Self::send_result_to(&result, sender);
                 }
-                *self = CachedResult::Cached { result };
+                *self = CachedResult::Cached {
+                    result: Box::new(result),
+                };
             }
             CachedResult::Cached { .. } => {}
         }
@@ -624,7 +631,7 @@ impl CachedResult {
     /// the spawn-timeout watchdog (or any other terminal-failure path)
     /// has already marked as failed.
     pub(crate) fn is_terminal_error(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Err(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_err())
     }
 
     /// Returns `true` if a successful result has been cached, i.e. the dataflow
@@ -633,7 +640,7 @@ impl CachedResult {
     /// that are past spawn — spawn-pending ones remain the spawn-timeout
     /// watchdog's domain. See #2028.
     pub(crate) fn is_cached_ok(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Ok(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_ok())
     }
 
     fn send_result_to(

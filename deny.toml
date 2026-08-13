@@ -18,7 +18,7 @@ yanked = "deny"
 ignore = [
     # --- Unmaintained transitive dependencies ---
     # All waived pending upstream migration by parent crates. Review quarterly.
-    "RUSTSEC-2025-0141",  # bincode 1.x + 2.x unmaintained. Workspace dep; migration to postcard/bincode2 planned post-1.0. (bincode 3.0.0 is a compile_error! protest stub, not an upgrade target.) Review: 2026-09.
+    "RUSTSEC-2025-0141",  # bincode unmaintained. No longer a dora dep (migrated to postcard); now transitive via zenoh-ext 1.9 only. Waiting for zenoh to migrate. Review: 2026-09.
     "RUSTSEC-2024-0436",  # paste: transitive (safer_ffi / macro_rules_attribute). Low risk. Review: 2026-07.
     "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained (thin wrapper over rustls-pki-types). Transitive via zenoh-link-commons 1.9; waiting for zenoh to migrate to rustls-pki-types PemObject. Review: 2026-09.
     # --- Temporary vulnerability waivers ---

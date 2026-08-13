@@ -28,7 +28,7 @@ Key communication paths:
 ## Workspace Facts
 
 - Rust edition: 2024
-- MSRV: 1.88.0
+- MSRV: 1.95.0
 - Shared workspace versioning
 - Python packages are built with `maturin`, not normal `cargo` flows
 - The repository is in an `adora` -> `dora` consolidation transition. Prefer `dora` names for new code, but preserve documented compatibility paths unless the change is explicitly a breaking cleanup.
@@ -38,7 +38,9 @@ Important packages:
 - `binaries/cli`: `dora` CLI
 - `binaries/daemon`: local process manager and transport bridge
 - `binaries/coordinator`: distributed orchestration
-- `binaries/runtime`: in-process operator runtime
+- `binaries/runtime-api`: language-neutral operator runtime SDK (`OperatorRunner` trait + event loop)
+- `binaries/runtime-shared-lib`: shared-library (C ABI) operator runtime backend (in the `dora` CLI)
+- `binaries/runtime-python`: Python (PyO3) operator runtime backend (in the Python wheel)
 - `libraries/core`: descriptor parsing and shared build/runtime utilities
 - `libraries/message`: protocol and message definitions
 - `apis/rust/node`: Rust node API
@@ -74,6 +76,7 @@ cargo test --all \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \
+  --exclude dora-runtime-python \
   --exclude dora-cli-api-python \
   --exclude dora-examples
 
@@ -153,6 +156,7 @@ cargo test --all \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \
+  --exclude dora-runtime-python \
   --exclude dora-cli-api-python \
   --exclude dora-examples
 ```

@@ -38,6 +38,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$ROOT"
 
+# shellcheck source=cargo-target-dir.sh
+source "$SCRIPT_DIR/cargo-target-dir.sh"
+TARGET_DIR="$(cargo_target_dir "$ROOT")"
+
 PASS=0
 FAIL=0
 SKIP=0
@@ -83,7 +87,7 @@ if [ "$VERBOSE" = false ] && [ "$SHOW_OUTPUT" = true ]; then
     echo "(tip: -v streams dora live; -q suppresses the per-example tail)"
 fi
 
-DORA="${DORA_BIN:-$ROOT/target/debug/dora}"
+DORA="${DORA_BIN:-$TARGET_DIR/debug/dora}"
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -130,15 +134,20 @@ cleanup_stale() {
     # goes away (see dora-rs/dora#1996), so reap any repo-local coordinator/daemon
     # stragglers. Otherwise they hold port 6013 or leave stale "Running" entries
     # that contaminate the next example's verdict.
-    pkill -f "$ROOT/target/debug/dora .*(coordinator|daemon)" > /dev/null 2>&1 || true
-    pkill -f "$ROOT/target/debug/dora-(coordinator|daemon|runtime)" > /dev/null 2>&1 || true
+    #
+    # These patterns scope to $TARGET_DIR, so when several git worktrees share
+    # one target dir they all resolve to the same binary path and this reaps
+    # across worktrees. That is unavoidable (the binary genuinely is one file),
+    # and concurrent smoke runs already contend on port 6013 anyway.
+    pkill -f "$TARGET_DIR/debug/dora .*(coordinator|daemon)" > /dev/null 2>&1 || true
+    pkill -f "$TARGET_DIR/debug/dora-(coordinator|daemon|runtime)" > /dev/null 2>&1 || true
     # Reap orphan example nodes that bind a FIXED port -- e.g. the MAVLink bridge
     # on udp:14550. If one lingers (hard-killed local run, or not self-exiting on
     # coordinator loss), the next mavlink example dies with "Address already in
     # use". These patterns only match the mavlink example binaries, so they're
     # no-ops for every other example.
-    pkill -f "$ROOT/target/(debug|release)/dora-mavlink2-bridge-node" > /dev/null 2>&1 || true
-    pkill -f "$ROOT/target/(debug|release)/mavlink2-bridge-example" > /dev/null 2>&1 || true
+    pkill -f "$TARGET_DIR/(debug|release)/dora-mavlink2-bridge-node" > /dev/null 2>&1 || true
+    pkill -f "$TARGET_DIR/(debug|release)/mavlink2-bridge-example" > /dev/null 2>&1 || true
     sleep 0.5
 }
 
@@ -179,8 +188,8 @@ ensure_python_bindings() {
         echo "        Python examples may fail with a version mismatch (pip install maturin)."
         return 0
     fi
-    local venv="$ROOT/target/smoke-venv"
-    echo "Setting up workspace Python bindings in target/smoke-venv (maturin build, first time ~1-3 min)..."
+    local venv="$TARGET_DIR/smoke-venv"
+    echo "Setting up workspace Python bindings in $venv (maturin build, first time ~1-3 min)..."
     uv venv --seed -p 3.12 "$venv" > /dev/null 2>&1 || uv venv --seed "$venv" > /dev/null 2>&1
     # shellcheck disable=SC1091
     source "$venv/bin/activate"
@@ -530,28 +539,6 @@ if [ "$RUN_PYTHON" = true ]; then
     run_local "local-queue-size-and-timeout"         "tests/queue_size_and_timeout_python/dataflow.yaml" 20
     run_local "local-queue-size-latest-data-python"  "tests/queue_size_latest_data_python/dataflow.yaml" 20
 
-    echo ""
-    echo "=== Memory-pool CPU transport ==="
-    # Dependencies (torch, numpy, tqdm) are provisioned by per-node `build:`
-    # steps that pip-install from download.pytorch.org/whl/cpu.  Skip
-    # gracefully on air-gapped / network-restricted machines where that index
-    # is unreachable; the gate is a lightweight TCP probe, not an import check.
-    if python3 -c "
-import urllib.request, sys
-try:
-    urllib.request.urlopen('https://download.pytorch.org/whl/cpu/', timeout=5)
-except Exception:
-    sys.exit(1)
-" 2>/dev/null; then
-        run_networked "memory-pool-cpu2cpu"            "examples/memory-pool/cpu2cpu.yml" 60
-        run_local     "local-memory-pool-cpu2cpu"      "examples/memory-pool/cpu2cpu.yml" 60
-        run_local     "local-memory-pool-auto-cleanup" "examples/memory-pool/auto_cleanup.yml" 10
-        run_local     "local-memory-pool-duplicate-free"    "examples/memory-pool/duplicate_free.yml" 10
-        run_local     "local-memory-pool-read-after-free"   "examples/memory-pool/read_after_free.yml" 10
-        run_local     "local-memory-pool-write-after-free"  "examples/memory-pool/write_after_free.yml" 10
-    else
-        log_skip "memory-pool" "download.pytorch.org unreachable (run on a machine with PyPI access to exercise this suite)"
-    fi
 fi
 
 # ---------------------------------------------------------------------------

@@ -560,6 +560,11 @@ impl PreparedNode {
                                 "cannot restart dynamic node".to_string(),
                             )
                             .await;
+                        // Same restart debt as the branches below and above:
+                        // the respawn produced no process to hand back, so
+                        // nothing else will ever settle the announcement.
+                        self.send_terminal_exit(generation, exit_status, restart_count, exited_pid)
+                            .await;
                         break;
                     }
                     Err(err) => {
@@ -1249,15 +1254,24 @@ mod tests {
         );
     }
 
-    /// A stop that lands during restart backoff (after `restart: true` was
-    /// announced) must settle the daemon's restart debt with a terminal
-    /// `SpawnedNodeResult` — otherwise the node entry is never removed and
-    /// the dataflow can never finish (dora-rs/dora#2926 review).
-    #[tokio::test]
-    async fn cancelled_restart_settles_terminal_exit() {
+    /// The incarnation that crashes in the abort-path tests below.
+    const ANNOUNCING_GENERATION: u64 = 7;
+    const EXITED_PID: u32 = 42;
+
+    /// Drive a restart loop up to and including its `restart: true`
+    /// announcement: start it, open the registration gate, report a failed
+    /// exit, then consume and check the announcement. Returns the daemon
+    /// receiver, the loop's handle, and the shared `disable_restart` flag so
+    /// the caller can steer the abort path it exercises.
+    async fn announce_restart(
+        restart_delay_secs: f64,
+    ) -> (
+        tokio::sync::mpsc::Receiver<Timestamped<Event>>,
+        tokio::task::JoinHandle<()>,
+        Arc<AtomicBool>,
+    ) {
         let (daemon_tx, mut daemon_rx) = tokio::sync::mpsc::channel(8);
-        // Long backoff so the disable flag flips deterministically mid-sleep.
-        let node = test_prepared_node(daemon_tx, 7, 0.5);
+        let node = test_prepared_node(daemon_tx, ANNOUNCING_GENERATION, restart_delay_secs);
         let (finished_tx, finished_rx) = oneshot::channel();
         let (registered_tx, registered_rx) = oneshot::channel();
         let disable_restart = Arc::new(AtomicBool::new(false));
@@ -1279,7 +1293,7 @@ mod tests {
             finished_tx
                 .send(NodeProcessFinished {
                     exit_status: NodeExitStatus::ExitCode(1),
-                    pid: 42,
+                    pid: EXITED_PID,
                 })
                 .is_ok(),
             "report node exit"
@@ -1292,24 +1306,40 @@ mod tests {
                 restart,
                 ..
             }) => {
-                assert_eq!(generation, 7);
+                assert_eq!(generation, ANNOUNCING_GENERATION);
                 assert!(restart, "first event must announce the restart");
             }
             other => panic!("unexpected event: {other:?}"),
         }
 
-        // Stop lands while the loop sleeps out its restart backoff.
-        disable_restart.store(true, atomic::Ordering::Release);
+        (daemon_rx, loop_task, disable_restart)
+    }
 
+    /// Assert that the announced restart was settled by exactly one terminal
+    /// `SpawnedNodeResult`, and that the loop then exited. The terminal event
+    /// must carry the announcing generation and the exited pid: no
+    /// `ProcessHandleReplaced` was sent on these paths, so that is what the
+    /// daemon's `running_nodes` entry still holds — anything else is dropped
+    /// as a stale exit and the entry leaks.
+    async fn expect_terminal_settlement(
+        daemon_rx: &mut tokio::sync::mpsc::Receiver<Timestamped<Event>>,
+        loop_task: tokio::task::JoinHandle<()>,
+        what: &str,
+    ) {
         let second = daemon_rx.recv().await.expect("terminal settlement");
         match second.inner {
             Event::Dora(DoraEvent::SpawnedNodeResult {
                 generation,
                 restart,
+                pid,
                 ..
             }) => {
-                assert_eq!(generation, 7, "terminal event must match the entry");
-                assert!(!restart, "cancelled restart must settle terminally");
+                assert_eq!(
+                    generation, ANNOUNCING_GENERATION,
+                    "terminal event must match the entry"
+                );
+                assert!(!restart, "{what} must settle terminally");
+                assert_eq!(pid, EXITED_PID, "terminal event must carry the exited pid");
             }
             other => panic!("unexpected event: {other:?}"),
         }
@@ -1319,6 +1349,36 @@ mod tests {
             daemon_rx.try_recv().is_err(),
             "no further events after the terminal settlement"
         );
+    }
+
+    /// A stop that lands during restart backoff (after `restart: true` was
+    /// announced) must settle the daemon's restart debt with a terminal
+    /// `SpawnedNodeResult` — otherwise the node entry is never removed and
+    /// the dataflow can never finish (dora-rs/dora#2926 review).
+    #[tokio::test]
+    async fn cancelled_restart_settles_terminal_exit() {
+        // Long backoff so the disable flag flips deterministically mid-sleep.
+        let (mut daemon_rx, loop_task, disable_restart) = announce_restart(0.5).await;
+
+        // Stop lands while the loop sleeps out its restart backoff.
+        disable_restart.store(true, atomic::Ordering::Release);
+
+        expect_terminal_settlement(&mut daemon_rx, loop_task, "a cancelled restart").await;
+    }
+
+    /// The third abort-after-announcement path: the respawn returns
+    /// `NodeKind::Dynamic`, so there is no successor process and no
+    /// `ProcessHandleReplaced` to settle the announcement. Like the cancel
+    /// and spawn-failure paths it must emit a terminal `SpawnedNodeResult`,
+    /// or the node entry leaks in `running_nodes` (dora-rs/dora#2936).
+    #[tokio::test]
+    async fn dynamic_respawn_settles_terminal_exit() {
+        // No backoff — nothing needs to race the respawn here, and
+        // `test_prepared_node` carries no command, so the respawn's
+        // `spawn_inner` takes the dynamic-node exit.
+        let (mut daemon_rx, loop_task, _disable_restart) = announce_restart(0.0).await;
+
+        expect_terminal_settlement(&mut daemon_rx, loop_task, "a dynamic respawn").await;
     }
 
     async fn read_all_lines(input: &[u8]) -> Vec<Vec<u8>> {

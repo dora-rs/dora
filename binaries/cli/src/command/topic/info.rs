@@ -195,6 +195,8 @@ fn info(
                             stats_clone.record(data_size, data_type, Instant::now());
                         }
                         InterDaemonEvent::OutputClosed { .. } => break,
+                        // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+                        _ => continue,
                     }
                 }
                 Ok(Err(_)) => continue,

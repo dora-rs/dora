@@ -236,13 +236,13 @@ The `.drec` format is a simple binary file:
 
 ```
 ┌──────────────────────────────────┐
-│ Header (bincode)                 │
+│ Header (binary)                  │
 │   version: u32                   │
 │   start_nanos: u64               │
 │   dataflow_id: Uuid              │
 │   descriptor_yaml: Vec<u8>       │
 ├──────────────────────────────────┤
-│ Entry 1 (bincode)                │
+│ Entry 1 (binary)                 │
 │   node_id: String                │
 │   output_id: String              │
 │   timestamp_offset_nanos: u64    │
@@ -252,13 +252,13 @@ The `.drec` format is a simple binary file:
 ├──────────────────────────────────┤
 │ ...                              │
 ├──────────────────────────────────┤
-│ Footer (bincode)                 │
+│ Footer (binary)                  │
 │   total_messages: u64            │
 │   total_bytes: u64               │
 └──────────────────────────────────┘
 ```
 
-The `event_bytes` field contains the raw `Timestamped<InterDaemonEvent>` bincode payload -- the same format used on the wire between daemons. The `descriptor_yaml` in the header stores the original dataflow descriptor so replay can reconstruct the dataflow.
+The container framing (header, per-entry lengths, footer) is hand-written little-endian fields; the `event_bytes` field contains the raw `Timestamped<InterDaemonEvent>` postcard payload -- the same format used on the wire between daemons. Recordings written before dora 1.0 used bincode for `event_bytes` and carry format version 1; this release refuses to open them. The `descriptor_yaml` in the header stores the original dataflow descriptor so replay can reconstruct the dataflow.
 
 ---
 

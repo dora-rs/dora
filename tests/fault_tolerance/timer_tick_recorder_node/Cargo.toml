@@ -1,0 +1,26 @@
+[package]
+name = "timer-tick-recorder-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node that appends every input it receives to
+# `DORA_TEST_MARKER_FILE`. Used by tests/node-lifecycle-e2e.rs to observe
+# whether a dynamically added node's timer input actually fires
+# (dora-rs/dora#2585) — `dora node list` reports `Running` either way, so
+# a starved timer is only visible from the node side. Lives here
+# alongside the other test-only node crates (`stop-delay-node` and
+# `fire-and-forget-source-node` are likewise shared with
+# tests/node-lifecycle-e2e.rs).
+
+[[bin]]
+name = "timer-tick-recorder-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

@@ -10,11 +10,10 @@ repository.workspace = true
 
 [features]
 default = []
-redb-backend = ["dep:redb", "dep:bincode", "dep:libc", "dep:tracing"]
+redb-backend = ["dep:redb", "dep:libc", "dep:tracing"]
 
 [dependencies]
 dora-message = { workspace = true }
-bincode = { version = "2.0", features = ["serde"], optional = true }
 eyre = { workspace = true }
 libc = { version = "0.2", optional = true }
 redb = { workspace = true, optional = true }
@@ -24,3 +23,6 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+# See the matching note in `libraries/message/Cargo.toml`: `Uuid::new_v4` is
+# test-only here too, and uhlc 0.5 used to enable `uuid/v4` for us by accident.
+uuid = { workspace = true, features = ["v4"] }

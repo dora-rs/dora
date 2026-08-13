@@ -723,6 +723,143 @@ fn rust_dynamic_node_readd_same_id_ignores_stale_exit() {
     );
 }
 
+static BUILD_TICK_RECORDER: Once = Once::new();
+
+/// Build the `timer-tick-recorder-node` fixture used by the #2585
+/// regression test. Same rationale as `ensure_rust_filter_built`: `dora
+/// node add` never runs a `build:` field, so the binary has to exist
+/// beforehand.
+fn ensure_tick_recorder_built() {
+    BUILD_TICK_RECORDER.call_once(|| {
+        let dora_root = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let status = Command::new("cargo")
+            .args(["build", "-p", "timer-tick-recorder-node"])
+            .arg("--target-dir")
+            .arg(dora_root.join("target"))
+            .status()
+            .expect("failed to run cargo build for timer-tick-recorder-node");
+        assert!(status.success(), "failed to build timer-tick-recorder-node");
+    });
+}
+
+/// Regression for dora-rs/dora#2585: a node added to an already-running
+/// dataflow must actually *receive* ticks on a timer input, even when it
+/// is the first subscriber of that interval.
+///
+/// Per-interval tick-emitting tasks are only ever spawned by
+/// `RunningDataflow::start()`, which the daemon calls once, on the
+/// all-nodes-ready transition. `AddNode` registered the new node in
+/// `dataflow.timers` but did not re-invoke `start()`, so an interval no
+/// already-running node subscribed to never got a task and the added
+/// node's timer input was silent forever. The node still spawns and
+/// still reports `Running`, which is why the pre-existing lifecycle
+/// coverage (`lifecycle_rust_dynamic_add_remove` adds a node wired to
+/// the *sender's output*, and asserts only that it reaches `Running`)
+/// could not see this: the only observable is a delivery reported by the
+/// node itself.
+///
+/// The interval is deliberately one the running dataflow does not
+/// already use — reusing an existing interval passes even with the bug,
+/// because the task spawned at start-up keeps firing and the delivery
+/// path re-reads the (now larger) subscriber set on every tick.
+#[test]
+fn rust_dynamic_node_receives_ticks_on_fresh_timer_interval() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let dataflow = Path::new(manifest_dir).join("examples/rust-dynamic-add-remove/dataflow.yml");
+
+    // Distinct from every interval `examples/rust-dynamic-add-remove`
+    // already subscribes to (sender 200ms, receiver 500ms), so the added
+    // node is the *first* subscriber of this one and a task genuinely has
+    // to be spawned for it.
+    const FRESH_INTERVAL_MS: u64 = 300;
+    // More than one, so a single stray delivery can't pass for a working
+    // timer; small enough to land well inside the poll deadline at 300ms
+    // apart.
+    const REQUIRED_TICKS: usize = 3;
+
+    // Before writing the spec below: the build both produces the binary
+    // the spec points at and guarantees `<manifest>/target/` exists,
+    // which a `CARGO_TARGET_DIR` override would otherwise leave absent.
+    ensure_tick_recorder_built();
+
+    // Artifacts under `target/` rather than the system temp dir, matching
+    // `write_stop_delay_yml`: gitignored, cleaned by `cargo clean`, and
+    // worth keeping after a failed run.
+    let dir = Path::new(manifest_dir).join("target");
+    let stem = format!("dora-timer-tick-{}", std::process::id());
+    let ticker_yml = dir.join(format!("{stem}.yml"));
+    let marker = dir.join(format!("{stem}.ticks"));
+    // A rerun in the same process would otherwise count the previous
+    // run's ticks.
+    let _ = fs::remove_file(&marker);
+    fs::write(
+        &ticker_yml,
+        format!(
+            "id: ticker\n\
+             path: {manifest_dir}/target/debug/timer-tick-recorder-node\n\
+             env:\n  \
+               DORA_TEST_MARKER_FILE: {marker}\n\
+             inputs:\n  \
+               tick: dora/timer/millis/{FRESH_INTERVAL_MS}\n",
+            marker = marker.display()
+        ),
+    )
+    .expect("failed to write ticker node spec");
+
+    let name = "rustlc-timer";
+    let fixture = LifecycleFixture {
+        dataflow_path: &dataflow,
+        filter_yml_path: &ticker_yml,
+        name,
+        sender_path_marker: "rust-dynamic-add-remove-sender",
+        use_uv: false,
+    };
+    let StartedLifecycle { dora, .. } = start_lifecycle(&fixture);
+    let _cleanup = CleanupGuard { dora: &dora };
+
+    add_node(&dora, name, &ticker_yml, "dora node add ticker");
+    let list_out = wait_for_list(&dora, name, Duration::from_secs(10), |m| {
+        m.get("ticker").is_some_and(|(s, _, _)| s == "Running")
+    });
+    assert!(
+        matches!(parse_node_list(&list_out).get("ticker"), Some((s, _, _)) if s == "Running"),
+        "ticker did not reach Running within 10s after `dora node add`; list:\n{list_out}"
+    );
+
+    let count_ticks = || {
+        fs::read_to_string(&marker)
+            .unwrap_or_default()
+            .lines()
+            .filter(|line| line.trim() == "tick")
+            .count()
+    };
+    // 15s covers ~50 ticks at 300ms, so this only expires if the timer is
+    // genuinely dead rather than merely slow to start (the node subscribes
+    // a moment after the task begins ticking, and ticks that predate the
+    // subscribe are dropped by the daemon's delivery path).
+    let deadline = std::time::Instant::now() + Duration::from_secs(15);
+    let mut ticks = count_ticks();
+    while ticks < REQUIRED_TICKS && std::time::Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        ticks = count_ticks();
+    }
+
+    assert!(
+        marker.exists(),
+        "ticker never created its marker file at {}, so it never connected — \
+         this test can't say anything about timer delivery",
+        marker.display()
+    );
+    assert!(
+        ticks >= REQUIRED_TICKS,
+        "dynamically added node got {ticks} ticks on the previously-unused \
+         interval {FRESH_INTERVAL_MS}ms within 15s, expected at least \
+         {REQUIRED_TICKS} (dora-rs/dora#2585: no tick-emitting task was \
+         spawned for an interval registered after the dataflow started)"
+    );
+}
+
 static BUILD_STOP_DELAY: Once = Once::new();
 
 /// Build the `stop-delay-node` fixture used by the #2916 hot-swap
@@ -2122,152 +2259,11 @@ fn run_killed_by_sigterm_terminates_nodes_and_exits() {
     // liveness windows in sibling tests are tuned for an unloaded runner.
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
-    ensure_cli_built();
-    let dora = dora_bin();
-    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
-    // `--target-dir` pinned for the same reason as the sibling helpers:
-    // the descriptor below hard-codes the workspace-relative path, so a
-    // `CARGO_TARGET_DIR` override would build the fixture somewhere the
-    // daemon will not look, and the failure would surface later as a
-    // misleading "node never reported its pid".
-    let status = Command::new("cargo")
-        .args(["build", "-p", "sigterm-ignoring-node"])
-        .arg("--target-dir")
-        .arg(&target)
-        .status()
-        .expect("failed to run cargo build for sigterm-ignoring-node");
-    assert!(status.success(), "failed to build sigterm-ignoring-node");
-
-    // Sweep artifacts from earlier runs, as the sibling tests do.
-    if let Ok(entries) = fs::read_dir(&target) {
-        for entry in entries.flatten() {
-            if entry
-                .file_name()
-                .to_string_lossy()
-                .starts_with("dora-2920-orphan-")
-            {
-                let _ = fs::remove_file(entry.path());
-            }
-        }
-    }
-    let pid_file = target.join(format!("dora-2920-orphan-{}.pid", std::process::id()));
-    let yaml = target.join(format!("dora-2920-orphan-{}.yml", std::process::id()));
-    fs::write(
-        &yaml,
-        format!(
-            "nodes:\n  \
-             - id: stubborn\n    \
-               path: \"{node}\"\n    \
-               env:\n      \
-                 DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
-               inputs:\n      \
-                 tick: dora/timer/millis/100\n",
-            node = target.join("debug/sigterm-ignoring-node").display(),
-            pid_file = pid_file.display(),
-        ),
-    )
-    .expect("failed to write dataflow yaml");
-
-    let log = target.join(format!("dora-2920-orphan-{}.log", std::process::id()));
-    let log_file = fs::File::create(&log).expect("failed to create log file");
-    let mut run = Command::new(&dora)
-        .args(["run", yaml.to_str().unwrap()])
-        .stdout(Stdio::null())
-        // Captured, not discarded: the failure this test exists to catch
-        // is a wedge on a remote runner, where the log is the only
-        // forensic artifact.
-        .stderr(Stdio::from(log_file))
-        .spawn()
-        .expect("failed to spawn dora run");
-
-    // RAII so every panic path below tears down the CLI *and* the node.
-    // The node ignores SIGTERM and outlives this test by design, so a
-    // bail-out that only kills the CLI would strand it on the runner for
-    // the rest of the suite.
-    struct Teardown {
-        cli_pid: u32,
-        /// Set once `try_wait` has reaped the CLI. After that its pid is
-        /// free for reuse and must never be signalled again.
-        cli_reaped: bool,
-        node_pid: Option<u32>,
-        files: Vec<std::path::PathBuf>,
-    }
-    impl Drop for Teardown {
-        fn drop(&mut self) {
-            // Signal the CLI only while it is UNREAPED: an unreaped child
-            // is a zombie at worst, so the kernel still holds its pid and
-            // it cannot have been recycled. Once reaped the pid is free,
-            // and a blind `kill` here would eventually hit a stranger.
-            if !self.cli_reaped {
-                let _ = Command::new("kill")
-                    .args(["-KILL", &self.cli_pid.to_string()])
-                    .status();
-            }
-            // The node is the daemon's child, never ours, so we can never
-            // reap it and cannot lean on the rule above. Confirm identity
-            // instead -- and note the target is a process GROUP, so a
-            // recycled pgid would take out an unrelated group, not just a
-            // stray process.
-            if let Some(pid) = self.node_pid
-                && still_our_fixture(pid)
-            {
-                let _ = Command::new("kill")
-                    .args(["-KILL", &format!("-{pid}")])
-                    .status();
-            }
-            for f in &self.files {
-                let _ = fs::remove_file(f);
-            }
-        }
-    }
-    let mut teardown = Teardown {
-        cli_pid: run.id(),
-        cli_reaped: false,
-        node_pid: None,
-        files: vec![yaml.clone(), pid_file.clone(), log.clone()],
-    };
-
-    let tail = |path: &std::path::Path| -> String {
-        fs::read_to_string(path)
-            .map(|s| s.lines().rev().take(20).collect::<Vec<_>>().join("\n"))
-            .unwrap_or_else(|e| format!("<could not read {}: {e}>", path.display()))
-    };
-
-    // Wait for the node to actually be up before signalling; otherwise we
-    // could tear down before it ever spawned and prove nothing.
-    let deadline = std::time::Instant::now() + Duration::from_secs(60);
-    let node_pid = loop {
-        // If the CLI already died, say so with its status and stderr
-        // rather than blaming the pid file 60s from now.
-        if let Some(status) = run.try_wait().expect("try_wait failed") {
-            teardown.cli_reaped = true;
-            panic!(
-                "`dora run` exited early with {status} before the node reported \
-                 its pid.\nstderr tail:\n{}",
-                tail(&log)
-            );
-        }
-        if let Ok(contents) = fs::read_to_string(&pid_file)
-            && let Ok(pid) = contents.trim().parse::<u32>()
-        {
-            break pid;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "node never reported its pid to {}\nstderr tail:\n{}",
-            pid_file.display(),
-            tail(&log)
-        );
-        std::thread::sleep(Duration::from_millis(200));
-    };
-    teardown.node_pid = Some(node_pid);
-    assert!(
-        node_is_fixture(node_pid),
-        "precondition: node {node_pid} should be running our fixture before we signal"
-    );
+    let mut run = StubbornRun::start("dora-2920-orphan", false);
+    let node_pid = run.wait_for_node();
 
     let signalled = Command::new("kill")
-        .args(["-TERM", &run.id().to_string()])
+        .args(["-TERM", &run.cli.id().to_string()])
         .status()
         .expect("failed to run `kill`");
     // Checked: an undelivered signal would make the wait below time out
@@ -2280,15 +2276,15 @@ fn run_killed_by_sigterm_terminates_nodes_and_exits() {
     // inflates teardown is caught rather than passing silently.
     let deadline = std::time::Instant::now() + Duration::from_secs(60);
     let status = loop {
-        match run.try_wait().expect("try_wait failed") {
+        match run.cli.try_wait().expect("try_wait failed") {
             Some(status) => {
-                teardown.cli_reaped = true;
+                run.cli_reaped = true;
                 break status;
             }
             None if std::time::Instant::now() >= deadline => panic!(
                 "`dora run` did not exit within 60s of SIGTERM — teardown \
                  wedged, so the run never returns (#2920)\nstderr tail:\n{}",
-                tail(&log)
+                run.stderr_tail()
             ),
             None => std::thread::sleep(Duration::from_millis(250)),
         }
@@ -2303,6 +2299,240 @@ fn run_killed_by_sigterm_terminates_nodes_and_exits() {
          ladder never reached its SIGKILL rung, so killing the CLI strands \
          nodes (#2920)"
     );
+}
+
+/// dora-rs/dora#2856: `SIGKILL` to `dora run` must not strand its nodes.
+///
+/// The sibling test above covers the signals the CLI can still *handle*.
+/// `SIGKILL` is the case where it cannot: nothing of ours runs after it, so
+/// the stop ladder, the destroy reaper and every other daemon-side teardown
+/// path are unavailable by construction. And because nodes are spawned as
+/// process-group leaders — deliberately, so a terminal `Ctrl-C` cannot kill
+/// them out from under the daemon — the orphan ends up with `ppid 1` in a
+/// group of its own, which neither inherited signal delivery nor a group-kill
+/// of the CLI reaches.
+///
+/// The containment therefore has to live in the node: `dora run` tells each
+/// node it spawns which pid it may not outlive (`DORA_RUN_PARENT_PID`), and
+/// the node's guard `SIGKILL`s its own process group once that pid is gone.
+///
+/// The fixture is the point of the test. It sets `SIGTERM` to `SIG_IGN` and
+/// never polls its event stream, so it survives every cooperative path AND a
+/// containment scheme that only manages to deliver `SIGTERM`. A node that died
+/// to either would pass this test without the fix.
+///
+/// Unix-only: it signals the CLI and inspects process state.
+#[test]
+#[cfg(unix)]
+fn run_killed_by_sigkill_does_not_orphan_nodes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // Its own process group, so that nothing this test does -- and nothing the
+    // daemon or a node does on the way down -- can be delivered to the test
+    // harness's own group by accident.
+    let mut run = StubbornRun::start("dora-2856-orphan", true);
+    let node_pid = run.wait_for_node();
+
+    let killed = Command::new("kill")
+        .args(["-KILL", &run.cli.id().to_string()])
+        .status()
+        .expect("failed to run `kill`");
+    // Checked: an undelivered signal would make the wait below time out and
+    // report an orphan that was never actually orphaned.
+    assert!(killed.success(), "failed to SIGKILL `dora run`");
+    // Reaped immediately: the CLI cannot run teardown code after SIGKILL, so
+    // there is nothing to wait for, and leaving it unreaped would keep a
+    // zombie around for the rest of the suite.
+    let status = run.cli.wait().expect("failed to reap `dora run`");
+    run.cli_reaped = true;
+
+    // The guard re-checks the parent twice a second, so a working containment
+    // lands in about a second. 30s is slack for a loaded runner while still
+    // bounding it: an orphan is forever, not slow.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while node_is_fixture(node_pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node {node_pid} outlived `dora run` ({status}) by 30s: killing the \
+             CLI outright strands its nodes (#2856)\nstderr tail:\n{}",
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// A `dora run` of the stubborn fixture, plus the RAII teardown both orphan
+/// tests need.
+///
+/// The fixture ignores `SIGTERM` and never polls its event stream, so it
+/// outlives a failing test by design: a bail-out that only killed the CLI
+/// would strand it on the runner for the rest of the suite. Every panic path
+/// therefore has to tear down the CLI *and* the node, which is why this is a
+/// `Drop` type rather than cleanup code at the end of each test.
+#[cfg(unix)]
+struct StubbornRun {
+    cli: std::process::Child,
+    /// Set once `try_wait`/`wait` has reaped the CLI. After that its pid is
+    /// free for reuse and must never be signalled again.
+    cli_reaped: bool,
+    node_pid: Option<u32>,
+    /// The CLI's captured stderr. The failures these tests exist to catch
+    /// happen on remote runners, where this is the only forensic artifact.
+    log: std::path::PathBuf,
+    /// Where the fixture publishes its own pid, so the tests assert on THAT
+    /// process rather than pattern-matching the process table (which would
+    /// also catch a leftover from an earlier run).
+    pid_file: std::path::PathBuf,
+    files: Vec<std::path::PathBuf>,
+}
+
+#[cfg(unix)]
+impl Drop for StubbornRun {
+    fn drop(&mut self) {
+        // Signal the CLI only while it is UNREAPED: an unreaped child is a
+        // zombie at worst, so the kernel still holds its pid and it cannot have
+        // been recycled. Once reaped the pid is free, and a blind `kill` here
+        // would eventually hit a stranger.
+        if !self.cli_reaped {
+            let _ = Command::new("kill")
+                .args(["-KILL", &self.cli.id().to_string()])
+                .status();
+        }
+        // The node is the daemon's child, never ours, so we can never reap it
+        // and cannot lean on the rule above. Confirm identity instead -- and
+        // note the target is a process GROUP, so a recycled pgid would take out
+        // an unrelated group, not just a stray process.
+        if let Some(pid) = self.node_pid
+            && still_our_fixture(pid)
+        {
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{pid}")])
+                .status();
+        }
+        for f in &self.files {
+            let _ = fs::remove_file(f);
+        }
+    }
+}
+
+#[cfg(unix)]
+impl StubbornRun {
+    /// Build the fixture, write a one-node dataflow for it, and start
+    /// `dora run` on it. `own_process_group` puts the CLI in a group of its
+    /// own.
+    ///
+    /// `--target-dir` is pinned for the same reason as the sibling helpers: the
+    /// descriptor hard-codes the workspace-relative binary path, so a
+    /// `CARGO_TARGET_DIR` override would build the fixture somewhere the daemon
+    /// will not look, and the failure would surface later as a misleading "node
+    /// never reported its pid".
+    fn start(prefix: &str, own_process_group: bool) -> Self {
+        use std::os::unix::process::CommandExt as _;
+
+        ensure_cli_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+        let built = Command::new("cargo")
+            .args(["build", "-p", "sigterm-ignoring-node"])
+            .arg("--target-dir")
+            .arg(&target)
+            .status()
+            .expect("failed to run cargo build for sigterm-ignoring-node");
+        assert!(built.success(), "failed to build sigterm-ignoring-node");
+
+        // Sweep artifacts from earlier runs: a stale pid file would be read as
+        // this run's node, and the test would assert against a process that
+        // exited long ago.
+        if let Ok(entries) = fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry.file_name().to_string_lossy().starts_with(prefix) {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        let scratch = |ext: &str| target.join(format!("{prefix}-{}.{ext}", std::process::id()));
+        let (yaml, pid_file, log) = (scratch("yml"), scratch("pid"), scratch("log"));
+        fs::write(
+            &yaml,
+            format!(
+                "nodes:\n  \
+                 - id: stubborn\n    \
+                   path: \"{node}\"\n    \
+                   env:\n      \
+                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
+                   inputs:\n      \
+                     tick: dora/timer/millis/100\n",
+                node = target.join("debug/sigterm-ignoring-node").display(),
+                pid_file = pid_file.display(),
+            ),
+        )
+        .expect("failed to write dataflow yaml");
+
+        let log_file = fs::File::create(&log).expect("failed to create log file");
+        let mut command = Command::new(&dora);
+        command
+            .args(["run", yaml.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log_file));
+        if own_process_group {
+            command.process_group(0);
+        }
+        let cli = command.spawn().expect("failed to spawn dora run");
+
+        Self {
+            cli,
+            cli_reaped: false,
+            node_pid: None,
+            files: vec![yaml, pid_file.clone(), log.clone()],
+            log,
+            pid_file,
+        }
+    }
+
+    fn stderr_tail(&self) -> String {
+        fs::read_to_string(&self.log)
+            .map(|s| s.lines().rev().take(20).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_else(|e| format!("<could not read {}: {e}>", self.log.display()))
+    }
+
+    /// Block until the node reports its pid, and record it for teardown.
+    ///
+    /// Both tests must know the node is actually up before they signal;
+    /// otherwise a teardown that ran before it ever spawned would "pass"
+    /// having proved nothing.
+    fn wait_for_node(&mut self) -> u32 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let node_pid = loop {
+            // If the CLI already died, say so with its status and stderr rather
+            // than blaming the pid file 60s from now.
+            if let Some(status) = self.cli.try_wait().expect("try_wait failed") {
+                self.cli_reaped = true;
+                panic!(
+                    "`dora run` exited early with {status} before the node reported \
+                     its pid.\nstderr tail:\n{}",
+                    self.stderr_tail()
+                );
+            }
+            if let Ok(contents) = fs::read_to_string(&self.pid_file)
+                && let Ok(pid) = contents.trim().parse::<u32>()
+            {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "node never reported its pid to {}\nstderr tail:\n{}",
+                self.pid_file.display(),
+                self.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        self.node_pid = Some(node_pid);
+        assert!(
+            node_is_fixture(node_pid),
+            "precondition: node {node_pid} should be running our fixture before we signal"
+        );
+        node_pid
+    }
 }
 
 /// Whether `pid` is alive AND is our fixture, so a recycled pid is not

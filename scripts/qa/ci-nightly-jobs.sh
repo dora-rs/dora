@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 27 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 26 test jobs
 # (re-counted in #2999: the previous 23 counted neither hub-smoke nor the two
 # ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new)
 # (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
-# This script covers 20 of the rest -- memory-pool-smoke and hub-smoke have
+# This script covers 20 of the rest -- hub-smoke has
 # no entry here, and one local cli-tests run covers both cli-tests halves -- with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
@@ -73,6 +73,10 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+# shellcheck source=../cargo-target-dir.sh
+source scripts/cargo-target-dir.sh
+TARGET_DIR="$(cargo_target_dir "$PWD")"
 
 # -----------------------------------------------------------------------------
 # Platform + env setup
@@ -879,14 +883,12 @@ job_cluster_e2e() {
       exit 1
     fi
 
-    local REPO_ROOT
-    REPO_ROOT="$(pwd)"
     cat > "$WORK/dataflow.yml" <<EOF
 nodes:
   - id: rust-node
     _unstable_deploy:
       machine: m1
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -896,7 +898,7 @@ nodes:
   - id: rust-status-node
     _unstable_deploy:
       machine: m2
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
@@ -909,7 +911,7 @@ nodes:
   - id: rust-sink
     _unstable_deploy:
       machine: m3
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    path: $TARGET_DIR/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
     input_types:
@@ -1067,9 +1069,6 @@ job_cluster_record_replay() {
 
     cluster_up_and_verify || exit 1
 
-    local REPO_ROOT
-    REPO_ROOT="$(pwd)"
-
     # plain.yml: the deploy-free, build-free, absolute-path descriptor. This
     # is what gets embedded in the .drec and replayed locally, so it must NOT
     # carry `_unstable_deploy` (local `dora run` rejects it) or `build:`
@@ -1078,7 +1077,7 @@ job_cluster_record_replay() {
     cat > "$WORK/plain.yml" <<EOF
 nodes:
   - id: rust-node
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/10
     outputs:
@@ -1086,7 +1085,7 @@ nodes:
     output_types:
       random: std/core/v1/UInt64
   - id: rust-status-node
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-status-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-status-node
     inputs:
       tick: dora/timer/millis/100
       random: rust-node/random
@@ -1097,7 +1096,7 @@ nodes:
     output_types:
       status: std/core/v1/String
   - id: rust-sink
-    path: $REPO_ROOT/target/debug/rust-dataflow-example-sink
+    path: $TARGET_DIR/debug/rust-dataflow-example-sink
     inputs:
       message: rust-status-node/status
     input_types:
@@ -1421,10 +1420,10 @@ job_redb_backend() {
   rm -f "$STORE"
 
   # Inline dataflow fixture
-  cat > examples/rust-dataflow/redb-smoke.yml <<'EOF'
+  cat > examples/rust-dataflow/redb-smoke.yml <<EOF
 nodes:
   - id: source
-    path: ../../target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/500
     outputs:
@@ -1568,10 +1567,10 @@ job_state_reconstruction() {
   local STORE=/tmp/state-reconstruct.db
   rm -f "$STORE"
 
-  cat > examples/rust-dataflow/long-running.yml <<'EOF'
+  cat > examples/rust-dataflow/long-running.yml <<EOF
 nodes:
   - id: source
-    path: ../../target/debug/rust-dataflow-example-node
+    path: $TARGET_DIR/debug/rust-dataflow-example-node
     inputs:
       tick: dora/timer/millis/500
     outputs:
@@ -1647,6 +1646,7 @@ job_test_cross_platform() {
     --exclude dora-node-api-python \
     --exclude dora-operator-api-python \
     --exclude dora-ros2-bridge-python \
+    --exclude dora-runtime-python \
     --exclude dora-cli-api-python \
     --exclude dora-examples
 }
@@ -1967,6 +1967,7 @@ job_cross_check() {
         --exclude dora-node-api-python \
         --exclude dora-operator-api-python \
         --exclude dora-ros2-bridge-python \
+        --exclude dora-runtime-python \
         --exclude dora-cli-api-python
       ;;
     Darwin)
@@ -1978,12 +1979,14 @@ job_cross_check() {
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
+          --exclude dora-runtime-python \
           --exclude dora-cli-api-python
       else
         cargo check --target x86_64-apple-darwin --all \
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
+          --exclude dora-runtime-python \
           --exclude dora-cli-api-python
       fi
       ;;

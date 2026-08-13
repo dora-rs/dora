@@ -40,6 +40,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=../cargo-target-dir.sh
+source scripts/cargo-target-dir.sh
+TARGET_DIR="$(cargo_target_dir "$PWD")"
+
 MODE="${1:---fast}"
 FAILED=()
 
@@ -269,6 +273,7 @@ case "$MODE" in
       --exclude dora-node-api-python \
       --exclude dora-operator-api-python \
       --exclude dora-ros2-bridge-python \
+      --exclude dora-runtime-python \
       --exclude dora-cli-api-python \
       --exclude dora-examples
     run "coverage" scripts/qa/coverage.sh
@@ -299,6 +304,7 @@ case "$MODE" in
       --exclude dora-node-api-python \
       --exclude dora-operator-api-python \
       --exclude dora-ros2-bridge-python \
+      --exclude dora-runtime-python \
       --exclude dora-cli-api-python \
       --exclude dora-examples \
       -- proptest
@@ -353,7 +359,7 @@ case "$MODE" in
     elif ! uv python find 3.12 > /dev/null 2>&1; then
       nightly_py_missing "Python 3.12"
     else
-      NIGHTLY_VENV="$(pwd)/target/qa-nightly-venv"
+      NIGHTLY_VENV="$TARGET_DIR/qa-nightly-venv"
       echo
       echo "=== preparing ambient Python venv at $NIGHTLY_VENV ==="
       echo "=== (matches GHA smoke-suite's 'uv pip install -e apis/python/node') ==="

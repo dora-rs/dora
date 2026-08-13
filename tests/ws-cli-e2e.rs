@@ -1019,7 +1019,7 @@ mod real_dataflow {
         cli_to_coordinator::ControlRequest, coordinator_to_cli::ControlRequestReply,
     };
     use fs2::FileExt as _;
-    use redb::{Database, TableDefinition};
+    use redb::{Database, ReadableDatabase, TableDefinition};
     use std::net::SocketAddr;
     use std::path::Path;
     use std::process::{Command, Stdio};

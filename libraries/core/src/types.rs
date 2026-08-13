@@ -197,6 +197,31 @@ pub struct ParsedUrn {
 /// - `std/core/v1/Float32` (no params)
 /// - `std/media/v1/AudioFrame[sample_type=f32]` (with params)
 /// - `std/media/v1/AudioFrame[sample_type=f32,channels=2]` (multiple params)
+///
+/// Returns `None` for malformed input: a `[` with no closing `]`, empty
+/// brackets `[]`, or an empty parameter key or value.
+///
+/// ```
+/// use dora_core::types::parse_urn;
+///
+/// // With parameters:
+/// let Some(parsed) = parse_urn("std/media/v1/AudioFrame[sample_type=f32,channels=2]")
+/// else { unreachable!() };
+/// assert_eq!(parsed.base, "std/media/v1/AudioFrame");
+/// assert_eq!(parsed.params.get("sample_type"), Some(&"f32".to_string()));
+/// assert_eq!(parsed.params.get("channels"), Some(&"2".to_string()));
+///
+/// // No-param URN parses with an empty parameter map:
+/// let Some(plain) = parse_urn("std/core/v1/Float32") else { unreachable!() };
+/// assert_eq!(plain.base, "std/core/v1/Float32");
+/// assert!(plain.params.is_empty());
+///
+/// // Malformed inputs return None:
+/// assert!(parse_urn("std/media/v1/AudioFrame[").is_none()); // no closing ]
+/// assert!(parse_urn("std/media/v1/AudioFrame[]").is_none()); // empty brackets
+/// assert!(parse_urn("std/media/v1/AudioFrame[=f32]").is_none()); // empty key
+/// assert!(parse_urn("").is_none());
+/// ```
 pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
     if urn.is_empty() {
         return None;
