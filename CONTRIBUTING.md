@@ -17,7 +17,7 @@ Running a command for the whole workspace is possible by passing `--workspace`.
 cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test all
-cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
+cargo test --all --exclude dora-runtime-python --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Lint
 cargo clippy --all -- -D warnings

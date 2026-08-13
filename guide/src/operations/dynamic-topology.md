@@ -29,9 +29,14 @@ id: filter
 path: filter.py
 outputs:
   - output
+inputs:
+  tick: dora/timer/millis/300
 ```
 
-After adding, wire inputs explicitly with `dora node connect`.
+Inputs can be declared inline like above, or wired after the fact with
+`dora node connect`. Timer inputs work either way, including on an
+interval that no already-running node subscribes to — adding the node
+starts a tick source for that interval.
 
 ## Examples
 

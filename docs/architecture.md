@@ -56,7 +56,9 @@ independently.
 | `binaries/cli` | dora-cli | CLI binary (`dora` command) — build, run, stop dataflows |
 | `binaries/coordinator` | dora-coordinator | Orchestrates distributed multi-daemon deployments; WebSocket server |
 | `binaries/daemon` | dora-daemon | Spawns nodes, manages shared-memory/TCP communication per machine |
-| `binaries/runtime` | dora-runtime | In-process operator execution (Python/C/C++ via dlopen/PyO3) |
+| `binaries/runtime-api` | dora-runtime-api | Language-neutral operator runtime SDK (event loop + `OperatorRunner` backend trait) |
+| `binaries/runtime-shared-lib` | dora-runtime-shared-lib | Shared-library operator backend (C/C++/Rust via dlopen); shipped in the `dora` CLI |
+| `binaries/runtime-python` | dora-runtime-python | Python operator backend (PyO3); shipped in the Python wheel |
 | `binaries/ros2-bridge-node` | dora-ros2-bridge-node | ROS2 integration node |
 | `binaries/record-node` | dora-record-node | Records dataflow messages to `.drec` format |
 | `binaries/replay-node` | dora-replay-node | Replays recorded messages from `.drec` files |
@@ -175,7 +177,7 @@ The daemon runs one per machine and manages the lifecycle of all nodes on that m
 1. Create working directory for the node
 2. Set up communication channel (TCP or shmem)
 3. Serialize `NodeConfig` to environment variable
-4. Spawn process with sanitized environment (blocks `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, etc.)
+4. Spawn process with sanitized environment (blocks `LD_PRELOAD`, `DYLD_INSERT_LIBRARIES`, etc.; descriptor `env:` entries cannot override the daemon's own control-plane variables — `DORA_NODE_CONFIG`, `DORA_RUNTIME_CONFIG`, `DORA_ZENOH_*`)
 5. Monitor via `ProcessHandle`
 
 ### Runtime
@@ -614,7 +616,7 @@ pub enum RestartPolicy {
 - `restart_delay` — initial backoff in seconds (doubles each attempt)
 - `max_restart_delay` — caps exponential backoff
 - `restart_window` — reset counter after N seconds (enables "N restarts per M seconds")
-- `health_check_timeout` — kill node if no activity within this duration
+- `health_check_timeout` — kill node if no activity within this duration, measured only after the node connects (post-connection liveness, not a startup deadline)
 
 ### Health Monitoring
 

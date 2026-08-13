@@ -25,7 +25,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if git diff --exit-code -- libraries/core/dora-schema.json libraries/core/dora-node-schema.json; then
+          # Every generated file, including the repo-root `dora-schema.json` —
+          # that is the copy the guide publishes as a `$schema` URL, so leaving
+          # it out of these lists is what let it drift (#3088).
+          SCHEMAS="dora-schema.json libraries/core/dora-schema.json libraries/core/dora-node-schema.json"
+          if git diff --exit-code -- $SCHEMAS; then
               echo "Schema file is up to date"
           else
               # Reuse ONE branch + PR: force-push so an already-open sync PR is
@@ -33,7 +37,7 @@ jobs:
               # main (which otherwise piles up dozens of duplicates while the
               # schema stays drifted).
               git checkout -B auto/schema-update
-              git add libraries/core/dora-schema.json libraries/core/dora-node-schema.json
+              git add $SCHEMAS
               git config user.email "dora-bot@phil-opp.com"
               git config user.name "Dora Bot"
               git commit -m "Update JSON schema (${{ github.sha }})"

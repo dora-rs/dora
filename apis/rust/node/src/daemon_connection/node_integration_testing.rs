@@ -166,6 +166,7 @@ impl IntegrationTestingEvents {
                 writeln!(writer.as_mut()).context("failed to write newline to output file")?;
             }
             OutputWriter::Channel(sender) => {
+                // Must not block: the node is waiting for this request's reply.
                 sender
                     .send(output)
                     .context("failed to send output to channel")?;
@@ -234,7 +235,7 @@ impl IntegrationTestingEvents {
 
 enum OutputWriter {
     Writer(Box<dyn Write + Send>),
-    Channel(flume::Sender<serde_json::Map<String, serde_json::Value>>),
+    Channel(tokio::sync::mpsc::UnboundedSender<serde_json::Map<String, serde_json::Value>>),
 }
 
 pub fn convert_output_to_json(

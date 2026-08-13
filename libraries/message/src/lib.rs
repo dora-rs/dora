@@ -72,6 +72,35 @@ impl BuildId {
     pub fn generate() -> Self {
         Self(Uuid::new_v7(Timestamp::now(uuid::NoContext)))
     }
+
+    /// Parse a `BuildId` from its [`Display`](std::fmt::Display) form,
+    /// `BuildId(<uuid>)`, so a value logged with `%build_id` round-trips.
+    ///
+    /// A bare UUID is also accepted for backward compatibility.
+    ///
+    /// ```
+    /// use dora_message::BuildId;
+    ///
+    /// let id = BuildId::generate();
+    /// // The `Display` form recovers the original id...
+    /// assert_eq!(BuildId::from_display_str(&id.to_string()), Some(id));
+    /// // ...as does a bare UUID.
+    /// assert_eq!(BuildId::from_display_str(&id.uuid().to_string()), Some(id));
+    /// // Garbage does not parse to a bogus id.
+    /// assert_eq!(BuildId::from_display_str("not-a-build-id"), None);
+    /// ```
+    pub fn from_display_str(s: &str) -> Option<Self> {
+        let inner = s
+            .strip_prefix("BuildId(")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .unwrap_or(s);
+        Uuid::parse_str(inner).ok().map(BuildId)
+    }
+
+    /// The underlying UUID.
+    pub fn uuid(&self) -> uuid::Uuid {
+        self.0
+    }
 }
 
 impl std::fmt::Display for BuildId {

@@ -26,6 +26,10 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 REPO_ROOT="$PWD"
 
+# shellcheck source=../cargo-target-dir.sh
+source scripts/cargo-target-dir.sh
+TARGET_DIR="$(cargo_target_dir "$REPO_ROOT")"
+
 # ---- Preflight ----
 if ! command -v cargo-pgo >/dev/null; then
   echo "ERROR: cargo-pgo not installed. Run:"
@@ -55,13 +59,13 @@ if ! command -v python3 >/dev/null; then
 fi
 
 HOST=$(rustc -vV | awk '/host:/ {print $2}')
-OUT_DIR="$REPO_ROOT/target/pgo-bench"
-# Force --target $HOST for both baseline and PGO builds so paths are
-# predictable regardless of user's cargo config. Step 3 (instrument) will
-# overwrite the binary at target/$HOST/dist/dora, but step 2 has already
-# captured the baseline CSV by then, so we also copy the binary to OUT_DIR
-# so it survives the overwrite and can be re-inspected.
-HOST_DIST_DORA="$REPO_ROOT/target/$HOST/dist/dora"
+OUT_DIR="$TARGET_DIR/pgo-bench"
+# Force --target $HOST for both baseline and PGO builds so the layout under
+# the target dir is predictable. Step 3 (instrument) will overwrite the binary
+# at $TARGET_DIR/$HOST/dist/dora, but step 2 has already captured the baseline
+# CSV by then, so we also copy the binary to OUT_DIR so it survives the
+# overwrite and can be re-inspected.
+HOST_DIST_DORA="$TARGET_DIR/$HOST/dist/dora"
 BASELINE_DORA="$OUT_DIR/baseline-dora"
 PGO_DORA="$HOST_DIST_DORA"
 
@@ -95,11 +99,11 @@ echo "Baseline CSV: $OUT_DIR/baseline.csv"
 
 # ---- 3/5: PGO instrumented build ----
 # Force --target $HOST so the instrumented binary always overwrites the
-# baseline at target/$HOST/dist/dora. Without it, if cargo-pgo's behavior
-# or the user's cargo config sends output elsewhere, the existence check
-# below would pass against the stale baseline binary from step 1, and
-# steps 4-5 would silently train+benchmark the baseline instead of the
-# instrumented build — producing a meaningless +0% comparison.
+# baseline at $TARGET_DIR/$HOST/dist/dora. Without it, if cargo-pgo's behavior
+# sends output elsewhere, the existence check below would pass against the
+# stale baseline binary from step 1, and steps 4-5 would silently
+# train+benchmark the baseline instead of the instrumented build — producing
+# a meaningless +0% comparison.
 echo ""
 echo "=== [3/5] PGO instrumented build (~10 min) ==="
 cargo pgo instrument build -- \
@@ -127,7 +131,7 @@ echo ""
 echo "=== [4/5] Training run + PGO optimize build (~7 min) ==="
 (
   cd examples/benchmark
-  LLVM_PROFILE_FILE="$REPO_ROOT/target/pgo-profiles/dora_%m_%p.profraw" \
+  LLVM_PROFILE_FILE="$TARGET_DIR/pgo-profiles/dora_%m_%p.profraw" \
     "$PGO_DORA" run dataflow.yml \
     > "$OUT_DIR/training.txt" 2>&1
 )

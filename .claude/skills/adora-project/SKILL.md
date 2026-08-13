@@ -181,7 +181,7 @@ Uses `goal_id` and `goal_status` metadata keys. Supports cancellation.
 cargo build --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python
 
 # Test (exclude Python + examples)
-cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python --exclude dora-cli-api-python --exclude dora-examples
+cargo test --all --exclude dora-node-api-python --exclude dora-operator-api-python --exclude dora-ros2-bridge-python --exclude dora-runtime-python --exclude dora-cli-api-python --exclude dora-examples
 
 # Single crate
 cargo test -p dora-core

@@ -49,6 +49,12 @@ is-terminal = "0.4.17"
 thiserror = { workspace = true }
 uuid = { workspace = true }
 
+# Process-group signalling for the `dora run` orphan guard (`orphan_guard.rs`).
+# Unix-only: the mechanism is `getppid`/`killpg`, which Windows has no
+# equivalent of.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 [dev-dependencies]
 criterion = { version = "0.5", features = ["html_reports"] }
 
