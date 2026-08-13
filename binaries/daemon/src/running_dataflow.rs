@@ -299,6 +299,12 @@ pub struct RunningDataflow {
     pub(crate) input_deadlines: HashMap<(NodeId, DataId), InputDeadline>,
     pub(crate) broken_inputs: HashMap<(NodeId, DataId), Duration>,
     pub(crate) running_nodes: BTreeMap<NodeId, RunningNode>,
+    /// Every node of this dataflow that runs on *this* daemon, whether or
+    /// not it is still running. Only grows, so it still answers "was this
+    /// node ours?" at teardown, when `running_nodes` has long since dropped
+    /// the exited ones. Scopes the `/dev/shm` orphan sweep — see
+    /// `MemoryPoolManager::cleanup_orphans` (dora-rs/dora#2881).
+    pub(crate) owned_nodes: BTreeSet<NodeId>,
     pub(crate) dynamic_nodes: BTreeSet<NodeId>,
     pub(crate) open_external_mappings: BTreeSet<OutputId>,
     pub(crate) _timer_handles: BTreeMap<Duration, futures::future::RemoteHandle<()>>,
@@ -402,6 +408,7 @@ impl RunningDataflow {
             input_deadlines: HashMap::new(),
             broken_inputs: HashMap::new(),
             running_nodes: BTreeMap::new(),
+            owned_nodes: BTreeSet::new(),
             dynamic_nodes: BTreeSet::new(),
             open_external_mappings: Default::default(),
             _timer_handles: BTreeMap::new(),

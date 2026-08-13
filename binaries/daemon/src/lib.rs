@@ -694,6 +694,37 @@ fn reclaim_memory_pools_after_exit(
     }
 }
 
+/// Release everything this daemon still holds for a dataflow that just
+/// finished here: its pool table entries, plus the `/dev/shm` segments of
+/// `owned_nodes` that no table entry covers.
+///
+/// A daemon that outlives the dataflow (`dora up`) would otherwise carry
+/// every unfreed pool — table entry and segment alike — until it exits
+/// (dora-rs/dora#2881). Releasing the table entries is unconditional,
+/// deliberately: a dynamic node can outlive the finish (`should_finish`
+/// ignores them), but the dataflow's routing, channels and listeners are gone
+/// by now, so it can no longer send or receive anything a pool would serve,
+/// and no later event would ever reach [`reclaim_memory_pools_after_exit`]
+/// for this dataflow.
+///
+/// This is a *per-daemon* finish and `/dev/shm` is host-wide, so the sweep is
+/// restricted to this daemon's own nodes — see
+/// [`MemoryPoolManager::cleanup_orphans`].
+///
+/// A free function rather than a method so it can be exercised without a
+/// whole `Daemon`.
+fn release_memory_pools_of_finished_dataflow(
+    memory_pool: &MemoryPoolManager,
+    dataflow_id: Uuid,
+    owned_nodes: &BTreeSet<NodeId>,
+) {
+    let dataflow_id = dataflow_id.to_string();
+    memory_pool.cleanup_dataflow(&dataflow_id);
+    MemoryPoolManager::cleanup_orphans(&dataflow_id, |node| {
+        owned_nodes.iter().any(|id| id.as_ref() == node)
+    });
+}
+
 /// Convert MemoryPoolMetadata into daemon-protocol MetadataParameters.
 fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
     use dora_message::metadata::Parameter;
@@ -2835,6 +2866,9 @@ impl Daemon {
                     // entry is registered.
                     running_node.mark_registered();
                     dataflow.running_nodes.insert(node_id.clone(), running_node);
+                    // Added after the spawn cohort, so it is not in
+                    // `spawn_nodes` — record it as ours for the orphan sweep.
+                    dataflow.owned_nodes.insert(node_id.clone());
 
                     // Update the daemon's stored descriptor so
                     // descriptor-based lookups (e.g. AllInputsClosed
@@ -3995,10 +4029,13 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
-        // Sweep orphaned /dev/shm segments from a previous crash of the
-        // same dataflow (keyed by dataflow_id, a UUID — safe in multi-
-        // daemon setups).
-        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+        // Sweep orphaned /dev/shm segments left by a previous crash of this
+        // dataflow's nodes, scoped to the nodes this daemon spawns — a
+        // co-located daemon may be spawning the other half of the same
+        // dataflow right now (see `cleanup_orphans`).
+        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string(), |node| {
+            spawn_nodes.iter().any(|id| id.as_ref() == node)
+        });
 
         let mut logger = self
             .logger
@@ -4011,6 +4048,7 @@ impl Daemon {
             self.daemon_id.clone(),
             dataflow_descriptor.clone(),
         );
+        dataflow.owned_nodes = spawn_nodes.clone();
         // Read from the descriptor, which is the one copy that survives
         // everything a dataflow outlives: auto-recovery re-spawn,
         // coordinator restart with state reconstruction, and `dora
@@ -5699,24 +5737,13 @@ impl Daemon {
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
         }
-        self.running.remove(&dataflow_id);
+        let owned_nodes = self
+            .running
+            .remove(&dataflow_id)
+            .map(|dataflow| dataflow.owned_nodes)
+            .unwrap_or_default();
 
-        // Release the dataflow's memory pools. A daemon that outlives the
-        // dataflow (`dora up`) would otherwise carry every unfreed pool —
-        // table entry and /dev/shm segment alike — until it exits
-        // (dora-rs/dora#2881). The orphan sweep additionally catches
-        // segments a node created but crashed before registering, which no
-        // table entry covers.
-        //
-        // Unconditional, deliberately: a dynamic node can outlive the
-        // finish (`should_finish` ignores them), but the remove above just
-        // discarded its routing, channels and listeners, so it can no
-        // longer send or receive anything a pool would serve. Keeping the
-        // pools would strand them until daemon exit with no path left to
-        // reclaim them — this dataflow will never reach `reclaim_unreachable`
-        // again.
-        self.memory_pool.cleanup_dataflow(&dataflow_id.to_string());
-        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+        release_memory_pools_of_finished_dataflow(&self.memory_pool, dataflow_id, &owned_nodes);
 
         Ok(())
     }
@@ -9814,6 +9841,54 @@ mod fault_tolerance_tests {
 
             assert_eq!(memory_pool.table_size(), expected, "case: {case}");
         }
+    }
+
+    #[test]
+    fn finishing_a_dataflow_releases_every_pool_it_still_holds() {
+        let (_running, memory_pool) = dataflow_with_pool(&[("sender", "recv")], &["recv"]);
+
+        // Owned nodes only scope the /dev/shm sweep; the table release is
+        // unconditional. `recv` was still running and could still have
+        // reached this pool, but the dataflow is over and no later event
+        // would ever reclaim it.
+        release_memory_pools_of_finished_dataflow(&memory_pool, Uuid::nil(), &BTreeSet::new());
+
+        assert_eq!(memory_pool.table_size(), 0);
+    }
+
+    /// `finish_dataflow` is a *per-daemon* finish, but `/dev/shm` is
+    /// host-wide: with two daemons serving one dataflow on one machine, the
+    /// first to finish must not unlink the segments of the second daemon's
+    /// still-running nodes (dora-rs/dora#2881 review). `cleanup_orphans` has
+    /// its own test for which names it matches; this one pins the wiring —
+    /// that the finish path passes its own nodes and not something wider.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn finishing_a_dataflow_sweeps_only_this_daemons_segments() {
+        let dataflow_id = Uuid::new_v4();
+        let segment = |node: &str| {
+            std::path::PathBuf::from(format!("/dev/shm/dora_pool_{dataflow_id}_{node}_0"))
+        };
+        // `ours` never registered its pool — a crash between creating the
+        // segment and registering it is exactly what the orphan sweep is
+        // for. `theirs` belongs to the co-located daemon.
+        for node in ["ours", "theirs"] {
+            std::fs::write(segment(node), b"x").unwrap();
+        }
+
+        let owned_nodes = BTreeSet::from([NodeId::from("ours".to_string())]);
+        release_memory_pools_of_finished_dataflow(
+            &MemoryPoolManager::new(),
+            dataflow_id,
+            &owned_nodes,
+        );
+
+        let (ours, theirs) = (segment("ours").exists(), segment("theirs").exists());
+        for node in ["ours", "theirs"] {
+            let _ = std::fs::remove_file(segment(node));
+        }
+        assert!(!ours, "this daemon's orphaned segment must be swept");
+        assert!(theirs, "the co-located daemon's live segment must survive");
     }
 }
 

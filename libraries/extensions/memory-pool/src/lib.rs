@@ -333,14 +333,28 @@ impl MemoryPoolManager {
             .collect()
     }
 
-    /// Sweep orphaned shared-memory segments from a previous crash or
-    /// SIGKILL of the same dataflow.
+    /// Sweep orphaned shared-memory segments of `dataflow_id` that belong to
+    /// one of *this daemon's* nodes.
     ///
-    /// `dataflow_id` scopes the sweep — only files matching
-    /// `dora_pool_{dataflow_id}_*` are removed.  This is safe even when
-    /// other daemons are running on the same host, because dataflow IDs
-    /// are UUIDs and no two daemons run the same one concurrently.
-    pub fn cleanup_orphans(dataflow_id: &str) {
+    /// Catches what the pool table cannot: a segment whose creator died
+    /// between `shm_open` and `register_memory_pool` has no entry to release.
+    ///
+    /// Ownership matters because `/dev/shm` is host-wide while the segment
+    /// name carries only the *dataflow* id: sweeping by dataflow id alone
+    /// reaches every daemon on the host. Two daemons serving one dataflow on
+    /// one machine (a `machine:` split) is a supported deployment, and there
+    /// the daemon that finishes first would unlink the other's *live*
+    /// segments, leaving a consumer over there with `ENOENT`. Both call sites
+    /// are per-daemon: the spawn-time sweep races the peer daemon's spawn,
+    /// the finish-time one runs while the peer may still be going. A node id
+    /// belongs to at most one daemon, so `is_local_node` keeps the sweep
+    /// host-safe without narrowing what it can reclaim.
+    ///
+    /// Segments are named `dora_pool_{dataflow_id}_{node_id}_{counter}`. Node
+    /// ids may contain `_`, the counter never does, so the last component
+    /// splits off the node id; a name that does not fit the pattern belongs
+    /// to nobody identifiable and is left alone.
+    pub fn cleanup_orphans(dataflow_id: &str, is_local_node: impl Fn(&str) -> bool) {
         #[cfg(target_os = "linux")]
         {
             let prefix = format!("dora_pool_{}_", dataflow_id);
@@ -349,8 +363,16 @@ impl MemoryPoolManager {
                     for entry in entries.flatten() {
                         let name = entry.file_name();
                         let name = name.to_string_lossy();
-                        if name.starts_with(&prefix)
-                            && let Err(err) = std::fs::remove_file(entry.path())
+                        let Some((node_id, counter)) = name
+                            .strip_prefix(&prefix)
+                            .and_then(|rest| rest.rsplit_once('_'))
+                        else {
+                            continue;
+                        };
+                        if counter.parse::<u64>().is_err() || !is_local_node(node_id) {
+                            continue;
+                        }
+                        if let Err(err) = std::fs::remove_file(entry.path())
                             && err.kind() != std::io::ErrorKind::NotFound
                         {
                             tracing::debug!(
@@ -370,7 +392,7 @@ impl MemoryPoolManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = dataflow_id;
+            let _ = (dataflow_id, is_local_node);
         }
     }
 
@@ -628,7 +650,54 @@ mod tests {
     #[test]
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
-        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid");
+        MemoryPoolManager::cleanup_orphans("test-dataflow-uuid", |_| true);
+    }
+
+    /// Two daemons on one host serve one dataflow, so both see the other's
+    /// segments under the same `dora_pool_{dataflow_id}_` prefix. The sweep
+    /// must unlink only its own daemon's nodes, or a finishing daemon
+    /// destroys a live segment the peer daemon's consumer has not mapped
+    /// yet (dora-rs/dora#2881 review).
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn cleanup_orphans_leaves_another_daemons_segments_alone() {
+        // Unique per run, so concurrent tests cannot collide in /dev/shm.
+        let dataflow_id = format!("test-df-{}-scoped", std::process::id());
+        let segment = |name: &str| std::path::PathBuf::from(format!("/dev/shm/{name}"));
+        // (segment name, must survive the sweep)
+        let files = [
+            (format!("dora_pool_{dataflow_id}_local_0"), false),
+            // A node id may itself contain '_', so only the last component
+            // is the counter: this is node `local_with_underscore`, not
+            // `local_with` or `local`.
+            (
+                format!("dora_pool_{dataflow_id}_local_with_underscore_7"),
+                false,
+            ),
+            (format!("dora_pool_{dataflow_id}_remote_0"), true),
+            // Not `{node}_{counter}` — attributable to nobody, so kept.
+            (format!("dora_pool_{dataflow_id}_local_notacounter"), true),
+            // Another dataflow entirely, even for a local node id.
+            (format!("dora_pool_{dataflow_id}other_local_0"), true),
+        ];
+        for (file, _) in &files {
+            std::fs::write(segment(file), b"x").unwrap();
+        }
+
+        MemoryPoolManager::cleanup_orphans(&dataflow_id, |node| {
+            matches!(node, "local" | "local_with_underscore")
+        });
+
+        let outcome: Vec<(&str, bool)> = files
+            .iter()
+            .map(|(file, _)| (file.as_str(), segment(file).exists()))
+            .collect();
+        for (file, _) in &files {
+            let _ = std::fs::remove_file(segment(file));
+        }
+        for ((file, expected_kept), (_, kept)) in files.iter().zip(&outcome) {
+            assert_eq!(kept, expected_kept, "{file}");
+        }
     }
 
     // -- dora#2881: pools must be reclaimed once nothing can reach them --
