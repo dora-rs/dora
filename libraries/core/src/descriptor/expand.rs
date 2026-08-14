@@ -2419,6 +2419,9 @@ nodes:
 
         let err = check_module_file(&path).unwrap_err().to_string();
         assert!(err.contains("producer/missing"), "{err}");
+    }
+
+    #[test]
     fn check_module_file_rejects_nested_module_missing_required_input() {
         let tmp = TempDir::new().unwrap();
 
