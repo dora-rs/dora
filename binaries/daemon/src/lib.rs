@@ -3162,7 +3162,8 @@ impl Daemon {
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
-                    dataflow.cascading_error_causes.forget(&node_id);
+                    // `forget_node_bookkeeping` also drops the recorded
+                    // cascading-error cause for this id (see its doc comment).
                     dataflow.forget_node_bookkeeping(&node_id);
                     dataflow
                         .node_stderr_most_recent
@@ -8246,6 +8247,7 @@ mod fault_tolerance_tests {
         let input_x: DataId = "input_x".to_string().into();
         let timeout = Duration::from_secs(1);
 
+        let upstream: NodeId = "upstream".to_string().into();
         for node in [&node_a, &node_b] {
             df.input_deadlines.insert(
                 (node.clone(), input_x.clone()),
@@ -8258,6 +8260,9 @@ mod fault_tolerance_tests {
                 .insert((node.clone(), input_x.clone()), timeout);
             df.node_stderr_most_recent
                 .insert(node.clone(), Arc::new(ArrayQueue::new(4)));
+            // Both nodes were recorded as cascading victims of `upstream`.
+            df.cascading_error_causes
+                .report_cascading_error(upstream.clone(), node.clone());
         }
 
         df.forget_node_bookkeeping(&node_a);
@@ -8272,6 +8277,10 @@ mod fault_tolerance_tests {
                 .contains_key(&(node_a.clone(), input_x.clone()))
         );
         assert!(!df.node_stderr_most_recent.contains_key(&node_a));
+        // … including the stale cascading-error cause, so a re-added/replaced
+        // `node_a` incarnation is classified by its own failure, not a stale
+        // upstream cause (dora-rs/dora#2927).
+        assert_eq!(df.cascading_error_causes.error_caused_by(&node_a), None);
 
         // … while node_b's are untouched.
         assert!(
@@ -8283,6 +8292,10 @@ mod fault_tolerance_tests {
                 .contains_key(&(node_b.clone(), input_x.clone()))
         );
         assert!(df.node_stderr_most_recent.contains_key(&node_b));
+        assert_eq!(
+            df.cascading_error_causes.error_caused_by(&node_b),
+            Some(&upstream)
+        );
     }
 
     // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
