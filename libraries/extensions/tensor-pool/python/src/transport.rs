@@ -1020,6 +1020,59 @@ fn warn_missing_tensor_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
     );
 }
 
+/// Extracts the per-process pool counter from a namespaced
+/// `pool_{node_id}_{counter}` buffer id, but only when `node_id` owns the pool.
+///
+/// The sender-side `PINNED_POOL`/`TRANSIT_META` maps are keyed by the bare
+/// per-process counter, *not* namespaced by node id, and every process's
+/// counters restart at 1. So a node that frees a *peer's* pool (a receiver
+/// releasing a pool it read) would otherwise reclaim its *own* same-counter
+/// slot — freeing a live GPU buffer whose IPC handle is still exported to a
+/// downstream node (dora-rs/dora#3168). Guarding on the owner segment keeps the
+/// sender-side cleanup pinned to pools this node actually registered.
+///
+/// The owner match is exact (not a `starts_with` prefix check) so node ids that
+/// are prefixes of each other (e.g. `cam` / `cam_left`) do not alias.
+fn owned_pool_counter(buffer_id: &str, node_id: &str) -> Option<u64> {
+    let (owner, counter) = buffer_id.strip_prefix("pool_")?.rsplit_once('_')?;
+    if owner != node_id {
+        return None;
+    }
+    counter.parse::<u64>().ok()
+}
+
+#[cfg(test)]
+mod owner_guard_tests {
+    use super::owned_pool_counter;
+
+    #[test]
+    fn extracts_counter_for_owned_pool() {
+        assert_eq!(owned_pool_counter("pool_camera_7", "camera"), Some(7));
+    }
+
+    /// A receiver freeing a peer's pool must not resolve to a bare counter —
+    /// otherwise it would reclaim its own same-counter `PINNED_POOL` slot
+    /// (dora-rs/dora#3168).
+    #[test]
+    fn rejects_peer_owned_pool() {
+        assert_eq!(owned_pool_counter("pool_A_1", "B"), None);
+    }
+
+    /// Owner ids that are prefixes of each other must not alias.
+    #[test]
+    fn does_not_alias_prefix_node_ids() {
+        assert_eq!(owned_pool_counter("pool_cam_left_3", "cam"), None);
+        assert_eq!(owned_pool_counter("pool_cam_left_3", "cam_left"), Some(3));
+    }
+
+    #[test]
+    fn rejects_malformed_ids() {
+        assert_eq!(owned_pool_counter("notapool_x_1", "x"), None);
+        assert_eq!(owned_pool_counter("pool_x_notanumber", "x"), None);
+        assert_eq!(owned_pool_counter("pool_x", "x"), None);
+    }
+}
+
 // ==================== seqlock ====================
 /// Begins a tensor-pool seqlock write at `gen_ptr` (header offset 96)
 /// **if the generation is even**.  Returns the **even** pre-write
@@ -1189,16 +1242,9 @@ impl Pool<'_> {
                 .remove(&buffer_id);
 
             // Sender-side cleanup (PINNED_POOL, GPU/transit buffers).
-            // Guard against cross-process counter aliasing: buffer ids are
-            // pool_{node_id}_{counter}.  Extract the owner segment (between
-            // "pool_" and the final "_<counter>") and require an exact
-            // equality match — a prefix check (starts_with) would alias
-            // across node ids that are prefixes of each other (e.g. cam /
-            // cam_left).
-            if let Some(owner_and_counter) = buffer_id.strip_prefix("pool_")
-                && let Some((owner, counter_str)) = owner_and_counter.rsplit_once('_')
-                && owner == self.node_id.as_ref()
-                && let Ok(c) = counter_str.parse::<u64>()
+            // `owned_pool_counter` guards against cross-process counter aliasing:
+            // it yields the bare counter only when this node owns the pool.
+            if let Some(c) = owned_pool_counter(&buffer_id, self.node_id.as_ref())
                 && let Some(slot) = PINNED_POOL
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
@@ -2551,12 +2597,14 @@ impl Pool<'_> {
         // Clean up sender-side pinned pool mapping (Shmem + CUDA host register).
         // Without this, each register->write->free cycle leaks one Shmem mapping
         // and one cudaHostRegister pinned region for the process lifetime.
-        // PINNED_POOL is sender-side (per-process), so bare counter is sufficient.
+        //
+        // PINNED_POOL/TRANSIT_META are keyed by the bare per-process counter, so
+        // this cleanup must only run when *this* node owns the pool — a receiver
+        // freeing a peer's pool shares the same counter and would otherwise
+        // reclaim its own live slot (dora-rs/dora#3168). `owned_pool_counter`
+        // enforces that guard, matching `process_pending_tensor_pool_frees`.
         {
-            let counter = buffer_id
-                .strip_prefix("pool_")
-                .and_then(|s| s.rsplit_once('_').map(|(_, c)| c))
-                .and_then(|c| c.parse::<u64>().ok());
+            let counter = owned_pool_counter(&buffer_id, self.node_id.as_ref());
             if let Some(c) = counter
                 && let Some(slot) = PINNED_POOL
                     .lock()
