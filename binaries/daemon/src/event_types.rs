@@ -189,6 +189,15 @@ pub enum DaemonNodeEvent {
         machine_id: String,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    /// Release a (possibly cross-machine) memory pool. Cross-machine pools
+    /// get their tracking entry removed and a targeted `FreePool` published
+    /// to the peer; the local /dev/shm mirror is unlinked. Local-only
+    /// pools (table managed by the node-side tensor-pool extension) are
+    /// simply acknowledged.
+    FreePinnedMemory {
+        shared_memory_id: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
 }
 
 #[derive(Debug)]

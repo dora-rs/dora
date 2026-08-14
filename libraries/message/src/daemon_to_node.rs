@@ -137,7 +137,7 @@ impl DaemonReply {
             // its own length is the whole hint.
             DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
             DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
-            DaemonReply::PinnedMemoryMetadata { metadata } => metadata.parameters.len() as usize,
+            DaemonReply::PinnedMemoryMetadata { metadata } => metadata.parameters.len(),
             DaemonReply::CrossMachinePoolRegistered { .. } => 0,
         }
     }

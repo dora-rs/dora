@@ -399,9 +399,17 @@ pub struct Spawner {
 
 impl Spawner {
     fn maybe_inject_machine_id(&self, command: Command) -> Command {
-        match &self.machine_id {
+        let command = match &self.machine_id {
             Some(machine_id) => command.env("DORA_MACHINE_ID", machine_id),
             None => command,
+        };
+        // The direct-TCP auth token, when the data plane is secured: a
+        // spawned node needs it to hand peer daemons the credentials for
+        // same-host direct segment opens (the daemon-side listener verifies
+        // it on every connection).
+        match std::env::var("DORA_MEMORY_POOL_AUTH_TOKEN") {
+            Ok(token) => command.env("DORA_MEMORY_POOL_AUTH_TOKEN", token),
+            Err(_) => command,
         }
     }
 
