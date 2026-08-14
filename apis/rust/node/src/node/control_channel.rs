@@ -204,6 +204,32 @@ impl ControlChannel {
         }
     }
 
+    /// Read a memory pool's metadata from the daemon. The cross-machine
+    /// data plane itself never needs this (mirror segments are derived by
+    /// name), but the legacy node-side path keeps it as a fallback for
+    /// pools registered with an explicit `name=`. On a daemon that no
+    /// longer serves the pool table this returns an error; callers treat
+    /// it as a soft miss.
+    pub fn read_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        _free: bool,
+    ) -> eyre::Result<Metadata> {
+        let request = DaemonRequest::ReadPinnedMemory { shared_memory_id };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
+        }
+    }
+
     pub fn write_pinned_memory(
         &mut self,
         shared_memory_id: String,
@@ -262,6 +288,26 @@ impl ControlChannel {
         match reply {
             DaemonReply::CrossMachinePoolRegistered { result, direct } => Ok((result, direct)),
             other => bail!("unexpected RegisterCrossMachinePool reply: {other:?}"),
+        }
+    }
+
+    /// Release a memory pool through the daemon. Cross-machine pools get
+    /// their tracking entry removed, the peer is told (targeted `FreePool`
+    /// publish), and the local mirror is unlinked; local-only pools are a
+    /// plain acknowledgement (the pool's own cleanup is node-side).
+    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> eyre::Result<()> {
+        let request = DaemonRequest::FreePinnedMemory { shared_memory_id };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send FreePinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
         }
     }
 }

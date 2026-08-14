@@ -2354,6 +2354,7 @@ dependencies = [
  "pythonize",
  "serde_json",
  "serde_yaml",
+ "shared_memory_extended",
  "tokio",
  "tracing",
 ]
