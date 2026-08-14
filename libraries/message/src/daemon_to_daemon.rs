@@ -122,6 +122,13 @@ impl InterDaemonEvent {
         match self {
             Self::Output { data, .. } => data.as_ref().map_or(0, |d| d.len()),
             Self::OutputClosed { .. } => 0,
+            // Cross-machine memory-pool events: payload is `tensor_data`
+            // (MemoryPoolWrite) or control-plane sizes.
+            Self::MemoryPoolWrite { tensor_data, .. } => tensor_data.len(),
+            Self::RegisterPool { .. }
+            | Self::RegisterPoolAck { .. }
+            | Self::MemoryPoolWriteAck { .. }
+            | Self::FreePool { .. } => 0,
         }
     }
 }

@@ -273,7 +273,8 @@ async fn handle_daemon_request(
             if cmd_tx.send(json).await.is_err() {
                 return false;
             }
-
+            true
+        }
         // `CoordinatorRequest` is `#[non_exhaustive]`: a newer daemon may send a
         // variant this coordinator predates. Keep the connection open and drop
         // the request rather than tearing down a daemon over an unknown message.

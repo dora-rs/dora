@@ -452,7 +452,7 @@ impl Listener {
                     connection,
                 )
                 .await?;
-
+            }
             // `DaemonRequest` is `#[non_exhaustive]`: a node built against a newer
             // dora-node-api may send a request this daemon predates. Answer with an
             // explicit error so the node fails loudly instead of hanging on a reply

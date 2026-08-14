@@ -89,6 +89,11 @@ impl InteractiveEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            // `DaemonRequest` is `#[non_exhaustive]`: a request this build
+            // predates is unsupported here.
+            other => {
+                eyre::bail!("unsupported request in interactive mode: {other:?}")
+            }
         };
         Ok(reply)
     }

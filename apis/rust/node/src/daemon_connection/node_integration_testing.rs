@@ -144,6 +144,11 @@ impl IntegrationTestingEvents {
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
+            // `DaemonRequest` is `#[non_exhaustive]`: a request this build
+            // predates is unsupported here.
+            other => {
+                eyre::bail!("unsupported request in integration-testing mode: {other:?}")
+            }
         };
         Ok(reply)
     }

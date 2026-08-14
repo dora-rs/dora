@@ -405,6 +405,10 @@ pub(crate) struct PendingDestroy {
 }
 
 pub struct Daemon {
+    /// This machine's id (as registered with the coordinator), if any.
+    /// Used to gate which daemon mirrors a cross-machine pool and to
+    /// inject `DORA_MACHINE_ID` into spawned nodes.
+    pub(crate) machine_id: Option<String>,
     pub(crate) running: HashMap<DataflowId, RunningDataflow>,
     pub(crate) working_dir: HashMap<DataflowId, PathBuf>,
     pub(crate) events_tx: mpsc::Sender<Timestamped<Event>>,
@@ -1024,6 +1028,7 @@ impl Daemon {
                                 ),
                             };
                             let (built, rx) = Self::build_daemon(
+                                machine_id.clone(),
                                 Some(coordinator_sender),
                                 daemon_id,
                                 None,
@@ -1148,6 +1153,7 @@ impl Daemon {
         descriptor_override: Option<Descriptor>,
     ) -> eyre::Result<DataflowResult> {
         Self::run_dataflow_with(
+            None,
             dataflow_path,
             build_id,
             local_build,
@@ -1167,6 +1173,7 @@ impl Daemon {
     /// Runs a single dataflow to completion with explicit options.
     #[allow(clippy::too_many_arguments)]
     pub async fn run_dataflow_with(
+        machine_id: Option<String>,
         dataflow_path: &Path,
         build_id: Option<BuildId>,
         local_build: Option<BuildInfo>,
@@ -1316,6 +1323,7 @@ impl Daemon {
         )
             .merge();
         let run_result = Self::run_general(
+            machine_id.clone(),
             Box::pin(events),
             None,
             DaemonId::new(None),
@@ -1384,6 +1392,7 @@ impl Daemon {
 
     #[allow(clippy::too_many_arguments)]
     async fn run_general(
+        machine_id: Option<String>,
         external_events: impl Stream<Item = Timestamped<Event>> + Unpin,
         coordinator_sender: Option<coordinator::CoordinatorSender>,
         daemon_id: DaemonId,
@@ -1409,6 +1418,7 @@ impl Daemon {
         // teardown code of ours survives — is the end of the dataflow (#2856).
         let bind_nodes_to_parent = true;
         let (mut daemon, mut dora_events_rx) = Self::build_daemon(
+            machine_id.clone(),
             coordinator_sender,
             daemon_id,
             exit_when_done,
@@ -1442,6 +1452,7 @@ impl Daemon {
     /// fixed in dora-rs/dora#2029.
     #[allow(clippy::too_many_arguments)]
     async fn build_daemon(
+        machine_id: Option<String>,
         coordinator_sender: Option<coordinator::CoordinatorSender>,
         daemon_id: DaemonId,
         exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
@@ -1564,6 +1575,7 @@ impl Daemon {
         });
 
         let daemon = Self {
+            machine_id,
             logger: Logger {
                 destination: log_destination,
                 daemon_id: daemon_id.clone(),
@@ -2569,6 +2581,7 @@ impl Daemon {
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
                         bind_nodes_to_parent: self.bind_nodes_to_parent,
+                        machine_id: self.machine_id.clone(),
                     };
                     let mut logger = self
                         .logger
@@ -3081,6 +3094,7 @@ impl Daemon {
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
                         bind_nodes_to_parent: self.bind_nodes_to_parent,
+                        machine_id: self.machine_id.clone(),
                     };
                     let mut logger = self
                         .logger
@@ -4141,6 +4155,7 @@ impl Daemon {
             zenoh_connect_endpoint: self.zenoh_listen_endpoint.clone(),
             zenoh_peering: dataflow.zenoh_peering.clone(),
             disable_multicast: self.disable_multicast,
+            machine_id: self.machine_id.clone(),
             bind_nodes_to_parent: self.bind_nodes_to_parent,
         };
 
@@ -4729,6 +4744,15 @@ impl Daemon {
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
+            }
+            // Cross-machine memory-pool events (ported from the
+            // pre-tensor-pool branch; handlers land in the follow-up
+            // commit that re-attaches the cross-machine data plane).
+            DaemonNodeEvent::WriteMemoryPool { .. }
+            | DaemonNodeEvent::RegisterCrossMachinePool { .. } => {
+                tracing::warn!(
+                    "memory pool: cross-machine event for {dataflow_id} not yet handled                      (cross-machine data plane re-attachment pending)"
+                );
             }
         }
         Ok(())
