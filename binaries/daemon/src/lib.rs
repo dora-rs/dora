@@ -651,6 +651,7 @@ fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
 /// so the /dev/shm name survives the handle drop — on Linux a created
 /// (owner) Shmem shm_unlinks on drop, which would remove the name local
 /// receivers open for the zero-copy fast path.
+#[allow(clippy::too_many_arguments)]
 fn create_cross_pool_shmem(
     dataflow_id: &Uuid,
     machine_id: &str,
