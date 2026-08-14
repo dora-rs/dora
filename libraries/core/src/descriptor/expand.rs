@@ -1,6 +1,9 @@
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{Descriptor, EnvValue, Node, NodeSource, OperatorConfig, OperatorSource},
+    descriptor::{
+        DYNAMIC_SOURCE, Descriptor, EnvValue, Node, NodeSource, OperatorConfig, OperatorSource,
+        SHELL_SOURCE,
+    },
     id::{DataId, NodeId},
 };
 use eyre::{Context, bail};
@@ -698,7 +701,11 @@ fn resolve_module_relative_path(
     // base_dir. Normalize lexically (collapse `..`) before the containment
     // check so paths like `../../evil` are detected even if the binary does
     // not exist yet (ruling out filesystem canonicalize).
-    if super::source_is_url(path) || Path::new(path).is_absolute() {
+    if path == DYNAMIC_SOURCE
+        || path == SHELL_SOURCE
+        || super::source_is_url(path)
+        || Path::new(path).is_absolute()
+    {
         return Ok(());
     }
 
@@ -2982,6 +2989,55 @@ nodes:
             runner.custom.as_ref().unwrap().path,
             "modules/nested/runner.py"
         );
+    }
+
+    #[test]
+    fn expand_preserves_dynamic_custom_source_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/dynamic_source.yml",
+            r#"
+module:
+  name: dynamic_source
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: dyn
+    custom:
+      path: dynamic
+      source: Local
+      inputs:
+        x: _mod/data
+      outputs:
+        - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/dynamic_source.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let dyn_node = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.dyn")
+            .unwrap();
+
+        assert_eq!(dyn_node.custom.as_ref().unwrap().path, "dynamic");
     }
 
     /// Expand a dataflow whose single module node `m` re-exports `result`, and
