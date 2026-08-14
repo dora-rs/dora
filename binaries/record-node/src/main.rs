@@ -58,7 +58,7 @@ fn main() -> eyre::Result<()> {
         .as_nanos() as u64;
 
     let header = RecordingHeader {
-        version: 1,
+        version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id: uuid::Uuid::new_v4(),
         descriptor_yaml: descriptor_yaml.into_bytes(),

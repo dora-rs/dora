@@ -253,6 +253,7 @@
       ]
     },
     "DataId": {
+      "description": "A validated data (output) identifier.\n\nA `DataId` may contain only `[a-zA-Z0-9_./-]` and must be non-empty. Unlike\n[`NodeId`], a `DataId` **may** contain `/` (runtime-operator outputs are\nnamespaced as `<operator-id>/<output-name>`), but leading, trailing, or\nconsecutive slashes — which would produce empty path segments — are\nrejected.\n\n# Parsing vs. conversion (panic footgun)\n\nUse [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it\nreturns `Result<DataId, InvalidId>`. The `From<String>` / `From<&str>`\nconversions — and therefore `.into()` and the auto-derived `TryFrom` —\n**panic** on an invalid id.\n\n```\nuse dora_message::id::DataId;\n\nassert!(\"image\".parse::<DataId>().is_ok());\nassert!(\"op/status\".parse::<DataId>().is_ok()); // '/' is allowed in a DataId\nassert!(\"a//b\".parse::<DataId>().is_err());     // empty path segment rejected\nassert!(\"/out\".parse::<DataId>().is_err());     // leading '/' rejected\nassert!(\"bad id\".parse::<DataId>().is_err());   // space rejected\n```\n\nThe infallible-looking conversion panics on the same invalid input:\n\n```should_panic\nuse dora_message::id::DataId;\nlet _ = DataId::from(\"a//b\".to_string()); // panics — prefer .parse()\n```",
       "type": "string"
     },
     "Duration": {
@@ -781,6 +782,7 @@
       ]
     },
     "NodeId": {
+      "description": "A validated node identifier.\n\nA `NodeId` may contain only `[a-zA-Z0-9_.-]`, must be non-empty, and must\nnot start with `.` (dot-segments like `.` or `..` could traverse into a\nparent directory when the id is joined into a filesystem path). Unlike\n[`DataId`], a `NodeId` may **not** contain `/`, which separates\n`<node_id>/<output_id>` in input-mapping syntax.\n\n# Parsing vs. conversion (panic footgun)\n\nUse [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it\nreturns `Result<NodeId, InvalidId>`. The `From<String>` conversion — and\ntherefore `.into()` and the auto-derived `TryFrom<String>` — **panics** on\nan invalid id.\n\n```\nuse dora_message::id::NodeId;\n\n// Fallible path — always safe for untrusted input:\nassert!(\"camera_node\".parse::<NodeId>().is_ok());\nassert!(\"node/out\".parse::<NodeId>().is_err()); // '/' is not allowed in a NodeId\nassert!(\"\".parse::<NodeId>().is_err());         // empty is rejected\nassert!(\".hidden\".parse::<NodeId>().is_err());  // leading '.' is rejected\n```\n\nThe infallible-looking conversion panics on the same invalid input:\n\n```should_panic\nuse dora_message::id::NodeId;\nlet _ = NodeId::from(\"node/out\".to_string()); // panics — prefer .parse()\n```",
       "type": "string"
     },
     "NodeSource": {

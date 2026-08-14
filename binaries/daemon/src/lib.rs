@@ -15,7 +15,6 @@ use dora_core::{
     },
     uhlc::{self, HLC},
 };
-use dora_memory_pool::{MemoryPoolId, MemoryPoolManager, MemoryPoolMetadata};
 use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
@@ -160,6 +159,7 @@ pub mod bench_support {
 
 mod coordinator;
 pub(crate) mod event_types;
+mod extension_table;
 mod extract_err_from_stderr;
 pub(crate) mod fault_tolerance;
 mod local_listener;
@@ -182,7 +182,11 @@ pub(crate) use running_dataflow::{
     RunningNode,
 };
 
-use crate::{extract_err_from_stderr::extract_err_from_stderr, pending::DataflowStatus};
+use crate::{
+    extension_table::{ExtensionKey, ExtensionTable},
+    extract_err_from_stderr::extract_err_from_stderr,
+    pending::DataflowStatus,
+};
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
@@ -240,6 +244,95 @@ fn deliver_param_update_strict(
         }
         Ok(false) => Err(eyre!("node `{node_id}` channel full")),
         Err(_) => Err(eyre!("node `{node_id}` channel closed")),
+    }
+}
+
+/// Tell every node that touched `key` that it is gone.
+///
+/// Returns the nodes that could not be reached. A full or closed channel is
+/// reported rather than retried: the entry is already out of the table, so the
+/// alternative to a warning is a silent resource leak in that node
+/// (dora-rs/dora#2935 is what that looks like in practice).
+fn notify_extension_dropped(
+    dataflow: &RunningDataflow,
+    namespace: &str,
+    key: &str,
+    touched_by: &BTreeSet<NodeId>,
+    clock: &HLC,
+) -> Vec<NodeId> {
+    let mut undelivered = Vec::new();
+    for node_id in touched_by {
+        let Some(channel) = dataflow.subscribe_channels.get(node_id) else {
+            // Not connected: it has either exited (nothing to release) or has
+            // not subscribed yet (it cannot hold the key either).
+            continue;
+        };
+        let event = NodeEvent::ExtensionDropped {
+            namespace: namespace.to_owned(),
+            key: key.to_owned(),
+        };
+        match send_with_timestamp(channel, event, clock) {
+            Ok(true) => dataflow.inc_pending(node_id),
+            Ok(false) | Err(_) => undelivered.push(node_id.clone()),
+        }
+    }
+    undelivered
+}
+
+/// Drop `key` from the table and notify its readers, logging any that could
+/// not be reached. Shared by the explicit drop request and by reclamation.
+fn drop_extension_and_notify(
+    extensions: &mut ExtensionTable,
+    dataflow: Option<&RunningDataflow>,
+    key: &ExtensionKey,
+    clock: &HLC,
+) -> bool {
+    let Some(touched_by) = extensions.drop_key(key) else {
+        return false;
+    };
+    if let Some(dataflow) = dataflow {
+        let undelivered =
+            notify_extension_dropped(dataflow, &key.namespace, &key.key, &touched_by, clock);
+        if !undelivered.is_empty() {
+            tracing::warn!(
+                namespace = %key.namespace,
+                key = %key.key,
+                nodes = ?undelivered,
+                "extension drop notification undelivered; these nodes keep whatever \
+                 they derived from the value until they exit"
+            );
+        }
+    }
+    true
+}
+
+/// Drop every extension entry owned by an exited node, notifying readers.
+fn reclaim_extensions_of_exited_node(
+    extensions: &mut ExtensionTable,
+    dataflow: Option<&RunningDataflow>,
+    dataflow_id: DataflowId,
+    node_id: &NodeId,
+    clock: &HLC,
+) {
+    let reclaimed = extensions.reclaim_owner(&dataflow_id.to_string(), node_id);
+    for (key, touched_by) in reclaimed {
+        if let Some(dataflow) = dataflow {
+            let undelivered =
+                notify_extension_dropped(dataflow, &key.namespace, &key.key, &touched_by, clock);
+            if !undelivered.is_empty() {
+                tracing::warn!(
+                    namespace = %key.namespace,
+                    key = %key.key,
+                    nodes = ?undelivered,
+                    "extension reclaim notification undelivered after node `{node_id}` exited"
+                );
+            }
+        }
+        tracing::debug!(
+            namespace = %key.namespace,
+            key = %key.key,
+            "reclaimed extension entry of exited node `{node_id}`"
+        );
     }
 }
 
@@ -351,7 +444,9 @@ pub struct Daemon {
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
     pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
-    pub(crate) memory_pool: MemoryPoolManager,
+    /// Opaque, dataflow-scoped store for out-of-tree extensions. See
+    /// `extension_table` and `docs/extensions.md`.
+    pub(crate) extensions: ExtensionTable,
     /// Nodes already warned about for sending after their dataflow
     /// finished, so `log_late_node_output` warns once each instead of
     /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
@@ -649,209 +744,6 @@ async fn collect_and_send_metrics_bg(
     }
 
     Ok(())
-}
-
-/// Convert MemoryPoolMetadata into daemon-protocol MetadataParameters.
-fn pool_metadata_to_params(meta: &MemoryPoolMetadata) -> MetadataParameters {
-    use dora_message::metadata::Parameter;
-    let mut p = MetadataParameters::new();
-    p.insert("ptr".into(), Parameter::Integer(meta.ptr as i64));
-    p.insert("size".into(), Parameter::Integer(meta.size as i64));
-    p.insert("dtype".into(), Parameter::String(meta.dtype.clone()));
-    let shape: Vec<i64> = meta.shape.iter().map(|&x| x as i64).collect();
-    p.insert("shape".into(), Parameter::ListInt(shape));
-    p.insert("is_pinned".into(), Parameter::Bool(meta.is_pinned));
-    if let Some(ref t) = meta.pinned_type {
-        p.insert("pinned_type".into(), Parameter::String(t.clone()));
-    }
-    if let Some(ref n) = meta.shared_memory_name {
-        p.insert("shared_memory_name".into(), Parameter::String(n.clone()));
-    }
-    if let Some(ipc) = meta.ipc_present {
-        p.insert("ipc_present".into(), Parameter::Bool(ipc));
-    }
-    if let Some(ref b) = meta.buffer_id {
-        p.insert("buffer_id".into(), Parameter::String(b.clone()));
-    }
-    p
-}
-
-/// Reconstruct MemoryPoolMetadata from MetadataParameters (best-effort).
-fn pool_metadata_from_params(params: &MetadataParameters) -> MemoryPoolMetadata {
-    use dora_message::metadata::Parameter;
-    let get_int = |k: &str| -> Option<i64> {
-        params.get(k).and_then(|p| {
-            if let Parameter::Integer(v) = p {
-                Some(*v)
-            } else {
-                None
-            }
-        })
-    };
-    let get_str = |k: &str| -> Option<String> {
-        params.get(k).and_then(|p| {
-            if let Parameter::String(s) = p {
-                Some(s.clone())
-            } else {
-                None
-            }
-        })
-    };
-    let get_bool = |k: &str| -> Option<bool> {
-        params.get(k).and_then(|p| {
-            if let Parameter::Bool(v) = p {
-                Some(*v)
-            } else {
-                None
-            }
-        })
-    };
-    MemoryPoolMetadata {
-        ptr: get_int("ptr").unwrap_or(0) as u64,
-        size: get_int("size").unwrap_or(0) as usize,
-        dtype: get_str("dtype").unwrap_or_default(),
-        shape: params
-            .get("shape")
-            .and_then(|p| {
-                if let Parameter::ListInt(v) = p {
-                    Some(v.iter().map(|&x| x as usize).collect())
-                } else {
-                    None
-                }
-            })
-            .unwrap_or_default(),
-        is_pinned: get_bool("is_pinned").unwrap_or(false),
-        shared_memory_name: get_str("shared_memory_name"),
-        buffer_id: get_str("buffer_id"),
-        ipc_present: get_bool("ipc_present"),
-        pinned_type: get_str("pinned_type"),
-    }
-}
-
-/// Release a memory pool and tell every other node that touched it to drop
-/// its per-process view of that pool.
-///
-/// Both daemon entry points that release a pool must go through here: the
-/// explicit `FreePinnedMemory` request and `ReadPinnedMemory { free: true }`.
-/// The read-with-free path used to free the pool without notifying anyone,
-/// so every other node kept its GPU buffer, pinned host buffer, IPC handle
-/// and shmem mapping for the rest of its life (#2935).
-fn free_pool_and_notify(
-    memory_pool: &MemoryPoolManager,
-    dataflow: Option<&RunningDataflow>,
-    id: &MemoryPoolId,
-    initiator: &str,
-    clock: &HLC,
-) -> Result<(), String> {
-    let (_metadata, touched) = memory_pool.free_memory_pool(id, initiator)?;
-
-    // Without a running dataflow there are no subscribe channels to notify;
-    // the pool table entry and its shmem segment are released either way.
-    let Some(dataflow) = dataflow else {
-        return Ok(());
-    };
-
-    let undelivered = notify_memory_pool_freed(dataflow, &id.id, &touched, initiator, clock);
-    if !undelivered.is_empty() {
-        tracing::error!(
-            pool = %id.id,
-            nodes = ?undelivered,
-            "FreeMemoryPool notification dropped (event channel full); these \
-             nodes hold their GPU/host/IPC/shmem resources for the pool until \
-             they exit"
-        );
-    }
-    Ok(())
-}
-
-/// Send `NodeEvent::FreeMemoryPool` to every node that registered or read
-/// the pool, except the node that initiated the free — it releases its own
-/// resources synchronously.
-///
-/// Returns the nodes whose notification could not be enqueued because their
-/// event channel was full. Those nodes leak the pool's per-process
-/// resources, so the caller surfaces them. Delivery is not retried: this
-/// runs on the daemon main loop with the freeing node blocked on its reply,
-/// so awaiting a backed-up receiver would stall every dataflow on the daemon.
-fn notify_memory_pool_freed(
-    dataflow: &RunningDataflow,
-    shared_memory_id: &str,
-    touched: &HashSet<String>,
-    initiator: &str,
-    clock: &HLC,
-) -> BTreeSet<NodeId> {
-    let mut undelivered = BTreeSet::new();
-    for (node, channel) in &dataflow.subscribe_channels {
-        if !touched.contains(node.as_ref()) || node.as_ref() == initiator {
-            continue;
-        }
-        let event = NodeEvent::FreeMemoryPool {
-            shared_memory_id: shared_memory_id.to_owned(),
-        };
-        match send_with_timestamp(channel, event, clock) {
-            Ok(true) => {
-                // The listener decrements `pending_messages` for every event
-                // it drains, so an enqueue without the matching increment
-                // underflows the reported count to `u64::MAX` (#2827).
-                dataflow.inc_pending(node);
-            }
-            // A full channel is reported as `Ok(false)`, not `Err` — the
-            // original loop inspected only `Err` and dropped this case
-            // silently (#2935).
-            Ok(false) => {
-                undelivered.insert(node.clone());
-            }
-            // Channel closed: the node is gone, so the OS already reclaimed
-            // the resources the notification would have released.
-            Err(_) => tracing::debug!(
-                node_id = %node,
-                pool = %shared_memory_id,
-                "skipping FreeMemoryPool notification: node disconnected"
-            ),
-        }
-    }
-    undelivered
-}
-
-#[cfg(test)]
-mod metadata_roundtrip_tests {
-    use super::*;
-    use dora_memory_pool::MemoryPoolMetadata;
-
-    /// `ipc_present` must survive a to_params → from_params round-trip
-    /// so the read path receives the trusted flag from daemon metadata.
-    #[test]
-    fn ipc_present_survives_roundtrip_true() {
-        let meta = MemoryPoolMetadata {
-            ipc_present: Some(true),
-            ..Default::default()
-        };
-        let params = pool_metadata_to_params(&meta);
-        let restored = pool_metadata_from_params(&params);
-        assert_eq!(restored.ipc_present, Some(true));
-    }
-
-    #[test]
-    fn ipc_present_survives_roundtrip_false() {
-        let meta = MemoryPoolMetadata {
-            ipc_present: Some(false),
-            ..Default::default()
-        };
-        let params = pool_metadata_to_params(&meta);
-        let restored = pool_metadata_from_params(&params);
-        assert_eq!(restored.ipc_present, Some(false));
-    }
-
-    #[test]
-    fn ipc_present_survives_roundtrip_none() {
-        let meta = MemoryPoolMetadata {
-            ipc_present: None,
-            ..Default::default()
-        };
-        let params = pool_metadata_to_params(&meta);
-        let restored = pool_metadata_from_params(&params);
-        assert_eq!(restored.ipc_present, None);
-    }
 }
 
 /// Where the daemon's zenoh listen address came from, which decides what a bind
@@ -1698,7 +1590,7 @@ impl Daemon {
             zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
-            memory_pool: MemoryPoolManager::new(),
+            extensions: ExtensionTable::new(),
             builds,
             sessions: Default::default(),
             metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
@@ -2073,13 +1965,6 @@ impl Daemon {
             // a Destroy command), so a closed channel is not an error.
             if let Err(e) = sender.send_event(&msg).await {
                 tracing::debug!("could not send Exit to coordinator (already gone?): {e}");
-            }
-        }
-
-        // Clean up any unfreed memory pool entries on daemon exit
-        if let Err(errors) = self.memory_pool.cleanup_all() {
-            for error in errors {
-                tracing::warn!("{error}");
             }
         }
 
@@ -3805,6 +3690,13 @@ impl Daemon {
                 }
                 Ok(())
             }
+            // `InterDaemonEvent` is `#[non_exhaustive]`: a peer daemon running a
+            // newer dora may send an event this one predates. Warn and continue —
+            // tearing down the dataflow over an unknown peer message would be worse.
+            other => {
+                tracing::warn!("ignoring unrecognized inter-daemon event: {other:?}");
+                Ok(())
+            }
         }
     }
 
@@ -3932,10 +3824,14 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
-        // Sweep orphaned /dev/shm segments from a previous crash of the
-        // same dataflow (keyed by dataflow_id, a UUID — safe in multi-
-        // daemon setups).
-        MemoryPoolManager::cleanup_orphans(&dataflow_id.to_string());
+        // Opt-in extension: reclaim `/dev/shm` segments a previous crash of
+        // this dataflow's nodes left behind. Scoped to the nodes this daemon
+        // spawns, since a co-located daemon may be starting the other half of
+        // the same dataflow right now. Compiles away without the feature.
+        #[cfg(feature = "tensor-pool")]
+        dora_tensor_pool::TensorPoolManager::cleanup_orphans(&dataflow_id.to_string(), |node| {
+            spawn_nodes.iter().any(|id| id.as_ref() == node)
+        });
 
         let mut logger = self
             .logger
@@ -4154,13 +4050,11 @@ impl Daemon {
                                 future::Either::Right((sample, f)) => {
                                     finished = f;
                                     let Ok(sample) = sample else { break };
-                                    // Node publishes raw payload + bincode metadata
+                                    // Node publishes raw payload + encoded metadata
                                     // attachment (see `DoraNode::zenoh_publish`).
+                                    use dora_message::metadata::Metadata;
                                     let Some(mut metadata) = sample.attachment().and_then(|a| {
-                                        bincode::deserialize::<dora_message::metadata::Metadata>(
-                                            &a.to_bytes(),
-                                        )
-                                        .ok()
+                                        dora_message::decode::<Metadata>(&a.to_bytes()).ok()
                                     }) else {
                                         continue;
                                     };
@@ -4765,6 +4659,64 @@ impl Daemon {
             } => self
                 .output_sent(dataflow_id, node_id, output_id, metadata)
                 .context("failed to mark output sent")?,
+            DaemonNodeEvent::ExtensionStore {
+                namespace,
+                key,
+                value,
+                reply_sender,
+            } => {
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace,
+                    key,
+                };
+                let result = self.extensions.store(ext_key, value, &node_id);
+                let _ = reply_sender.send(DaemonReply::Result(result));
+            }
+            DaemonNodeEvent::ExtensionLoad {
+                namespace,
+                key,
+                remove,
+                reply_sender,
+            } => {
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace,
+                    key,
+                };
+                let value = self.extensions.load(&ext_key, &node_id);
+                // Remove only after a hit: a miss must not broadcast a drop
+                // for a key that was never there.
+                if remove && value.is_some() {
+                    drop_extension_and_notify(
+                        &mut self.extensions,
+                        self.running.get(&dataflow_id),
+                        &ext_key,
+                        &self.clock,
+                    );
+                }
+                let _ = reply_sender.send(DaemonReply::ExtensionValue { value });
+            }
+            DaemonNodeEvent::ExtensionDrop {
+                namespace,
+                key,
+                reply_sender,
+            } => {
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace,
+                    key,
+                };
+                drop_extension_and_notify(
+                    &mut self.extensions,
+                    self.running.get(&dataflow_id),
+                    &ext_key,
+                    &self.clock,
+                );
+                // Idempotent: dropping an absent key is success, so a retry
+                // after a lost reply does not surface as an error.
+                let _ = reply_sender.send(DaemonReply::Result(Ok(())));
+            }
             DaemonNodeEvent::EventStreamDropped { reply_sender } => {
                 let inner = async {
                     let dataflow = self
@@ -4777,136 +4729,6 @@ impl Daemon {
 
                 let reply = inner.await.map_err(|err| format!("{err:?}"));
                 let _ = reply_sender.send(DaemonReply::Result(reply));
-            }
-            DaemonNodeEvent::RegisterPinnedMemory {
-                shared_memory_id,
-                metadata,
-                reply_sender,
-            } => {
-                let result = (|| -> Result<(), String> {
-                    let pool_metadata = pool_metadata_from_params(&metadata.parameters);
-                    // Validate required fields that the helper fills with defaults
-                    if pool_metadata.ptr == 0 {
-                        return Err("missing or invalid ptr".to_string());
-                    }
-                    if pool_metadata.size == 0 {
-                        return Err("missing or invalid size".to_string());
-                    }
-                    if pool_metadata.dtype.is_empty() {
-                        return Err("missing or invalid dtype".to_string());
-                    }
-                    if pool_metadata.shape.is_empty() {
-                        return Err("missing shape".to_string());
-                    }
-                    // Mirror the Python-side size cap.
-                    if pool_metadata.size > 1024 * 1024 * 1024 {
-                        return Err(format!("size {} exceeds 1 GiB cap", pool_metadata.size));
-                    }
-                    // Require a shared memory name for cleanup.
-                    let shm_name = pool_metadata
-                        .shared_memory_name
-                        .as_ref()
-                        .filter(|n| !n.is_empty())
-                        .ok_or_else(|| "missing shared_memory_name".to_string())?;
-                    // Validate prefix in the same way free_shared_memory does.
-                    if !shm_name.starts_with("dora_pool_")
-                        || shm_name.contains('/')
-                        || shm_name.contains("..")
-                    {
-                        return Err(format!("shared_memory_name `{}` is invalid", shm_name));
-                    }
-
-                    // Per-daemon pool cap (soft limit — rejects excess registrations).
-                    const MAX_POOLS: usize = 512;
-                    if self.memory_pool.table_size() >= MAX_POOLS {
-                        return Err(format!(
-                            "daemon pool table full ({MAX_POOLS} entries); \
-                             free unused pools before registering more"
-                        ));
-                    }
-
-                    self.memory_pool.register_memory_pool(
-                        MemoryPoolId {
-                            dataflow_id: dataflow_id.to_string(),
-                            id: shared_memory_id,
-                        },
-                        pool_metadata,
-                        node_id.to_string(),
-                    )
-                })();
-                let _ = reply_sender.send(DaemonReply::Result(result));
-            }
-            DaemonNodeEvent::ReadPinnedMemory {
-                shared_memory_id,
-                free,
-                reply_sender,
-            } => {
-                let result = (|| -> Result<dora_message::metadata::Metadata, String> {
-                    let id = MemoryPoolId {
-                        dataflow_id: dataflow_id.to_string(),
-                        id: shared_memory_id.clone(),
-                    };
-                    let metadata = self
-                        .memory_pool
-                        .read_memory_pool(&id, node_id.as_ref())
-                        .ok_or_else(|| {
-                            format!("memory pool with ID {} not found", shared_memory_id)
-                        })?;
-
-                    if free
-                        && let Err(err) = free_pool_and_notify(
-                            &self.memory_pool,
-                            self.running.get(&dataflow_id),
-                            &id,
-                            node_id.as_ref(),
-                            &self.clock,
-                        )
-                    {
-                        tracing::warn!(
-                            "Failed to free memory pool {} after reading: {}",
-                            shared_memory_id,
-                            err
-                        );
-                    }
-
-                    let mut parameters = pool_metadata_to_params(&metadata);
-                    // When freeing, drop shared_memory_name — the segment has
-                    // been unlinked and the name is a dangling reference.
-                    if free {
-                        parameters.remove("shared_memory_name");
-                    }
-
-                    let timestamp = self.clock.new_timestamp();
-                    Ok(dora_message::metadata::Metadata::from_parameters(
-                        timestamp, parameters,
-                    ))
-                })();
-
-                match result {
-                    Ok(metadata) => {
-                        let _ = reply_sender.send(DaemonReply::PinnedMemoryMetadata { metadata });
-                    }
-                    Err(err) => {
-                        let _ = reply_sender.send(DaemonReply::Result(Err(err)));
-                    }
-                }
-            }
-            DaemonNodeEvent::FreePinnedMemory {
-                shared_memory_id,
-                reply_sender,
-            } => {
-                let id = MemoryPoolId {
-                    dataflow_id: dataflow_id.to_string(),
-                    id: shared_memory_id,
-                };
-                let result = free_pool_and_notify(
-                    &self.memory_pool,
-                    self.running.get(&dataflow_id),
-                    &id,
-                    node_id.as_ref(),
-                    &self.clock,
-                );
-                let _ = reply_sender.send(DaemonReply::Result(result));
             }
         }
         Ok(())
@@ -5596,6 +5418,14 @@ impl Daemon {
                 dataflows.remove(&dataflow_id);
             });
 
+        // Whatever survived node-exit reclamation goes now: the dataflow's
+        // channels and listeners are gone, so nothing can reach these entries
+        // and no later event would reclaim them.
+        let dropped = self.extensions.reclaim_dataflow(&dataflow_id.to_string());
+        if dropped > 0 {
+            tracing::debug!(%dataflow_id, dropped, "released extension entries of finished dataflow");
+        }
+
         logger
             .log(
                 LogLevel::Info,
@@ -5626,7 +5456,6 @@ impl Daemon {
             let _ = df.listener_shutdown_tx.send(true);
         }
         self.running.remove(&dataflow_id);
-
         Ok(())
     }
 
@@ -6047,6 +5876,17 @@ impl Daemon {
                     // mid-startup (dora-rs/dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
                 }
+
+                // A node that crashed cannot withdraw its own descriptors.
+                // Reclaiming here is the reason the extension table lives in
+                // the daemon at all (dora-rs/dora#2881).
+                reclaim_extensions_of_exited_node(
+                    &mut self.extensions,
+                    self.running.get(&dataflow_id),
+                    dataflow_id,
+                    &node_id,
+                    &self.clock,
+                );
 
                 logger
                     .log(
@@ -7961,226 +7801,6 @@ mod fault_tolerance_tests {
             (NodeEvent::Input { .. }, "Input") => true,
             _ => false,
         }
-    }
-
-    // ---- cross-process memory-pool cleanup (#2935) ----
-
-    /// Subscribe `node` to `df` with a channel of `capacity` slots and a
-    /// pending-message counter, mirroring what `DaemonNodeEvent::Subscribe`
-    /// installs for a live node.
-    fn subscribe_test_node(
-        df: &mut RunningDataflow,
-        node: &NodeId,
-        capacity: usize,
-    ) -> (
-        mpsc::Receiver<Timestamped<NodeEvent>>,
-        Arc<std::sync::atomic::AtomicU64>,
-    ) {
-        let (tx, rx) = mpsc::channel(capacity);
-        df.subscribe_channels.insert(node.clone(), tx);
-        let counter = Arc::new(AtomicU64::new(0));
-        df.pending_messages.insert(node.clone(), counter.clone());
-        (rx, counter)
-    }
-
-    fn test_pool_id(name: &str) -> MemoryPoolId {
-        MemoryPoolId {
-            dataflow_id: Uuid::nil().to_string(),
-            id: name.to_string(),
-        }
-    }
-
-    /// Metadata without a backing segment, so `free_memory_pool` skips the
-    /// Linux-only `/dev/shm` unlink and the tests stay cross-platform.
-    fn test_pool_metadata() -> MemoryPoolMetadata {
-        MemoryPoolMetadata {
-            size: 1024,
-            dtype: "float32".into(),
-            shape: vec![256],
-            ..Default::default()
-        }
-    }
-
-    fn freed_pool_ids(events: &[NodeEvent]) -> Vec<&str> {
-        events
-            .iter()
-            .filter_map(|event| match event {
-                NodeEvent::FreeMemoryPool { shared_memory_id } => Some(shared_memory_id.as_str()),
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// The cleanup broadcast must reach every node that registered or read
-    /// the pool, and nobody else: not the node that initiated the free (it
-    /// released synchronously) and not a subscriber that never touched the
-    /// pool.
-    ///
-    /// `free_pool_and_notify` is the single entry point behind both
-    /// `FreePinnedMemory` and `ReadPinnedMemory { free: true }` — before
-    /// #2935 the read-with-free path freed the pool without notifying
-    /// anyone, so every other node kept its GPU/host/IPC/shmem resources.
-    #[test]
-    fn free_pool_notifies_touched_nodes_only() {
-        let clock = test_clock();
-        let mut df = test_dataflow();
-        let pools = MemoryPoolManager::new();
-
-        let registrar: NodeId = "registrar".to_string().into();
-        let reader: NodeId = "reader".to_string().into();
-        let bystander: NodeId = "bystander".to_string().into();
-        let (mut registrar_rx, registrar_pending) =
-            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
-        let (mut reader_rx, _) = subscribe_test_node(&mut df, &reader, NODE_EVENT_CHANNEL_CAPACITY);
-        let (mut bystander_rx, _) =
-            subscribe_test_node(&mut df, &bystander, NODE_EVENT_CHANNEL_CAPACITY);
-
-        let id = test_pool_id("pool-1");
-        pools
-            .register_memory_pool(id.clone(), test_pool_metadata(), registrar.to_string())
-            .unwrap();
-        pools
-            .read_memory_pool(&id, reader.as_ref())
-            .expect("pool should exist");
-
-        // The reader frees the pool it just read — the normal lifecycle.
-        free_pool_and_notify(&pools, Some(&df), &id, reader.as_ref(), &clock)
-            .expect("free should succeed");
-
-        assert_eq!(
-            freed_pool_ids(&drain_events(&mut registrar_rx)),
-            vec!["pool-1"],
-            "the registering node must be told to release its pool resources"
-        );
-        assert!(
-            drain_events(&mut reader_rx).is_empty(),
-            "the initiator released synchronously and must not be notified"
-        );
-        assert!(
-            drain_events(&mut bystander_rx).is_empty(),
-            "a node that never touched the pool must not be notified"
-        );
-
-        // Every delivery site pairs an enqueue with `inc_pending`; the
-        // listener decrements unconditionally, so a missing increment
-        // underflows the reported count to `u64::MAX` (#2827).
-        assert_eq!(registrar_pending.load(atomic::Ordering::Relaxed), 1);
-    }
-
-    /// `send_with_timestamp` reports a full channel as `Ok(false)`, not
-    /// `Err`. The original broadcast matched only on `Err`, so a full
-    /// channel silently skipped the cleanup (#2935). The undelivered node
-    /// must be reported so the leak is visible.
-    #[test]
-    fn notify_pool_freed_reports_nodes_with_full_channels() {
-        let clock = test_clock();
-        let mut df = test_dataflow();
-
-        let registrar: NodeId = "registrar".to_string().into();
-        let backed_up: NodeId = "backed-up".to_string().into();
-        let (mut registrar_rx, registrar_pending) =
-            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
-        // A one-slot channel, already full: the next send is dropped.
-        let (_backed_up_rx, backed_up_pending) = subscribe_test_node(&mut df, &backed_up, 1);
-        assert!(
-            send_with_timestamp(&df.subscribe_channels[&backed_up], NodeEvent::Stop, &clock)
-                .expect("channel is open")
-        );
-
-        let touched = HashSet::from([
-            registrar.to_string(),
-            backed_up.to_string(),
-            "initiator".to_string(),
-        ]);
-        let undelivered = notify_memory_pool_freed(&df, "pool-1", &touched, "initiator", &clock);
-
-        assert_eq!(
-            undelivered,
-            BTreeSet::from([backed_up.clone()]),
-            "a node whose channel is full must be reported as undelivered"
-        );
-        assert_eq!(
-            backed_up_pending.load(atomic::Ordering::Relaxed),
-            0,
-            "a dropped event must not increment the pending counter"
-        );
-        assert_eq!(
-            freed_pool_ids(&drain_events(&mut registrar_rx)),
-            vec!["pool-1"],
-            "one full channel must not stop the broadcast to the other nodes"
-        );
-        assert_eq!(registrar_pending.load(atomic::Ordering::Relaxed), 1);
-    }
-
-    /// A closed channel means the node is gone and the OS reclaimed its
-    /// resources — benign, and it must not abort the rest of the broadcast
-    /// or be reported as a leak.
-    #[test]
-    fn notify_pool_freed_skips_disconnected_nodes() {
-        let clock = test_clock();
-        let mut df = test_dataflow();
-
-        let registrar: NodeId = "registrar".to_string().into();
-        let gone: NodeId = "gone".to_string().into();
-        let (mut registrar_rx, _) =
-            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
-        let (gone_rx, _) = subscribe_test_node(&mut df, &gone, NODE_EVENT_CHANNEL_CAPACITY);
-        drop(gone_rx);
-
-        let touched = HashSet::from([registrar.to_string(), gone.to_string()]);
-        let undelivered = notify_memory_pool_freed(&df, "pool-1", &touched, "third-party", &clock);
-
-        assert!(
-            undelivered.is_empty(),
-            "a closed channel is benign, not an undelivered notification"
-        );
-        assert_eq!(
-            freed_pool_ids(&drain_events(&mut registrar_rx)),
-            vec!["pool-1"],
-            "a disconnected peer must not abort the rest of the broadcast"
-        );
-    }
-
-    /// Freeing an unknown pool must surface the manager's error to the
-    /// requesting node and broadcast nothing.
-    #[test]
-    fn free_pool_propagates_unknown_pool_error_without_notifying() {
-        let clock = test_clock();
-        let mut df = test_dataflow();
-        let pools = MemoryPoolManager::new();
-
-        let registrar: NodeId = "registrar".to_string().into();
-        let (mut registrar_rx, _) =
-            subscribe_test_node(&mut df, &registrar, NODE_EVENT_CHANNEL_CAPACITY);
-
-        let err = free_pool_and_notify(
-            &pools,
-            Some(&df),
-            &test_pool_id("never-registered"),
-            registrar.as_ref(),
-            &clock,
-        )
-        .expect_err("freeing an unknown pool must fail");
-        assert!(
-            err.contains("memory pool not found"),
-            "unexpected error: {err}"
-        );
-        assert!(drain_events(&mut registrar_rx).is_empty());
-    }
-
-    /// A dataflow that is no longer running has no subscribe channels; the
-    /// pool must still be released rather than the free failing.
-    #[test]
-    fn free_pool_without_running_dataflow_still_releases_the_entry() {
-        let clock = test_clock();
-        let pools = MemoryPoolManager::new();
-        let id = test_pool_id("pool-1");
-        pools
-            .register_memory_pool(id.clone(), test_pool_metadata(), "registrar".into())
-            .unwrap();
-
-        free_pool_and_notify(&pools, None, &id, "registrar", &clock).expect("free should succeed");
-        assert_eq!(pools.table_size(), 0);
     }
 
     // -- Test 1: close_input removes input, sends InputClosed, no AllInputsClosed with remaining inputs --

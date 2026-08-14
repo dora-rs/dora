@@ -240,6 +240,12 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
             //
             // Load nested module to collect its declared outputs.
             let nested_module = load_module_file(&nested_canonical)?;
+            check_nested_module_required_inputs(
+                &module_file.module.name,
+                &node.id,
+                &nested_module.module,
+                &node.inputs,
+            )?;
             for output in &nested_module.module.outputs {
                 inner_outputs.insert(output.to_string());
             }
@@ -369,6 +375,27 @@ fn reject_duplicate_ports(module_name: &str, field: &str, ports: &[DataId]) -> e
     for port in ports {
         if !seen.insert(port) {
             bail!("module `{module_name}` has duplicate `{field}` entry `{port}`");
+        }
+    }
+    Ok(())
+}
+
+fn check_nested_module_required_inputs(
+    module_name: &str,
+    node_id: &NodeId,
+    nested_module: &ModuleHeader,
+    node_inputs: &BTreeMap<DataId, Input>,
+) -> eyre::Result<()> {
+    for declared_input in &nested_module.inputs {
+        if !node_inputs.contains_key(declared_input) {
+            bail!(
+                "module `{}`: nested module `{}` declares required input `{}` \
+                 but node `{}` does not provide it",
+                module_name,
+                nested_module.name,
+                declared_input,
+                node_id,
+            );
         }
     }
     Ok(())
@@ -2392,6 +2419,49 @@ nodes:
 
         let err = check_module_file(&path).unwrap_err().to_string();
         assert!(err.contains("producer/missing"), "{err}");
+    fn check_module_file_rejects_nested_module_missing_required_input() {
+        let tmp = TempDir::new().unwrap();
+
+        write_file(
+            tmp.path(),
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let path = write_file(
+            tmp.path(),
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("leaf"), "got: {msg}");
+        assert!(msg.contains("data"), "got: {msg}");
+        assert!(msg.contains("nested"), "got: {msg}");
     }
 
     /// Regression test for #2851: `check_module_file` must accept a nested

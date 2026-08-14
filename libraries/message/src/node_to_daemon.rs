@@ -8,6 +8,7 @@ use crate::{
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum DaemonRequest {
     Register(NodeRegisterRequest),
     Subscribe,
@@ -28,21 +29,60 @@ pub enum DaemonRequest {
     NodeConfig {
         node_id: NodeId,
     },
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: Metadata,
+    /// Store an opaque value in the daemon's dataflow-scoped extension table.
+    ///
+    /// dora attaches no meaning to `namespace`, `key` or `value`: this is the
+    /// out-of-band channel for transports that live outside the tree (see
+    /// `docs/extensions.md`). The daemon tracks who stored a key and who has
+    /// read it, so it can notify readers on removal and reclaim the entry when
+    /// the dataflow ends.
+    ExtensionStore {
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
     },
-    ReadPinnedMemory {
-        shared_memory_id: String,
-        free: bool,
+    /// Read an opaque value back. `remove: true` drops it in the same round
+    /// trip, so a consume-once handoff needs one request rather than two.
+    ExtensionLoad {
+        namespace: String,
+        key: String,
+        remove: bool,
     },
-    FreePinnedMemory {
-        shared_memory_id: String,
+    /// Drop an opaque value. Every node that stored or loaded the key is sent
+    /// [`NodeEvent::ExtensionDropped`] so it can release whatever the value
+    /// referred to.
+    ExtensionDrop {
+        namespace: String,
+        key: String,
     },
 }
 
 impl DaemonRequest {
-    pub fn expects_tcp_bincode_reply(&self) -> bool {
+    /// Bulk bytes this request will contribute to its encoding, for
+    /// [`crate::encode_presized`].
+    ///
+    /// Matched exhaustively on purpose: a new payload-carrying variant that
+    /// forgets to report its size would silently fall back to growing the
+    /// buffer from empty, which is the cost `encode_presized` exists to avoid
+    /// and which no test would catch.
+    pub fn encode_size_hint(&self) -> usize {
+        match self {
+            DaemonRequest::SendMessage { data, .. } => data.as_ref().map_or(0, DataMessage::len),
+            DaemonRequest::Register(_)
+            | DaemonRequest::Subscribe
+            | DaemonRequest::OutputSent { .. }
+            | DaemonRequest::CloseOutputs(_)
+            | DaemonRequest::OutputsDone
+            | DaemonRequest::NextEvent
+            | DaemonRequest::EventStreamDropped
+            | DaemonRequest::NodeConfig { .. } => 0,
+            // The stored value dominates; the namespace and key are short.
+            DaemonRequest::ExtensionStore { value, .. } => value.len(),
+            DaemonRequest::ExtensionLoad { .. } | DaemonRequest::ExtensionDrop { .. } => 0,
+        }
+    }
+
+    pub fn expects_tcp_binary_reply(&self) -> bool {
         #[allow(clippy::match_like_matches_macro)]
         match self {
             DaemonRequest::SendMessage { .. }
@@ -54,9 +94,9 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => true,
+            | DaemonRequest::ExtensionStore { .. }
+            | DaemonRequest::ExtensionLoad { .. }
+            | DaemonRequest::ExtensionDrop { .. } => true,
         }
     }
 
@@ -72,9 +112,9 @@ impl DaemonRequest {
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. } => false,
+            | DaemonRequest::ExtensionStore { .. }
+            | DaemonRequest::ExtensionLoad { .. }
+            | DaemonRequest::ExtensionDrop { .. } => false,
         }
     }
 }
@@ -93,7 +133,13 @@ pub struct NodeRegisterRequest {
     /// layout differs (as it did across #2366). Carrying the format version
     /// explicitly lets the daemon reject an incompatible peer at register with
     /// a clear message, instead of the node desyncing mid-stream into a
-    /// cryptic `tag for enum is not valid` bincode error (#2742).
+    /// cryptic bad-enum-discriminant deserialization error (#2742).
+    ///
+    /// This covers *layout* drift within one encoding. It cannot cover a change
+    /// of the encoding itself: the register frame is encoded the same way as
+    /// everything else, so a peer from before the bincode→postcard move fails
+    /// while decoding the frame that carries this field, never reaching the
+    /// check. Such changes are gated by the release notes instead.
     metadata_version: u16,
 }
 
@@ -168,7 +214,7 @@ mod register_version_tests {
         // A peer built from a dora revision with a different metadata wire
         // format — same semver, incompatible bytes. This is the #2366 / #2742
         // shape: it must be rejected at register with a legible message rather
-        // than desyncing mid-stream into a cryptic bincode error.
+        // than desyncing mid-stream into a cryptic deserialization error.
         let mut req = request();
         req.metadata_version = Metadata::CURRENT_VERSION.wrapping_add(1);
         let err = req

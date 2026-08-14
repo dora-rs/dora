@@ -88,12 +88,41 @@ pub enum DaemonCommunication {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[must_use]
 #[allow(clippy::large_enum_variant)]
+#[non_exhaustive]
 pub enum DaemonReply {
     Result(Result<(), String>),
     NextEvents(Vec<Timestamped<NodeEvent>>),
-    NodeConfig { result: Result<NodeConfig, String> },
-    PinnedMemoryMetadata { metadata: Metadata },
+    NodeConfig {
+        result: Result<NodeConfig, String>,
+    },
+    /// Reply to [`DaemonRequest::ExtensionLoad`]. `None` means the key is not
+    /// in the table — either never stored, or already dropped.
+    ExtensionValue {
+        value: Option<Vec<u8>>,
+    },
     Empty,
+}
+
+impl DaemonReply {
+    /// Bulk bytes this reply will contribute to its encoding, for
+    /// [`crate::encode_presized`].
+    ///
+    /// `NextEvents` is a batch, so this sums the per-event hints rather than
+    /// relying on the single flat envelope allowance `encode_presized` adds:
+    /// the daemon drains up to `NODE_EVENT_CHANNEL_CAPACITY` events into one
+    /// reply, and a batch of a few dozen would otherwise realloc several times
+    /// on envelopes alone.
+    pub fn encode_size_hint(&self) -> usize {
+        match self {
+            DaemonReply::NextEvents(events) => {
+                events.iter().map(|e| e.inner.encode_size_hint()).sum()
+            }
+            // The extension value is opaque bytes handed straight back, so
+            // its own length is the whole hint.
+            DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
+            DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
+        }
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -132,9 +161,9 @@ pub enum NodeEvent {
     /// Sent when `dora param set` changes a parameter for this node.
     ///
     /// `value_json` carries JSON-encoded bytes rather than `serde_json::Value`:
-    /// this message is serialized with bincode on the daemon↔node TCP channel,
+    /// this message is serialized with postcard on the daemon↔node TCP channel,
     /// and `serde_json::Value::deserialize` uses `deserialize_any`, which
-    /// bincode does not support.
+    /// postcard (like any non-self-describing format) does not support.
     ParamUpdate {
         key: String,
         value_json: Vec<u8>,
@@ -154,13 +183,44 @@ pub enum NodeEvent {
         error: String,
         source_node_id: NodeId,
     },
-    /// A memory pool has been freed by another node in the dataflow.
+    /// An extension key this node stored or loaded has been dropped, by
+    /// another node or by the daemon reclaiming it.
     ///
-    /// When any node calls `free_memory_pool`, the daemon broadcasts this
-    /// event to every node so that per-process GPU/transit buffers and
-    /// shmem mappings are released regardless of which node initiated the
-    /// free.
-    FreeMemoryPool {
-        shared_memory_id: String,
+    /// Delivered out of band: the event stream consumes it rather than
+    /// surfacing it to user code, so a language binding polls
+    /// `drain_dropped_extension_keys()` instead.
+    ExtensionDropped {
+        namespace: String,
+        key: String,
     },
+}
+
+impl NodeEvent {
+    /// Bulk bytes this event will contribute to the encoding of the
+    /// [`DaemonReply`] that wraps it.
+    ///
+    /// Includes a flat per-event allowance for the `Timestamped` wrapper,
+    /// `Metadata` and ids, because these are batched: see
+    /// [`DaemonReply::encode_size_hint`].
+    pub fn encode_size_hint(&self) -> usize {
+        /// Measured at ~72 bytes for a typical `Input` (timestamp 25 +
+        /// `Metadata` 27 + tags and ids); rounded up so a batch of small events
+        /// still lands in one allocation.
+        const PER_EVENT_ENVELOPE: usize = 128;
+
+        let payload = match self {
+            NodeEvent::Input { data, .. } => data.as_ref().map_or(0, |d| d.len()),
+            NodeEvent::Stop
+            | NodeEvent::Reload { .. }
+            | NodeEvent::InputClosed { .. }
+            | NodeEvent::InputRecovered { .. }
+            | NodeEvent::NodeRestarted { .. }
+            | NodeEvent::AllInputsClosed
+            | NodeEvent::ParamUpdate { .. }
+            | NodeEvent::ParamDeleted { .. }
+            | NodeEvent::NodeFailed { .. } => 0,
+            NodeEvent::ExtensionDropped { namespace, key } => namespace.len() + key.len(),
+        };
+        payload.saturating_add(PER_EVENT_ENVELOPE)
+    }
 }
