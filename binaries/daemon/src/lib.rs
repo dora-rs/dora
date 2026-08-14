@@ -517,7 +517,16 @@ async fn auth_handshake_verify(stream: &mut tokio::net::TcpStream) -> Result<(),
         .await
         .map_err(|e| format!("auth handshake read failed: {e}"))?;
     let expected = cross_data_auth_token().unwrap_or_default();
-    if token.as_slice() == expected.as_bytes() {
+    // Constant-time comparison (parity with the message-layer auth): the
+    // handshake token is a shared deployment secret, so a timing side
+    // channel on the comparison would leak it byte by byte.
+    let token_ok = token.len() == expected.len()
+        && token
+            .iter()
+            .zip(expected.as_bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0;
+    if token_ok {
         stream
             .write_all(&[AUTH_OK])
             .await
@@ -526,6 +535,30 @@ async fn auth_handshake_verify(stream: &mut tokio::net::TcpStream) -> Result<(),
     } else {
         let _ = stream.write_all(&[AUTH_FAIL]).await;
         Err("peer auth token mismatch".to_string())
+    }
+}
+
+/// Gate a fresh direct-TCP connection on the auth handshake.
+///
+/// Returns `Ok(())` when the peer passed the handshake (or no token is
+/// configured — a token-less daemon accepts token-less peers), and
+/// `Err(reason)` when the connection must be dropped *before* any frame
+/// is served. This is the listener's consumption of
+/// [`auth_handshake_verify`]; factored out so the accept loop's
+/// reject-on-mismatch behavior is testable through a real socket.
+///
+/// Note the nested-result flatten: `timeout(...).await` is
+/// `Result<Result<(), String>, Elapsed>` — an `Err` from the verify
+/// (bad magic, over-long or wrong token) is the *inner* result and must
+/// be rejected here, not just the outer timeout.
+async fn cross_data_auth_gate(stream: &mut tokio::net::TcpStream) -> Result<(), String> {
+    if cross_data_auth_token().is_none() {
+        return Ok(());
+    }
+    match tokio::time::timeout(CROSS_DATA_READ_TIMEOUT, auth_handshake_verify(stream)).await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(e)) => Err(format!("auth handshake rejected: {e}")),
+        Err(_) => Err("auth handshake timed out".to_string()),
     }
 }
 
@@ -5462,14 +5495,8 @@ impl Daemon {
                     // accepts token-less peers — the handshake is a
                     // configured-deployment option, both ends set it or
                     // neither does).
-                    if cross_data_auth_token().is_some()
-                        && let Err(e) = tokio::time::timeout(
-                            CROSS_DATA_READ_TIMEOUT,
-                            auth_handshake_verify(&mut stream),
-                        )
-                        .await
-                    {
-                        tracing::warn!("memory pool: direct-TCP auth rejected for {peer}: {e:?}");
+                    if let Err(e) = cross_data_auth_gate(&mut stream).await {
+                        tracing::warn!("memory pool: direct-TCP auth rejected for {peer}: {e}");
                         return;
                     }
                     loop {
@@ -12697,5 +12724,58 @@ mod cross_pool_write_tests {
             verify_err.contains("mismatch"),
             "verify side must report the mismatch: {verify_err}"
         );
+    }
+
+    /// The listener's auth gate, driven through a real socket: a peer
+    /// with the wrong token must be rejected (no frame may be served)
+    /// and a peer with the shared token must pass. This pins the
+    /// nested-result flatten in `cross_data_auth_gate` — a regression
+    /// there (binding only the outer timeout, as the listener did
+    /// before) would let a mismatched peer through, while the
+    /// direct-call tests of `auth_handshake_verify` would stay green.
+    #[tokio::test]
+    async fn auth_gate_rejects_wrong_token_through_real_socket() {
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::set_var("DORA_MEMORY_POOL_AUTH_TOKEN", "test-shared-secret") };
+        struct EnvGuard;
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+            }
+        }
+        let _guard = EnvGuard;
+
+        // Wrong token: the gate must reject, mirroring the listener's
+        // drop-before-serving behavior.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            cross_data_auth_gate(&mut stream).await
+        });
+        let mut client = tokio::net::TcpStream::connect(addr).await.unwrap();
+        auth_handshake_send(&mut client, "wrong-token")
+            .await
+            .expect_err("wrong token must fail the send side");
+        let gate_err = server.await.unwrap().unwrap_err();
+        assert!(
+            gate_err.contains("mismatch"),
+            "gate must reject the mismatched peer: {gate_err}"
+        );
+
+        // Correct token: the gate must pass, exactly as the listener
+        // would then serve frames.
+        let listener2 = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr2 = listener2.local_addr().unwrap();
+        let server2 = tokio::spawn(async move {
+            let (mut stream, _) = listener2.accept().await.unwrap();
+            cross_data_auth_gate(&mut stream).await
+        });
+        let mut client2 = tokio::net::TcpStream::connect(addr2).await.unwrap();
+        auth_handshake_send(&mut client2, "test-shared-secret")
+            .await
+            .unwrap();
+        let gate_ok = server2.await.unwrap().unwrap();
+        assert_eq!(gate_ok, (), "shared token must pass the gate");
     }
 }
