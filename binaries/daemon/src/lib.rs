@@ -659,6 +659,7 @@ fn create_cross_pool_shmem(
     dtype: &str,
     shape: &[i64],
     device: &str,
+    sender_shmem: Option<&str>,
 ) -> eyre::Result<()> {
     // Machine-qualified OS id: the mirror lives on the target machine's
     // /dev/shm, which on a dual-daemon test host is the SAME namespace as
@@ -679,13 +680,23 @@ fn create_cross_pool_shmem(
     // (untrusted cross-machine strings) — build the header JSON with
     // serde_json so quotes/backslashes are escaped instead of corrupting
     // or injecting into the parsed structure.
-    let json = serde_json::to_string(&serde_json::json!({
+    // `sender_shmem`: the sender's local segment name, relayed so a
+    // same-host reader can open it directly (the direct-TCP zero-copy
+    // fast path — the mirror is only a fallback that would otherwise
+    // serve stale frames, since the origin skips the per-frame push for
+    // same-host pools). Absent on cross-host mirrors, where readers
+    // consume the mirror's own data region.
+    let mut header_json = serde_json::json!({
         "size": size,
         "dtype": dtype,
         "shape": shape,
         "pinned_type": device,
-    }))
-    .map_err(|e| eyre::eyre!("failed to serialize mirror header JSON: {e}"))?;
+    });
+    if let Some(name) = sender_shmem {
+        header_json["sender_shmem"] = serde_json::Value::String(name.to_string());
+    }
+    let json = serde_json::to_string(&header_json)
+        .map_err(|e| eyre::eyre!("failed to serialize mirror header JSON: {e}"))?;
     let data_offset = DORADMA_HEADER_SIZE + json.len();
     let make_conf = || ShmemConf::new().os_id(&shmem_name).size(size + data_offset);
     let mut shmem = match make_conf().create() {
@@ -5176,6 +5187,7 @@ impl Daemon {
                             &dtype,
                             &shape,
                             &device,
+                            Some(&shmem_name),
                         )
                     };
                     let (ok, error) = match result {
@@ -11796,7 +11808,7 @@ mod cross_pool_write_tests {
         std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 512]).unwrap();
         let _cleanup = ShmemCleanup(shmem_name.clone());
 
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], "cpu").unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], "cpu", None).unwrap();
 
         // The recreated segment must be a valid DORADMA mirror.
         let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
@@ -11815,7 +11827,7 @@ mod cross_pool_write_tests {
                 TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                     .unwrap();
             let _cleanup = ShmemCleanup(shmem_name.clone());
-            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], device)
+            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], device, None)
                 .unwrap();
             let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
             let json_len = unsafe { read_header_u64(shmem.as_ptr().add(8)) } as usize;
@@ -11842,7 +11854,7 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 4 * 1024 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12029,7 +12041,7 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 64 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12124,7 +12136,7 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 64 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12233,7 +12245,7 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 64 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu").unwrap();
+        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12475,7 +12487,7 @@ mod cross_pool_write_tests {
             let dataflow_id = Uuid::new_v4();
             let pool_id = "pool_node_0";
             const SIZE: usize = 64 * 1024;
-            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu")
+            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None)
                 .unwrap();
             let shmem_name =
                 TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)

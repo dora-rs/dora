@@ -4183,11 +4183,54 @@ impl Node {
             return Ok(None);
         }
 
-        // Check if this pool uses GPU DMA (IPC handle in header).
-        // Reading ipc_present early lets us skip the shmem data-region
-        // size check for GPU-buffer pools (receiver_is_cuda registrations
-        // allocate header-only shmem).
-        let ipc_present = unsafe { std::ptr::read(shmem_ptr.add(24) as *const u64) };
+        // Same-host direct-read fast path: the mirror's header carries the
+        // sender's segment name (`sender_shmem`, written by the mirroring
+        // daemon from the RegisterPool event). When that segment is
+        // reachable on this host, read it directly — the origin skips the
+        // per-frame push for same-host pools (direct == true), so the
+        // mirror would otherwise serve stale frames forever.
+        let mut active_shmem = shmem;
+        let mut active_ptr = shmem_ptr;
+        let mut active_size = shmem_size;
+        let mut active_json_len = json_len;
+        let mut active_data_offset = data_offset;
+        let mut active_ipc = unsafe { std::ptr::read(active_ptr.add(24) as *const u64) };
+        if let Some(sender_name) = metadata_dict
+            .get_item("sender_shmem")
+            .ok()
+            .flatten()
+            .and_then(|v| v.extract::<String>().ok())
+        {
+            if sender_name != shmem_name
+                && let Ok(sender) = ShmemConf::new().os_id(&sender_name).open()
+                && sender.len() >= DORADMA_HEADER_SIZE
+            {
+                let sender_ptr = sender.as_ptr();
+                let magic = unsafe { std::slice::from_raw_parts(sender_ptr, 8) };
+                if magic == DORADMA_MAGIC {
+                    // Re-read the sender's own header: its JSON (written by
+                    // the node's register) has a different length than the
+                    // mirror's, hence a different data_offset. The
+                    // metadata values (size/dtype/shape) agree — the sender
+                    // registered the same pool.
+                    active_shmem = sender;
+                    active_ptr = active_shmem.as_ptr();
+                    active_size = active_shmem.len();
+                    active_json_len = unsafe { read_header_u64(active_ptr.add(8)) as usize };
+                    active_data_offset = unsafe { read_header_u64(active_ptr.add(16)) as usize };
+                    active_ipc = unsafe { std::ptr::read(active_ptr.add(24) as *const u64) };
+                }
+            }
+        }
+        // Shadow the original bindings with the active (possibly
+        // sender-redirected) segment's values. `active_shmem` keeps the
+        // mapping alive for the rest of the read.
+        let shmem = active_shmem;
+        let shmem_ptr = active_ptr;
+        let shmem_size = active_size;
+        let json_len = active_json_len;
+        let data_offset = active_data_offset;
+        let ipc_present = active_ipc;
 
         // Verify data_offset + size fits within shared memory segment.
         // GPU-buffer reads (ipc_present == 1) don't access the shmem data
