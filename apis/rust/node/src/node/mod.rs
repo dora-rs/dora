@@ -406,7 +406,7 @@ fn declare_ack_subscribers(
                 let Some(attachment) = sample.attachment() else {
                     return;
                 };
-                let Ok(metadata) = bincode::deserialize::<Metadata>(&attachment.to_bytes()) else {
+                let Ok(metadata) = dora_message::decode::<Metadata>(&attachment.to_bytes()) else {
                     // Not a dora ack (foreign publisher on the ack key): ignore.
                     return;
                 };
@@ -524,7 +524,7 @@ impl StartupHandshake {
                             continue;
                         };
                         let metadata = Metadata::startup_marker(clock.new_timestamp());
-                        let attachment = match bincode::serialize(&metadata) {
+                        let attachment = match dora_message::encode(&metadata) {
                             Ok(bytes) => bytes,
                             Err(e) => {
                                 debug!(output = %state.output_id, "failed to serialize startup marker ({e})");
@@ -1880,7 +1880,7 @@ impl DoraNode {
             .expect("a declared publisher implies a zenoh session");
 
         // Serialize metadata as zenoh attachment.
-        let metadata_bytes = match bincode::serialize(metadata) {
+        let metadata_bytes = match dora_message::encode(metadata) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
@@ -2341,34 +2341,48 @@ impl DoraNode {
         }
     }
 
-    /// Register a pinned memory pool with the daemon for lifecycle tracking.
+    /// Store an opaque value in the daemon's dataflow-scoped extension table.
     ///
-    /// Send the memory pool metadata to the daemon so it can track the pool
-    /// and provide it to other nodes for zero-copy access.
-    pub fn register_pinned_memory(
+    /// This is the seam for transports that live outside the dora tree: dora
+    /// brokers the value's lifetime and nothing else — it never interprets
+    /// `namespace`, `key` or `value`. See `docs/extensions.md`.
+    ///
+    /// The daemon remembers which nodes touched a key so that dropping it
+    /// notifies them, and reclaims the entry when the dataflow ends or the
+    /// storing node exits. Drain the notifications with
+    /// [`event_stream::extensions::drain_dropped_keys`](crate::event_stream::extensions::drain_dropped_keys).
+    pub fn extension_store(
         &mut self,
-        shared_memory_id: String,
-        metadata: Metadata,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        value: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         self.control_channel
-            .register_pinned_memory(shared_memory_id, metadata)
+            .extension_store(namespace.into(), key.into(), value)
     }
 
-    /// Read pinned memory metadata from the daemon.
+    /// Read an opaque value back, optionally removing it in the same round trip.
     ///
-    /// When `free` is true, the daemon also frees the pool after reading.
-    pub fn read_pinned_memory(
+    /// Returns `None` if the key is not in the table — never stored, or
+    /// already dropped.
+    pub fn extension_load(
         &mut self,
-        shared_memory_id: String,
-        free: bool,
-    ) -> Result<Metadata, eyre::Error> {
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        remove: bool,
+    ) -> Result<Option<Vec<u8>>, eyre::Error> {
         self.control_channel
-            .read_pinned_memory(shared_memory_id, free)
+            .extension_load(namespace.into(), key.into(), remove)
     }
 
-    /// Free a pinned memory pool via the daemon.
-    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
-        self.control_channel.free_pinned_memory(shared_memory_id)
+    /// Drop an opaque value, notifying every node that stored or loaded it.
+    pub fn extension_drop(
+        &mut self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<(), eyre::Error> {
+        self.control_channel
+            .extension_drop(namespace.into(), key.into())
     }
     /// Write tensor bytes to a pinned memory pool via the daemon. The
     /// daemon forwards the payload to remote daemons so the mirror pool
@@ -3045,7 +3059,7 @@ fn publish_schema_once(
             metadata
                 .parameters
                 .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
-            bincode::serialize(&metadata).ok()
+            dora_message::encode(&metadata).ok()
         }
     }
 }

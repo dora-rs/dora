@@ -147,18 +147,21 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: metadata::Metadata,
+    ExtensionStore {
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    ReadPinnedMemory {
-        shared_memory_id: String,
-        free: bool,
+    ExtensionLoad {
+        namespace: String,
+        key: String,
+        remove: bool,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    FreePinnedMemory {
-        shared_memory_id: String,
+    ExtensionDrop {
+        namespace: String,
+        key: String,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     /// Write tensor data to a memory pool, with cross-machine forwarding.

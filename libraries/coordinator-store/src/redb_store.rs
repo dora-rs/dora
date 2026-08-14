@@ -18,16 +18,16 @@ const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_par
 
 /// Bump this when the serialization format of any stored record changes.
 ///
-/// bincode is not self-describing, so `#[serde(default)]` on a struct/enum
+/// postcard is not self-describing, so `#[serde(default)]` on a struct/enum
 /// field does NOT make old persisted bytes decodable -- it only fills in the
 /// field when the deserializer already knows the field is absent, which for
-/// bincode's positional encoding never happens (a missing trailing field
+/// postcard's positional encoding never happens (a missing trailing field
 /// reads past the end of the buffer and fails). Any change to a persisted
 /// type's shape -- including adding a `#[serde(default)]` field -- MUST bump
 /// this constant, so `open()` rejects old-format databases up front instead
 /// of decoding old rows into errors that get silently dropped by the
 /// `list_*` methods below.
-const SCHEMA_VERSION: u32 = 4; // v4: added ready-barrier release + verdict (#2998)
+const SCHEMA_VERSION: u32 = 5; // v5: record encoding moved from bincode to postcard
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
@@ -140,32 +140,35 @@ impl RedbStore {
 // ---------------------------------------------------------------------------
 
 /// Maximum size of a single serialized record. `decode` refuses to *read*
-/// beyond this (capping allocation from a malformed varint length prefix), and
-/// `encode` refuses to *write* beyond it. The two limits must match: a record
-/// that encodes larger than `decode` will accept is silently unreadable —
-/// `put_dataflow` would persist it, but every later `get_dataflow` returns a
-/// decode error and `list_dataflows` skips it as "corrupt" (dora-rs/dora#2027),
-/// dropping a perfectly valid dataflow from startup recovery. Guarding at write
-/// time turns that silent data loss into an explicit error at the source.
+/// beyond this, and `encode` refuses to *write* beyond it. The two limits must
+/// match: a record that encodes larger than `decode` will accept is silently
+/// unreadable — `put_dataflow` would persist it, but every later
+/// `get_dataflow` returns a decode error and `list_dataflows` skips it as
+/// "corrupt" (dora-rs/dora#2027), dropping a perfectly valid dataflow from
+/// startup recovery. Guarding at write time turns that silent data loss into an
+/// explicit error at the source.
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
 
-fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
-    let bytes = bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map_err(|e| eyre!("encode error: {e}"))?;
-    if bytes.len() > MAX_RECORD_BYTES {
+/// The one place the limit is applied, so `encode` and `decode` cannot drift.
+fn check_record_size(len: usize, direction: &str) -> Result<()> {
+    if len > MAX_RECORD_BYTES {
         eyre::bail!(
-            "record too large to store: {} bytes exceeds the {MAX_RECORD_BYTES}-byte limit",
-            bytes.len()
+            "record too large to {direction}: {len} bytes exceeds the {MAX_RECORD_BYTES}-byte limit"
         );
     }
+    Ok(())
+}
+
+fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+    let bytes = dora_message::encode(value).map_err(|e| eyre!("encode error: {e}"))?;
+    check_record_size(bytes.len(), "store")?;
     Ok(bytes)
 }
 
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let config = bincode::config::standard().with_limit::<{ MAX_RECORD_BYTES }>();
-    let (val, _) =
-        bincode::serde::decode_from_slice(bytes, config).map_err(|e| eyre!("decode error: {e}"))?;
-    Ok(val)
+    // The codec has no built-in decode cap, so mirror `encode`'s limit here.
+    check_record_size(bytes.len(), "read").map_err(|e| eyre!("decode error: {e}"))?;
+    dora_message::decode(bytes).map_err(|e| eyre!("decode error: {e:#}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -609,18 +612,18 @@ mod tests {
     }
 
     /// #2471: `#[serde(default)]` on `DataflowStatus::Failed::terminal` does NOT
-    /// make bincode-encoded bytes from before the field existed decodable --
-    /// bincode is positional, not self-describing. `status` is not the last
+    /// make encoded bytes from before the field existed decodable --
+    /// postcard is positional, not self-describing. `status` is not the last
     /// field of `DataflowRecord`, so a missing `terminal` byte doesn't reliably
     /// fail to decode the way a standalone `DataflowStatus` would: the decoder
     /// instead reads the next record field's first byte as `terminal` and keeps
     /// going, shifted by one byte, into `daemon_ids`/`node_to_daemon`/`uv`/
     /// `generation`/timestamps. Depending on the field values that land on
     /// each shifted position, this either surfaces much later as a confusing,
-    /// unrelated decode error (e.g. `InvalidBooleanValue` on `uv`, as observed
-    /// with the field values below -- nothing about that error points at
-    /// `terminal` or `status`) or -- for other field-value combinations --
-    /// could silently succeed with a structurally valid but corrupted record.
+    /// unrelated decode error (a bad-bool or bad-length failure on one of the
+    /// shifted trailing fields -- nothing about it points at `terminal` or
+    /// `status`) or -- for other field-value combinations -- could silently
+    /// succeed with a structurally valid but corrupted record.
     /// Neither outcome is the clean, predictable "missing field" failure the
     /// `terminal` doc comment implies, and both confirm the actual safety net
     /// is the `SCHEMA_VERSION` bump: a database written before `terminal`
@@ -674,12 +677,11 @@ mod tests {
             created_at: 1000,
             updated_at: 2000,
         };
-        let old_bytes =
-            bincode::serde::encode_to_vec(&old_record, bincode::config::standard()).unwrap();
+        let old_bytes = dora_message::encode(&old_record).unwrap();
 
         // Decoding as the current `DataflowRecord` must NOT reproduce the
-        // encoded values: it either errors out (empirically: `InvalidBooleanValue`
-        // on the shifted `uv` field, not anything mentioning `terminal`), or --
+        // encoded values: it either errors out on a shifted trailing field
+        // (with nothing in the message mentioning `terminal`), or --
         // for other field-value combinations -- silently misdecodes into a
         // structurally valid but wrong record. Either outcome is unsafe to
         // serve from `list_dataflows`/`get_dataflow`, which is exactly why old
@@ -694,7 +696,7 @@ mod tests {
                         || decoded.updated_at != 2000,
                     "decode succeeded AND reproduced the original trailing fields -- \
                      the byte-shift this test exists to demonstrate did not occur; \
-                     re-check bincode's encoding of an empty Vec/BTreeMap length prefix"
+                     re-check postcard's encoding of an empty Vec/BTreeMap length prefix"
                 );
             }
         }
@@ -832,7 +834,7 @@ mod tests {
 
     /// redb 3 dropped support for the v2 on-disk format, so a store written by
     /// an older dora (redb 2.x) is unreadable after the redb 4 upgrade (#2449).
-    /// That failure must carry [`crate::SCHEMA_MISMATCH_MARKER`] like a bincode
+    /// That failure must carry [`crate::SCHEMA_MISMATCH_MARKER`] like a record
     /// schema bump does, so `dora up` offers the same `--recreate-store`
     /// recovery instead of surfacing a bare redb error the user cannot act on.
     #[test]
@@ -1323,7 +1325,7 @@ mod tests {
         }
     }
 
-    /// A corrupt bincode blob in the dataflows table surfaces as an error
+    /// A corrupt record blob in the dataflows table surfaces as an error
     /// on the read path, not a panic. This is the file-corruption scenario
     /// from plan-fault-injection.md section 3.3 at the API level.
     #[test]
@@ -1338,7 +1340,7 @@ mod tests {
             let txn = store.db.begin_write().unwrap();
             {
                 let mut table = txn.open_table(DATAFLOWS).unwrap();
-                let garbage: &[u8] = b"not a valid bincode record XXXXXXXX";
+                let garbage: &[u8] = b"not a valid postcard record XXXXXXXX";
                 let key: &[u8] = uuid.as_bytes();
                 table.insert(key, garbage).unwrap();
             }

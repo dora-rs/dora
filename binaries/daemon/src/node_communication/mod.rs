@@ -386,15 +386,17 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::RegisterPinnedMemory {
-                shared_memory_id,
-                metadata,
+            DaemonRequest::ExtensionStore {
+                namespace,
+                key,
+                value,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::RegisterPinnedMemory {
-                        shared_memory_id,
-                        metadata,
+                    DaemonNodeEvent::ExtensionStore {
+                        namespace,
+                        key,
+                        value,
                         reply_sender,
                     },
                     Some(reply),
@@ -402,15 +404,17 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::ReadPinnedMemory {
-                shared_memory_id,
-                free,
+            DaemonRequest::ExtensionLoad {
+                namespace,
+                key,
+                remove,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::ReadPinnedMemory {
-                        shared_memory_id,
-                        free,
+                    DaemonNodeEvent::ExtensionLoad {
+                        namespace,
+                        key,
+                        remove,
                         reply_sender,
                     },
                     Some(reply),
@@ -418,11 +422,12 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::FreePinnedMemory { shared_memory_id } => {
+            DaemonRequest::ExtensionDrop { namespace, key } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::FreePinnedMemory {
-                        shared_memory_id,
+                    DaemonNodeEvent::ExtensionDrop {
+                        namespace,
+                        key,
                         reply_sender,
                     },
                     Some(reply),
@@ -447,6 +452,17 @@ impl Listener {
                     connection,
                 )
                 .await?;
+
+            // `DaemonRequest` is `#[non_exhaustive]`: a node built against a newer
+            // dora-node-api may send a request this daemon predates. Answer with an
+            // explicit error so the node fails loudly instead of hanging on a reply
+            // that never comes.
+            other => {
+                let reply = DaemonReply::Result(Err(format!(
+                    "unsupported request from node (node is likely newer than this daemon): {other:?}"
+                )));
+                self.send_reply(reply, connection).await?;
+
             }
         }
         Ok(())

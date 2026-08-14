@@ -99,14 +99,14 @@ After the handshake, the coordinator pushes binary WS frames. Each frame has a f
  0                   16                              N
  ├───────────────────┼──────────────────────────────┤
  │  subscription_id  │  Timestamped<InterDaemonEvent>│
- │  (16 bytes UUID)  │  (bincode serialized)         │
+ │  (16 bytes UUID)  │  (postcard serialized)        │
  └───────────────────┴──────────────────────────────┘
 ```
 
 | Field | Size | Description |
 |-------|------|-------------|
 | `subscription_id` | 16 bytes | UUID matching the `TopicSubscribed` ack, for multiplexing |
-| payload | variable | Raw `Timestamped<InterDaemonEvent>` bincode bytes from Zenoh |
+| payload | variable | Raw `Timestamped<InterDaemonEvent>` postcard bytes from Zenoh |
 
 The 16-byte UUID prefix allows multiplexing multiple subscriptions on a single WS connection without additional framing overhead.
 
@@ -248,7 +248,9 @@ The coordinator subscribes to Zenoh topics using the format from `dora_core::top
 dora/{dataflow_id}/{node_id}/{data_id}
 ```
 
-Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized with bincode. The coordinator forwards these bytes as-is (prepended with subscription UUID) -- no re-serialization.
+Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized with [postcard](https://docs.rs/postcard) -- a compact, non-self-describing binary format with a documented, stable wire spec. The coordinator forwards these bytes as-is (prepended with subscription UUID) -- no re-serialization.
+
+> **Wire break (dora 1.0):** this payload was bincode-encoded before 1.0. The encoding is positional in both formats, so a bincode-era subscriber does not fail cleanly against postcard frames -- it misparses them. There is no version handshake on this channel; match your subscriber to the dora release.
 
 ---
 
@@ -258,7 +260,7 @@ Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized wi
 |-----------|-------|-----------|
 | Binary frame channel capacity | 64 | Balance between latency and memory |
 | Drop policy | Drop on full | Prefer freshness over completeness |
-| Binary format | Raw bincode (no base64) | Avoid 33% overhead for large payloads |
+| Binary format | Raw postcard (no base64) | Avoid 33% overhead for large payloads |
 
 For high-throughput topics (camera images, point clouds), the binary frame channel may fill up if the WS connection is slow. Dropped samples are silent -- the CLI will show reduced frequency in `topic hz` but won't stall.
 

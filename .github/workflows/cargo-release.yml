@@ -95,7 +95,6 @@ jobs:
           publish_if_not_exists dora-tracing
           publish_if_not_exists dora-metrics
           publish_if_not_exists dora-hub-client
-          publish_if_not_exists dora-memory-pool
 
           # Publish rust API
           publish_if_not_exists dora-operator-api-types

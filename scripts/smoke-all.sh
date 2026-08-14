@@ -566,6 +566,8 @@ except Exception:
     else
         log_skip "memory-pool" "download.pytorch.org unreachable (run on a machine with PyPI access to exercise this suite)"
     fi
+
+
 fi
 
 # ---------------------------------------------------------------------------

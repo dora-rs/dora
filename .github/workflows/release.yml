@@ -76,7 +76,6 @@ jobs:
             dora-tracing
             dora-metrics
             dora-hub-client
-            dora-memory-pool
             dora-operator-api-types
             dora-operator-api-macros
             dora-operator-api

@@ -2214,6 +2214,7 @@ fn smoke_memory_pool_cuda2cuda() {
 }
 
 // ---------------------------------------------------------------------------
+
 // Examples under `examples/` that do NOT have a corresponding `smoke_*` or
 // `contract_*` test in this file. Some are blocked (filed issue or external
 // dep); others are intentionally covered by a DIFFERENT CI job. Keep this
@@ -2233,13 +2234,6 @@ fn smoke_memory_pool_cuda2cuda() {
 //
 // | Example                   | Where it's tested / blocker                          | Tracking |
 // |---------------------------|------------------------------------------------------|----------|
-// | memory-pool               | covered: smoke_memory_pool_cpu2cpu /                 | #2264    |
-// |                           | smoke_local_memory_pool_{cpu2cpu, auto_cleanup,      |          |
-// |                           | duplicate_free, read_after_free, write_after_free}   |          |
-// |                           | (#[ignore]); nightly memory-pool-smoke job;          |          |
-// |                           | smoke-all.sh gates on `import torch`, skips          |          |
-// |                           | gracefully when download.pytorch.org unreachable.    |          |
-// |                           | cuda2cpu/cpu2cuda/etc blocked: needs NVIDIA CUDA.     |          |
 // | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
 // | dynamic-add-remove        | blocker: `dora node add` times out +                 | #1682    |
 // |                           | corrupts dataflow state                              |          |

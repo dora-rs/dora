@@ -19,11 +19,14 @@ impl Metadata {
     /// Current metadata wire-format version, stamped on every outgoing message.
     ///
     /// Bumped from 0 to 1 when the `ArrowTypeInfo` sidecar was dropped and the
-    /// wire format became Arrow-IPC-only. A receiver can compare
+    /// wire format became Arrow-IPC-only, and from 1 to 2 when the binary
+    /// encoding moved from bincode to postcard (varint integers and length
+    /// prefixes, so the byte layout differs even though the field order does
+    /// not). A receiver can compare
     /// [`metadata_version`](Self::metadata_version) against this to detect a peer
     /// speaking an incompatible format and report it clearly instead of failing
     /// with a cryptic positional-deserialization error.
-    pub const CURRENT_VERSION: u16 = 1;
+    pub const CURRENT_VERSION: u16 = 2;
 
     pub fn new(timestamp: uhlc::Timestamp) -> Self {
         Self::from_parameters(timestamp, Default::default())
@@ -347,14 +350,14 @@ mod tests {
     #[test]
     fn startup_marker_is_detected_and_survives_the_wire() {
         // A marker is recognized only via the reserved parameter, and the flag
-        // must survive bincode round-tripping — it travels as the zenoh
+        // must survive postcard round-tripping — it travels as the zenoh
         // attachment, and a receiver that failed to recognize it would decode
         // the marker as node data and surface it to user code.
         let marker = Metadata::startup_marker(test_timestamp());
         assert!(marker.is_startup_marker());
 
-        let bytes = bincode::serialize(&marker).expect("serialize");
-        let decoded: Metadata = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = crate::encode(&marker).expect("serialize");
+        let decoded: Metadata = crate::decode(&bytes).expect("deserialize");
         assert!(decoded.is_startup_marker());
     }
 
@@ -404,7 +407,7 @@ mod tests {
 
     #[test]
     fn startup_ack_round_trips_and_extracts_identity() {
-        // The ack travels as a bincode attachment on the `@ack` topic; the
+        // The ack travels as a postcard attachment on the `@ack` topic; the
         // producer must recover exactly the (consumer, input) identity it needs
         // to tick off a required acker.
         let ack = Metadata::startup_ack(test_timestamp(), "camera-consumer", "image/depth");
@@ -416,8 +419,8 @@ mod tests {
         // travel on different topics but share the filtering code path.
         assert!(!ack.is_startup_marker());
 
-        let bytes = bincode::serialize(&ack).expect("serialize");
-        let decoded: Metadata = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = crate::encode(&ack).expect("serialize");
+        let decoded: Metadata = crate::decode(&bytes).expect("deserialize");
         assert_eq!(
             decoded.startup_ack_identity(),
             Some(("camera-consumer", "image/depth"))
@@ -540,10 +543,10 @@ mod tests {
 
     #[test]
     fn outgoing_metadata_is_stamped_with_current_version() {
-        // The wire format is positional (bincode) and carries no separate type
+        // The wire format is positional (postcard) and carries no separate type
         // descriptor, so `metadata_version` is the only in-band signal of an
         // incompatible layout. Every constructor must stamp `CURRENT_VERSION`.
-        assert_eq!(Metadata::CURRENT_VERSION, 1);
+        assert_eq!(Metadata::CURRENT_VERSION, 2);
         let ts = uhlc::HLC::default().new_timestamp();
         assert_eq!(
             Metadata::new(ts).metadata_version(),
