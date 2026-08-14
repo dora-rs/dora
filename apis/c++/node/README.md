@@ -245,6 +245,13 @@ default:
 
 Events that arrive during the wait but do not match are buffered and
 replayed by later `next_event` calls, so your main event loop loses nothing.
+
+`ServerRestarted` is reported for a restart that lands while a wait or poll
+is running, because the correlation is reading the stream then. One that
+lands between calls reaches your own loop as `DoraEventType::NodeRestarted`
+(use `event_as_node_restarted` for the id). Ignore it and the next request
+will wait out its whole deadline against a server you had already been told
+had restarted.
 The `event` field also carries a matching `DoraEventType` (`Timeout` /
 `AllInputsClosed` / `Empty`), so you can branch on either field. A malformed
 `server_node_id` yields `DoraPatternStatus::InvalidArgument` rather than
