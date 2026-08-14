@@ -40,7 +40,7 @@ for i in range(MESSAGE_COUNT):
     if i == 0:
         print(f"Sender preview: {torch_tensor[:5]}")
         tensor_info = get_tensor_info(torch_tensor)
-        memory_pool_id = node.register_memory_pool(
+        memory_pool_id = node.register_tensor_pool(
             tensor_info, RECEIVER_DEVICE, machine=os.getenv("cross_machine")
         )
         if memory_pool_id is None:
@@ -51,7 +51,7 @@ for i in range(MESSAGE_COUNT):
                 )
             else:
                 print(
-                    "Memory pool registration failed (warned, no pool created) — exiting",
+                    "Tensor pool registration failed (warned, no pool created) — exiting",
                     flush=True,
                 )
             sys.exit(1)
@@ -65,8 +65,8 @@ for i in range(MESSAGE_COUNT):
     else:
         tensor_info = get_tensor_info(torch_tensor)
         if SCENARIO == "write_after_free" and i == 1:
-            node.free_memory_pool(memory_pool_id)
-        node.write_memory_pool(memory_pool_id, tensor_info)
+            node.free_tensor_pool(memory_pool_id)
+        node.write_tensor_pool(memory_pool_id, tensor_info)
         node.send_output("data", pa.array([]), metadata)
         # Turn-based handshake: wait for the receiver's ack (it sends
         # next_require after consuming this frame) before writing the

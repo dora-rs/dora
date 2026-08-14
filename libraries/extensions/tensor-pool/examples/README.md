@@ -4,7 +4,7 @@
 
 This example exercises Dora's pinned memory-pool transport for repeated tensor transfer between a sender node and a receiver node. The positive scenarios keep the existing throughput-oriented behavior, and the negative scenarios verify that lifecycle errors are surfaced as warnings instead of crashing the nodes.
 
-Beyond the single-daemon scenarios, the `*_cross*.yml` dataflows exercise the **same-host multi-daemon** and **cross-machine** topologies: `register_memory_pool(machine=...)` mirrors the pool on another daemon (same host or another machine), with zero-copy direct reads when the daemons share a host and a reliable zenoh/TCP data plane when they do not.
+Beyond the single-daemon scenarios, the `*_cross*.yml` dataflows exercise the **same-host multi-daemon** and **cross-machine** topologies: `register_tensor_pool(machine=...)` mirrors the pool on another daemon (same host or another machine), with zero-copy direct reads when the daemons share a host and a reliable zenoh/TCP data plane when they do not.
 
 ## Install
 
@@ -43,9 +43,9 @@ python -c "import torch; assert torch.cuda.is_available()"
 ### Positive throughput scenarios (single daemon)
 
 ```bash
-dora run examples/memory-pool/cpu2cpu.yml
-dora run examples/memory-pool/cpu2cuda.yml
-dora run examples/memory-pool/cuda2cpu.yml
+dora run libraries/extensions/tensor-pool/examples/cpu2cpu.yml
+dora run libraries/extensions/tensor-pool/examples/cpu2cuda.yml
+dora run libraries/extensions/tensor-pool/examples/cuda2cpu.yml
 ```
 
 Expected behavior:
@@ -67,8 +67,8 @@ dora daemon --machine-id B --coordinator-addr 127.0.0.1 --coordinator-port 6025 
   --zenoh-peer tcp/127.0.0.1:5463 --local-listen-port 0
 
 # build through the coordinator (deploy sections require it), then start attached
-dora build --coordinator-port 6025 examples/memory-pool/cpu2cpu_cross_local.yml
-dora start --coordinator-port 6025 examples/memory-pool/cpu2cpu_cross_local.yml --attach
+dora build --coordinator-port 6025 libraries/extensions/tensor-pool/examples/cpu2cpu_cross_local.yml
+dora start --coordinator-port 6025 libraries/extensions/tensor-pool/examples/cpu2cpu_cross_local.yml --attach
 ```
 
 Expected: `Average transfer throughput` ≈ **5800 MB/s** (same-host direct read; the relay baseline for the same topology is 89–113 MB/s, a 50–65× gap). This scenario is also covered by the torch-gated smoke test `smoke_local_memory_pool_cpu2cpu_cross_local`.
@@ -92,9 +92,9 @@ dora daemon --machine-id A --coordinator-addr <rendezvous-ip> --coordinator-port
 
 **The YAML needs three things** (all present in the `*_cross*.yml` files):
 
-1. `env: cross_machine: "B"` — the sender registers with `register_memory_pool(machine="B")`; without it the pool stays local and the receiver never sees a mirror.
+1. `env: cross_machine: "B"` — the sender registers with `register_tensor_pool(machine="B")`; without it the pool stays local and the receiver never sees a mirror.
 2. `_unstable_deploy: machine: A|B` per node — which daemon spawns which node.
-3. `_unstable_deploy: working_dir: ../../examples/memory-pool` — relative to the daemon's cwd (repo root), per the multiple-daemons convention. Absolute paths are NOT portable.
+3. `_unstable_deploy: working_dir: .` (relative to the yml's directory) — relative to the daemon's cwd (repo root), per the multiple-daemons convention. Absolute paths are NOT portable.
 
 **True-WAN zenoh config** (`ZENOH_CONFIG` env on the dialing daemon) — three points, all required on a real WAN link (default multicast discovery does not work across routed networks):
 
@@ -116,14 +116,14 @@ ZENOH_CONFIG=/path/to/zenoh_wan.json5 dora daemon --machine-id A --coordinator-a
 **Run** (a YAML without `build:` steps can be started directly — `dora build` races a fast build and may report "no running build", which is harmless):
 
 ```bash
-dora build --coordinator-addr <rendezvous-ip> --coordinator-port 6025 examples/memory-pool/cpu2cpu_cross.yml
-dora start --coordinator-addr <rendezvous-ip> --coordinator-port 6025 examples/memory-pool/cpu2cpu_cross.yml --attach
+dora build --coordinator-addr <rendezvous-ip> --coordinator-port 6025 libraries/extensions/tensor-pool/examples/cpu2cpu_cross.yml
+dora start --coordinator-addr <rendezvous-ip> --coordinator-port 6025 libraries/extensions/tensor-pool/examples/cpu2cpu_cross.yml --attach
 ```
 
 **Known behavior** (measured numbers live in `design.md` §5):
 
 - Cross-machine pools accept tensors up to the 1 GiB registration cap. The per-frame write sends only metadata to the daemon (shared-memory reference); the daemon reads the sender's segment and forwards it, so the 64 MiB node→daemon request limit does not apply.
-- Writes are **commit-acknowledged**: `write_memory_pool` returns only after the mirror daemon confirms the segment write, so the `send_output` notification that follows can never overtake the data (the receiver can never return a stale frame). A failed mirror write or a 120 s ack timeout fails the write loudly.
+- Writes are **commit-acknowledged**: `write_tensor_pool` returns only after the mirror daemon confirms the segment write, so the `send_output` notification that follows can never overtake the data (the receiver can never return a stale frame). A failed mirror write or a 120 s ack timeout fails the write loudly.
 - GPU-involved cross-machine paths stage through CPU pools automatically (GPU_A → DtoH → CPU_A → zenoh TCP → CPU_B → HtoD → GPU_B).
 - Native dora's cross-machine relay carries only small frames and hangs beyond that (Drop + express silently drops fragments when the 16-batch TX queue backs up); ROS 2 network DDS is RTT-paced on high-latency links. The pool is the only path that moves large frames over the WAN.
 - Same-host cross-daemon reads bypass the write/ack machinery entirely (`direct=true`).
@@ -139,10 +139,10 @@ dora start --coordinator-addr <rendezvous-ip> --coordinator-port 6025 examples/m
 ### Negative-path scenarios
 
 ```bash
-dora run examples/memory-pool/duplicate_free.yml
-dora run examples/memory-pool/read_after_free.yml
-dora run examples/memory-pool/write_after_free.yml
-dora run examples/memory-pool/auto_cleanup.yml
+dora run libraries/extensions/tensor-pool/examples/duplicate_free.yml
+dora run libraries/extensions/tensor-pool/examples/read_after_free.yml
+dora run libraries/extensions/tensor-pool/examples/write_after_free.yml
+dora run libraries/extensions/tensor-pool/examples/auto_cleanup.yml
 ```
 
 Expected warnings/info:

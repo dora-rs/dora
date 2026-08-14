@@ -1934,7 +1934,7 @@ fn smoke_shell_node_blocked_without_flag() {
 fn smoke_memory_pool_cpu2cpu() {
     run_smoke_test(
         "memory-pool-cpu2cpu",
-        "examples/memory-pool/cpu2cpu.yml",
+        "libraries/extensions/tensor-pool/examples/cpu2cpu.yml",
         Duration::from_secs(60),
     );
 }
@@ -1944,7 +1944,7 @@ fn smoke_memory_pool_cpu2cpu() {
 fn smoke_local_memory_pool_cpu2cpu() {
     run_smoke_test_local(
         "local-memory-pool-cpu2cpu",
-        "examples/memory-pool/cpu2cpu.yml",
+        "libraries/extensions/tensor-pool/examples/cpu2cpu.yml",
         60,
     );
 }
@@ -1959,7 +1959,7 @@ fn smoke_local_memory_pool_cpu2cpu() {
 fn smoke_local_memory_pool_cpu2cpu_cross_local() {
     run_cross_local_smoke_test(
         "local-memory-pool-cpu2cpu-cross-local",
-        "examples/memory-pool/cpu2cpu_cross_local.yml",
+        "libraries/extensions/tensor-pool/examples/cpu2cpu_cross_local.yml",
         Duration::from_secs(150),
     );
 }
@@ -1998,10 +1998,9 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 
     // A stale session file from a previous local build would make
     // `dora start` reject the dataflow ("built locally"); start clean.
-    let _ = std::fs::remove_file(
-        Path::new(manifest_dir)
-            .join("examples/memory-pool/out/cpu2cpu_cross_local.dora-session.yaml"),
-    );
+    let _ = std::fs::remove_file(Path::new(manifest_dir).join(
+        "libraries/extensions/tensor-pool/examples/out/cpu2cpu_cross_local.dora-session.yaml",
+    ));
 
     let mut children: Vec<std::process::Child> = Vec::new();
     fn cleanup(children: &mut Vec<std::process::Child>, tmp: &std::path::Path) {
@@ -2047,7 +2046,7 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
         let listen_port = local_listen_port;
         local_listen_port += 1;
         let log = tmp.join(format!("daemon-{machine}.log"));
-        // The yml's `working_dir: ../../examples/memory-pool` is relative to
+        // The yml's `working_dir: .` is relative to
         // the daemon's cwd (the repo root, per the multiple-daemons
         // convention), so the daemons run from the test's cwd.
         let daemon = Command::new(&dora)
@@ -2153,7 +2152,7 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
 fn smoke_local_memory_pool_auto_cleanup() {
     run_smoke_test_local(
         "local-memory-pool-auto-cleanup",
-        "examples/memory-pool/auto_cleanup.yml",
+        "libraries/extensions/tensor-pool/examples/auto_cleanup.yml",
         10,
     );
 }
@@ -2163,7 +2162,7 @@ fn smoke_local_memory_pool_auto_cleanup() {
 fn smoke_local_memory_pool_duplicate_free() {
     run_smoke_test_local(
         "local-memory-pool-duplicate-free",
-        "examples/memory-pool/duplicate_free.yml",
+        "libraries/extensions/tensor-pool/examples/duplicate_free.yml",
         10,
     );
 }
@@ -2173,7 +2172,7 @@ fn smoke_local_memory_pool_duplicate_free() {
 fn smoke_local_memory_pool_read_after_free() {
     run_smoke_test_local(
         "local-memory-pool-read-after-free",
-        "examples/memory-pool/read_after_free.yml",
+        "libraries/extensions/tensor-pool/examples/read_after_free.yml",
         10,
     );
 }
@@ -2183,7 +2182,7 @@ fn smoke_local_memory_pool_read_after_free() {
 fn smoke_local_memory_pool_write_after_free() {
     run_smoke_test_local(
         "local-memory-pool-write-after-free",
-        "examples/memory-pool/write_after_free.yml",
+        "libraries/extensions/tensor-pool/examples/write_after_free.yml",
         10,
     );
 }
@@ -2198,7 +2197,7 @@ fn smoke_local_memory_pool_write_after_free() {
 fn smoke_memory_pool_cuda_inner() {
     run_smoke_test(
         "memory-pool-cuda-inner",
-        "examples/memory-pool/cuda_inner.yml",
+        "libraries/extensions/tensor-pool/examples/cuda_inner.yml",
         Duration::from_secs(60),
     );
 }
@@ -2208,7 +2207,7 @@ fn smoke_memory_pool_cuda_inner() {
 fn smoke_memory_pool_cuda2cuda() {
     run_smoke_test(
         "memory-pool-cuda2cuda",
-        "examples/memory-pool/cuda2cuda.yml",
+        "libraries/extensions/tensor-pool/examples/cuda2cuda.yml",
         Duration::from_secs(60),
     );
 }

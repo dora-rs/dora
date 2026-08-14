@@ -342,7 +342,7 @@ def get_tensor_info(tensor: torch.Tensor) -> dict:
     size, dtype, shape, and device.
 
     This is the canonical way to pass tensor metadata to memory-pool
-    operations such as ``register_memory_pool`` and ``write_memory_pool``.
+    operations such as ``register_tensor_pool`` and ``write_tensor_pool``.
     """
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()

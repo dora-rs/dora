@@ -39,7 +39,7 @@ for i in range(MESSAGE_COUNT):
         # corrupt iteration 0.
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
-            tensor_info = node.read_memory_pool(memory_pool_id)
+            tensor_info = node.read_tensor_pool(memory_pool_id)
             torch_tensor = tensor_from_info(tensor_info)
             if int(torch_tensor[0].item()) == 0:
                 break
@@ -66,7 +66,7 @@ for i in range(MESSAGE_COUNT):
         # window.
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
-            tensor_info = node.read_memory_pool(memory_pool_id)
+            tensor_info = node.read_tensor_pool(memory_pool_id)
             torch_tensor = tensor_from_info(tensor_info)
             if int(torch_tensor[0].item()) == i:
                 break
@@ -75,7 +75,7 @@ for i in range(MESSAGE_COUNT):
                 f"iteration {i}: expected frame {i} never arrived within the retry window"
             )
 
-    # The tensor is zero-copy — write_memory_pool on the sender overwrites
+    # The tensor is zero-copy — write_tensor_pool on the sender overwrites
     # the shmem bytes in place, so the receiver's existing tensor object
     # automatically reflects new data.  Turn-based signaling ensures the
     # sender has finished writing before the receiver accesses the tensor.
@@ -96,16 +96,16 @@ for i in range(MESSAGE_COUNT):
     velocities.append(velocity)
 
     if SCENARIO == "duplicate_free" and i == MESSAGE_COUNT - 1:
-        node.free_memory_pool(memory_pool_id)
-        node.free_memory_pool(memory_pool_id)
+        node.free_tensor_pool(memory_pool_id)
+        node.free_tensor_pool(memory_pool_id)
     elif SCENARIO == "read_after_free" and i == MESSAGE_COUNT - 1:
-        node.free_memory_pool(memory_pool_id)
+        node.free_tensor_pool(memory_pool_id)
         try:
-            node.read_memory_pool(memory_pool_id)
+            node.read_tensor_pool(memory_pool_id)
         except Exception:
             pass  # Expected: pool was freed, read should fail
     elif SCENARIO != "auto_cleanup" and i == MESSAGE_COUNT - 1:
-        node.free_memory_pool(memory_pool_id)
+        node.free_tensor_pool(memory_pool_id)
 
     node.send_output("next_require", pa.array([]))
     pbar.update(1)

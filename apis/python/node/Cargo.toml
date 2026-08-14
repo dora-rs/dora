@@ -13,7 +13,7 @@ publish = false  # PyO3 cdylib, shipped via PyPI as `dora-rs`, not crates.io
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["tracing", "metrics", "async"]
+default = ["tracing", "metrics", "async", "tensor-pool"]
 # Opt-in tensor-pool transport. NOT covered by dora's 1.0 compatibility
 # guarantees — see libraries/extensions/tensor-pool/README.md. Off by default
 # so a standard wheel neither builds nor exposes it.
