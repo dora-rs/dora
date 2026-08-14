@@ -11754,6 +11754,13 @@ mod health_check_tests {
 mod cross_pool_write_tests {
     use super::*;
 
+    /// Serializes tests that mutate the process-wide
+    /// `DORA_MEMORY_POOL_AUTH_TOKEN` env var. Rust tests run on parallel
+    /// threads; the auth-handshake tests key off that env on both the
+    /// send and verify sides, so a parallel `set_var` would flip the
+    /// handshake contract out from under them mid-flight.
+    static CROSS_DATA_AUTH_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     /// Panic-safe cleanup: unlink the test mirror from /dev/shm even when
     /// an assertion fails mid-test (a leaked segment would pollute the
     /// bench host's zero-residue checks).
@@ -11808,7 +11815,17 @@ mod cross_pool_write_tests {
         std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 512]).unwrap();
         let _cleanup = ShmemCleanup(shmem_name.clone());
 
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], "cpu", None).unwrap();
+        create_cross_pool_shmem(
+            &dataflow_id,
+            "B",
+            pool_id,
+            SIZE,
+            "int64",
+            &[512],
+            "cpu",
+            None,
+        )
+        .unwrap();
 
         // The recreated segment must be a valid DORADMA mirror.
         let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
@@ -11827,8 +11844,17 @@ mod cross_pool_write_tests {
                 TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                     .unwrap();
             let _cleanup = ShmemCleanup(shmem_name.clone());
-            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[512], device, None)
-                .unwrap();
+            create_cross_pool_shmem(
+                &dataflow_id,
+                "B",
+                pool_id,
+                SIZE,
+                "int64",
+                &[512],
+                device,
+                None,
+            )
+            .unwrap();
             let shmem = ShmemConf::new().os_id(&shmem_name).open().unwrap();
             let json_len = unsafe { read_header_u64(shmem.as_ptr().add(8)) } as usize;
             let json_bytes = unsafe {
@@ -11854,7 +11880,17 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 4 * 1024 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
+        create_cross_pool_shmem(
+            &dataflow_id,
+            "B",
+            pool_id,
+            SIZE,
+            "int64",
+            &[8192],
+            "cpu",
+            None,
+        )
+        .unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12041,7 +12077,17 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 64 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
+        create_cross_pool_shmem(
+            &dataflow_id,
+            "B",
+            pool_id,
+            SIZE,
+            "int64",
+            &[8192],
+            "cpu",
+            None,
+        )
+        .unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12136,7 +12182,17 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 64 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
+        create_cross_pool_shmem(
+            &dataflow_id,
+            "B",
+            pool_id,
+            SIZE,
+            "int64",
+            &[8192],
+            "cpu",
+            None,
+        )
+        .unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12245,7 +12301,17 @@ mod cross_pool_write_tests {
         let dataflow_id = Uuid::new_v4();
         let pool_id = "pool_node_0";
         const SIZE: usize = 64 * 1024;
-        create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None).unwrap();
+        create_cross_pool_shmem(
+            &dataflow_id,
+            "B",
+            pool_id,
+            SIZE,
+            "int64",
+            &[8192],
+            "cpu",
+            None,
+        )
+        .unwrap();
         let shmem_name =
             TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                 .unwrap();
@@ -12479,6 +12545,25 @@ mod cross_pool_write_tests {
     #[test]
     #[cfg(target_os = "linux")]
     fn direct_tcp_frame_round_trip_writes_mirror() {
+        // This test exercises the token-less contract (both ends skip the
+        // handshake when no token is configured). Serialize against the
+        // auth test's env mutation and clear the variable defensively so
+        // a token in the developer's shell cannot flip this test into
+        // handshake mode mid-flight.
+        //
+        // SAFETY (env mutation in tests): `CROSS_DATA_AUTH_ENV_LOCK`
+        // serializes every test that reads or writes this variable; the
+        // guard runs on this test's own thread and is never awaited on.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
+        unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+        struct TokenEnvGuard;
+        impl Drop for TokenEnvGuard {
+            fn drop(&mut self) {
+                unsafe { std::env::remove_var("DORA_MEMORY_POOL_AUTH_TOKEN") };
+            }
+        }
+        let _token_guard = TokenEnvGuard;
+
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -12487,8 +12572,17 @@ mod cross_pool_write_tests {
             let dataflow_id = Uuid::new_v4();
             let pool_id = "pool_node_0";
             const SIZE: usize = 64 * 1024;
-            create_cross_pool_shmem(&dataflow_id, "B", pool_id, SIZE, "int64", &[8192], "cpu", None)
-                .unwrap();
+            create_cross_pool_shmem(
+                &dataflow_id,
+                "B",
+                pool_id,
+                SIZE,
+                "int64",
+                &[8192],
+                "cpu",
+                None,
+            )
+            .unwrap();
             let shmem_name =
                 TensorPoolManager::cross_pool_shmem_name("B", &dataflow_id.to_string(), pool_id)
                     .unwrap();
@@ -12539,10 +12633,12 @@ mod cross_pool_write_tests {
     async fn auth_handshake_accepts_shared_token_and_rejects_others() {
         // Hermetic env for this test: set and restore.
         //
-        // SAFETY (env mutation in tests): tests run single-threaded within
-        // this process for the duration of the setup/drop pair (the
-        // handshake futures below never spawn), so no other thread can be
-        // reading the variable while it is mutated.
+        // SAFETY (env mutation in tests): `CROSS_DATA_AUTH_ENV_LOCK`
+        // serializes every test that reads or writes this variable, so no
+        // other test thread can observe the mutation mid-test. The std
+        // mutex is only ever locked briefly by this test's own thread
+        // (never awaited on), so it cannot deadlock the async body.
+        let _env_lock = CROSS_DATA_AUTH_ENV_LOCK.lock().unwrap();
         unsafe { std::env::set_var("DORA_MEMORY_POOL_AUTH_TOKEN", "test-shared-secret") };
         struct EnvGuard;
         impl Drop for EnvGuard {
