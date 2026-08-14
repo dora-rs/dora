@@ -1,4 +1,4 @@
-use std::{fs::File, thread, time::Duration};
+use std::{fs::File, io::Read, thread, time::Duration};
 
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use dora_node_api::{
@@ -6,7 +6,7 @@ use dora_node_api::{
     arrow::array::{ArrayData, NullArray, make_array},
     arrow_utils::decode_arrow_ipc,
 };
-use dora_recording::RecordingReader;
+use dora_recording::{RecordEntry, RecordingReader};
 use eyre::Context;
 
 /// Decode a recorded output payload back into Arrow [`ArrayData`].
@@ -49,6 +49,31 @@ fn pacing_sleep_nanos(prev_offset: u64, entry_offset: u64, speed: f64) -> u64 {
     (delta_nanos as f64 / speed) as u64
 }
 
+/// Read the next entry, treating a corrupt record the same way the recording
+/// layer treats a torn trailing record: stop the pass gracefully instead of
+/// aborting the whole replay.
+///
+/// [`RecordingReader::next_entry`] returns `Ok(None)` for EOF, the footer, or a
+/// torn trailing record, but `Err` for a *complete* record whose internal
+/// length fields are corrupt (the bounds checks added in dora-rs/dora#2027).
+/// The previous loop propagated that `Err` with `?`, which aborted the process
+/// and discarded every fully-intact record after the bad one — the opposite of
+/// the skip-and-continue policy the payload and event decoders already follow.
+/// Log a warning and end iteration so every record *before* the corruption
+/// still replays, mirroring the torn-tail handling in the recording layer.
+fn next_replay_entry<R: Read>(
+    reader: &mut RecordingReader<R>,
+    replay_file: &str,
+) -> Option<RecordEntry> {
+    match reader.next_entry() {
+        Ok(entry) => entry,
+        Err(e) => {
+            eprintln!("warning: stopping replay at a corrupt record in {replay_file}: {e:#}");
+            None
+        }
+    }
+}
+
 fn main() -> eyre::Result<()> {
     let replay_file =
         std::env::var("DORA_REPLAY_FILE").wrap_err("DORA_REPLAY_FILE env var not set")?;
@@ -77,7 +102,7 @@ fn main() -> eyre::Result<()> {
         let mut replayed = 0u64;
         let mut skipped = 0u64;
 
-        while let Some(entry) = reader.next_entry()? {
+        while let Some(entry) = next_replay_entry(&mut reader, &replay_file) {
             if entry.node_id != replay_node {
                 continue;
             }
@@ -174,9 +199,13 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_recorded_payload, pacing_sleep_nanos, replay_emitted_nothing_usable};
+    use super::{
+        decode_recorded_payload, next_replay_entry, pacing_sleep_nanos,
+        replay_emitted_nothing_usable,
+    };
     use dora_node_api::arrow::array::{Array, Int32Array};
     use dora_node_api::arrow_utils::encode_arrow_ipc;
+    use dora_recording::{RecordEntry, RecordingHeader, RecordingReader, RecordingWriter};
 
     #[test]
     fn first_entry_honors_its_initial_offset() {
@@ -245,5 +274,47 @@ mod tests {
         // behavior the `main` loop relies on to stay resilient.
         let garbage = [0xde, 0xad, 0xbe, 0xef, 0x00, 0x01, 0x02, 0x03];
         assert!(decode_recorded_payload(Some(&garbage)).is_err());
+    }
+
+    #[test]
+    fn corrupt_record_stops_replay_gracefully_after_good_records() {
+        // A recording whose first record is intact but which is followed by a
+        // *complete* corrupt record must still replay the good record and then
+        // stop gracefully, rather than aborting the whole pass (as the old `?`
+        // on `next_entry` did).
+        let header = RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: Default::default(),
+            descriptor_yaml: Vec::new(),
+        };
+        let good = RecordEntry {
+            node_id: "node1".to_string(),
+            output_id: "out1".to_string(),
+            timestamp_offset_nanos: 10,
+            event_bytes: b"data".to_vec(),
+        };
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = RecordingWriter::new(&mut buf, &header).expect("writer");
+            writer.write_entry(&good).expect("write good entry");
+            writer.flush().expect("flush");
+        }
+        // Append a *complete* record whose body claims node_id_len = 100 but
+        // holds only the 2 length bytes — the recording layer rejects this with
+        // `Err` (not a torn-tail `Ok(None)`), mirroring the recording crate's
+        // `corrupt_node_id_len_returns_err_not_panic` test.
+        let body: &[u8] = &100u16.to_le_bytes();
+        buf.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        buf.extend_from_slice(body);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).expect("open");
+        // The good record is returned …
+        let first = next_replay_entry(&mut reader, "test.drec").expect("good record replays");
+        assert_eq!(first, good);
+        // … and the corrupt record ends iteration gracefully instead of
+        // propagating an error / panicking.
+        assert!(next_replay_entry(&mut reader, "test.drec").is_none());
     }
 }
