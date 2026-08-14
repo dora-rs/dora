@@ -557,6 +557,20 @@ impl TensorPoolManager {
         let (node_id, counter) = shared_memory_id
             .strip_prefix("pool_")
             .and_then(|s| s.rsplit_once('_'))?;
+        // Defense in depth: `node_id`/`counter` come from the wire
+        // (RegisterPool from a peer daemon). The free path rejects names
+        // containing '/' or '..' explicitly; the create/mirror path must
+        // agree or a crafted id could slip past the asymmetry. glibc
+        // shm_open rejects an embedded '/' today, but the guard belongs
+        // at this single source of truth — create, write, and free all
+        // derive from it.
+        if node_id.contains('/')
+            || node_id.contains("..")
+            || counter.contains('/')
+            || counter.contains("..")
+        {
+            return None;
+        }
         Some(format!(
             "dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}"
         ))
@@ -597,6 +611,25 @@ mod tests {
     /// The registrar's downstream consumers at registration time.
     fn readers(nodes: &[&str]) -> HashSet<String> {
         nodes.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// A wire-controlled `shared_memory_id` must never smuggle a path
+    /// component into the derived `/dev/shm` name (the free path rejects
+    /// '/' and '..'; the create path must agree).
+    #[test]
+    fn cross_pool_shmem_name_rejects_path_components() {
+        for evil in ["pool_a/../../b_1", "pool_.._1", "pool_a_b/1", "pool_a_..1"] {
+            assert_eq!(
+                TensorPoolManager::cross_pool_shmem_name("M", "df", evil),
+                None,
+                "id `{evil}` must be rejected"
+            );
+        }
+        // The legitimate shape still resolves.
+        assert_eq!(
+            TensorPoolManager::cross_pool_shmem_name("M", "df", "pool_node_42"),
+            Some("dora_pool_M_df_node_42".to_string())
+        );
     }
 
     #[test]

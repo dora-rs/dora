@@ -438,6 +438,14 @@ fn cross_machine_enabled() -> bool {
 /// = no handshake (the daemon then relies on the port's reachability).
 /// Spawned nodes receive the token via `DORA_MEMORY_POOL_AUTH_TOKEN` so
 /// they can hand it to peer daemons for same-host direct opens.
+///
+/// Scope: the token authenticates the direct-TCP data plane only. The
+/// zenoh control/relay plane (RegisterPool/FreePool/MemoryPoolWrite over
+/// `dataflow_memory_pool_topic`) is unauthenticated — dora's mesh-daemon
+/// model treats peers as trusted. When this token is relied on over an
+/// untrusted link (edge↔cloud WAN), the zenoh transport itself must be
+/// secured (e.g. TLS via the zenoh config), or the control plane must be
+/// firewalled to trusted peers.
 const CROSS_DATA_AUTH_TOKEN_ENV: &str = "DORA_MEMORY_POOL_AUTH_TOKEN";
 
 fn cross_data_auth_token() -> Option<String> {
