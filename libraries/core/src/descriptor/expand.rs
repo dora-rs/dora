@@ -3040,6 +3040,55 @@ nodes:
         assert_eq!(dyn_node.custom.as_ref().unwrap().path, "dynamic");
     }
 
+    #[test]
+    fn expand_preserves_shell_custom_source_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/shell_source.yml",
+            r#"
+module:
+  name: shell_source
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: shell
+    custom:
+      path: shell
+      source: Local
+      inputs:
+        x: _mod/data
+      outputs:
+        - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/shell_source.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let shell_node = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.shell")
+            .unwrap();
+
+        assert_eq!(shell_node.custom.as_ref().unwrap().path, "shell");
+    }
+
     /// Expand a dataflow whose single module node `m` re-exports `result`, and
     /// return the mapping the downstream `sink` node ends up with. Also asserts
     /// that the expanded dataflow passes wiring validation, which is what
