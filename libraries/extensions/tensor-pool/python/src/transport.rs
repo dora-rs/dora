@@ -1462,8 +1462,12 @@ impl Pool<'_> {
         // not from the shmem data region.  Allocate only the header portion
         // (metadata + IPC handle + seqlock) — a few hundred bytes instead of
         // 80 MB.  This also lets us skip cudaHostRegister on a useless data
-        // region.
-        let total_size = if receiver_is_cuda {
+        // region.  Cross-machine GPU pools are the exception: CUDA IPC
+        // handles are host-local, so the mirror stores the data region and
+        // the receiver stages it HtoD — the segment must be full-size or
+        // the registration push cannot read the frame (see the push
+        // condition below).
+        let total_size = if receiver_is_cuda && !cross_machine {
             data_offset
         } else {
             data_offset + size
@@ -2977,8 +2981,21 @@ impl Pool<'_> {
                 buffer_id,
                 freed.len()
             );
-            freed.insert(buffer_id);
+            freed.insert(buffer_id.clone());
         }
+
+        // Drop the classification-sets entries: pool ids embed a
+        // monotonic counter, so register/free cycles would otherwise
+        // grow NO_MIRROR_POOLS / DIRECT_POOLS without bound on a
+        // long-running node.
+        NO_MIRROR_POOLS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer_id);
+        DIRECT_POOLS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&buffer_id);
 
         Ok(())
     }

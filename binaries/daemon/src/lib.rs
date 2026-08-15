@@ -5296,6 +5296,15 @@ impl Daemon {
                 }
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
+                // Drop the per-pool relay write lock: pool ids embed a
+                // monotonic counter, so entries would otherwise
+                // accumulate for every freed relay-path pool (unbounded
+                // on a long-running daemon when direct TCP is
+                // unavailable).
+                CROSS_POOL_WRITE_LOCKS
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .remove(&shared_memory_id);
                 // Same machine-qualified id as `create_cross_pool_shmem`.
                 let Some(shmem_name) = TensorPoolManager::cross_pool_shmem_name(
                     self.machine_id.as_deref().unwrap_or_default(),
@@ -6947,9 +6956,44 @@ impl Daemon {
                                     }
                                     tensor_pool.register_cross_pool(
                                         dataflow_id.to_string(),
-                                        shared_memory_id,
+                                        shared_memory_id.clone(),
                                         machine_id,
                                     );
+                                    // Make the explicit `name=` segment
+                                    // discoverable for the
+                                    // shared-memory-reference write path:
+                                    // `write_pinned_memory` falls back to
+                                    // this table when the derived
+                                    // auto-name does not match the actual
+                                    // segment (the register-time initial
+                                    // push arrives right after this ack,
+                                    // so the entry must exist before the
+                                    // node's first write).
+                                    tensor_pool.register_tensor_pool(
+                                        dora_tensor_pool::TensorPoolId {
+                                            dataflow_id: dataflow_id.to_string(),
+                                            id: shared_memory_id.clone(),
+                                        },
+                                        dora_tensor_pool::TensorPoolMetadata {
+                                            size,
+                                            dtype: dtype.clone(),
+                                            shape: shape
+                                                .iter()
+                                                .map(|s| *s as usize)
+                                                .collect(),
+                                            shared_memory_name: Some(shmem_name.clone()),
+                                            buffer_id: Some(shared_memory_id.clone()),
+                                            ..Default::default()
+                                        },
+                                        node_id.to_string(),
+                                        HashSet::new(),
+                                    )
+                                    .unwrap_or_else(|e| {
+                                        tracing::warn!(
+                                            "memory pool: failed to record {} in the pool table: {e}",
+                                            shared_memory_id
+                                        );
+                                    });
                                     reply = Ok(());
                                     direct = ack_direct;
                                     break;
