@@ -2842,6 +2842,25 @@ impl Daemon {
                     Ok(())
                 })();
 
+                // Reclaim the removed node's extension-table entries. Its
+                // later `SpawnedNodeResult` exit event is swallowed by the
+                // generation guard (the node is already gone from
+                // `running_nodes`), so the reclaim at that call site is
+                // unreachable for a removed node — this is the only reachable
+                // point. Without it, repeated dynamic add/remove cycles of an
+                // entry-owning node leak entries toward the per-dataflow cap
+                // and readers never receive the drop notification
+                // (dora-rs/dora#3177, originally #2881/#3014).
+                if result.is_ok() {
+                    reclaim_extensions_of_exited_node(
+                        &mut self.extensions,
+                        self.running.get(&dataflow_id),
+                        dataflow_id,
+                        &node_id,
+                        &self.clock,
+                    );
+                }
+
                 // Outside the closure because it is async. Why removal
                 // has to drive the barrier at all: see
                 // `PendingNodes::handle_node_removal`.
@@ -3225,6 +3244,20 @@ impl Daemon {
                     // The outgoing (or an even earlier) incarnation's stale
                     // result must not be attributed to the replacement.
                     clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                    // Reclaim the outgoing incarnation's extension-table
+                    // entries. Its exit event is dropped by the generation
+                    // guard, so this is the only reachable point to release
+                    // them. The freshly spawned replacement shares the node id
+                    // but has not stored anything yet, so this drops only the
+                    // outgoing incarnation's entries (dora-rs/dora#3177,
+                    // originally #2881/#3014).
+                    reclaim_extensions_of_exited_node(
+                        &mut self.extensions,
+                        self.running.get(&dataflow_id),
+                        dataflow_id,
+                        &node_id,
+                        &self.clock,
+                    );
                 }
                 let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
