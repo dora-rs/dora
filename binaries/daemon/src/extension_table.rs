@@ -43,6 +43,12 @@ struct Entry {
 #[derive(Debug, Default)]
 pub struct ExtensionTable {
     entries: HashMap<ExtensionKey, Entry>,
+    /// Live entry count per `dataflow_id`, kept in step with `entries` so the
+    /// per-dataflow cap check in [`store`](Self::store) is O(1) instead of an
+    /// O(total-entries) scan of every key across every dataflow. Invariant: a
+    /// dataflow's value equals the number of `entries` keys with that
+    /// `dataflow_id`, and the key is absent once that count reaches zero.
+    per_dataflow_count: HashMap<String, usize>,
 }
 
 /// Upper bound on entries per dataflow, so a looping node cannot exhaust the
@@ -79,10 +85,10 @@ impl ExtensionTable {
             }
             None => {
                 let count = self
-                    .entries
-                    .keys()
-                    .filter(|k| k.dataflow_id == key.dataflow_id)
-                    .count();
+                    .per_dataflow_count
+                    .get(&key.dataflow_id)
+                    .copied()
+                    .unwrap_or(0);
                 if count >= MAX_ENTRIES_PER_DATAFLOW {
                     return Err(format!(
                         "extension table full for this dataflow ({MAX_ENTRIES_PER_DATAFLOW} entries); \
@@ -90,6 +96,10 @@ impl ExtensionTable {
                         key.namespace, key.key
                     ));
                 }
+                *self
+                    .per_dataflow_count
+                    .entry(key.dataflow_id.clone())
+                    .or_insert(0) += 1;
                 self.entries.insert(
                     key,
                     Entry {
@@ -118,7 +128,21 @@ impl ExtensionTable {
     /// `None` if it was not present, so a duplicate drop is distinguishable
     /// from a real one and does not produce a second broadcast.
     pub fn drop_key(&mut self, key: &ExtensionKey) -> Option<BTreeSet<NodeId>> {
-        self.entries.remove(key).map(|entry| entry.touched_by)
+        let entry = self.entries.remove(key)?;
+        self.decrement(&key.dataflow_id);
+        Some(entry.touched_by)
+    }
+
+    /// Decrement the live-entry counter for `dataflow_id`, dropping the counter
+    /// key entirely at zero so an idle dataflow leaves no residue. Call exactly
+    /// once per entry removed from `entries`.
+    fn decrement(&mut self, dataflow_id: &str) {
+        if let Some(count) = self.per_dataflow_count.get_mut(dataflow_id) {
+            *count -= 1;
+            if *count == 0 {
+                self.per_dataflow_count.remove(dataflow_id);
+            }
+        }
     }
 
     /// Drop everything owned by `node` in `dataflow_id`, for when it exits.
@@ -140,6 +164,7 @@ impl ExtensionTable {
             .into_iter()
             .filter_map(|k| {
                 let touched = self.entries.remove(&k)?.touched_by;
+                self.decrement(&k.dataflow_id);
                 Some((k, touched))
             })
             .collect()
@@ -150,6 +175,7 @@ impl ExtensionTable {
     pub fn reclaim_dataflow(&mut self, dataflow_id: &str) -> usize {
         let before = self.entries.len();
         self.entries.retain(|k, _| k.dataflow_id != dataflow_id);
+        self.per_dataflow_count.remove(dataflow_id);
         before - self.entries.len()
     }
 
@@ -357,5 +383,66 @@ mod tests {
             t.store(key("pool", "0"), b"v2".to_vec(), &node("n"))
                 .is_ok()
         );
+    }
+
+    /// Recompute the per-dataflow counts from `entries` and assert the
+    /// incrementally maintained `per_dataflow_count` matches exactly — no
+    /// drift and no zero-valued residue. This is the invariant the O(1) cap
+    /// check in `store` relies on.
+    fn assert_count_invariant(t: &ExtensionTable) {
+        let mut recomputed: HashMap<String, usize> = HashMap::new();
+        for k in t.entries.keys() {
+            *recomputed.entry(k.dataflow_id.clone()).or_insert(0) += 1;
+        }
+        assert_eq!(
+            t.per_dataflow_count, recomputed,
+            "per_dataflow_count drifted from entries"
+        );
+    }
+
+    #[test]
+    fn dropping_an_entry_at_cap_frees_a_slot() {
+        let mut t = ExtensionTable::new();
+        for i in 0..MAX_ENTRIES_PER_DATAFLOW {
+            t.store(key("pool", &i.to_string()), b"v".to_vec(), &node("n"))
+                .unwrap();
+        }
+        // At cap, a fresh key is rejected...
+        assert!(
+            t.store(key("pool", "extra"), b"v".to_vec(), &node("n"))
+                .is_err()
+        );
+        // ...but dropping one frees exactly one slot, which requires the O(1)
+        // counter to have been decremented on removal.
+        assert!(t.drop_key(&key("pool", "0")).is_some());
+        assert!(
+            t.store(key("pool", "extra"), b"v".to_vec(), &node("n"))
+                .is_ok()
+        );
+        assert_count_invariant(&t);
+    }
+
+    #[test]
+    fn reclaim_paths_keep_the_count_in_step() {
+        let mut t = ExtensionTable::new();
+        t.store(key("pool", "a"), b"v".to_vec(), &node("owner"))
+            .unwrap();
+        t.store(key("pool", "b"), b"v".to_vec(), &node("owner"))
+            .unwrap();
+        let mut other = key("pool", "c");
+        other.dataflow_id = "other-df".into();
+        t.store(other, b"v".to_vec(), &node("owner")).unwrap();
+        assert_count_invariant(&t);
+
+        // Owner exit reclaims that owner's entries in "df".
+        t.reclaim_owner("df", &node("owner"));
+        assert_count_invariant(&t);
+        // "df" is now empty, so its counter key must be gone (no zero residue).
+        assert!(!t.per_dataflow_count.contains_key("df"));
+
+        // Dataflow finish clears the remaining dataflow's counter entirely.
+        t.reclaim_dataflow("other-df");
+        assert_count_invariant(&t);
+        assert!(t.per_dataflow_count.is_empty());
     }
 }
