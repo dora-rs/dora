@@ -705,7 +705,9 @@ fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
 /// the receiver-side consumers (`load_metadata`, `GPU_BUF_SIZES`) find
 /// the same keys. `pinned_type` carries the receiver device ("cuda:0")
 /// exactly like the mirror header JSON (same input, same value).
-#[cfg(target_os = "linux")]
+/// NOT cfg-gated: it only builds a JSON descriptor (no /dev/shm access),
+/// and the RegisterPool handler calls it unconditionally — gating it
+/// broke the macOS daemon build (何勇 review 5302853212).
 fn build_mirror_descriptor(
     size: usize,
     dtype: &str,
@@ -5260,11 +5262,24 @@ impl Daemon {
                     &dataflow_id.to_string(),
                     &shared_memory_id,
                 ) {
-                    let owner = shared_memory_id
+                    // Fallible owner parse: the node id segment comes from
+                    // the wire (`pool_{node}_{counter}`), and
+                    // `NodeId::from(String)` panics on an invalid id
+                    // (e.g. `pool_!_1` passes the path-component guard).
+                    // Reject the registration instead of crashing the
+                    // daemon (何勇 review 5302853212).
+                    let Some(owner) = shared_memory_id
                         .strip_prefix("pool_")
                         .and_then(|s| s.rsplit_once('_'))
-                        .map(|(node, _)| node.to_string())
-                        .unwrap_or_default();
+                        .map(|(node, _)| node)
+                        .and_then(|node| node.parse::<NodeId>().ok())
+                    else {
+                        tracing::warn!(
+                            "memory pool: rejecting RegisterPool with invalid pool id \
+                             {shared_memory_id} (cannot derive a sender node id)"
+                        );
+                        return Ok(());
+                    };
                     let ext_key = ExtensionKey {
                         dataflow_id: dataflow_id.to_string(),
                         namespace: "dora-tensor-pool".to_string(),
@@ -5272,7 +5287,7 @@ impl Daemon {
                     };
                     let value =
                         build_mirror_descriptor(size, &dtype, &shape, &mirror_shmem_name, &device);
-                    if let Err(e) = self.extensions.store(ext_key, value, &NodeId::from(owner)) {
+                    if let Err(e) = self.extensions.store(ext_key, value, &owner) {
                         tracing::warn!(
                             "memory pool: failed to store mirror descriptor for {shared_memory_id}: {e}"
                         );
@@ -5392,13 +5407,18 @@ impl Daemon {
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
-                // pool (a receiver mid-read learns via drain_dropped).
+                // pool — through the notify path so receiver nodes on
+                // this machine learn via `drain_dropped` and release
+                // their mappings (a bare drop_key discards the
+                // touched-node set and strands them, 何勇 review
+                // 5302853212).
                 let ext_key = ExtensionKey {
                     dataflow_id: dataflow_id.to_string(),
                     namespace: "dora-tensor-pool".to_string(),
                     key: shared_memory_id.clone(),
                 };
-                self.extensions.drop_key(&ext_key);
+                let dataflow = self.running.get(&dataflow_id);
+                drop_extension_and_notify(&mut self.extensions, dataflow, &ext_key, &self.clock);
                 // Drop the per-pool relay write lock: keyed by a fresh
                 // per-dataflow UUID like the sibling cross-write maps,
                 // so entries would otherwise accumulate for every freed
@@ -7150,13 +7170,9 @@ impl Daemon {
                 shared_memory_id,
                 reply_sender,
             } => {
-                // Cross-machine mirrors never enter the daemon's tensor
-                // pool table (the table is node-side), so the release is
-                // table-free: drop the cross_pools entry and, when the
-                // pool was cross-machine, publish the targeted FreePool
-                // and unlink this machine's mirror. A local-only pool has
-                // no cross_pools entry — the reply is a plain Ok (the
-                // node-side extension owns its own cleanup).
+                // Drop the cross_pools entry and, when the pool was
+                // cross-machine, publish the targeted FreePool and unlink
+                // this machine's mirror.
                 let peer = self
                     .tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
@@ -7172,6 +7188,26 @@ impl Daemon {
                         self.shm_provider.as_deref(),
                     )
                     .await;
+                }
+                // A cross-machine registration with an explicit `name=`
+                // recorded an entry in the pool table (so the write path
+                // resolves the segment). Remove it here — and let
+                // `free_tensor_pool` unlink the *actual* sender segment
+                // (the metadata's `shared_memory_name` is the real
+                // `name=`, which the derived-name unlink in
+                // `release_cross_pool` misses, leaving the /dev/shm
+                // object behind). Not-found (local pools, auto-named
+                // cross-machine pools) is fine — the table is only
+                // populated on the explicit-name path (何勇 review
+                // 5302853212).
+                if let Err(e) = self.tensor_pool.free_tensor_pool(
+                    &dora_tensor_pool::TensorPoolId {
+                        dataflow_id: dataflow_id.to_string(),
+                        id: shared_memory_id.clone(),
+                    },
+                    node_id.as_ref(),
+                ) {
+                    tracing::debug!("memory pool: no pool-table entry for {shared_memory_id}: {e}");
                 }
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }

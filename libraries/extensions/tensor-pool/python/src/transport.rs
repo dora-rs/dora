@@ -1273,6 +1273,27 @@ impl Pool<'_> {
                     // Drop slot → munmap
                 }
             }
+            // Cross-machine GPU pool staging cache: unpin the mirror and
+            // free the pooled GPU buffer BEFORE dropping the mapping
+            // (unregister must precede munmap) — parity with the explicit
+            // `free_tensor_pool` path; without this a remotely freed
+            // CUDA mirror retains its pinned mapping and pooled GPU
+            // allocation (何勇 review 5302853212).
+            if let Some(slot) = RECV_GPU_HTOD
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&buffer_id)
+                && let Ok(helpers) = get_cuda_helpers(py)
+            {
+                let bound = helpers.bind(py);
+                let _ = bound.call_method1("_unregister_host", (slot.host_base,));
+                let _ = bound.call_method1("_free_gpu_buf", (&buffer_id,));
+                // slot._shmem drops here -> munmap
+            }
+            GPU_BUF_SIZES
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&buffer_id);
             RECV_CPU_SHMEM
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
