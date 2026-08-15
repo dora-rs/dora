@@ -1936,7 +1936,7 @@ impl Pool<'_> {
         // unavailable), fail registration instead of returning a pool that
         // every later write/read would silently reject.  Reclaim the shmem
         // segment on the way out (it was created with owner=false).
-        if receiver_is_cuda && !ipc_written {
+        if receiver_is_cuda && !cross_machine && !ipc_written {
             // The GPU pool buffer (and, on the transit path, the page-locked
             // host transit buffer) were allocated before the IPC export, which
             // failed.  Free them before bailing — otherwise they leak for the
