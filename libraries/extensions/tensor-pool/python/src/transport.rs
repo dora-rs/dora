@@ -1623,7 +1623,7 @@ impl Pool<'_> {
                     device.clone(),
                     target_machine,
                 )
-                .map_err(|e| e.to_string());
+                .map_err(|e| format!("{e:?}"));
             match result {
                 Ok((Ok(()), direct)) => {
                     if direct {
@@ -1772,7 +1772,11 @@ impl Pool<'_> {
         // permanently-broken pool.
         let mut ipc_written = false;
 
-        if receiver_is_cuda && let Ok(helpers) = get_cuda_helpers(py) {
+        if receiver_is_cuda
+            && !cross_machine
+            && !ipc_written
+            && let Ok(helpers) = get_cuda_helpers(py)
+        {
             let bound = helpers.bind(py);
 
             // Enable P2P for the sender/receiver pair before any IPC operations.
