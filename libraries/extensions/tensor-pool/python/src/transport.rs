@@ -1530,8 +1530,13 @@ impl Pool<'_> {
         // via the IPC handle in the DORADMA header and never touch the
         // shmem data region; skipping this copy for them eliminates
         // a redundant CPU-memcpy or GPU-DtoH transfer on every
-        // registration (cpu2cuda and cuda2cuda respectively).
-        if !receiver_is_cuda {
+        // registration (cpu2cuda and cuda2cuda respectively).  A
+        // cross-machine GPU receiver reads the staged data region instead
+        // (no IPC handle crosses hosts, and the mirror stores the data
+        // region for HtoD staging), so the initial copy runs there too —
+        // a full-size segment with an untouched data region would read as
+        // page-fault-sparse on the relay path and push empty frames.
+        if !receiver_is_cuda || cross_machine {
             // The DtoH copy must publish either a fully-initialized data
             // region or nothing — uninitialized shmem exposed as a valid
             // frame is data corruption.  Both a failed cudaMemcpy and a
