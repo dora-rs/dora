@@ -160,6 +160,11 @@ jobs:
         if: matrix.platform.zig
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
           manylinux: manylinux_2_28
@@ -168,6 +173,11 @@ jobs:
         if: ${{ !matrix.platform.zig }}
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           working-directory: ${{ matrix.repository.path }}

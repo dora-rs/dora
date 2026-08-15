@@ -94,6 +94,11 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           args: --release --out dist --zig
           manylinux: manylinux_2_28
@@ -147,6 +152,11 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           args: --release --out dist
           sccache: "false"
@@ -189,6 +199,11 @@ jobs:
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           manylinux: auto
           container: off
@@ -223,6 +238,11 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i ${{ env.PYTHON_VERSION }}
           # Was "true" — sccache floods the 10 GB repo cache with
@@ -258,6 +278,11 @@ jobs:
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           target: ${{ matrix.platform.target }}
           args: --release --out dist -i ${{ env.PYTHON_VERSION }}
           # Explicit: never enable the sccache GitHub-cache backend here
@@ -286,6 +311,11 @@ jobs:
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           command: sdist
           args: --out dist
           working-directory: ${{ matrix.repository.path }}
@@ -333,5 +363,10 @@ jobs:
         env:
           MATURIN_PYPI_TOKEN: ${{ secrets.PYPI_PASS }}
         with:
+          # Pin the maturin version so the action skips its versions-manifest
+          # lookup (an unretried api.github.com / raw.githubusercontent.com
+          # fetch that intermittently fails with a self-signed-certificate TLS
+          # error and ejects PRs from the merge queue). See dora-rs/dora#3161.
+          maturin-version: v1.14.1
           command: upload
           args: --non-interactive --skip-existing ${{ matrix.repository.name }}-*/*
