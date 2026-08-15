@@ -2982,7 +2982,7 @@ impl Pool<'_> {
             {
                 let bound = helpers.bind(py);
                 let _ = bound.call_method1("_unregister_host", (slot.host_base,));
-                let _ = bound.call_method1("_free_htod_buf", (&buffer_id,));
+                let _ = bound.call_method1("_free_gpu_buf", (&buffer_id,));
                 // slot._shmem drops here -> munmap
             }
         }
@@ -3381,8 +3381,8 @@ impl Pool<'_> {
                             .call_method1("_register_host", (shmem_ptr as u64, shmem_size))
                             .map_err(|e| eyre::eyre!("_register_host: {}", e))?;
                         let gpu_buf: u64 = bound
-                            .call_method1("_get_htod_buf", (buffer_id, size))
-                            .map_err(|e| eyre::eyre!("_get_htod_buf: {}", e))?
+                            .call_method1("_get_gpu_buf", (buffer_id, size))
+                            .map_err(|e| eyre::eyre!("_get_gpu_buf: {}", e))?
                             .extract()
                             .map_err(|e| eyre::eyre!("extract gpu_buf: {}", e))?;
                         let mut cache = RECV_GPU_HTOD.lock().unwrap_or_else(|e| e.into_inner());
