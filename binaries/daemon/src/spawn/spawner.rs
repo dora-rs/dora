@@ -403,14 +403,13 @@ impl Spawner {
             Some(machine_id) => command.env("DORA_MACHINE_ID", machine_id),
             None => command,
         };
-        // The direct-TCP auth token, when the data plane is secured: a
-        // spawned node needs it to hand peer daemons the credentials for
-        // same-host direct segment opens (the daemon-side listener verifies
-        // it on every connection).
-        match std::env::var("DORA_MEMORY_POOL_AUTH_TOKEN") {
-            Ok(token) => command.env("DORA_MEMORY_POOL_AUTH_TOKEN", token),
-            Err(_) => command,
-        }
+        // Note: the direct-TCP auth token (`DORA_MEMORY_POOL_AUTH_TOKEN`)
+        // is deliberately NOT injected into spawned nodes. The handshake
+        // runs entirely inside the daemon (it reads its own env on
+        // send/verify), and no node-side code ever reads the token —
+        // injecting it would only leak the shared deployment secret into
+        // every user node process (bot review 5301862843, 2026-08-15).
+        command
     }
 
     fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {

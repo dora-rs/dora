@@ -436,8 +436,10 @@ fn cross_machine_enabled() -> bool {
 /// handshake before the first data frame; a mismatched or missing token
 /// drops the connection (the origin degrades to the zenoh relay). Unset
 /// = no handshake (the daemon then relies on the port's reachability).
-/// Spawned nodes receive the token via `DORA_MEMORY_POOL_AUTH_TOKEN` so
-/// they can hand it to peer daemons for same-host direct opens.
+/// The token is NOT injected into spawned nodes (the handshake runs
+/// entirely in the daemon; node-side code never reads it — injecting it
+/// would leak the shared secret into every user node process, bot
+/// review 5301862843).
 ///
 /// Scope: the token authenticates the direct-TCP data plane only. The
 /// zenoh control/relay plane (RegisterPool/FreePool/MemoryPoolWrite over
@@ -570,9 +572,16 @@ async fn cross_data_auth_gate(stream: &mut tokio::net::TcpStream) -> Result<(), 
     }
 }
 
-static CROSS_POOL_WRITE_LOCKS: std::sync::LazyLock<
-    std::sync::Mutex<std::collections::HashMap<String, std::sync::Arc<std::sync::Mutex<()>>>>,
-> = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+/// Per-pool synchronous write lock for the zenoh-relay data plane.
+/// Keyed by `(dataflow id, pool id)` like the direct-TCP twin
+/// `CROSS_POOL_WRITE_LOCKS_ASYNC`: pool ids repeat across dataflows (each
+/// node process restarts its counter), and a bare pool-id key would
+/// serialize writes to different segments of concurrent dataflows.
+type CrossPoolWriteLocksSync = std::sync::Mutex<
+    std::collections::HashMap<(Uuid, String), std::sync::Arc<std::sync::Mutex<()>>>,
+>;
+static CROSS_POOL_WRITE_LOCKS: std::sync::LazyLock<CrossPoolWriteLocksSync> =
+    std::sync::LazyLock::new(CrossPoolWriteLocksSync::default);
 
 /// Async per-pool write lock for the direct-TCP data plane: a
 /// `std::sync::MutexGuard` cannot be held across an `.await`, so the
@@ -852,11 +861,12 @@ fn write_cross_pool_data(
         let mut locks = CROSS_POOL_WRITE_LOCKS
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        match locks.get(shared_memory_id) {
+        let key = (*dataflow_id, shared_memory_id.to_string());
+        match locks.get(&key) {
             Some(lock) => lock.clone(),
             None => {
                 let lock = std::sync::Arc::new(std::sync::Mutex::new(()));
-                locks.insert(shared_memory_id.to_string(), lock.clone());
+                locks.insert(key, lock.clone());
                 lock
             }
         }
@@ -5389,15 +5399,15 @@ impl Daemon {
                     key: shared_memory_id.clone(),
                 };
                 self.extensions.drop_key(&ext_key);
-                // Drop the per-pool relay write lock: pool ids embed a
-                // monotonic counter, so entries would otherwise
-                // accumulate for every freed relay-path pool (unbounded
-                // on a long-running daemon when direct TCP is
-                // unavailable).
+                // Drop the per-pool relay write lock: keyed by a fresh
+                // per-dataflow UUID like the sibling cross-write maps,
+                // so entries would otherwise accumulate for every freed
+                // relay-path pool (unbounded on a long-running daemon
+                // when direct TCP is unavailable).
                 CROSS_POOL_WRITE_LOCKS
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
-                    .remove(&shared_memory_id);
+                    .remove(&(dataflow_id, shared_memory_id.to_string()));
                 // Same machine-qualified id as `create_cross_pool_shmem`.
                 let Some(shmem_name) = TensorPoolManager::cross_pool_shmem_name(
                     self.machine_id.as_deref().unwrap_or_default(),
@@ -7909,6 +7919,17 @@ impl Daemon {
         // that never recovered would otherwise linger).
         {
             let mut locks = CROSS_POOL_WRITE_LOCKS_ASYNC.lock().await;
+            locks.retain(|(df, _), _| *df != dataflow_id);
+        }
+        {
+            // The zenoh-relay write lock is the same fresh per-dataflow
+            // UUID key; drain it here too — a relay-path pool whose
+            // dataflow ends without an explicit free (e.g. a node crash,
+            // so no FreePool is published) would otherwise leak its entry
+            // for the daemon's lifetime (bot review 5301862843).
+            let mut locks = CROSS_POOL_WRITE_LOCKS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             locks.retain(|(df, _), _| *df != dataflow_id);
         }
         {
