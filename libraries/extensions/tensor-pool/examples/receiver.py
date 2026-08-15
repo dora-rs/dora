@@ -39,7 +39,16 @@ for i in range(MESSAGE_COUNT):
         # corrupt iteration 0.
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
-            tensor_info = node.read_tensor_pool(memory_pool_id)
+            # The pool may not be ready yet: the registration push
+            # travels the relay (or a direct-TCP fallback) and can
+            # take seconds on a WAN. read_tensor_pool raises after
+            # its own 500ms retry window, so catch and retry until
+            # the 300s deadline.
+            try:
+                tensor_info = node.read_tensor_pool(memory_pool_id)
+            except RuntimeError:
+                time.sleep(0.1)
+                continue
             torch_tensor = tensor_from_info(tensor_info)
             if int(torch_tensor[0].item()) == 0:
                 break
@@ -66,7 +75,13 @@ for i in range(MESSAGE_COUNT):
         # window.
         deadline = time.monotonic() + 300
         while time.monotonic() < deadline:
-            tensor_info = node.read_tensor_pool(memory_pool_id)
+            # Same retry-on-raise as the first frame: the mirror write
+            # may lag the notification on a WAN.
+            try:
+                tensor_info = node.read_tensor_pool(memory_pool_id)
+            except RuntimeError:
+                time.sleep(0.1)
+                continue
             torch_tensor = tensor_from_info(tensor_info)
             if int(torch_tensor[0].item()) == i:
                 break
