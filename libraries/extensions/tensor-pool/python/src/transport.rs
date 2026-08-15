@@ -2733,13 +2733,26 @@ impl Pool<'_> {
                     }
                     Ok(None) => break,
                     Err(e) => {
+                        tracing::warn!(
+                            "[{}] try_doradma_read hard error for {}: {e:#}",
+                            self.node_id,
+                            buffer_id
+                        );
                         warn_missing_tensor_pool(&self.node_id, "read", &buffer_id);
                         eyre::bail!("tensor pool {}: fast path failed: {}", buffer_id, e);
                     }
                 }
             }
             // Retries exhausted — fall back to the daemon for CPU pools.
-            if let Ok(metadata) = crate::seam::load_metadata(self.node, &buffer_id, false) {
+            let metadata = crate::seam::load_metadata(self.node, &buffer_id, false);
+            if let Err(e) = &metadata {
+                tracing::warn!(
+                    "[{}] daemon metadata lookup failed for {}: {e:#}",
+                    self.node_id,
+                    buffer_id
+                );
+            }
+            if let Ok(metadata) = metadata {
                 let size = metadata
                     .parameters
                     .get("size")

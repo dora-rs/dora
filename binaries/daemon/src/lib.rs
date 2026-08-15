@@ -5266,6 +5266,10 @@ impl Daemon {
                         tracing::warn!(
                             "memory pool: failed to store mirror descriptor for {shared_memory_id}: {e}"
                         );
+                    } else {
+                        tracing::info!(
+                            "memory pool: stored mirror descriptor for {shared_memory_id}"
+                        );
                     }
                 }
                 // Advertise this daemon's direct-TCP data listener so the
