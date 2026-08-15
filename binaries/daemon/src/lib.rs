@@ -683,6 +683,55 @@ fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
     removed
 }
 
+/// The pool descriptor replicated into this daemon's extension table when
+/// a cross-machine pool is mirrored (RegisterPool). The sender's node
+/// stores the descriptor on its own daemon only; without this replication
+/// a receiver's daemon query (`load_metadata`) misses, so a GPU receiver
+/// never obtains the daemon-trusted size it requires before HtoD staging
+/// (`GPU_BUF_SIZES`) and every read fails as "pool does not exist". CPU
+/// receivers never notice — their fast path reads the mirror header
+/// directly — which is why CPU-only deployments cannot trip this.
+///
+/// Field set mirrors the python transport's `seam::store` descriptor so
+/// the receiver-side consumers (`load_metadata`, `GPU_BUF_SIZES`) find
+/// the same keys. `pinned_type` carries the receiver device ("cuda:0")
+/// exactly like the mirror header JSON (same input, same value).
+#[cfg(target_os = "linux")]
+fn build_mirror_descriptor(
+    size: usize,
+    dtype: &str,
+    shape: &[i64],
+    mirror_shmem_name: &str,
+    device: &str,
+) -> Vec<u8> {
+    let mut params = MetadataParameters::new();
+    params.insert(
+        "size".to_string(),
+        dora_message::metadata::Parameter::Integer(size as i64),
+    );
+    params.insert(
+        "dtype".to_string(),
+        dora_message::metadata::Parameter::String(dtype.to_string()),
+    );
+    params.insert(
+        "shape".to_string(),
+        dora_message::metadata::Parameter::ListInt(shape.to_vec()),
+    );
+    params.insert(
+        "shared_memory_name".to_string(),
+        dora_message::metadata::Parameter::String(mirror_shmem_name.to_string()),
+    );
+    params.insert(
+        "pinned_type".to_string(),
+        dora_message::metadata::Parameter::String(device.to_string()),
+    );
+    params.insert(
+        "ipc_present".to_string(),
+        dora_message::metadata::Parameter::Bool(false),
+    );
+    serde_json::to_vec(&params).unwrap_or_default()
+}
+
 /// Create a CPU DORADMA pool mirror on this machine. Mirrors the node
 /// API's register_memory_pool shmem layout. The generation is
 /// initialized to an odd (in-progress) value with all-zero data so
@@ -5187,6 +5236,38 @@ impl Daemon {
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
                 let tensor_pool = self.tensor_pool.clone();
                 let shm_provider = self.shm_provider.clone();
+                // Replicate the pool descriptor into the local extension
+                // table before the mirror creation task runs, so a
+                // receiver's daemon query resolves it from the first
+                // frame (see `build_mirror_descriptor` for why the
+                // sender-side store alone is insufficient). Owner is the
+                // sender node id, derived from the pool id like
+                // `cross_pool_shmem_name`; the sender node never runs on
+                // this host, so the node-exit reclaim never fires —
+                // FreePool drops the entry explicitly.
+                if let Some(mirror_shmem_name) = TensorPoolManager::cross_pool_shmem_name(
+                    self.machine_id.as_deref().unwrap_or_default(),
+                    &dataflow_id.to_string(),
+                    &shared_memory_id,
+                ) {
+                    let owner = shared_memory_id
+                        .strip_prefix("pool_")
+                        .and_then(|s| s.rsplit_once('_'))
+                        .map(|(node, _)| node.to_string())
+                        .unwrap_or_default();
+                    let ext_key = ExtensionKey {
+                        dataflow_id: dataflow_id.to_string(),
+                        namespace: "dora-tensor-pool".to_string(),
+                        key: shared_memory_id.clone(),
+                    };
+                    let value =
+                        build_mirror_descriptor(size, &dtype, &shape, &mirror_shmem_name, &device);
+                    if let Err(e) = self.extensions.store(ext_key, value, &NodeId::from(owner)) {
+                        tracing::warn!(
+                            "memory pool: failed to store mirror descriptor for {shared_memory_id}: {e}"
+                        );
+                    }
+                }
                 // Advertise this daemon's direct-TCP data listener so the
                 // origin can bypass the zenoh relay for per-frame writes.
                 let data_port = self.cross_data_listener_port;
@@ -5296,6 +5377,14 @@ impl Daemon {
                 }
                 self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
+                // The replicated mirror descriptor goes away with the
+                // pool (a receiver mid-read learns via drain_dropped).
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace: "dora-tensor-pool".to_string(),
+                    key: shared_memory_id.clone(),
+                };
+                self.extensions.drop_key(&ext_key);
                 // Drop the per-pool relay write lock: pool ids embed a
                 // monotonic counter, so entries would otherwise
                 // accumulate for every freed relay-path pool (unbounded
@@ -9575,6 +9664,83 @@ fn rebuild_debug_topic_stream(
             }
             Some(payload.to_vec())
         }
+    }
+}
+
+#[cfg(test)]
+mod cross_mirror_descriptor_tests {
+    use super::build_mirror_descriptor;
+    use dora_message::metadata::{MetadataParameters, Parameter};
+
+    fn decode(bytes: &[u8]) -> MetadataParameters {
+        serde_json::from_slice(bytes).expect("descriptor must decode")
+    }
+
+    fn get_str<'a>(params: &'a MetadataParameters, key: &str) -> &'a str {
+        match params.get(key) {
+            Some(Parameter::String(s)) => s,
+            other => panic!("expected string {key}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn gpu_mirror_descriptor_carries_receiver_device() {
+        // A GPU receiver's mirror: pinned_type must be the receiver
+        // device ("cuda:0"), not "cpu" — the python receiver derives
+        // `effective_as_cuda` from it and stages the mirror's CPU data
+        // region HtoD.
+        let bytes = build_mirror_descriptor(
+            61_440_000,
+            "torch.int64",
+            &[7_680_000],
+            "dora_pool_D_01a00445-b12d-734b-852b-463d76c749b1_sender_node_1",
+            "cuda:0",
+        );
+        let params = decode(&bytes);
+        assert_eq!(
+            get_str(&params, "pinned_type"),
+            "cuda:0",
+            "GPU mirror must advertise the receiver device"
+        );
+        assert_eq!(
+            get_str(&params, "dtype"),
+            "torch.int64",
+            "dtype must round-trip"
+        );
+        assert_eq!(
+            params.get("size"),
+            Some(&Parameter::Integer(61_440_000)),
+            "size must round-trip"
+        );
+        assert_eq!(
+            params.get("shape"),
+            Some(&Parameter::ListInt(vec![7_680_000])),
+            "shape must round-trip"
+        );
+        assert_eq!(
+            get_str(&params, "shared_memory_name",),
+            "dora_pool_D_01a00445-b12d-734b-852b-463d76c749b1_sender_node_1",
+            "shared_memory_name must be the machine-qualified mirror segment"
+        );
+        assert_eq!(
+            params.get("ipc_present"),
+            Some(&Parameter::Bool(false)),
+            "cross-machine mirrors never export a host-local IPC handle"
+        );
+    }
+
+    #[test]
+    fn cpu_mirror_descriptor_is_cpu() {
+        // A CPU receiver's mirror: pinned_type "cpu" keeps the python
+        // receiver on the CPU read path (no HtoD staging).
+        let bytes = build_mirror_descriptor(
+            61_440_000,
+            "torch.int64",
+            &[7_680_000],
+            "dora_pool_D_01a00445-b12d-734b-852b-463d76c749b1_sender_node_1",
+            "cpu",
+        );
+        assert_eq!(get_str(&decode(&bytes), "pinned_type"), "cpu");
     }
 }
 
