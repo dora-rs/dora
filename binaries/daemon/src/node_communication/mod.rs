@@ -256,6 +256,32 @@ impl Listener {
                     .await
                     .wrap_err("failed to send register reply")?;
             }
+            DaemonRequest::RegisterCrossMachinePool {
+                shared_memory_id,
+                shmem_name,
+                size,
+                dtype,
+                shape,
+                device,
+                machine_id,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::RegisterCrossMachinePool {
+                        shared_memory_id,
+                        shmem_name,
+                        size,
+                        dtype,
+                        shape,
+                        device,
+                        machine_id,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
             DaemonRequest::NodeConfig { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected node config message".into()));
                 self.send_reply(reply, connection)
@@ -402,6 +428,36 @@ impl Listener {
                     DaemonNodeEvent::ExtensionDrop {
                         namespace,
                         key,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::WritePinnedMemory {
+                shared_memory_id,
+                tensor_data,
+                size,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::WriteMemoryPool {
+                        shared_memory_id,
+                        tensor_data,
+                        size,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::FreePinnedMemory { shared_memory_id } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::FreePinnedMemory {
+                        shared_memory_id,
                         reply_sender,
                     },
                     Some(reply),
