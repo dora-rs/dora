@@ -95,6 +95,17 @@ pub struct RunningNode {
     /// under this node ID. Lifecycle events from older incarnations must not
     /// mutate this entry or contribute results to it.
     pub(crate) generation: u64,
+    /// Shared counter into which *this entry's own* restart loop publishes its
+    /// successor's generation, before spawning that successor (see
+    /// `RawSpawner::restart_loop`). Because the successor can connect and
+    /// `Subscribe` before the daemon processes the matching
+    /// `ProcessHandleReplaced` (which advances [`Self::generation`]), the event
+    /// gate must accept a generation equal to this announced successor even
+    /// though it is newer than [`Self::generation`]. Crucially it is *this*
+    /// lineage's counter: a stranger incarnation (e.g. a concurrent restart of
+    /// a node being replaced) mints a higher generation into a *different*
+    /// counter, so its events are still rejected (dora-rs/dora#2997).
+    pub(crate) generation_counter: Arc<AtomicU64>,
     pub(crate) node_config: NodeConfig,
     pub(crate) pid: Option<Arc<AtomicU32>>,
     pub(crate) restart_count: Arc<AtomicU32>,

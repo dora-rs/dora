@@ -201,6 +201,7 @@ impl PreparedNode {
             restart_loop_start: Some(registered_tx),
             _listener_shutdown: Some(self.listener_shutdown.clone()),
             generation: self.generation,
+            generation_counter: self.generation_counter.clone(),
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
