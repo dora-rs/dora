@@ -592,6 +592,10 @@ static CROSS_POOL_WRITE_LOCKS: std::sync::LazyLock<CrossPoolWriteLocksSync> =
 /// cross-write state: pool ids repeat across dataflows (each node process
 /// restarts its counter), and a bare pool-id key would needlessly
 /// serialize writes to *different* segments of concurrent dataflows.
+/// Per-plane only: the relay path serializes on the separate sync
+/// `CROSS_POOL_WRITE_LOCKS`; cross-plane exclusion is provided by the
+/// node's turn-based write cadence, not by these locks (bot review
+/// 5306582566; the dual-lock split is a decided design).
 type CrossPoolWriteLocks = tokio::sync::Mutex<
     std::collections::HashMap<(Uuid, String), std::sync::Arc<tokio::sync::Mutex<()>>>,
 >;
@@ -854,11 +858,16 @@ fn write_cross_pool_data(
     tensor_data: &[u8],
     size: usize,
 ) -> bool {
-    // Serialise concurrent writes to the same pool: two overlapping
-    // memcpys would interleave bytes and leave a mixed frame that the
-    // seqlock (odd = in-progress) cannot detect once both writers have
-    // completed an even generation. Per-pool lock, held across the whole
-    // write (open + seqlock begin + copy + end).
+    // Serialise concurrent relay-path writes to the same pool: two
+    // overlapping memcpys would interleave bytes and leave a mixed frame
+    // that the seqlock (odd = in-progress) cannot detect once both
+    // writers have completed an even generation. Per-pool lock, held
+    // across the whole write (open + seqlock begin + copy + end).
+    // NOTE: this lock is per-plane — the direct-TCP path serializes on
+    // the separate `CROSS_POOL_WRITE_LOCKS_ASYNC`. Cross-plane exclusion
+    // relies on the node's turn-based write cadence (each write awaits
+    // its seq-matched ack before the next), which the design assumes
+    // (bot review 5306582566; the dual-lock split is a decided design).
     let write_lock = {
         let mut locks = CROSS_POOL_WRITE_LOCKS
             .lock()
