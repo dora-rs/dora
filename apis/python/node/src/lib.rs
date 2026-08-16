@@ -1203,29 +1203,11 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
     Ok(())
 }
 
-#[cfg(test)]
-mod pin_tests {
-    use super::*;
-}
-
-// ---------------------------------------------------------------------------
-// GPU transport-path classification — pure decision logic extractable
-// from CUDA-runtime-embedded code so the full matrix can be exercised in
-// CI without a GPU.  Same pattern as `should_pin` above.
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod transport_tests {
-    use super::*;
-
-    // -- classify_transport -------------------------------------------------
-
-    // -- classify_write_path -------------------------------------------------
-
-    // -- check_capacity_gpu_pool --------------------------------------------
-}
-
-#[pymethods]
-impl Node {}
-
-impl Node {}
+// Note: the GPU transport-path classification matrix (`classify_transport`,
+// `classify_write_path`, `check_capacity_gpu_pool`) is tested in
+// `libraries/extensions/tensor-pool/python/src/transport.rs` (pure
+// decision logic, exercised without a GPU — see the `#[cfg(test)]` module
+// there). The `transport_tests` scaffolding that used to live here was
+// removed: it was empty, and this crate's test binary is excluded from
+// CI (`cargo test --all` skips the PyO3 crates), so the stub advertised
+// coverage that did not exist (bot review 5306582566).
