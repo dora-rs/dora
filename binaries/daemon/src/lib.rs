@@ -5428,6 +5428,14 @@ impl Daemon {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&(dataflow_id, shared_memory_id.to_string()));
+                // The direct-TCP twin lock accumulates the same way: a
+                // direct-path pool freed here would otherwise keep its
+                // entry until dataflow finish (only the relay lock was
+                // drained on free — self-review, 2026-08-16).
+                CROSS_POOL_WRITE_LOCKS_ASYNC
+                    .lock()
+                    .await
+                    .remove(&(dataflow_id, shared_memory_id.to_string()));
                 // Same machine-qualified id as `create_cross_pool_shmem`.
                 let Some(shmem_name) = TensorPoolManager::cross_pool_shmem_name(
                     self.machine_id.as_deref().unwrap_or_default(),
@@ -7209,6 +7217,21 @@ impl Daemon {
                 ) {
                     tracing::debug!("memory pool: no pool-table entry for {shared_memory_id}: {e}");
                 }
+                // Drop this machine's replicated mirror descriptor. The
+                // sender-free path reaches it via the FreePool event; the
+                // receiver-free path lands here directly and would
+                // otherwise leave the descriptor (and any receiver's
+                // ExtensionDropped notification) until dataflow finish —
+                // asymmetric with the FreePool path (self-review,
+                // 2026-08-16). A no-op for pools whose registration never
+                // completed (drop_key returns None).
+                let ext_key = ExtensionKey {
+                    dataflow_id: dataflow_id.to_string(),
+                    namespace: "dora-tensor-pool".to_string(),
+                    key: shared_memory_id.clone(),
+                };
+                let dataflow = self.running.get(&dataflow_id);
+                drop_extension_and_notify(&mut self.extensions, dataflow, &ext_key, &self.clock);
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }

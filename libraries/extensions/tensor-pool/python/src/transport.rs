@@ -1754,6 +1754,15 @@ impl Pool<'_> {
                         self.node_id,
                         buffer_id
                     );
+                    // The mirror daemon stored the pool descriptor before
+                    // its mirror-creation task ran; a failed creation (1 GiB
+                    // cap, leftover-segment EEXIST) otherwise leaves a
+                    // phantom descriptor poisoning receiver lookups until
+                    // dataflow finish. Tell the daemon to tear the
+                    // registration down — FreePinnedMemory now drops the
+                    // descriptor, both write locks, and any table entry
+                    // (self-review, 2026-08-16).
+                    let _ = self.node.free_pinned_memory(buffer_id.clone());
                     rollback_local_pool(
                         &mut shmem,
                         shmem_ptr as u64,
