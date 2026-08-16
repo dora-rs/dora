@@ -808,12 +808,27 @@ fn create_cross_pool_shmem(
     let mut shmem = match make_conf().create() {
         Ok(s) => s,
         Err(e) => {
-            // EEXIST: a stale mirror left by a daemon that was killed
-            // without running shutdown cleanup (the mirror handle is
-            // owner-less, so nothing unlinks it on process death). The
-            // old dataflow is dead — its nodes were daemon children — so
-            // replacing the segment is safe: unlink and retry once.
+            // EEXIST: either a stale mirror left by a daemon that was
+            // killed without running shutdown cleanup, or — on a retried
+            // registration whose first ack was lost — this daemon's own
+            // live mirror created moments ago. Unlinking the latter
+            // strands receivers that already mapped the old inode (they
+            // read a frozen frame forever while writes land in the new
+            // one). Distinguish by segment size: a live mirror from this
+            // same (dataflow, pool) registration has exactly this size
+            // and its header is already written — treat it as idempotent
+            // success; anything else is stale and safe to replace (bot
+            // review 5307022693).
             let shm_path = format!("/dev/shm/{shmem_name}");
+            if let Ok(meta) = std::fs::metadata(&shm_path)
+                && meta.len() == (size + data_offset) as u64
+            {
+                tracing::info!(
+                    "memory pool: mirror {shmem_name} already exists at the registered size \
+                     — idempotent success (registration retried after a lost ack)"
+                );
+                return Ok(());
+            }
             if std::path::Path::new(&shm_path).exists() {
                 tracing::warn!("memory pool: stale mirror {shmem_name} exists, replacing");
                 std::fs::remove_file(&shm_path)
@@ -6801,6 +6816,7 @@ impl Daemon {
                         }
                         None => tensor_data,
                     };
+                    let mut relay_seq = seq;
                     if let Some(endpoint) = direct_endpoint {
                         match send_cross_data_frame(
                             &cross_data_conns,
@@ -6837,6 +6853,43 @@ impl Daemon {
                                          (warned once; recovery will be logged)"
                                     );
                                 }
+                                // The direct attempt for this seq is
+                                // abandoned. On a mid-frame disconnect the
+                                // mirror has already parsed the header and
+                                // publishes ok:false(old seq) the instant
+                                // its read fails — which would win the race
+                                // against the relay's ok:true (published
+                                // only after the re-sent frame is memcpy'd)
+                                // and fail the node's write even though the
+                                // zenoh fallback delivers the frame
+                                // byte-for-byte. Re-key the pending entry to
+                                // a fresh seq for the relay hop so the stale
+                                // ok:false is dropped by the first-wins
+                                // resolver, and keep the per-pool counter
+                                // monotonic so the next write cannot
+                                // collide with this re-keyed seq (bot
+                                // review 5307022693).
+                                let rekeyed = CROSS_WRITE_PENDING
+                                    .lock()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .remove(&(dataflow_id, shared_memory_id.clone(), seq));
+                                if let Some(tx) = rekeyed {
+                                    let mut seqs =
+                                        CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+                                    let counter = seqs
+                                        .entry((dataflow_id, shared_memory_id.clone()))
+                                        .or_insert(0);
+                                    *counter += 1;
+                                    relay_seq = *counter;
+                                    drop(seqs);
+                                    CROSS_WRITE_PENDING
+                                        .lock()
+                                        .unwrap_or_else(|e| e.into_inner())
+                                        .insert(
+                                            (dataflow_id, shared_memory_id.clone(), relay_seq),
+                                            tx,
+                                        );
+                                }
                             }
                         }
                     }
@@ -6845,7 +6898,7 @@ impl Daemon {
                         shared_memory_id: shared_memory_id.clone(),
                         tensor_data,
                         size,
-                        seq,
+                        seq: relay_seq,
                     };
                     if let Err(e) = publish_memory_pool_event(
                         &session,
@@ -6862,7 +6915,7 @@ impl Daemon {
                         if let Some(tx) = CROSS_WRITE_PENDING
                             .lock()
                             .unwrap_or_else(|e| e.into_inner())
-                            .remove(&(dataflow_id, shared_memory_id, seq))
+                            .remove(&(dataflow_id, shared_memory_id, relay_seq))
                         {
                             let _ = tx.send(DaemonReply::Result(Err(format!(
                                 "cross-machine write failed to reach the remote daemon: {e}"
@@ -9834,6 +9887,160 @@ mod cross_mirror_descriptor_tests {
             "cpu",
         );
         assert_eq!(get_str(&decode(&bytes), "pinned_type"), "cpu");
+    }
+}
+
+#[cfg(test)]
+mod cross_write_failover_tests {
+    use super::{CROSS_WRITE_PENDING, CROSS_WRITE_SEQ, resolve_cross_write_ack};
+    use dora_message::DataflowId;
+    use dora_message::daemon_to_node::DaemonReply;
+
+    #[test]
+    fn failover_rekey_drops_stale_direct_ack_and_resolves_via_relay() {
+        // The WriteMemoryPool failover rekeys the pending entry to a
+        // fresh seq for the zenoh relay hop, so the mirror's ok:false
+        // for the abandoned direct seq (published the instant its
+        // mid-frame read fails) is dropped by the first-wins resolver,
+        // and the relay's ok:true resolves the node's write. Without the
+        // rekey, the ok:false would win the race and fail a write the
+        // relay delivered byte-for-byte (bot review 5307022693).
+        let df = DataflowId::new_v4();
+        let pool = "pool_sender_node_1".to_string();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        // Write-side seq allocation (counter 0 -> 1), mirroring the
+        // WriteMemoryPool handler.
+        let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        let counter = seqs.entry((df, pool.clone())).or_insert(0);
+        *counter += 1;
+        let seq = *counter;
+        drop(seqs);
+        assert_eq!(seq, 1, "test setup assumes the first write takes seq 1");
+        CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((df, pool.clone(), seq), tx);
+
+        // Rekey (mirrors the direct-failure arm): remove the old seq,
+        // bump the per-pool counter, re-insert under the fresh seq. The
+        // counter is what guarantees relay_seq != seq (the seq always
+        // derives from it).
+        let tx = CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(df, pool.clone(), seq))
+            .expect("pending entry present");
+        let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        let counter = seqs.entry((df, pool.clone())).or_insert(0);
+        *counter += 1;
+        let relay_seq = *counter;
+        drop(seqs);
+        assert_ne!(relay_seq, seq, "rekey must produce a fresh seq");
+        CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((df, pool.clone(), relay_seq), tx);
+
+        // The stale direct-plane ok:false arrives first: no pending entry
+        // under the old seq, so it is dropped without touching the node.
+        assert!(!resolve_cross_write_ack(
+            df,
+            pool.clone(),
+            seq,
+            false,
+            Some("mid-frame direct read failed".to_string())
+        ));
+
+        // The relay's ok:true resolves the node's write as a success.
+        assert!(resolve_cross_write_ack(
+            df,
+            pool.clone(),
+            relay_seq,
+            true,
+            None
+        ));
+        let result = rx.blocking_recv().expect("node reply delivered");
+        assert!(
+            matches!(result, DaemonReply::Result(Ok(()))),
+            "node must see the relay's success, not the stale direct failure"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn create_cross_pool_shmem_idempotent_on_matching_size() {
+        // A retried registration whose first ack was lost re-runs
+        // create_cross_pool_shmem against the daemon's own live mirror:
+        // same (dataflow, pool) and same size must be an idempotent
+        // success, not an unlink+recreate that strands receivers already
+        // mapping the old inode (bot review 5307022693).
+        let df = DataflowId::new_v4();
+        let pool = "pool_sender_node_1".to_string();
+        let size = 61_440_000usize;
+        super::create_cross_pool_shmem(
+            &df,
+            "M",
+            &pool,
+            size,
+            "torch.int64",
+            &[7_680_000],
+            "cpu",
+            None,
+        )
+        .expect("first create");
+        let name = super::TensorPoolManager::cross_pool_shmem_name("M", &df.to_string(), &pool)
+            .expect("name");
+        let path = format!("/dev/shm/{name}");
+        let ino_after_create = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("segment exists").ino()
+        };
+        // Second attempt (same everything): idempotent success — the
+        // inode must survive, so receivers mapping it keep reading the
+        // live mirror rather than a frozen orphan.
+        super::create_cross_pool_shmem(
+            &df,
+            "M",
+            &pool,
+            size,
+            "torch.int64",
+            &[7_680_000],
+            "cpu",
+            None,
+        )
+        .expect("retry must be idempotent");
+        let ino_after_idempotent = {
+            use std::os::unix::fs::MetadataExt;
+            std::fs::metadata(&path).expect("segment exists").ino()
+        };
+        assert_eq!(
+            ino_after_create, ino_after_idempotent,
+            "idempotent retry must not unlink+recreate the live mirror"
+        );
+
+        // A stale mirror of a different size is still replaced (new
+        // inode, new size).
+        super::create_cross_pool_shmem(
+            &df,
+            "M",
+            &pool,
+            size + 1,
+            "torch.int64",
+            &[7_680_000],
+            "cpu",
+            None,
+        )
+        .expect("stale size replaced");
+        let meta = std::fs::metadata(&path).expect("segment exists");
+        let ino_after_replace = {
+            use std::os::unix::fs::MetadataExt;
+            meta.ino()
+        };
+        assert_ne!(
+            ino_after_create, ino_after_replace,
+            "stale-size mirror must be replaced with a fresh segment"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
 
