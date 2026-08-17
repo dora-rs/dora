@@ -16,6 +16,10 @@ Add to your `Cargo.toml`:
 dora-node-api = { workspace = true }
 ```
 
+See [Arrow version policy](#arrow-version-policy) if your node needs to name
+Arrow types directly (e.g. to build a `StructArray` or share arrays with
+polars/datafusion/parquet).
+
 ### DoraNode
 
 The primary struct for sending outputs and retrieving node information. Obtained through one of the initialization functions below.
@@ -63,7 +67,7 @@ pub fn send_output(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<()>
 
 // Send raw bytes. Copies into shared memory when beneficial.
@@ -309,7 +313,7 @@ pub enum Event {
     Input {
         id: DataId,           // input ID from the YAML (not the sender's output ID)
         metadata: Metadata,   // timestamp and type information
-        data: ArrowData,      // Apache Arrow data
+        data: DoraArray,      // Apache Arrow data, owned by dora
     },
 
     // The sender mapped to this input exited; no more data will arrive.
@@ -444,14 +448,97 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 Messages smaller than this threshold are sent via TCP. Messages at or above this size use shared memory for zero-copy transfer.
 
-#### ArrowData
+#### DoraArray
 
 ```rust
-// Wrapper around arrow::array::ArrayRef. Implements Deref to the inner ArrayRef.
-pub struct ArrowData(pub arrow::array::ArrayRef);
+// A dora-owned Apache Arrow array. The inner array is private.
+pub struct DoraArray { /* private */ }
+
+impl DoraArray {
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn null_count(&self) -> usize;
+    pub fn type_name(&self) -> String;   // e.g. "UInt64"
+}
 ```
 
-Data from `Event::Input` arrives as `ArrowData`. Use `TryFrom` conversions or Arrow APIs to extract typed values.
+Data from `Event::Input` arrives as `DoraArray`. Use the `TryFrom<&DoraArray>`
+conversions (`bool`, the primitive integer/float types, `String`, `&str`, the
+`chrono` date/time types, `&[T]`, `Vec<T>`) or `into_vec::<T>()` to extract
+typed values without naming an Arrow type.
+
+To reach the Arrow array itself, enable the feature naming your Arrow major —
+see [Arrow version policy](#arrow-version-policy).
+
+`IntoArrow` is the other direction, and what `send_output` takes:
+
+```rust
+pub trait IntoArrow {
+    fn into_arrow(self) -> DoraArray;
+}
+```
+
+It is implemented for booleans, strings, the primitive integer/float types,
+`Vec`s of those, a few `chrono` types, `()` (an empty null array, for
+metadata-only outputs), and `DoraArray` itself.
+
+---
+
+### Arrow version policy
+
+`dora-node-api`'s public API is frozen for the life of 1.x, and Arrow ships a
+major roughly every 6–8 weeks. If an Arrow type appeared in that frozen API,
+dora 1.x would be pinned to one Arrow major for its whole life and users would
+have to choose between current dora and current polars/datafusion/parquet.
+
+So it does not. Every ungated signature uses the dora-owned `DoraArray` /
+`IntoArrow`, and Arrow is reachable only through **explicitly versioned,
+opt-in features**:
+
+```toml
+[dependencies]
+# Nothing extra needed if your node never names an Arrow type.
+dora-node-api = "1"
+
+# Naming Arrow 59 — dora's current internal major. Free: no conversion, and
+# no extra copy of Arrow in your build.
+dora-node-api = { version = "1", features = ["arrow-v59"] }
+```
+
+| Feature | Re-export | `DoraArray` accessors | Cost |
+|---|---|---|---|
+| *(none)* | — | `len`, `is_empty`, `null_count`, `type_name`, `TryFrom`, `into_vec` | — |
+| `arrow-v59` | `dora_node_api::arrow_v59` | `as_array`, `into_inner`, `from_array`, `From<ArrayRef>` | free (borrow) |
+| `arrow-v58` | `dora_node_api::arrow_v58` | `from_arrow_v58`, `to_arrow_v58` | one Arrow C Data Interface hop; no buffer copy |
+
+There is deliberately no `pub use arrow;`. A bare `arrow` re-export changes
+meaning silently when dora bumps its internal major. `arrow_v59` cannot: it
+either exists and means Arrow 59, or it is visibly gone.
+
+Cargo unifies semver-compatible versions, so if you declare `arrow = "59"`
+yourself you get *the same crate instance* as `dora_node_api::arrow_v59` — the
+types are interchangeable, not merely similar. Two different Arrow majors also
+coexist fine (distinct crates, distinct symbols, pure Rust).
+
+#### Support window
+
+- **Adding an `arrow-vN` feature is additive** and can land in any minor.
+- **Removing one is breaking** and waits for a major, after at least one
+  release carrying `#[deprecated]`.
+- At ~8 Arrow majors a year dora carries **two or three** at a time: the
+  current internal major plus one or two older ones.
+- When dora moves its internal major (say 59 → 60), `arrow-v60` is added and
+  becomes the free/borrowing one; `arrow-v59` keeps working but demotes to a
+  *converting* accessor over the C Data Interface, exactly like `arrow-v58`
+  today. Nothing silently changes meaning.
+
+#### Not covered by the guarantee
+
+`dora_arrow_convert::internal` is an Arrow-typed seam for dora's own crates
+(the C/C++/Python bindings, the record/replay nodes). It is not re-exported
+from `dora-node-api`, it names dora's internal Arrow major, and it is
+**exempt from the semver guarantee** — it changes whenever the internal major
+does. Use the version-gated accessors instead.
 
 ---
 
@@ -475,7 +562,7 @@ impl InputTracker {
     pub fn is_closed(&self, id: &DataId) -> bool
 
     // Last received value for an input. Available even when closed.
-    pub fn last_value(&self, id: &DataId) -> Option<&ArrowData>
+    pub fn last_value(&self, id: &DataId) -> Option<&DoraArray>
 
     // All inputs currently in Closed state.
     pub fn closed_inputs(&self) -> Vec<&DataId>
@@ -596,7 +683,7 @@ The operator `Event` enum is simpler than the node `Event` and uses `&str` for I
 #[non_exhaustive]
 pub enum Event<'a> {
     // An input was received.
-    Input { id: &'a str, data: ArrowData },
+    Input { id: &'a str, data: DoraArray },
 
     // Failed to parse the input data as an Arrow array.
     InputParseError { id: &'a str, error: String },

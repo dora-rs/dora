@@ -157,7 +157,9 @@ impl InteractiveEvents {
 
                     // The receive side decodes a self-describing Arrow IPC
                     // stream, so encode the array into one here.
-                    match encode_arrow_ipc(&array_data) {
+                    match encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(
+                        array_data,
+                    )) {
                         Ok(buf) => Some(buf),
                         Err(err) => {
                             eprintln!("{}", format!("{err}").red());

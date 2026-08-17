@@ -79,7 +79,7 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
             Ok(data) => Event::Input {
                 id: &input.id,
                 metadata: &input.metadata,
-                data: arrow::array::make_array(data).into(),
+                data: dora_arrow_convert::internal::from_array_data(data),
             },
             Err(err) => Event::InputParseError {
                 id: &input.id,

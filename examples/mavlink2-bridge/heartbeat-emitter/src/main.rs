@@ -15,7 +15,7 @@ use dora_mavlink2_bridge::{
     mavlink::dialects::common::{HEARTBEAT_DATA, MavAutopilot, MavModeFlag, MavState, MavType},
 };
 use dora_node_api::{
-    DoraNode, Event, MetadataParameters, arrow::array::ArrayRef, dora_core::config::DataId,
+    DoraNode, Event, MetadataParameters, arrow_v59::array::ArrayRef, dora_core::config::DataId,
 };
 use eyre::{Result, eyre};
 

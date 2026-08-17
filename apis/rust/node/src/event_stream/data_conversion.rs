@@ -3,7 +3,7 @@ use std::{ptr::NonNull, sync::Arc};
 use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::IntoArrow;
 
-use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
 
 pub enum RawData {
     Empty,
@@ -15,7 +15,9 @@ impl RawData {
         match self {
             // A metadata-only message with no payload. Any real array is a
             // non-empty IPC stream, so an empty payload maps to the unit array.
-            RawData::Empty => Ok(().into_arrow().into()),
+            RawData::Empty => {
+                Ok(dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data())
+            }
             RawData::Vec(data) => {
                 // Wrap the 128-byte-aligned `AVec` as an Arrow `Buffer` without
                 // copying (the buffer aliases the allocation), then let the
@@ -26,7 +28,7 @@ impl RawData {
                 let raw_buffer = unsafe {
                     arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data))
                 };
-                decode_arrow_ipc_zero_copy(raw_buffer)
+                decode_arrow_ipc_zero_copy_raw(raw_buffer)
             }
         }
     }
@@ -55,9 +57,9 @@ mod tests {
 
         // Encode the IPC stream into a 128-byte-aligned AVec, exactly as the
         // send path does for the daemon fallback.
-        let len = ipc_encode::ipc_fast_path_len(&data).unwrap();
+        let len = ipc_encode::ipc_fast_path_len_data(&data).unwrap();
         let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
-        ipc_encode::encode_ipc_into(&data, &mut avec).unwrap();
+        ipc_encode::encode_ipc_into_data(&data, &mut avec).unwrap();
         let message = DataMessage::Vec(avec);
 
         // Same encode/decode entry points the node->daemon->node TCP hops use.
@@ -82,6 +84,9 @@ mod tests {
     #[test]
     fn empty_payload_decodes_to_unit_array() {
         let decoded = RawData::Empty.into_arrow_array().unwrap();
-        assert_eq!(decoded, ().into_arrow().into());
+        assert_eq!(
+            decoded,
+            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data()
+        );
     }
 }

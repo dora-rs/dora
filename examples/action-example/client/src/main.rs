@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use dora_node_api::{
     DoraNode, Event, GOAL_ID, GOAL_STATUS, MetadataParameters, Parameter,
-    arrow::array::{Array, Int64Array},
+    arrow_v59::array::{Array, Int64Array},
     get_string_param,
 };
 
@@ -33,6 +33,7 @@ fn main() -> eyre::Result<()> {
                 "feedback" => {
                     let gid = get_string_param(&metadata.parameters, GOAL_ID);
                     let fb_array = data
+                        .as_array()
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .map(|a| a.value(0));

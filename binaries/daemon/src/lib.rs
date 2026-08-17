@@ -8547,7 +8547,6 @@ impl Daemon {
                 // the IPC stream, so set the `arrow-ipc` framing parameter.
                 use dora_arrow_convert::IntoArrow;
                 let array = json.as_str().into_arrow();
-                let array: dora_node_api::arrow::array::ArrayData = array.into();
                 let ipc_bytes = match dora_node_api::arrow_utils::encode_arrow_ipc(&array) {
                     Ok(bytes) => bytes,
                     Err(e) => {

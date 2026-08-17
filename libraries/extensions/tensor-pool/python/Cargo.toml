@@ -11,7 +11,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true  }
 dora-message = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 eyre = { workspace = true }

@@ -6,7 +6,7 @@ version = 4
 name = "action-example-client"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -15,7 +15,7 @@ dependencies = [
 name = "action-example-server"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -215,22 +215,54 @@ checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
 name = "arrow"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6cfdd0833e32a9874d2b55089333ad310c0be208aafa277385ce2461dec90be3"
+dependencies = [
+ "arrow-arith 58.4.0",
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-cast 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-ord 58.4.0",
+ "arrow-row 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "arrow-string 58.4.0",
+]
+
+[[package]]
+name = "arrow"
 version = "59.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ffaaa3e009861fd829d0a24dd6f115aa8e4634324bb092147d43baafe69ca4a7"
 dependencies = [
- "arrow-arith",
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-data",
+ "arrow-arith 59.2.0",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-cast 59.2.0",
+ "arrow-data 59.2.0",
  "arrow-ipc",
- "arrow-ord",
+ "arrow-ord 59.2.0",
  "arrow-pyarrow",
- "arrow-row",
- "arrow-schema",
- "arrow-select",
- "arrow-string",
+ "arrow-row 59.2.0",
+ "arrow-schema 59.2.0",
+ "arrow-select 59.2.0",
+ "arrow-string 59.2.0",
+]
+
+[[package]]
+name = "arrow-arith"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a41203398f0eaa6f7ec8e62c0da742a21abf282c148fc157f6c35c90e29981a"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "chrono",
+ "num-traits",
 ]
 
 [[package]]
@@ -239,11 +271,29 @@ version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "757ef1836251e88222542a7da2623bc1c9cb9e20afefa6db2c41e79991cd91d4"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
  "chrono",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-array"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ae33dad492b7df00a217563a7b0ef2874df68a0deea1b1a3acf628152f7f7a69"
+dependencies = [
+ "ahash",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "chrono",
+ "half",
+ "hashbrown 0.17.1",
+ "num-complex",
+ "num-integer",
  "num-traits",
 ]
 
@@ -254,15 +304,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bc9a4a4b2b5ecd0e04df03471661cb61f28bed3c7fd50994715129b01b2edb97"
 dependencies = [
  "ahash",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
  "chrono",
  "half",
  "hashbrown 0.17.1",
  "libc",
  "num-complex",
  "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-buffer"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9552f96391c005e6ab449fa941420935e7e062489b12b8b1b08879b2163f5b5"
+dependencies = [
+ "bytes",
+ "half",
+ "num-bigint 0.4.8",
  "num-traits",
 ]
 
@@ -280,16 +342,37 @@ dependencies = [
 
 [[package]]
 name = "arrow-cast"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3a8a327c9649f30d8406995f27642b68df354713cca3baaaf100f076f18d5f34"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-ord 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "atoi",
+ "base64 0.22.1",
+ "chrono",
+ "half",
+ "lexical-core",
+ "num-traits",
+ "ryu",
+]
+
+[[package]]
+name = "arrow-cast"
 version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68338a9096a5dc9bc11927c58c43a8526d96bf6abd2012ef6c0c9f505991cc79"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-ord 59.2.0",
+ "arrow-schema 59.2.0",
+ "arrow-select 59.2.0",
  "atoi",
  "base64 0.23.1",
  "chrono",
@@ -301,12 +384,25 @@ dependencies = [
 
 [[package]]
 name = "arrow-data"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b24852db04738907e06c04ea61e42fe7fda962a34513022dc0d0e754fb7976b"
+dependencies = [
+ "arrow-buffer 58.4.0",
+ "arrow-schema 58.4.0",
+ "half",
+ "num-integer",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-data"
 version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "723fe4aeed7604e00b9883a465af4ff0a0e6c44c03e41a68c3d1cbc403e0e44d"
 dependencies = [
- "arrow-buffer",
- "arrow-schema",
+ "arrow-buffer 59.2.0",
+ "arrow-schema 59.2.0",
  "half",
  "num-integer",
  "num-traits",
@@ -318,11 +414,11 @@ version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "149437b14371f5b9ec60f5ddc751483ae99d7a7072653c0075e5e469156eea7b"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
+ "arrow-select 59.2.0",
  "flatbuffers",
 ]
 
@@ -332,12 +428,12 @@ version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f18b9123ccfec418a663f821c9a034af339711678c11ffe00d3ec07da5ff9f7e"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-cast",
- "arrow-ord",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-cast 59.2.0",
+ "arrow-ord 59.2.0",
+ "arrow-schema 59.2.0",
+ "arrow-select 59.2.0",
  "chrono",
  "half",
  "indexmap 2.14.0",
@@ -353,15 +449,28 @@ dependencies = [
 
 [[package]]
 name = "arrow-ord"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "63a083ec750f5c043f02946b4baf05fcdbb55f4560a3277055caca5cc99f3eb0"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+]
+
+[[package]]
+name = "arrow-ord"
 version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e6c08dff0686cf23ca4f562803f191ccbeb726dbae6309cd4b4aaf65e0f2c979"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
+ "arrow-select 59.2.0",
 ]
 
 [[package]]
@@ -370,10 +479,23 @@ version = "59.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b9e66bd74e4a47c6df9a2af16d9cca97e37cdfe5b3207d5e3558646e07957a27"
 dependencies = [
- "arrow-array",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
  "pyo3",
+]
+
+[[package]]
+name = "arrow-row"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "514ba0ef0d4c5896202dae736251ce415abb43a950bed570fb7981b8716c0e4c"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "half",
 ]
 
 [[package]]
@@ -382,11 +504,20 @@ version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbec439386df71ad570e6758a946111322b9e9dc8db83b5527321f0b4c9119c2"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
  "half",
+]
+
+[[package]]
+name = "arrow-schema"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "21ca356ad6425cecb6eb7b28e4f659f1ee7880fbb1a16127de7dd62901efee9e"
+dependencies = [
+ "bitflags 2.13.1",
 ]
 
 [[package]]
@@ -402,16 +533,47 @@ dependencies = [
 
 [[package]]
 name = "arrow-select"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c58da39eb3d8350ad4a549e5c2bc49284dac554016c69829310350f1731b0aad"
+dependencies = [
+ "ahash",
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "num-traits",
+]
+
+[[package]]
+name = "arrow-select"
 version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "466b19cf75130b891dc1b23a84b343c714c62c64c9c62e365c76aa0ff90a53fb"
 dependencies = [
  "ahash",
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
  "num-traits",
+]
+
+[[package]]
+name = "arrow-string"
+version = "58.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6789b388467525e3271326b6b4915666ecfdf5142aef09779445c954b67543c"
+dependencies = [
+ "arrow-array 58.4.0",
+ "arrow-buffer 58.4.0",
+ "arrow-data 58.4.0",
+ "arrow-schema 58.4.0",
+ "arrow-select 58.4.0",
+ "memchr",
+ "num-traits",
+ "regex",
+ "regex-syntax",
 ]
 
 [[package]]
@@ -420,11 +582,11 @@ version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c838a25bb3691e919e0f617616ac51a4ff8517a952e29ca133cf0c22b2ce65b1"
 dependencies = [
- "arrow-array",
- "arrow-buffer",
- "arrow-data",
- "arrow-schema",
- "arrow-select",
+ "arrow-array 59.2.0",
+ "arrow-buffer 59.2.0",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
+ "arrow-select 59.2.0",
  "memchr",
  "num-traits",
  "regex",
@@ -1920,7 +2082,8 @@ dependencies = [
 name = "dora-arrow-convert"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 58.4.0",
+ "arrow 59.0.0",
  "chrono",
  "eyre",
  "half",
@@ -1932,9 +2095,9 @@ dependencies = [
 name = "dora-cli"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "arrow-json",
- "arrow-schema",
+ "arrow-schema 59.2.0",
  "chrono",
  "clap",
  "clap_complete",
@@ -2006,7 +2169,7 @@ dependencies = [
 name = "dora-coordinator"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "axum",
  "ctrlc",
  "dora-coordinator-store",
@@ -2052,8 +2215,8 @@ dependencies = [
 name = "dora-core"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow-buffer",
- "arrow-schema",
+ "arrow-buffer 59.2.0",
+ "arrow-schema 59.2.0",
  "dora-message",
  "dunce",
  "eyre",
@@ -2143,7 +2306,7 @@ dependencies = [
 name = "dora-examples"
 version = "0.0.0"
 dependencies = [
- "arrow-array",
+ "arrow-array 59.2.0",
  "assert2",
  "dora-cli",
  "dora-coordinator",
@@ -2187,7 +2350,7 @@ dependencies = [
 name = "dora-log-utils"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "chrono",
  "dora-arrow-convert",
  "dora-message",
@@ -2199,7 +2362,7 @@ dependencies = [
 name = "dora-mavlink2-bridge"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "eyre",
  "mavlink",
  "num-traits",
@@ -2214,7 +2377,7 @@ dependencies = [
 name = "dora-mavlink2-bridge-node"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-mavlink2-bridge",
  "dora-node-api",
  "eyre",
@@ -2232,8 +2395,8 @@ name = "dora-message"
 version = "1.0.0-rc.4"
 dependencies = [
  "aligned-vec",
- "arrow-data",
- "arrow-schema",
+ "arrow-data 59.2.0",
+ "arrow-schema 59.2.0",
  "chrono",
  "criterion 0.8.2",
  "dirs 6.0.0",
@@ -2271,9 +2434,10 @@ name = "dora-node-api"
 version = "1.0.0-rc.4"
 dependencies = [
  "aligned-vec",
- "arrow",
+ "arrow 58.4.0",
+ "arrow 59.0.0",
  "arrow-json",
- "arrow-schema",
+ "arrow-schema 59.2.0",
  "chrono",
  "colored",
  "criterion 0.5.1",
@@ -2306,7 +2470,7 @@ dependencies = [
 name = "dora-node-api-c"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow-array",
+ "arrow-array 59.2.0",
  "dora-node-api",
  "eyre",
  "tracing",
@@ -2316,7 +2480,7 @@ dependencies = [
 name = "dora-node-api-cxx"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "chrono",
  "cxx",
  "cxx-build",
@@ -2336,7 +2500,7 @@ dependencies = [
 name = "dora-node-api-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "chrono",
  "dora-cli",
  "dora-download",
@@ -2398,8 +2562,8 @@ name = "dora-operator-api-python"
 version = "1.0.0-rc.4"
 dependencies = [
  "aligned-vec",
- "arrow",
- "arrow-schema",
+ "arrow 59.0.0",
+ "arrow-schema 59.2.0",
  "chrono",
  "dora-node-api",
  "eyre",
@@ -2418,7 +2582,7 @@ dependencies = [
 name = "dora-operator-api-types"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-arrow-convert",
  "safer-ffi",
 ]
@@ -2491,7 +2655,7 @@ dependencies = [
 name = "dora-ros2-bridge-arrow"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "byteorder",
  "cdr-encoding",
  "dora-ros2-bridge-msg-gen",
@@ -2524,7 +2688,7 @@ dependencies = [
 name = "dora-ros2-bridge-node"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-message",
  "dora-node-api",
  "dora-ros2-bridge",
@@ -2545,7 +2709,7 @@ dependencies = [
 name = "dora-ros2-bridge-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-message",
  "dora-ros2-bridge",
  "dora-ros2-bridge-arrow",
@@ -2564,7 +2728,7 @@ dependencies = [
 name = "dora-runtime-api"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-core",
  "dora-message",
  "dora-metrics",
@@ -2584,7 +2748,7 @@ dependencies = [
 name = "dora-runtime-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-core",
  "dora-download",
  "dora-node-api",
@@ -2608,7 +2772,7 @@ dependencies = [
 name = "dora-runtime-shared-lib"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-core",
  "dora-download",
  "dora-node-api",
@@ -2635,7 +2799,7 @@ dependencies = [
 name = "dora-tensor-pool-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-message",
  "dora-node-api",
  "eyre",
@@ -4560,7 +4724,7 @@ dependencies = [
 name = "mavlink2-bridge-example-heartbeat-emitter"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-mavlink2-bridge",
  "dora-node-api",
  "eyre",
@@ -4583,7 +4747,7 @@ dependencies = [
 name = "mavlink2-bridge-example-telemetry-printer-rust"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-mavlink2-bridge",
  "dora-node-api",
  "eyre",
@@ -7172,7 +7336,7 @@ dependencies = [
 name = "service-example-client"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -7181,7 +7345,7 @@ dependencies = [
 name = "service-example-server"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9480,7 +9644,7 @@ dependencies = [
 name = "yaml-bridge-action-goal"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9489,7 +9653,7 @@ dependencies = [
 name = "yaml-bridge-action-server-handler"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9498,7 +9662,7 @@ dependencies = [
 name = "yaml-bridge-service-handler"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9507,7 +9671,7 @@ dependencies = [
 name = "yaml-bridge-service-requester"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow",
+ "arrow 59.0.0",
  "dora-node-api",
  "eyre",
 ]

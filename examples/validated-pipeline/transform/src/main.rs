@@ -1,4 +1,6 @@
-use dora_node_api::{DoraNode, Event, EventStream, IntoArrow, arrow, dora_core::config::DataId};
+use dora_node_api::{
+    DoraNode, Event, EventStream, IntoArrow, arrow_v59 as arrow, dora_core::config::DataId,
+};
 use eyre::{ContextCompat, bail};
 
 #[cfg(test)]
@@ -18,6 +20,7 @@ fn run(mut node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
                 id, data, metadata, ..
             } if id.as_str() == "value" => {
                 let arr = data
+                    .as_array()
                     .as_any()
                     .downcast_ref::<arrow::array::Int64Array>()
                     .context("expected Int64Array")?;

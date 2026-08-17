@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use dora_node_api::{
     DoraNode, Event, GOAL_ID, GOAL_STATUS, GOAL_STATUS_CANCELED, GOAL_STATUS_SUCCEEDED,
     MetadataParameters, Parameter,
-    arrow::array::{Array, Int64Array},
+    arrow_v59::array::{Array, Int64Array},
     get_string_param,
 };
 
@@ -24,6 +24,7 @@ fn main() -> eyre::Result<()> {
                     let goal_id =
                         get_string_param(&metadata.parameters, GOAL_ID).map(str::to_owned);
                     let start = data
+                        .as_array()
                         .as_any()
                         .downcast_ref::<Int64Array>()
                         .map(|a| a.value(0));

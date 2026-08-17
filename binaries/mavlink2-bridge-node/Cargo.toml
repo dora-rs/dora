@@ -8,7 +8,7 @@ description = "MAVLink 2 ↔ dora bridge node, daemon-spawnable"
 
 [dependencies]
 dora-mavlink2-bridge = { workspace = true }
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true , features = ["arrow-v59"] }
 mavlink = { workspace = true }
 arrow = { workspace = true }
 url = { workspace = true }

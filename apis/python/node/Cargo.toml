@@ -23,7 +23,7 @@ metrics = ["dora-node-api/metrics"]
 async = ["pyo3/experimental-async"]
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true  }
 dora-message = { workspace = true }
 dora-operator-api-python = { workspace = true }
 dora-runtime-python = { workspace = true }

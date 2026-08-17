@@ -86,8 +86,31 @@
 
 #![warn(missing_docs)]
 
-pub use arrow;
-pub use dora_arrow_convert::*;
+/// Apache Arrow 59, dora's current **internal** major.
+///
+/// Enabled by the `arrow-v59` feature, which pulls no extra dependency: this
+/// is the same copy of Arrow 59 dora itself links, so
+/// [`DoraArray::as_array`] hands it back for free and arrays built with it
+/// need no conversion.
+///
+/// This is deliberately not `pub use arrow;`. A bare `arrow` re-export changes
+/// meaning silently when dora bumps its internal major; `arrow_v59` either
+/// exists and means Arrow 59, or it is visibly gone. See
+/// `docs/plan-arrow-version-decoupling.md`.
+#[cfg(feature = "arrow-v59")]
+pub use arrow as arrow_v59;
+/// Apache Arrow 58, for nodes that name that major.
+///
+/// Enabled by the `arrow-v58` feature. Arrow 58 is **not** dora's internal
+/// major, so payloads cross a C Data Interface hop
+/// ([`DoraArray::from_arrow_v58`] / [`DoraArray::to_arrow_v58`]). The hop does
+/// not copy buffers.
+#[cfg(feature = "arrow-v58")]
+pub use arrow58 as arrow_v58;
+// Deliberately *not* a glob re-export: `dora_arrow_convert::internal` is an
+// Arrow-typed, semver-exempt seam for dora's own crates and must not become
+// reachable through the frozen `dora-node-api` surface.
+pub use dora_arrow_convert::{DoraArray, IntoArrow, into_vec};
 pub use dora_core::{self, uhlc};
 pub use dora_message::{
     DataflowId,
