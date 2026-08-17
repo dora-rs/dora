@@ -89,7 +89,6 @@ pub mod bench_support {
     ) {
         let descriptor = dora_message::descriptor::Descriptor {
             nodes: vec![],
-            communication: dora_message::config::CommunicationConfig::default(),
             deploy: None,
             debug: dora_message::descriptor::Debug::default(),
             health_check_interval: None,
@@ -3564,10 +3563,6 @@ impl Daemon {
                 nodes_on_machine,
                 uv,
             }) => {
-                match dataflow_descriptor.communication.remote {
-                    dora_core::config::RemoteCommunicationConfig::Tcp => {}
-                }
-
                 let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
 
                 let result = self
@@ -3628,10 +3623,6 @@ impl Daemon {
                 write_events_to,
                 artifact_base_url: _,
             }) => {
-                match dataflow_descriptor.communication.remote {
-                    dora_core::config::RemoteCommunicationConfig::Tcp => {}
-                }
-
                 let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
 
                 let result = self
@@ -4141,7 +4132,6 @@ impl Daemon {
                             operators: None,
                             operator: None,
                             ros2: None,
-                            custom: None,
                             outputs: Default::default(),
                             output_types: Default::default(),
                             output_framing: Default::default(),
@@ -10252,7 +10242,6 @@ mod fault_tolerance_tests {
     use std::sync::atomic::AtomicU32;
 
     use dora_message::{
-        config::CommunicationConfig,
         daemon_to_node::NodeEvent,
         descriptor::{Debug as DescriptorDebug, Descriptor},
     };
@@ -10261,7 +10250,6 @@ mod fault_tolerance_tests {
     fn test_dataflow() -> RunningDataflow {
         let descriptor = Descriptor {
             nodes: vec![],
-            communication: CommunicationConfig::default(),
             deploy: None,
             debug: DescriptorDebug::default(),
             health_check_interval: None,
