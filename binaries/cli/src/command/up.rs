@@ -47,16 +47,38 @@ impl Executable for Up {
 #[serde(deny_unknown_fields)]
 struct UpConfig {}
 
+/// Resolve the coordinator bind address from `DORA_COORDINATOR_ADDR`.
+///
+/// Unlike every other subcommand — which routes these env vars through clap's
+/// typed `value_parser` and hard-errors on a bad value — `dora up` reads them
+/// by hand. A malformed value must be a hard error too, otherwise `up` would
+/// silently bind the default endpoint while the very next `dora start`/`list`
+/// (parsed through clap) rejects the same env var, leaving the two halves of a
+/// workflow disagreeing about where the coordinator lives.
+fn coordinator_addr_from_env(raw: Option<String>) -> eyre::Result<std::net::IpAddr> {
+    match raw {
+        Some(s) => s
+            .parse()
+            .with_context(|| format!("invalid DORA_COORDINATOR_ADDR `{s}`")),
+        None => Ok(LOCALHOST),
+    }
+}
+
+/// Resolve the coordinator port from `DORA_COORDINATOR_PORT`; see
+/// [`coordinator_addr_from_env`] for why a malformed value is a hard error.
+fn coordinator_port_from_env(raw: Option<String>) -> eyre::Result<u16> {
+    match raw {
+        Some(s) => s
+            .parse()
+            .with_context(|| format!("invalid DORA_COORDINATOR_PORT `{s}`")),
+        None => Ok(DORA_COORDINATOR_PORT_WS_DEFAULT),
+    }
+}
+
 pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
-    let addr: std::net::IpAddr = std::env::var("DORA_COORDINATOR_ADDR")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(LOCALHOST);
-    let port: u16 = std::env::var("DORA_COORDINATOR_PORT")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
+    let addr = coordinator_addr_from_env(std::env::var("DORA_COORDINATOR_ADDR").ok())?;
+    let port = coordinator_port_from_env(std::env::var("DORA_COORDINATOR_PORT").ok())?;
     let coordinator_addr = (addr, port).into();
     if recreate_store && !addr.is_loopback() {
         bail!(
@@ -736,6 +758,56 @@ mod destroy_guard_tests {
         assert!(
             matches!(down_decision(vec![df("busy")], true), DownDecision::Proceed),
             "`--force` is the documented way to say \"yes, kill them\""
+        );
+    }
+}
+
+#[cfg(test)]
+mod coordinator_env_tests {
+    use super::{
+        DORA_COORDINATOR_PORT_WS_DEFAULT, LOCALHOST, coordinator_addr_from_env,
+        coordinator_port_from_env,
+    };
+
+    #[test]
+    fn absent_env_falls_back_to_defaults() {
+        assert_eq!(coordinator_addr_from_env(None).unwrap(), LOCALHOST);
+        assert_eq!(
+            coordinator_port_from_env(None).unwrap(),
+            DORA_COORDINATOR_PORT_WS_DEFAULT
+        );
+    }
+
+    #[test]
+    fn valid_env_is_honored() {
+        assert_eq!(
+            coordinator_addr_from_env(Some("127.0.0.1".to_string())).unwrap(),
+            LOCALHOST
+        );
+        assert_eq!(
+            coordinator_port_from_env(Some("7000".to_string())).unwrap(),
+            7000
+        );
+    }
+
+    #[test]
+    fn malformed_env_is_a_hard_error_not_a_silent_default() {
+        // A typo must not silently bind the default endpoint while the next
+        // clap-parsed subcommand rejects the same value (dora-rs/dora).
+        let addr_err = coordinator_addr_from_env(Some("not-an-ip".to_string()))
+            .expect_err("a malformed address must be rejected");
+        assert!(
+            format!("{addr_err:#}").contains("DORA_COORDINATOR_ADDR"),
+            "error should name the offending variable: {addr_err:#}"
+        );
+
+        // Out of u16 range and a non-numeric value both fail.
+        assert!(coordinator_port_from_env(Some("70000".to_string())).is_err());
+        let port_err = coordinator_port_from_env(Some("6O12".to_string()))
+            .expect_err("a non-numeric port must be rejected");
+        assert!(
+            format!("{port_err:#}").contains("DORA_COORDINATOR_PORT"),
+            "error should name the offending variable: {port_err:#}"
         );
     }
 }
