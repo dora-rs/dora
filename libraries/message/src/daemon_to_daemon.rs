@@ -30,6 +30,7 @@ pub enum InterDaemonEvent {
     MemoryPoolWrite {
         dataflow_id: DataflowId,
         shared_memory_id: String,
+        #[serde(with = "crate::bulk_bytes::vec")]
         tensor_data: Vec<u8>,
         size: usize,
         /// Per-pool write sequence assigned by the origin daemon. Echoed
