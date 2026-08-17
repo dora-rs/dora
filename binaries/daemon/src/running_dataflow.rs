@@ -1082,17 +1082,16 @@ impl RunningDataflow {
         if !self.timers_gate_drain && self.is_drained(node_id) {
             return false;
         }
-        // NOTE: this misclassifies a runtime (`operators:`) node as a
-        // source, because its inputs live under `operators[].config.inputs`
-        // and the top-level map is empty. Pre-existing and left alone here:
-        // correcting it would newly arm the straggler watchdog for operator
-        // dataflows, which is a behavior change well outside #2920.
-        let is_source = self
-            .descriptor
-            .nodes
-            .iter()
-            .find(|n| &n.id == node_id)
-            .is_some_and(|n| n.inputs.is_empty());
+        // `has_data_input` reads `data_inputs`, recorded at registration
+        // time, rather than the raw descriptor: a runtime (`operators:`)
+        // node keeps its inputs under `operators[].config.inputs` and has
+        // an empty top-level `inputs` map, so a descriptor-derived check
+        // reports every operator node as a source and permanently disarms
+        // the straggler watchdog for the whole dataflow the moment one is
+        // running (`select_finish_stragglers` returns early on the first
+        // `never_finishes` node it sees). Same fix `is_finished_non_source`
+        // already applies for the same reason.
+        let is_source = !self.has_data_input(node_id);
         let has_timer = self
             .timers
             .values()
@@ -1303,6 +1302,30 @@ mod tests {
                     .insert(input);
             }
         }
+    }
+
+    /// A node with a real data input but an empty top-level `inputs` map
+    /// (the shape of a runtime/`operators:` node — its inputs live under
+    /// `operators[].config.inputs`) must not be classified as a source.
+    /// `node_never_finishes` used to derive "is this a source" from the raw
+    /// descriptor's top-level `inputs`, so every operator node with real
+    /// inputs read as a source and permanently vetoed the finish-straggler
+    /// watchdog for the whole dataflow.
+    #[test]
+    fn operator_shaped_node_with_data_input_is_not_a_source() {
+        // Empty top-level `inputs` mirrors an `operators:` node's descriptor
+        // shape; `register_inputs` then records a real data input the way
+        // the daemon does for `operators[].config.inputs`.
+        let node = node_id("op");
+        let mut df = dataflow_with_node("op", &[]);
+        register_inputs(&mut df, "op", &[("value", false)]);
+
+        assert!(
+            !df.node_never_finishes(&node),
+            "a node with a registered data input can reach natural finish \
+             and must not be treated as a source, regardless of what its \
+             top-level descriptor `inputs` map looks like"
+        );
     }
 
     /// Default behavior is unchanged: every input gates the drain, so a

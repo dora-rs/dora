@@ -10757,6 +10757,18 @@ mod fault_tolerance_tests {
         df.connected_nodes.insert(node.clone());
     }
 
+    /// Record a real `User` data input for `node`, exactly as the spawn and
+    /// `AddNode` paths do. `node_never_finishes` classifies "is this a source"
+    /// from `data_inputs`, so a fixture that skips this models a *source*, and
+    /// a source vetoes the watchdog for the whole dataflow — every assertion
+    /// below about a user-input node needs the input recorded to mean anything.
+    fn register_data_input(df: &mut RunningDataflow, node: &NodeId) {
+        df.data_inputs
+            .entry(node.clone())
+            .or_default()
+            .insert("value".to_string().into());
+    }
+
     #[test]
     fn timer_fed_node_is_not_a_finish_straggler() {
         // A long-running timer-only node never drains and sends no daemon
@@ -10785,6 +10797,7 @@ mod fault_tolerance_tests {
         let mut df = test_dataflow();
         let stuck: NodeId = "stuck".to_string().into();
         insert_silent_node(&mut df, &stuck);
+        register_data_input(&mut df, &stuck);
 
         let now = node_communication::current_millis();
         let selected = df.finish_stragglers(Duration::from_millis(1), now);
@@ -10801,6 +10814,7 @@ mod fault_tolerance_tests {
         let running = test_running_node();
         running.last_activity.store(1, atomic::Ordering::Release);
         df.running_nodes.insert(starting.clone(), running);
+        register_data_input(&mut df, &starting);
         // NOTE: deliberately NOT added to subscribe_channels (not connected).
 
         let now = node_communication::current_millis();
@@ -10822,6 +10836,7 @@ mod fault_tolerance_tests {
         running.last_activity.store(1, atomic::Ordering::Release);
         df.running_nodes.insert(stuck.clone(), running);
         df.connected_nodes.insert(stuck.clone());
+        register_data_input(&mut df, &stuck);
         // NOTE: no subscribe_channels entry — the event stream was dropped.
 
         let now = node_communication::current_millis();
@@ -10842,6 +10857,7 @@ mod fault_tolerance_tests {
         let running = test_running_node();
         running.last_activity.store(1, atomic::Ordering::Release);
         df.running_nodes.insert(node_a.clone(), running);
+        register_data_input(&mut df, &node_a);
 
         let now = node_communication::current_millis();
         let selected = df.finish_stragglers(Duration::from_millis(1), now);
@@ -10859,6 +10875,7 @@ mod fault_tolerance_tests {
         let mut df = test_dataflow();
         let node: NodeId = "reused".to_string().into();
         insert_silent_node(&mut df, &node);
+        register_data_input(&mut df, &node);
         df.timers
             .entry(Duration::from_millis(100))
             .or_default()
@@ -10898,6 +10915,7 @@ mod fault_tolerance_tests {
         );
         df.running_nodes.insert(node.clone(), running);
         df.connected_nodes.insert(node.clone());
+        register_data_input(&mut df, &node);
         df.all_inputs_closed_at.insert(
             node.clone(),
             std::time::Instant::now() - Duration::from_secs(1),
