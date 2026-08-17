@@ -8074,6 +8074,29 @@ impl Daemon {
                 .unwrap_or_else(|e| e.into_inner());
             endpoints.retain(|(df, _), _| *df != dataflow_id);
         }
+        // Unlink this daemon's mirror /dev/shm segments for the dataflow
+        // before draining the cross-pool table. A cross-machine dataflow
+        // that ends without an explicit FreePool reaching the mirror (node
+        // crash, `dora stop`, origin-daemon crash, dropped FreePool publish)
+        // would otherwise leave the mirror segment — sized up to the
+        // registration cap — resident forever, growing unbounded on a
+        // long-lived daemon cycling many such dataflows (#3194). By the time
+        // finish runs the local receiver nodes are done, so the unlink is
+        // safe, matching the FreePool handler's unlink. The name is
+        // `machine_id`-qualified, so it only ever matches a segment this
+        // daemon created as the mirror: an origin-side entry resolves to a
+        // name that does not exist locally (a harmless NotFound no-op), which
+        // also keeps it host-safe when two daemons share a host.
+        if let Some(machine_id) = self.machine_id.as_deref().filter(|m| !m.is_empty()) {
+            let dataflow_str = dataflow_id.to_string();
+            for pool_id in self.tensor_pool.cross_pool_ids(&dataflow_str) {
+                if let Some(shmem_name) =
+                    TensorPoolManager::cross_pool_shmem_name(machine_id, &dataflow_str, &pool_id)
+                {
+                    remove_cross_pool_shmem(&shmem_name);
+                }
+            }
+        }
         // Release this dataflow's cross_pools entries (mirror tracking).
         // Mirrors never enter the tensor-pool table, so this covers them;
         // the local pool table is node-side and not touched here.

@@ -529,6 +529,22 @@ impl TensorPoolManager {
             .remove(&(dataflow_id.to_string(), pool_id.to_string()))
     }
 
+    /// The cross-machine pool ids this manager still tracks for
+    /// `dataflow_id`.
+    ///
+    /// Used by the daemon to unlink its mirror `/dev/shm` segments on
+    /// dataflow finish: an explicit `FreePool` may never reach the mirror
+    /// (node crash, `dora stop`, origin-daemon crash, dropped publish), and
+    /// those segments — sized up to the registration cap — would otherwise
+    /// leak for the daemon's lifetime.
+    pub fn cross_pool_ids(&self, dataflow_id: &str) -> Vec<String> {
+        self.lock_cross_pools()
+            .keys()
+            .filter(|(df, _)| df == dataflow_id)
+            .map(|(_, pool)| pool.clone())
+            .collect()
+    }
+
     /// The pool's peer machine (the machine it mirrors to/from), if any.
     pub fn cross_peer(&self, dataflow_id: &str, pool_id: &str) -> Option<String> {
         self.lock_cross_pools()
@@ -630,6 +646,29 @@ mod tests {
             TensorPoolManager::cross_pool_shmem_name("M", "df", "pool_node_42"),
             Some("dora_pool_M_df_node_42".to_string())
         );
+    }
+
+    #[test]
+    fn cross_pool_ids_scoped_to_dataflow_and_cleared_on_cleanup() {
+        // The daemon's finish-time mirror unlink (#3194) relies on
+        // `cross_pool_ids` returning exactly the finishing dataflow's pools
+        // — never another dataflow's, whose mirror segments are still live.
+        let mgr = TensorPoolManager::new();
+        mgr.register_cross_pool("df_a".into(), "pool_x_1".into(), "peer".into());
+        mgr.register_cross_pool("df_a".into(), "pool_y_2".into(), "peer".into());
+        mgr.register_cross_pool("df_b".into(), "pool_z_3".into(), "peer".into());
+
+        let mut a = mgr.cross_pool_ids("df_a");
+        a.sort();
+        assert_eq!(a, vec!["pool_x_1".to_string(), "pool_y_2".to_string()]);
+        assert_eq!(mgr.cross_pool_ids("df_b"), vec!["pool_z_3".to_string()]);
+        assert!(mgr.cross_pool_ids("df_missing").is_empty());
+
+        // After the dataflow's entries are drained, nothing is returned —
+        // the daemon drains via `cleanup_cross_pools` right after unlinking.
+        mgr.cleanup_cross_pools("df_a");
+        assert!(mgr.cross_pool_ids("df_a").is_empty());
+        assert_eq!(mgr.cross_pool_ids("df_b"), vec!["pool_z_3".to_string()]);
     }
 
     #[test]
