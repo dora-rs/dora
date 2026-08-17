@@ -1734,6 +1734,62 @@ fn resolve_cross_write_ack(
     }
 }
 
+/// Fire the safety-net timeout for a pending cross-machine write: remove the
+/// entry under `seq` and fail the node's blocked `WritePinnedMemory`. Returns
+/// whether an entry existed.
+///
+/// The caller passes the write's *effective* seq — the one the entry is live
+/// under now, which advances from the original `seq` to a fresh `relay_seq` on
+/// a direct-TCP → zenoh failover. Keying the timeout to the pre-failover seq
+/// makes it a no-op after a re-key, leaving the write hung forever (#3193).
+fn fire_cross_write_timeout(dataflow_id: Uuid, shared_memory_id: String, seq: u64) -> bool {
+    if let Some(tx) = CROSS_WRITE_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(dataflow_id, shared_memory_id, seq))
+    {
+        let _ = tx.send(DaemonReply::Result(Err(
+            "cross-machine write timed out waiting for the remote commit ack".to_string(),
+        )));
+        true
+    } else {
+        false
+    }
+}
+
+/// Fail and drop every cross-machine write reply still pending for
+/// `dataflow_id`, unblocking any node stuck in `WritePinnedMemory`. Returns the
+/// number of stranded writes reclaimed.
+///
+/// Called from `finish_dataflow`: the per-write safety-net timeout normally
+/// reclaims these, but a dataflow that finishes first (node crash, `dora stop`,
+/// or a relay entry orphaned by a failover) would otherwise leave the entry —
+/// and the node's blocked write — hanging until that timeout, and leak the
+/// entry for the daemon's lifetime if the reply channel is already gone (#3193).
+/// Mirrors how the sibling cross-write maps are already drained here.
+fn drain_cross_write_pending(dataflow_id: Uuid) -> usize {
+    let stranded: Vec<_> = {
+        let mut pending = CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        let keys: Vec<(Uuid, String, u64)> = pending
+            .keys()
+            .filter(|(df, _, _)| *df == dataflow_id)
+            .cloned()
+            .collect();
+        keys.into_iter()
+            .filter_map(|k| pending.remove(&k))
+            .collect()
+    };
+    let count = stranded.len();
+    for tx in stranded {
+        let _ = tx.send(DaemonReply::Result(Err(
+            "dataflow finished before the cross-machine write was acknowledged".to_string(),
+        )));
+    }
+    count
+}
+
 /// Size of the daemon's zenoh SHM provider segment. Memory-pool control
 /// notifications (RegisterPool/RegisterPoolAck/FreePool) are KB-scale,
 /// so a small segment carries all in-flight control traffic with headroom;
@@ -6767,7 +6823,16 @@ impl Daemon {
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .insert((dataflow_id, shared_memory_id.clone(), seq), reply_sender);
-                let pending_key = (dataflow_id, shared_memory_id.clone(), seq);
+                // The seq the pending entry is live under. Starts at `seq`;
+                // a direct-TCP → zenoh failover re-keys the entry to a fresh
+                // `relay_seq` below and advances this to match, so the
+                // safety-net timeout removes the entry under whatever seq is
+                // actually live. Keying the timeout to the pre-failover seq
+                // (as it did) makes it a no-op after a re-key, leaving the
+                // node's write blocked forever (#3193).
+                let effective_seq = Arc::new(std::sync::atomic::AtomicU64::new(seq));
+                let timeout_seq = effective_seq.clone();
+                let timeout_pool = shared_memory_id.clone();
                 // Direct-TCP data plane: when the register ack reported a
                 // data listener, writes bypass the zenoh relay entirely —
                 // one user-space copy on this side (segment → send
@@ -6889,6 +6954,11 @@ impl Daemon {
                                             (dataflow_id, shared_memory_id.clone(), relay_seq),
                                             tx,
                                         );
+                                    // Point the safety-net timeout at the
+                                    // re-keyed entry so it can still reclaim
+                                    // it if the relay ack is lost (#3193).
+                                    effective_seq
+                                        .store(relay_seq, std::sync::atomic::Ordering::SeqCst);
                                 }
                             }
                         }
@@ -6924,19 +6994,14 @@ impl Daemon {
                     }
                 });
                 // Safety net: if the ack never arrives (peer restart,
-                // lost ack), fail the write rather than hang the node.
+                // lost ack), fail the write rather than hang the node. Read
+                // the effective seq *after* sleeping so the removal follows
+                // any direct-TCP → relay re-key that happened meanwhile
+                // (#3193).
                 tokio::spawn(async move {
                     tokio::time::sleep(CROSS_WRITE_ACK_TIMEOUT).await;
-                    if let Some(tx) = CROSS_WRITE_PENDING
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner())
-                        .remove(&pending_key)
-                    {
-                        let _ = tx.send(DaemonReply::Result(Err(
-                            "cross-machine write timed out waiting for the remote commit ack"
-                                .to_string(),
-                        )));
-                    }
+                    let seq = timeout_seq.load(std::sync::atomic::Ordering::SeqCst);
+                    fire_cross_write_timeout(dataflow_id, timeout_pool, seq);
                 });
             }
             DaemonNodeEvent::RegisterCrossMachinePool {
@@ -8057,6 +8122,11 @@ impl Daemon {
             let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
             seqs.retain(|(df, _), _| *df != dataflow_id);
         }
+        // Fail any cross-machine write replies still pending for this
+        // dataflow. Without it a node whose write was in flight at finish
+        // hangs until the 120s safety-net timeout, and a relay entry orphaned
+        // by a failover (#3193) would leak for the daemon's lifetime.
+        drain_cross_write_pending(dataflow_id);
         {
             let mut degraded = CROSS_DIRECT_DEGRADED
                 .lock()
@@ -9892,7 +9962,10 @@ mod cross_mirror_descriptor_tests {
 
 #[cfg(test)]
 mod cross_write_failover_tests {
-    use super::{CROSS_WRITE_PENDING, CROSS_WRITE_SEQ, resolve_cross_write_ack};
+    use super::{
+        CROSS_WRITE_PENDING, CROSS_WRITE_SEQ, drain_cross_write_pending, fire_cross_write_timeout,
+        resolve_cross_write_ack,
+    };
     use dora_message::DataflowId;
     use dora_message::daemon_to_node::DaemonReply;
 
@@ -9964,6 +10037,83 @@ mod cross_write_failover_tests {
             matches!(result, DaemonReply::Result(Ok(()))),
             "node must see the relay's success, not the stale direct failure"
         );
+    }
+
+    #[test]
+    fn safety_net_timeout_follows_the_relay_rekey() {
+        // #3193: after a direct-TCP → zenoh failover re-keys the pending
+        // entry from `seq` to `relay_seq`, the safety-net timeout must fire
+        // against `relay_seq`. Keyed to the pre-failover `seq` (as it was),
+        // the timeout is a silent no-op and the node's write hangs forever.
+        let df = DataflowId::new_v4();
+        let pool = "pool_timeout_follows_rekey".to_string();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+
+        // Insert under the original seq, then re-key to a fresh relay seq
+        // (mirrors the direct-failure arm of the WriteMemoryPool handler).
+        CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((df, pool.clone(), 1), tx);
+        let tx = CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&(df, pool.clone(), 1))
+            .expect("pending entry present");
+        CROSS_WRITE_PENDING
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert((df, pool.clone(), 2), tx);
+
+        // Timing out on the pre-failover seq is the bug: a no-op that leaves
+        // the write pending.
+        assert!(!fire_cross_write_timeout(df, pool.clone(), 1));
+        assert!(
+            rx.try_recv().is_err(),
+            "write must still be pending after a timeout keyed to the stale seq"
+        );
+
+        // The effective (relay) seq resolves it: the node's write fails
+        // cleanly instead of hanging.
+        assert!(fire_cross_write_timeout(df, pool.clone(), 2));
+        assert!(
+            matches!(rx.try_recv(), Ok(DaemonReply::Result(Err(_)))),
+            "the timeout keyed to the effective seq must fail the node's write"
+        );
+    }
+
+    #[test]
+    fn finish_dataflow_drain_fails_pending_cross_writes() {
+        // #3193: a dataflow that finishes with a write still pending (node
+        // crash / stop, or a relay entry orphaned by failover) must have that
+        // entry reclaimed and the node unblocked, not left to leak. An
+        // unrelated dataflow's pending write must survive the drain.
+        let df = DataflowId::new_v4();
+        let other_df = DataflowId::new_v4();
+        let pool = "pool_finish_drain".to_string();
+        let (tx, mut rx) = tokio::sync::oneshot::channel();
+        let (other_tx, mut other_rx) = tokio::sync::oneshot::channel();
+
+        {
+            let mut pending = CROSS_WRITE_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            pending.insert((df, pool.clone(), 7), tx);
+            pending.insert((other_df, pool.clone(), 7), other_tx);
+        }
+
+        assert_eq!(drain_cross_write_pending(df), 1);
+        assert!(
+            matches!(rx.try_recv(), Ok(DaemonReply::Result(Err(_)))),
+            "the finishing dataflow's pending write must be failed"
+        );
+        assert!(
+            other_rx.try_recv().is_err(),
+            "an unrelated dataflow's pending write must be untouched"
+        );
+
+        // Leave the shared static tidy for other tests.
+        drain_cross_write_pending(other_df);
     }
 
     #[cfg(target_os = "linux")]
