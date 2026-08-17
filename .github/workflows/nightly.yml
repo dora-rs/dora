@@ -1792,6 +1792,7 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
+          --exclude dora-tensor-pool-python
       - name: Check (cross)
         if: matrix.cross
         run: >
@@ -1801,6 +1802,7 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
+          --exclude dora-tensor-pool-python
 
   # ===== ROS2 bridge basic checks =====
   # Keep nightly coverage for ROS2 bridge code that does not require a full ROS
