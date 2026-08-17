@@ -184,7 +184,7 @@ mod tests {
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType;
     use dora_message::metadata::Metadata;
-    use dora_node_api::ArrowData;
+    use dora_node_api::DoraArray;
 
     fn closed_event(id: &str) -> Event {
         Event::InputClosed {
@@ -196,7 +196,7 @@ mod tests {
         Event::Input {
             id: DataId::from(id.to_string()),
             metadata: Metadata::new(dora_core::uhlc::HLC::default().new_timestamp()),
-            data: ArrowData(new_empty_array(&DataType::Null)),
+            data: DoraArray::from(new_empty_array(&DataType::Null)),
         }
     }
 

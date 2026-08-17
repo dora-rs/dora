@@ -6,7 +6,7 @@ use dora_message::{
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
 };
-use dora_node_api::{DoraNode, Event, arrow::datatypes::DataType, arrow_utils};
+use dora_node_api::{DoraNode, Event, arrow_utils, arrow_v59::datatypes::DataType};
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::Context;
 
@@ -81,8 +81,8 @@ fn main() -> eyre::Result<()> {
 
                 // Record the payload as a self-describing Arrow IPC stream so
                 // replay can reconstruct the array without a type sidecar.
-                let arrow_data = data.to_data();
-                let raw_data = if matches!(arrow_data.data_type(), DataType::Null)
+                let arrow_data = &data;
+                let raw_data = if matches!(arrow_data.as_array().data_type(), DataType::Null)
                     && arrow_data.is_empty()
                 {
                     // Exactly the unit array that replay rebuilds from an absent
@@ -106,17 +106,17 @@ fn main() -> eyre::Result<()> {
                     // copies) and then copied the result a third time into the
                     // `AVec`, on every recorded message.
                     let encoded: AVec<u8, ConstAlign<128>> =
-                        match arrow_utils::ipc_encode::ipc_fast_path_len(&arrow_data) {
+                        match arrow_utils::ipc_encode::ipc_fast_path_len(arrow_data) {
                             Some(len) => {
                                 let mut buf: AVec<u8, ConstAlign<128>> =
                                     AVec::__from_elem(128, 0, len);
-                                arrow_utils::ipc_encode::encode_ipc_into(&arrow_data, &mut buf)
+                                arrow_utils::ipc_encode::encode_ipc_into(arrow_data, &mut buf)
                                     .wrap_err("failed to Arrow-IPC-encode recorded output")?;
                                 buf
                             }
                             None => {
                                 let ipc_bytes =
-                                    arrow_utils::ipc_encode::encode_ipc_to_vec(&arrow_data)
+                                    arrow_utils::ipc_encode::encode_ipc_to_vec(arrow_data)
                                         .wrap_err("failed to Arrow-IPC-encode recorded output")?;
                                 AVec::from_slice(128, &ipc_bytes)
                             }

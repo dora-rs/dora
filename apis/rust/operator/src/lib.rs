@@ -18,14 +18,12 @@
 #![warn(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::missing_safety_doc)]
 
-pub use dora_arrow_convert::*;
+use dora_arrow_convert::internal::array_ref;
+pub use dora_arrow_convert::{DoraArray, IntoArrow, into_vec};
 pub use dora_operator_api_macros::register_operator;
 pub use dora_operator_api_types as types;
 pub use types::DoraStatus;
-use types::{
-    Metadata, Output, SendOutput,
-    arrow::{self, array::Array},
-};
+use types::{Metadata, Output, SendOutput, arrow};
 
 pub mod raw;
 
@@ -45,7 +43,7 @@ pub enum Event<'a> {
         /// Metadata associated with this input (e.g. OpenTelemetry context).
         metadata: &'a types::Metadata,
         /// The Arrow-encoded payload.
-        data: ArrowData,
+        data: DoraArray,
     },
     /// The payload for an input could not be decoded into an Arrow array.
     ///
@@ -136,9 +134,10 @@ impl DoraOutputSender<'_> {
     ///  Send an output from the operator:
     ///  - `id` is the `output_id` as defined in your dataflow.
     ///  - `data` is the data that should be sent
-    pub fn send(&mut self, id: &str, data: impl Array) -> Result<(), String> {
+    pub fn send(&mut self, id: &str, data: impl IntoArrow) -> Result<(), String> {
+        let data = data.into_arrow();
         let (data_array, schema) =
-            arrow::ffi::to_ffi(&data.into_data()).map_err(|err| err.to_string())?;
+            arrow::ffi::to_ffi(&array_ref(&data).to_data()).map_err(|err| err.to_string())?;
         let result = self.0.send_output.call(Output {
             id: id.to_owned().into(),
             data_array,

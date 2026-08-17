@@ -18,7 +18,7 @@ use dora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use dora_node_api::{Metadata, arrow::array::ArrayData, arrow_utils::encode_arrow_ipc};
+use dora_node_api::{DoraArray, Metadata, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::CommandWrap;
 use std::{
@@ -40,7 +40,7 @@ use tokio::{
 /// parameter (so the node-side receive path decodes it). Returns `None` if
 /// encoding fails (logged by the caller).
 fn ipc_log_payload(
-    array: &ArrayData,
+    array: &DoraArray,
     clock: &dora_core::uhlc::HLC,
 ) -> Option<(DataMessage, Metadata)> {
     let ipc_bytes = encode_arrow_ipc(array)
@@ -924,7 +924,6 @@ impl PreparedNode {
                 if let Some(stdout_output_name) = &send_stdout_to {
                     // Convert logs to a self-describing Arrow IPC DataMessage.
                     let array = content.as_str().into_arrow();
-                    let array: ArrayData = array.into();
                     if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
                         let output_id = OutputId(
                             node_id.clone(),
@@ -1008,7 +1007,6 @@ impl PreparedNode {
                     && let Ok(json) = serde_json::to_string(&log_message)
                 {
                     let array = json.as_str().into_arrow();
-                    let array: ArrayData = array.into();
                     if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
                         let output_id =
                             OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));

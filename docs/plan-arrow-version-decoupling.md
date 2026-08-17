@@ -1,6 +1,8 @@
 # Decoupling `dora-node-api` from the Arrow major version
 
-**Status:** design agreed, not yet implemented. Blocks 1.0.
+**Status:** implemented. The user-facing contract now lives in
+[`docs/api-rust.md` § Arrow version policy](api-rust.md#arrow-version-policy);
+this document is kept as the design rationale.
 **Scope:** `dora-node-api`, `dora-arrow-convert`, and every consumer that names an Arrow type.
 
 ## The problem
@@ -168,6 +170,44 @@ down; it is the only ongoing cost of this design.
   matching-version case free.
 - **Make `Event` generic over the payload.** Pushes a type parameter into every
   user signature.
+
+## What landed, and where it deviated
+
+All five steps below are implemented. Two things differ from the design as
+written:
+
+- **`EncodedSample::data_type()` is gated, not replaced by a type URN.**
+  `dora_core::types::TypeRegistry` only covers the standard scalar/struct
+  catalog; nested lists, dictionaries, unions and timestamps-with-timezone have
+  no URN, so a URN-returning accessor would be lossy for exactly the outputs
+  whose type a caller most needs. It is `#[cfg(feature = "arrow-v59")]`, with an
+  ungated `type_name() -> String` for logging. `DoraArray` got the same
+  treatment.
+- **One Arrow-typed seam remains, deliberately.** `DoraArray` lives in
+  `dora-arrow-convert`, but the code that must build and unwrap it
+  (`dora-node-api`, the C/C++/Python bindings, record/replay) lives in other
+  crates, and Rust has no cross-crate `pub(crate)`. Routing that through the
+  `arrow-v59` *feature* would not work: `dora-node-api` would have to enable it
+  unconditionally, and cargo feature unification would then hand every
+  downstream user the ungated accessor — the silent-drift problem the gate
+  exists to prevent. So `dora_arrow_convert::internal` is `pub`,
+  `#[doc(hidden)]`-in-spirit, **not** re-exported from `dora-node-api`, and
+  written down in `docs/api-rust.md` as exempt from the semver guarantee.
+  `dora-node-api`'s own frozen surface is Arrow-free; that is the contract that
+  matters.
+
+Two additions the design did not call for but the migration needed:
+
+- **`arrow_utils::IpcPayload`**, a dora-owned wrapper for the receive-side byte
+  buffer, so `decode_arrow_ipc_zero_copy` / `InputDecoder::{set_schema,
+  decode_batch}` do not name `arrow::buffer::Buffer`. It also removed three
+  copies of the same hand-written `Buffer::from_custom_allocation` unsafe block.
+- **Gated `IntoArrow` impls for Arrow 59 array types** (`ArrayRef`,
+  `PrimitiveArray<T>`, `StructArray`, …), so `send_output(id, params,
+  my_struct_array)` still works for callers on the internal major. A blanket
+  `impl<A: arrow::array::Array> IntoArrow for A` is *not* possible — it overlaps
+  with `impl IntoArrow for u8` under coherence's "upstream crates may add a new
+  impl" rule — so the concrete types are listed.
 
 ## Order of work
 

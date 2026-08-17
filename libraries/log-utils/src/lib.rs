@@ -25,7 +25,7 @@ pub fn parse_log(json: &str) -> Result<LogMessage> {
 /// Convenience wrapper for node event handlers. The daemon sends one log
 /// entry per Arrow message, so this extracts the first string element and
 /// parses it as JSON. Additional elements (if any) are ignored.
-pub fn parse_log_from_arrow(data: &dora_arrow_convert::ArrowData) -> Result<LogMessage> {
+pub fn parse_log_from_arrow(data: &dora_arrow_convert::DoraArray) -> Result<LogMessage> {
     let json: &str = data.try_into().context("expected string arrow data")?;
     parse_log(json)
 }

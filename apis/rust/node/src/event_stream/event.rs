@@ -1,4 +1,4 @@
-use dora_arrow_convert::ArrowData;
+use dora_arrow_convert::DoraArray;
 use dora_core::config::{DataId, NodeId, OperatorId};
 use dora_message::metadata::Metadata;
 
@@ -28,7 +28,7 @@ pub enum Event {
         /// Meta information about this input, e.g. the timestamp.
         metadata: Metadata,
         /// The actual data in the Apache Arrow data format.
-        data: ArrowData,
+        data: DoraArray,
     },
     /// An input was closed by the sender.
     ///

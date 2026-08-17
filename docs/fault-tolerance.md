@@ -303,11 +303,11 @@ while let Some(event) = events.recv() {
 `InputTracker` maintains two `HashMap`s:
 
 - `states: HashMap<DataId, InputState>` -- current state per input (Healthy or Closed)
-- `cache: HashMap<DataId, ArrowData>` -- last received value per input
+- `cache: HashMap<DataId, DoraArray>` -- last received value per input
 
 On `Event::Input`, both maps are updated (state = Healthy, cache = data clone). On `Event::InputClosed`, only state changes (cache is preserved). On `Event::InputRecovered`, state is set back to Healthy. The cache is never cleared, so `last_value()` always returns the most recent data even after the input closes.
 
-Note: `ArrowData` wraps `Arc<dyn arrow::array::Array>`, so the cache clone is reference-counted (cheap).
+Note: `DoraArray` wraps an `Arc`-backed Arrow array, so the cache clone is reference-counted (cheap).
 
 ### API Reference
 
@@ -317,7 +317,7 @@ Note: `ArrowData` wraps `Arc<dyn arrow::array::Array>`, so the cache clone is re
 | `process_event(&Event)` | `bool` | Update state. Returns true if event was relevant |
 | `state(&DataId)` | `Option<InputState>` | Current state (Healthy or Closed) |
 | `is_closed(&DataId)` | `bool` | Check if input is closed |
-| `last_value(&DataId)` | `Option<&ArrowData>` | Last received value (available even when closed) |
+| `last_value(&DataId)` | `Option<&DoraArray>` | Last received value (available even when closed) |
 | `closed_inputs()` | `Vec<&DataId>` | All currently closed inputs |
 | `any_closed()` | `bool` | True if any tracked input is closed |
 

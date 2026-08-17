@@ -15,7 +15,7 @@ repository.workspace = true
 
 [dependencies]
 dora-runtime-api = { workspace = true }
-dora-node-api = { workspace = true, default-features = false }
+dora-node-api = { workspace = true, default-features = false, features = ["arrow-v59"] }
 dora-core = { workspace = true }
 dora-download = { workspace = true }
 dora-operator-api-types = { workspace = true }

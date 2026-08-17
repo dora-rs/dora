@@ -216,7 +216,10 @@ impl IntegrationTestingEvents {
 
                     // The receive side decodes a self-describing Arrow IPC
                     // stream, so encode the array into one here.
-                    let buf = encode_arrow_ipc(&array).with_context(|| {
+                    let buf = encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(
+                        array,
+                    ))
+                    .with_context(|| {
                         format!("failed to IPC-encode input event at offset {time_offset_secs}s ")
                     })?;
 
