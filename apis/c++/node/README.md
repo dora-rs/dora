@@ -257,6 +257,31 @@ The `event` field also carries a matching `DoraEventType` (`Timeout` /
 `server_node_id` yields `DoraPatternStatus::InvalidArgument` rather than
 aborting the process.
 
+#### Reacting to a restart with several requests in flight
+
+A restart is reported to the *one* correlation that consumes it — the wait or
+poll that happened to be reading the stream. Others outstanding against the
+same server are not told, and would otherwise sit until their own deadlines.
+Handling the event in your own loop covers them:
+
+```c++
+case DoraEventType::NodeRestarted:
+{
+    const auto who = std::string(event_as_node_restarted(std::move(event)));
+    // Everything still outstanding against that node is orphaned: the
+    // instance that would have answered is gone.
+    for (const auto &entry : pending_for(who))
+    {
+        cancel_correlation(dora_node.events, entry.request_id);
+    }
+    resend_against_new_instance(who);
+    break;
+}
+```
+
+`cancel_correlation` releases the framework's deadline for those requests;
+resending is yours to do, under a fresh `request_id` from `new_request_id()`.
+
 #### Clients that cannot block
 
 `recv_service_response` waits. A single-threaded node with its own
