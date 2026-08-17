@@ -3858,10 +3858,7 @@ async fn start_topic_debug_stream(
 ) -> eyre::Result<Uuid> {
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, &topics)?;
     if !topic_debug_enabled(running_dataflows, dataflow_id)? {
-        eyre::bail!(
-            "topic inspection requires `_unstable_debug.enable_debug_inspection: true` \
-             (the flag was previously named `publish_all_messages_to_zenoh`; the old name is still accepted)"
-        );
+        eyre::bail!("topic inspection requires `_unstable_debug.enable_debug_inspection: true`");
     }
     let subscription_id = Uuid::new_v4();
     running_dataflows

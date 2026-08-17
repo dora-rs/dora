@@ -89,7 +89,6 @@ pub mod bench_support {
     ) {
         let descriptor = dora_message::descriptor::Descriptor {
             nodes: vec![],
-            communication: dora_message::config::CommunicationConfig::default(),
             deploy: None,
             debug: dora_message::descriptor::Debug::default(),
             health_check_interval: None,
