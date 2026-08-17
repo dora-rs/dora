@@ -11,7 +11,7 @@ use opentelemetry_sdk::metrics::SdkMeterProvider;
 /// where the metric exporter ignored `DORA_OTLP_ENDPOINT` and always fell back
 /// to the OTLP gRPC default (`http://localhost:4317`), silently diverging from
 /// the trace exporter when a remote collector was configured.
-pub fn init_meter_provider(endpoint: &str) -> eyre::Result<SdkMeterProvider> {
+pub fn init_meter_provider(name: &str, endpoint: &str) -> eyre::Result<SdkMeterProvider> {
     let exporter = MetricExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
@@ -19,6 +19,7 @@ pub fn init_meter_provider(endpoint: &str) -> eyre::Result<SdkMeterProvider> {
         .wrap_err("failed to create metric exporter")?;
 
     Ok(SdkMeterProvider::builder()
+        .with_resource(crate::telemetry::service_resource(name))
         .with_periodic_exporter(exporter)
         .build())
 }
