@@ -105,7 +105,7 @@ impl Connection for TcpConnection {
                 }
             },
         };
-        bincode::deserialize(&raw)
+        dora_message::decode(&raw)
             .wrap_err("failed to deserialize DaemonRequest")
             .map(Some)
     }
@@ -115,8 +115,8 @@ impl Connection for TcpConnection {
             // don't send empty replies
             return Ok(());
         }
-        let serialized =
-            bincode::serialize(&message).wrap_err("failed to serialize DaemonReply")?;
+        let serialized = dora_message::encode_presized(&message, message.encode_size_hint())
+            .wrap_err("failed to serialize DaemonReply")?;
         socket_stream_send(&mut self.0, &serialized)
             .await
             .wrap_err("failed to send DaemonReply")?;

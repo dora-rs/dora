@@ -143,9 +143,9 @@ pub enum DataflowStatus {
         /// store-vs-CLI view across coordinator restarts.
         ///
         /// `#[serde(default)]` documents the intended semantics for a
-        /// missing value, but with the bincode encoding used by
+        /// missing value, but with the postcard encoding used by
         /// `RedbStore` it does NOT make old bytes decodable on its own
-        /// (bincode is not self-describing, so a missing trailing field
+        /// (postcard is not self-describing, so a missing trailing field
         /// fails to decode rather than falling back to `Default`). Records
         /// written before this field existed require a `SCHEMA_VERSION`
         /// bump (see `redb_store.rs`) so old databases are rejected at

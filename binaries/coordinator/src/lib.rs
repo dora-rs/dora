@@ -250,12 +250,20 @@ async fn start_with_events(
     #[cfg(feature = "metrics")]
     let otel_metrics = otel_metrics::new_shared();
 
+    // DaemonId -> WS peer address, shared with the WS server so the
+    // ResolveMachine reply can carry the target daemon's direct-TCP data
+    // listener address.
+    let daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
         clock.clone(),
         auth_token,
         artifact_store,
+        store.clone(),
+        daemon_peer_addrs.clone(),
     )
     .await
     .wrap_err("failed to start WS server")?;
@@ -274,6 +282,7 @@ async fn start_with_events(
             clock,
             store,
             span_store,
+            daemon_peer_addrs,
             #[cfg(feature = "metrics")]
             otel_metrics,
         )
@@ -299,6 +308,9 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
     #[cfg(feature = "metrics")] otel_metrics: otel_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
@@ -427,6 +439,12 @@ async fn start_inner(
                     match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
+                            if let Some(peer_addr) = connection.peer_addr {
+                                daemon_peer_addrs
+                                    .write()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(daemon_id.to_string(), peer_addr);
+                            }
                             daemon_connections.add(daemon_id.clone(), connection);
                             if let Err(e) =
                                 store.register_daemon(dora_coordinator_store::DaemonInfo {
@@ -894,6 +912,27 @@ async fn start_inner(
                             grace_duration,
                             force,
                         } => {
+                            // A pending restart already sent `StopDataflow` to
+                            // the daemon(s) and is waiting for
+                            // `DataflowFinishedOnDaemon` to spawn the new
+                            // incarnation under a fresh UUID; `running_dataflows`
+                            // still contains the old UUID in the meantime. An
+                            // explicit `Stop` for that UUID means the caller
+                            // wants the dataflow gone, not restarted — cancel
+                            // the pending restart (erroring its caller) rather
+                            // than letting it silently spawn a new incarnation
+                            // after this stop reports success. Last-writer-wins,
+                            // and unlike an outright rejection this doesn't
+                            // block `--force` from ever landing while a
+                            // long-`--grace-duration` restart is in flight.
+                            cancel_pending_restart(
+                                &mut pending_restarts,
+                                dataflow_uuid,
+                                format!(
+                                    "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
+                                ),
+                            );
+
                             // `dataflow_results` is filled incrementally, one
                             // entry per daemon, while a multi-daemon dataflow is
                             // still running on the others (see
@@ -947,6 +986,16 @@ async fn start_inner(
                             force,
                         } => match resolve_name(name, &running_dataflows, &archived_dataflows) {
                             Ok(dataflow_uuid) => {
+                                // Same pending-restart cancellation as `Stop`
+                                // — see the comment there for why.
+                                cancel_pending_restart(
+                                    &mut pending_restarts,
+                                    dataflow_uuid,
+                                    format!(
+                                        "dataflow `{dataflow_uuid}` was stopped before the restart could complete"
+                                    ),
+                                );
+
                                 // Same partial-completion guard as `Stop`: a
                                 // still-running multi-daemon dataflow has a
                                 // partial `dataflow_results` entry, but must
@@ -2163,6 +2212,7 @@ async fn start_inner(
                     &mut archived_dataflows,
                     &mut dataflow_results,
                     &mut daemon_connections,
+                    &mut pending_restarts,
                     &clock,
                     store.as_ref(),
                 )
@@ -2242,32 +2292,31 @@ async fn start_inner(
                 }
             }
             Event::Log(message) => {
-                const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
-                if let Some(dataflow_id) = &message.dataflow_id {
-                    if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
+                // `dataflow_id`/`build_id` are `Copy`, so match them by value to
+                // leave `message` free to move into `buffer_log_message`.
+                if let Some(dataflow_id) = message.dataflow_id {
+                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                         if dataflow.log_subscribers.is_empty() {
-                            if dataflow.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                                dataflow.buffered_log_messages.push(message);
-                            } else if dataflow.buffered_log_messages.len()
-                                == MAX_BUFFERED_LOG_MESSAGES
-                            {
+                            if buffer_log_message(&mut dataflow.buffered_log_messages, message) {
                                 tracing::warn!(
-                                    "log buffer full for dataflow {dataflow_id}, dropping new messages"
+                                    "log buffer full for dataflow {dataflow_id} \
+                                     ({MAX_BUFFERED_LOG_MESSAGES} messages); dropping further \
+                                     messages until a log subscriber attaches"
                                 );
                             }
                         } else {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
                     }
-                } else if let Some(build_id) = &message.build_id
-                    && let Some(build) = running_builds.get_mut(build_id)
+                } else if let Some(build_id) = message.build_id
+                    && let Some(build) = running_builds.get_mut(&build_id)
                 {
                     if build.log_subscribers.is_empty() {
-                        if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                            build.buffered_log_messages.push(message);
-                        } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
+                        if buffer_log_message(&mut build.buffered_log_messages, message) {
                             tracing::warn!(
-                                "log buffer full for build {build_id}, dropping new messages"
+                                "log buffer full for build {build_id} \
+                                 ({MAX_BUFFERED_LOG_MESSAGES} messages); dropping further \
+                                 messages until a log subscriber attaches"
                             );
                         }
                     } else {
@@ -2982,6 +3031,29 @@ fn topic_outputs_by_daemon(
     Ok(outputs_by_daemon)
 }
 
+/// Maximum number of log messages buffered per dataflow / build while no log
+/// subscriber is attached. Once full, newer messages are dropped (the older
+/// ones are kept so a subscriber that attaches later still sees the start of
+/// the run).
+const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
+
+/// Buffer `message`, or drop it once `buffer` already holds
+/// [`MAX_BUFFERED_LOG_MESSAGES`].
+///
+/// Returns `true` exactly once — on the message that fills the buffer — so the
+/// caller logs a single "buffer full" warning. Further messages are dropped and
+/// return `false`, which is what keeps the warning from re-firing on every
+/// subsequent message once the buffer is full.
+fn buffer_log_message(buffer: &mut Vec<LogMessage>, message: LogMessage) -> bool {
+    if buffer.len() < MAX_BUFFERED_LOG_MESSAGES {
+        let now_full = buffer.len() == MAX_BUFFERED_LOG_MESSAGES - 1;
+        buffer.push(message);
+        now_full
+    } else {
+        false
+    }
+}
+
 /// Handle the success arm of `Event::DataflowSpawnResult`.
 ///
 /// Extracted from the inline event loop so the late-arrival guard can be
@@ -3154,6 +3226,21 @@ enum DisconnectAction {
     ReclaimOrphaned(DataflowId),
 }
 
+/// Cancel a pending restart for `uuid`, if one exists: removes it from
+/// `pending_restarts` and replies to the parked restart caller with `Err`
+/// explaining why. No-op if there is no pending restart for `uuid`.
+fn cancel_pending_restart(
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
+    uuid: DataflowId,
+    reason: impl std::fmt::Display,
+) {
+    if let Some(restart) = pending_restarts.remove(&uuid) {
+        let reason = reason.to_string();
+        tracing::warn!(dataflow = %uuid, "cancelling pending restart: {reason}");
+        let _ = restart.reply_sender.send(Err(eyre!("{reason}")));
+    }
+}
+
 fn cleanup_disconnected_daemons_from_running_dataflows(
     running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
     disconnected: &BTreeSet<DaemonId>,
@@ -3196,15 +3283,11 @@ fn cleanup_disconnected_daemons_from_running_dataflows(
     // daemon(s) will never send DataflowFinishedOnDaemon, so any caller
     // waiting on a deferred restart would hang indefinitely (#2082 H1).
     for uuid in &affected_uuids {
-        if let Some(restart) = pending_restarts.remove(uuid) {
-            tracing::warn!(
-                dataflow = %uuid,
-                "daemon disconnected while restart was pending; cancelling restart"
-            );
-            let _ = restart.reply_sender.send(Err(eyre!(
-                "daemon disconnected while restart was pending for dataflow `{uuid}`"
-            )));
-        }
+        cancel_pending_restart(
+            pending_restarts,
+            *uuid,
+            format!("daemon disconnected while restart was pending for dataflow `{uuid}`"),
+        );
     }
     actions
 }
@@ -3538,6 +3621,7 @@ async fn check_spawn_timeouts(
     archived_dataflows: &mut IndexMap<DataflowId, ArchivedDataflow>,
     dataflow_results: &mut IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>>,
     daemon_connections: &mut DaemonConnections,
+    pending_restarts: &mut HashMap<DataflowId, PendingRestart>,
     clock: &HLC,
     store: &dyn CoordinatorStore,
 ) {
@@ -3618,6 +3702,19 @@ async fn check_spawn_timeouts(
             // reachable from any other code path; defensive.)
             continue;
         };
+        // `PendingRestart` is keyed by this (old) UUID: `initiate_restart`
+        // only requires the UUID to be present in `running_dataflows`,
+        // which it is while this very spawn is stuck — i.e. a restart was
+        // requested for this dataflow while it was still spawning, before
+        // this watchdog gave up on it. Without this, the entry would never
+        // drain (only `DataflowFinishedOnDaemon` and the daemon-disconnect
+        // path do), permanently wedging both the parked restart caller and
+        // any future `Stop` for this UUID.
+        cancel_pending_restart(
+            pending_restarts,
+            uuid,
+            format!("dataflow `{uuid}`'s spawn timed out while a restart was pending"),
+        );
         let err_msg = format!(
             "spawn timed out after {}s; {} daemon(s) never reported \
              spawn_result; rolled back {} previously-started daemon(s)",
@@ -3858,10 +3955,7 @@ async fn start_topic_debug_stream(
 ) -> eyre::Result<Uuid> {
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, &topics)?;
     if !topic_debug_enabled(running_dataflows, dataflow_id)? {
-        eyre::bail!(
-            "topic inspection requires `_unstable_debug.enable_debug_inspection: true` \
-             (the flag was previously named `publish_all_messages_to_zenoh`; the old name is still accepted)"
-        );
+        eyre::bail!("topic inspection requires `_unstable_debug.enable_debug_inspection: true`");
     }
     let subscription_id = Uuid::new_v4();
     running_dataflows
@@ -4338,7 +4432,6 @@ fn resolve_single_node(
 ) -> eyre::Result<(NodeId, ResolvedNode)> {
     let tmp_desc = Descriptor {
         nodes: vec![node],
-        communication: Default::default(),
         deploy: None,
         debug: Default::default(),
         health_check_interval: None,
@@ -5040,6 +5133,10 @@ async fn initiate_restart(
             reply_sender,
         },
     );
+    // Logged (rather than left silent) so a test can poll for the exact
+    // moment the restart becomes cancellable via a `Stop`, instead of
+    // guessing a fixed delay.
+    tracing::info!(dataflow = %dataflow_uuid, "restart pending; waiting for dataflow to finish stopping");
 }
 
 #[cfg(test)]
@@ -7612,12 +7709,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7672,12 +7771,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7719,12 +7820,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -7805,12 +7908,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8152,12 +8257,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8198,12 +8305,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8259,12 +8368,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8344,11 +8455,13 @@ mod tests {
         }
         assert_eq!(dataflow_results.len(), MAX_DATAFLOW_RESULTS);
 
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8429,12 +8542,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8670,12 +8785,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8741,12 +8858,14 @@ mod tests {
         let mut archived_dataflows: IndexMap<DataflowId, ArchivedDataflow> = IndexMap::new();
         let mut dataflow_results: IndexMap<DataflowId, BTreeMap<DaemonId, DataflowDaemonResult>> =
             IndexMap::new();
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
 
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )
@@ -8824,11 +8943,13 @@ mod tests {
         // If `NodeId::from("<watchdog>")` is reintroduced, this awaits
         // a panic and the test fails. Currently uses `"watchdog"` which
         // passes validation.
+        let mut pending_restarts: HashMap<DataflowId, PendingRestart> = HashMap::new();
         check_spawn_timeouts(
             &mut running_dataflows,
             &mut archived_dataflows,
             &mut dataflow_results,
             &mut daemon_connections,
+            &mut pending_restarts,
             &clock,
             store.as_ref(),
         )

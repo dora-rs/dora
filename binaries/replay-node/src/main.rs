@@ -89,9 +89,8 @@ fn main() -> eyre::Result<()> {
             }
             prev_offset = entry.timestamp_offset_nanos;
 
-            // Deserialize the InterDaemonEvent from raw bincode
             let timestamped: Timestamped<InterDaemonEvent> =
-                match bincode::deserialize(&entry.event_bytes) {
+                match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
                     Ok(event) => event,
                     Err(e) => {
                         eprintln!(
@@ -119,7 +118,7 @@ fn main() -> eyre::Result<()> {
                         Err(e) => {
                             // A single corrupt-but-complete payload must not
                             // abort the whole replay. Skip it, matching the
-                            // bincode branch above and the recording layer's
+                            // event-decode branch above and the recording layer's
                             // torn-record resilience (dropping a bad record
                             // rather than failing the run).
                             eprintln!(
@@ -136,6 +135,12 @@ fn main() -> eyre::Result<()> {
                 }
                 InterDaemonEvent::OutputClosed { .. } => {
                     // Skip close events during replay
+                }
+                // `InterDaemonEvent` is `#[non_exhaustive]`: a recording made by a
+                // newer dora may carry events this replay node predates. Skip them
+                // rather than aborting an otherwise-replayable recording.
+                _ => {
+                    skipped += 1;
                 }
             }
         }
