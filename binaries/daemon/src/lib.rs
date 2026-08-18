@@ -1825,13 +1825,11 @@ fn drain_cross_write_pending(dataflow_id: Uuid) -> usize {
         let mut pending = CROSS_WRITE_PENDING
             .lock()
             .unwrap_or_else(|e| e.into_inner());
-        let keys: Vec<(Uuid, String, u64)> = pending
-            .keys()
-            .filter(|(df, _, _)| *df == dataflow_id)
-            .cloned()
-            .collect();
-        keys.into_iter()
-            .filter_map(|k| pending.remove(&k))
+        // One pass, no key clones: the previous scan-clone-then-remove shape
+        // allocated a `String` per match just to look each entry back up.
+        pending
+            .extract_if(|(df, _, _), _| *df == dataflow_id)
+            .map(|(_, tx)| tx)
             .collect()
     };
     let count = stranded.len();
@@ -6988,13 +6986,25 @@ impl Daemon {
                                 // with this re-keyed seq (bot review
                                 // 5307022693), and advance `effective_seq`
                                 // so the safety-net timeout follows it (#3193).
-                                if let Some(new_seq) = rekey_cross_write_to_relay(
+                                match rekey_cross_write_to_relay(
                                     dataflow_id,
                                     &shared_memory_id,
                                     seq,
                                     &effective_seq,
                                 ) {
-                                    relay_seq = new_seq;
+                                    Some(new_seq) => relay_seq = new_seq,
+                                    // Nothing was pending under `seq`, so this
+                                    // write is already resolved: the mirror's
+                                    // stale ok:false won the race, the safety
+                                    // net fired, or `finish_dataflow` drained
+                                    // it. Falling through would publish the
+                                    // whole payload to the mirror anyway — it
+                                    // would memcpy the frame and advance the
+                                    // seqlock, so a receiver there reads as
+                                    // "stable" a frame this daemon already told
+                                    // the sender had failed, and a full-size WAN
+                                    // transfer burns with nobody awaiting it.
+                                    None => return,
                                 }
                             }
                         }
