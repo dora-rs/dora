@@ -430,9 +430,9 @@ The store tracks three record types:
 |--------|-----|-----------------|
 | `DataflowRecord` | UUID (16 bytes) | uuid, name, descriptor (JSON), status, daemon IDs, generation counter, created/updated timestamps |
 | `BuildRecord` | UUID (16 bytes) | build ID, status, errors, created/updated timestamps |
-| `DaemonInfo` | DaemonId (bincode) | daemon ID, machine ID |
+| `DaemonInfo` | DaemonId (postcard) | daemon ID, machine ID |
 
-Records are serialized with [bincode](https://docs.rs/bincode/2) for compact, fast encoding.
+Records are serialized with [postcard](https://docs.rs/postcard) for compact, fast encoding.
 
 ### Dataflow Status Lifecycle
 
@@ -514,9 +514,9 @@ pub trait CoordinatorStore: Send + Sync {
 }
 ```
 
-The `RedbStore` implementation uses three redb tables (`daemons`, `dataflows`, `builds`) with UUID-based binary keys and bincode-serialized values. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
+The `RedbStore` implementation uses three redb tables (`daemons`, `dataflows`, `builds`) with UUID-based binary keys and postcard-serialized values. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
 
-A bincode deserialization limit of 64 MiB guards against corrupted data that could encode huge allocation sizes in length prefixes.
+A 64 MiB record-size limit is enforced symmetrically on both encode and decode, so a record can never be written that the reader would later refuse. postcard reads only from the slice it is handed and does not pre-allocate from a length prefix, so a corrupt row cannot drive a large allocation.
 
 ---
 

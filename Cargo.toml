@@ -67,7 +67,10 @@ members = [
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/mavlink2-bridge",
-    "libraries/extensions/memory-pool",
+    # Opt-in tensor-pool transport. Outside the 1.0 compatibility
+    # guarantees — see libraries/extensions/tensor-pool/README.md.
+    "libraries/extensions/tensor-pool",
+    "libraries/extensions/tensor-pool/python",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
@@ -134,7 +137,8 @@ dora-ros2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-b
 dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
-dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
+dora-tensor-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/tensor-pool" }
+dora-tensor-pool-python = { version = "1.0.0-rc.4", path = "libraries/extensions/tensor-pool/python" }
 dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
 # Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
 # apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
@@ -186,7 +190,7 @@ uuid = { version = "1.23", features = ["serde", "v7"] }
 futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
 fs2 = "0.4.3"
 redb = "4.1"
-bincode = "1.3.3"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 flume = "0.12.0"
 tempfile = "3.27.0"
 proptest = "1.11"

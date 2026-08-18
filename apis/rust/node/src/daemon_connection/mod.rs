@@ -66,7 +66,7 @@ impl DaemonChannel {
                 let (reply_tx, reply) = oneshot::channel();
                 channel
                     .blocking_send((request.clone(), reply_tx))
-                    .expect("failed to send request to IntegrationTestChannel");
+                    .context("failed to send request to IntegrationTestChannel")?;
                 reply
                     .blocking_recv()
                     .context("failed to receive oneshot reply")

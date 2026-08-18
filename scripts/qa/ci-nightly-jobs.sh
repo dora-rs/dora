@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # scripts/qa/ci-nightly-jobs.sh -- local driver for the GHA nightly jobs.
 #
-# The GHA nightly workflow (.github/workflows/nightly.yml) has 27 test jobs
+# The GHA nightly workflow (.github/workflows/nightly.yml) has 26 test jobs
 # (re-counted in #2999: the previous 23 counted neither hub-smoke nor the two
 # ros2-zenoh-* jobs, and multi-daemon-late-subscriber is new)
 # (post-#1716, plus cluster-record-replay from #2013 and kani-proofs).
 # `cargo test -p dora-examples --test example-smoke` (run by qa-nightly's
 # example-smoke step)
 # covers 4 of them (smoke-suite + log-sinks + service-action + streaming).
-# This script covers 20 of the rest -- memory-pool-smoke and hub-smoke have
+# This script covers 20 of the rest -- hub-smoke has
 # no entry here, and one local cli-tests run covers both cli-tests halves -- with
 # platform-aware dispatch -- on macOS dev machines it runs the macOS subset,
 # on Linux it runs the Linux subset, etc. (#1716).
@@ -1961,33 +1961,43 @@ job_kani_proofs() {
 # toolchains that aren't always present locally. CI does the full matrix.
 # -----------------------------------------------------------------------------
 job_cross_check() {
+  # Each `cargo check` below is prefixed with the GHA job-level
+  # `PYO3_NO_PYTHON: "1"` (kept per-command so it doesn't leak into the jobs
+  # that run after this one). Without it a local run resolves the host
+  # interpreter and passes even when CI cannot, which is exactly how the
+  # `dora-tensor-pool-python` breakage (#3150) reached nightly: every
+  # pyo3-linking crate must be excluded here, and only the no-interpreter
+  # build proves it.
   case "$OS" in
     Linux)
-      cargo check --target x86_64-unknown-linux-gnu --all \
+      PYO3_NO_PYTHON=1 cargo check --target x86_64-unknown-linux-gnu --all \
         --exclude dora-node-api-python \
         --exclude dora-operator-api-python \
         --exclude dora-ros2-bridge-python \
         --exclude dora-runtime-python \
-        --exclude dora-cli-api-python
+        --exclude dora-cli-api-python \
+        --exclude dora-tensor-pool-python
       ;;
     Darwin)
       # uname -m is arm64 on Apple Silicon, x86_64 on Intel.
       local arch
       arch="$(uname -m)"
       if [ "$arch" = "arm64" ]; then
-        cargo check --target aarch64-apple-darwin --all \
+        PYO3_NO_PYTHON=1 cargo check --target aarch64-apple-darwin --all \
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
           --exclude dora-runtime-python \
-          --exclude dora-cli-api-python
+          --exclude dora-cli-api-python \
+          --exclude dora-tensor-pool-python
       else
-        cargo check --target x86_64-apple-darwin --all \
+        PYO3_NO_PYTHON=1 cargo check --target x86_64-apple-darwin --all \
           --exclude dora-node-api-python \
           --exclude dora-operator-api-python \
           --exclude dora-ros2-bridge-python \
           --exclude dora-runtime-python \
-          --exclude dora-cli-api-python
+          --exclude dora-cli-api-python \
+          --exclude dora-tensor-pool-python
       fi
       ;;
     *)

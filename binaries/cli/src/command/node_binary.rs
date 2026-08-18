@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use eyre::bail;
 
@@ -46,20 +46,29 @@ pub fn find(binary_name: &str, crate_name: &str) -> eyre::Result<PathBuf> {
     })
 }
 
-fn search(binary_name: &str) -> Option<PathBuf> {
-    // Check next to current executable first
-    if let Ok(exe) = std::env::current_exe() {
-        let dir = exe.parent().unwrap_or(std::path::Path::new("."));
-        let candidate = dir.join(binary_name);
+/// Look for `binary_name` in `dir`, also probing the platform executable
+/// suffix (e.g. `.exe` on Windows) so a `cargo build` artifact is found.
+fn probe_dir(dir: &Path, binary_name: &str) -> Option<PathBuf> {
+    let candidate = dir.join(binary_name);
+    if candidate.exists() {
+        return Some(candidate);
+    }
+    let suffix = std::env::consts::EXE_SUFFIX;
+    if !suffix.is_empty() {
+        let candidate = dir.join(format!("{binary_name}{suffix}"));
         if candidate.exists() {
             return Some(candidate);
         }
-        #[cfg(target_os = "windows")]
-        {
-            let candidate = dir.join(format!("{binary_name}.exe"));
-            if candidate.exists() {
-                return Some(candidate);
-            }
+    }
+    None
+}
+
+fn search(binary_name: &str) -> Option<PathBuf> {
+    // Check next to current executable first
+    if let Ok(exe) = std::env::current_exe() {
+        let dir = exe.parent().unwrap_or(Path::new("."));
+        if let Some(candidate) = probe_dir(dir, binary_name) {
+            return Some(candidate);
         }
     }
 
@@ -73,11 +82,38 @@ fn search(binary_name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
         .unwrap_or_else(|_| PathBuf::from("target"));
     for profile in ["debug", "release"] {
-        let candidate = cargo_target.join(profile).join(binary_name);
-        if candidate.exists() {
+        if let Some(candidate) = probe_dir(&cargo_target.join(profile), binary_name) {
             return dunce::canonicalize(candidate).ok();
         }
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::probe_dir;
+
+    #[test]
+    fn probe_dir_finds_binary_with_platform_suffix() {
+        // Build a unique temp dir without external crates.
+        let mut dir = std::env::temp_dir();
+        dir.push(format!("dora-node-binary-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // Write a file under the real executable name (`foo` on unix,
+        // `foo.exe` on windows), mirroring what `cargo build` produces.
+        let file_name = format!("foo{}", std::env::consts::EXE_SUFFIX);
+        let file_path = dir.join(&file_name);
+        std::fs::write(&file_path, b"binary").unwrap();
+
+        // `probe_dir` must locate it from the bare name on every platform.
+        let found = probe_dir(&dir, "foo");
+        assert_eq!(found.as_deref(), Some(file_path.as_path()));
+
+        // A name that does not exist yields None.
+        assert_eq!(probe_dir(&dir, "does-not-exist"), None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
 }

@@ -1,9 +1,5 @@
 use crate::{DaemonNodeEvent, Event};
-use dora_core::{
-    config::{LocalCommunicationConfig, NodeId},
-    topics::LOCALHOST,
-    uhlc,
-};
+use dora_core::{config::NodeId, topics::LOCALHOST, uhlc};
 use dora_message::{
     DataflowId,
     common::Timestamped,
@@ -44,46 +40,39 @@ pub async fn spawn_listener_loop(
     node_id: &NodeId,
     generation: Arc<AtomicU64>,
     daemon_tx: &mpsc::Sender<Timestamped<Event>>,
-    config: LocalCommunicationConfig,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) -> eyre::Result<DaemonCommunication> {
-    match config {
-        LocalCommunicationConfig::Tcp => {
-            let socket = match TcpListener::bind((LOCALHOST, 0)).await {
-                Ok(socket) => socket,
-                Err(err) => {
-                    return Err(
-                        eyre::Report::new(err).wrap_err("failed to create local TCP listener")
-                    );
-                }
-            };
-            let socket_addr = socket
-                .local_addr()
-                .wrap_err("failed to get local addr of socket")?;
-
-            let event_loop_node_id = format!("{dataflow_id}/{node_id}");
-            let daemon_tx = daemon_tx.clone();
-            let shutdown = shutdown.clone();
-            tokio::spawn(async move {
-                tcp::listener_loop(
-                    socket,
-                    generation,
-                    daemon_tx,
-                    clock,
-                    last_activity,
-                    shutdown,
-                    node_shutdown,
-                )
-                .await;
-                tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
-            });
-
-            Ok(DaemonCommunication::Tcp { socket_addr })
+    let socket = match TcpListener::bind((LOCALHOST, 0)).await {
+        Ok(socket) => socket,
+        Err(err) => {
+            return Err(eyre::Report::new(err).wrap_err("failed to create local TCP listener"));
         }
-    }
+    };
+    let socket_addr = socket
+        .local_addr()
+        .wrap_err("failed to get local addr of socket")?;
+
+    let event_loop_node_id = format!("{dataflow_id}/{node_id}");
+    let daemon_tx = daemon_tx.clone();
+    let shutdown = shutdown.clone();
+    tokio::spawn(async move {
+        tcp::listener_loop(
+            socket,
+            generation,
+            daemon_tx,
+            clock,
+            last_activity,
+            shutdown,
+            node_shutdown,
+        )
+        .await;
+        tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
+    });
+
+    Ok(DaemonCommunication::Tcp { socket_addr })
 }
 
 struct Listener {
@@ -256,6 +245,32 @@ impl Listener {
                     .await
                     .wrap_err("failed to send register reply")?;
             }
+            DaemonRequest::RegisterCrossMachinePool {
+                shared_memory_id,
+                shmem_name,
+                size,
+                dtype,
+                shape,
+                device,
+                machine_id,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::RegisterCrossMachinePool {
+                        shared_memory_id,
+                        shmem_name,
+                        size,
+                        dtype,
+                        shape,
+                        device,
+                        machine_id,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
             DaemonRequest::NodeConfig { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected node config message".into()));
                 self.send_reply(reply, connection)
@@ -360,15 +375,17 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::RegisterPinnedMemory {
-                shared_memory_id,
-                metadata,
+            DaemonRequest::ExtensionStore {
+                namespace,
+                key,
+                value,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::RegisterPinnedMemory {
-                        shared_memory_id,
-                        metadata,
+                    DaemonNodeEvent::ExtensionStore {
+                        namespace,
+                        key,
+                        value,
                         reply_sender,
                     },
                     Some(reply),
@@ -376,15 +393,48 @@ impl Listener {
                 )
                 .await?;
             }
-            DaemonRequest::ReadPinnedMemory {
-                shared_memory_id,
-                free,
+            DaemonRequest::ExtensionLoad {
+                namespace,
+                key,
+                remove,
             } => {
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
-                    DaemonNodeEvent::ReadPinnedMemory {
+                    DaemonNodeEvent::ExtensionLoad {
+                        namespace,
+                        key,
+                        remove,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::ExtensionDrop { namespace, key } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::ExtensionDrop {
+                        namespace,
+                        key,
+                        reply_sender,
+                    },
+                    Some(reply),
+                    connection,
+                )
+                .await?;
+            }
+            DaemonRequest::WritePinnedMemory {
+                shared_memory_id,
+                tensor_data,
+                size,
+            } => {
+                let (reply_sender, reply) = oneshot::channel();
+                self.process_daemon_event(
+                    DaemonNodeEvent::WriteMemoryPool {
                         shared_memory_id,
-                        free,
+                        tensor_data,
+                        size,
                         reply_sender,
                     },
                     Some(reply),
@@ -403,6 +453,16 @@ impl Listener {
                     connection,
                 )
                 .await?;
+            }
+            // `DaemonRequest` is `#[non_exhaustive]`: a node built against a newer
+            // dora-node-api may send a request this daemon predates. Answer with an
+            // explicit error so the node fails loudly instead of hanging on a reply
+            // that never comes.
+            other => {
+                let reply = DaemonReply::Result(Err(format!(
+                    "unsupported request from node (node is likely newer than this daemon): {other:?}"
+                )));
+                self.send_reply(reply, connection).await?;
             }
         }
         Ok(())

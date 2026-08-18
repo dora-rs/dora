@@ -102,7 +102,11 @@ pub(super) fn run_ssh(target: &str, port: Option<u16>, cmd: &str) -> eyre::Resul
     if let Some(p) = port {
         command.args(["-p", &p.to_string()]);
     }
-    command.args([target, cmd]);
+    // `--` marks the end of options so a `target` beginning with `-` (e.g. a
+    // malicious `-oProxyCommand=...`) is treated as the hostname, not an ssh
+    // option. Defense-in-depth: `ClusterConfig::validate` already rejects a
+    // leading dash on `host`/`user`.
+    command.args(["--", target, cmd]);
     let status = command
         .status()
         .with_context(|| format!("failed to run ssh to {target}"))?;

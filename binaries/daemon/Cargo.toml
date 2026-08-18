@@ -20,6 +20,7 @@ bench = []
 telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
+dora-tensor-pool = { workspace = true }
 eyre = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
@@ -35,12 +36,10 @@ dora-tracing = { workspace = true, optional = true }
 dora-arrow-convert = { workspace = true }
 dora-node-api = { workspace = true }
 dora-message = { workspace = true }
-dora-memory-pool = { workspace = true }
 serde_yaml = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
 shared_memory_extended = "0.13.0"
-bincode = { workspace = true }
 aligned-vec = "0.6.4"
 ctrlc = "3.5.2"
 which = "8"

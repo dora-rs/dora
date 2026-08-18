@@ -449,6 +449,15 @@ jobs:
         run: >
           cargo test -p dora-examples --test finish-straggler-e2e -- --test-threads=1
         timeout-minutes: 10
+      # Coordinator Stop-vs-Restart race regression: a `Stop` landing while
+      # a `Restart` is pending must cancel the restart and actually stop the
+      # dataflow, not report success while a new incarnation keeps running.
+      # Lives in `dora-examples` (excluded from the bulk `cargo test --all`
+      # step), so it needs an explicit invocation.
+      - name: Run coordinator stop/restart race E2E
+        run: >
+          cargo test -p dora-examples --test stop-restart-race-e2e -- --test-threads=1
+        timeout-minutes: 10
 
   # Semantic contract tests — promoted from nightly per #1632.
   #
@@ -687,7 +696,15 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-deny
+          tool: cargo-deny
+      # Pin cargo-audit via cargo install: install-action's "latest"
+      # raced between runner caches, and older cached releases crash
+      # parsing this Cargo.lock's multi-target windows-sys (webbrowser's
+      # windows-only 0.48.0 target dependency — "invalid Cargo.lock
+      # dependency tree: failed to find dependency: windows-sys 0.48.0").
+      # 0.22.2 parses it cleanly (verified locally against this lock).
+      - name: Install cargo-audit (pinned)
+        run: cargo install cargo-audit --locked --version 0.22.2
       - run: make qa-audit
 
   unwrap-budget:
