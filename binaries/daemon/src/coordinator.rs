@@ -7,7 +7,7 @@ use dora_message::{
     ws_protocol::WsResponse,
 };
 use eyre::eyre;
-use futures::{SinkExt, StreamExt};
+use futures::{Sink, SinkExt, StreamExt};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
@@ -178,8 +178,9 @@ pub async fn register(
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Channel for outgoing messages (daemon events + command replies).
-    // The coordinator sender writes to this, and the spawned task reads and forwards to WS.
-    let (send_tx, mut send_rx) = mpsc::channel::<String>(64);
+    // The coordinator sender writes to this, and the writer task below reads
+    // and forwards to WS.
+    let (send_tx, send_rx) = mpsc::channel::<String>(64);
 
     // Send Register request.
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
@@ -233,123 +234,222 @@ pub async fn register(
 
     let (tx, rx) = mpsc::channel(1);
 
-    // Spawned task: bidirectional WS message routing.
-    // - Reads coordinator commands from WS, sends to event channel, awaits reply, sends reply back.
-    // - Reads outgoing events from send_rx, forwards to WS.
+    // The coordinator connection is serviced by two cooperating tasks that
+    // split the WebSocket:
+    //
+    //  * a **writer** task is the sole owner/writer of `ws_tx`. It drains both
+    //    the external fire-and-forget events (`send_rx`) and internal frames
+    //    from the reader (command responses + pongs, via `internal_rx`).
+    //  * a **reader** task owns `ws_rx`, forwards each command to the daemon's
+    //    main event loop, awaits its reply, and hands responses/pongs to the
+    //    writer.
+    //
+    // Keeping the outbound drain in its own task is what prevents the deadlock
+    // fixed here (dora-rs/dora#3164): processing a command on the main loop can
+    // require pushing outbound messages through `send_tx`, so a single loop
+    // that both awaited replies and drained `send_rx` would wedge — a command
+    // whose handling emits a burst larger than `send_tx`'s capacity blocks the
+    // main loop on a full `send_tx` while the loop is parked awaiting that
+    // command's reply, so `send_rx` never drains and the reply never comes.
+    // With an independent writer, `send_rx` always drains, so no internal cycle
+    // can form; only genuine peer backpressure can slow transmission.
+    let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
+
+    tokio::spawn(run_coordinator_ws_writer(ws_tx, send_rx, internal_rx));
+
     let task_clock = clock.clone();
-    tokio::spawn(async move {
-        let clock = task_clock;
-        loop {
-            tokio::select! {
-                msg = ws_rx.next() => {
-                    let Some(msg) = msg else { break };
-                    let text = match msg {
-                        Ok(Message::Text(text)) => text,
-                        Ok(Message::Close(_)) => break,
-                        Ok(Message::Ping(data)) => {
-                            let _ = ws_tx.send(Message::Pong(data)).await;
-                            continue;
-                        }
-                        Ok(_) => continue,
-                        Err(e) => {
-                            tracing::warn!("WS coordinator connection error: {e}");
-                            break;
-                        }
-                    };
-
-                    // Replies to our own daemon→coordinator requests
-                    // (e.g. ResolveMachine) arrive in the same
-                    // daemon_event envelope as commands, but with a
-                    // different params type (`Timestamped<ResolveMachineReply>`)
-                    // that the typed `CoordinatorCommandRaw` parse below
-                    // would reject. Route them to the pending caller by
-                    // id before the command parse.
-                    if let Ok(reply) = serde_json::from_str::<ReplyRouteRaw>(&text) {
-                        let pending = COORDINATOR_PENDING
-                            .lock()
-                            .unwrap_or_else(|e| e.into_inner())
-                            .remove(&reply.id);
-                        if let Some(tx) = pending {
-                            let _ =
-                                tx.send(reply.params.unwrap_or(serde_json::Value::Null));
-                            continue;
-                        }
-                    }
-
-                    // Parse directly from raw text to preserve u128 fidelity
-                    // for uhlc::ID inside timestamps.
-                    let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
-                        Ok(r) => r,
-                        Err(e) => {
-                            tracing::warn!("failed to parse coordinator WS message: {e}");
-                            continue;
-                        }
-                    };
-
-                    let request_id = raw.id;
-                    let needs_reply = raw.method == "daemon_command";
-                    let event = raw.params;
-
-                    if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
-                        tracing::warn!("failed to update daemon clock: {err}");
-                    }
-
-                    let (reply_tx, reply_rx) = oneshot::channel();
-                    if tx
-                        .send(Timestamped {
-                            inner: CoordinatorEvent {
-                                event: event.inner,
-                                reply_tx,
-                            },
-                            timestamp: event.timestamp,
-                        })
-                        .await
-                        .is_err()
-                    {
-                        break;
-                    }
-
-                    let Ok(reply) = reply_rx.await else {
-                        tracing::warn!("daemon sent no reply");
-                        continue;
-                    };
-
-                    if let Some(reply) = reply {
-                        if needs_reply {
-                            let response = match serde_json::to_value(&reply) {
-                                Ok(val) => WsResponse::ok(request_id, val),
-                                Err(e) => {
-                                    tracing::error!("failed to serialize reply: {e}");
-                                    WsResponse::err(request_id, format!("{e}"))
-                                }
-                            };
-                            if let Ok(json) = serde_json::to_string(&response)
-                                && ws_tx.send(Message::Text(json.into())).await.is_err() {
-                                    break;
-                                }
-                        }
-                        if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
-                            if let Some(notify) = notify {
-                                let _ = notify.send(());
-                            }
-                            break;
-                        }
-                    }
-                }
-                Some(outgoing) = send_rx.recv() => {
-                    if ws_tx.send(Message::Text(outgoing.into())).await.is_err() {
-                        break;
-                    }
-                }
-            }
-        }
-    });
+    tokio::spawn(run_coordinator_ws_reader(
+        ws_rx,
+        tx,
+        internal_tx,
+        task_clock,
+    ));
 
     Ok((
         daemon_id,
         CoordinatorSender { sender: send_tx },
         ReceiverStream::new(rx),
     ))
+}
+
+/// A frame the reader hands to the writer for transmission. The writer is the
+/// sole owner of the WebSocket sink, so responses and pongs route through it
+/// rather than being written by the reader directly.
+enum OutboundFrame {
+    /// A message to write to the coordinator socket.
+    Ws(Message),
+    /// Fire a `DestroyResult` completion notification and then close the
+    /// connection. Routed through the writer (rather than fired directly in the
+    /// reader) so it happens only *after* the preceding `DestroyResult`
+    /// response has been flushed to the socket — preserving the original
+    /// flush-then-notify ordering across the reader/writer split.
+    DestroyNotify(oneshot::Sender<()>),
+}
+
+/// Outbound half of the coordinator WS connection: the sole writer of `ws_tx`.
+///
+/// Drains `send_rx` (external fire-and-forget events) and `internal_rx`
+/// (reader-produced responses/pongs) until the connection errors, the reader
+/// stops (dropping `internal_tx`), or a `DestroyNotify` frame ends it. Because
+/// this drain runs independently of command/reply processing, nothing the
+/// reader does can stall it — see `register` and dora-rs/dora#3164.
+async fn run_coordinator_ws_writer<Tx>(
+    mut ws_tx: Tx,
+    mut send_rx: mpsc::Receiver<String>,
+    mut internal_rx: mpsc::Receiver<OutboundFrame>,
+) where
+    Tx: Sink<Message> + Unpin,
+{
+    loop {
+        tokio::select! {
+            frame = internal_rx.recv() => match frame {
+                Some(OutboundFrame::Ws(msg)) => {
+                    if ws_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                Some(OutboundFrame::DestroyNotify(notify)) => {
+                    let _ = notify.send(());
+                    break;
+                }
+                // Reader stopped; all frames it queued (FIFO) are already
+                // flushed, so close the write half by dropping `ws_tx`.
+                None => break,
+            },
+            outgoing = send_rx.recv() => match outgoing {
+                Some(text) => {
+                    if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                        break;
+                    }
+                }
+                // CoordinatorSender dropped: nothing more to send.
+                None => break,
+            },
+        }
+    }
+}
+
+/// Inbound half of the coordinator WS connection: reads frames from `ws_rx`,
+/// forwards commands to the daemon's main event loop over `tx`, awaits each
+/// reply, and routes responses/pongs to the writer over `internal_tx`.
+///
+/// Each command's reply is awaited before the next frame is read, so at most
+/// one command is in flight — unchanged from the pre-split loop. The reply
+/// await cannot deadlock because the writer drains `send_rx` independently
+/// (dora-rs/dora#3164).
+async fn run_coordinator_ws_reader<Rx, E>(
+    mut ws_rx: Rx,
+    tx: mpsc::Sender<Timestamped<CoordinatorEvent>>,
+    internal_tx: mpsc::Sender<OutboundFrame>,
+    clock: Arc<HLC>,
+) where
+    Rx: Stream<Item = Result<Message, E>> + Unpin,
+    E: std::fmt::Display,
+{
+    while let Some(msg) = ws_rx.next().await {
+        let text = match msg {
+            Ok(Message::Text(text)) => text,
+            Ok(Message::Close(_)) => break,
+            Ok(Message::Ping(data)) => {
+                // Route the pong through the writer (the sole ws_tx owner).
+                if internal_tx
+                    .send(OutboundFrame::Ws(Message::Pong(data)))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+            Ok(_) => continue,
+            Err(e) => {
+                tracing::warn!("WS coordinator connection error: {e}");
+                break;
+            }
+        };
+
+        // Replies to our own daemon→coordinator requests (e.g. ResolveMachine)
+        // arrive in the same daemon_event envelope as commands, but with a
+        // different params type (`Timestamped<ResolveMachineReply>`) that the
+        // typed `CoordinatorCommandRaw` parse below would reject. Route them to
+        // the pending caller by id before the command parse.
+        if let Ok(reply) = serde_json::from_str::<ReplyRouteRaw>(&text) {
+            let pending = COORDINATOR_PENDING
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&reply.id);
+            if let Some(tx) = pending {
+                let _ = tx.send(reply.params.unwrap_or(serde_json::Value::Null));
+                continue;
+            }
+        }
+
+        // Parse directly from raw text to preserve u128 fidelity for uhlc::ID
+        // inside timestamps.
+        let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::warn!("failed to parse coordinator WS message: {e}");
+                continue;
+            }
+        };
+
+        let request_id = raw.id;
+        let needs_reply = raw.method == "daemon_command";
+        let event = raw.params;
+
+        if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
+            tracing::warn!("failed to update daemon clock: {err}");
+        }
+
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if tx
+            .send(Timestamped {
+                inner: CoordinatorEvent {
+                    event: event.inner,
+                    reply_tx,
+                },
+                timestamp: event.timestamp,
+            })
+            .await
+            .is_err()
+        {
+            break;
+        }
+
+        let Ok(reply) = reply_rx.await else {
+            tracing::warn!("daemon sent no reply");
+            continue;
+        };
+
+        if let Some(reply) = reply {
+            if needs_reply {
+                let response = match serde_json::to_value(&reply) {
+                    Ok(val) => WsResponse::ok(request_id, val),
+                    Err(e) => {
+                        tracing::error!("failed to serialize reply: {e}");
+                        WsResponse::err(request_id, format!("{e}"))
+                    }
+                };
+                if let Ok(json) = serde_json::to_string(&response)
+                    && internal_tx
+                        .send(OutboundFrame::Ws(Message::Text(json.into())))
+                        .await
+                        .is_err()
+                {
+                    break;
+                }
+            }
+            if let DaemonCoordinatorReply::DestroyResult { notify, .. } = reply {
+                if let Some(notify) = notify {
+                    // Hand the notify to the writer so it fires only after the
+                    // response above has been flushed, then closes the socket.
+                    let _ = internal_tx.send(OutboundFrame::DestroyNotify(notify)).await;
+                }
+                break;
+            }
+        }
+    }
 }
 
 /// Resolve a machine id through the coordinator. Returns false when the
@@ -570,5 +670,89 @@ mod tests {
         // Sub-4ms backoff yields range == 0; must not divide/modulo by zero.
         let backoff = Duration::from_millis(3);
         assert_eq!(jittered_backoff(backoff, 12345), backoff);
+    }
+
+    /// Regression test for dora-rs/dora#3164: the outbound path must keep
+    /// draining `send_rx` while a coordinator command's reply is still in
+    /// flight. Otherwise a command whose handling emits a burst larger than the
+    /// `send_tx` capacity wedges the daemon's main loop on a full `send_tx`, and
+    /// the reply never arrives — a permanent deadlock.
+    ///
+    /// With the reader and writer split into separate tasks the burst drains
+    /// independently of the reply await, so this completes; a single combined
+    /// loop (the pre-fix shape) deadlocks and hits the timeout.
+    #[tokio::test]
+    async fn ws_writer_drains_outbound_while_command_reply_is_in_flight() {
+        use futures::stream;
+
+        let clock = Arc::new(HLC::default());
+
+        // Outbound WS sink: unbounded, so the only thing that can stall the
+        // outbound path is the writer failing to drain `send_rx` — the bug under
+        // test — not sink backpressure.
+        let (ws_out_tx, _ws_out_rx) = futures::channel::mpsc::unbounded::<Message>();
+
+        // One `daemon_command`, then pending forever; the command's
+        // `DestroyResult` reply is what ends the reader loop.
+        let df_id = Uuid::new_v4();
+        let event = DaemonCoordinatorEvent::AllNodesReady {
+            dataflow_id: df_id,
+            exited_before_subscribe: Vec::new(),
+        };
+        let params_json = serde_json::to_string(&Timestamped {
+            inner: event,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        let cmd_id = Uuid::new_v4();
+        let cmd_json =
+            format!(r#"{{"id":"{cmd_id}","method":"daemon_command","params":{params_json}}}"#);
+        let ws_in = stream::iter(vec![Ok::<Message, std::io::Error>(Message::Text(
+            cmd_json.into(),
+        ))])
+        .chain(stream::pending());
+
+        let (tx, mut rx) = mpsc::channel::<Timestamped<CoordinatorEvent>>(1);
+        // Same capacity as production (`register`). The mock main loop sends far
+        // more than this before replying, so the reply can only be produced if
+        // the writer keeps draining `send_rx` concurrently.
+        let (send_tx, send_rx) = mpsc::channel::<String>(64);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(ws_out_tx, send_rx, internal_rx));
+        let reader = tokio::spawn(run_coordinator_ws_reader(
+            ws_in,
+            tx,
+            internal_tx,
+            clock.clone(),
+        ));
+
+        // Mock daemon main loop: on the command, emit a burst that exceeds the
+        // send-channel capacity, then reply with `DestroyResult` to end the loop.
+        let main_loop = tokio::spawn(async move {
+            if let Some(ev) = rx.recv().await {
+                for i in 0..500u32 {
+                    send_tx
+                        .send(format!("outbound-{i}"))
+                        .await
+                        .expect("writer must keep draining send_rx");
+                }
+                let _ = ev
+                    .inner
+                    .reply_tx
+                    .send(Some(DaemonCoordinatorReply::DestroyResult {
+                        result: Ok(()),
+                        notify: None,
+                    }));
+            }
+        });
+
+        tokio::time::timeout(Duration::from_secs(10), async {
+            reader.await.unwrap();
+            writer.await.unwrap();
+            main_loop.await.unwrap();
+        })
+        .await
+        .expect("WS router deadlocked under outbound backpressure (#3164)");
     }
 }
