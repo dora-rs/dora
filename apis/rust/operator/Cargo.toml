@@ -11,6 +11,28 @@ repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+# Passthrough for `dora-arrow-convert`'s Arrow-major features, mirroring the
+# pair `dora-node-api` exposes. Operators receive `Event::Input { data:
+# DoraArray, .. }` and send `impl IntoArrow`, so every typed-array accessor
+# (`DoraArray::as_array` / `from_array` / `into_inner`, `IntoArrow for
+# ArrayRef`) sits behind one of these. Without the passthrough an operator
+# author has no way to enable them: the feature simply does not exist on this
+# crate, so `dora-operator-api/arrow-v59` fails resolution.
+#
+# `default = []` for the same reason as on `dora-node-api`: a node or operator
+# that never names an Arrow type never needs a major.
+default = []
+# dora's *internal* Arrow major. Also re-exports it as `arrow_v59` (see
+# `lib.rs`), so operators name the exact copy dora links.
+arrow-v59 = ["dora-arrow-convert/arrow-v59"]
+# An *older* major, reached through the Arrow C Data Interface. Unlike
+# `dora-node-api` this adds no aliased `arrow58` dependency and no `arrow_v58`
+# re-export: the bridge's `TryFrom` impls are what the feature is for, and a
+# caller wanting Arrow 58 already has it in their own manifest (that is why
+# they want the bridge), where cargo unifies it with dora's copy.
+arrow-v58 = ["dora-arrow-convert/arrow-v58"]
+
 [dependencies]
 dora-operator-api-macros = { workspace = true }
 dora-operator-api-types = { workspace = true }

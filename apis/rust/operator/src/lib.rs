@@ -25,6 +25,31 @@ pub use dora_operator_api_types as types;
 pub use types::DoraStatus;
 use types::{Metadata, Output, SendOutput, arrow};
 
+/// dora's **internal** Arrow major, re-exported under a name that states it.
+///
+/// Enabled by the `arrow-v59` feature, which also unlocks
+/// [`DoraArray::as_array`] / [`DoraArray::from_array`] and `IntoArrow for
+/// ArrayRef`. Together they are what lets an operator read and send a typed
+/// Arrow array:
+///
+/// ```
+/// use dora_operator_api::{Event, arrow_v59::array::ArrayRef};
+///
+/// fn handle(event: &Event) {
+///     if let Event::Input { data, .. } = event {
+///         let array: &ArrayRef = data.as_array();
+///         println!("received {} rows", array.len());
+///     }
+/// }
+/// ```
+///
+/// This is deliberately not a bare `pub use arrow;`, for the same reason
+/// `dora_node_api::arrow_v59` is not: an unversioned re-export changes meaning
+/// silently when dora bumps its internal major, whereas `arrow_v59` either
+/// resolves or does not.
+#[cfg(feature = "arrow-v59")]
+pub use types::arrow as arrow_v59;
+
 pub mod raw;
 
 /// An event delivered to an operator's [`DoraOperator::on_event`] callback.
@@ -147,6 +172,34 @@ impl DoraOutputSender<'_> {
             },
         });
         result.into_result()
+    }
+}
+
+/// Guards the `arrow-v59` passthrough feature (see `Cargo.toml`). Operators
+/// are handed `DoraArray` and send `impl IntoArrow`; both the borrowing
+/// accessor and `IntoArrow for ArrayRef` live behind
+/// `dora-arrow-convert/arrow-v59`, which this crate has to forward for an
+/// operator author to be able to enable it at all.
+#[cfg(all(test, feature = "arrow-v59"))]
+mod arrow_v59_tests {
+    use super::*;
+    use arrow_v59::array::{ArrayRef, Int32Array};
+    use std::sync::Arc;
+
+    #[test]
+    fn typed_array_round_trips_through_dora_array() {
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+
+        // Send side: `DoraOutputSender::send` takes `impl IntoArrow`.
+        let payload: DoraArray = array.into_arrow();
+        assert_eq!(payload.len(), 3);
+
+        // Receive side: `Event::Input { data: DoraArray, .. }`.
+        let received: &ArrayRef = payload.as_array();
+        assert_eq!(received.len(), 3);
+
+        // And building a payload from a concrete Arrow array.
+        assert_eq!(DoraArray::from_array(Int32Array::from(vec![7])).len(), 1);
     }
 }
 
