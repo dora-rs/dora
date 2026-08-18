@@ -250,12 +250,20 @@ async fn start_with_events(
     #[cfg(feature = "metrics")]
     let otel_metrics = otel_metrics::new_shared();
 
+    // DaemonId -> WS peer address, shared with the WS server so the
+    // ResolveMachine reply can carry the target daemon's direct-TCP data
+    // listener address.
+    let daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
         clock.clone(),
         auth_token,
         artifact_store,
+        store.clone(),
+        daemon_peer_addrs.clone(),
     )
     .await
     .wrap_err("failed to start WS server")?;
@@ -274,6 +282,7 @@ async fn start_with_events(
             clock,
             store,
             span_store,
+            daemon_peer_addrs,
             #[cfg(feature = "metrics")]
             otel_metrics,
         )
@@ -299,6 +308,9 @@ async fn start_inner(
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     span_store: SpanStore,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
     #[cfg(feature = "metrics")] otel_metrics: otel_metrics::SharedMetrics,
 ) -> eyre::Result<()> {
     let daemon_heartbeat_interval =
@@ -427,6 +439,12 @@ async fn start_inner(
                     match version_check_result.map_err(|e| eyre!(e)).and(send_result) {
                         Ok(()) => {
                             let _ = daemon_id_tx.send(daemon_id.clone());
+                            if let Some(peer_addr) = connection.peer_addr {
+                                daemon_peer_addrs
+                                    .write()
+                                    .unwrap_or_else(|e| e.into_inner())
+                                    .insert(daemon_id.to_string(), peer_addr);
+                            }
                             daemon_connections.add(daemon_id.clone(), connection);
                             if let Err(e) =
                                 store.register_daemon(dora_coordinator_store::DaemonInfo {
@@ -2274,32 +2292,31 @@ async fn start_inner(
                 }
             }
             Event::Log(message) => {
-                const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
-                if let Some(dataflow_id) = &message.dataflow_id {
-                    if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
+                // `dataflow_id`/`build_id` are `Copy`, so match them by value to
+                // leave `message` free to move into `buffer_log_message`.
+                if let Some(dataflow_id) = message.dataflow_id {
+                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                         if dataflow.log_subscribers.is_empty() {
-                            if dataflow.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                                dataflow.buffered_log_messages.push(message);
-                            } else if dataflow.buffered_log_messages.len()
-                                == MAX_BUFFERED_LOG_MESSAGES
-                            {
+                            if buffer_log_message(&mut dataflow.buffered_log_messages, message) {
                                 tracing::warn!(
-                                    "log buffer full for dataflow {dataflow_id}, dropping new messages"
+                                    "log buffer full for dataflow {dataflow_id} \
+                                     ({MAX_BUFFERED_LOG_MESSAGES} messages); dropping further \
+                                     messages until a log subscriber attaches"
                                 );
                             }
                         } else {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
                     }
-                } else if let Some(build_id) = &message.build_id
-                    && let Some(build) = running_builds.get_mut(build_id)
+                } else if let Some(build_id) = message.build_id
+                    && let Some(build) = running_builds.get_mut(&build_id)
                 {
                     if build.log_subscribers.is_empty() {
-                        if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                            build.buffered_log_messages.push(message);
-                        } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
+                        if buffer_log_message(&mut build.buffered_log_messages, message) {
                             tracing::warn!(
-                                "log buffer full for build {build_id}, dropping new messages"
+                                "log buffer full for build {build_id} \
+                                 ({MAX_BUFFERED_LOG_MESSAGES} messages); dropping further \
+                                 messages until a log subscriber attaches"
                             );
                         }
                     } else {
@@ -3101,6 +3118,29 @@ async fn handle_dataflow_spawn_result(
             clock,
         )
         .await;
+    }
+}
+
+/// Maximum number of log messages buffered per dataflow / build while no log
+/// subscriber is attached. Once full, newer messages are dropped (the older
+/// ones are kept so a subscriber that attaches later still sees the start of
+/// the run).
+const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
+
+/// Buffer `message`, or drop it once `buffer` already holds
+/// [`MAX_BUFFERED_LOG_MESSAGES`].
+///
+/// Returns `true` exactly once — on the message that fills the buffer — so the
+/// caller logs a single "buffer full" warning. Further messages are dropped and
+/// return `false`, which is what keeps the warning from re-firing on every
+/// subsequent message once the buffer is full.
+fn buffer_log_message(buffer: &mut Vec<LogMessage>, message: LogMessage) -> bool {
+    if buffer.len() < MAX_BUFFERED_LOG_MESSAGES {
+        let now_full = buffer.len() == MAX_BUFFERED_LOG_MESSAGES - 1;
+        buffer.push(message);
+        now_full
+    } else {
+        false
     }
 }
 
@@ -4045,10 +4085,7 @@ async fn start_topic_debug_stream(
 ) -> eyre::Result<Uuid> {
     let outputs_by_daemon = topic_outputs_by_daemon(running_dataflows, dataflow_id, &topics)?;
     if !topic_debug_enabled(running_dataflows, dataflow_id)? {
-        eyre::bail!(
-            "topic inspection requires `_unstable_debug.enable_debug_inspection: true` \
-             (the flag was previously named `publish_all_messages_to_zenoh`; the old name is still accepted)"
-        );
+        eyre::bail!("topic inspection requires `_unstable_debug.enable_debug_inspection: true`");
     }
     let subscription_id = Uuid::new_v4();
     running_dataflows
@@ -4525,7 +4562,6 @@ fn resolve_single_node(
 ) -> eyre::Result<(NodeId, ResolvedNode)> {
     let tmp_desc = Descriptor {
         nodes: vec![node],
-        communication: Default::default(),
         deploy: None,
         debug: Default::default(),
         health_check_interval: None,

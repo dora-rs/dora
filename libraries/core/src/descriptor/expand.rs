@@ -138,7 +138,6 @@ pub fn expand_modules_with_boundaries(
     Ok(ExpandedDescriptor {
         descriptor: Descriptor {
             nodes: flat_nodes,
-            communication: descriptor.communication.clone(),
             deploy: descriptor.deploy.clone(),
             debug: descriptor.debug.clone(),
             health_check_interval: descriptor.health_check_interval,
@@ -187,6 +186,12 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
             check_mod_refs(&module_file.module.name, &node.id, inputs, &all_input_names)?;
         }
     }
+    let module_outputs = collect_module_source_outputs(&module_file, module_dir)?;
+    check_internal_wiring(
+        &module_file.module.name,
+        &module_file.nodes,
+        &module_outputs,
+    )?;
 
     // Check outputs: each declared output should be produced by some inner node.
     // For nested module children, recursively load their declared outputs.
@@ -257,6 +262,90 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         }
     }
 
+    Ok(())
+}
+
+fn collect_module_source_outputs(
+    module_file: &ModuleFile,
+    module_dir: &Path,
+) -> eyre::Result<BTreeMap<String, BTreeSet<String>>> {
+    let mut outputs = BTreeMap::new();
+    for node in &module_file.nodes {
+        let node_id = node.id.to_string();
+        if outputs.contains_key(&node_id) {
+            bail!(
+                "module `{}` has duplicate node ID `{}`",
+                module_file.module.name,
+                node.id,
+            );
+        }
+
+        let node_outputs = if let Some(ref mod_path) = node.module {
+            if is_absolute_any_platform(mod_path) {
+                bail!(
+                    "module `{}`: nested module path `{}` must be relative (node `{}`)",
+                    module_file.module.name,
+                    mod_path,
+                    node.id,
+                );
+            }
+            let nested = module_dir.join(mod_path);
+            let nested_canonical = nested.canonicalize().with_context(|| {
+                format!(
+                    "module `{}`: nested module `{}` referenced by node `{}` not found",
+                    module_file.module.name, mod_path, node.id,
+                )
+            })?;
+            let nested_module = load_module_file(&nested_canonical)?;
+            nested_module
+                .module
+                .outputs
+                .iter()
+                .map(|output| output.to_string())
+                .collect()
+        } else {
+            node_output_refs(node)
+                .into_iter()
+                .map(|(_, output_ref)| output_ref)
+                .collect()
+        };
+
+        outputs.insert(node_id, node_outputs);
+    }
+    Ok(outputs)
+}
+
+fn check_internal_wiring(
+    module_name: &str,
+    nodes: &[Node],
+    module_outputs: &BTreeMap<String, BTreeSet<String>>,
+) -> eyre::Result<()> {
+    for node in nodes {
+        for inputs in node_input_maps(node) {
+            for (input_id, input) in inputs {
+                if let InputMapping::User(mapping) = &input.mapping {
+                    let source = mapping.source.to_string();
+                    if source == MODULE_INPUT_SOURCE {
+                        continue;
+                    }
+                    if let Some(outputs) = module_outputs.get(&source) {
+                        let output = mapping.output.to_string();
+                        if !outputs.contains(&output) {
+                            bail!(
+                                "module `{}`: node `{}` input `{}` references \
+                                 `{}/{}` but that output is not produced",
+                                module_name,
+                                node.id,
+                                input_id,
+                                source,
+                                output,
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
     Ok(())
 }
 
@@ -356,9 +445,6 @@ fn node_input_maps(node: &Node) -> Vec<&BTreeMap<DataId, Input>> {
     if let Some(ref operator) = node.operator {
         maps.push(&operator.config.inputs);
     }
-    if let Some(ref custom) = node.custom {
-        maps.push(&custom.run_config.inputs);
-    }
     maps
 }
 
@@ -377,9 +463,6 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
     if let Some(ref mut operator) = node.operator {
         maps.push(&mut operator.config.inputs);
     }
-    if let Some(ref mut custom) = node.custom {
-        maps.push(&mut custom.run_config.inputs);
-    }
     maps
 }
 
@@ -388,8 +471,8 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
 ///
 /// The two differ only for multi-operator runtime nodes: their outputs live in
 /// `operators[].config.outputs` and must be referenced as
-/// `<operator_id>/<output>`. Node-level `outputs`, legacy `custom:`
-/// `run_config.outputs`, and single `operator:` outputs are all referenced by
+/// `<operator_id>/<output>`. Node-level `outputs` and single `operator:`
+/// outputs are both referenced by
 /// their bare name — for `operator:` the `op/` prefix is injected later by
 /// `resolve_aliases_and_set_defaults`, so adding it here would double it up.
 ///
@@ -414,9 +497,6 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     }
     if let Some(ref operator) = node.operator {
         refs.extend(bare(&operator.config.outputs));
-    }
-    if let Some(ref custom) = node.custom {
-        refs.extend(bare(&custom.run_config.outputs));
     }
     refs
 }
@@ -615,6 +695,8 @@ fn expand_module_node(
             inner_node.deploy = node.deploy.clone();
         }
 
+        propagate_module_node_env(&mut inner_node, node.env.as_ref());
+
         // Substitute params in env values
         if !params.is_empty() {
             substitute_params_in_node(&mut inner_node, params);
@@ -703,9 +785,6 @@ fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
     if let Some(ref mut operator) = node.operator {
         prepend_build(&mut operator.config.build, module_build);
     }
-    if let Some(ref mut custom) = node.custom {
-        prepend_build(&mut custom.build, module_build);
-    }
 }
 
 fn prepend_build(build: &mut Option<String>, module_build: &str) {
@@ -714,6 +793,26 @@ fn prepend_build(build: &mut Option<String>, module_build: &str) {
         Some(existing) => format!("{module_build}\n{existing}"),
         None => module_build.to_string(),
     });
+}
+
+/// Fill an inner node's `env` with entries from the module node that references
+/// it.
+///
+/// The inner node's own `env` wins on conflict: the module node's entries only
+/// fill keys the inner node did not set. This matches `merge_env`'s "per-node
+/// entries override global ones" and the `deploy` propagation above, which also
+/// only fills when the inner value is unset.
+fn propagate_module_node_env(
+    inner_node: &mut Node,
+    module_env: Option<&BTreeMap<String, EnvValue>>,
+) {
+    let Some(module_env) = module_env.filter(|env| !env.is_empty()) else {
+        return;
+    };
+    let env = inner_node.env.get_or_insert_with(BTreeMap::new);
+    for (key, value) in module_env {
+        env.entry(key.clone()).or_insert_with(|| value.clone());
+    }
 }
 
 /// Substitute `${_param.name}` references in a node's args and inject params
@@ -852,9 +951,6 @@ fn rewrite_external_refs(
         }
         if let Some(ref mut operator) = node.operator {
             rewrite_inputs_map(&mut operator.config.inputs, output_maps, &node.id)?;
-        }
-        if let Some(ref mut custom) = node.custom {
-            rewrite_inputs_map(&mut custom.run_config.inputs, output_maps, &node.id)?;
         }
     }
     Ok(())
@@ -1855,6 +1951,182 @@ nodes:
         assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --verbose"));
     }
 
+    #[test]
+    fn expand_module_node_env_propagates_to_inner_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "env_module.yml",
+            r#"
+module:
+  name: env_module
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    env:
+      INNER_ONLY: from-inner
+      SHARED: inner
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: env_module.yml
+    env:
+      WRAPPER_ONLY: from-wrapper
+      SHARED: wrapper
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(
+            env["INNER_ONLY"],
+            EnvValue::String("from-inner".to_string())
+        );
+        assert_eq!(
+            env["WRAPPER_ONLY"],
+            EnvValue::String("from-wrapper".to_string())
+        );
+        // The inner node's own `env` wins over the module node's, matching
+        // `merge_env` ("per-node entries override global ones") and `deploy`.
+        assert_eq!(env["SHARED"], EnvValue::String("inner".to_string()));
+    }
+
+    #[test]
+    fn expand_module_node_with_empty_env_leaves_inner_env_unset() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "empty_env_module.yml",
+            r#"
+module:
+  name: empty_env_module
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: empty_env_module.yml
+    env: {}
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        assert_eq!(worker.env, None);
+    }
+
+    #[test]
+    fn expand_outer_params_reach_nested_module_inner_nodes_as_env() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "inner.yml",
+            r#"
+module:
+  name: inner
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+"#,
+        );
+
+        write_file(
+            base,
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: inner
+    module: inner.yml
+    inputs:
+      data: _mod/data
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: outer
+    module: outer.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "outer.inner.worker")
+            .unwrap();
+        let env = worker.env.as_ref().unwrap();
+        assert_eq!(env["PARAM_SPEED"], EnvValue::String("2.0".to_string()));
+    }
+
     // ---- Feature 5: module-level build ----
 
     #[test]
@@ -1968,7 +2240,7 @@ nodes:
 module:
   name: inner_kind_builds
   inputs: [data]
-  outputs: [from_runtime, from_operator, from_custom]
+  outputs: [from_runtime, from_operator]
 
 build: pip install shared
 
@@ -1991,16 +2263,6 @@ nodes:
         data: _mod/data
       outputs:
         - from_operator
-
-  - id: runner
-    custom:
-      path: runner.py
-      source: Local
-      build: pip install runner
-      inputs:
-        data: _mod/data
-      outputs:
-        - from_custom
 "#,
         );
 
@@ -2038,14 +2300,6 @@ nodes:
             .unwrap();
         let single_build = single.operator.as_ref().unwrap().config.build.as_deref();
         assert_eq!(single_build, Some("pip install shared\npip install single"));
-
-        let runner = expanded
-            .nodes
-            .iter()
-            .find(|n| n.id.to_string() == "m.runner")
-            .unwrap();
-        let custom_build = runner.custom.as_ref().unwrap().build.as_deref();
-        assert_eq!(custom_build, Some("pip install shared\npip install runner"));
     }
 
     // ---- Feature 1: boundaries metadata ----
@@ -2256,6 +2510,79 @@ nodes:
         let result = check_module_file(&path);
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("missing"));
+    }
+
+    #[test]
+    fn check_module_file_rejects_duplicate_inner_node_ids() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "duplicate_inner_nodes.yml",
+            r#"
+module:
+  name: duplicate_inner_nodes
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: proc
+    path: a.py
+    outputs:
+      - y
+  - id: proc
+    path: b.py
+    outputs:
+      - z
+"#,
+        );
+
+        let err = check_module_file(&path).unwrap_err().to_string();
+        assert!(err.contains("duplicate node ID"), "{err}");
+        assert!(err.contains("proc"), "{err}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_invalid_internal_wiring() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "bad_internal_wiring.yml",
+            r#"
+module:
+  name: bad_internal_wiring
+  inputs: []
+  outputs: [y]
+
+nodes:
+  - id: preprocessor
+    path: preprocessor.py
+    outputs:
+      - cleaned
+  - id: producer
+    path: producer.py
+    inputs:
+      data: preprocessor/cleaned
+    outputs:
+      - y
+  - id: valid_consumer
+    path: valid_consumer.py
+    inputs:
+      data: producer/y
+    outputs:
+      - z
+  - id: consumer
+    path: consumer.py
+    inputs:
+      data: producer/missing
+  - id: independent
+    path: independent.py
+    outputs:
+      - side
+"#,
+        );
+
+        let err = check_module_file(&path).unwrap_err().to_string();
+        assert!(err.contains("producer/missing"), "{err}");
     }
 
     #[test]
@@ -2796,80 +3123,6 @@ nodes:
         assert!(err.to_string().contains("_mod/nonexistent"));
     }
 
-    /// Regression test for #2441: legacy `custom:` inner nodes have the same
-    /// blind spot as operator nodes — their inputs live in
-    /// `run_config.inputs`, not the node-level `inputs` map.
-    #[test]
-    fn expand_rewrites_custom_node_inputs() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-
-        write_file(
-            base,
-            "custom_module.yml",
-            r#"
-module:
-  name: legacy
-  inputs: [data]
-
-nodes:
-  - id: stage_a
-    path: a.py
-    outputs: [aux]
-
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        x: _mod/data
-        y: stage_a/aux
-      outputs:
-        - result
-"#,
-        );
-
-        let desc = parse_descriptor(
-            r#"
-nodes:
-  - id: src
-    path: src.py
-    outputs: [val]
-  - id: m
-    module: custom_module.yml
-    inputs:
-      data: src/val
-"#,
-        );
-
-        let expanded = expand_modules(&desc, base).unwrap();
-
-        let runner = expanded
-            .nodes
-            .iter()
-            .find(|n| n.id.to_string() == "m.runner")
-            .unwrap();
-        let custom = runner.custom.as_ref().unwrap();
-
-        let x = &custom.run_config.inputs[&DataId::from("x".to_string())];
-        match &x.mapping {
-            InputMapping::User(m) => {
-                assert_eq!(m.source.to_string(), "src");
-                assert_eq!(m.output.to_string(), "val");
-            }
-            _ => panic!("expected user mapping"),
-        }
-
-        let y = &custom.run_config.inputs[&DataId::from("y".to_string())];
-        match &y.mapping {
-            InputMapping::User(m) => {
-                assert_eq!(m.source.to_string(), "m.stage_a");
-                assert_eq!(m.output.to_string(), "aux");
-            }
-            _ => panic!("expected user mapping"),
-        }
-    }
-
     /// Expand a dataflow whose single module node `m` re-exports `result`, and
     /// return the mapping the downstream `sink` node ends up with. Also asserts
     /// that the expanded dataflow passes wiring validation, which is what
@@ -2975,44 +3228,11 @@ nodes:
         assert_eq!(mapping.output.to_string(), "result");
     }
 
-    /// Regression test for #2817: same for a legacy `custom:` inner node, whose
-    /// outputs live in `run_config.outputs`.
-    #[test]
-    fn expand_resolves_custom_produced_module_output() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-
-        write_file(
-            base,
-            "mod.yml",
-            r#"
-module:
-  name: legacy
-  inputs: [data]
-  outputs: [result]
-
-nodes:
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        x: _mod/data
-      outputs:
-        - result
-"#,
-        );
-
-        let mapping = expand_and_resolve_sink_input(base);
-        assert_eq!(mapping.source.to_string(), "m.runner");
-        assert_eq!(mapping.output.to_string(), "result");
-    }
-
     /// Regression test for #2817: `check_module_file` must accept a declared
-    /// output produced by an operator or legacy custom inner node, and still
-    /// reject one nothing produces.
+    /// output produced by an operator inner node, and still reject one nothing
+    /// produces.
     #[test]
-    fn check_module_file_accepts_operator_and_custom_produced_outputs() {
+    fn check_module_file_accepts_operator_produced_outputs() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
 
@@ -3023,7 +3243,7 @@ nodes:
 module:
   name: mixed
   inputs: [data]
-  outputs: [from_operator, from_custom]
+  outputs: [from_operator]
 
 nodes:
   - id: runtime
@@ -3034,15 +3254,6 @@ nodes:
           x: _mod/data
         outputs:
           - from_operator
-
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        y: _mod/data
-      outputs:
-        - from_custom
 "#,
         );
         check_module_file(&path).unwrap();

@@ -517,49 +517,6 @@ pub struct UserInputMapping {
     pub output: DataId,
 }
 
-#[derive(Debug, Default, Serialize, Deserialize, JsonSchema, Clone)]
-#[serde(deny_unknown_fields, rename_all = "lowercase")]
-pub struct CommunicationConfig {
-    // see https://github.com/dtolnay/serde-yaml/issues/298
-    #[serde(
-        default,
-        with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_local"
-    )]
-    #[schemars(with = "String")]
-    pub local: LocalCommunicationConfig,
-    #[serde(
-        default,
-        with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_remote"
-    )]
-    #[schemars(with = "String")]
-    pub remote: RemoteCommunicationConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LocalCommunicationConfig {
-    #[default]
-    Tcp,
-}
-
-impl fmt::Display for LocalCommunicationConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tcp => write!(f, "tcp"),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields, rename_all = "lowercase")]
-#[derive(Default)]
-pub enum RemoteCommunicationConfig {
-    #[default]
-    Tcp,
-}
-
 /// A byte size that can be deserialized from either an integer (raw bytes) or a
 /// string with a unit suffix (`KB`, `MB`, `GB`, case-insensitive).
 ///
@@ -1077,42 +1034,6 @@ mod tests {
                 node_filter: None,
             })
         ));
-    }
-
-    #[test]
-    fn communication_config_local_tcp_lowercase() {
-        let yaml = "_unstable_local: tcp\n";
-        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.local, LocalCommunicationConfig::Tcp);
-    }
-
-    #[test]
-    fn communication_config_remote_tcp_lowercase() {
-        let yaml = "_unstable_remote: tcp\n";
-        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(config.remote, RemoteCommunicationConfig::Tcp));
-    }
-
-    #[test]
-    fn communication_config_unknown_local_variant_errors() {
-        let yaml = "_unstable_local: unixdomain\n";
-        assert!(serde_yaml::from_str::<CommunicationConfig>(yaml).is_err());
-    }
-
-    #[test]
-    fn local_communication_config_display() {
-        assert_eq!(LocalCommunicationConfig::Tcp.to_string(), "tcp");
-    }
-
-    #[test]
-    fn communication_config_roundtrip_local() {
-        let config = CommunicationConfig {
-            local: LocalCommunicationConfig::Tcp,
-            remote: RemoteCommunicationConfig::Tcp,
-        };
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(parsed.local, LocalCommunicationConfig::Tcp);
     }
 
     #[test]

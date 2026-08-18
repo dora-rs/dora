@@ -146,6 +146,14 @@ pub enum ControlRequest {
     TopicSubscribe {
         dataflow_id: Uuid,
         topics: Vec<(NodeId, DataId)>,
+        /// Binary-frame encoding the client speaks, see
+        /// [`TOPIC_DATA_PROTOCOL_VERSION`](crate::TOPIC_DATA_PROTOCOL_VERSION).
+        ///
+        /// `None` means the client predates the handshake and therefore speaks
+        /// the bincode encoding; the coordinator rejects it rather than let it
+        /// misparse postcard frames.
+        #[serde(default)]
+        protocol_version: Option<u16>,
     },
     TopicUnsubscribe {
         subscription_id: Uuid,

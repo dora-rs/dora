@@ -168,7 +168,13 @@ fn classify_recv_error(err: &MessageReadError, datagram: bool) -> RecvDispositio
     }
 }
 
+/// `deny_unknown_fields` turns a mistyped key into a hard parse error rather
+/// than silently ignoring it and falling back to the default. Without it,
+/// `systemid: 10` (missing underscore) is dropped and the node quietly runs
+/// with `system_id = 255`; a `MAVLINK_BRIDGE_CONFIG` typo would otherwise
+/// misconfigure the bridge with no diagnostic.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     endpoint: String,
     #[serde(default = "default_system_id")]
@@ -1059,6 +1065,28 @@ mod tests {
         assert!(
             msg.contains("nullable") || msg.contains("null"),
             "error must mention null rows, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn config_parses_minimal_and_applies_defaults() {
+        let cfg: Config = serde_yaml::from_str("endpoint: udp://127.0.0.1:14550").unwrap();
+        assert_eq!(cfg.endpoint, "udp://127.0.0.1:14550");
+        assert_eq!(cfg.system_id, default_system_id());
+        assert_eq!(cfg.component_id, default_component_id());
+    }
+
+    #[test]
+    fn config_rejects_unknown_field() {
+        // A mistyped key (`systemid` instead of `system_id`) must be a hard
+        // error, not silently ignored — otherwise the node would run with the
+        // default system_id (255) and no diagnostic.
+        let err = serde_yaml::from_str::<Config>("endpoint: udp://127.0.0.1:14550\nsystemid: 10")
+            .expect_err("unknown config key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("systemid") || msg.contains("unknown field"),
+            "error should name the unknown field, got: {msg}"
         );
     }
 }
