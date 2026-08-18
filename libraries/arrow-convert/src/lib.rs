@@ -14,7 +14,7 @@
 //! | Feature | Effect |
 //! |---|---|
 //! | `arrow-v59` | dora's *internal* major. Adds the borrowing accessors [`DoraArray::as_array`] / [`DoraArray::into_inner`] and `From`/`Into` for `arrow::array::ArrayRef`. Pulls **no extra dependency** — it re-exports the copy of Arrow 59 dora already links. |
-//! | `arrow-v58` | An *older* major. Adds an aliased `arrow58` dependency plus [`DoraArray::to_arrow_v58`] / [`DoraArray::from_arrow_v58`], which hop across the Arrow C Data Interface (zero-copy, see [`ffi_bridge`]). |
+//! | `arrow-v58` | An *older* major. Adds an aliased `arrow58` dependency plus `TryFrom` impls in both directions, which hop across the Arrow C Data Interface (zero-copy, see the `ffi_bridge` module). The hop is fallible, hence `TryFrom` rather than `From`. |
 //!
 //! `default = []`, so neither is on unless asked for. See
 //! `docs/plan-arrow-version-decoupling.md` and the support-window policy in
@@ -153,7 +153,8 @@ impl DoraArray {
 /// This is free: no conversion, no allocation, just a reference to the array
 /// dora already holds. When dora later moves internally to Arrow 60, this
 /// borrowing pair re-gates behind `arrow-v60` and `arrow-v59` keeps a
-/// *converting* accessor (see [`DoraArray::to_arrow_v58`]) instead.
+/// *converting* `TryFrom` pair instead — which is exactly what `arrow-v58`
+/// already looks like today (see the `ffi_bridge` module).
 #[cfg(feature = "arrow-v59")]
 impl DoraArray {
     /// Borrow the underlying Arrow 59 array.
