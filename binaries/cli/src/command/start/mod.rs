@@ -16,7 +16,12 @@ use crate::{
 use dora_core::descriptor::{Descriptor, DescriptorExt};
 use dora_message::{cli_to_coordinator::ControlRequest, common::LogMessage, descriptor::EnvValue};
 use eyre::Context;
-use std::{collections::BTreeMap, io::IsTerminal, net::SocketAddr, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    io::IsTerminal,
+    net::SocketAddr,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 mod attach;
@@ -156,11 +161,54 @@ fn start_dataflow(
     exit_when_nodes_finish: Option<bool>,
 ) -> Result<(PathBuf, Descriptor, WsSession, Uuid), eyre::Error> {
     let dataflow = resolve_dataflow(dataflow).context("could not resolve dataflow")?;
+    // No extra context on the error: every failure inside already carries a
+    // user-facing, actionable message.
+    let (dataflow_descriptor, dataflow_session) =
+        prepare_descriptor(&dataflow, debug, env_overrides, exit_when_nodes_finish)?;
+
+    let session = connect_to_coordinator(coordinator_socket)?;
+
+    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &session)?;
+
+    let dataflow_id = {
+        let dataflow = dataflow_descriptor.clone();
+        let reply = send_control_request(
+            &session,
+            &ControlRequest::Start {
+                build_id: dataflow_session.build_id,
+                session_id: dataflow_session.session_id,
+                dataflow,
+                name,
+                local_working_dir,
+                uv,
+                write_events_to: write_events_to(),
+            },
+        )?;
+        let uuid = expect_reply!(reply, DataflowStartTriggered { uuid })?;
+        println!("dataflow start triggered: {uuid}");
+        uuid
+    };
+    Ok((dataflow, dataflow_descriptor, session, dataflow_id))
+}
+
+/// Read, expand and finalize the descriptor that `dora start` hands to the
+/// coordinator, together with the dataflow session it belongs to.
+///
+/// Split out of [`start_dataflow`] because the order of the steps below is
+/// load-bearing (see the `--env` / `--exit-when-nodes-finish` comments) and
+/// everything here is filesystem-only — the network starts at
+/// `connect_to_coordinator`, so this half is unit-testable on its own.
+fn prepare_descriptor(
+    dataflow: &Path,
+    debug: bool,
+    env_overrides: BTreeMap<String, EnvValue>,
+    exit_when_nodes_finish: Option<bool>,
+) -> eyre::Result<(Descriptor, DataflowSession)> {
     let working_dir = dataflow
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    let mut dataflow_descriptor = Descriptor::blocking_read(&dataflow)
+    let mut dataflow_descriptor = Descriptor::blocking_read(dataflow)
         .wrap_err_with(|| {
             format!(
                 "failed to read dataflow at `{}`\n\n  \
@@ -171,7 +219,7 @@ fn start_dataflow(
         .expand(working_dir)
         .wrap_err("failed to expand modules in dataflow descriptor")?;
     let mut dataflow_session =
-        DataflowSession::read_session(&dataflow).context("failed to read DataflowSession")?;
+        DataflowSession::read_session(dataflow).context("failed to read DataflowSession")?;
     // `hub:` references are desugared by `dora build`, which stores the
     // resolved descriptor in the session — `dora start` requires that prior
     // build, exactly like git sources require a prior clone. Compare the
@@ -201,7 +249,7 @@ fn start_dataflow(
         .context("failed to resolve nodes for session fingerprint")?;
     if dataflow_session.invalidate_if_build_inputs_changed(&resolved_for_fingerprint) {
         dataflow_session
-            .write_out_for_dataflow(&dataflow)
+            .write_out_for_dataflow(dataflow)
             .context("failed to persist invalidated dataflow session")?;
     }
     drop(resolved_for_fingerprint);
@@ -248,29 +296,7 @@ fn start_dataflow(
     // stands.
     dataflow_descriptor.apply_exit_when_nodes_finish(exit_when_nodes_finish);
 
-    let session = connect_to_coordinator(coordinator_socket)?;
-
-    let local_working_dir = local_working_dir(&dataflow, &dataflow_descriptor, &session)?;
-
-    let dataflow_id = {
-        let dataflow = dataflow_descriptor.clone();
-        let reply = send_control_request(
-            &session,
-            &ControlRequest::Start {
-                build_id: dataflow_session.build_id,
-                session_id: dataflow_session.session_id,
-                dataflow,
-                name,
-                local_working_dir,
-                uv,
-                write_events_to: write_events_to(),
-            },
-        )?;
-        let uuid = expect_reply!(reply, DataflowStartTriggered { uuid })?;
-        println!("dataflow start triggered: {uuid}");
-        uuid
-    };
-    Ok((dataflow, dataflow_descriptor, session, dataflow_id))
+    Ok((dataflow_descriptor, dataflow_session))
 }
 
 fn wait_until_dataflow_started(
@@ -371,5 +397,92 @@ mod tests {
         assert!(!local_build_blocks_distributed_start(true, false));
         // nothing built: nothing to block -> allow.
         assert!(!local_build_blocks_distributed_start(false, false));
+    }
+
+    /// A `hub:` dataflow on disk plus the session `dora build` would have left
+    /// behind: the desugared descriptor and the digest of the source it was
+    /// desugared from. Returns the dataflow path.
+    fn hub_dataflow_fixture(dir: &Path, source: &str, resolved: &str) -> PathBuf {
+        std::fs::create_dir_all(dir).unwrap();
+        let dataflow = dir.join("hubflow.yml");
+        std::fs::write(&dataflow, source).unwrap();
+
+        let expanded = Descriptor::parse(source.as_bytes().to_vec())
+            .unwrap()
+            .expand(dir)
+            .unwrap();
+        let resolved = Descriptor::parse(resolved.as_bytes().to_vec()).unwrap();
+        let session = DataflowSession {
+            source_fingerprint: DataflowSession::fingerprint_source(&expanded),
+            resolved_dataflow: Some(resolved.clone()),
+            // matching, so `invalidate_if_build_inputs_changed` stays inert
+            // and the fixture models a dataflow that is up to date with its
+            // build rather than one that needs rebuilding.
+            build_fingerprint: Some(DataflowSession::fingerprint_build_inputs(
+                &resolved.resolve_aliases_and_set_defaults().unwrap(),
+            )),
+            ..Default::default()
+        };
+        session.write_out_for_dataflow(&dataflow).unwrap();
+        dataflow
+    }
+
+    const HUB_SOURCE: &str = "nodes:\n  - id: a\n    hub: dora-yolo@^0.5\n";
+    const HUB_RESOLVED: &str = "nodes:\n  - id: a\n    path: ./a\n";
+
+    #[test]
+    fn hub_start_applies_exit_when_nodes_finish_in_both_directions() {
+        // Regression test for #2996. `--exit-when-nodes-finish` used to be
+        // folded into the descriptor *before* the hub build-fingerprint gate.
+        // The field is serialized, so an override that differed from the
+        // on-disk YAML moved `fingerprint_source` and made this exact
+        // invocation bail with "changed since the last `dora build`" — and on
+        // the paths where the digest still matched, the gate's
+        // `dataflow_descriptor = resolved` dropped the flag instead. Both
+        // directions of the override have to survive to the final descriptor.
+        let dir = tempfile::tempdir().unwrap();
+
+        // YAML says nothing -> the flag turns it on.
+        let dataflow = hub_dataflow_fixture(dir.path(), HUB_SOURCE, HUB_RESOLVED);
+        let (descriptor, _) =
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(true)).unwrap();
+        assert_eq!(descriptor.exit_when_nodes_finish, Some(true));
+        // and we are looking at the hub-resolved descriptor, not the on-disk one
+        assert!(descriptor.nodes.iter().all(|n| n.hub.is_none()));
+
+        // omitted -> the descriptor's own setting stands, untouched.
+        let (descriptor, _) = prepare_descriptor(&dataflow, false, BTreeMap::new(), None).unwrap();
+        assert_eq!(descriptor.exit_when_nodes_finish, None);
+
+        // YAML says `true` -> the documented `=false` force-off must apply.
+        let on = "exit_when_nodes_finish: true\n";
+        let dataflow = hub_dataflow_fixture(
+            &dir.path().join("forced"),
+            &format!("{on}{HUB_SOURCE}"),
+            &format!("{on}{HUB_RESOLVED}"),
+        );
+        let (descriptor, _) =
+            prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(false)).unwrap();
+        assert_eq!(descriptor.exit_when_nodes_finish, Some(false));
+
+        let (descriptor, _) = prepare_descriptor(&dataflow, false, BTreeMap::new(), None).unwrap();
+        assert_eq!(descriptor.exit_when_nodes_finish, Some(true));
+    }
+
+    #[test]
+    fn hub_start_still_rejects_a_dataflow_edited_since_the_build() {
+        // Taking the flag out of `fingerprint_source` must not disarm the
+        // staleness gate: a real on-disk edit still has to be caught, because
+        // `dora start` cannot re-resolve `hub:` references itself.
+        let dir = tempfile::tempdir().unwrap();
+        let dataflow = hub_dataflow_fixture(dir.path(), HUB_SOURCE, HUB_RESOLVED);
+        std::fs::write(&dataflow, format!("{HUB_SOURCE}  - id: b\n    path: ./b\n")).unwrap();
+
+        let err = prepare_descriptor(&dataflow, false, BTreeMap::new(), Some(true)).unwrap_err();
+        assert!(
+            err.to_string()
+                .contains("changed since the last `dora build`"),
+            "expected the staleness bail, got: {err:#}"
+        );
     }
 }
