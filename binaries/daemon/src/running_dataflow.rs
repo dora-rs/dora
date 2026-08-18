@@ -524,7 +524,7 @@ impl RunningDataflow {
                         } else {
                             let mut m = BTreeMap::new();
                             m.insert(
-                                "open_telemetry_context".to_string(),
+                                dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
                                 dora_node_api::Parameter::String(ctx),
                             );
                             m

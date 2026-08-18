@@ -142,7 +142,7 @@ impl SharedLibraryOperator<'_> {
             } = output;
             let mut parameters = BTreeMap::new();
             parameters.insert(
-                "open_telemetry_context".to_string(),
+                dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
                 Parameter::String(open_telemetry_context.to_string()),
             );
 
@@ -205,7 +205,7 @@ impl SharedLibraryOperator<'_> {
                     let cx = span.context();
                     let string_cx = serialize_context(&cx);
                     metadata.parameters.insert(
-                        "open_telemetry_context".to_string(),
+                        dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
                         Parameter::String(string_cx),
                     );
                 }
