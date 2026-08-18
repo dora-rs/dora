@@ -127,6 +127,62 @@ pub mod option {
     }
 }
 
+/// The same bulk-bytes treatment for a plain `Vec<u8>` field.
+///
+/// Used by cross-machine payloads that do not need the 128-byte Arrow
+/// alignment (`InterDaemonEvent::MemoryPoolWrite::tensor_data`), where the
+/// receiver copies the bytes into a mirror segment rather than decoding them
+/// zero-copy. The wire encoding is identical to serde's default `Vec<u8>`
+/// (postcard: varint length + raw bytes), so this is a pure speedup with no
+/// version bump — `vec_encoding_is_unchanged_from_the_seq_form` pins it.
+pub mod vec {
+    use serde::{
+        Deserializer, Serializer,
+        de::{self, Visitor},
+    };
+    use std::fmt;
+
+    pub fn serialize<S: Serializer>(value: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(value)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>, D::Error> {
+        deserializer.deserialize_bytes(VecPayloadVisitor)
+    }
+
+    struct VecPayloadVisitor;
+
+    impl<'de> Visitor<'de> for VecPayloadVisitor {
+        type Value = Vec<u8>;
+
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a byte array")
+        }
+
+        fn visit_bytes<E: de::Error>(self, v: &[u8]) -> Result<Self::Value, E> {
+            Ok(v.to_vec())
+        }
+
+        fn visit_borrowed_bytes<E: de::Error>(self, v: &'de [u8]) -> Result<Self::Value, E> {
+            Ok(v.to_vec())
+        }
+
+        fn visit_byte_buf<E: de::Error>(self, v: Vec<u8>) -> Result<Self::Value, E> {
+            Ok(v)
+        }
+
+        /// Self-describing formats (notably JSON) render bytes as a sequence of
+        /// numbers and hand that back here rather than to `visit_bytes`.
+        fn visit_seq<A: de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+            let mut out = Vec::with_capacity(seq.size_hint().unwrap_or(0));
+            while let Some(byte) = seq.next_element::<u8>()? {
+                out.push(byte);
+            }
+            Ok(out)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +273,58 @@ mod tests {
                 _ => panic!("option state changed across the round trip"),
             }
         }
+    }
+
+    // --- plain `Vec<u8>` variant (`crate::bulk_bytes::vec`) ---
+
+    #[derive(Serialize, Deserialize)]
+    struct VecSeqForm(Vec<u8>);
+
+    #[derive(Serialize, Deserialize)]
+    struct VecBytesForm(#[serde(with = "super::vec")] Vec<u8>);
+
+    fn vec_payload(len: usize) -> Vec<u8> {
+        (0..len).map(|i| (i % 251) as u8).collect()
+    }
+
+    /// Same premise as `encoding_is_unchanged_from_the_seq_form`, for the
+    /// plain-`Vec<u8>` helper used by `MemoryPoolWrite::tensor_data` (#3195):
+    /// swapping the per-element loop for a bulk copy must not move a byte on
+    /// the wire, including across postcard's 127/128 varint-prefix boundary.
+    #[test]
+    fn vec_encoding_is_unchanged_from_the_seq_form() {
+        for len in [0, 1, 127, 128, 129, 300, 4096, 70_000] {
+            let value = vec_payload(len);
+            assert_eq!(
+                postcard::to_stdvec(&VecSeqForm(value.clone())).expect("seq"),
+                postcard::to_stdvec(&VecBytesForm(value)).expect("bytes"),
+                "len {len}: bulk encoding differs from the sequence encoding — \
+                 this would be an unversioned wire break"
+            );
+        }
+    }
+
+    #[test]
+    fn vec_round_trips() {
+        for len in [0, 1, 128, 4096] {
+            let value = vec_payload(len);
+            let bytes = postcard::to_stdvec(&VecBytesForm(value.clone())).expect("serialize");
+            let back: VecBytesForm = postcard::from_bytes(&bytes).expect("deserialize");
+            assert_eq!(back.0, value, "len {len}: payload changed");
+        }
+    }
+
+    /// JSON hands bytes back as a sequence, so the visitor must accept that
+    /// shape too, and the JSON text must be unchanged from the sequence form.
+    #[test]
+    fn vec_survives_a_json_round_trip() {
+        let value = vec_payload(300);
+        let json = serde_json::to_string(&VecBytesForm(value.clone())).expect("to json");
+        let back: VecBytesForm = serde_json::from_str(&json).expect("from json");
+        assert_eq!(back.0, value);
+        assert_eq!(
+            json,
+            serde_json::to_string(&VecSeqForm(value)).expect("seq to json")
+        );
     }
 }

@@ -86,17 +86,27 @@ pub struct CleanupSummary {
     pub released_count: usize,
 }
 
+/// Cross-machine pools this manager participates in: (dataflow id, pool
+/// id) -> (peer machine id, dataflow id). Unlike the main table these
+/// entries describe *mirrors* (pools that live on another machine's
+/// /dev/shm), written on register ack (origin side) and on mirror
+/// creation (mirror side), drained by `cleanup_all` on daemon exit.
+type CrossPoolTable = HashMap<(String, String), (String, String)>;
+
 /// Manager for tensor pool allocations.
 #[derive(Clone)]
 pub struct TensorPoolManager {
     /// Table mapping tensor pool IDs to their entries.
     tensor_pool_table: Arc<Mutex<HashMap<TensorPoolId, TensorPoolEntry>>>,
+    /// See [`CrossPoolTable`].
+    cross_pools: Arc<Mutex<CrossPoolTable>>,
 }
 
 impl TensorPoolManager {
     pub fn new() -> Self {
         Self {
             tensor_pool_table: Arc::new(Mutex::new(HashMap::new())),
+            cross_pools: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -107,6 +117,12 @@ impl TensorPoolManager {
     /// daemon on an edge case.
     fn lock_table(&self) -> std::sync::MutexGuard<'_, HashMap<TensorPoolId, TensorPoolEntry>> {
         self.tensor_pool_table
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner())
+    }
+
+    fn lock_cross_pools(&self) -> std::sync::MutexGuard<'_, CrossPoolTable> {
+        self.cross_pools
             .lock()
             .unwrap_or_else(|poison| poison.into_inner())
     }
@@ -338,6 +354,19 @@ impl TensorPoolManager {
         released
     }
 
+    /// Drop every cross-machine entry of a finished dataflow.
+    ///
+    /// `cross_pools` is keyed by the same per-dataflow UUIDs as the main
+    /// table, so a daemon that outlives the dataflow (`dora up`) would
+    /// otherwise hold one entry per (dataflow, pool) forever. Unlinks are
+    /// deliberately not done here: freeing a cross-machine pool publishes
+    /// `FreePool` (the peer unlinks its side); this is only the local
+    /// bookkeeping drain for dataflows whose nodes never got to free.
+    pub fn cleanup_cross_pools(&self, dataflow_id: &str) {
+        self.lock_cross_pools()
+            .retain(|(df, _), _| df != dataflow_id);
+    }
+
     /// Drop the entries of `dataflow_id` that `should_release` accepts and
     /// unlink their segments, returning the released ids.
     ///
@@ -452,6 +481,11 @@ impl TensorPoolManager {
             }
         }
 
+        // Cross-machine entries carry no segment of their own on the
+        // freeing side (the peer unlinks its mirror via FreePool), so
+        // they are drained without side effects.
+        self.lock_cross_pools().clear();
+
         let released_count = unreleased_count - errors.len();
 
         if errors.is_empty() {
@@ -474,6 +508,72 @@ impl TensorPoolManager {
             );
             Err(errors)
         }
+    }
+    /// Record a cross-machine pool: the origin records `{pool -> target}`
+    /// when the register ack arrives, the mirror records `{pool -> origin}`
+    /// after creating the mirror segment. Keyed by dataflow so concurrently
+    /// running dataflows (whose node processes each restart their pool
+    /// counter from zero) cannot alias each other's entries.
+    pub fn register_cross_pool(&self, dataflow_id: String, pool_id: String, peer_machine: String) {
+        self.lock_cross_pools()
+            .insert((dataflow_id.clone(), pool_id), (peer_machine, dataflow_id));
+    }
+
+    /// Forget a cross-machine pool (called on free).
+    pub fn unregister_cross_pool(
+        &self,
+        dataflow_id: &str,
+        pool_id: &str,
+    ) -> Option<(String, String)> {
+        self.lock_cross_pools()
+            .remove(&(dataflow_id.to_string(), pool_id.to_string()))
+    }
+
+    /// The pool's peer machine (the machine it mirrors to/from), if any.
+    pub fn cross_peer(&self, dataflow_id: &str, pool_id: &str) -> Option<String> {
+        self.lock_cross_pools()
+            .get(&(dataflow_id.to_string(), pool_id.to_string()))
+            .map(|(peer, _)| peer.clone())
+    }
+
+    /// Whether `pool_id` (of `dataflow_id`) is a cross-machine pool this
+    /// daemon participates in.
+    pub fn is_cross(&self, dataflow_id: &str, pool_id: &str) -> bool {
+        self.lock_cross_pools()
+            .contains_key(&(dataflow_id.to_string(), pool_id.to_string()))
+    }
+
+    /// Machine-qualified OS id of a cross-machine pool mirror:
+    /// `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}`, derived
+    /// from a `pool_{node_id}_{counter}` shaped `shared_memory_id`. Returns
+    /// `None` when the id does not match that shape. Single source of truth
+    /// for the qualified name — create, write, and the free paths must agree
+    /// or a mirror leaks under a name nobody unlinks.
+    pub fn cross_pool_shmem_name(
+        machine_id: &str,
+        dataflow_id: &str,
+        shared_memory_id: &str,
+    ) -> Option<String> {
+        let (node_id, counter) = shared_memory_id
+            .strip_prefix("pool_")
+            .and_then(|s| s.rsplit_once('_'))?;
+        // Defense in depth: `node_id`/`counter` come from the wire
+        // (RegisterPool from a peer daemon). The free path rejects names
+        // containing '/' or '..' explicitly; the create/mirror path must
+        // agree or a crafted id could slip past the asymmetry. glibc
+        // shm_open rejects an embedded '/' today, but the guard belongs
+        // at this single source of truth — create, write, and free all
+        // derive from it.
+        if node_id.contains('/')
+            || node_id.contains("..")
+            || counter.contains('/')
+            || counter.contains("..")
+        {
+            return None;
+        }
+        Some(format!(
+            "dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}"
+        ))
     }
 }
 
@@ -511,6 +611,25 @@ mod tests {
     /// The registrar's downstream consumers at registration time.
     fn readers(nodes: &[&str]) -> HashSet<String> {
         nodes.iter().map(|n| n.to_string()).collect()
+    }
+
+    /// A wire-controlled `shared_memory_id` must never smuggle a path
+    /// component into the derived `/dev/shm` name (the free path rejects
+    /// '/' and '..'; the create path must agree).
+    #[test]
+    fn cross_pool_shmem_name_rejects_path_components() {
+        for evil in ["pool_a/../../b_1", "pool_.._1", "pool_a_b/1", "pool_a_..1"] {
+            assert_eq!(
+                TensorPoolManager::cross_pool_shmem_name("M", "df", evil),
+                None,
+                "id `{evil}` must be rejected"
+            );
+        }
+        // The legitimate shape still resolves.
+        assert_eq!(
+            TensorPoolManager::cross_pool_shmem_name("M", "df", "pool_node_42"),
+            Some("dora_pool_M_df_node_42".to_string())
+        );
     }
 
     #[test]

@@ -55,6 +55,40 @@ pub enum DaemonRequest {
         namespace: String,
         key: String,
     },
+    /// Register a pinned-memory pool with the daemon (single-machine
+    /// legacy protocol; the tensor-pool extension prefers the extension
+    /// table, these requests remain for the cross-machine work).
+    RegisterPinnedMemory {
+        shared_memory_id: String,
+        metadata: Metadata,
+    },
+    /// Read pinned-memory pool metadata from the daemon.
+    ReadPinnedMemory {
+        shared_memory_id: String,
+    },
+    /// Release a pinned-memory pool.
+    FreePinnedMemory {
+        shared_memory_id: String,
+    },
+    WritePinnedMemory {
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+    },
+    /// Cross-machine memory pool registration: the daemon resolves the
+    /// target machine via the coordinator and mirrors the pool there.
+    RegisterCrossMachinePool {
+        shared_memory_id: String,
+        /// The local /dev/shm segment name (explicit `name=` or
+        /// machine-qualified auto name) — forwarded to the mirror daemon
+        /// as a remote reference for same-host direct reads.
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    },
 }
 
 impl DaemonRequest {
@@ -79,6 +113,11 @@ impl DaemonRequest {
             // The stored value dominates; the namespace and key are short.
             DaemonRequest::ExtensionStore { value, .. } => value.len(),
             DaemonRequest::ExtensionLoad { .. } | DaemonRequest::ExtensionDrop { .. } => 0,
+            DaemonRequest::WritePinnedMemory { tensor_data, .. } => tensor_data.len(),
+            DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. } => 0,
         }
     }
 
@@ -94,6 +133,11 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
+            | DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. }
             | DaemonRequest::ExtensionStore { .. }
             | DaemonRequest::ExtensionLoad { .. }
             | DaemonRequest::ExtensionDrop { .. } => true,
@@ -112,6 +156,11 @@ impl DaemonRequest {
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::EventStreamDropped
+            | DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. }
+            | DaemonRequest::RegisterCrossMachinePool { .. }
             | DaemonRequest::ExtensionStore { .. }
             | DaemonRequest::ExtensionLoad { .. }
             | DaemonRequest::ExtensionDrop { .. } => false,

@@ -207,6 +207,8 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - MSRV check (`cargo-hack`)
 - Plus the integration smokes: record/replay, cluster (lifecycle smoke + ssh end-to-end), topic-and-top, cpu-affinity, redb-backend, daemon-reconnect, state-reconstruction, and the Kani formal-verification proofs (`kani-proofs`)
 
+**Label automation (`.github/workflows/needs-rebase.yml`):** API-only job (no runner build) that keeps a `needs-rebase` label in sync with GitHub's merge-conflict state. It labels a PR when it conflicts with `main` and removes the label as soon as it stops conflicting — on the PR's own pushes, on every push to `main` (which rescans all open PRs, so a conflict resolved by someone else's merge clears too), and via a daily sweep as a safety net.
+
 **Developer guidance:** for non-Linux verification before merge, run `make qa-test` or `make qa-examples` locally; `make qa-nightly` covers the full nightly matrix (except ROS2) locally in ~3-4 hours.
 
 ## Test-Driven Development

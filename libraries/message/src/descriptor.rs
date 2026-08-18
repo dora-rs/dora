@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{ByteSize, CommunicationConfig, Input, NodeRunConfig},
+    config::{ByteSize, Input, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -40,7 +40,6 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///
 /// A dataflow consists of:
 /// - **Nodes**: The computational units that process data
-/// - **Communication**: Optional communication configuration
 /// - **Deployment**: Optional deployment configuration (unstable)
 /// - **Debug options**: Optional development and debugging settings (unstable)
 ///
@@ -85,11 +84,6 @@ pub struct Descriptor {
     /// For each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
-
-    /// Communication configuration (optional, uses defaults)
-    #[schemars(skip)]
-    #[serde(default)]
-    pub communication: CommunicationConfig,
 
     /// Deployment configuration (optional, unstable)
     #[schemars(skip)]
@@ -243,16 +237,12 @@ pub enum DistributeStrategy {
 
 /// Debug options for dataflow development and troubleshooting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Debug {
     /// When true, daemons mirror every node output to the coordinator WebSocket
     /// so that `dora topic echo`, `dora topic hz`, and `dora topic info` can
     /// inspect runtime messages.
-    ///
-    /// The field was previously named `publish_all_messages_to_zenoh` (from
-    /// before the CLI inspection path moved off zenoh in PR #238). Serde still
-    /// accepts the old name as an alias for backward compatibility with
-    /// existing dataflow YAML; the alias will be removed in a future release.
-    #[serde(default, alias = "publish_all_messages_to_zenoh")]
+    #[serde(default)]
     pub enable_debug_inspection: bool,
 }
 
@@ -442,12 +432,6 @@ pub struct Node {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ros2: Option<Ros2BridgeConfig>,
-
-    /// Legacy node configuration (deprecated).
-    ///
-    /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom: Option<CustomNode>,
 
     /// Output data identifiers produced by this node.
     ///
@@ -1134,9 +1118,11 @@ pub struct CustomNode {
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    /// Environment variables for the custom nodes
+    /// Environment variables injected during resolution.
     ///
-    /// Deprecated, use outer-level `env` field instead.
+    /// Not user-writable: [`Node::env`] is the YAML surface. Resolution folds
+    /// it into this field, and the ROS2 bridge desugaring uses it to pass
+    /// `DORA_ROS2_BRIDGE_CONFIG` to the spawned bridge binary.
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
@@ -1559,10 +1545,13 @@ _unstable_debug:
     }
 
     #[test]
-    fn debug_flag_accepts_legacy_alias() {
-        // Backward-compat regression guard (#240): dataflow YAML in the wild
-        // still uses `publish_all_messages_to_zenoh`. The serde alias must
-        // keep deserializing that into the renamed field.
+    fn debug_flag_rejects_the_removed_legacy_alias() {
+        // The `publish_all_messages_to_zenoh` alias was removed for 1.0. It
+        // must *error* rather than deserialize to the default: silently
+        // ignoring it would leave debug inspection off while the dataflow
+        // looks like it enabled it, and `dora topic echo` would return
+        // nothing with no explanation. `deny_unknown_fields` on `Debug` is
+        // what turns that into a diagnosable failure.
         let yaml = r#"
 nodes:
   - id: test
@@ -1570,8 +1559,12 @@ nodes:
 _unstable_debug:
   publish_all_messages_to_zenoh: true
 "#;
-        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
-        assert!(desc.debug.enable_debug_inspection);
+        let err = serde_yaml::from_str::<Descriptor>(yaml)
+            .expect_err("removed alias must be rejected, not silently ignored");
+        assert!(
+            err.to_string().contains("publish_all_messages_to_zenoh"),
+            "error should name the offending field, got: {err}"
+        );
     }
 
     #[test]

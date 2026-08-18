@@ -79,12 +79,21 @@ impl InteractiveEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
+            DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
+            DaemonRequest::RegisterCrossMachinePool { .. } => {
+                eyre::bail!("cross-machine pool registration is not supported in interactive mode")
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
-            // `DaemonRequest` is `#[non_exhaustive]`: reject an unknown
-            // request explicitly rather than silently answering `Ok`.
-            other => eyre::bail!("unsupported daemon request: {other:?}"),
+            // `DaemonRequest` is `#[non_exhaustive]`: a request this build
+            // predates is unsupported here.
+            other => {
+                eyre::bail!("unsupported request in interactive mode: {other:?}")
+            }
         };
         Ok(reply)
     }

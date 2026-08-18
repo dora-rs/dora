@@ -714,18 +714,28 @@ impl Node {
     /// present when this wheel was built with the `tensor-pool` feature; see
     /// `libraries/extensions/tensor-pool/README.md`.
     ///
+    /// `machine`: target machine id for a cross-machine pool — the daemon
+    /// mirrors the pool there. `None` registers a local pool. `name`:
+    /// explicit `/dev/shm` segment name (dora-owned `dora_pool_*` namespace
+    /// only); `None` derives a machine-qualified name from `DORA_MACHINE_ID`
+    /// when set.
+    ///
     /// :type tensor_info: dict
     /// :type device: str, optional
+    /// :type machine: str, optional
+    /// :type name: str, optional
     /// :rtype: pyarrow.Array
     #[cfg(feature = "tensor-pool")]
-    #[pyo3(signature = (tensor_info, device="cpu".to_string()))]
+    #[pyo3(signature = (tensor_info, device="cpu".to_string(), machine=None, name=None))]
     pub fn register_tensor_pool(
         &self,
         tensor_info: &Bound<'_, PyDict>,
         device: String,
+        machine: Option<String>,
+        name: Option<String>,
         py: Python,
     ) -> eyre::Result<Py<PyAny>> {
-        self.with_pool(|pool| pool.register_tensor_pool(tensor_info, device, py))
+        self.with_pool(|pool| pool.register_tensor_pool(tensor_info, device, machine, name, py))
     }
 
     /// Write tensor data into an existing tensor pool.
@@ -1192,3 +1202,12 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 
     Ok(())
 }
+
+// Note: the GPU transport-path classification matrix (`classify_transport`,
+// `classify_write_path`, `check_capacity_gpu_pool`) is tested in
+// `libraries/extensions/tensor-pool/python/src/transport.rs` (pure
+// decision logic, exercised without a GPU — see the `#[cfg(test)]` module
+// there). The `transport_tests` scaffolding that used to live here was
+// removed: it was empty, and this crate's test binary is excluded from
+// CI (`cargo test --all` skips the PyO3 crates), so the stub advertised
+// coverage that did not exist (bot review 5306582566).

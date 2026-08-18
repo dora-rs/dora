@@ -38,7 +38,7 @@ impl ControlChannel {
                     }
                 }
             }
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
@@ -56,6 +56,13 @@ impl ControlChannel {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         Ok(Self { channel, clock })
+    }
+
+    /// Drop the underlying daemon channel so this control-channel sender clone
+    /// is released. The testing daemon exits after OutputsDone under shutdown
+    /// independently of remaining EventStream sender clones.
+    pub(crate) fn close_channel(&mut self) {
+        self.channel = DaemonChannel::Interactive(Default::default());
     }
 
     pub fn report_outputs_done(&mut self) -> eyre::Result<()> {
@@ -201,6 +208,113 @@ impl ControlChannel {
             DaemonReply::Result(Ok(())) => Ok(()),
             DaemonReply::Result(Err(e)) => bail!("{e}"),
             other => bail!("unexpected ExtensionDrop reply: {other:?}"),
+        }
+    }
+
+    /// Read a memory pool's metadata from the daemon. The cross-machine
+    /// data plane itself never needs this (mirror segments are derived by
+    /// name), but the legacy node-side path keeps it as a fallback for
+    /// pools registered with an explicit `name=`. On a daemon that no
+    /// longer serves the pool table this returns an error; callers treat
+    /// it as a soft miss.
+    pub fn read_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        _free: bool,
+    ) -> eyre::Result<Metadata> {
+        let request = DaemonRequest::ReadPinnedMemory { shared_memory_id };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
+        }
+    }
+
+    pub fn write_pinned_memory(
+        &mut self,
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+    ) -> eyre::Result<()> {
+        let request = DaemonRequest::WritePinnedMemory {
+            shared_memory_id,
+            tensor_data,
+            size,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send WritePinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected WritePinnedMemory reply: {other:?}"),
+        }
+    }
+
+    /// Register a pool on a remote machine via the daemon (the daemon
+    /// resolves the machine through the coordinator and mirrors the
+    /// pool there with a synchronous confirmation).
+    #[allow(clippy::too_many_arguments)]
+    pub fn register_cross_machine_pool(
+        &mut self,
+        shared_memory_id: String,
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+    ) -> eyre::Result<(Result<(), String>, bool)> {
+        let request = DaemonRequest::RegisterCrossMachinePool {
+            shared_memory_id,
+            shmem_name,
+            size,
+            dtype,
+            shape,
+            device,
+            machine_id,
+        };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send RegisterCrossMachinePool request to dora-daemon")?;
+        match reply {
+            DaemonReply::CrossMachinePoolRegistered { result, direct } => Ok((result, direct)),
+            other => bail!("unexpected RegisterCrossMachinePool reply: {other:?}"),
+        }
+    }
+
+    /// Release a memory pool through the daemon. Cross-machine pools get
+    /// their tracking entry removed, the peer is told (targeted `FreePool`
+    /// publish), and the local mirror is unlinked; local-only pools are a
+    /// plain acknowledgement (the pool's own cleanup is node-side).
+    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> eyre::Result<()> {
+        let request = DaemonRequest::FreePinnedMemory { shared_memory_id };
+        let reply = self
+            .channel
+            .request(&Timestamped {
+                inner: request,
+                timestamp: self.clock.new_timestamp(),
+            })
+            .wrap_err("failed to send FreePinnedMemory request to dora-daemon")?;
+        match reply {
+            DaemonReply::Result(Ok(())) => Ok(()),
+            DaemonReply::Result(Err(e)) => bail!("{e}"),
+            other => bail!("unexpected FreePinnedMemory reply: {other:?}"),
         }
     }
 }

@@ -1,7 +1,10 @@
 use std::{
     fs::File,
     io::Write,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -33,6 +36,9 @@ pub struct IntegrationTestingEvents {
     start_timestamp: uhlc::Timestamp,
     start_time: Instant,
     options: TestingOptions,
+    /// Set by `DoraNode::drop` so a mid-replay sleep in [`Self::next_event`]
+    /// can abort and let the testing daemon process CloseOutputs (dora-rs/dora#2855).
+    shutdown: Arc<AtomicBool>,
 }
 
 impl IntegrationTestingEvents {
@@ -40,6 +46,7 @@ impl IntegrationTestingEvents {
         input: TestingInput,
         output: TestingOutput,
         options: TestingOptions,
+        shutdown: Arc<AtomicBool>,
     ) -> eyre::Result<Self> {
         let mut node_info: IntegrationTestInput = match input {
             TestingInput::FromJsonFile(input_file_path) => serde_json::from_slice(
@@ -99,6 +106,7 @@ impl IntegrationTestingEvents {
             start_timestamp,
             start_time,
             options,
+            shutdown,
         })
     }
 
@@ -132,12 +140,23 @@ impl IntegrationTestingEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
+            DaemonRequest::RegisterPinnedMemory { .. }
+            | DaemonRequest::ReadPinnedMemory { .. }
+            | DaemonRequest::FreePinnedMemory { .. }
+            | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
+            DaemonRequest::RegisterCrossMachinePool { .. } => {
+                eyre::bail!(
+                    "cross-machine pool registration is not supported in integration-testing mode"
+                )
+            }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
             }
-            // `DaemonRequest` is `#[non_exhaustive]`: reject an unknown
-            // request explicitly rather than silently answering `Ok`.
-            other => eyre::bail!("unsupported daemon request: {other:?}"),
+            // `DaemonRequest` is `#[non_exhaustive]`: a request this build
+            // predates is unsupported here.
+            other => {
+                eyre::bail!("unsupported request in integration-testing mode: {other:?}")
+            }
         };
         Ok(reply)
     }
@@ -176,6 +195,10 @@ impl IntegrationTestingEvents {
     }
 
     fn next_event(&mut self) -> eyre::Result<Option<Timestamped<NodeEvent>>> {
+        if self.shutdown.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+
         let Some(event) = self.events.next() else {
             return Ok(None);
         };
@@ -187,7 +210,16 @@ impl IntegrationTestingEvents {
         let time_offset = Duration::from_secs_f64(time_offset_secs);
         let elapsed = self.start_time.elapsed();
         if let Some(wait_time) = time_offset.checked_sub(elapsed) {
-            std::thread::sleep(wait_time);
+            // Sleep in short slices so `DoraNode::drop` can interrupt a
+            // scheduled wait and still get a CloseOutputs reply (#2855).
+            let deadline = Instant::now() + wait_time;
+            while Instant::now() < deadline {
+                if self.shutdown.load(Ordering::Relaxed) {
+                    return Ok(None);
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                std::thread::sleep(remaining.min(Duration::from_millis(10)));
+            }
         }
 
         let timestamp = Timestamp::new(
@@ -245,44 +277,107 @@ pub fn convert_output_to_json(
     start_timestamp: Timestamp,
     skip_output_time_offsets: bool,
 ) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
-    let mut output = serde_json::Map::new();
-    output.insert("id".into(), output_id.to_string().into());
-    if !skip_output_time_offsets {
-        let time_offset = metadata.timestamp().get_diff_duration(&start_timestamp);
-        output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
-    }
+    let mut output = json_header(
+        output_id,
+        metadata,
+        start_timestamp,
+        skip_output_time_offsets,
+    );
     if data.is_some() {
         let data_array = data_to_arrow_array(data.clone().map(std::sync::Arc::unwrap_or_clone))
             .context("failed to convert output to arrow array")?;
-
-        let data_type_json = serde_json::to_value(data_array.data_type())
-            .context("failed to serialize data type as JSON")?;
-
-        let batch = RecordBatch::try_from_iter([("inner", data_array)])
-            .context("failed to create RecordBatch")?;
-
-        let mut writer = arrow_json::ArrayWriter::new(Vec::new());
-        writer
-            .write(&batch)
-            .context("failed to encode data as JSON")?;
-        writer
-            .finish()
-            .context("failed to finish writing JSON data")?;
-        let json_data_encoded = writer.into_inner();
-
-        // Reparse the string using serde_json
-        let json_data: Vec<serde_json::Map<String, serde_json::Value>> =
-            serde_json::from_reader(json_data_encoded.as_slice())
-                .context("failed to parse JSON data again")?;
-        // remove `inner` field again
-        let json_data_flattened: Vec<_> = json_data
-            .into_iter()
-            .map(|mut m| m.remove("inner"))
-            .collect();
-        output.insert("data".into(), json_data_flattened.into());
-        output.insert("data_type".into(), data_type_json);
+        append_arrow_array_json(&mut output, data_array)?;
     }
     Ok(output)
+}
+
+/// Serialize an already-decoded Arrow array (e.g. an input received over the
+/// zenoh data plane) into the same JSON shape as [`convert_output_to_json`].
+///
+/// The daemon-path `Input` events reach the recorder as an encoded
+/// [`DataMessage`], but zenoh-delivered inputs arrive already decoded as an
+/// `ArrayData`, so this is the entry point for recording those.
+pub fn convert_arrow_input_to_json(
+    input_id: &dora_message::id::DataId,
+    metadata: &Metadata,
+    data: arrow::array::ArrayRef,
+    start_timestamp: Timestamp,
+    skip_output_time_offsets: bool,
+) -> eyre::Result<serde_json::Map<String, serde_json::Value>> {
+    let mut output = json_header(
+        input_id,
+        metadata,
+        start_timestamp,
+        skip_output_time_offsets,
+    );
+    append_arrow_array_json(&mut output, data)?;
+    Ok(output)
+}
+
+/// Build the `id` (+ optional `time_offset_secs`) prefix shared by every
+/// recorded input/output event.
+fn json_header(
+    id: &dora_message::id::DataId,
+    metadata: &Metadata,
+    start_timestamp: Timestamp,
+    skip_output_time_offsets: bool,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut output = serde_json::Map::new();
+    output.insert("id".into(), id.to_string().into());
+    if !skip_output_time_offsets {
+        let input_ts = metadata.timestamp();
+        // A zenoh-delivered input can carry a remote HLC timestamp that
+        // precedes this node's `start_timestamp` (a remote clock that is
+        // behind, or a producer that started earlier). `get_diff_duration` is
+        // an unguarded NTP64 (`u64`) subtraction that would underflow — a debug
+        // panic (which unwinds past `add_event`'s `Err` guard and kills the
+        // event loop) or a release wraparound to a garbage offset. Clamp to
+        // zero when the input predates start. The daemon path only ever records
+        // locally-timestamped inputs (always >= start), so this is a no-op
+        // there.
+        let time_offset = if input_ts.get_time() >= start_timestamp.get_time() {
+            input_ts.get_diff_duration(&start_timestamp)
+        } else {
+            std::time::Duration::ZERO
+        };
+        output.insert("time_offset_secs".into(), time_offset.as_secs_f64().into());
+    }
+    output
+}
+
+/// Encode `data_array` into the `data` / `data_type` fields of a recorded
+/// event's JSON object.
+fn append_arrow_array_json(
+    output: &mut serde_json::Map<String, serde_json::Value>,
+    data_array: arrow::array::ArrayRef,
+) -> eyre::Result<()> {
+    let data_type_json = serde_json::to_value(data_array.data_type())
+        .context("failed to serialize data type as JSON")?;
+
+    let batch = RecordBatch::try_from_iter([("inner", data_array)])
+        .context("failed to create RecordBatch")?;
+
+    let mut writer = arrow_json::ArrayWriter::new(Vec::new());
+    writer
+        .write(&batch)
+        .context("failed to encode data as JSON")?;
+    writer
+        .finish()
+        .context("failed to finish writing JSON data")?;
+    let json_data_encoded = writer.into_inner();
+
+    // Reparse the string using serde_json
+    let json_data: Vec<serde_json::Map<String, serde_json::Value>> =
+        serde_json::from_reader(json_data_encoded.as_slice())
+            .context("failed to parse JSON data again")?;
+    // remove `inner` field again
+    let json_data_flattened: Vec<_> = json_data
+        .into_iter()
+        .map(|mut m| m.remove("inner"))
+        .collect();
+    output.insert("data".into(), json_data_flattened.into());
+    output.insert("data_type".into(), data_type_json);
+    Ok(())
 }
 
 fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
