@@ -8,8 +8,8 @@ use super::{Executable, default_tracing};
 use crate::common::parse_duration;
 use crate::{
     common::{
-        CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
-        send_control_request,
+        CoordinatorOptions, error_indicates_dataflow_finished, expect_reply,
+        resolve_dataflow_identifier_interactive, send_control_request,
     },
     output::{
         LogFormat, LogOutputConfig, level_filter_is_active, message_passes_level_filter,
@@ -1114,13 +1114,21 @@ fn stream_logs_from_coordinator(
         until.and_then(|d| chrono::TimeDelta::from_std(d).ok().map(|td| now - td));
     let want_node = node.map(|n| n.as_ref());
 
-    let log_rx = session.subscribe_logs(
-        &serde_json::to_vec(&ControlRequest::LogSubscribe {
-            dataflow_id: uuid,
-            level: log_level,
-        })
-        .wrap_err("failed to serialize message")?,
-    )?;
+    let request = serde_json::to_vec(&ControlRequest::LogSubscribe {
+        dataflow_id: uuid,
+        level: log_level,
+    })
+    .wrap_err("failed to serialize message")?;
+    let log_rx = match session.subscribe_logs(&request) {
+        Ok(rx) => rx,
+        // The dataflow finished (and was dropped from the running table)
+        // before the live subscription was accepted. The historical logs
+        // have already been printed by `logs`, so this is a clean end of
+        // stream, not an error — mirror `wait_until_dataflow_started`, which
+        // tolerates the same race for sub-second dataflows.
+        Err(err) if error_indicates_dataflow_finished(&err.to_string()) => return Ok(()),
+        Err(err) => return Err(err).wrap_err("failed to subscribe to logs"),
+    };
 
     while let Ok(raw) = log_rx.recv() {
         let raw = match raw {
