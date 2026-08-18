@@ -185,7 +185,6 @@ pub(crate) use running_dataflow::{
 use crate::{
     extension_table::{ExtensionKey, ExtensionTable},
     extract_err_from_stderr::extract_err_from_stderr,
-    pending::DataflowStatus,
 };
 use dora_tensor_pool::TensorPoolManager;
 use shared_memory_extended::ShmemConf;
@@ -3701,7 +3700,14 @@ impl Daemon {
                                 &mut dataflow.cascading_error_causes,
                             )
                             .await?;
-                        if ready {
+                        // Not gated on `dataflow_started` — `start()` is
+                        // idempotent — but it must not resurrect a dataflow that
+                        // is already tearing down (dora-rs/dora#3053). The
+                        // release can legitimately arrive after a local stop: the
+                        // daemon can stop on its own (`trigger_manual_stop`), and
+                        // the coordinator replays `AllNodesReady` to a daemon
+                        // that reconnects.
+                        if ready && !dataflow.stop_sent {
                             logger.log(LogLevel::Info, None,
                                 Some("daemon".into()),
                                 "coordinator reported that all nodes are ready, starting dataflow",
@@ -4300,8 +4306,13 @@ impl Daemon {
                                     )
                                     .await;
                                 match status {
-                                    Ok(DataflowStatus::AllNodesReady)
-                                        if !dataflow.dataflow_started =>
+                                    // Removing the last pending cohort member
+                                    // completes the barrier, and a `RemoveNode`
+                                    // can land mid-teardown, so this shares the
+                                    // `!stop_sent` gate with the subscribe and
+                                    // node-death triggers (dora-rs/dora#3053).
+                                    Ok(status)
+                                        if dataflow.should_start_on_barrier_completion(&status) =>
                                     {
                                         logger
                                             .log(
@@ -6514,21 +6525,26 @@ impl Daemon {
                                 &mut logger,
                             )
                             .await?;
-                        match status {
-                            DataflowStatus::AllNodesReady if !dataflow.dataflow_started => {
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        None,
-                                        Some("daemon".into()),
-                                        "all nodes are ready, starting dataflow",
-                                    )
-                                    .await;
-                                // `start()` sets `dataflow_started`; the guard
-                                // above keeps this to a single spawn.
-                                dataflow.start(&self.events_tx, &self.clock).await?;
-                            }
-                            _ => {}
+                        // `should_start_on_barrier_completion` keeps this to a
+                        // single spawn (`start()` sets `dataflow_started`) and
+                        // suppresses it entirely once `stop_sent` is set. A late
+                        // subscribe during teardown is an expected path, not a
+                        // hypothetical one: `subscribe()` above has a dedicated
+                        // `stop_sent` branch that answers such a node with
+                        // `Stop`. If that node is the last pending cohort member,
+                        // its subscription completes the barrier and would
+                        // otherwise start the dataflow that is already stopping
+                        // (dora-rs/dora#3053).
+                        if dataflow.should_start_on_barrier_completion(&status) {
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    None,
+                                    Some("daemon".into()),
+                                    "all nodes are ready, starting dataflow",
+                                )
+                                .await;
+                            dataflow.start(&self.events_tx, &self.clock).await?;
                         }
                     }
                 }
@@ -7849,8 +7865,12 @@ impl Daemon {
         // and both of those callers start the dataflow here. Do the same, so a
         // non-cohort survivor that was answered `Ok(())` (since #2933) isn't
         // left parked on a dataflow that never starts and never tears down
-        // (#2967). `start()` is idempotent and guarded by `dataflow_started`.
-        if matches!(status, DataflowStatus::AllNodesReady) && !dataflow.dataflow_started {
+        // (#2967). `should_start_on_barrier_completion` keeps that idempotent
+        // (it gates on `dataflow_started`) and additionally suppresses the start
+        // once the dataflow is stopping (dora-rs/dora#3053) — the stop ladder
+        // itself kills a still-pending non-dynamic cohort member, so this
+        // trigger is reachable during teardown.
+        if dataflow.should_start_on_barrier_completion(&status) {
             logger
                 .log(
                     LogLevel::Info,
@@ -10238,6 +10258,7 @@ mod debug_topic_tests {
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
+    use crate::pending::DataflowStatus;
     use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
 
@@ -10356,6 +10377,53 @@ mod fault_tolerance_tests {
         assert!(!df.dataflow_started);
         df.start(&events_tx, &clock).await.unwrap();
         assert!(df.dataflow_started);
+    }
+
+    fn test_logger(clock: Arc<HLC>) -> DaemonLogger {
+        Logger {
+            destination: log::LogDestination::Tracing,
+            daemon_id: DaemonId::new(None),
+            clock,
+        }
+        .for_daemon(DaemonId::new(None))
+    }
+
+    // dora-rs/dora#3053: a startup-barrier completion can arrive *during*
+    // teardown — a pending cohort member subscribing inside the stop grace
+    // window, that member being killed when the window expires (the death
+    // trigger from #2970), or a `RemoveNode` dropping the last pending member.
+    // `should_start_on_barrier_completion` gates all three on `!stop_sent`, so
+    // a stopping dataflow is never (re)started. Drives `stop_all` rather than
+    // assigning `stop_sent`, so the test tracks the real teardown entry point.
+    #[tokio::test]
+    async fn barrier_completion_does_not_start_a_stopping_dataflow() {
+        let clock = Arc::new(HLC::default());
+        let mut daemon_logger = test_logger(clock.clone());
+        let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+        let mut df = test_dataflow();
+
+        // A fresh dataflow whose barrier just completed should start.
+        assert!(df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
+
+        // A `Pending` status never starts.
+        assert!(!df.should_start_on_barrier_completion(&DataflowStatus::Pending));
+
+        // Once the dataflow is stopping, the same completion must not start it.
+        let finish_when = df
+            .stop_all(&mut None, &clock, None, false, &mut logger)
+            .await
+            .unwrap();
+        assert!(matches!(finish_when, FinishDataflowWhen::Now));
+        assert!(df.stop_sent, "stop_all must record that stop was sent");
+        assert!(
+            !df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady),
+            "a stopping dataflow must not be started by a completing startup barrier"
+        );
+
+        // An already-started dataflow is not started again either.
+        let mut df = test_dataflow();
+        df.dataflow_started = true;
+        assert!(!df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
     }
 
     fn test_running_node() -> RunningNode {

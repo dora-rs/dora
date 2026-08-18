@@ -1,7 +1,9 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator, fault_tolerance::CascadingErrorCauses, pending::PendingNodes,
+    DoraEvent, OutputId, coordinator,
+    fault_tolerance::CascadingErrorCauses,
+    pending::{DataflowStatus, PendingNodes},
     send_with_timestamp,
 };
 use dora_core::{
@@ -446,6 +448,29 @@ impl RunningDataflow {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
+    }
+
+    /// Whether a startup-barrier completion (reported as
+    /// [`DataflowStatus::AllNodesReady`]) should start this dataflow.
+    ///
+    /// Every barrier-completion trigger — a node subscribing, a `RemoveNode`
+    /// dropping the last pending member, and a cohort member dying before it
+    /// subscribed (dora-rs/dora#2970) — can fire *during teardown*, so all three
+    /// share this gate (dora-rs/dora#3053). `stop_all` neither closes the node
+    /// listener nor completes the barrier for still-pending non-dynamic members:
+    /// it only drains the *existing* `subscribe_channels`, drops the pending
+    /// *dynamic* nodes, and schedules a (by default graceful) process stop. A
+    /// pending cohort member can therefore still subscribe within the grace
+    /// window — `Daemon::subscribe` has a dedicated `stop_sent` branch for
+    /// exactly that — or be killed when the window expires, and either way
+    /// completes the barrier.
+    ///
+    /// Starting a stopping dataflow spawns timer tasks that tick into a
+    /// teardown until the dataflow is dropped, and flips `dataflow_started` on,
+    /// which is the flag a racing `AddNode` reads to decide it may spawn timer
+    /// tasks of its own.
+    pub(crate) fn should_start_on_barrier_completion(&self, status: &DataflowStatus) -> bool {
+        matches!(status, DataflowStatus::AllNodesReady) && !self.dataflow_started && !self.stop_sent
     }
 
     pub(crate) async fn start(
