@@ -1842,14 +1842,37 @@ type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
 /// Whether a node-connection event belongs to a superseded incarnation.
 ///
-/// Strictly-older comparison, deliberately not equality: generations are
-/// globally monotonic, and the restart loop publishes a successor's
-/// generation to the listener BEFORE spawning it, so a fast successor's
-/// events can carry a generation NEWER than the entry until its
-/// `ProcessHandleReplaced` is processed. Dropping those would eat the
-/// successor's one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
-fn event_generation_is_stale(entry_generation: u64, event_generation: u64) -> bool {
-    event_generation < entry_generation
+/// An event is fresh only when its generation belongs to this entry's own
+/// incarnation lineage: either the currently-registered incarnation
+/// (`entry_generation`) or the successor this entry's OWN restart loop
+/// announced before spawning it (`successor_generation`, published into the
+/// entry's shared `generation_counter` before the successor connects).
+///
+/// The successor exception is why this is not a plain `== entry_generation`
+/// check: the restart loop publishes the successor's generation to the
+/// listener and spawns it BEFORE the daemon processes the matching
+/// `ProcessHandleReplaced` (which advances `entry_generation`), so a fast
+/// successor's `Subscribe`/`SendOut` can arrive while the entry still holds
+/// the predecessor's generation. Dropping those would eat the successor's
+/// one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
+///
+/// The reason it is not a plain `event < entry` check either: that wrongly
+/// accepts a *stranger's* higher generation. When `dora node replace` races a
+/// restart of the outgoing node, the outgoing incarnation's restart loop mints
+/// a generation ABOVE the replacement's (both draw from the same global
+/// counter, but the replacement's is minted first, before its slow build). Its
+/// zombie's events would then pass a `<` gate and be applied to the
+/// replacement — reinstalling a dead subscribe channel, closing the
+/// replacement's outputs, injecting spurious output (dora-rs/dora#2997).
+/// Matching on the entry's OWN announced successor rejects that stranger — the
+/// stranger's generation lives in the outgoing lineage's counter, never the
+/// replacement's — while still letting the real successor through.
+fn event_generation_is_stale(
+    entry_generation: u64,
+    successor_generation: u64,
+    event_generation: u64,
+) -> bool {
+    event_generation != entry_generation && event_generation != successor_generation
 }
 
 /// Patch a stored descriptor entry with a replacement node's definition
@@ -3153,14 +3176,19 @@ impl Daemon {
                     // replaced or re-added id's old connection must not
                     // mutate the current entry (close its outputs, remove
                     // its subscription, ...) — dora-rs/dora#2926, #2927.
-                    // STRICTLY older only: the restart loop publishes the
-                    // successor's generation before spawning it, so a fast
-                    // successor can connect (and Subscribe) while the entry
-                    // still holds the predecessor's generation — a NEWER
-                    // event generation is that successor racing its own
-                    // `ProcessHandleReplaced` and must not be dropped, or
-                    // its one-shot Subscribe is lost and the incarnation
-                    // stays disconnected. Entry-absent passes through:
+                    // Accept only this entry's own lineage: its current
+                    // generation, or the successor its OWN restart loop
+                    // announced into `generation_counter` before spawning it.
+                    // The successor exception lets a fast successor's Subscribe
+                    // through while the entry still holds the predecessor's
+                    // generation (before its `ProcessHandleReplaced` lands),
+                    // without which its one-shot Subscribe is lost and the
+                    // incarnation stays disconnected. The lineage restriction
+                    // rejects a stranger's HIGHER generation — e.g. a
+                    // concurrent restart of a node being replaced mints a
+                    // generation above the replacement's — instead of
+                    // misapplying its zombie's events to the replacement
+                    // (dora-rs/dora#2997). Entry-absent passes through:
                     // during startup a node can register before its
                     // RunningNode is inserted, and the pending-nodes
                     // barrier owns that window.
@@ -3168,7 +3196,13 @@ impl Daemon {
                         .running
                         .get(&dataflow)
                         .and_then(|df| df.running_nodes.get(&node_id))
-                        .is_some_and(|node| event_generation_is_stale(node.generation, generation));
+                        .is_some_and(|node| {
+                            event_generation_is_stale(
+                                node.generation,
+                                node.generation_counter.load(atomic::Ordering::Acquire),
+                                generation,
+                            )
+                        });
                     if superseded {
                         tracing::debug!(
                             %dataflow,
@@ -10432,6 +10466,7 @@ mod fault_tolerance_tests {
             restart_loop_start: None,
             _listener_shutdown: None,
             generation: 7,
+            generation_counter: Arc::new(AtomicU64::new(7)),
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
@@ -10461,23 +10496,45 @@ mod fault_tolerance_tests {
         }
     }
 
-    /// dora-rs/dora#2988 review, finding 1: the Event::Node gate must be
-    /// STRICTLY-older, not exact-match. The restart loop publishes a
-    /// successor's generation before spawning it, so the successor's
-    /// connection can emit its one-shot Subscribe with a generation NEWER
-    /// than the entry — dropping that leaves the incarnation disconnected
-    /// forever.
+    /// dora-rs/dora#2988 review, finding 1 (still upheld) and dora-rs/dora#2997:
+    /// the Event::Node gate accepts only the entry's own lineage — its current
+    /// generation or the successor its own restart loop announced into
+    /// `generation_counter`. It must let a fast successor's early events through
+    /// (or the incarnation stays disconnected forever) yet reject a stranger's
+    /// higher generation (or a replace-vs-restart zombie corrupts the
+    /// replacement).
     #[test]
-    fn node_event_gate_drops_only_strictly_older_generations() {
+    fn node_event_gate_accepts_only_own_lineage() {
+        // No pending successor announced: counter == entry generation.
         // Predecessor's connection after a swap advanced the entry: stale.
-        assert!(event_generation_is_stale(8, 7));
-        // The entry's current incarnation: current.
-        assert!(!event_generation_is_stale(8, 8));
-        // Successor racing its own ProcessHandleReplaced: must pass.
+        assert!(event_generation_is_stale(8, 8, 7));
+        // The entry's current incarnation: fresh.
+        assert!(!event_generation_is_stale(8, 8, 8));
+        // A higher generation with no announced successor is a stranger: stale.
         assert!(
-            !event_generation_is_stale(8, 9),
+            event_generation_is_stale(8, 8, 9),
+            "a newer generation the entry never announced must be dropped"
+        );
+
+        // The entry's own restart loop announced successor generation 9 (into
+        // `generation_counter`) before spawning it. Its early Subscribe races
+        // ahead of `ProcessHandleReplaced`, so the entry still reads generation
+        // 8; that successor's events must pass.
+        assert!(
+            !event_generation_is_stale(8, 9, 9),
             "a successor's early events must not be dropped while the \
              entry still holds the predecessor's generation"
+        );
+
+        // #2997: `dora node replace` minted the replacement at generation 10
+        // (its counter is 10, no successor announced), while a concurrent
+        // restart of the outgoing node minted a zombie at generation 11 in a
+        // DIFFERENT lineage's counter. The zombie's events (gen 11) must not be
+        // applied to the replacement, even though 11 > 10.
+        assert!(
+            event_generation_is_stale(10, 10, 11),
+            "a stranger incarnation's higher generation must be rejected, \
+             not misattributed to the replacement"
         );
     }
 
