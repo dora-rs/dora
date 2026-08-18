@@ -58,13 +58,20 @@ CUDA↔CUDA and the negative lifecycle cases.
 
 | Issue | Symptom |
 |---|---|
-| [#3015](https://github.com/dora-rs/dora/issues/3015) | Pool ids collide across node restarts — a restarted node cannot re-register its pool |
 | [#2935](https://github.com/dora-rs/dora/issues/2935) | Cross-process free cleanup can be silently skipped |
 | [#2890](https://github.com/dora-rs/dora/issues/2890) | The seqlock overflow fix (#2866) is incomplete: two inline end-write paths still use non-wrapping `old_gen + 1` |
 
 [#2881](https://github.com/dora-rs/dora/issues/2881) (pools not released when a
 node crashes) is **fixed**, by #3014 plus the daemon-side reclamation described
 below.
+
+[#3015](https://github.com/dora-rs/dora/issues/3015) (pool ids collide across
+node restarts) is **fixed**: the per-process counter is now seeded from a
+random `u64` (`PINNED_COUNTER` in `python/src/transport.rs`), so a restarted
+node no longer re-derives its previous incarnation's shared-memory name. One
+follow-up remains — with the collision gone, a pathological crash loop whose
+receiver never frees now leaks a pool per restart up to the registry cap
+instead of failing fast; the complete fix is an owner-death pool reclaim.
 
 ## How it reaches dora
 
