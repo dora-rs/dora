@@ -110,51 +110,8 @@ def _libcudart():
 _cudaIpcMemLazyEnablePeerAccess = 1
 
 # Numpy dtype string -> torch dtype mapping.
-_DTYPE_MAP = {
-    "<i8": torch.int64,
-    "<i4": torch.int32,
-    "<i2": torch.int16,
-    "<f4": torch.float32,
-    "<f8": torch.float64,
-    "<f2": torch.float16,
-    "<u1": torch.uint8,
-    "|b1": torch.bool,
-    "int64": torch.int64,
-    "int32": torch.int32,
-    "int16": torch.int16,
-    "float32": torch.float32,
-    "float64": torch.float64,
-    "float16": torch.float16,
-    "uint8": torch.uint8,
-    "bool": torch.bool,
-    # Torch type names (used by tensor_from_info)
-    "torch.int64": torch.int64,
-    "torch.int32": torch.int32,
-    "torch.int16": torch.int16,
-    "torch.float32": torch.float32,
-    "torch.float64": torch.float64,
-    "torch.float16": torch.float16,
-    "torch.uint8": torch.uint8,
-    "torch.bool": torch.bool,
-    "torch.int8": torch.int8,
-    "torch.bfloat16": torch.bfloat16,
-}
-
 # Torch dtype -> numpy dtype mapping (used by tensor_from_info for
 # constructing numpy arrays from raw memory pointers).
-_TORCH_TO_NUMPY_DTYPE_MAP = {
-    torch.int64: np.int64,
-    torch.float32: np.float32,
-    torch.float64: np.float64,
-    torch.int32: np.int32,
-    torch.int16: np.int16,
-    torch.int8: np.int8,
-    torch.uint8: np.uint8,
-    torch.bool: np.bool_,
-    torch.float16: np.float16,
-    torch.bfloat16: np.float16,  # bfloat16 maps to float16 in numpy
-}
-
 # CUDA error codes for better error messages
 _CUDA_ERROR_SUCCESS = 0
 _CUDA_ERROR_HOST_MEMORY_ALREADY_REGISTERED = 712
@@ -334,31 +291,58 @@ def open_ipc_handle(
         ipc_handle.close()
 
 
-# ---------------------------------------------------------------------------
-# Tensor info helpers for memory-pool operations
-# ---------------------------------------------------------------------------
+# ---- memory-pool helpers (ported from the pre-tensor-pool branch) ----
+_DTYPE_MAP = {
+    "<i8": torch.int64,
+    "<i4": torch.int32,
+    "<i2": torch.int16,
+    "<f4": torch.float32,
+    "<f8": torch.float64,
+    "<f2": torch.float16,
+    "<u1": torch.uint8,
+    "|b1": torch.bool,
+    "int64": torch.int64,
+    "int32": torch.int32,
+    "int16": torch.int16,
+    "float32": torch.float32,
+    "float64": torch.float64,
+    "float16": torch.float16,
+    "uint8": torch.uint8,
+    "bool": torch.bool,
+    # Torch type names (used by tensor_from_info)
+    "torch.int64": torch.int64,
+    "torch.int32": torch.int32,
+    "torch.int16": torch.int16,
+    "torch.float32": torch.float32,
+    "torch.float64": torch.float64,
+    "torch.float16": torch.float16,
+    "torch.uint8": torch.uint8,
+    "torch.bool": torch.bool,
+    "torch.int8": torch.int8,
+    "torch.bfloat16": torch.bfloat16,
+}
 
-
-class _ArrayInterface:
-    """Minimal object implementing ``__array_interface__`` so that
-    ``torch.as_tensor`` can wrap raw CPU memory as a tensor (zero-copy)."""
-
-    def __init__(self, ptr, shape, strides, dtype_str):
-        self.__array_interface__ = {
-            "shape": tuple(shape),
-            "strides": tuple(strides) if strides else None,
-            "typestr": dtype_str,
-            "data": (ptr, False),
-            "version": 3,
-        }
-
+# Torch dtype -> numpy dtype mapping (used by tensor_from_info for
+# constructing numpy arrays from raw memory pointers).
+_TORCH_TO_NUMPY_DTYPE_MAP = {
+    torch.int64: np.int64,
+    torch.float32: np.float32,
+    torch.float64: np.float64,
+    torch.int32: np.int32,
+    torch.int16: np.int16,
+    torch.int8: np.int8,
+    torch.uint8: np.uint8,
+    torch.bool: np.bool_,
+    torch.float16: np.float16,
+    torch.bfloat16: np.float16,  # bfloat16 maps to float16 in numpy
+}
 
 def get_tensor_info(tensor: torch.Tensor) -> dict:
     """Serialize a tensor into a ``tensor_info`` dict containing pointer,
     size, dtype, shape, and device.
 
     This is the canonical way to pass tensor metadata to memory-pool
-    operations such as ``register_memory_pool`` and ``write_memory_pool``.
+    operations such as ``register_tensor_pool`` and ``write_tensor_pool``.
     """
     if not tensor.is_contiguous():
         tensor = tensor.contiguous()

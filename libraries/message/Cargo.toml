@@ -2,7 +2,16 @@
 name = "dora-message"
 version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
+# Deliberately pinned below the workspace MSRV, not inherited (#3090).
+# This is the only crate carrying `#[kani::proof]` harnesses, and Kani
+# builds it with its own bundled toolchain — 0.67.0 ships rustc
+# 1.93.0-nightly — which cargo refuses to use the moment this crate
+# requires something newer, before a single proof runs. Nothing here
+# needs the workspace floor: the sysinfo 0.39 / redb 4 requirement that
+# raised it to 1.95 (#3017) belongs to the CLI, daemon, and coordinator
+# store. Keep this at or below Kani's rustc — see
+# `docs/formal-verification.md`.
+rust-version = "1.88.0"
 documentation.workspace = true
 readme.workspace = true
 description.workspace = true
@@ -21,15 +30,19 @@ serde = { workspace = true }
 eyre = { workspace = true }
 arrow-schema = { workspace = true, features = ["serde"] }
 tokio = { workspace = true, features = ["sync"] }
-uuid = { workspace = true }
+# `v4` is used directly by this crate (see `Uuid::new_v4()` in `common.rs` /
+# `ws_protocol.rs`). Declared explicitly rather than relying on feature
+# unification from another crate, so an isolated build (`cargo bench -p
+# dora-message`) compiles on its own — see #3020.
+uuid = { workspace = true, features = ["v4"] }
 log = { version = "0.4.33", features = ["serde"] }
 aligned-vec = { version = "0.6.4", features = ["serde"] }
 semver = { workspace = true }
 schemars = "1.2.1"
-uhlc = "0.5.1"
+uhlc = "0.9.0"
 serde_yaml = { workspace = true }
 serde-with-expand-env = "1.1.0"
-bincode = { workspace = true }
+postcard = { workspace = true }
 serde_json = { workspace = true }
 chrono = { version = "0.4", features = ["serde"] }
 getrandom = "0.4"
@@ -42,6 +55,10 @@ libc = "0.2"
 tempfile = { workspace = true }
 criterion = { version = "0.8", features = ["html_reports"] }
 proptest = { workspace = true }
+# `Uuid::new_v4` is used only by the `#[cfg(test)]` modules, so `v4` is
+# dev-only. It used to arrive by accident through feature unification: uhlc 0.5
+# depended on `uuid` with `v4` enabled, and the uhlc 0.9 bump dropped that dep.
+uuid = { workspace = true, features = ["v4"] }
 
 [[bench]]
 name = "message_serde"

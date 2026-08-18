@@ -14,7 +14,9 @@ members = [
     "binaries/cli",
     "binaries/coordinator",
     "binaries/daemon",
-    "binaries/runtime",
+    "binaries/runtime-api",
+    "binaries/runtime-shared-lib",
+    "binaries/runtime-python",
     "binaries/mavlink2-bridge-node",
     "binaries/ros2-bridge-node",
     "examples/rust-dataflow/node",
@@ -65,7 +67,10 @@ members = [
     "libraries/extensions/download",
     "libraries/extensions/telemetry/*",
     "libraries/extensions/mavlink2-bridge",
-    "libraries/extensions/memory-pool",
+    # Opt-in tensor-pool transport. Outside the 1.0 compatibility
+    # guarantees — see libraries/extensions/tensor-pool/README.md.
+    "libraries/extensions/tensor-pool",
+    "libraries/extensions/tensor-pool/python",
     "libraries/extensions/ros2-bridge",
     "libraries/extensions/ros2-bridge/msg-gen",
     "libraries/extensions/ros2-bridge/python",
@@ -74,20 +79,28 @@ members = [
     "tests/fault_tolerance/always_crash_node",
     "tests/fault_tolerance/clean_exit_node",
     "tests/fault_tolerance/delayed_crash_node",
+    "tests/fault_tolerance/drain_recording_node",
     "tests/fault_tolerance/emit_then_exit_source_node",
     "tests/fault_tolerance/event_log_observer_node",
     "tests/fault_tolerance/fire_and_forget_source_node",
     "tests/fault_tolerance/hang_after_init_node",
     "tests/fault_tolerance/input_closed_observer_node",
+    "tests/fault_tolerance/late_dynamic_sender",
     "tests/fault_tolerance/reconnect_survivor_node",
+    "tests/fault_tolerance/sigterm_ignoring_node",
     "tests/fault_tolerance/silent_source_node",
+    "tests/fault_tolerance/stop_delay_node",
     "tests/fault_tolerance/timed_burst_source_node",
+    "tests/fault_tolerance/timer_tick_recorder_node",
     "xtask",
 ]
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.88.0"
+# Raising this does not raise `dora-message`, which pins its own lower
+# `rust-version` so Kani's bundled toolchain can still build the proof
+# harnesses (#3090). Bump that one only against Kani's rustc.
+rust-version = "1.95.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
 version = "1.0.0-rc.4"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
@@ -115,15 +128,29 @@ dora-download = { version = "1.0.0-rc.4", path = "libraries/extensions/download"
 dora-log-utils = { version = "1.0.0-rc.4", path = "libraries/log-utils" }
 dora-coordinator-store = { version = "1.0.0-rc.4", path = "libraries/coordinator-store" }
 dora-cli = { version = "1.0.0-rc.4", path = "binaries/cli" }
-dora-runtime = { version = "1.0.0-rc.4", path = "binaries/runtime" }
+dora-runtime-api = { version = "1.0.0-rc.4", path = "binaries/runtime-api" }
+dora-runtime-shared-lib = { version = "1.0.0-rc.4", path = "binaries/runtime-shared-lib" }
+dora-runtime-python = { version = "1.0.0-rc.4", path = "binaries/runtime-python" }
 dora-daemon = { version = "1.0.0-rc.4", path = "binaries/daemon" }
 dora-coordinator = { version = "1.0.0-rc.4", path = "binaries/coordinator" }
 dora-ros2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge" }
 dora-ros2-bridge-msg-gen = { version = "1.0.0-rc.4", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
 dora-mavlink2-bridge = { version = "1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
-dora-memory-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/memory-pool" }
+dora-tensor-pool = { version = "1.0.0-rc.4", path = "libraries/extensions/tensor-pool" }
+dora-tensor-pool-python = { version = "1.0.0-rc.4", path = "libraries/extensions/tensor-pool/python" }
 dora-message = { version = "1.0.0-rc.4", path = "libraries/message" }
+# Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
+# apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
+# `rmw_dds_common` graph discovery (see `ros2-client`'s `src/gid.rs`), matching
+# the distro our ROS2 harness runs (`scripts/ros2dev.sh`). Distro selection
+# became an explicit Cargo feature in 0.10 (default `jazzy`, i.e. 16-byte Gid);
+# 0.8 only had a `pre-iron-gid` opt-out. Changing this changes graph-discovery
+# wire compatibility.
+ros2-client = { version = "0.10.1", default-features = false, features = ["humble"] }
+# Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
+# workspace resolves a single copy.
+cdr-encoding = "0.11"
 arrow = { version = "59", default-features = false }
 arrow-schema = { version = "59" }
 arrow-data = { version = "59" }
@@ -161,7 +188,9 @@ serde = { version = "1", features = ["derive"] }
 tracing = "0.1.44"
 uuid = { version = "1.23", features = ["serde", "v7"] }
 futures = { version = "0.3.32", default-features = false, features = ["std", "async-await"] }
-bincode = "1.3.3"
+fs2 = "0.4.3"
+redb = "4.1"
+postcard = { version = "1.1.3", default-features = false, features = ["use-std"] }
 flume = "0.12.0"
 tempfile = "3.27.0"
 proptest = "1.11"
@@ -203,6 +232,8 @@ tracing = { workspace = true }
 futures = { workspace = true }
 tokio-stream = "0.1.18"
 tempfile = { workspace = true }
+redb = { workspace = true }
+fs2 = { workspace = true }
 assert2 = "0.4.0"
 tokio-tungstenite = "0.29"
 libloading = "0.9"
@@ -233,6 +264,10 @@ path = "examples/c++-dataflow/run.rs"
 [[example]]
 name = "cxx-arrow-dataflow"
 path = "examples/c++-arrow-dataflow/run.rs"
+
+[[example]]
+name = "cxx-service-action"
+path = "examples/c++-service-action/run.rs"
 
 [[example]]
 name = "mavlink2-bridge-cxx"
@@ -280,6 +315,37 @@ path = "tests/finish-straggler-e2e.rs"
 
 [profile.release]
 lto = "thin"
+
+# mio 0.6.23 (pulled in on all platforms by mio-extras -> rustdds/ros2-client)
+# computes struct field offsets with the pre-`offset_of!` hack
+# `&(*(0 as *const T)).field as *const _ as usize` — a literal null-pointer
+# dereference (src/sys/windows/selector.rs:470). Its Windows IOCP completion
+# handlers run that macro on *every* UDP/TCP completion, so with
+# `debug-assertions` on, rustc's null-pointer check fires a **non-unwinding**
+# panic and aborts the process:
+#
+#     thread 'RustDDS Participant 0 event loop' panicked at
+#       mio-0.6.23\src\sys\windows\udp.rs:401:25:
+#     null pointer dereference occurred
+#     thread caused non-unwinding panic. aborting.
+#
+# That kills the `dora-ros2-bridge` test binary on Windows (dora-rs/dora#3091)
+# and any debug build that actually receives DDS traffic. Release builds are
+# unaffected because `debug-assertions` is off there.
+#
+# This cannot be upgraded away: mio 0.6.23 (2019) is the last 0.6.x, and
+# `mio_06 = "^0.6.23"` is a *non-optional direct* dependency of every published
+# rustdds — 0.14.0 included — and of ros2-client 0.8-0.10, with mio-extras
+# 2.0.6 requiring mio ^0.6.14 on top. So the #2854 port does not remove it.
+# The only way to remove the UB rather than the check is to patch mio itself
+# (a one-line `offset_of!` fix, via a git fork so `--cap-lints allow` still
+# applies); that was weighed and deferred as too much supply-chain surface for
+# this. Opting the one dependency out of debug assertions restores the behavior
+# mio 0.6 was written against. The version is pinned in the spec on purpose: if
+# mio 0.6.23 ever does leave the graph, `cargo check` warns that the spec
+# matches nothing, which is the cue to delete this block.
+[profile.dev.package."mio:0.6.23"]
+debug-assertions = false
 
 # The profile that 'dist' will build with
 [profile.dist]

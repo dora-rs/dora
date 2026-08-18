@@ -21,10 +21,12 @@ use tokio::{
 #[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
 pub async fn listener_loop(
     listener: TcpListener,
+    generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
+    mut node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
     loop {
         tokio::select! {
@@ -34,6 +36,7 @@ pub async fn listener_loop(
                     Ok((connection, _)) => {
                         tokio::spawn(handle_connection_loop(
                             connection,
+                            generation.clone(),
                             daemon_tx.clone(),
                             clock.clone(),
                             last_activity.clone(),
@@ -45,6 +48,19 @@ pub async fn listener_loop(
                 tracing::trace!("TCP listener shutting down");
                 break;
             }
+            // Per-node lifetime (dora-rs/dora#2988 review, finding 3): the
+            // senders live in the node's RunningNode entry and its restart
+            // loop, so removing the node (replace/remove/teardown) closes
+            // this listener instead of leaking it until the whole dataflow
+            // finishes. `changed()` errors when the last sender drops —
+            // either way, stop accepting. Existing connections are
+            // unaffected (their tasks run independently and are
+            // generation-gated).
+            result = node_shutdown.changed() => {
+                let _ = result;
+                tracing::trace!("TCP listener shutting down (node retired)");
+                break;
+            }
         }
     }
 }
@@ -52,6 +68,7 @@ pub async fn listener_loop(
 #[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
 async fn handle_connection_loop(
     connection: TcpStream,
+    generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
@@ -60,7 +77,14 @@ async fn handle_connection_loop(
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
-    Listener::run(TcpConnection(connection), daemon_tx, clock, last_activity).await
+    Listener::run(
+        TcpConnection(connection),
+        generation,
+        daemon_tx,
+        clock,
+        last_activity,
+    )
+    .await
 }
 
 struct TcpConnection(TcpStream);
@@ -81,7 +105,7 @@ impl Connection for TcpConnection {
                 }
             },
         };
-        bincode::deserialize(&raw)
+        dora_message::decode(&raw)
             .wrap_err("failed to deserialize DaemonRequest")
             .map(Some)
     }
@@ -91,8 +115,8 @@ impl Connection for TcpConnection {
             // don't send empty replies
             return Ok(());
         }
-        let serialized =
-            bincode::serialize(&message).wrap_err("failed to serialize DaemonReply")?;
+        let serialized = dora_message::encode_presized(&message, message.encode_size_hint())
+            .wrap_err("failed to serialize DaemonReply")?;
         socket_stream_send(&mut self.0, &serialized)
             .await
             .wrap_err("failed to send DaemonReply")?;

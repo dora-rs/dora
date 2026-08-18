@@ -19,6 +19,7 @@ cargo clippy --all \
 
 # 3. Unit + integration tests (~90s first run)
 cargo test --all \
+  --exclude dora-runtime-python \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python
@@ -291,14 +292,14 @@ fn test_main_function() -> eyre::Result<()> {
     let inputs = TestingInput::Input(
         IntegrationTestInput::new("node_id".parse().unwrap(), events),
     );
-    let (tx, rx) = flume::unbounded();
+    let (tx, mut rx) = integration_testing::unbounded_channel();
     let outputs = TestingOutput::ToChannel(tx);
     let options = TestingOptions { skip_output_time_offsets: true };
 
     integration_testing::setup_integration_testing(inputs, outputs, options);
     crate::main()?;
 
-    let outputs = rx.try_iter().collect::<Vec<_>>();
+    let outputs = integration_testing::drain_outputs(&mut rx);
     assert_eq!(outputs, expected_outputs);
     Ok(())
 }
@@ -366,6 +367,7 @@ Add new test files in the `tests/` directory. For tests that need the full CLI s
 Always exclude Python packages:
 ```bash
 cargo test --all \
+  --exclude dora-runtime-python \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python

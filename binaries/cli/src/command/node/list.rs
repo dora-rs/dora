@@ -33,6 +33,10 @@ pub struct List {
     pub dataflow: Option<String>,
 
     /// Output format
+    ///
+    /// `json` emits JSON Lines (one object per line). All fields are
+    /// formatted strings; the `dataflow` field is omitted from each
+    /// object when `--dataflow` is given.
     #[clap(long, short = 'f', value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 
@@ -195,4 +199,47 @@ fn list(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::OutputEntry;
+
+    fn entry(node: &str, dataflow: Option<&str>) -> OutputEntry {
+        OutputEntry {
+            node: node.into(),
+            status: "Running".into(),
+            pid: "123".into(),
+            cpu: "0.1%".into(),
+            memory: "10 MB".into(),
+            restarts: "0".into(),
+            dataflow: dataflow.map(Into::into),
+        }
+    }
+
+    /// Pins the runtime JSON contract the help text promises: each entry
+    /// serializes to a single line that parses as an independent JSON
+    /// object, and the `dataflow` key is omitted (not null) when the
+    /// listing is filtered to one dataflow.
+    #[test]
+    fn json_entries_serialize_as_independent_single_line_objects() {
+        let unfiltered = serde_json::to_string(&entry("a", Some("df"))).expect("serialize entry");
+        let filtered = serde_json::to_string(&entry("b", None)).expect("serialize entry");
+
+        for line in [&unfiltered, &filtered] {
+            assert!(!line.contains('\n'), "JSONL entries must be single-line");
+            serde_json::from_str::<serde_json::Value>(line)
+                .expect("each output line must parse as standalone JSON");
+        }
+
+        let unfiltered: serde_json::Value =
+            serde_json::from_str(&unfiltered).expect("parse unfiltered entry");
+        assert_eq!(unfiltered["dataflow"], "df");
+        let filtered: serde_json::Value =
+            serde_json::from_str(&filtered).expect("parse filtered entry");
+        assert!(
+            filtered.get("dataflow").is_none(),
+            "`dataflow` must be omitted, not null, when filtering by dataflow"
+        );
+    }
 }

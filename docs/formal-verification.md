@@ -92,6 +92,30 @@ nightly workflow runs the proofs daily (`kani-proofs` job in
 `scripts/qa/ci-nightly-jobs.sh kani-proofs`), so a broken harness is
 caught within a day and auto-filed as a `nightly-regression` issue.
 
+### Proof crates must stay below Kani's bundled toolchain
+
+Kani does not build with the workspace toolchain — it ships its own
+nightly (0.67.0 → `nightly-2025-11-21`, rustc 1.93.0-nightly). Cargo
+refuses to compile a package whose `rust-version` exceeds the running
+rustc, so **a proof crate whose MSRV outruns Kani's rustc stops being
+verified at all**: `cargo kani` fails before codegen, reporting "Found 0
+compilation errors" rather than a failed proof. That is how #3090
+happened — the workspace MSRV went to 1.95 in #3017 and every nightly
+run after it was red with zero proofs run.
+
+So `dora-message` pins its own `rust-version` (currently 1.88.0) instead
+of inheriting `[workspace.package]`, with a comment in its `Cargo.toml`
+saying why. Any crate that gains a `#[kani::proof]` harness needs the
+same treatment. Two guards keep the pin honest: the nightly `msrv` job
+runs `cargo hack check --rust-version`, which fails if the crate no
+longer builds on the version it advertises, and the `kani-proofs` job
+fails if the pin ever climbs past Kani's rustc.
+
+Cargo compares only the release numbers here, ignoring the pre-release
+tag, so `rust-version = "1.93.0"` would be accepted by rustc
+1.93.0-nightly. The pin sits a few releases lower anyway, to leave room
+for a workspace MSRV bump landing before the matching Kani release.
+
 ## Adding a new proof
 
 1. Prefer extracting the invariant-bearing logic into a small **pure
@@ -110,10 +134,14 @@ caught within a day and auto-filed as a `nightly-regression` issue.
    workspace = true
    ```
 
-4. Nothing else: `scripts/qa/kani.sh` discovers proof crates by scanning
+4. In the same `Cargo.toml`, replace `rust-version.workspace = true` with
+   a pin at or below Kani's bundled rustc (see the section above) —
+   otherwise the crate silently drops out of verification the next time
+   the workspace MSRV moves ahead of Kani.
+5. Nothing else: `scripts/qa/kani.sh` discovers proof crates by scanning
    for `#[kani::proof]`, so `make qa-kani` picks the new harness up
    automatically.
-5. State each property in prose in the harness doc comment, and aim for the
+6. State each property in prose in the harness doc comment, and aim for the
    soundness/completeness pair — one-directional proofs silently miss
    "rejects everything" regressions.
 

@@ -340,7 +340,32 @@ fn check_uv(stdout: &mut termcolor::StandardStream) -> eyre::Result<()> {
 
 #[cfg(test)]
 mod node_health_tests {
-    use super::{NodeHealthCounts, NodeHealthReport, node_health_report};
+    use super::{NodeHealthCounts, NodeHealthReport, node_health_report, tally_node_status};
+    use dora_message::daemon_to_coordinator::NodeStatus;
+
+    #[test]
+    fn restarting_node_is_not_counted_as_healthy() {
+        let mut counts = NodeHealthCounts {
+            total: 1,
+            ..Default::default()
+        };
+        tally_node_status(&mut counts, Some(&NodeStatus::Restarting));
+        assert_eq!(counts.healthy, 0);
+        assert_eq!(counts.degraded, 1);
+        // A flapping node must surface as a warning, never PASS.
+        assert!(matches!(
+            node_health_report(counts),
+            NodeHealthReport::Warn(_)
+        ));
+    }
+
+    #[test]
+    fn missing_metrics_and_running_count_as_healthy() {
+        let mut counts = NodeHealthCounts::default();
+        tally_node_status(&mut counts, None);
+        tally_node_status(&mut counts, Some(&NodeStatus::Running));
+        assert_eq!(counts.healthy, 2);
+    }
 
     #[test]
     fn all_stopped_is_not_reported_as_healthy() {
@@ -548,23 +573,31 @@ fn check_node_health(session: &WsSession) -> eyre::Result<NodeHealthCounts> {
         total: nodes.len(),
         ..Default::default()
     };
-
     for node in &nodes {
-        if let Some(metrics) = &node.metrics {
-            use dora_message::daemon_to_coordinator::NodeStatus;
-            match metrics.status {
-                NodeStatus::Running => counts.healthy += 1,
-                NodeStatus::Restarting => counts.healthy += 1,
-                NodeStatus::Degraded => counts.degraded += 1,
-                NodeStatus::Failed => counts.failed += 1,
-                NodeStatus::Stopped => counts.stopped += 1,
-            }
-        } else {
-            counts.healthy += 1; // No metrics yet = assumed healthy
-        }
+        tally_node_status(&mut counts, node.metrics.as_ref().map(|m| &m.status));
     }
-
     Ok(counts)
+}
+
+/// Fold a single node's status into the health tally. Kept pure (no session)
+/// so the status → bucket mapping is unit-testable.
+///
+/// `None` means the node has reported no metrics yet, which is treated as
+/// healthy. A node in a restart loop is *not* healthy: `dora top` already
+/// renders `Restarting` as a red fault state, so folding it into `healthy`
+/// (as this previously did) let `doctor` report PASS and exit 0 for a
+/// flapping node. It is counted as degraded instead, so `doctor` warns.
+fn tally_node_status(
+    counts: &mut NodeHealthCounts,
+    status: Option<&dora_message::daemon_to_coordinator::NodeStatus>,
+) {
+    use dora_message::daemon_to_coordinator::NodeStatus;
+    match status {
+        None | Some(NodeStatus::Running) => counts.healthy += 1,
+        Some(NodeStatus::Restarting | NodeStatus::Degraded) => counts.degraded += 1,
+        Some(NodeStatus::Failed) => counts.failed += 1,
+        Some(NodeStatus::Stopped) => counts.stopped += 1,
+    }
 }
 
 fn validate_dataflow(path: &std::path::Path) -> eyre::Result<()> {

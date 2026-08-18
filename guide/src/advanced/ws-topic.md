@@ -99,16 +99,51 @@ After the handshake, the coordinator pushes binary WS frames. Each frame has a f
  0                   16                              N
  ├───────────────────┼──────────────────────────────┤
  │  subscription_id  │  Timestamped<InterDaemonEvent>│
- │  (16 bytes UUID)  │  (bincode serialized)         │
+ │  (16 bytes UUID)  │  (postcard serialized)        │
  └───────────────────┴──────────────────────────────┘
 ```
 
 | Field | Size | Description |
 |-------|------|-------------|
 | `subscription_id` | 16 bytes | UUID matching the `TopicSubscribed` ack, for multiplexing |
-| payload | variable | Raw `Timestamped<InterDaemonEvent>` bincode bytes from Zenoh |
+| payload | variable | Raw `Timestamped<InterDaemonEvent>` postcard bytes from Zenoh |
 
 The 16-byte UUID prefix allows multiplexing multiple subscriptions on a single WS connection without additional framing overhead.
+
+### Protocol version
+
+The frames above carry no envelope and no self-describing encoding, so a peer
+speaking a different binary format **misparses** them rather than failing to
+decode. The subscription handshake therefore exchanges a version, and either
+side refuses the subscription on mismatch:
+
+| Version | Payload encoding |
+|---------|------------------|
+| (absent) | pre-1.0, bincode — predates this handshake |
+| 1 | bincode |
+| 2 | postcard (current, `dora_message::TOPIC_DATA_PROTOCOL_VERSION`) |
+
+`TopicSubscribe` carries the client's version and `TopicSubscribed` carries the
+coordinator's:
+
+```json
+{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2}}
+{"TopicSubscribed": {"subscription_id": "...", "protocol_version": 2}}
+```
+
+Both fields are `#[serde(default)]`, so a peer that predates the handshake
+simply omits them — which deserializes to `None` and is rejected for the same
+reason a wrong number is. The rejection names both versions, so an operator can
+tell which side is old:
+
+```
+topic data protocol mismatch: client speaks version 1, coordinator speaks 2.
+Binary frames are positionally encoded, so subscribing would silently misparse
+rather than fail. Upgrade whichever side is older.
+```
+
+Bump `TOPIC_DATA_PROTOCOL_VERSION` whenever the binary payload encoding changes.
+The JSON handshake itself is self-describing and does not need the bump.
 
 ---
 
@@ -248,7 +283,9 @@ The coordinator subscribes to Zenoh topics using the format from `dora_core::top
 dora/{dataflow_id}/{node_id}/{data_id}
 ```
 
-Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized with bincode. The coordinator forwards these bytes as-is (prepended with subscription UUID) -- no re-serialization.
+Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized with [postcard](https://docs.rs/postcard) -- a compact, non-self-describing binary format with a documented, stable wire spec. The coordinator forwards these bytes as-is (prepended with subscription UUID) -- no re-serialization.
+
+> **Wire break (dora 1.0):** this payload was bincode-encoded before 1.0. The encoding is positional in both formats, so a bincode-era subscriber does not fail cleanly against postcard frames -- it misparses them. The subscription handshake carries a `protocol_version` on both sides precisely so that mismatch is refused at subscribe time instead of surfacing as corrupt data; see [Protocol version](#protocol-version) below.
 
 ---
 
@@ -258,7 +295,7 @@ Each topic carries `Timestamped<InterDaemonEvent>` as its payload, serialized wi
 |-----------|-------|-----------|
 | Binary frame channel capacity | 64 | Balance between latency and memory |
 | Drop policy | Drop on full | Prefer freshness over completeness |
-| Binary format | Raw bincode (no base64) | Avoid 33% overhead for large payloads |
+| Binary format | Raw postcard (no base64) | Avoid 33% overhead for large payloads |
 
 For high-throughput topics (camera images, point clouds), the binary frame channel may fill up if the WS connection is slow. Dropped samples are silent -- the CLI will show reduced frequency in `topic hz` but won't stall.
 

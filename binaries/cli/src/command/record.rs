@@ -299,6 +299,31 @@ fn run_record(args: Record) -> eyre::Result<()> {
         .execute()
 }
 
+/// What a Ctrl-C on the recording loop should do, given whether one was already
+/// seen. Split out from the signal handler so the escalation state machine is
+/// unit-testable without delivering a real signal (which also exits the process
+/// via `process::exit`, and races the handler-installation window).
+#[derive(Debug, PartialEq, Eq)]
+enum CtrlCAction {
+    /// First Ctrl-C: request a graceful stop (finalize the recording).
+    RequestStop,
+    /// Repeated Ctrl-C: give up and exit immediately, even if a write is wedged.
+    ExitImmediately,
+}
+
+/// Advance the Ctrl-C escalation state: the first call requests a stop, every
+/// later call escalates. Taking `&mut bool` is deliberate — the handler owns
+/// the flag across invocations, so dropping the `mut` there would fail to
+/// compile rather than silently disabling escalation.
+fn record_ctrlc_action(signalled: &mut bool) -> CtrlCAction {
+    if *signalled {
+        CtrlCAction::ExitImmediately
+    } else {
+        *signalled = true;
+        CtrlCAction::RequestStop
+    }
+}
+
 fn run_record_proxy(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -420,7 +445,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         .as_nanos() as u64;
 
     let header = RecordingHeader {
-        version: 1,
+        version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id,
         descriptor_yaml: yaml_bytes,
@@ -432,10 +457,39 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     eprintln!("Recording... (press Ctrl-C to stop)");
 
-    // Set up Ctrl-C handler
+    // Set up Ctrl-C handler.
+    //
+    // The first Ctrl-C requests a graceful stop (finalize the recording and
+    // exit). Escalate on a repeated signal — as the daemon, coordinator, and
+    // `dora start` attach handlers all do — so an operator is never stuck: the
+    // recording loop does blocking file I/O between poll ticks, and a write that
+    // wedges (full disk, stalled network mount, a large flush) would otherwise
+    // swallow every subsequent Ctrl-C with no way out but SIGKILL from another
+    // terminal. The second signal exits immediately with the conventional SIGINT
+    // status; the partial file is left in place, but the message warns that it
+    // may be truncated so the operator knows `dora replay` will get a short
+    // recording (a missing footer is tolerated by `RecordingReader`, and the
+    // flush before `finish()` below bounds the loss to the footer).
+    //
+    // Two deliberate departures from those siblings, both because what wedges
+    // here is our own teardown rather than a child process:
+    //   * `process::exit` rather than the daemon's unwinding `bail!` — the
+    //     thing being escaped IS `writer.finish()`, so unwinding through it
+    //     would re-enter the wedge. Nothing here owns child processes to
+    //     orphan.
+    //   * exit 130 (128 + SIGINT) rather than the attach handler's 1, so a
+    //     supervisor can tell an operator abort from a recording error. This
+    //     is the only place in the CLI that returns it; see docs/cli.md.
     let (stop_tx, stop_rx) = std::sync::mpsc::channel();
-    ctrlc::set_handler(move || {
-        let _ = stop_tx.send(());
+    let mut signalled = false;
+    ctrlc::set_handler(move || match record_ctrlc_action(&mut signalled) {
+        CtrlCAction::RequestStop => {
+            let _ = stop_tx.send(());
+        }
+        CtrlCAction::ExitImmediately => {
+            eprintln!("received second Ctrl-C -> exiting immediately (recording may be truncated)");
+            std::process::exit(130);
+        }
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
@@ -448,7 +502,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
         match data_rx.recv_timeout(std::time::Duration::from_millis(100)) {
             Ok(Ok(payload)) => {
-                // The payload is already `Timestamped<InterDaemonEvent>` bincode bytes.
+                // The payload is already `Timestamped<InterDaemonEvent>` postcard bytes.
                 // Parse it to extract node_id and output_id for the recording entry.
                 let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
                     Ok(e) => e,
@@ -460,6 +514,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                         node_id, output_id, ..
                     } => (node_id.to_string(), output_id.to_string()),
                     InterDaemonEvent::OutputClosed { .. } => continue,
+                    // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+                    _ => continue,
                 };
 
                 let now_nanos = SystemTime::now()
@@ -485,6 +541,17 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         }
     }
+
+    // Flush before the blocking finalize, not as part of it. `finish()` writes
+    // the buffered tail AND the footer, and it is the call most likely to wedge
+    // (full disk, stalled network mount) — which is exactly when an operator
+    // reaches for the second Ctrl-C. Escalating out of an unflushed `finish()`
+    // discards every entry since the last 100-message flush: with fewer than
+    // 100 messages recorded that is the whole file, and `dora replay` then
+    // fails with "failed to read recording header" rather than replaying a
+    // short recording. Flushing here bounds what escalation can cost to the
+    // 24-byte footer, which readers already tolerate.
+    writer.flush()?;
 
     let footer = writer.finish()?;
     eprintln!(
@@ -612,6 +679,27 @@ mod tests {
                 "legacy/buffer",
                 "runtime/op/status",
             ]
+        );
+    }
+
+    #[test]
+    fn ctrlc_requests_stop_first_then_escalates() {
+        // The recording loop's Ctrl-C handler must ask for a graceful stop on
+        // the first signal and escalate to an immediate exit on every one
+        // after — so a wedged write can't swallow repeated Ctrl-C. Pins the
+        // state machine without a real signal (#2952).
+        let mut signalled = false;
+        assert_eq!(
+            record_ctrlc_action(&mut signalled),
+            CtrlCAction::RequestStop
+        );
+        assert_eq!(
+            record_ctrlc_action(&mut signalled),
+            CtrlCAction::ExitImmediately
+        );
+        assert_eq!(
+            record_ctrlc_action(&mut signalled),
+            CtrlCAction::ExitImmediately
         );
     }
 

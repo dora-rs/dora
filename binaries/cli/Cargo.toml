@@ -18,13 +18,13 @@ path = "src/main.rs"
 [features]
 default = ["tracing", "metrics", "redb-backend"]
 tracing = ["dep:dora-tracing"]
-metrics = ["dora-runtime/metrics", "dora-coordinator/metrics"]
+metrics = ["dora-runtime-shared-lib/metrics", "dora-coordinator/metrics"]
 python = ["pyo3"]
 # Enable extension-module only when building the Python wheel via maturin.
 # This suppresses Python library linking, which is correct for cdylib targets
 # loaded into Python but breaks standalone binary and test builds.
 python-extension-module = ["python", "pyo3/extension-module"]
-redb-backend = ["dora-coordinator/redb-backend", "dep:libc"]
+redb-backend = ["dora-coordinator/redb-backend", "dep:fs2", "dep:libc"]
 
 [dependencies]
 arrow = { workspace = true, features = ["ipc"] }
@@ -32,6 +32,7 @@ arrow-schema = { workspace = true }
 clap = { version = "4.6.1", features = ["derive", "string", "env"] }
 clap_complete = "4.6.7"
 eyre = { workspace = true }
+fs2 = { workspace = true, optional = true }
 libc = { version = "0.2", optional = true }
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-hub-client = { workspace = true }
@@ -56,7 +57,7 @@ tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
 dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }
-dora-runtime = { workspace = true }
+dora-runtime-shared-lib = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["io-util", "net"] }
 futures = { workspace = true }
@@ -67,7 +68,7 @@ colored = { workspace = true }
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 itertools = "0.15"
-sysinfo = "0.38.4"
+sysinfo = "0.39"
 
 env_logger = "0.11.11"
 # self_update 0.44 made the HTTP backend an explicit feature; without

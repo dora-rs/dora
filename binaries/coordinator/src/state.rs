@@ -98,6 +98,10 @@ pub(crate) struct DaemonConnection {
     pub(crate) sender: mpsc::Sender<String>,
     /// Shared with the ws_daemon handler task to resolve correlation-based replies.
     pub(crate) pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    /// The daemon's WS peer address as seen by the coordinator (set at
+    /// registration). Lets other daemons reach this daemon's direct-TCP
+    /// memory-pool data listener.
+    pub(crate) peer_addr: Option<std::net::SocketAddr>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
@@ -131,6 +135,7 @@ impl DaemonConnection {
         Self {
             sender,
             pending_replies,
+            peer_addr: None,
             last_heartbeat: Instant::now(),
             labels,
             ft_stats: None,
@@ -150,8 +155,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon and wait for a reply.
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
@@ -206,8 +211,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon without waiting for a reply (fire-and-forget).
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send(&self, message: &[u8]) -> eyre::Result<()> {
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
@@ -249,6 +254,22 @@ pub(crate) struct RunningDataflow {
     /// IDs of daemons that are waiting until all nodes are started.
     pub(crate) pending_daemons: BTreeSet<DaemonId>,
     pub(crate) exited_before_subscribe: Vec<NodeId>,
+    /// Whether the ready barrier has already been broadcast for this
+    /// dataflow.
+    ///
+    /// The broadcast goes to `daemons` at the moment it fires, so a daemon
+    /// that is disconnected then never receives it — and nothing replays it
+    /// on reconnect, leaving every node it owns parked in `init_from_env()`
+    /// forever (dora-rs/dora#2998). Remembering the release lets the
+    /// reconnect path re-send it to just that daemon.
+    ///
+    /// Mirrored into the persisted record (`make_record`) and restored by
+    /// [`RunningDataflow::recovered`], because this entry does not survive
+    /// orphan reclaim or a coordinator restart. It cannot be left in memory
+    /// only and reconstructed later from a fresh `ReadyOnDaemon`: the daemon
+    /// never sends one, since `PendingNodes::reported_init_to_coordinator` is
+    /// set once and never reset.
+    pub(crate) ready_barrier_released: bool,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
@@ -478,7 +499,17 @@ impl RunningDataflow {
             descriptor,
             daemons: daemons.clone(),
             pending_daemons: BTreeSet::new(),
-            exited_before_subscribe: Vec::new(),
+            // Restored, not reset: the live entry is destroyed by orphan
+            // reclaim and by coordinator restart, and the daemon cannot prompt
+            // a fresh broadcast because its `reported_init_to_coordinator` is
+            // never reset. Dropping the verdict here is what left a
+            // reconnecting daemon hanging forever (dora-rs/dora#2998).
+            exited_before_subscribe: record
+                .barrier_exited_before_subscribe
+                .iter()
+                .map(|n| NodeId::from(n.clone()))
+                .collect(),
+            ready_barrier_released: record.ready_barrier_released,
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
@@ -486,7 +517,9 @@ impl RunningDataflow {
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {
-                result: Ok(ControlRequestReply::DataflowSpawned { uuid: record.uuid }),
+                result: Box::new(Ok(ControlRequestReply::DataflowSpawned {
+                    uuid: record.uuid,
+                })),
             },
             stop_reply_senders: Vec::new(),
             buffered_log_messages: Vec::new(),
@@ -530,6 +563,12 @@ impl RunningDataflow {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             uv: self.uv,
+            ready_barrier_released: self.ready_barrier_released,
+            barrier_exited_before_subscribe: self
+                .exited_before_subscribe
+                .iter()
+                .map(|n| n.to_string())
+                .collect(),
             generation: self.store_generation,
             created_at: self.created_at,
             updated_at: now_millis(),
@@ -541,8 +580,11 @@ pub(crate) enum CachedResult {
     Pending {
         result_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
     },
+    // Boxed because `ControlRequestReply` is large: without the box the
+    // `Cached` variant dwarfs `Pending`, which trips clippy's
+    // `large_enum_variant` on some targets (e.g. Windows) but not others (#2979).
     Cached {
-        result: eyre::Result<ControlRequestReply>,
+        result: Box<eyre::Result<ControlRequestReply>>,
     },
 }
 
@@ -573,7 +615,9 @@ impl CachedResult {
                 for sender in result_senders.drain(..) {
                     Self::send_result_to(&result, sender);
                 }
-                *self = CachedResult::Cached { result };
+                *self = CachedResult::Cached {
+                    result: Box::new(result),
+                };
             }
             CachedResult::Cached { .. } => {}
         }
@@ -592,7 +636,7 @@ impl CachedResult {
     /// the spawn-timeout watchdog (or any other terminal-failure path)
     /// has already marked as failed.
     pub(crate) fn is_terminal_error(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Err(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_err())
     }
 
     /// Returns `true` if a successful result has been cached, i.e. the dataflow
@@ -601,7 +645,7 @@ impl CachedResult {
     /// that are past spawn — spawn-pending ones remain the spawn-timeout
     /// watchdog's domain. See #2028.
     pub(crate) fn is_cached_ok(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Ok(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_ok())
     }
 
     fn send_result_to(

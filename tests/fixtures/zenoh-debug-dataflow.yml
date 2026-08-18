@@ -1,5 +1,5 @@
-# Dataflow with `enable_debug_inspection: true` enabled (previously named
-# `publish_all_messages_to_zenoh`) — required for `dora topic echo`,
+# Dataflow with `enable_debug_inspection: true` enabled — required for
+# `dora topic echo`,
 # `topic info`, and `topic pub` to inspect/inject runtime messages.
 # Used by the nightly TUI smoke job.
 #

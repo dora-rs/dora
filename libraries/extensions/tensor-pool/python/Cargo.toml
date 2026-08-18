@@ -1,0 +1,21 @@
+[package]
+name = "dora-tensor-pool-python"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+documentation.workspace = true
+readme = "../README.md"
+description = "Pinned-host / CUDA tensor-pool transport for dora Python nodes. Opt-in extension — NOT covered by dora's 1.0 compatibility guarantees. See libraries/extensions/tensor-pool/README.md."
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+dora-node-api = { workspace = true }
+dora-message = { workspace = true }
+arrow = { workspace = true, features = ["pyarrow"] }
+eyre = { workspace = true }
+pyo3 = { workspace = true }
+serde_json = { workspace = true }
+shared_memory_extended = "0.13.0"
+tracing = { workspace = true }

@@ -95,7 +95,6 @@ jobs:
           publish_if_not_exists dora-tracing
           publish_if_not_exists dora-metrics
           publish_if_not_exists dora-hub-client
-          publish_if_not_exists dora-memory-pool
 
           # Publish rust API
           publish_if_not_exists dora-operator-api-types
@@ -110,7 +109,11 @@ jobs:
           publish_if_not_exists dora-coordinator
           publish_if_not_exists dora-daemon
           publish_if_not_exists dora-operator-api-python
-          publish_if_not_exists dora-runtime
+          # The former `dora-runtime`, split per language. `dora-cli` depends on
+          # `dora-runtime-shared-lib` (→ `-api`), so both must land first.
+          publish_if_not_exists dora-runtime-api
+          publish_if_not_exists dora-runtime-shared-lib
+          publish_if_not_exists dora-runtime-python
           publish_if_not_exists dora-cli
 
           # Publish ROS2 bridge (before the cxx APIs, which optionally
