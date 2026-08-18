@@ -2250,6 +2250,21 @@ fn extract_node_results(
 }
 
 impl Daemon {
+    /// Release every extension-table entry owned by `node_id`, notifying the
+    /// nodes that read them. Thin wrapper over the free function so the call
+    /// sites do not each repeat the `running` lookup — the exception is the
+    /// clean-exit site, which holds a `&mut self.logger` borrow and so must
+    /// name the disjoint fields itself.
+    fn reclaim_extensions(&mut self, dataflow_id: DataflowId, node_id: &NodeId) {
+        reclaim_extensions_of_exited_node(
+            &mut self.extensions,
+            self.running.get(&dataflow_id),
+            dataflow_id,
+            node_id,
+            &self.clock,
+        );
+    }
+
     /// Runs the daemon. `zenoh_listen_addr` overrides the address this
     /// daemon's zenoh listener binds, and therefore the locator its peers are
     /// told to dial.
@@ -4315,6 +4330,26 @@ impl Daemon {
                     Ok(())
                 })();
 
+                // Reclaim the removed node's extension-table entries. Its
+                // later `SpawnedNodeResult` exit event is swallowed by the
+                // generation guard (the node is already gone from
+                // `running_nodes`), so the reclaim at that call site is
+                // unreachable for a removed node. Without a reclaim here,
+                // repeated dynamic add/remove cycles of an entry-owning node
+                // leak entries toward the per-dataflow cap and readers never
+                // receive the drop notification (dora-rs/dora#3177,
+                // originally #2881/#3014).
+                //
+                // Reclaiming here rather than only on the node's death also
+                // notifies readers promptly, and is the ONLY release for a
+                // node that never reports an exit at all (a dynamic node has
+                // no process handle to wait on). What it does not cover —
+                // stores made during the stop grace window — is picked up by
+                // the second reclaim on the dropped exit event.
+                if result.is_ok() {
+                    self.reclaim_extensions(dataflow_id, &node_id);
+                }
+
                 // Outside the closure because it is async. Why removal
                 // has to drive the barrier at all: see
                 // `PendingNodes::handle_node_removal`.
@@ -4705,6 +4740,19 @@ impl Daemon {
                     // The outgoing (or an even earlier) incarnation's stale
                     // result must not be attributed to the replacement.
                     clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                    // Reclaim the outgoing incarnation's extension-table
+                    // entries. Its exit event is dropped by the generation
+                    // guard, so this is the only reachable point to release
+                    // them (dora-rs/dora#3177, originally #2881/#3014).
+                    //
+                    // Unlike `RemoveNode` this needs no second reclaim on the
+                    // exit event, and it drops only the outgoing incarnation's
+                    // entries: the replacement's higher generation is already
+                    // installed above, and the daemon's event loop is serial,
+                    // so it has not stored anything yet and the outgoing
+                    // incarnation's later stores are dropped as superseded
+                    // (#2926, #2927) instead of landing under the shared id.
+                    self.reclaim_extensions(dataflow_id, &node_id);
                 }
                 let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
@@ -8357,6 +8405,10 @@ impl Daemon {
                     .running
                     .get(&dataflow_id)
                     .and_then(|dataflow| dataflow.running_nodes.get(&node_id));
+                // Nothing owns the id: `RemoveNode` took the entry out, or the
+                // dataflow is gone. A mismatching generation with an entry
+                // still present means a replacement or a re-add owns it now.
+                let node_id_unowned = current_generation.is_none();
                 // Deliberate semantics of the entry-absent case: an exit
                 // arriving after `RemoveNode` took the entry out is dropped
                 // here WITHOUT running the finish accounting below. That
@@ -8377,6 +8429,22 @@ impl Daemon {
                             ),
                         )
                         .await;
+                    // A node removed while alive keeps its daemon connection
+                    // for the whole stop grace window — the node-event guard
+                    // deliberately lets its events through once the entry is
+                    // gone — so it can still store extension entries after
+                    // `RemoveNode`'s eager reclaim. This event is that process
+                    // actually dying: the last chance to release them, and
+                    // without it they would live until dataflow finish, which
+                    // is the accumulation dora-rs/dora#3177 set out to stop.
+                    // Only when nothing owns the id: ownership is keyed by node
+                    // id alone (see `ExtensionTable`), so reclaiming for a
+                    // replacement or a re-add would take the live incarnation's
+                    // entries with it. Idempotent — an already-reclaimed exit
+                    // finds nothing.
+                    if node_id_unowned {
+                        self.reclaim_extensions(dataflow_id, &node_id);
+                    }
                     if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                         dataflow
                             .grace_duration_kills
@@ -8549,6 +8617,8 @@ impl Daemon {
                 // A node that crashed cannot withdraw its own descriptors.
                 // Reclaiming here is the reason the extension table lives in
                 // the daemon at all (dora-rs/dora#2881).
+                // The free function, not the `&mut self` wrapper: `logger`
+                // holds a mutable borrow of `self.logger` across this point.
                 reclaim_extensions_of_exited_node(
                     &mut self.extensions,
                     self.running.get(&dataflow_id),
@@ -12222,6 +12292,51 @@ mod fault_tolerance_tests {
             &mut deadline,
             window
         ));
+    }
+
+    // -- dora#3177: extension entries of removed/replaced nodes --
+
+    fn ext_key(key: &str) -> ExtensionKey {
+        ExtensionKey {
+            dataflow_id: Uuid::nil().to_string(),
+            namespace: "dora-tensor-pool".into(),
+            key: key.into(),
+        }
+    }
+
+    /// The daemon-side half of reclamation, which `extension_table.rs`
+    /// cannot cover: the drop notification actually reaches the reader's
+    /// subscribe channel, so it can release what it derived from the value.
+    /// Every reclaim call site — `RemoveNode`, `ReplaceNode`, and both exit
+    /// paths — goes through this.
+    #[test]
+    fn reclaim_drops_owned_entries_and_notifies_readers() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let owner: NodeId = "owner".to_string().into();
+        let reader: NodeId = "reader".to_string().into();
+
+        let mut extensions = ExtensionTable::new();
+        extensions
+            .store(ext_key("pool_owner_1"), b"descriptor".to_vec(), &owner)
+            .unwrap();
+        extensions.load(&ext_key("pool_owner_1"), &reader).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(reader.clone(), tx);
+
+        reclaim_extensions_of_exited_node(&mut extensions, Some(&df), Uuid::nil(), &owner, &clock);
+
+        assert_eq!(extensions.len(), 0, "the owner's entry must be gone");
+        let events = drain_events(&mut rx);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [NodeEvent::ExtensionDropped { namespace, key }]
+                    if namespace == "dora-tensor-pool" && key == "pool_owner_1"
+            ),
+            "reader must be notified exactly once: {events:?}"
+        );
     }
 }
 

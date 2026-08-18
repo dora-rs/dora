@@ -32,6 +32,15 @@ pub struct ExtensionKey {
 struct Entry {
     value: Vec<u8>,
     /// The node that stored it. Its exit reclaims the entry.
+    ///
+    /// A bare id, not (id, incarnation): a node that is removed and re-added
+    /// under the same id inherits whatever its predecessor stored, because
+    /// the daemon cannot tell the two apart here. That costs the removed
+    /// incarnation's stop-grace-window entries their prompt release — they
+    /// live until dataflow finish (dora-rs/dora#3177). Making ownership
+    /// generation-aware would close it; it needs the storing incarnation's
+    /// generation threaded down to `store`, which the daemon drops before
+    /// the `ExtensionStore` arm today.
     owner: NodeId,
     /// Everyone who stored or loaded it, and so must be told when it is
     /// dropped. Includes the owner.
