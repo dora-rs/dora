@@ -12,10 +12,6 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-# Opt-in: reclaim orphaned tensor-pool shared-memory segments left by a
-# crashed node. Outside the 1.0 guarantees — see
-# libraries/extensions/tensor-pool/README.md.
-tensor-pool = ["dep:dora-tensor-pool"]
 default = ["tracing", "telemetry"]
 tracing = ["dep:dora-tracing"]
 bench = []
@@ -24,7 +20,7 @@ bench = []
 telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
-dora-tensor-pool = { workspace = true, optional = true }
+dora-tensor-pool = { workspace = true }
 eyre = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }

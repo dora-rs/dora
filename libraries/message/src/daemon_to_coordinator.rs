@@ -23,6 +23,10 @@ pub enum CoordinatorRequest {
         daemon_id: DaemonId,
         event: DaemonEvent,
     },
+    /// Resolve a machine id to a registered daemon (cross-machine pools).
+    ResolveMachine {
+        machine_id: String,
+    },
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]

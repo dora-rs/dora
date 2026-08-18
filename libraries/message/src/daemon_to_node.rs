@@ -101,6 +101,27 @@ pub enum DaemonReply {
         value: Option<Vec<u8>>,
     },
     Empty,
+    /// Result of a cross-machine pool registration. `Err` carries the
+    /// warning message (resolution failure or remote creation failure) —
+    /// the register is a warn-and-no-op in both cases. `direct` tells the
+    /// node whether the remote daemon can open its segment directly
+    /// (same host): when true, the per-frame data push is skipped.
+    ///
+    /// Appended last so existing variants keep their bincode indices: the
+    /// Python node API ships separately (PyPI) from the daemon, so a
+    /// mixed-version pair must not misdecode older replies.
+    CrossMachinePoolRegistered {
+        result: Result<(), String>,
+        direct: bool,
+    },
+    /// Reply to [`DaemonRequest::ReadPinnedMemory`]. Appended last for the
+    /// same reason as [`DaemonReply::CrossMachinePoolRegistered`]: the
+    /// enum is encoded by variant index, and a mid-enum insertion would
+    /// shift the wire indices of `ExtensionValue`/`Empty` for version-
+    /// skewed node/daemon pairs (the Python node API ships separately).
+    PinnedMemoryMetadata {
+        metadata: Metadata,
+    },
 }
 
 impl DaemonReply {
@@ -121,6 +142,8 @@ impl DaemonReply {
             // its own length is the whole hint.
             DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
             DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
+            DaemonReply::PinnedMemoryMetadata { metadata } => metadata.parameters.len(),
+            DaemonReply::CrossMachinePoolRegistered { .. } => 0,
         }
     }
 }

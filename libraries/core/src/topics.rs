@@ -756,6 +756,13 @@ pub fn zenoh_daemon_control_topic(
     format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
 }
 
+/// Zenoh topic for cross-machine memory pool data forwarding.
+/// All daemons in the dataflow subscribe to this topic.
+pub fn dataflow_memory_pool_topic(dataflow_id: &uuid::Uuid) -> String {
+    let network_id = "default";
+    format!("dora/{network_id}/{dataflow_id}/memory-pool")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

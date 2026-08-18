@@ -223,10 +223,15 @@ pub fn parse_jsonl_line(line: &str) -> Option<LogMessage> {
         .and_then(|l| l.as_str())
         .and_then(|s| parse_log_level_str(s).ok())
         .unwrap_or(LogLevelOrStdout::Stdout);
+    // Parse fallibly: `NodeId::from` panics on any id that fails validation,
+    // and this input is untrusted -- it comes from a log file that may have
+    // been written by an older dora version (whose id rules were laxer) or by
+    // an external producer. A malformed id degrades to `None` (rendered as the
+    // default node label) instead of aborting the whole `dora logs` command.
     let node_id = v
         .get("node")
         .and_then(|n| n.as_str())
-        .map(|s| dora_message::id::NodeId::from(s.to_string()));
+        .and_then(|s| s.parse::<dora_message::id::NodeId>().ok());
     let message = v
         .get("msg")
         .and_then(|m| m.as_str())
@@ -404,7 +409,7 @@ mod tests {
     fn rendered_rest(msg: LogMessage, config: &LogOutputConfig) -> String {
         colored::control::set_override(false);
         let line = format_pretty_line(&msg, config);
-        line.splitn(2, ' ').nth(1).unwrap().to_string()
+        line.split_once(' ').unwrap().1.to_string()
     }
 
     #[test]
@@ -581,6 +586,27 @@ mod tests {
         let line = r#"{"ts":"2025-01-01T00:00:00Z","level":"bogus","msg":"hi"}"#;
         let msg = parse_jsonl_line(line).unwrap();
         assert!(matches!(msg.level, LogLevelOrStdout::Stdout));
+    }
+
+    #[test]
+    fn parse_jsonl_invalid_node_id_does_not_panic() {
+        // Log files written by an older dora (or by an external producer) can
+        // carry a node id that today's `validate_node_id` rejects -- notably
+        // the now-reserved `dora`. Parsing must degrade to `node_id: None`
+        // rather than panicking, which would abort the whole `dora logs` run
+        // on a single bad line.
+        for node in ["dora", "bad id", "node/out", ".hidden", ""] {
+            let line = format!(
+                r#"{{"ts":"2025-01-01T00:00:00Z","level":"info","node":"{node}","msg":"hello"}}"#
+            );
+            let msg = parse_jsonl_line(&line)
+                .unwrap_or_else(|| panic!("line with node `{node}` should still parse"));
+            assert_eq!(msg.message, "hello");
+            assert!(
+                msg.node_id.is_none(),
+                "invalid node id `{node}` must not yield a NodeId"
+            );
+        }
     }
 
     #[test]

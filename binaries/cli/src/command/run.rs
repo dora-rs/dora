@@ -290,6 +290,7 @@ impl Executable for Run {
         let exit_when_nodes_finish = self.exit_when_nodes_finish;
         let handle = rt.spawn(async move {
             Daemon::run_dataflow_with(
+                None,
                 &dataflow_path_for_daemon,
                 dataflow_session.build_id,
                 dataflow_session.local_build,
