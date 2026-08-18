@@ -30,7 +30,8 @@ pub struct Stop {
     /// Specifically, it does the following:
     /// 1. Sends `Event::Stop` to all nodes of the dataflow.
     /// 2. After DURATION, performs a soft kill (sending SIGTERM, or Ctrl-Break on Windows).
-    /// 3. If the dataflow is still running after DURATION * 0.5, terminates all its processes.
+    /// 3. If the dataflow is still running after a further DURATION / 2 (i.e. DURATION * 1.5 in
+    ///    total), forcibly terminates (SIGKILL) all its processes.
     #[clap(
         long,
         value_name = "DURATION",

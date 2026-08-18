@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{ByteSize, CommunicationConfig, Input, NodeRunConfig},
+    config::{ByteSize, Input, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -40,7 +40,6 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///
 /// A dataflow consists of:
 /// - **Nodes**: The computational units that process data
-/// - **Communication**: Optional communication configuration
 /// - **Deployment**: Optional deployment configuration (unstable)
 /// - **Debug options**: Optional development and debugging settings (unstable)
 ///
@@ -85,11 +84,6 @@ pub struct Descriptor {
     /// For each node, you need to specify the `path` of the executable or script that Dora should run when starting the node.
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
-
-    /// Communication configuration (optional, uses defaults)
-    #[schemars(skip)]
-    #[serde(default)]
-    pub communication: CommunicationConfig,
 
     /// Deployment configuration (optional, unstable)
     #[schemars(skip)]
@@ -243,16 +237,12 @@ pub enum DistributeStrategy {
 
 /// Debug options for dataflow development and troubleshooting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Debug {
     /// When true, daemons mirror every node output to the coordinator WebSocket
     /// so that `dora topic echo`, `dora topic hz`, and `dora topic info` can
     /// inspect runtime messages.
-    ///
-    /// The field was previously named `publish_all_messages_to_zenoh` (from
-    /// before the CLI inspection path moved off zenoh in PR #238). Serde still
-    /// accepts the old name as an alias for backward compatibility with
-    /// existing dataflow YAML; the alias will be removed in a future release.
-    #[serde(default, alias = "publish_all_messages_to_zenoh")]
+    #[serde(default)]
     pub enable_debug_inspection: bool,
 }
 
@@ -442,12 +432,6 @@ pub struct Node {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ros2: Option<Ros2BridgeConfig>,
-
-    /// Legacy node configuration (deprecated).
-    ///
-    /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom: Option<CustomNode>,
 
     /// Output data identifiers produced by this node.
     ///
@@ -1089,6 +1073,28 @@ impl From<PythonSourceDef> for PythonSource {
     }
 }
 
+/// Built-in runtime name for shared-library operators.
+pub const RUNTIME_SHARED_LIBRARY: &str = "shared-library";
+/// Built-in runtime name for Python operators.
+pub const RUNTIME_PYTHON: &str = "python";
+/// Built-in runtime name for WebAssembly operators.
+pub const RUNTIME_WASM: &str = "wasm";
+
+impl OperatorSource {
+    /// The name of the runtime that hosts operators declared with this source.
+    ///
+    /// This mapping is the single source of truth for "which runtime hosts this
+    /// operator": the daemon's spawn logic and the CLI's build hashing key on
+    /// the name rather than matching each variant.
+    pub fn runtime_name(&self) -> &'static str {
+        match self {
+            OperatorSource::SharedLibrary(_) => RUNTIME_SHARED_LIBRARY,
+            OperatorSource::Python(_) => RUNTIME_PYTHON,
+            OperatorSource::Wasm(_) => RUNTIME_WASM,
+        }
+    }
+}
+
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct CustomNode {
@@ -1112,9 +1118,11 @@ pub struct CustomNode {
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    /// Environment variables for the custom nodes
+    /// Environment variables injected during resolution.
     ///
-    /// Deprecated, use outer-level `env` field instead.
+    /// Not user-writable: [`Node::env`] is the YAML surface. Resolution folds
+    /// it into this field, and the ROS2 bridge desugaring uses it to pass
+    /// `DORA_ROS2_BRIDGE_CONFIG` to the spawned bridge binary.
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
@@ -1537,10 +1545,13 @@ _unstable_debug:
     }
 
     #[test]
-    fn debug_flag_accepts_legacy_alias() {
-        // Backward-compat regression guard (#240): dataflow YAML in the wild
-        // still uses `publish_all_messages_to_zenoh`. The serde alias must
-        // keep deserializing that into the renamed field.
+    fn debug_flag_rejects_the_removed_legacy_alias() {
+        // The `publish_all_messages_to_zenoh` alias was removed for 1.0. It
+        // must *error* rather than deserialize to the default: silently
+        // ignoring it would leave debug inspection off while the dataflow
+        // looks like it enabled it, and `dora topic echo` would return
+        // nothing with no explanation. `deny_unknown_fields` on `Debug` is
+        // what turns that into a diagnosable failure.
         let yaml = r#"
 nodes:
   - id: test
@@ -1548,7 +1559,59 @@ nodes:
 _unstable_debug:
   publish_all_messages_to_zenoh: true
 "#;
-        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
-        assert!(desc.debug.enable_debug_inspection);
+        let err = serde_yaml::from_str::<Descriptor>(yaml)
+            .expect_err("removed alias must be rejected, not silently ignored");
+        assert!(
+            err.to_string().contains("publish_all_messages_to_zenoh"),
+            "error should name the offending field, got: {err}"
+        );
+    }
+
+    #[test]
+    fn operator_source_shared_library_names_its_runtime() {
+        let cfg: OperatorConfig = serde_yaml::from_str("shared-library: build/op").unwrap();
+        assert!(matches!(&cfg.source, OperatorSource::SharedLibrary(s) if s == "build/op"));
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_SHARED_LIBRARY);
+        assert_eq!(cfg.source.runtime_name(), "shared-library");
+    }
+
+    #[test]
+    fn operator_source_python_source_only_names_its_runtime() {
+        let cfg: OperatorConfig = serde_yaml::from_str("python: op.py").unwrap();
+        assert!(matches!(&cfg.source, OperatorSource::Python(py) if py.source == "op.py"));
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_PYTHON);
+    }
+
+    #[test]
+    fn operator_source_python_with_conda_env_names_its_runtime() {
+        let cfg: OperatorConfig =
+            serde_yaml::from_str("python:\n  source: op.py\n  conda_env: my-env").unwrap();
+        match &cfg.source {
+            OperatorSource::Python(py) => {
+                assert_eq!(py.source, "op.py");
+                assert_eq!(py.conda_env.as_deref(), Some("my-env"));
+            }
+            other => panic!("expected python source, got {other:?}"),
+        }
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_PYTHON);
+    }
+
+    #[test]
+    fn operator_source_wasm_names_its_runtime() {
+        let cfg: OperatorConfig = serde_yaml::from_str("wasm: op.wasm").unwrap();
+        assert!(matches!(&cfg.source, OperatorSource::Wasm(s) if s == "op.wasm"));
+        assert_eq!(cfg.source.runtime_name(), RUNTIME_WASM);
+    }
+
+    /// The runtime a node is spawned with must survive a descriptor round-trip:
+    /// the daemon re-parses the serialized descriptor before spawning.
+    #[test]
+    fn operator_source_runtime_survives_a_serde_roundtrip() {
+        for yaml in ["shared-library: build/op", "python: op.py", "wasm: op.wasm"] {
+            let cfg: OperatorConfig = serde_yaml::from_str(yaml).unwrap();
+            let serialized = serde_yaml::to_string(&cfg).unwrap();
+            let reparsed: OperatorConfig = serde_yaml::from_str(&serialized).unwrap();
+            assert_eq!(cfg.source.runtime_name(), reparsed.source.runtime_name());
+        }
     }
 }

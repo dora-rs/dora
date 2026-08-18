@@ -147,16 +147,53 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: metadata::Metadata,
+    ExtensionStore {
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    ReadPinnedMemory {
-        shared_memory_id: String,
-        free: bool,
+    ExtensionLoad {
+        namespace: String,
+        key: String,
+        remove: bool,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    ExtensionDrop {
+        namespace: String,
+        key: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    /// Write tensor data to a memory pool, with cross-machine forwarding.
+    /// The daemon serialises the payload and pushes it to remote daemons
+    /// via Zenoh so the mirror pool can be updated in place.
+    WriteMemoryPool {
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    /// Register a memory pool on another machine: resolve the target
+    /// machine through the coordinator, publish `RegisterPool` over the
+    /// memory-pool topic, and await the remote `RegisterPoolAck` before
+    /// replying (synchronous cross-machine register).
+    RegisterCrossMachinePool {
+        shared_memory_id: String,
+        /// The sender's local segment name — forwarded to the mirror
+        /// daemon so same-host readers can open it directly.
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    /// Release a (possibly cross-machine) memory pool. Cross-machine pools
+    /// get their tracking entry removed and a targeted `FreePool` published
+    /// to the peer; the local /dev/shm mirror is unlinked. Local-only
+    /// pools (table managed by the node-side tensor-pool extension) are
+    /// simply acknowledged.
     FreePinnedMemory {
         shared_memory_id: String,
         reply_sender: oneshot::Sender<DaemonReply>,

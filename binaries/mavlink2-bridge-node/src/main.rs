@@ -97,20 +97,29 @@ const READER_SHUTDOWN_POLL: Duration = Duration::from_millis(20);
 /// budgeted retry rather than a one-shot connect.
 const CONNECT_RETRY_BUDGET: Duration = Duration::from_secs(5);
 const CONNECT_RETRY_INTERVAL: Duration = Duration::from_millis(100);
-/// Minimum gap between `recv`-error warnings. mavlink-core 0.18's TCP
-/// transport returns `Err(WouldBlock)` every ~100 ms on a silent peer,
-/// so without rate-limiting a transient (or even a fatal, pre-fix) link
-/// would emit ~10 warns/second. We log at most one warning per this
-/// interval so a flaky or dead link doesn't flood the logs.
+/// Minimum gap between `recv`-error warnings. Routine read timeouts
+/// (`WouldBlock`/`TimedOut`) are classified `Silent` and never logged, so
+/// this only rate-limits genuine anomalies (`RecvDisposition::Transient`:
+/// corrupt frames, datagram I/O errors). A peer spraying garbage frames could
+/// still emit one per read otherwise, so we log at most one warning per
+/// interval to keep the logs readable.
 const RECV_WARN_INTERVAL: Duration = Duration::from_secs(5);
 
 /// How `run_reader` should react to an error returned by `conn.recv()`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecvDisposition {
-    /// "No data yet" — a socket read timeout (`WouldBlock`/`TimedOut`),
-    /// an interrupted syscall, or a single corrupt frame on an
-    /// otherwise-live link. The reader keeps looping; the connection is
-    /// still usable.
+    /// "No data yet" — a socket read timeout (`WouldBlock`/`TimedOut`) or an
+    /// interrupted syscall on an otherwise-live link. This is the *routine*
+    /// path: mavlink-core 0.18's TCP transport returns `Err(WouldBlock)` every
+    /// ~100 ms read timeout whenever a frame isn't ready, so on a healthy but
+    /// low-rate link (e.g. a 1 Hz HEARTBEAT) it fires several times a second.
+    /// The reader keeps looping *without* logging — there is nothing wrong.
+    Silent,
+    /// A recoverable anomaly worth noting — a single corrupt/garbled frame
+    /// (CRC mismatch, unknown id, bad enum) or a transient datagram I/O error
+    /// (e.g. an ICMP port-unreachable from a restarting peer). The connection
+    /// is still usable, so the reader keeps looping, but it logs the error
+    /// (rate-limited) because, unlike a routine read timeout, it is unexpected.
     Transient,
     /// "Connection dead" — a fatal I/O error such as `UnexpectedEof`
     /// (peer closed the socket), `ConnectionReset`, or `BrokenPipe`.
@@ -143,17 +152,29 @@ fn classify_recv_error(err: &MessageReadError, datagram: bool) -> RecvDispositio
         // mismatch, unknown id, bad enum). The link is still alive, so
         // skip the bad frame and keep reading.
         MessageReadError::Parse(_) => RecvDisposition::Transient,
-        MessageReadError::Io(_) if datagram => RecvDisposition::Transient,
         MessageReadError::Io(io_err) => match io_err.kind() {
+            // Routine "no data yet" on a live link — never log these, or a
+            // perfectly healthy connection warns forever (dora-rs#2034 fixed
+            // the fatal-vs-transient split; this keeps the transient path
+            // quiet on the common case).
             std::io::ErrorKind::WouldBlock
             | std::io::ErrorKind::TimedOut
-            | std::io::ErrorKind::Interrupted => RecvDisposition::Transient,
+            | std::io::ErrorKind::Interrupted => RecvDisposition::Silent,
+            // A datagram socket has no connection that can die, so any other
+            // I/O error is ridden out — but it is a genuine anomaly, so log it.
+            _ if datagram => RecvDisposition::Transient,
             _ => RecvDisposition::Fatal,
         },
     }
 }
 
+/// `deny_unknown_fields` turns a mistyped key into a hard parse error rather
+/// than silently ignoring it and falling back to the default. Without it,
+/// `systemid: 10` (missing underscore) is dropped and the node quietly runs
+/// with `system_id = 255`; a `MAVLINK_BRIDGE_CONFIG` typo would otherwise
+/// misconfigure the bridge with no diagnostic.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Config {
     endpoint: String,
     #[serde(default = "default_system_id")]
@@ -274,10 +295,15 @@ fn run_reader(
                         // with a link that will never recover.
                         return Err(eyre!("mavlink connection lost: {e}"));
                     }
+                    RecvDisposition::Silent => {
+                        // Routine "no data yet" (read timeout / interrupted
+                        // syscall) on a live link. Keep looping without
+                        // logging — warning here would spam a healthy link.
+                    }
                     RecvDisposition::Transient => {
-                        // "No data yet" (read timeout) or a single
-                        // corrupt frame. Keep looping quietly; rate-limit
-                        // the warn so a chatty-but-live link can't flood.
+                        // A recoverable anomaly (corrupt frame, or a datagram
+                        // I/O error). Keep looping, but log it — rate-limited
+                        // so a peer spraying garbage can't flood the logs.
                         let now = Instant::now();
                         let should_warn = last_warn
                             .is_none_or(|prev| now.duration_since(prev) >= RECV_WARN_INTERVAL);
@@ -806,29 +832,40 @@ mod tests {
     }
 
     #[test]
-    fn would_block_is_transient() {
-        // TCP's 100 ms socket read timeout surfaces as WouldBlock; this
-        // is the normal "silent peer, no data yet" path and must NOT be
-        // treated as a dead link.
+    fn would_block_is_silent() {
+        // TCP's 100 ms socket read timeout surfaces as WouldBlock; this is the
+        // normal "silent peer, no data yet" path. It must NOT be treated as a
+        // dead link, and must NOT be logged (a healthy low-rate link produces
+        // several of these per second — warning on them spams the log).
         assert_eq!(
             classify_recv_error(&io(std::io::ErrorKind::WouldBlock), false),
-            RecvDisposition::Transient
+            RecvDisposition::Silent
         );
     }
 
     #[test]
-    fn timed_out_is_transient() {
+    fn timed_out_is_silent() {
         assert_eq!(
             classify_recv_error(&io(std::io::ErrorKind::TimedOut), false),
-            RecvDisposition::Transient
+            RecvDisposition::Silent
         );
     }
 
     #[test]
-    fn interrupted_is_transient() {
+    fn interrupted_is_silent() {
         assert_eq!(
             classify_recv_error(&io(std::io::ErrorKind::Interrupted), false),
-            RecvDisposition::Transient
+            RecvDisposition::Silent
+        );
+    }
+
+    #[test]
+    fn datagram_read_timeout_is_silent() {
+        // Even on a datagram socket, a routine read timeout is "no data yet",
+        // not an anomaly worth logging.
+        assert_eq!(
+            classify_recv_error(&io(std::io::ErrorKind::WouldBlock), true),
+            RecvDisposition::Silent
         );
     }
 
@@ -1028,6 +1065,28 @@ mod tests {
         assert!(
             msg.contains("nullable") || msg.contains("null"),
             "error must mention null rows, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn config_parses_minimal_and_applies_defaults() {
+        let cfg: Config = serde_yaml::from_str("endpoint: udp://127.0.0.1:14550").unwrap();
+        assert_eq!(cfg.endpoint, "udp://127.0.0.1:14550");
+        assert_eq!(cfg.system_id, default_system_id());
+        assert_eq!(cfg.component_id, default_component_id());
+    }
+
+    #[test]
+    fn config_rejects_unknown_field() {
+        // A mistyped key (`systemid` instead of `system_id`) must be a hard
+        // error, not silently ignored — otherwise the node would run with the
+        // default system_id (255) and no diagnostic.
+        let err = serde_yaml::from_str::<Config>("endpoint: udp://127.0.0.1:14550\nsystemid: 10")
+            .expect_err("unknown config key must be rejected");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("systemid") || msg.contains("unknown field"),
+            "error should name the unknown field, got: {msg}"
         );
     }
 }
