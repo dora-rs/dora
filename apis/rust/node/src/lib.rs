@@ -112,7 +112,26 @@ pub use arrow58 as arrow_v58;
 // Arrow-typed, semver-exempt seam for dora's own crates and must not become
 // reachable through the frozen `dora-node-api` surface.
 pub use dora_arrow_convert::{DoraArray, IntoArrow, into_vec};
-pub use dora_core::{self, uhlc};
+pub use dora_core::uhlc;
+
+/// The subset of [`dora_core`] that is part of dora's public API.
+///
+/// Deliberately not `pub use dora_core::self`. Re-exporting the whole crate
+/// froze `dora_core`'s descriptor, topics, build, manifest and type-registry
+/// surface into dora's 1.0 guarantee, none of which a node needs — the only
+/// items reached through this path anywhere are the three id types below and
+/// `uhlc`, which is re-exported at the crate root.
+///
+/// The `config` path is preserved verbatim because
+/// `dora_node_api::dora_core::config::DataId` is what `dora new` scaffolds and
+/// what the Rust API reference documents.
+pub mod dora_core {
+    /// Identifier types used in node and dataflow configuration.
+    pub mod config {
+        pub use dora_core::config::{DataId, NodeId, OperatorId};
+    }
+    pub use dora_core::uhlc;
+}
 pub use dora_message::{
     DataflowId,
     metadata::{
