@@ -2135,30 +2135,36 @@ async fn start_inner(
                     expire_stopped_nodes(dataflow);
                 }
                 let mut disconnected = BTreeSet::new();
+                // Send the per-daemon heartbeats concurrently rather than
+                // awaiting each 500 ms-bounded send in turn. Each send awaits a
+                // bounded WS mpsc, so a single backpressured (slow/half-dead but
+                // not yet 30 s-stale) daemon would otherwise stall this control
+                // loop for up to 500 ms before the next daemon is even tried —
+                // and N such daemons stall it for N × 500 ms, delaying every
+                // spawn/stop/logs request. `join_all` bounds the whole tick at
+                // ~500 ms regardless of daemon count. Mirrors `destroy_daemons`.
+                let mut heartbeats = Vec::new();
                 for (machine_id, connection) in daemon_connections.iter_mut() {
-                    if connection.last_heartbeat.elapsed() > Duration::from_secs(15) {
+                    let elapsed = connection.last_heartbeat.elapsed();
+                    if elapsed > Duration::from_secs(15) {
                         tracing::warn!(
-                            "no heartbeat message from machine `{machine_id}` since {:?}",
-                            connection.last_heartbeat.elapsed()
+                            "no heartbeat message from machine `{machine_id}` since {elapsed:?}"
                         )
                     }
-                    if connection.last_heartbeat.elapsed() > Duration::from_secs(30) {
+                    if elapsed > Duration::from_secs(30) {
                         disconnected.insert(machine_id.clone());
                         continue;
                     }
-                    let result: eyre::Result<()> = tokio::time::timeout(
-                        Duration::from_millis(500),
-                        send_heartbeat_message(connection, clock.new_timestamp()),
-                    )
-                    .await
-                    .wrap_err("timeout")
-                    .and_then(|r| r)
-                    .wrap_err_with(|| {
-                        format!("failed to send heartbeat message to daemon at `{machine_id}`")
-                    });
+                    heartbeats.push(send_heartbeat_with_timeout(
+                        machine_id.clone(),
+                        connection,
+                        clock.new_timestamp(),
+                    ));
+                }
+                for (machine_id, result) in join_all(heartbeats).await {
                     if let Err(err) = result {
                         tracing::warn!("{err:?}");
-                        disconnected.insert(machine_id.clone());
+                        disconnected.insert(machine_id);
                     }
                 }
                 if !disconnected.is_empty() {
@@ -3104,6 +3110,25 @@ fn handle_spawn_result_ok(
             tracing::warn!("failed to persist dataflow running: {e}");
         }
     }
+}
+
+/// Send one heartbeat to `connection` with a 500 ms deadline, tagging the
+/// result with `machine_id` so the watchdog can act on failures after awaiting
+/// many of these concurrently via `join_all`.
+async fn send_heartbeat_with_timeout(
+    machine_id: DaemonId,
+    connection: &mut crate::state::DaemonConnection,
+    timestamp: dora_core::uhlc::Timestamp,
+) -> (DaemonId, eyre::Result<()>) {
+    let result = tokio::time::timeout(
+        Duration::from_millis(500),
+        send_heartbeat_message(connection, timestamp),
+    )
+    .await
+    .wrap_err("timeout")
+    .and_then(|r| r)
+    .wrap_err_with(|| format!("failed to send heartbeat message to daemon at `{machine_id}`"));
+    (machine_id, result)
 }
 
 /// Handle the failure arm of `Event::DataflowSpawnResult`.
