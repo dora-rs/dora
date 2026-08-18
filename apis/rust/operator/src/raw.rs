@@ -1,9 +1,28 @@
+//! Low-level FFI entry points backing the [`register_operator!`] macro.
+//!
+//! [`register_operator!`] generates the three `extern "C"` shims the dora
+//! runtime calls — `dora_init_operator`, `dora_drop_operator`, and
+//! `dora_on_event` — and forwards each to the matching function here,
+//! monomorphized for the user's operator type. These functions are `unsafe`
+//! because they move ownership of the operator across the C ABI boundary as a
+//! raw `*mut c_void`; user code should never call them directly.
+//!
+//! [`register_operator!`]: crate::register_operator
+
 use crate::{DoraOperator, DoraOutputSender, DoraStatus, Event};
 use dora_operator_api_types::{
     DoraInitResult, DoraResult, OnEventResult, RawEvent, SendOutput, arrow,
 };
 use std::ffi::c_void;
 
+/// Construct the operator (`O::default()`), box it, and hand ownership back to
+/// the runtime as an opaque `operator_context` pointer.
+///
+/// # Safety
+///
+/// The returned `operator_context` points to a leaked `Box<O>`. The caller must
+/// eventually pass it to [`dora_drop_operator::<O>`] exactly once (with the same
+/// `O`) to reclaim it, and must not use it after that.
 pub unsafe fn dora_init_operator<O: DoraOperator>() -> DoraInitResult {
     let operator: O = Default::default();
     let ptr: *mut O = Box::leak(Box::new(operator));
@@ -14,12 +33,30 @@ pub unsafe fn dora_init_operator<O: DoraOperator>() -> DoraInitResult {
     }
 }
 
+/// Reclaim and drop the operator behind `operator_context`.
+///
+/// # Safety
+///
+/// `operator_context` must be a pointer previously returned by
+/// [`dora_init_operator::<O>`] for the same `O`, and must not have been dropped
+/// already. After this call the pointer is dangling and must not be reused.
 pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) -> DoraResult {
     let raw: *mut O = operator_context.cast();
     drop(unsafe { Box::from_raw(raw) });
     DoraResult { error: None }
 }
 
+/// Dispatch one runtime event to the operator's [`DoraOperator::on_event`].
+///
+/// A panic in the user's `on_event` is caught and reported as an operator error
+/// (with `DoraStatus::Stop`) rather than being allowed to unwind across the C
+/// ABI boundary, which would abort the process.
+///
+/// # Safety
+///
+/// `operator_context` must be a valid pointer returned by
+/// [`dora_init_operator::<O>`] for the same `O` and not yet dropped. `event` and
+/// `send_output` must be valid for the duration of the call.
 pub unsafe fn dora_on_event<O: DoraOperator>(
     event: &mut RawEvent,
     send_output: &SendOutput,

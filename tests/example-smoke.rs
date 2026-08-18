@@ -1934,7 +1934,7 @@ fn smoke_shell_node_blocked_without_flag() {
 fn smoke_memory_pool_cpu2cpu() {
     run_smoke_test(
         "memory-pool-cpu2cpu",
-        "examples/memory-pool/cpu2cpu.yml",
+        "libraries/extensions/tensor-pool/examples/cpu2cpu.yml",
         Duration::from_secs(60),
     );
 }
@@ -1944,8 +1944,205 @@ fn smoke_memory_pool_cpu2cpu() {
 fn smoke_local_memory_pool_cpu2cpu() {
     run_smoke_test_local(
         "local-memory-pool-cpu2cpu",
-        "examples/memory-pool/cpu2cpu.yml",
+        "libraries/extensions/tensor-pool/examples/cpu2cpu.yml",
         60,
+    );
+}
+
+// Same-host cross-daemon memory-pool example: needs two daemons
+// (machine A and B), so it uses a dedicated harness instead of
+// `dora up` (which starts a single daemon). The four true
+// cross-machine examples (`*_cross.yml`) require two hosts and are
+// intentionally not smoke-tested on CI.
+#[test]
+#[ignore = "requires `torch` and `tqdm` (not in standard CI)"]
+fn smoke_local_memory_pool_cpu2cpu_cross_local() {
+    run_cross_local_smoke_test(
+        "local-memory-pool-cpu2cpu-cross-local",
+        "libraries/extensions/tensor-pool/examples/cpu2cpu_cross_local.yml",
+        Duration::from_secs(150),
+    );
+}
+
+/// Start a coordinator plus two same-host daemons (machine A and B),
+/// run the dataflow with `dora start --attach`, and wait for the
+/// receiver's throughput line. Cleans up every child process on both
+/// success and failure.
+fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
+    use std::net::TcpListener;
+
+    ensure_cli_built();
+
+    let dora = dora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let full_yaml = Path::new(manifest_dir).join(yaml_path);
+    assert!(
+        full_yaml.exists(),
+        "{name}: dataflow YAML not found at {full_yaml:?}"
+    );
+
+    let uv = needs_uv(&full_yaml);
+
+    // Pick free ports for the coordinator and the daemons' zenoh peer.
+    let coordinator_port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("pick coordinator port");
+    let zenoh_port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("pick zenoh port");
+
+    let tmp = std::env::temp_dir().join(format!("{name}-{coordinator_port}"));
+    std::fs::create_dir_all(&tmp).expect("create smoke tmp dir");
+
+    // A stale session file from a previous local build would make
+    // `dora start` reject the dataflow ("built locally"); start clean.
+    let _ = std::fs::remove_file(Path::new(manifest_dir).join(
+        "libraries/extensions/tensor-pool/examples/out/cpu2cpu_cross_local.dora-session.yaml",
+    ));
+
+    let mut children: Vec<std::process::Child> = Vec::new();
+    fn cleanup(children: &mut Vec<std::process::Child>, tmp: &std::path::Path) {
+        for child in children {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+        let _ = std::fs::remove_dir_all(tmp);
+    }
+
+    // Coordinator.
+    let coordinator_log = tmp.join("coordinator.log");
+    let coordinator = Command::new(&dora)
+        .args([
+            "coordinator",
+            "--interface",
+            "127.0.0.1",
+            "--port",
+            &coordinator_port.to_string(),
+            "--store",
+            "memory",
+        ])
+        .stdout(Stdio::from(
+            std::fs::File::create(&coordinator_log).unwrap(),
+        ))
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap_or_else(|e| panic!("{name}: failed to spawn coordinator: {e}"));
+    children.push(coordinator);
+    std::thread::sleep(Duration::from_secs(2));
+
+    // Daemon A (listens on the zenoh peer port) and daemon B (dials it).
+    // Each daemon also gets an explicit local listen port: two daemons on
+    // one host would otherwise pick the same default and collide.
+    let mut local_listen_port = TcpListener::bind("127.0.0.1:0")
+        .and_then(|l| l.local_addr())
+        .map(|a| a.port())
+        .expect("pick local listen port");
+    for (machine, dial) in [
+        ("A", format!("tcp/0.0.0.0:{zenoh_port}")),
+        ("B", format!("tcp/127.0.0.1:{zenoh_port}")),
+    ] {
+        let listen_port = local_listen_port;
+        local_listen_port += 1;
+        let log = tmp.join(format!("daemon-{machine}.log"));
+        // The yml's `working_dir: .` is relative to
+        // the daemon's cwd (the repo root, per the multiple-daemons
+        // convention), so the daemons run from the test's cwd.
+        let daemon = Command::new(&dora)
+            .args([
+                "daemon",
+                "--machine-id",
+                machine,
+                "--coordinator-addr",
+                "127.0.0.1",
+                "--coordinator-port",
+                &coordinator_port.to_string(),
+                "--zenoh-peer",
+                &dial,
+                "--local-listen-port",
+                &listen_port.to_string(),
+            ])
+            .stdout(Stdio::from(std::fs::File::create(&log).unwrap()))
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap_or_else(|e| panic!("{name}: failed to spawn daemon {machine}: {e}"));
+        children.push(daemon);
+        std::thread::sleep(Duration::from_secs(2));
+    }
+
+    // Cross-machine deploys must be built through the coordinator: a local
+    // build cannot be used by remote daemons.
+    let mut build_cmd = Command::new(&dora);
+    build_cmd.args([
+        "build",
+        full_yaml.to_str().unwrap(),
+        "--coordinator-port",
+        &coordinator_port.to_string(),
+    ]);
+    if uv {
+        build_cmd.arg("--uv");
+    }
+    let build_status = build_cmd
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .unwrap_or_else(|e| panic!("{name}: failed to run dora build: {e}"));
+    assert!(build_status.success(), "{name}: dora build failed");
+
+    // Start the dataflow attached and poll for the receiver's marker.
+    let attach_log = tmp.join("attach.log");
+    // The CLI's logs go to stderr — capture both streams so the marker
+    // and any failure detail land in the same file.
+    let attach_file = std::fs::File::create(&attach_log).unwrap();
+    let attach = Command::new(&dora)
+        .args([
+            "start",
+            full_yaml.to_str().unwrap(),
+            "--coordinator-port",
+            &coordinator_port.to_string(),
+            "--attach",
+        ])
+        .stdout(Stdio::from(attach_file.try_clone().unwrap()))
+        .stderr(Stdio::from(attach_file))
+        .spawn()
+        .unwrap_or_else(|e| panic!("{name}: failed to spawn dora start: {e}"));
+    children.push(attach);
+
+    let deadline = std::time::Instant::now() + timeout;
+    let success = loop {
+        if let Ok(output) = std::fs::read_to_string(&attach_log) {
+            // The marker alone is not enough: it must be accompanied by a
+            // clean finish (no Failed state), so a degraded/short transfer
+            // cannot pass. The receiver.py per-frame assertions (tensor[0]
+            // == i for all 100 frames) run before the marker prints, so a
+            // byte-correct full transfer is implied; require the finished
+            // marker too.
+            if output.contains("Average transfer throughput")
+                && (output.contains("dataflow finished")
+                    || output.contains("finished successfully"))
+                && !output.contains("Failed")
+            {
+                break true;
+            }
+        }
+        if std::time::Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    };
+
+    let attach_tail = std::fs::read_to_string(&attach_log)
+        .unwrap_or_default()
+        .lines()
+        .rev()
+        .take(15)
+        .collect::<Vec<_>>()
+        .join("\n");
+    cleanup(&mut children, &tmp);
+    assert!(
+        success,
+        "{name}: timed out waiting for the throughput marker in {attach_log:?}; last lines:\n{attach_tail}"
     );
 }
 
@@ -1955,7 +2152,7 @@ fn smoke_local_memory_pool_cpu2cpu() {
 fn smoke_local_memory_pool_auto_cleanup() {
     run_smoke_test_local(
         "local-memory-pool-auto-cleanup",
-        "examples/memory-pool/auto_cleanup.yml",
+        "libraries/extensions/tensor-pool/examples/auto_cleanup.yml",
         10,
     );
 }
@@ -1965,7 +2162,7 @@ fn smoke_local_memory_pool_auto_cleanup() {
 fn smoke_local_memory_pool_duplicate_free() {
     run_smoke_test_local(
         "local-memory-pool-duplicate-free",
-        "examples/memory-pool/duplicate_free.yml",
+        "libraries/extensions/tensor-pool/examples/duplicate_free.yml",
         10,
     );
 }
@@ -1975,7 +2172,7 @@ fn smoke_local_memory_pool_duplicate_free() {
 fn smoke_local_memory_pool_read_after_free() {
     run_smoke_test_local(
         "local-memory-pool-read-after-free",
-        "examples/memory-pool/read_after_free.yml",
+        "libraries/extensions/tensor-pool/examples/read_after_free.yml",
         10,
     );
 }
@@ -1985,12 +2182,38 @@ fn smoke_local_memory_pool_read_after_free() {
 fn smoke_local_memory_pool_write_after_free() {
     run_smoke_test_local(
         "local-memory-pool-write-after-free",
-        "examples/memory-pool/write_after_free.yml",
+        "libraries/extensions/tensor-pool/examples/write_after_free.yml",
         10,
     );
 }
 
+// GPU memory-pool tests: require CUDA-capable GPU(s).
+// cuda_inner needs at least 1 GPU; cuda2cuda needs ≥2 distinct GPUs.
+// Both are `#[ignore]`-gated because standard CI runners lack GPUs.
+// Run locally:
+//   cargo test --test example-smoke -- --ignored cuda
+#[test]
+#[ignore = "requires CUDA GPU(s)"]
+fn smoke_memory_pool_cuda_inner() {
+    run_smoke_test(
+        "memory-pool-cuda-inner",
+        "libraries/extensions/tensor-pool/examples/cuda_inner.yml",
+        Duration::from_secs(60),
+    );
+}
+
+#[test]
+#[ignore = "requires CUDA GPU(s) — ≥2 GPUs"]
+fn smoke_memory_pool_cuda2cuda() {
+    run_smoke_test(
+        "memory-pool-cuda2cuda",
+        "libraries/extensions/tensor-pool/examples/cuda2cuda.yml",
+        Duration::from_secs(60),
+    );
+}
+
 // ---------------------------------------------------------------------------
+
 // Examples under `examples/` that do NOT have a corresponding `smoke_*` or
 // `contract_*` test in this file. Some are blocked (filed issue or external
 // dep); others are intentionally covered by a DIFFERENT CI job. Keep this
@@ -2010,13 +2233,6 @@ fn smoke_local_memory_pool_write_after_free() {
 //
 // | Example                   | Where it's tested / blocker                          | Tracking |
 // |---------------------------|------------------------------------------------------|----------|
-// | memory-pool               | covered: smoke_memory_pool_cpu2cpu /                 | #2264    |
-// |                           | smoke_local_memory_pool_{cpu2cpu, auto_cleanup,      |          |
-// |                           | duplicate_free, read_after_free, write_after_free}   |          |
-// |                           | (#[ignore]); nightly memory-pool-smoke job;          |          |
-// |                           | smoke-all.sh gates on `import torch`, skips          |          |
-// |                           | gracefully when download.pytorch.org unreachable.    |          |
-// |                           | cuda2cpu/cpu2cuda/etc blocked: needs NVIDIA CUDA.     |          |
 // | cuda-benchmark            | blocker: needs NVIDIA CUDA toolkit                   | —        |
 // | dynamic-add-remove        | blocker: `dora node add` times out +                 | #1682    |
 // |                           | corrupts dataflow state                              |          |
@@ -2028,6 +2244,9 @@ fn smoke_local_memory_pool_write_after_free() {
 // | c-dataflow                | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
 // | c++-dataflow              | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
 // | c++-arrow-dataflow        | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
+// | c++-service-action        | covered: `examples` job via                          | covered  |
+// |                           | `[[example]] cxx-service-action` (cargo run          |          |
+// |                           | --example), same shape as `cxx-arrow-dataflow`       |          |
 // | cmake-dataflow            | covered: `cli` job (3 OS), ci.yml CLI tests          | covered  |
 // | cpu-affinity-probe        | covered: nightly `cpu-affinity-smoke`                | covered  |
 // |                           | (.github/workflows/nightly.yml:535)                  |          |

@@ -93,8 +93,9 @@ pub use dora_message::{
     DataflowId,
     metadata::{
         self, FIN, FLUSH, GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_CANCELED,
-        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, Parameter, REQUEST_ID, SEGMENT_ID,
-        SEQ, SESSION_ID, get_bool_param, get_integer_param, get_string_param,
+        GOAL_STATUS_SUCCEEDED, Metadata, MetadataParameters, OPEN_TELEMETRY_CONTEXT, Parameter,
+        REQUEST_ID, SEGMENT_ID, SEQ, SESSION_ID, get_bool_param, get_integer_param,
+        get_string_param,
     },
 };
 use dora_message::{
@@ -113,7 +114,8 @@ pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;
 pub use node::{
-    DataSample, DoraNode, DoraNodeBuilder, StreamSegment, ZERO_COPY_THRESHOLD, arrow_utils,
+    DataSample, DoraNode, DoraNodeBuilder, EncodedSample, SampleAllocator, StreamSegment,
+    ZERO_COPY_THRESHOLD, arrow_utils,
 };
 pub use uuid;
 
@@ -122,9 +124,11 @@ use tokio::sync::oneshot;
 
 mod daemon_connection;
 mod error;
-mod event_stream;
+/// Asynchronous event stream and daemon communication.
+pub mod event_stream;
 pub mod integration_testing;
 mod node;
+mod orphan_guard;
 
 pub use error::{NodeError, NodeResult, PatternError};
 
@@ -138,6 +142,9 @@ enum DaemonCommunicationWrapper {
     Testing {
         channel:
             tokio::sync::mpsc::Sender<(Timestamped<DaemonRequest>, oneshot::Sender<DaemonReply>)>,
+        /// Shared with the testing daemon so Drop can interrupt a scheduled
+        /// `next_event` sleep (dora-rs/dora#2855).
+        shutdown: std::sync::Arc<std::sync::atomic::AtomicBool>,
     },
 }
 

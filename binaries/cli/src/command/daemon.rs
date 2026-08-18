@@ -303,7 +303,40 @@ fn parse_labels(s: &str) -> Result<BTreeMap<String, String>, String> {
         let (k, v) = pair
             .split_once('=')
             .ok_or_else(|| format!("invalid label `{pair}`, expected key=value"))?;
-        map.insert(k.to_string(), v.to_string());
+        // Trim each half, not just the whole pair: `--labels "gpu = true"`
+        // must yield key `gpu` / value `true`, otherwise the surrounding
+        // whitespace leaks into the label and it silently fails to match a
+        // node's `gpu: true` requirement at scheduling time.
+        let k = k.trim();
+        if k.is_empty() {
+            return Err(format!("invalid label `{pair}`, key must not be empty"));
+        }
+        map.insert(k.to_string(), v.trim().to_string());
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_labels;
+
+    #[test]
+    fn parse_labels_trims_keys_and_values() {
+        let map = parse_labels("gpu = true, arch =arm64,zone= eu ").unwrap();
+        assert_eq!(map.get("gpu").map(String::as_str), Some("true"));
+        assert_eq!(map.get("arch").map(String::as_str), Some("arm64"));
+        assert_eq!(map.get("zone").map(String::as_str), Some("eu"));
+    }
+
+    #[test]
+    fn parse_labels_skips_empty_pairs() {
+        let map = parse_labels("a=1,,b=2,").unwrap();
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn parse_labels_rejects_missing_value_and_empty_key() {
+        assert!(parse_labels("gpu").is_err());
+        assert!(parse_labels(" =true").is_err());
+    }
 }

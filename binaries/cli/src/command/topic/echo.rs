@@ -42,6 +42,9 @@ pub struct Echo {
     selector: TopicSelector,
 
     /// Output format
+    ///
+    /// `json` emits JSON Lines (one object per decoded message);
+    /// diagnostics go to stderr.
     #[clap(long, value_name = "FORMAT", default_value_t = OutputFormat::Table)]
     pub format: OutputFormat,
 
@@ -240,6 +243,8 @@ fn inspect(
             } => {
                 eprintln!("Output {node_id}/{output_id} closed");
             }
+            // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+            _ => {}
         }
     }
 

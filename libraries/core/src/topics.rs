@@ -50,6 +50,42 @@ pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
 /// `--zenoh-no-multicast`, so a single flag covers the whole process tree.
 pub const DORA_ZENOH_MULTICAST_ENV: &str = "DORA_ZENOH_MULTICAST";
 
+/// Pid of the process whose death must end this node, injected **only** by a
+/// daemon that runs in-process with whoever started it: `Daemon::run_dataflow`
+/// and its callers — `dora run`, `dora daemon --run-dataflow`, and embedders
+/// that drive one dataflow to completion.
+///
+/// There, the one process is coordinator, daemon and node-parent at once, so
+/// its death is the end of the dataflow by definition. Every teardown path
+/// dora has is cooperative and so cannot survive `SIGKILL`, which is neither
+/// catchable nor blockable: no CLI- or daemon-side code runs after it. Nodes
+/// are deliberately spawned as process-group leaders (so a terminal `Ctrl-C`
+/// cannot kill them out from under the daemon), which also means an orphan
+/// keeps running with `ppid 1` in a group of its own — unreachable by both
+/// inherited signal delivery and a group-kill of the parent. Handing the node
+/// the pid lets it notice on its own (dora-rs/dora#2856).
+///
+/// Deliberately NOT set on the `dora up` + `dora start` path: there the parent
+/// is a long-lived daemon whose lifetime is decoupled from its nodes on
+/// purpose — a node survives a coordinator drop, a reconnect, and a watchdog
+/// disconnect while keeping its pid (dora-rs/dora#2029). Tying node lifetime
+/// to that parent would break exactly the property `daemon-reconnect-e2e`
+/// asserts.
+pub const DORA_RUN_PARENT_PID_ENV: &str = "DORA_RUN_PARENT_PID";
+
+/// Zenoh's own config-file override, honored by
+/// [`open_zenoh_session_with_listen`].
+///
+/// Takes precedence over every `DORA_ZENOH_*` variable: when it is set the
+/// session is built entirely from the named file, so the connect/listen plan
+/// and the multicast decision are never read. That makes it a full bypass of
+/// the daemon's node wiring, which is why the daemon refuses it from a
+/// descriptor's `env:` (#2944) while still honoring it from its own
+/// environment — the documented way to point a whole deployment at a custom
+/// zenoh config.
+#[cfg(feature = "zenoh")]
+pub const ZENOH_CONFIG_PATH_ENV: &str = zenoh::Config::DEFAULT_CONFIG_PATH_ENV;
+
 /// Whether a session may discover peers by multicast scouting.
 ///
 /// Spelled as an enum rather than a bool because the concept flips polarity at
@@ -70,6 +106,19 @@ pub enum MulticastScouting {
 #[cfg(feature = "zenoh")]
 fn multicast_disabled_by_env() -> bool {
     multicast_disabled_by_value(std::env::var(DORA_ZENOH_MULTICAST_ENV).ok().as_deref())
+}
+
+/// The effective decision for a process that also has its own request.
+///
+/// [`open_zenoh_session_with_listen`] ORs the caller's request with
+/// [`DORA_ZENOH_MULTICAST_ENV`], so a process that has to *forward* its
+/// decision — the daemon, to the nodes it spawns — must OR them the same way.
+/// Forwarding only its own flag drops the environment half, leaving nodes
+/// scouting by multicast in exactly the environments where the variable was
+/// set to stop them.
+#[cfg(feature = "zenoh")]
+pub fn multicast_disabled(requested_off: bool) -> bool {
+    requested_off || multicast_disabled_by_env()
 }
 
 /// Parse a [`DORA_ZENOH_MULTICAST_ENV`] value (`None` when the var is unset).
@@ -103,6 +152,20 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
         open_zenoh_session_with_listen(coordinator_addr, None, None, MulticastScouting::Allowed)
             .await?;
     Ok(session)
+}
+
+/// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
+///
+/// The peer address is formatted through a [`SocketAddr`] so that IPv6
+/// addresses are bracketed (`tcp/[::1]:5456`), matching zenoh's TCP locator
+/// grammar. Interpolating a bare [`IpAddr`] instead would emit `tcp/::1:5456`
+/// for IPv6 — a malformed locator where the port colon is indistinguishable
+/// from the address colons, which `insert_json5` rejects (#3041). This is the
+/// same bracketing [`reserve_zenoh_endpoint`] already relies on.
+#[cfg(feature = "zenoh")]
+fn coordinator_connect_endpoints(addr: IpAddr) -> String {
+    let peer = SocketAddr::new(addr, 5456);
+    format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
 }
 
 /// Like [`open_zenoh_session`], but also configures the session to listen on
@@ -342,7 +405,7 @@ pub async fn open_zenoh_session_with_listen(
             // multicast scouting only" and mean it. Treating the request as
             // absolute would disarm that recovery and strand the daemon.
             let requested_off =
-                matches!(multicast, MulticastScouting::Disabled) || multicast_disabled_by_env();
+                multicast_disabled(matches!(multicast, MulticastScouting::Disabled));
             if (connect_inserted || (requested_off && listen_configured))
                 && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
             {
@@ -350,13 +413,8 @@ pub async fn open_zenoh_session_with_listen(
             }
 
             if let Some(addr) = coordinator_addr
-                && let Err(err) = zenoh_config.insert_json5(
-                    "connect/endpoints",
-                    &format!(
-                        r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{}:5456"] }}"#,
-                        addr
-                    ),
-                )
+                && let Err(err) = zenoh_config
+                    .insert_json5("connect/endpoints", &coordinator_connect_endpoints(addr))
             {
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
@@ -597,7 +655,7 @@ fn local_address_toward(target: SocketAddr) -> Option<IpAddr> {
 
 /// Zenoh key for node output data.
 ///
-/// Payload format: raw Arrow bytes with bincode `Metadata` in the Zenoh
+/// Payload format: raw Arrow bytes with postcard `Metadata` in the Zenoh
 /// attachment. This topic is published by nodes and consumed directly by
 /// downstream nodes (plus debug-inspection subscribers). Daemon control frames
 /// must not be published here; use [`zenoh_daemon_control_topic`] instead.
@@ -611,23 +669,50 @@ pub fn zenoh_output_publish_topic(
     format!("dora/{network_id}/{dataflow_id}/output/{node_id}/{output_id}")
 }
 
-/// Zenoh key carrying the Arrow IPC **schema** for an output's data topic, as a
-/// `/@schema` sub-key of [`zenoh_output_publish_topic`]. The producer publishes
-/// the schema here (on change) through a zenoh-ext `AdvancedPublisher` whose
-/// cache retains the last sample; a subscriber's `AdvancedSubscriber` history
-/// query fetches it on join, so the data topic only ever carries schema-less
-/// record batches. The `@`-prefixed final chunk keeps it from matching the
-/// concrete data key (no cross-delivery to the data subscriber).
+/// Hex-encode a `DataId` so it occupies exactly one zenoh key chunk.
+///
+/// A `DataId` may legally contain `/` (unlike a `NodeId`), so embedding one
+/// verbatim as a key segment would spill into extra chunks. Hex is unambiguous
+/// (`[0-9a-f]`, never `/`) and collision-free. Same helper previously used for
+/// readiness liveliness keys (#2666).
+#[cfg(feature = "zenoh")]
+fn hex_key_segment(id: &dora_message::id::DataId) -> String {
+    use std::fmt::Write;
+    let s: &str = id.as_ref();
+    let mut out = String::with_capacity(s.len() * 2);
+    for b in s.bytes() {
+        let _ = write!(out, "{b:02x}");
+    }
+    out
+}
+
+/// Zenoh key carrying the Arrow IPC **schema** for an output's data topic.
+///
+/// Layout: `dora/{network}/{dataflow}/schema/{node}/{hex(output_id)}`.
+///
+/// This lives under a dedicated `schema/` plane — **not** under
+/// [`zenoh_output_publish_topic`] — so it cannot collide with a nested DataId
+/// such as `cmd/_schema` (whose data topic would otherwise share a key with
+/// the schema side-channel for `cmd`), and so wildcard subscribers on the
+/// data-topic namespace never see schema traffic.
+///
+/// The output id is [hex-encoded](hex_key_segment) into a single chunk because
+/// DataIds may contain `/`. The key has no `@…` verbatim chunks: zenoh-ext
+/// liveliness tokens are `${remaining:**}/@adv/${entity}/${zid}/${eid}/${meta}`
+/// and Zenoh verbatim chunks are hermetic — `**` cannot cross them — so a key
+/// that introduced `@schema` before `/@adv/…` failed `ke_liveliness::parse`
+/// and flooded WARN logs (#2923). The producer still publishes here through a
+/// zenoh-ext `AdvancedPublisher` (cache + `publisher_detection`); subscribers
+/// recover via `AdvancedSubscriber` history.
 #[cfg(feature = "zenoh")]
 pub fn zenoh_output_schema_topic(
     dataflow_id: uuid::Uuid,
     node_id: &dora_message::id::NodeId,
     output_id: &dora_message::id::DataId,
 ) -> String {
-    format!(
-        "{}/@schema",
-        zenoh_output_publish_topic(dataflow_id, node_id, output_id)
-    )
+    let network_id = "default";
+    let output = hex_key_segment(output_id);
+    format!("dora/{network_id}/{dataflow_id}/schema/{node_id}/{output}")
 }
 
 /// Zenoh key on which consumers acknowledge a producer's startup route-probe
@@ -656,7 +741,7 @@ pub fn zenoh_output_ack_topic(
 
 /// Zenoh key for control frames associated with a node output.
 ///
-/// Payload format: bincode `Timestamped<InterDaemonEvent>` with no Zenoh
+/// Payload format: postcard `Timestamped<InterDaemonEvent>` with no Zenoh
 /// attachment. Published by daemons for inter-daemon control (for example
 /// `OutputClosed`) and by the coordinator for explicit topic injection. Keeping
 /// this separate from [`zenoh_output_publish_topic`] avoids mixing control frames
@@ -669,6 +754,13 @@ pub fn zenoh_daemon_control_topic(
 ) -> String {
     let network_id = "default";
     format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
+}
+
+/// Zenoh topic for cross-machine memory pool data forwarding.
+/// All daemons in the dataflow subscribe to this topic.
+pub fn dataflow_memory_pool_topic(dataflow_id: &uuid::Uuid) -> String {
+    let network_id = "default";
+    format!("dora/{network_id}/{dataflow_id}/memory-pool")
 }
 
 #[cfg(test)]
@@ -699,6 +791,16 @@ mod tests {
                 "{value:?} must not disable multicast scouting"
             );
         }
+    }
+
+    /// A caller's own request must survive the fold, whatever the environment
+    /// says. The environment half is covered by the value tests above; this
+    /// pins that [`multicast_disabled`] never *weakens* an explicit request —
+    /// the daemon forwards its result to every node it spawns.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_explicit_multicast_disable_is_never_lost() {
+        assert!(multicast_disabled(true));
     }
 
     #[test]
@@ -752,6 +854,29 @@ mod tests {
                 ) || e.raw_os_error() == Some(97) => {}
             Err(e) => panic!("unexpected error reserving ::1 endpoint: {e}"),
         }
+    }
+
+    // The coordinator peer endpoint must bracket IPv6 too, or `insert_json5`
+    // rejects the malformed locator and the peer connect-endpoint is silently
+    // dropped (#3041). Pure string formatting — no session is opened.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn coordinator_connect_endpoints_bracket_ipv6() {
+        let v6 = coordinator_connect_endpoints(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
+        assert!(
+            v6.contains(r#"peer: ["tcp/[::1]:5456"]"#),
+            "IPv6 coordinator peer must be bracketed, got {v6}"
+        );
+        assert!(
+            !v6.contains("tcp/::1:5456"),
+            "unbracketed IPv6 peer locator is malformed, got {v6}"
+        );
+
+        let v4 = coordinator_connect_endpoints(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
+        assert!(
+            v4.contains(r#"peer: ["tcp/127.0.0.1:5456"]"#),
+            "IPv4 coordinator peer must be unbracketed, got {v4}"
+        );
     }
 
     // The filter behind the routing lookup, tested directly rather than through
@@ -813,7 +938,7 @@ mod tests {
 
     // Node raw output and daemon control frames MUST live on distinct Zenoh
     // keys: they share neither format nor consumer, and merging them caused the
-    // #1992 crossover (daemon bincode-decoding node output). Guard the split.
+    // #1992 crossover (daemon postcard-decoding node output). Guard the split.
     #[cfg(feature = "zenoh")]
     #[test]
     fn output_and_control_topics_are_distinct() {
@@ -864,6 +989,55 @@ mod tests {
                 assert_ne!(a, b, "per-output zenoh keys must not overlap");
             }
         }
+    }
+
+    // zenoh-ext publisher-detection liveliness uses
+    // `${remaining:**}/@adv/...`. Verbatim (`@…`) chunks are hermetic, so a
+    // schema key that itself introduced `/@schema` before `/@adv/` made tokens
+    // unparseable and flooded WARN logs (#2923). Keep the schema key free of
+    // `@` chunks (AdvancedPublisher + publisher_detection still used).
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn schema_topic_has_no_verbatim_chunks() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let output = DataId::from("out".to_string());
+        let topic = zenoh_output_schema_topic(dataflow_id, &node, &output);
+
+        assert!(
+            topic.contains("/schema/"),
+            "schema side-channel must live under the dedicated `/schema/` plane, got {topic}"
+        );
+        assert!(
+            !topic.contains("/output/"),
+            "schema side-channel must not nest under the data-topic `/output/` path, got {topic}"
+        );
+        for chunk in topic.split('/') {
+            assert!(
+                !chunk.starts_with('@'),
+                "schema topic chunk `{chunk}` must not be verbatim (`@…`); \
+                 otherwise zenoh_ext liveliness tokens fail to parse (#2923)"
+            );
+        }
+    }
+
+    // `/_schema` nested under the output path collided with a valid DataId
+    // `cmd/_schema`. The schema plane must stay outside `output/{node}/{data_id}`.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn schema_topic_does_not_collide_with_nested_data_id() {
+        use dora_message::id::{DataId, NodeId};
+
+        let dataflow_id = uuid::Uuid::nil();
+        let node = NodeId::from("node".to_string());
+        let parent = DataId::from("cmd");
+        let nested = DataId::from("cmd/_schema");
+        assert_ne!(
+            zenoh_output_schema_topic(dataflow_id, &node, &parent),
+            zenoh_output_publish_topic(dataflow_id, &node, &nested),
+        );
     }
 
     // The ack design relies on exact-key matching instead of wildcards, so an

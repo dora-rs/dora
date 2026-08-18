@@ -139,11 +139,31 @@ Each `RunningNode` has a `last_activity: Arc<AtomicU64>` field storing the times
 The health check function (`check_node_health`) iterates all running nodes:
 
 1. Skip nodes without `health_check_timeout` set
-2. Skip nodes with `last_activity == 0` (not yet connected)
+2. Skip nodes that have not connected yet (not in `connected_nodes`)
 3. Compute `elapsed_ms = now - last_activity`
 4. If `elapsed_ms > timeout_ms`, log a warning and **kill** the node process
 
 After killing, the normal exit handling runs, which evaluates the restart policy. This means `health_check_timeout` combined with `restart_policy: on-failure` automatically recovers hung nodes.
+
+### Post-Connection Liveness Only
+
+Step 2 above means `health_check_timeout` bounds **post-connection** liveness, not
+total startup time. A node joins `connected_nodes` when it first subscribes to
+events (inside `Node::init` / `DoraNode::init_from_env`), and the timeout clock is
+only consulted from that point on.
+
+This is deliberate: `last_activity` is seeded to the spawn timestamp, so without
+the connection gate a node whose legitimate cold start (Python imports,
+model-weight loading) exceeds `health_check_timeout` would be SIGKILLed
+mid-startup -- and under `restart_policy: always`/`on-failure` that becomes an
+unescapable restart loop.
+
+The tradeoff is that a node that hangs **before** it ever subscribes -- a
+deadlock in import or init code that never reaches `Node::init` -- is not
+reaped by this watchdog, and the dataflow stays in its pending state waiting
+for that node. Slow-but-legitimate startup and hung startup are
+indistinguishable before the node connects, so bounding them needs a separate
+startup deadline rather than this timeout.
 
 ### What Counts as "Activity"
 
@@ -410,9 +430,9 @@ The store tracks three record types:
 |--------|-----|-----------------|
 | `DataflowRecord` | UUID (16 bytes) | uuid, name, descriptor (JSON), status, daemon IDs, generation counter, created/updated timestamps |
 | `BuildRecord` | UUID (16 bytes) | build ID, status, errors, created/updated timestamps |
-| `DaemonInfo` | DaemonId (bincode) | daemon ID, machine ID |
+| `DaemonInfo` | DaemonId (postcard) | daemon ID, machine ID |
 
-Records are serialized with [bincode](https://docs.rs/bincode/2) for compact, fast encoding.
+Records are serialized with [postcard](https://docs.rs/postcard) for compact, fast encoding.
 
 ### Dataflow Status Lifecycle
 
@@ -494,9 +514,9 @@ pub trait CoordinatorStore: Send + Sync {
 }
 ```
 
-The `RedbStore` implementation uses three redb tables (`daemons`, `dataflows`, `builds`) with UUID-based binary keys and bincode-serialized values. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
+The `RedbStore` implementation uses three redb tables (`daemons`, `dataflows`, `builds`) with UUID-based binary keys and postcard-serialized values. All operations are synchronous (redb is a synchronous library); the coordinator calls them directly from the async event loop since they are fast in-process operations.
 
-A bincode deserialization limit of 64 MiB guards against corrupted data that could encode huge allocation sizes in length prefixes.
+A 64 MiB record-size limit is enforced symmetrically on both encode and decode, so a record can never be written that the reader would later refuse. postcard reads only from the slice it is handed and does not pre-allocate from a length prefix, so a corrupt row cannot drive a large allocation.
 
 ---
 

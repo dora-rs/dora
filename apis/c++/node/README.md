@@ -176,6 +176,124 @@ if (!error.empty())
 }
 ```
 
+### Reading Input Metadata
+
+`event_as_input` returns the payload only. To also read the message's
+metadata without going through Arrow, use `event_as_input_with_metadata`:
+
+```c++
+auto input = event_as_input_with_metadata(std::move(event));
+std::cout << std::string(input.id) << ": " << input.metadata->to_json() << std::endl;
+```
+
+The returned `DoraInputWithMetadata` owns a `rust::Box<Metadata>`, which has
+no default constructor — declare it with `auto`, or hold it in a
+`std::optional` if you need it to outlive a `try` block.
+
+## Service and Action Patterns
+
+The binding exposes the same Service (request/reply) and Action
+(goal/feedback/result) primitives as the Rust and Python APIs. See
+[`docs/patterns.md`](../../../docs/patterns.md) for the pattern
+specification and `examples/c++-service-action/` for a runnable example.
+
+### Service: request / reply
+
+`send_service_request` generates a UUID v7 `request_id`, injects it into the
+metadata, and returns it — you never set the key yourself:
+
+```c++
+auto request = send_service_request(
+    dora_node.send_output, "request", payload_slice, new_metadata());
+if (!std::string(request.error).empty())
+{
+    std::cerr << "send failed: " << std::string(request.error) << std::endl;
+    return -1;
+}
+const std::string request_id(request.request_id);
+```
+
+On failure `request_id` is empty, so a caller that ignores `error` cannot
+end up waiting for a correlation that was never sent. Use
+`send_arrow_service_request` for Arrow payloads.
+
+`recv_service_response` then blocks for that specific reply, with a timeout
+and server-restart detection built in:
+
+```c++
+auto reply = recv_service_response(
+    dora_node.events, request_id, "server-node-id", /* timeout_ms */ 5000);
+
+switch (reply.status)
+{
+case DoraPatternStatus::Matched:
+    handle(event_as_input(std::move(reply.event)));
+    break;
+case DoraPatternStatus::Timeout:
+    // the deadline elapsed
+    break;
+case DoraPatternStatus::ServerRestarted:
+    // the in-flight request_id is orphaned; retry against the new instance
+    break;
+case DoraPatternStatus::StreamEnded:
+    // the dataflow is stopping
+    break;
+default:
+    std::cerr << std::string(reply.error) << std::endl;
+}
+```
+
+Events that arrive during the wait but do not match are buffered and
+replayed by later `next_event` calls, so your main event loop loses nothing.
+The `event` field also carries a matching `DoraEventType` (`Timeout` /
+`AllInputsClosed` / `Empty`), so you can branch on either field. A malformed
+`server_node_id` yields `DoraPatternStatus::InvalidArgument` rather than
+aborting the process.
+
+The server must echo the request's `request_id` back, which is why it needs
+`event_as_input_with_metadata`:
+
+```c++
+auto input = event_as_input_with_metadata(std::move(event));
+// ... compute the reply ...
+send_service_response(
+    dora_node.send_output, "response", result_slice, std::move(input.metadata));
+```
+
+### Action: goal / feedback / result
+
+Actions correlate on `goal_id`, which the client sets explicitly because the
+same id also labels the feedback stream:
+
+```c++
+const std::string goal_id(new_goal_id());
+auto metadata = new_metadata();
+metadata->set_goal_id(goal_id);
+send_output_with_metadata(dora_node.send_output, "goal", payload_slice, std::move(metadata));
+
+auto outcome = recv_action_result(
+    dora_node.events, goal_id, "server-node-id", /* timeout_ms */ 5000);
+```
+
+`recv_action_result` returns only on a **terminal** status. The server tags
+feedback with `goal_id` alone, and the final message with `goal_id` plus
+`goal_status`:
+
+```c++
+// feedback: no goal_status, so the client keeps waiting
+feedback_metadata->set_goal_id(goal_id);
+
+// terminal result
+result_metadata->set_goal_id(goal_id);
+result_metadata->set_goal_status(goal_status_succeeded());  // or _aborted() / _canceled()
+```
+
+Prefer the `goal_status_succeeded()` / `goal_status_aborted()` /
+`goal_status_canceled()` accessors over string literals — a typo would leave
+the client waiting until its timeout instead of failing loudly. The same
+applies to `set_request_id` / `set_goal_id` / `set_goal_status` and their
+getters, which wrap the reserved metadata keys.
+
 ## Using the ROS2 Bridge
 
 The `dora-ros2-bindings.h` contains function and struct definitions that allow interacting with ROS2 nodes.

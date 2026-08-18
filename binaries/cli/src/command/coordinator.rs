@@ -141,12 +141,18 @@ fn create_store(spec: &str) -> eyre::Result<Arc<dyn CoordinatorStore>> {
     }
 }
 
-#[cfg(feature = "redb-backend")]
-fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
+/// `~/.dora` (HOME, falling back to USERPROFILE, then `.`). Path derivation
+/// only — callers create the directory with the permissions they need.
+pub(crate) fn dora_dir() -> std::path::PathBuf {
     let home = std::env::var("HOME")
         .or_else(|_| std::env::var("USERPROFILE"))
         .unwrap_or_else(|_| ".".into());
-    let dir = std::path::PathBuf::from(home).join(".dora");
+    std::path::PathBuf::from(home).join(".dora")
+}
+
+#[cfg(feature = "redb-backend")]
+pub(crate) fn default_redb_path() -> eyre::Result<std::path::PathBuf> {
+    let dir = dora_dir();
     // Set restrictive umask before creating directory to close the TOCTOU window
     // between creation and set_permissions.
     #[cfg(unix)]

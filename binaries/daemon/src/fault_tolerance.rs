@@ -42,4 +42,12 @@ impl CascadingErrorCauses {
     pub fn report_cascading_error(&mut self, causing_node: NodeId, affected_node: NodeId) {
         self.caused_by.entry(affected_node).or_insert(causing_node);
     }
+
+    /// Forget a recorded cascading cause for `node`. Used when the id's
+    /// process incarnation is replaced (dora-rs/dora#2927): entries are
+    /// otherwise never removed, so a stale cohort-era cause would be
+    /// attributed to the successor's own failures.
+    pub fn forget(&mut self, node: &NodeId) {
+        self.caused_by.remove(node);
+    }
 }

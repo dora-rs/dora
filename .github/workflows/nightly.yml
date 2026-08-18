@@ -20,9 +20,10 @@ name: Nightly Regression
 # high-frequency PR loop (ci.yml) depends on. Nightly is a non-blocking
 # once-daily job, so it restores where it can but never saves — trading
 # a slower nightly for a warm PR loop. Do NOT drop these `save-if:
-# false` gates. If nightly build time becomes a problem, move these to a
-# separate cache backend (e.g. `cache-provider: buildjet`, as
-# pip-release.yml does) rather than saving into the GitHub budget.
+# false` gates. If nightly build time becomes a problem, find a cache
+# backend outside the GitHub budget rather than saving into it. Note
+# that BuildJet — the escape hatch pip-release.yml used to use — is
+# shutting down, and rust-cache v2.9.2 removed that provider.
 #
 # Triggers:
 #   - schedule: daily at 06:00 UTC
@@ -43,6 +44,15 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/nightly.yml"
+
+# A newer nightly makes older ones obsolete, so don't let them pile up.
+# Scheduled runs share `github.ref` (refs/heads/main), so a fresh run
+# cancels a still-queued/running earlier one instead of competing with it
+# (and with the merge queue) for the runner pool. Nightly is not a
+# merge-queue required status, so cancelling a run cannot wedge the queue.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -102,65 +112,6 @@ jobs:
           path: smoke-output.log
           retention-days: 14
       - name: Fail the job if smoke suite failed
-        if: steps.smoke.outputs.exit_code != '0'
-        run: exit 1
-
-  # Memory-pool CPU transport smoke tests (dora-rs/dora#2168).
-  #
-  # These 6 tests (smoke_memory_pool_cpu2cpu + smoke_local_memory_pool_*) are
-  # `#[ignore]`-gated in tests/example-smoke.rs because they need torch + tqdm,
-  # which the smoke-suite job above does not install — so that job skips them
-  # and they ran in NO workflow (#2302 Finding 1; the gap #2264 Finding 1 first
-  # raised). They are CPU-only (sender_device/receiver_device: cpu), so no GPU
-  # is required: the per-node `build:` steps pip-install CPU torch from
-  # download.pytorch.org via uv. A dedicated job keeps the torch-download cost
-  # and any pytorch-index flakiness off the main smoke-suite, and makes the
-  # unsafe seqlock / pointer-arithmetic / bounds / free paths flagged by #2264
-  # execute at least once per nightly run.
-  memory-pool-smoke:
-    name: Memory-pool CPU smoke tests (#2168)
-    runs-on: ubuntu-latest
-    # 6 tests, --test-threads=1 (they share coordinator ports). Most of the
-    # wall clock is the one-time CPU-torch download/install in the per-node
-    # build steps; 45 min leaves margin on top of a cold cargo compile.
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: false
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-      - uses: astral-sh/setup-uv@v8.1.0
-        with:
-          enable-cache: true
-      - name: Set up Python venv
-        run: |
-          uv venv --seed -p 3.12
-          echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
-          source .venv/bin/activate
-          uv pip install pyarrow
-          uv pip install -e apis/python/node
-      - name: Run memory-pool smoke tests
-        id: smoke
-        continue-on-error: true
-        # `--ignored memory_pool` runs only the ignored memory-pool tests; the
-        # per-node `build:` steps install torch/tqdm/numpy into the active venv.
-        run: |
-          cargo test -p dora-examples --test example-smoke -- \
-            --ignored --test-threads=1 memory_pool 2>&1 | tee memory-pool-smoke.log
-          echo "exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
-      - name: Upload smoke log
-        uses: actions/upload-artifact@v7
-        with:
-          name: memory-pool-smoke-output
-          path: memory-pool-smoke.log
-          retention-days: 14
-      - name: Fail the job if memory-pool smoke tests failed
         if: steps.smoke.outputs.exit_code != '0'
         run: exit 1
 
@@ -382,7 +333,7 @@ jobs:
           # #1674 for record). (Historically the workspace root also had
           # a types/ dir that replay wrongly loaded as user types; it moved
           # to libraries/core/types/ but the placement rule stands.)
-          timeout 300s dora record examples/rust-dataflow/dataflow.yml \
+          timeout -k 30s 300s dora record examples/rust-dataflow/dataflow.yml \
             -o examples/rust-dataflow/run.drec
           test -f examples/rust-dataflow/run.drec || { echo "record did not produce run.drec"; exit 1; }
           echo "recording size: $(wc -c < examples/rust-dataflow/run.drec) bytes"
@@ -569,7 +520,7 @@ jobs:
     # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
     # built-in exit / --duration / --count). Topic inspection (echo/hz/info)
     # streams over the coordinator WebSocket (PR #238) — requires
-    # `_unstable_debug.publish_all_messages_to_zenoh: true` in the fixture.
+    # `_unstable_debug.enable_debug_inspection: true` in the fixture.
     #
     # Uses Python source nodes (ticker.py / sink.py) so the dataflow runs
     # indefinitely until stopped (rust-dataflow nodes hit tick limits).
@@ -578,7 +529,11 @@ jobs:
     name: Topic & top inspection smoke
     runs-on: ubuntu-latest
     needs: build-cli
-    timeout-minutes: 15
+    # Sized as "the capped build step below, plus slack for everything else".
+    # Setup actions take ~20s and the actual inspection smokes take ~20s (see
+    # the successful runs on 2026-08-08/09/10), so this cap only bites if the
+    # build step's own 25-minute cap somehow does not.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -593,15 +548,38 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
-      - name: Set up Python venv with local dora-rs
-        # Required so the Python source nodes import dora-rs 0.2.1 (matching
-        # the daemon's message format), not the 0.5.0 from PyPI.
+      - name: Set up Python venv
         run: |
           uv venv --seed -p 3.12
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
           source .venv/bin/activate
           uv pip install pyarrow
+      - name: Build local dora-rs Python bindings into the venv
+        # Required so the Python source nodes import dora-rs 0.2.1 (matching
+        # the daemon's message format), not the 0.5.0 from PyPI.
+        #
+        # Split out of the venv setup and capped separately because it is
+        # essentially the whole job: it is a from-source maturin build of
+        # `dora-node-api-python`, and `rust-cache` runs with `save-if: false`
+        # here, so this job never populates a cache and only ever gets a warm
+        # `target/` by luck. The three runs that completed took 11m23, 12m29
+        # and 13m29 in this step alone, while everything after it — CLI
+        # download, `dora up`, and all twenty inspection assertions — took
+        # 16-20 seconds. The old 15-minute *job* cap therefore left the build
+        # ~14m30, which the runner-speed spread overruns often: six of the
+        # eleven nightlies between 2026-08-06 and 2026-08-18 died right here,
+        # and because a timed-out job reports as `cancelled` the whole run
+        # concluded `cancelled` and both nightly automations skipped.
+        #
+        # 25 minutes is ~1.9x the slowest build that has actually finished,
+        # matching the headroom #3094 gave the E2E step for the same
+        # cold-cache reason. Keep it: an overrun here now means the build
+        # genuinely wedged, and an overrun of the job cap means the smoke
+        # assertions wedged. Trimming this back just re-creates the timeout.
+        run: |
+          source .venv/bin/activate
           uv pip install -e apis/python/node
+        timeout-minutes: 25
       - name: Download dora CLI
         uses: actions/download-artifact@v8
         with:
@@ -656,7 +634,7 @@ jobs:
         # update is available. Catches regressions in CLI flag parsing,
         # the self_update crate integration, and the API-response contract.
         run: |
-          out=$(timeout 30 dora self update --check-only 2>&1) || exit_code=$?
+          out=$(timeout -k 30s 30 dora self update --check-only 2>&1) || exit_code=$?
           echo "$out"
           # Must always print the entry banner — if this is missing, the
           # command didn't even start the check path.
@@ -715,7 +693,7 @@ jobs:
           # Tests the CLI-side WebSocket subscription path end-to-end (#238).
           # Fixture emits at 10 Hz, so 5 frames arrive in ~500ms — generous
           # 15s timeout protects against daemon startup delay.
-          timeout 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json \
+          timeout -k 30s 15 dora topic echo -d tui-smoke ticker/count --count 5 --format json \
             2>&1 | tee echo.out
           lines=$(grep -c '"name":"ticker/count"' echo.out || echo 0)
           if [ "$lines" -lt 5 ]; then
@@ -1021,6 +999,28 @@ jobs:
           pkill -CONT -f "dora daemon" 2>/dev/null || true
           pkill -f "dora (daemon|coordinator)" 2>/dev/null || true
 
+  multi-daemon-late-subscriber:
+    # Guards the cross-daemon start barrier (#2938, #2998) end to end: a node
+    # added to a *running* two-daemon dataflow must get past
+    # `init_from_env()`. The test landed in #3010; this is its CI slot, so a
+    # regression is caught rather than sitting unrun. Nightly rather than PR
+    # tier because it needs a real coordinator plus two daemons, and it builds
+    # its own CLI and fixtures (hence no `needs: build-cli`, and a budget like
+    # the other compile-in-job jobs).
+    name: multi-daemon late subscriber end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Run multi-daemon late-subscriber E2E
+        run: cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
+
   state-reconstruction-smoke:
     # Partial regression test for #255. Validates what the current redb
     # backend + recovery path actually delivers on coord restart: store
@@ -1176,6 +1176,7 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
 
@@ -1327,6 +1328,11 @@ jobs:
       - name: C++ Dataflow example
         timeout-minutes: 15
         run: cargo run --example cxx-dataflow
+      # Service/Action parity for the C++ binding (#2686). Placed before the
+      # Arrow install because it uses byte payloads and needs no Arrow C++.
+      - name: C++ Service and Action example
+        timeout-minutes: 15
+        run: cargo run --example cxx-service-action
       - name: Install Arrow C++ Library
         timeout-minutes: 10
         shell: bash
@@ -1363,15 +1369,18 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    # Windows builds + Python Dynamic Node tests are slower than other
-    # platforms; 60 min is not enough when the runner is under load.
-    # 100 min: on 2026-06-11 (first run with the #2145 wheel cache) Windows
-    # finished all test steps at ~88 min but was killed at 90 during the
-    # post-job rust-cache save. The structural per-step rebuild creep is
-    # fixed (#2143); this covers the remaining fixed cost (23 min CLI build
-    # + 19 min venv setup) plus the cache save. Do not raise further —
-    # investigate per-step times instead (see #2143).
-    timeout-minutes: 100
+    # Windows is the binding platform here. The Python half now lives in
+    # `cli-tests-python`, so what is left is the CLI build (~29 min on
+    # Windows) plus the native template/dynamic/error-event steps
+    # (~14 min) — 60 min leaves room for a loaded runner without the
+    # 100-min budget that this job used to overrun (#2742).
+    #
+    # Do not fold the Python steps back in and do not raise this instead:
+    # the combined job hit the cap in the middle of "Test Python Operator
+    # example" on every nightly from 2026-07-30, which reported as
+    # `cancelled` rather than `failure` and therefore also blocked
+    # `close-issue-on-success` from ever firing.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -1394,7 +1403,26 @@ jobs:
       - name: Build CLI
         timeout-minutes: 45
         shell: bash
-        run: cargo install --path binaries/cli --locked
+        # Installed into the workspace instead of ~/.cargo/bin so it can
+        # be published as an artifact for `cli-tests-python`, which would
+        # otherwise repeat this build — ~29 min of the Windows budget.
+        # `github.workspace` rather than `$PWD`: under git-bash on Windows
+        # `$PWD` is `/d/a/dora/dora`, and GITHUB_PATH entries are taken
+        # verbatim, so steps that default to pwsh would resolve that as
+        # drive-relative and not find the binary.
+        run: |
+          cargo install --path binaries/cli --locked --root ./dist
+          echo '${{ github.workspace }}/dist/bin' >> "$GITHUB_PATH"
+
+      # Published straight after the build, not at the end of the job:
+      # `cli-tests-python` needs only the binary, so a later native test
+      # failing here must not skip the Python half on every platform.
+      - name: Publish CLI for the Python half
+        uses: actions/upload-artifact@v7
+        with:
+          name: dora-cli-${{ matrix.platform }}
+          path: dist/bin/dora*
+          retention-days: 1
 
       - name: Test Rust template project
         timeout-minutes: 45
@@ -1448,6 +1476,103 @@ jobs:
           echo "$output"
           echo "$output" | grep -q "Received error from node" || { echo "ERROR: consumer did not receive NodeFailed event"; exit 1; }
 
+      - name: Test C template project
+        timeout-minutes: 45
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          dora new test_c_project --lang c --internal-create-with-path-dependencies
+          cd test_c_project
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora run dataflow.yml --stop-after 10s
+
+      - name: Test C++ template project
+        timeout-minutes: 45
+        shell: bash
+        if: runner.os == 'Linux'
+        run: |
+          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
+          cd test_cxx_project
+          cmake -B build
+          cmake --build build
+          cmake --install build
+          dora run dataflow.yml --stop-after 10s
+
+  # The Python half of the CLI tests, split out of `cli-tests` in #2742.
+  #
+  # Combined, the two halves needed ~100 min on Windows — 29 min of CLI
+  # build, 25 min of venv setup and ~40 min of tests — and the job was
+  # killed by its own `timeout-minutes` partway through "Test Python
+  # Operator example" on every nightly from 2026-07-30 onward. That
+  # reported as `cancelled`, which is invisible to `file-issue-on-failure`
+  # (it only lists `failure`) and fatal to `close-issue-on-success` (it
+  # refuses to close on any `cancelled` need), so the nightly issue could
+  # neither name the problem nor ever close.
+  #
+  # Splitting rather than raising the cap keeps each half comfortably
+  # inside its budget, and reusing the CLI artifact means the split costs
+  # no extra build time.
+  cli-tests-python:
+    name: 'CLI Tests: Python (${{ matrix.platform }})'
+    runs-on: ${{ matrix.platform }}
+    needs: cli-tests
+    # `needs` on its own implies `if: success()`, and `cli-tests` is a
+    # `fail-fast: false` matrix whose *aggregate* result is `failure` when
+    # any single leg fails — so one red platform would skip the Python half
+    # on ALL of them. That is precisely the coverage loss this split exists
+    # to avoid, and publishing the artifact early does not help: the binary
+    # being available is moot if the job is gated out before it runs.
+    #
+    # The artifact is published straight after `Build CLI`, so it exists
+    # whenever the build itself succeeded. If the *build* is what failed,
+    # this job's download step fails on that platform — redundant with the
+    # `cli-tests` failure, but honest, and the other two platforms still run.
+    if: ${{ !cancelled() }}
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, macos-latest, windows-latest]
+      fail-fast: false
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Free Disk Space (Ubuntu)
+        uses: jlumbroso/free-disk-space@main
+        if: runner.os == 'Linux'
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: true
+          swap-storage: true
+      - name: Download CLI built by cli-tests
+        uses: actions/download-artifact@v8
+        with:
+          name: dora-cli-${{ matrix.platform }}
+          path: ./cli-bin
+      - name: Install CLI to PATH
+        shell: bash
+        # upload-artifact does not preserve the executable bit; the chmod
+        # is a harmless no-op on Windows, where the bit is not what makes
+        # dora.exe runnable.
+        #
+        # `github.workspace`, not `$PWD` — see the Build CLI step in
+        # `cli-tests`. And nothing here may *use* the CLI: GITHUB_PATH
+        # takes effect for later steps only, never the one that writes it.
+        run: |
+          chmod +x ./cli-bin/dora* || true
+          echo '${{ github.workspace }}/cli-bin' >> "$GITHUB_PATH"
+      - name: Check the downloaded CLI runs
+        run: dora --version
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
@@ -1596,30 +1721,6 @@ jobs:
           dora build tests/queue_size_latest_data_rust/dataflow.yaml --uv
           dora run tests/queue_size_latest_data_rust/dataflow.yaml --uv
 
-      - name: Test C template project
-        timeout-minutes: 45
-        shell: bash
-        if: runner.os == 'Linux'
-        run: |
-          dora new test_c_project --lang c --internal-create-with-path-dependencies
-          cd test_c_project
-          cmake -B build
-          cmake --build build
-          cmake --install build
-          dora run dataflow.yml --stop-after 10s
-
-      - name: Test C++ template project
-        timeout-minutes: 45
-        shell: bash
-        if: runner.os == 'Linux'
-        run: |
-          dora new test_cxx_project --lang cxx --internal-create-with-path-dependencies
-          cd test_cxx_project
-          cmake -B build
-          cmake --build build
-          cmake --install build
-          dora run dataflow.yml --stop-after 10s
-
   # Benchmark example on 3 platforms (matches upstream dora bench job).
   # Separate from the criterion regression job below.
   bench-example:
@@ -1716,7 +1817,9 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
+          --exclude dora-tensor-pool-python
       - name: Check (cross)
         if: matrix.cross
         run: >
@@ -1724,7 +1827,9 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
+          --exclude dora-tensor-pool-python
 
   # ===== ROS2 bridge basic checks =====
   # Keep nightly coverage for ROS2 bridge code that does not require a full ROS
@@ -1786,6 +1891,13 @@ jobs:
         run: cargo test -p dora-ros2-bridge-python
 
   # ===== MSRV check =====
+  # Advisory (`continue-on-error`) until these have run green for a
+  # stretch: they drive real ROS 2 containers, so a docker/apt hiccup
+  # should not redden a nightly. NOTE that this also hides them from
+  # `file-issue-on-failure` — `needs.<job>.result` reads `success` for a
+  # continue-on-error job — which is why they failed silently from the
+  # day they were added (#2790, 2026-07-21) until #2742 went looking.
+  # Drop `continue-on-error` once they are trustworthy.
   ros2-zenoh-humble:
     name: ROS2 Zenoh Interop (Humble)
     runs-on: ubuntu-latest
@@ -1796,6 +1908,16 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      # `ros2-zenoh-interop.sh` builds the ROS2 bridge wheel with maturin
+      # and installs it with pip, so the job needs a >=3.11 interpreter
+      # and maturin on PATH. Without them the script died on
+      # `maturin: command not found` (exit 127) before running a single
+      # case.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
       - run: scripts/ros2-zenoh-interop.sh humble all
       - if: failure()
         uses: actions/upload-artifact@v7
@@ -1803,6 +1925,7 @@ jobs:
           name: ros2-zenoh-humble-logs
           path: target/ros2-zenoh-logs
 
+  # Advisory for the same reason as `ros2-zenoh-humble` above.
   ros2-zenoh-kilted:
     name: ROS2 Zenoh Interop (Kilted)
     runs-on: ubuntu-latest
@@ -1813,6 +1936,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+      - name: Install maturin
+        run: pip install maturin
       - run: scripts/ros2-zenoh-interop.sh kilted all
       - if: failure()
         uses: actions/upload-artifact@v7
@@ -1856,7 +1984,6 @@ jobs:
     needs:
       - build-cli
       - smoke-suite
-      - memory-pool-smoke
       - log-sinks
       - service-action
       - streaming
@@ -1869,10 +1996,12 @@ jobs:
       - redb-backend-smoke
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
+      - multi-daemon-late-subscriber
       - kani-proofs
       - test-cross-platform
       - examples
       - cli-tests
+      - cli-tests-python
       - bench-example
       - cross-check
       - ros2-bridge
@@ -1882,7 +2011,17 @@ jobs:
     # `always() && contains(needs.*.result, 'failure')` covers both direct
     # failures and the case where build-cli fails and downstream jobs get
     # skipped (plain `failure()` would miss the skipped-cascade case).
-    if: always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule'
+    #
+    # `cancelled` is included because GitHub Actions reports a job that blows
+    # its `timeout-minutes` cap as `cancelled`, not `failure` — so a timed-out
+    # subjob used to make the whole run conclude `cancelled` while this
+    # reporter (and the closer below) both skipped, i.e. a real regression
+    # produced silence. This gate is deliberately coarse: `cancel-in-progress`
+    # (#3043) also marks jobs `cancelled` when a newer run supersedes this
+    # one, and the two cases are told apart in the step below, which knows the
+    # per-job timings. It exits 0 without filing if every cancellation turns
+    # out to be a supersede.
+    if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     steps:
       - uses: actions/checkout@v6
       - name: Create or update regression issue
@@ -1918,10 +2057,6 @@ jobs:
               smoke-suite)
                 echo 'cargo test -p dora-examples --test example-smoke -- --test-threads=1'
                 ;;
-              memory-pool-smoke)
-                # Needs torch+tqdm; the per-node build steps install CPU torch.
-                echo 'cargo test -p dora-examples --test example-smoke -- --ignored --test-threads=1 memory_pool'
-                ;;
               log-sinks)
                 # Three dataflows in this job; run each individually on failure.
                 printf 'dora run examples/log-sink-file/dataflow.yml --uv --stop-after 15s\ndora run examples/log-sink-alert/dataflow.yml --uv --stop-after 15s\ndora run examples/log-sink-tcp/dataflow.yml --uv --stop-after 15s\n'
@@ -1931,6 +2066,9 @@ jobs:
                 ;;
               streaming)
                 echo 'dora run examples/streaming-example/dataflow.yml --uv --stop-after 15s'
+                ;;
+              multi-daemon-late-subscriber)
+                echo 'cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1'
                 ;;
               record-replay)
                 echo 'scripts/qa/ci-nightly-jobs.sh record-replay'
@@ -1971,7 +2109,9 @@ jobs:
               examples)
                 echo 'scripts/qa/ci-nightly-jobs.sh examples'
                 ;;
-              cli-tests)
+              cli-tests | cli-tests-python)
+                # The local runner is not split — no per-job time cap
+                # applies there — so it covers both halves.
                 echo 'scripts/qa/ci-nightly-jobs.sh cli-tests'
                 ;;
               bench-example)
@@ -1998,25 +2138,32 @@ jobs:
             case "$1" in
               build-cli) echo '^Build dora CLI \(shared\)$' ;;
               smoke-suite) echo '^Smoke suite \(tests/example-smoke\.rs\)$' ;;
-              memory-pool-smoke) echo '^Memory-pool CPU smoke tests \(#2168\)$' ;;
               log-sinks) echo '^Log-sink examples \(Python sources\)$' ;;
               service-action) echo '^Service / Action patterns \(Rust-only\)$' ;;
               streaming) echo '^Streaming example \(Python\)$' ;;
               record-replay) echo '^Record/replay round-trip$' ;;
               cluster-smoke) echo '^Cluster lifecycle smoke$' ;;
               cluster-e2e) echo '^Cluster SSH end-to-end$' ;;
+              cluster-record-replay) echo '^Cluster record/replay end-to-end$' ;;
               topic-and-top-smoke) echo '^Topic & top inspection smoke$' ;;
               cpu-affinity-smoke) echo '^cpu_affinity end-to-end \(Linux\)$' ;;
               redb-backend-smoke) echo '^redb backend end-to-end$' ;;
               daemon-reconnect-smoke) echo '^daemon auto-reconnect end-to-end \(Linux\)$' ;;
               state-reconstruction-smoke) echo '^state reconstruction end-to-end \(partial\)$' ;;
+              multi-daemon-late-subscriber) echo '^multi-daemon late subscriber end-to-end$' ;;
               kani-proofs) echo '^Kani formal-verification proofs$' ;;
               test-cross-platform) echo '^Test \(.+\) \[nightly\]$' ;;
               examples) echo '^Examples \(.+\)$' ;;
               cli-tests) echo '^CLI Tests \(.+\)$' ;;
+              cli-tests-python) echo '^CLI Tests: Python \(.+\)$' ;;
               bench-example) echo '^Bench Example \(.+\)$' ;;
               cross-check) echo '^Cross-check \(.+\)$' ;;
               ros2-bridge) echo '^ROS2 Bridge Basic Checks$' ;;
+              # `continue-on-error` keeps these two out of `failed_jobs`, but
+              # the cancellation classifier looks up every job in `needs`, and
+              # an unmapped name there defaults to "report it".
+              ros2-zenoh-humble) echo '^ROS2 Zenoh Interop \(Humble\)$' ;;
+              ros2-zenoh-kilted) echo '^ROS2 Zenoh Interop \(Kilted\)$' ;;
               msrv) echo '^MSRV check$' ;;
               *) echo '' ;;
             esac
@@ -2032,23 +2179,112 @@ jobs:
           skipped_jobs=$(echo "$NEEDS_JSON" \
             | jq -r 'to_entries | map(select(.value.result == "skipped")) | .[].key' \
             | sort)
+          # Jobs whose result is `cancelled`. Two very different things land
+          # here; see the classifier below.
+          cancelled_jobs=$(echo "$NEEDS_JSON" \
+            | jq -r 'to_entries | map(select(.value.result == "cancelled")) | .[].key' \
+            | sort)
 
+          run_job_rows=$(mktemp)
           failed_job_rows=$(mktemp)
           failed_log_index=$(mktemp)
           failed_logs_error=$(mktemp)
           failed_logs_dir=$(mktemp -d)
-          trap 'rm -rf "$failed_job_rows" "$failed_log_index" "$failed_logs_error" "$failed_logs_dir"' EXIT
+          trap 'rm -rf "$run_job_rows" "$failed_job_rows" "$failed_log_index" "$failed_logs_error" "$failed_logs_dir"' EXIT
 
           # Do not use whole-run logs here: this reporter job is still
           # running, and GitHub does not expose whole-run logs until the run
-          # completes. Completed failed jobs already have individual logs, so
+          # completes. Completed jobs already have individual logs, so
           # enumerate them and download each job log directly.
+          #
+          # One enumeration feeds both the failure excerpts and the
+          # cancellation classifier. Columns:
+          #   id \t name \t conclusion \t started_at \t completed_at \t cancelled step
           if gh api --paginate "/repos/$REPO/actions/runs/$RUN_ID/jobs?per_page=100" \
-            --jq '.jobs[] | select(.status == "completed" and .conclusion == "failure") | [.id, .name] | @tsv' \
-            > "$failed_job_rows" 2> "$failed_logs_error"; then
+            --jq '.jobs[] | select(.status == "completed") | [.id, .name, .conclusion, .started_at, .completed_at, ((.steps // []) | map(select(.conclusion == "cancelled")) | (.[0].name // ""))] | @tsv' \
+            > "$run_job_rows" 2> "$failed_logs_error"; then
             logs_available=1
           else
             logs_available=0
+          fi
+          awk -F'\t' '$3 == "failure" { printf "%s\t%s\n", $1, $2 }' "$run_job_rows" > "$failed_job_rows"
+
+          # --- Telling a blown `timeout-minutes` cap apart from a supersede ---
+          #
+          # GitHub reports both as `cancelled`, but they need opposite
+          # handling: a timed-out subjob is a regression worth an issue, while
+          # a run superseded by `concurrency: cancel-in-progress` (#3043) is
+          # routine and must stay silent, or every push to main that lands
+          # during a nightly files a bogus report.
+          #
+          # The tell is whether the *run* carried on afterwards. A
+          # `timeout-minutes` cap kills exactly one job while the rest of the
+          # matrix keeps working for many minutes; a supersede kills
+          # everything in flight in one wave and the run ends right there, so
+          # nothing completes more than a few seconds later. Run 32107803630
+          # (`topic-and-top-smoke` blew its cap at 07:09:27, other jobs ran on
+          # until ~08:00) classifies as a timeout; the 12:07:49-12:08:03 wave
+          # that ended run 32022246649 classifies as a supersede.
+          #
+          # A run with a single cancelled job cannot be a supersede either — a
+          # supersede would have taken this reporter down with it rather than
+          # letting it run — so that shortcut is checked first and also covers
+          # the case where the cancelled job happens to be the run's last.
+          # Unmappable job names are reported rather than swallowed: silence
+          # is the failure mode this whole change exists to remove.
+          #
+          # Note this is orthogonal to the skipped-cascade above: a failed
+          # `build-cli` marks its dependents `skipped`, never `cancelled`.
+          SUPERSEDE_WINDOW_SECONDS=120
+          run_last_completed=$(cut -f5 "$run_job_rows" | sort | tail -1)
+          run_cancelled_count=$(awk -F'\t' '$3 == "cancelled"' "$run_job_rows" | wc -l | tr -d '[:space:]')
+
+          to_epoch() {
+            date -u -d "$1" +%s 2>/dev/null || echo 0
+          }
+
+          # Emits "<completed_at>\t<cancelled step>\t<duration minutes>" for the
+          # latest cancelled GitHub job matching a `needs` job id, or nothing.
+          cancelled_job_facts() {
+            local pattern gid gname gconc gstart gdone gstep best_done best_step best_mins
+            pattern=$(job_log_pattern "$1")
+            [ -n "$pattern" ] || return 0
+            best_done=""
+            while IFS=$'\t' read -r gid gname gconc gstart gdone gstep; do
+              [ "$gconc" = "cancelled" ] || continue
+              [[ "$gname" =~ $pattern ]] || continue
+              if [ -z "$best_done" ] || [[ "$gdone" > "$best_done" ]]; then
+                best_done="$gdone"
+                best_step="$gstep"
+                best_mins=$(( ($(to_epoch "$gdone") - $(to_epoch "$gstart")) / 60 ))
+              fi
+            done < "$run_job_rows"
+            [ -n "$best_done" ] || return 0
+            printf '%s\t%s\t%s\n' "$best_done" "$best_step" "$best_mins"
+          }
+
+          timed_out_jobs=""
+          superseded_jobs=""
+          run_last_epoch=$(to_epoch "$run_last_completed")
+          while IFS= read -r job; do
+            [ -n "$job" ] || continue
+            facts=$(cancelled_job_facts "$job")
+            job_done=$(printf '%s' "$facts" | cut -f1)
+            if [ "$run_cancelled_count" -le 1 ] || [ -z "$job_done" ] \
+              || [ $((run_last_epoch - $(to_epoch "$job_done"))) -ge "$SUPERSEDE_WINDOW_SECONDS" ]; then
+              timed_out_jobs+="$job"$'\n'
+            else
+              superseded_jobs+="$job"$'\n'
+            fi
+          done <<< "$cancelled_jobs"
+
+          if [ -n "$superseded_jobs" ]; then
+            echo "Cancellations attributed to a concurrency supersede (not reported):"
+            printf '%s' "$superseded_jobs"
+          fi
+          if [ -z "$failed_jobs" ] && [ -z "$timed_out_jobs" ]; then
+            echo "Nothing failed and every cancellation looks like a concurrency supersede; not filing an issue."
+            exit 0
           fi
 
           fetch_failed_job_log_once() {
@@ -2226,6 +2462,25 @@ jobs:
               details+="$job_header$excerpt$job_footer"
             done <<< "$failed_jobs"
           fi
+          if [ -n "$timed_out_jobs" ]; then
+            details+=$'\n### Timed out (job hit its `timeout-minutes` cap)\n\n'
+            details+=$'GitHub Actions reports a job that runs out of time as `cancelled`, so\nthese read like somebody stopped the run — nobody did. Each job below\nwas still working when its cap expired, and the step named is where it\nwas when the clock ran out.\n\n'
+            while IFS= read -r job; do
+              [ -z "$job" ] && continue
+              facts=$(cancelled_job_facts "$job")
+              job_step=$(printf '%s' "$facts" | cut -f2)
+              job_mins=$(printf '%s' "$facts" | cut -f3)
+              details+="- \`$job\`"
+              if [ -n "$job_mins" ]; then
+                details+=" — ran out of time after ~${job_mins}m"
+              fi
+              if [ -n "$job_step" ]; then
+                details+=", in step \`$job_step\`"
+              fi
+              details+=$'\n\n  Reproduce locally:\n\n  ```\n  '"$(job_repro "$job")"$'\n  ```\n\n'
+            done <<< "$timed_out_jobs"
+            details+=$'Either the step got slower or its budget is too tight — check the\nstep timings in the run before assuming the code regressed.\n'
+          fi
           if [ -n "$skipped_jobs" ]; then
             details+=$'\n### Skipped (cascading from a failed dependency)\n\n'
             while IFS= read -r job; do
@@ -2237,12 +2492,22 @@ jobs:
 
           # Issue/comment composer. Exports COMMENT_BODY and ISSUE_BODY
           # so the gh commands below can pick them up.
-          comment_body="Another failure on $DATE.
+          # A run with no `failure` at all got here because a job timed out;
+          # say so rather than claiming something failed.
+          if [ -n "$failed_jobs" ]; then
+            comment_lead="Another failure on $DATE."
+            issue_lead="Nightly regression suite failed on $DATE."
+          else
+            comment_lead="Another timeout on $DATE."
+            issue_lead="Nightly regression suite timed out on $DATE."
+          fi
+
+          comment_body="$comment_lead
 
           Run: $RUN_URL
           Commit: \`$COMMIT_SHA\`
           $details"
-          issue_body="Nightly regression suite failed on $DATE.
+          issue_body="$issue_lead
 
           Run: $RUN_URL
           Commit: \`$COMMIT_SHA\`
@@ -2277,7 +2542,6 @@ jobs:
     needs:
       - build-cli
       - smoke-suite
-      - memory-pool-smoke
       - log-sinks
       - service-action
       - streaming
@@ -2290,10 +2554,12 @@ jobs:
       - redb-backend-smoke
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
+      - multi-daemon-late-subscriber
       - kani-proofs
       - test-cross-platform
       - examples
       - cli-tests
+      - cli-tests-python
       - bench-example
       - cross-check
       - ros2-bridge

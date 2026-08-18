@@ -16,11 +16,16 @@ pub struct DataflowStatusEntry {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
     Event {
         daemon_id: DaemonId,
         event: DaemonEvent,
+    },
+    /// Resolve a machine id to a registered daemon (cross-machine pools).
+    ResolveMachine {
+        machine_id: String,
     },
 }
 
@@ -157,6 +162,7 @@ mod register_version_tests {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum DaemonEvent {
     BuildResult {
         build_id: BuildId,
@@ -342,6 +348,11 @@ pub enum DaemonCoordinatorReply {
     RestartNodeResult(Result<(), String>),
     StopNodeResult(Result<(), String>),
     RemoveNodeResult(Result<(), String>),
+    /// Reply for `DaemonCoordinatorEvent::ReplaceNode`. Same
+    /// specific-reply contract as `AddNodeResult` (#1682): the
+    /// coordinator only commits its descriptor update after matching
+    /// this exact variant.
+    ReplaceNodeResult(Result<(), String>),
     /// Reply for `DaemonCoordinatorEvent::AddMapping`. Previously the daemon
     /// returned `None`, which the coordinator's WS layer skipped instead
     /// of forwarding as a reply, causing `send_and_receive` to time out
