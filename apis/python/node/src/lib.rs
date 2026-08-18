@@ -274,16 +274,20 @@ impl Node {
             .drain()
             .context("Could not drain events. Channel is closed")?
             .into_iter()
+            // Propagate a conversion failure rather than substituting an empty
+            // `{}` placeholder or silently dropping the event. A bogus `{}` is
+            // indistinguishable from a real event and makes downstream
+            // `event["type"]`/`event["id"]` access raise `KeyError`; silently
+            // dropping is worse still — a lost service-response event would hang
+            // the requester with no Python-visible signal (only a `tracing`
+            // warning the node usually can't see). Surfacing the error matches
+            // `next()`, which also propagates via `?`.
             .map(|event| {
                 event
                     .to_py_dict(py)
                     .context("Could not convert event into a dict")
-                    .unwrap_or_else(|err| {
-                        tracing::warn!("failed to convert event to dict: {err:?}");
-                        PyDict::new(py).into()
-                    })
             })
-            .collect();
+            .collect::<eyre::Result<Vec<_>>>()?;
         Ok(events)
     }
 
