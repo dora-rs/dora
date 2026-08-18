@@ -14,9 +14,9 @@ use std::{
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig,
-    Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, RUNTIME_PYTHON, RUNTIME_SHARED_LIBRARY, RUNTIME_WASM,
+    ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
+    Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
@@ -167,7 +167,6 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 .iter_mut()
                 .flat_map(|op| op.config.inputs.values_mut())
                 .collect(),
-            NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
             NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
             NodeKindMut::Ros2Bridge(_) => vec![],
         };
@@ -217,7 +216,6 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 health_check_timeout: node.health_check_timeout,
                 finish_grace_secs: node.finish_grace_secs,
             }),
-            NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
             NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
             NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
                 operators: vec![OperatorDefinition {
@@ -418,11 +416,6 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
             .as_mut()
             .map(NodeKindMut::Runtime)
             .ok_or_eyre("no operators"),
-        NodeKind::Custom(_) => node
-            .custom
-            .as_mut()
-            .map(NodeKindMut::Custom)
-            .ok_or_eyre("no custom"),
         NodeKind::Operator(_) => node
             .operator
             .as_mut()
@@ -621,26 +614,24 @@ impl NodeExt for Node {
         match (
             &self.path,
             &self.operators,
-            &self.custom,
             &self.operator,
             &self.ros2,
             &self.module,
         ) {
-            (None, None, None, None, None, None) => {
+            (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
-            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
-            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
+            (None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -653,7 +644,6 @@ pub enum NodeKind<'a> {
     Standard(&'a String),
     /// Dora runtime node
     Runtime(&'a RuntimeNode),
-    Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
@@ -670,7 +660,6 @@ enum NodeKindMut<'a> {
     },
     /// Dora runtime node
     Runtime(&'a mut RuntimeNode),
-    Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),

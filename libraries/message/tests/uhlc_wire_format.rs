@@ -1,6 +1,6 @@
 //! Wire-format contract between `dora-message` and its `uhlc` dependency.
 //!
-//! `uhlc::Timestamp` is embedded in every bincode-encoded daemon↔node,
+//! `uhlc::Timestamp` is embedded in every postcard-encoded daemon↔node,
 //! daemon↔daemon and record-file message (`Metadata`, `Timestamped`), and in
 //! every JSON-encoded CLI↔coordinator and coordinator↔daemon WebSocket frame.
 //! Its encoding is therefore part of dora's on-the-wire protocol even though the
@@ -9,13 +9,18 @@
 //! loudly.
 //!
 //! The golden vectors below pin that encoding so a future `uhlc` bump cannot
-//! move it unnoticed. They were captured under `uhlc 0.5.2` and still hold
-//! under `uhlc 0.9.0` (dora-rs/dora#2446): 0.9 changed the in-memory
-//! representation of `ID` from `NonZeroU128` to `[u8; 16]`, but both encode to
-//! the same 16 little-endian bytes under bincode, so the binary plane is
-//! untouched. The JSON plane *did* change shape (see
-//! `timestamp_json_encoding_is_pinned`) — that link is version-gated and now
-//! survives `serde_json::Value`, which the `NonZeroU128` form could not.
+//! move it unnoticed. The binary vectors were re-captured when the binary plane
+//! moved from bincode to postcard (`Metadata::CURRENT_VERSION` 1 → 2): postcard
+//! varint-encodes the `NTP64` instead of writing a fixed little-endian `u64`,
+//! while the HLC id stays a fixed 16-byte array. That was the last deliberate
+//! change to these bytes — a test failing against them now means a protocol
+//! migration is genuinely required, not that the vector needs updating.
+//!
+//! The JSON plane is unaffected by the postcard move. It last changed shape at
+//! `uhlc 0.9.0` (dora-rs/dora#2446), which switched `ID`'s in-memory form from
+//! `NonZeroU128` to `[u8; 16]` (see `timestamp_json_encoding_is_pinned`) — that
+//! link is version-gated and now survives `serde_json::Value`, which the
+//! `NonZeroU128` form could not.
 
 use dora_message::{
     common::Timestamped,
@@ -23,15 +28,15 @@ use dora_message::{
     uhlc::{ID, NTP64, Timestamp},
 };
 
-/// The pinned bincode encoding of [`golden_timestamp`]: the NTP64 as a
-/// little-endian `u64`, then the HLC id as its 16 little-endian bytes.
+/// The pinned postcard encoding of [`golden_timestamp`]: the NTP64 as a
+/// 9-byte varint, then the HLC id as its 16 little-endian bytes (a fixed-size
+/// array, so postcard writes no length prefix for it).
 ///
-/// This exact vector is what a uhlc-0.5 dora produced and what a uhlc-0.9 dora
-/// produces. If a bump changes it, every daemon↔node message, every inter-daemon
+/// If a uhlc bump changes this, every daemon↔node message, every inter-daemon
 /// zenoh sample and every `dora record` file written by a different dora version
 /// becomes unreadable — so a test failing against it means a protocol migration
 /// is genuinely required, not that the vector needs updating.
-const TIMESTAMP_HEX: &str = "88776655443322110102030405060708090a0b0c0d0e0f10";
+const TIMESTAMP_HEX: &str = "88ef99abc5e88c91110102030405060708090a0b0c0d0e0f10";
 
 /// A fixed timestamp: an arbitrary but non-round NTP64 and a 16-byte HLC id
 /// whose bytes are all distinct, so any reordering (the failure mode #2446
@@ -52,20 +57,20 @@ fn hex(bytes: &[u8]) -> String {
 }
 
 #[test]
-fn timestamp_bincode_encoding_is_pinned() {
-    let encoded = bincode::serialize(&golden_timestamp()).expect("serialize timestamp");
+fn timestamp_postcard_encoding_is_pinned() {
+    let encoded = postcard::to_stdvec(&golden_timestamp()).expect("serialize timestamp");
     assert_eq!(
         hex(&encoded),
         TIMESTAMP_HEX,
-        "uhlc::Timestamp bincode encoding changed — this is a protocol break"
+        "uhlc::Timestamp postcard encoding changed — this is a protocol break"
     );
 }
 
 #[test]
-fn timestamp_bincode_round_trips() {
+fn timestamp_postcard_round_trips() {
     let original = golden_timestamp();
-    let encoded = bincode::serialize(&original).expect("serialize");
-    let decoded: Timestamp = bincode::deserialize(&encoded).expect("deserialize");
+    let encoded = postcard::to_stdvec(&original).expect("serialize");
+    let decoded: Timestamp = postcard::from_bytes(&encoded).expect("deserialize");
 
     assert_eq!(decoded, original);
     // Compare the id through its byte form too: `PartialEq` alone would still
@@ -78,31 +83,31 @@ fn timestamp_bincode_round_trips() {
 }
 
 #[test]
-fn metadata_bincode_encoding_is_pinned() {
+fn metadata_postcard_encoding_is_pinned() {
     // `Metadata` is the envelope that actually rides on every output message,
-    // so pin the composite too: `metadata_version` as a little-endian u16, the
-    // 24-byte timestamp, then the parameter map length as a little-endian u64.
-    let encoded = bincode::serialize(&Metadata::new(golden_timestamp())).expect("serialize");
+    // so pin the composite too: `metadata_version` as a varint u16, the 25-byte
+    // timestamp, then the parameter map length as a varint.
+    let encoded = postcard::to_stdvec(&Metadata::new(golden_timestamp())).expect("serialize");
     assert_eq!(
         hex(&encoded),
         format!(
             "{version}{TIMESTAMP_HEX}{empty_parameter_map}",
-            version = "0100",
-            empty_parameter_map = "0000000000000000",
+            version = "02",
+            empty_parameter_map = "00",
         ),
-        "Metadata bincode encoding changed — bump Metadata::CURRENT_VERSION"
+        "Metadata postcard encoding changed — bump Metadata::CURRENT_VERSION"
     );
 }
 
 #[test]
-fn timestamped_bincode_prefix_is_the_inner_value() {
+fn timestamped_postcard_prefix_is_the_inner_value() {
     // `Timestamped<T>` puts `inner` first and the timestamp last, so the
-    // timestamp's 24 bytes are the tail of every daemon↔coordinator frame.
+    // timestamp's 25 bytes are the tail of every daemon↔coordinator frame.
     let timestamped = Timestamped {
         inner: 0xABu8,
         timestamp: golden_timestamp(),
     };
-    let encoded = bincode::serialize(&timestamped).expect("serialize");
+    let encoded = postcard::to_stdvec(&timestamped).expect("serialize");
     assert_eq!(hex(&encoded), format!("ab{TIMESTAMP_HEX}"));
 }
 
@@ -147,12 +152,20 @@ fn timestamp_survives_a_serde_json_value_round_trip() {
 }
 
 #[test]
-fn a_freshly_generated_hlc_id_uses_all_sixteen_bytes() {
-    // Guards the premise of the test above: if `HLC::default()` ever produced a
-    // short id, the `serde_json::Value` round trip would pass for reasons that
-    // do not generalize to production timestamps.
+fn a_freshly_generated_hlc_timestamp_survives_a_serde_json_value_round_trip() {
+    // Companion to `timestamp_survives_a_serde_json_value_round_trip`, which pins
+    // the property on the deterministic full-width `golden_timestamp` (top byte
+    // `0x10`, so it exceeds `u64`): confirm a *real* `HLC::default()` timestamp
+    // also survives `serde_json::Value`.
+    //
+    // We deliberately do NOT assert that the id uses all sixteen bytes. Under
+    // uhlc 0.9 `HLC::default()` seeds its id with a uniformly random 128-bit
+    // value (`ID::rand()`), whose most-significant byte is zero ~1/256 of the
+    // time, so `size() == 16` is probabilistic and would flake ~1 run in 256
+    // (dora-rs/dora#3104). The round trip below is lossless for an id of any
+    // width — that, not the byte count of a random id, is the property that
+    // matters here.
     let timestamp = dora_message::uhlc::HLC::default().new_timestamp();
-    assert_eq!(timestamp.get_id().size(), 16);
 
     let value = serde_json::to_value(Timestamped {
         inner: (),

@@ -1,0 +1,208 @@
+# Keeps a `needs-rebase` label in sync with GitHub's merge-conflict state.
+#
+# The label is added when a PR conflicts with the default branch and removed
+# as soon as it stops conflicting — whether the author rebased (handled by the
+# `pull_request_target` trigger) or someone else's merge into main resolved the
+# overlap (handled by the `push` trigger, which rescans every open PR).
+#
+# GitHub computes mergeability lazily: a freshly invalidated PR reports
+# `UNKNOWN` until a background job finishes, so the script re-polls the
+# undecided PRs instead of treating `UNKNOWN` as "no conflict". PRs that are
+# still undecided when the retry budget runs out keep whatever label state
+# they had — a stale label is better than a wrong one, and the next push or
+# the daily sweep will settle it.
+name: Needs rebase
+
+on:
+  push:
+    branches: [main]
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  # Safety net for runs lost to API errors or missed events.
+  schedule:
+    - cron: "17 5 * * *"
+  workflow_dispatch:
+
+# `pull_request_target` runs in the context of the base repo, so the token has
+# write access even for PRs from forks. No code from the PR is checked out.
+permissions:
+  pull-requests: write
+
+concurrency:
+  group: needs-rebase-${{ github.event_name == 'pull_request_target' && github.event.number || 'repo' }}
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Sync needs-rebase label
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const LABEL = 'needs-rebase';
+            const LABEL_COLOR = 'd93f0b';
+            const LABEL_DESCRIPTION = 'Conflicts with the base branch — rebase or merge main to resolve';
+
+            // GitHub recomputes mergeability in the background; give it
+            // ~90s to make up its mind.
+            const MAX_REPOLLS = 7;
+            const REPOLL_DELAY_MS = 12_000;
+            // A push to main invalidates every open PR's mergeability, but not
+            // atomically with the ref update. Querying immediately can read the
+            // pre-push answer and clear a label the push just earned, so let
+            // the invalidation land before the first query.
+            const SETTLE_MS = 15_000;
+
+            const { owner, repo } = context.repo;
+            const baseBranch = context.payload.repository.default_branch;
+            const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            const PR_FIELDS = `
+              number
+              baseRefName
+              mergeable
+              labels(first: 100) { nodes { name } }
+            `;
+
+            async function listOpenPrs() {
+              const query = `
+                query($owner: String!, $repo: String!, $base: String!, $cursor: String) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequests(states: OPEN, baseRefName: $base, first: 100, after: $cursor) {
+                      pageInfo { hasNextPage endCursor }
+                      nodes { ${PR_FIELDS} }
+                    }
+                  }
+                }`;
+              const prs = [];
+              let cursor = null;
+              for (;;) {
+                const result = await github.graphql(query, { owner, repo, base: baseBranch, cursor });
+                const page = result.repository.pullRequests;
+                prs.push(...page.nodes);
+                if (!page.pageInfo.hasNextPage) break;
+                cursor = page.pageInfo.endCursor;
+              }
+              return prs;
+            }
+
+            async function getPr(number) {
+              const query = `
+                query($owner: String!, $repo: String!, $number: Int!) {
+                  repository(owner: $owner, name: $repo) {
+                    pullRequest(number: $number) { ${PR_FIELDS} closed }
+                  }
+                }`;
+              const result = await github.graphql(query, { owner, repo, number });
+              const pr = result.repository.pullRequest;
+              // A PR closed mid-run, or retargeted away from the default
+              // branch, is no longer ours to label.
+              if (!pr || pr.closed || pr.baseRefName !== baseBranch) return null;
+              return pr;
+            }
+
+            const singlePr = context.eventName === 'pull_request_target';
+            // On a sweep every open PR is invalidated at once, so re-poll with
+            // the same bulk query instead of one request per undecided PR.
+            const fetchAll = singlePr
+              ? async () => {
+                  const pr = await getPr(context.payload.pull_request.number);
+                  return pr ? [pr] : [];
+                }
+              : listOpenPrs;
+
+            if (!singlePr) await sleep(SETTLE_MS);
+
+            const targets = await fetchAll();
+            if (targets.length === 0) {
+              core.info('No open PRs to check.');
+              return;
+            }
+            core.info(`Checking ${targets.length} open PR(s) against ${baseBranch}.`);
+
+            // Separate the PRs GitHub has an answer for from the ones it is
+            // still thinking about, re-polling only the latter.
+            const undecided = new Map(targets.map((pr) => [pr.number, pr]));
+            const decided = [];
+            for (let repoll = 0; ; repoll++) {
+              for (const [number, pr] of [...undecided]) {
+                if (pr.mergeable !== 'UNKNOWN') {
+                  decided.push(pr);
+                  undecided.delete(number);
+                }
+              }
+              if (undecided.size === 0 || repoll >= MAX_REPOLLS) break;
+              core.info(
+                `Waiting on mergeability for ${undecided.size} PR(s) ` +
+                `(re-poll ${repoll + 1}/${MAX_REPOLLS}).`
+              );
+              await sleep(REPOLL_DELAY_MS);
+              const fresh = new Map((await fetchAll()).map((pr) => [pr.number, pr]));
+              for (const number of [...undecided.keys()]) {
+                const pr = fresh.get(number);
+                // Gone from the list: closed or retargeted mid-run, not ours.
+                if (pr) undecided.set(number, pr);
+                else undecided.delete(number);
+              }
+            }
+
+            let labelChecked = false;
+            async function ensureLabelExists() {
+              if (labelChecked) return;
+              try {
+                await github.rest.issues.getLabel({ owner, repo, name: LABEL });
+              } catch (error) {
+                if (error.status !== 404) throw error;
+                await github.rest.issues.createLabel({
+                  owner,
+                  repo,
+                  name: LABEL,
+                  color: LABEL_COLOR,
+                  description: LABEL_DESCRIPTION,
+                });
+                core.info(`Created the ${LABEL} label.`);
+              }
+              labelChecked = true;
+            }
+
+            let added = 0;
+            let removed = 0;
+            for (const pr of decided) {
+              const labelled = pr.labels.nodes.some((label) => label.name === LABEL);
+              const conflicting = pr.mergeable === 'CONFLICTING';
+              if (conflicting && !labelled) {
+                await ensureLabelExists();
+                await github.rest.issues.addLabels({
+                  owner,
+                  repo,
+                  issue_number: pr.number,
+                  labels: [LABEL],
+                });
+                added += 1;
+                core.info(`#${pr.number}: conflicts with ${baseBranch} — added ${LABEL}.`);
+              } else if (!conflicting && labelled) {
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner,
+                    repo,
+                    issue_number: pr.number,
+                    name: LABEL,
+                  });
+                } catch (error) {
+                  // Someone (or a concurrent run) removed it first.
+                  if (error.status !== 404) throw error;
+                }
+                removed += 1;
+                core.info(`#${pr.number}: merges cleanly again — removed ${LABEL}.`);
+              }
+            }
+
+            for (const number of undecided.keys()) {
+              core.warning(
+                `#${number}: GitHub did not finish computing mergeability; ` +
+                `leaving the ${LABEL} label unchanged.`
+              );
+            }
+            core.info(`Done: ${added} label(s) added, ${removed} removed, ${undecided.size} undecided.`);

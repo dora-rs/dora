@@ -45,7 +45,7 @@ mod tests {
     use arrow::array::{Array, Float32Array};
     use dora_message::node_to_daemon::DataMessage;
 
-    /// The daemon/TCP fallback carries the IPC stream as a bincode-serialized
+    /// The daemon/TCP fallback carries the IPC stream as a postcard-serialized
     /// `DataMessage::Vec`. A round-trip through that serialization must preserve
     /// both the payload and its 128-byte alignment, so the receiver still
     /// decodes zero-copy via `decode_arrow_ipc_zero_copy`.
@@ -60,9 +60,9 @@ mod tests {
         ipc_encode::encode_ipc_into(&data, &mut avec).unwrap();
         let message = DataMessage::Vec(avec);
 
-        // bincode round-trip = what the node->daemon->node TCP hops do.
-        let bytes = bincode::serialize(&message).unwrap();
-        let restored: DataMessage = bincode::deserialize(&bytes).unwrap();
+        // Same encode/decode entry points the node->daemon->node TCP hops use.
+        let bytes = dora_message::encode(&message).unwrap();
+        let restored: DataMessage = dora_message::decode(&bytes).unwrap();
         let DataMessage::Vec(avec) = restored;
         assert_eq!(
             avec.as_ptr() as usize % 128,

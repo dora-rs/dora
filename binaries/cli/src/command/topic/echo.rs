@@ -243,6 +243,8 @@ fn inspect(
             } => {
                 eprintln!("Output {node_id}/{output_id} closed");
             }
+            // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+            _ => {}
         }
     }
 
