@@ -116,28 +116,43 @@ fn filename_from_url(url: &reqwest::Url) -> Option<String> {
         .map(|segment| segment.to_string())
 }
 
+/// Sanitize a candidate filename: strip path components to prevent traversal,
+/// reject null bytes and overly long names. Returns `None` when nothing usable
+/// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
+/// or a name over 255 bytes / containing a NUL. (A trailing slash such as
+/// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+fn sanitize_filename(name: &str) -> Option<String> {
+    let sanitized = Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())?;
+    if sanitized.contains('\0') || sanitized.len() > 255 {
+        return None;
+    }
+    Some(sanitized)
+}
+
+/// Pick a sanitized filename from the `Content-Disposition` header (if any),
+/// falling back to the URL's last path segment.
+///
+/// Each source is sanitized *independently* and then chained: a
+/// `Content-Disposition` filename that sanitizes away (e.g. a
+/// hostile/degenerate `filename=".."`, which `Path::file_name` maps to `None`)
+/// must not suppress the URL fallback that would otherwise name the download
+/// fine.
+fn resolve_filename(content_disposition: Option<&str>, url: &reqwest::Url) -> Option<String> {
+    content_disposition
+        .and_then(parse_content_disposition_filename)
+        .and_then(|name| sanitize_filename(&name))
+        .or_else(|| filename_from_url(url).and_then(|name| sanitize_filename(&name)))
+}
+
 fn get_filename(response: &reqwest::Response) -> Option<String> {
-    let raw_name = response
+    let content_disposition = response
         .headers()
         .get("content-disposition")
-        .and_then(|value| value.to_str().ok())
-        .and_then(parse_content_disposition_filename);
-
-    // If Content-Disposition header is not available, extract from the URL.
-    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
-
-    // Sanitize: strip path components to prevent traversal,
-    // reject null bytes and overly long names
-    raw_name.and_then(|name| {
-        let sanitized = Path::new(&name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())?;
-        if sanitized.contains('\0') || sanitized.len() > 255 {
-            return None;
-        }
-        Some(sanitized)
-    })
+        .and_then(|value| value.to_str().ok());
+    resolve_filename(content_disposition, response.url())
 }
 
 /// Download a file from a URL into `target_dir`.
@@ -412,6 +427,54 @@ mod tests {
         // RFC 5987 extended form is not decoded here; it falls through to None.
         assert_eq!(
             parse_content_disposition_filename("attachment; filename*=UTF-8''model.bin"),
+            None
+        );
+    }
+
+    // --- resolve_filename (Content-Disposition + URL fallback) ---
+
+    fn resolve(cd: Option<&str>, url: &str) -> Option<String> {
+        super::resolve_filename(cd, &reqwest::Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn resolve_prefers_content_disposition() {
+        assert_eq!(
+            resolve(
+                Some("attachment; filename=\"model.bin\""),
+                "https://example.com/other.bin"
+            ),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_no_header() {
+        assert_eq!(
+            resolve(None, "https://example.com/dir/weights.safetensors"),
+            Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_header_sanitizes_away() {
+        // Regression: a degenerate/hostile `Content-Disposition` filename that
+        // `Path::file_name` maps to `None` (`..`, `.`, a trailing slash) must
+        // not suppress the perfectly good URL fallback — previously
+        // `get_filename` returned `None` and aborted the download.
+        for cd in ["attachment; filename=\"..\"", "attachment; filename=\".\""] {
+            assert_eq!(
+                resolve(Some(cd), "https://example.com/model.bin"),
+                Some("model.bin".to_string()),
+                "header {cd:?} should fall back to the URL name"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_returns_none_when_both_sources_are_unusable() {
+        assert_eq!(
+            resolve(Some("attachment; filename=\"..\""), "https://example.com/"),
             None
         );
     }
