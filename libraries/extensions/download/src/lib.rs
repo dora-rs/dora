@@ -28,24 +28,70 @@ fn parse_content_disposition_filename(header: &str) -> Option<String> {
         }
         let value = value.trim();
         let name = if let Some(after_quote) = value.strip_prefix('"') {
-            // Quoted form: the value runs up to the closing quote.
-            after_quote.split('"').next().unwrap_or(after_quote)
+            // Quoted form: the value runs up to the first quote that is not a
+            // `\"` escape.
+            unquote_disposition_value(after_quote)
         } else {
-            value
+            value.to_string()
         };
-        (!name.is_empty()).then(|| name.to_string())
+        (!name.is_empty()).then_some(name)
     })
+}
+
+/// Decode a `Content-Disposition` quoted-string body (the text after the
+/// opening `"`): return everything up to the first *unescaped* closing quote,
+/// with a `\"` escape collapsed to a literal `"`. Without honoring the escape,
+/// a header like `filename="my \"weird\" name.bin"` is truncated at the first
+/// inner `\"` to `my \` instead of `my "weird" name.bin`.
+///
+/// Only `\"` is treated as an escape. A backslash that is *not* followed by a
+/// quote is kept verbatim, because real-world (non-RFC-compliant) servers
+/// routinely send unescaped Windows paths such as
+/// `filename="C:\dir\file.bin"`, and decoding those backslashes as quoted-pairs
+/// would silently corrupt the name. If no closing quote is present the whole
+/// remainder is returned (best-effort).
+fn unquote_disposition_value(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // `\"` -> literal `"`. Any other backslash stays literal.
+            '\\' if chars.peek() == Some(&'"') => {
+                out.push('"');
+                chars.next();
+            }
+            '"' => break,
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Split a `Content-Disposition` header value into its `;`-separated
 /// parameters, treating a `;` inside a double-quoted value as literal so that
 /// `filename="a;b.bin"` stays a single parameter.
+///
+/// An escaped quote (`\"`) does not open or close a quoted value, so the split
+/// agrees with [`unquote_disposition_value`] on where a value ends. Without
+/// this, an escaped quote in one parameter would flip the quote state and merge
+/// the following `;`-separated parameter (e.g. the real `filename=`) into it.
+///
+/// The escape policy is deliberately identical to [`unquote_disposition_value`]:
+/// *only* `\"` is an escape — any other backslash is literal (so unescaped
+/// Windows paths survive). Keeping the two in lockstep is what prevents the
+/// splitter and the decoder from disagreeing on where a value ends.
 fn split_disposition_params(header: &str) -> impl Iterator<Item = &str> {
     let mut params = Vec::new();
     let mut start = 0;
     let mut in_quotes = false;
-    for (i, c) in header.char_indices() {
+    let mut chars = header.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
         match c {
+            // `\"` inside a quoted value is an escaped quote: consume the `"` so
+            // it does not close the value. Any other backslash is literal.
+            '\\' if in_quotes && chars.peek().is_some_and(|&(_, c)| c == '"') => {
+                chars.next();
+            }
             '"' => in_quotes = !in_quotes,
             ';' if !in_quotes => {
                 params.push(&header[start..i]);
@@ -256,6 +302,54 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename("attachment; filename=\"a;b.bin\""),
             Some("a;b.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quotes_inside_quoted_filename_are_unescaped() {
+        // RFC 6266 / RFC 2616 quoted-pairs: an escaped `\"` inside the value is
+        // literal, not the terminator. A substring split on the first `"` would
+        // truncate this to `my \`.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; filename=\"my \\\"weird\\\" name.bin\""
+            ),
+            Some("my \"weird\" name.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quote_before_trailing_param_ends_the_value() {
+        // The escaped `\"` is not the terminator; the value ends at the real
+        // closing quote and the trailing `; size=...` parameter is ignored.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; filename=\"a \\\"b\\\".bin\"; size=1000"
+            ),
+            Some("a \"b\".bin".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quote_in_earlier_param_does_not_swallow_filename() {
+        // An escaped quote in a *preceding* parameter must not desync the
+        // splitter from the value decoder and hide the real filename: the `;`
+        // after the earlier value is still a parameter boundary.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; title=\"a \\\"b\"; filename=\"doc.bin\""
+            ),
+            Some("doc.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn unescaped_backslashes_are_kept_verbatim() {
+        // Real-world (non-RFC-compliant) servers send unescaped Windows paths;
+        // a `\` that does not escape a quote must be preserved, not dropped.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"C:\\Users\\file.bin\""),
+            Some("C:\\Users\\file.bin".to_string())
         );
     }
 
