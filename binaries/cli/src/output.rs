@@ -404,7 +404,7 @@ mod tests {
     fn rendered_rest(msg: LogMessage, config: &LogOutputConfig) -> String {
         colored::control::set_override(false);
         let line = format_pretty_line(&msg, config);
-        line.splitn(2, ' ').nth(1).unwrap().to_string()
+        line.split_once(' ').unwrap().1.to_string()
     }
 
     #[test]

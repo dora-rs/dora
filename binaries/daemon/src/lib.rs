@@ -12457,7 +12457,7 @@ mod cross_pool_write_tests {
         let patterns: Vec<Vec<u8>> = (0..WRITERS).map(|w| vec![w; SIZE]).collect();
         for round in 0..200 {
             std::thread::scope(|scope| {
-                for (_w, pattern) in patterns.iter().enumerate() {
+                for pattern in patterns.iter() {
                     let pattern = pattern.as_slice();
                     scope.spawn(move || {
                         write_cross_pool_data(&dataflow_id, "B", pool_id, pattern, SIZE);
@@ -13220,8 +13220,8 @@ mod cross_pool_write_tests {
         auth_handshake_send(&mut client, "test-shared-secret")
             .await
             .unwrap();
-        let verify = server.await.unwrap().unwrap();
-        assert_eq!(verify, (), "shared token must be accepted");
+        server.await.unwrap().unwrap();
+        assert_eq!((), (), "shared token must be accepted");
 
         // Wrong token: rejected on the verify side and an error on the
         // send side (the peer answers AUTH_FAIL).
@@ -13299,7 +13299,7 @@ mod cross_pool_write_tests {
         auth_handshake_send(&mut client2, "test-shared-secret")
             .await
             .unwrap();
-        let gate_ok = server2.await.unwrap().unwrap();
-        assert_eq!(gate_ok, (), "shared token must pass the gate");
+        server2.await.unwrap().unwrap();
+        assert_eq!((), (), "shared token must pass the gate");
     }
 }
