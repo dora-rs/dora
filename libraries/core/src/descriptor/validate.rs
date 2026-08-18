@@ -806,16 +806,16 @@ fn validate_ros2_qos(
                  must be between 1 and 10000"
         );
     }
-    if let Some(t) = qos.max_blocking_time
-        && (!t.is_finite() || t < 0.0)
-    {
-        bail!("node `{node_id}`: QoS max_blocking_time must be a finite non-negative number");
-    }
-    if let Some(t) = qos.lease_duration
-        && (!t.is_finite() || t < 0.0)
-    {
-        bail!("node `{node_id}`: QoS lease_duration must be a finite non-negative number");
-    }
+    // Both fields reach `Duration::from_secs_f64` in the ROS2 bridge QoS
+    // conversion and panic on a finite-but-overflowing value (e.g. `1e300`),
+    // not just on NaN/infinite/negative. `check_seconds_field` probes that
+    // exact boundary with `try_from_secs_f64`, matching every other
+    // second-valued field here, and keeps validating both fields whenever set
+    // (as the prior check did). `allow_zero = true`: `max_blocking_time`
+    // defaults to `0.0` and a zero lease is harmless.
+    let owner = format!("node `{node_id}`");
+    check_seconds_field(&owner, "QoS max_blocking_time", qos.max_blocking_time, true)?;
+    check_seconds_field(&owner, "QoS lease_duration", qos.lease_duration, true)?;
     Ok(())
 }
 
@@ -2617,6 +2617,55 @@ nodes:
         let err = validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
             .unwrap_err();
         assert!(err.to_string().contains("lease_duration"));
+    }
+
+    /// A finite but enormous QoS duration passes the old
+    /// `is_finite()` / `>= 0` check yet overflows `Duration`, which panics
+    /// `Duration::from_secs_f64` in the ROS2 bridge QoS conversion. Both
+    /// fields must be rejected at descriptor validation instead.
+    #[test]
+    fn validate_qos_overflowing_durations_are_rejected() {
+        let base = Ros2BridgeConfig {
+            service: Some("/svc".into()),
+            service_type: Some("a/B".into()),
+            role: Some(Ros2Role::Client),
+            ..Default::default()
+        };
+        let mut inputs = BTreeMap::new();
+        inputs.insert(DataId::from("request".to_owned()), dummy_input());
+        let mut outputs = BTreeSet::new();
+        outputs.insert(DataId::from("response".to_owned()));
+
+        // `1e300` seconds is finite and positive but far beyond `Duration::MAX`.
+        for (field, qos) in [
+            (
+                "lease_duration",
+                dora_message::descriptor::Ros2QosConfig {
+                    lease_duration: Some(1e300),
+                    ..Default::default()
+                },
+            ),
+            (
+                "max_blocking_time",
+                dora_message::descriptor::Ros2QosConfig {
+                    reliable: true,
+                    max_blocking_time: Some(1e300),
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let config = Ros2BridgeConfig {
+                qos,
+                ..base.clone()
+            };
+            let err =
+                validate_ros2_config(&NodeId::from("n".to_owned()), &config, &inputs, &outputs)
+                    .unwrap_err();
+            assert!(
+                err.to_string().contains(field),
+                "expected error naming `{field}`, got: {err}"
+            );
+        }
     }
 
     // --- Wiring validation tests ---
