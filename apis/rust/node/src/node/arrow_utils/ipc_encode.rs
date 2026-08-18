@@ -359,11 +359,11 @@ pub(crate) fn ipc_fast_path_len_data(array: &ArrayData) -> Option<usize> {
 ///
 /// ```
 /// # fn main() -> eyre::Result<()> {
-/// use dora_node_api::arrow::array::{Array, UInt64Array};
 /// use dora_node_api::arrow_utils::decode_arrow_ipc;
 /// use dora_node_api::arrow_utils::ipc_encode::PreparedIpc;
+/// use dora_node_api::{IntoArrow, into_vec};
 ///
-/// let data = UInt64Array::from(vec![1, 2, 3]).into_data();
+/// let data = vec![1u64, 2, 3].into_arrow();
 ///
 /// // Prepare once, size the destination from `byte_len()`, then encode into it.
 /// let prepared = PreparedIpc::new(&data).expect("primitive array is fast-path eligible");
@@ -372,7 +372,7 @@ pub(crate) fn ipc_fast_path_len_data(array: &ArrayData) -> Option<usize> {
 ///
 /// // The buffer is a self-describing IPC stream, identical to `encode_ipc_into`.
 /// let decoded = decode_arrow_ipc(&buffer)?;
-/// assert_eq!(decoded, UInt64Array::from(vec![1, 2, 3]).into_data());
+/// assert_eq!(into_vec::<u64>(&decoded)?, vec![1, 2, 3]);
 /// # Ok(())
 /// # }
 /// ```
