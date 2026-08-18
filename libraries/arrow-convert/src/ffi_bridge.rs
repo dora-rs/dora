@@ -200,7 +200,7 @@ mod tests {
     use arrow58::array::{Array, ArrayRef};
 
     /// 58 → 59 → 58. The values must survive both hops, and the schema with
-    /// them: a mis-set field in the reinterpreted `FFI_ArrowSchema` shows up
+    /// them: a wrongly set field in the reinterpreted `FFI_ArrowSchema` shows up
     /// here as a changed data type or a decode error.
     #[test]
     fn round_trip_58_59_58() {
