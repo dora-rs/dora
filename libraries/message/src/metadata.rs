@@ -28,6 +28,7 @@ impl Metadata {
     /// with a cryptic positional-deserialization error.
     pub const CURRENT_VERSION: u16 = 2;
 
+    /// Create metadata with the given timestamp and no user parameters.
     pub fn new(timestamp: uhlc::Timestamp) -> Self {
         Self::from_parameters(timestamp, Default::default())
     }
@@ -82,6 +83,8 @@ impl Metadata {
         Some((consumer, input))
     }
 
+    /// Create metadata with the given timestamp and user parameters, stamping
+    /// the current wire-format version ([`CURRENT_VERSION`](Self::CURRENT_VERSION)).
     pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
             metadata_version: Self::CURRENT_VERSION,
@@ -97,10 +100,13 @@ impl Metadata {
         self.metadata_version
     }
 
+    /// The hybrid-logical-clock timestamp assigned when this message was sent.
     pub fn timestamp(&self) -> uhlc::Timestamp {
         self.timestamp
     }
 
+    /// The serialized OpenTelemetry propagation context carried in the
+    /// `open_telemetry_context` parameter, or an empty string if absent.
     pub fn open_telemetry_context(&self) -> String {
         get_string_param(&self.parameters, OPEN_TELEMETRY_CONTEXT)
             .unwrap_or("")
@@ -160,16 +166,47 @@ pub const STARTUP_ACK_INPUT_PARAM: &str = "__dora_startup_ack_input";
 /// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
 
-/// A metadata parameter that can be sent as part of output messages.
+/// A typed metadata parameter sent as part of output messages.
+///
+/// Parameters are stored by key in [`MetadataParameters`]. The `get_*_param`
+/// helpers ([`get_string_param`], [`get_integer_param`], [`get_bool_param`])
+/// are type-checked: they return the value only when the stored variant matches
+/// the requested type, and `None` both for a missing key **and** for a key whose
+/// stored value has a different type. Callers therefore never need to match on
+/// the variant themselves for the common scalar cases.
+///
+/// ```
+/// use dora_message::metadata::{
+///     get_integer_param, get_string_param, MetadataParameters, Parameter,
+/// };
+///
+/// let mut params = MetadataParameters::new();
+/// params.insert("frame".to_string(), Parameter::Integer(7));
+///
+/// // Matching type -> the value.
+/// assert_eq!(get_integer_param(&params, "frame"), Some(7));
+/// // Wrong requested type -> None (not a panic, not a coercion).
+/// assert_eq!(get_string_param(&params, "frame"), None);
+/// // Missing key -> None.
+/// assert_eq!(get_integer_param(&params, "absent"), None);
+/// ```
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Parameter {
+    /// A boolean value.
     Bool(bool),
+    /// A signed 64-bit integer value.
     Integer(i64),
+    /// A UTF-8 string value.
     String(String),
+    /// A list of signed 64-bit integers.
     ListInt(Vec<i64>),
+    /// A 64-bit floating-point value.
     Float(f64),
+    /// A list of 64-bit floating-point values.
     ListFloat(Vec<f64>),
+    /// A list of UTF-8 strings.
     ListString(Vec<String>),
+    /// A UTC timestamp.
     Timestamp(DateTime<Utc>),
 }
 
