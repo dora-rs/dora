@@ -283,7 +283,7 @@ fn notify_extension_dropped(
 
 /// Drop `key` from the table and notify its readers, logging any that could
 /// not be reached. Shared by the explicit drop request and by reclamation.
-fn drop_extension_and_notify(
+pub(crate) fn drop_extension_and_notify(
     extensions: &mut ExtensionTable,
     dataflow: Option<&RunningDataflow>,
     key: &ExtensionKey,
@@ -407,7 +407,7 @@ pub(crate) struct PendingDestroy {
 }
 
 #[cfg(feature = "tensor-pool")]
-mod memory_pool;
+mod pool_extension;
 
 pub struct Daemon {
     /// This machine's id (as registered with the coordinator), if any.
@@ -461,7 +461,7 @@ pub struct Daemon {
     /// feature, so a default daemon carries none of it — see
     /// `libraries/extensions/tensor-pool/README.md`.
     #[cfg(feature = "tensor-pool")]
-    pub(crate) pool: memory_pool::PoolState,
+    pub(crate) pool: dora_tensor_pool::daemon::PoolState,
     /// Nodes already warned about for sending after their dataflow
     /// finished, so `log_late_node_output` warns once each instead of
     /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
@@ -1908,7 +1908,7 @@ impl Daemon {
             git_manager: Default::default(),
             extensions: ExtensionTable::new(),
             #[cfg(feature = "tensor-pool")]
-            pool: memory_pool::PoolState::new(),
+            pool: dora_tensor_pool::daemon::PoolState::new(),
             builds,
             sessions: Default::default(),
             metrics_state: Arc::new(std::sync::Mutex::new(MetricsState::default())),
@@ -1945,7 +1945,7 @@ impl Daemon {
         // whatever it left behind. What that means is its business; the daemon
         // only supplies the machine identity it is scoped to.
         #[cfg(feature = "tensor-pool")]
-        memory_pool::PoolState::sweep_orphans_at_startup(self.machine_id.as_deref());
+        dora_tensor_pool::daemon::PoolState::sweep_orphans_at_startup(self.machine_id.as_deref());
 
         let watchdog_clock = self.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
@@ -4248,7 +4248,7 @@ impl Daemon {
         // a co-located daemon may be starting the other half of the same
         // dataflow right now.
         #[cfg(feature = "tensor-pool")]
-        memory_pool::PoolState::sweep_orphans_for_dataflow(dataflow_id, |node| {
+        dora_tensor_pool::daemon::PoolState::sweep_orphans_for_dataflow(dataflow_id, |node| {
             spawn_nodes.iter().any(|id| id.as_ref() == node)
         });
 

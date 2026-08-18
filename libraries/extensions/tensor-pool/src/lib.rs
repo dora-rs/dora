@@ -1,5 +1,8 @@
 pub mod protocol;
 
+#[cfg(feature = "daemon")]
+pub mod daemon;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 

@@ -2,28 +2,28 @@
 //!
 //! Everything dora knows about this transport is that an extension named
 //! [`NAMESPACE`] exists and that opaque bytes must reach it. The bytes are
-//! decoded here, into the extension's own protocol types — dora's wire
-//! protocol carries no pool-shaped variant. See `docs/extensions.md`.
+//! decoded here, into this crate's own [`crate::protocol`] types — dora's
+//! wire protocol carries no pool-shaped variant. See `docs/extensions.md`.
 
 use super::*;
-use dora_tensor_pool::protocol::{NAMESPACE, NodeRequest, NodeResponse, PeerMessage};
 
-impl crate::Daemon {
+impl PoolState {
     /// Route one [`InterDaemonEvent::ExtensionMessage`] to its extension.
     ///
     /// The `target_machine` gate is dora's, not the extension's: the topic is
     /// a dataflow-scope broadcast, so an addressed message must be dropped by
     /// every daemon it does not name. It was previously duplicated inside the
     /// register and free handlers.
-    pub(crate) async fn handle_extension_message(
+    pub async fn handle_extension_message(
         &mut self,
+        svc: &mut dyn DaemonServices,
         dataflow_id: Uuid,
         namespace: String,
         target_machine: Option<String>,
         payload: Vec<u8>,
     ) -> eyre::Result<()> {
         if let Some(target) = target_machine.as_deref()
-            && target != self.machine_id.as_deref().unwrap_or("")
+            && target != svc.machine_id().as_deref().unwrap_or("")
         {
             return Ok(());
         }
@@ -38,11 +38,13 @@ impl crate::Daemon {
                 return Ok(());
             }
         };
-        self.handle_pool_peer_message(dataflow_id, message).await
+        self.handle_pool_peer_message(svc, dataflow_id, message)
+            .await
     }
 
     async fn handle_pool_peer_message(
         &mut self,
+        svc: &mut dyn DaemonServices,
         dataflow_id: Uuid,
         message: PeerMessage,
     ) -> eyre::Result<()> {
@@ -63,7 +65,6 @@ impl crate::Daemon {
                 // genuinely missing mirror still warns inside
                 // `write_cross_pool_data`.
                 let is_cross = self
-                    .pool
                     .tensor_pool
                     .is_cross(&dataflow_id.to_string(), &shared_memory_id);
                 if !is_cross {
@@ -76,10 +77,10 @@ impl crate::Daemon {
                 // The mirror write is a synchronous 61.44MB memcpy
                 // (10-30ms) — off the event loop or it would stall
                 // heartbeats, node replies and output delivery.
-                let local_machine_id = self.machine_id.clone().unwrap_or_default();
-                let session = self.zenoh_session.clone();
-                let clock = self.clock.clone();
-                let shm_provider = self.pool.shm_provider.clone();
+                let local_machine_id = svc.machine_id().unwrap_or_default();
+                let session = svc.zenoh_session();
+                let clock = svc.clock();
+                let shm_provider = self.shm_provider.clone();
                 tokio::spawn(async move {
                     // `dataflow_id` (Uuid) is Copy; captured by copy.
                     let ok = write_cross_pool_data(
@@ -173,7 +174,6 @@ impl crate::Daemon {
                 // check would reject legitimate registrations during a
                 // slow build.
                 let Some(dataflow_live) = self
-                    .pool
                     .subscribers
                     .get(&dataflow_id)
                     .map(|s| s.dataflow_live.clone())
@@ -184,18 +184,18 @@ impl crate::Daemon {
                     );
                     return Ok(());
                 };
-                let session = self.zenoh_session.clone();
-                let clock = self.clock.clone();
+                let session = svc.zenoh_session();
+                let clock = svc.clock();
                 // The gating above guarantees this daemon IS the target
                 // machine, so its machine id is the mirror's namespace.
                 // Lazily open the direct-TCP data listener now that this
                 // daemon is actually mirroring something (daemons that
                 // never participate in cross-machine pools stay closed).
-                self.ensure_cross_data_listener().await;
-                let local_machine_id = self.machine_id.clone();
+                self.ensure_cross_data_listener(svc).await;
+                let local_machine_id = svc.machine_id();
                 // Pool creation happens inside spawn (creation is millisecond-scale but publishing may Block)
-                let tensor_pool = self.pool.tensor_pool.clone();
-                let shm_provider = self.pool.shm_provider.clone();
+                let tensor_pool = self.tensor_pool.clone();
+                let shm_provider = self.shm_provider.clone();
                 // Replicate the pool descriptor into the local extension
                 // table before the mirror creation task runs, so a
                 // receiver's daemon query resolves it from the first
@@ -206,7 +206,7 @@ impl crate::Daemon {
                 // this host, so the node-exit reclaim never fires —
                 // FreePool drops the entry explicitly.
                 let mirror_shmem_name = TensorPoolManager::cross_pool_shmem_name(
-                    self.machine_id.as_deref().unwrap_or_default(),
+                    svc.machine_id().unwrap_or_default().as_str(),
                     &dataflow_id.to_string(),
                     &shared_memory_id,
                 );
@@ -229,14 +229,12 @@ impl crate::Daemon {
                         );
                         return Ok(());
                     };
-                    let ext_key = ExtensionKey {
-                        dataflow_id: dataflow_id.to_string(),
-                        namespace: "dora-tensor-pool".to_string(),
-                        key: shared_memory_id.clone(),
-                    };
+                    let ext_key = shared_memory_id.clone();
                     let value =
                         build_mirror_descriptor(size, &dtype, &shape, mirror_shmem_name, &device);
-                    if let Err(e) = self.extensions.store(ext_key, value, &owner) {
+                    if let Err(e) =
+                        svc.extension_store(dataflow_id, NAMESPACE, &ext_key, value, owner.as_ref())
+                    {
                         tracing::warn!(
                             "memory pool: failed to store mirror descriptor for {shared_memory_id}: {e}"
                         );
@@ -248,7 +246,7 @@ impl crate::Daemon {
                 }
                 // Advertise this daemon's direct-TCP data listener so the
                 // origin can bypass the zenoh relay for per-frame writes.
-                let data_port = self.pool.cross_data_listener_port;
+                let data_port = self.cross_data_listener_port;
                 // Explicit dialable address override: the coordinator only
                 // sees this daemon's WS source address, which is the wrong
                 // dial target under NAT / multi-homed / same-host
@@ -364,8 +362,7 @@ impl crate::Daemon {
                 Ok(())
             }
             PeerMessage::Free { shared_memory_id } => {
-                self.pool
-                    .tensor_pool
+                self.tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
                 // The replicated mirror descriptor goes away with the
                 // pool — through the notify path so receiver nodes on
@@ -373,13 +370,8 @@ impl crate::Daemon {
                 // their mappings (a bare drop_key discards the
                 // touched-node set and strands them, 何勇 review
                 // 5302853212).
-                let ext_key = ExtensionKey {
-                    dataflow_id: dataflow_id.to_string(),
-                    namespace: "dora-tensor-pool".to_string(),
-                    key: shared_memory_id.clone(),
-                };
-                let dataflow = self.running.get(&dataflow_id);
-                drop_extension_and_notify(&mut self.extensions, dataflow, &ext_key, &self.clock);
+                let ext_key = shared_memory_id.clone();
+                svc.extension_drop_notify(dataflow_id, NAMESPACE, &ext_key);
                 // Drop the per-pool relay write lock: keyed by a fresh
                 // per-dataflow UUID like the sibling cross-write maps,
                 // so entries would otherwise accumulate for every freed
@@ -399,7 +391,7 @@ impl crate::Daemon {
                     .remove(&(dataflow_id, shared_memory_id.to_string()));
                 // Same machine-qualified id as `create_cross_pool_shmem`.
                 if !unlink_cross_pool_segment(
-                    self.machine_id.as_deref().unwrap_or_default(),
+                    svc.machine_id().unwrap_or_default().as_str(),
                     &dataflow_id.to_string(),
                     &shared_memory_id,
                 ) {
@@ -413,8 +405,9 @@ impl crate::Daemon {
 
     /// Route one `DaemonRequest::ExtensionRequest` to its extension and hand
     /// the opaque reply back to the calling node.
-    pub(crate) async fn handle_extension_request(
+    pub async fn handle_extension_request(
         &mut self,
+        svc: &mut dyn DaemonServices,
         dataflow_id: Uuid,
         node_id: NodeId,
         namespace: String,
@@ -436,12 +429,13 @@ impl crate::Daemon {
                 return Ok(());
             }
         };
-        self.handle_pool_node_request(dataflow_id, node_id, request, reply_sender)
+        self.handle_pool_node_request(svc, dataflow_id, node_id, request, reply_sender)
             .await
     }
 
     async fn handle_pool_node_request(
         &mut self,
+        svc: &mut dyn DaemonServices,
         dataflow_id: Uuid,
         node_id: NodeId,
         request: NodeRequest,
@@ -475,7 +469,6 @@ impl crate::Daemon {
                 // included), backing up the event channels until the
                 // sender's WritePinnedMemory hangs forever.
                 if !self
-                    .pool
                     .tensor_pool
                     .is_cross(&dataflow_id.to_string(), &shared_memory_id)
                 {
@@ -504,9 +497,9 @@ impl crate::Daemon {
                     // daemon table does not hold the entry yet. The
                     // table lookup covers explicit `name=` pools (whose
                     // names are not derivable).
-                    self.machine_id
-                        .as_deref()
-                        .filter(|m| !m.is_empty())
+                    let local_machine = svc.machine_id().unwrap_or_default();
+                    (!local_machine.is_empty())
+                        .then_some(local_machine.as_str())
                         .and_then(|m| {
                             TensorPoolManager::cross_pool_shmem_name(
                                 m,
@@ -515,10 +508,9 @@ impl crate::Daemon {
                             )
                         })
                         .or_else(|| {
-                            self.pool
-                                .tensor_pool
+                            self.tensor_pool
                                 .read_tensor_pool(
-                                    &dora_tensor_pool::TensorPoolId {
+                                    &crate::TensorPoolId {
                                         dataflow_id: dataflow_id.to_string(),
                                         id: shared_memory_id.clone(),
                                     },
@@ -528,9 +520,9 @@ impl crate::Daemon {
                                 .filter(|n| !n.is_empty())
                         })
                 };
-                let session = self.zenoh_session.clone();
-                let clock = self.clock.clone();
-                let shm_provider = self.pool.shm_provider.clone();
+                let session = svc.zenoh_session();
+                let clock = svc.clock();
+                let shm_provider = self.shm_provider.clone();
                 // Remote commit acknowledgement: the reply is withheld
                 // until the mirror daemon confirms the segment write
                 // (MemoryPoolWriteAck). Otherwise the send_output
@@ -568,13 +560,12 @@ impl crate::Daemon {
                 // back to zenoh when no endpoint is known or the send
                 // fails.
                 let direct_endpoint = self
-                    .pool
                     .cross_data_endpoints
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .get(&(dataflow_id, shared_memory_id.clone()))
                     .copied();
-                let cross_data_conns = self.pool.cross_data_conns.clone();
+                let cross_data_conns = self.cross_data_conns.clone();
                 tokio::spawn(async move {
                     // The segment read (a full-size allocation plus copy)
                     // runs here, off the event loop.
@@ -756,16 +747,18 @@ impl crate::Daemon {
                     return Ok(());
                 }
                 let topic = dataflow_extension_topic(&dataflow_id, NAMESPACE);
-                let session = self.zenoh_session.clone();
-                let clock = self.clock.clone();
-                let coordinator_sender = self.coordinator_sender.clone();
-                // The origin machine id for the RegisterPool event: the
+                let session = svc.zenoh_session();
+                let clock = svc.clock();
+                // The resolution runs inside the spawn, but `svc` is not
+                // reachable there — take the future now and move it in.
+                let resolve = svc.resolve_machine(machine_id.clone());
+                // The origin machine id for the register message: the
                 // mirror records `{pool -> origin}` and later frees
                 // toward it. `self` is not reachable inside the spawn.
-                let origin_machine_id = self.machine_id.clone();
-                let tensor_pool = self.pool.tensor_pool.clone();
-                let shm_provider = self.pool.shm_provider.clone();
-                let cross_data_endpoints = self.pool.cross_data_endpoints.clone();
+                let origin_machine_id = svc.machine_id();
+                let tensor_pool = self.tensor_pool.clone();
+                let shm_provider = self.shm_provider.clone();
+                let cross_data_endpoints = self.cross_data_endpoints.clone();
                 tokio::spawn(async move {
                     // Clone for the post-flow cleanup below: the inner
                     // async block moves `shared_memory_id` into the pool
@@ -775,19 +768,10 @@ impl crate::Daemon {
                     // confirmed it can open our segment directly.
                     let mut direct = false;
                     let reply = async {
-                        // Resolve the target machine through the
-                        // coordinator. No coordinator connection means
-                        // the machine cannot be resolved either — same
-                        // warn-and-skip.
-                        let Some(coordinator_sender) = coordinator_sender.as_ref() else {
-                            return Err(format!(
-                                r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
-                            ));
-                        };
-                        let Some(peer_addr) =
-                            coordinator::resolve_machine(coordinator_sender, &clock, &machine_id)
-                                .await
-                        else {
+                        // Resolve the target machine through the coordinator.
+                        // No coordinator connection means the machine cannot
+                        // be resolved either — same warn-and-skip.
+                        let Some(peer_addr) = resolve.await else {
                             return Err(format!(
                                 r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
                             ));
@@ -909,7 +893,7 @@ impl crate::Daemon {
                                 return Err(format!("RegisterPool publish failed: {e}"));
                             }
                             match tokio::time::timeout(
-                                coordinator::CROSS_REGISTER_TIMEOUT,
+                                CROSS_REGISTER_TIMEOUT,
                                 ack_rx,
                             )
                             .await
@@ -964,11 +948,11 @@ impl crate::Daemon {
                                     // so the entry must exist before the
                                     // node's first write).
                                     tensor_pool.register_tensor_pool(
-                                        dora_tensor_pool::TensorPoolId {
+                                        crate::TensorPoolId {
                                             dataflow_id: dataflow_id.to_string(),
                                             id: shared_memory_id.clone(),
                                         },
-                                        dora_tensor_pool::TensorPoolMetadata {
+                                        crate::TensorPoolMetadata {
                                             size,
                                             dtype: dtype.clone(),
                                             shape: shape
@@ -1042,19 +1026,18 @@ impl crate::Daemon {
                 // cross-machine, publish the targeted FreePool and unlink
                 // this machine's mirror.
                 let peer = self
-                    .pool
                     .tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
                     .map(|entry| entry.peer_machine);
                 if let Some(peer) = &peer {
                     release_cross_pool(
-                        &self.zenoh_session,
-                        &self.clock,
+                        &svc.zenoh_session(),
+                        &svc.clock(),
                         &dataflow_id,
-                        self.machine_id.as_deref().unwrap_or_default(),
+                        svc.machine_id().unwrap_or_default().as_str(),
                         peer,
                         &shared_memory_id,
-                        self.pool.shm_provider.as_deref(),
+                        self.shm_provider.as_deref(),
                     )
                     .await;
                 }
@@ -1069,8 +1052,8 @@ impl crate::Daemon {
                 // cross-machine pools) is fine — the table is only
                 // populated on the explicit-name path (何勇 review
                 // 5302853212).
-                if let Err(e) = self.pool.tensor_pool.free_tensor_pool(
-                    &dora_tensor_pool::TensorPoolId {
+                if let Err(e) = self.tensor_pool.free_tensor_pool(
+                    &crate::TensorPoolId {
                         dataflow_id: dataflow_id.to_string(),
                         id: shared_memory_id.clone(),
                     },
@@ -1086,13 +1069,8 @@ impl crate::Daemon {
                 // asymmetric with the FreePool path (self-review,
                 // 2026-08-16). A no-op for pools whose registration never
                 // completed (drop_key returns None).
-                let ext_key = ExtensionKey {
-                    dataflow_id: dataflow_id.to_string(),
-                    namespace: "dora-tensor-pool".to_string(),
-                    key: shared_memory_id.clone(),
-                };
-                let dataflow = self.running.get(&dataflow_id);
-                drop_extension_and_notify(&mut self.extensions, dataflow, &ext_key, &self.clock);
+                let ext_key = shared_memory_id.clone();
+                svc.extension_drop_notify(dataflow_id, NAMESPACE, &ext_key);
                 let _ = reply_sender.send(DaemonReply::Result(Ok(())));
             }
         }
@@ -1106,11 +1084,11 @@ impl crate::Daemon {
     /// address is configurable (`DORA_MEMORY_POOL_DATA_BIND`, default
     /// `0.0.0.0`) for hosts where the listener must not sit on every
     /// interface.
-    async fn ensure_cross_data_listener(&mut self) {
+    async fn ensure_cross_data_listener(&mut self, svc: &mut dyn DaemonServices) {
         if !cross_machine_enabled() {
             return;
         }
-        if self.pool.cross_data_listener_port.is_some() {
+        if self.cross_data_listener_port.is_some() {
             return;
         }
         let port = std::env::var(CROSS_DATA_PORT_ENV)
@@ -1128,17 +1106,17 @@ impl crate::Daemon {
                 return;
             }
         };
-        self.pool.cross_data_listener_port = listener.local_addr().ok().map(|a| a.port());
+        self.cross_data_listener_port = listener.local_addr().ok().map(|a| a.port());
         tracing::info!(
             "memory pool: direct-TCP data listener on port {:?}",
-            self.pool.cross_data_listener_port
+            self.cross_data_listener_port
         );
 
-        let tensor_pool = self.pool.tensor_pool.clone();
-        let machine_id = self.machine_id.clone().unwrap_or_default();
-        let session = self.zenoh_session.clone();
-        let clock = self.clock.clone();
-        let shm_provider = self.pool.shm_provider.clone();
+        let tensor_pool = self.tensor_pool.clone();
+        let machine_id = svc.machine_id().unwrap_or_default();
+        let session = svc.zenoh_session();
+        let clock = svc.clock();
+        let shm_provider = self.shm_provider.clone();
         // Auth is read per connection (env lookup), so the daemon needs no
         // state here beyond the option the handshake checks.
         tokio::spawn(async move {
@@ -1200,7 +1178,7 @@ impl crate::Daemon {
 
     /// Subscribe to this dataflow's extension topic for the cross-machine
     /// messages arriving over zenoh.
-    pub(crate) fn pool_subscribe_dataflow(&mut self, dataflow_id: Uuid) {
+    pub fn subscribe_dataflow(&mut self, svc: &mut dyn DaemonServices, dataflow_id: Uuid) {
         // Subscribe to the dataflow memory-pool topic for cross-machine
         // events arriving through Zenoh (WriteMemoryPool, RegisterPool,
         // RegisterPoolAck, FreePool). Declared FIRST, before the node
@@ -1217,8 +1195,8 @@ impl crate::Daemon {
         // cross-machine data plane is not enabled.
         if cross_machine_enabled() {
             let mp_topic = dataflow_extension_topic(&dataflow_id, NAMESPACE);
-            let mp_session = self.zenoh_session.clone();
-            let mp_events_tx = self.events_tx.clone();
+            let mp_session = svc.zenoh_session();
+            let sink = svc.peer_message_sink();
             let subscriber = tokio::spawn(async move {
                 let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
                     tracing::warn!(
@@ -1233,12 +1211,7 @@ impl crate::Daemon {
                         Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
                     {
                         tracing::info!("memory pool: received inter-daemon event on {mp_topic}");
-                        let _ = mp_events_tx
-                            .send(Timestamped {
-                                inner: Event::Daemon(event.inner),
-                                timestamp: event.timestamp,
-                            })
-                            .await;
+                        sink(event).await;
                     }
                 }
             });
@@ -1246,7 +1219,7 @@ impl crate::Daemon {
             // abandoned task would keep the subscriber, its session clone,
             // and its event sender alive for the daemon's lifetime.
             // Aborted in `finish_dataflow` and on the failed-spawn path.
-            self.pool.subscribers.insert(
+            self.subscribers.insert(
                 dataflow_id,
                 MemoryPoolSubscriber {
                     handle: subscriber,
@@ -1257,8 +1230,8 @@ impl crate::Daemon {
     }
 
     /// Release this dataflow's pool state when the dataflow finishes.
-    pub(crate) async fn pool_cleanup_dataflow(&mut self, dataflow_id: Uuid) {
-        if let Some(subscriber) = self.pool.subscribers.remove(&dataflow_id) {
+    pub async fn cleanup_dataflow(&mut self, dataflow_id: Uuid) {
+        if let Some(subscriber) = self.subscribers.remove(&dataflow_id) {
             subscriber.shutdown();
         }
 
@@ -1321,7 +1294,6 @@ impl crate::Daemon {
         // pool) forever.
         {
             let mut endpoints = self
-                .pool
                 .cross_data_endpoints
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
@@ -1339,8 +1311,8 @@ impl crate::Daemon {
         // dora-rs/dora#2881; mirrors now behave the same way rather than
         // leaking for the daemon's lifetime.
         let dataflow_str = dataflow_id.to_string();
-        self.pool.tensor_pool.cleanup_dataflow(&dataflow_str);
-        self.pool.tensor_pool.cleanup_cross_pools(&dataflow_str);
+        self.tensor_pool.cleanup_dataflow(&dataflow_str);
+        self.tensor_pool.cleanup_cross_pools(&dataflow_str);
     }
 }
 

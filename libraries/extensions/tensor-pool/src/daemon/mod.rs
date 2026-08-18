@@ -1,8 +1,8 @@
-//! Cross-machine memory-pool transport (opt-in, outside dora's 1.0
-//! guarantees — see `libraries/extensions/tensor-pool/README.md`).
+//! The daemon half of this transport.
 //!
-//! Extracted from `lib.rs`, where it had grown to ~2.7k lines inline.
-//! Split by plane so each piece is reviewable on its own:
+//! It reaches the daemon only through [`DaemonServices`] — seven
+//! capabilities, no access to daemon state. Split by plane so each piece is
+//! reviewable on its own:
 //!
 //! | module | what it owns |
 //! |---|---|
@@ -10,13 +10,9 @@
 //! | [`mirror`] | DORADMA header, seqlock, `/dev/shm` mirror segments |
 //! | [`data_plane`] | direct-TCP listener and sender |
 //! | [`control`] | zenoh control events and pending-ack registries |
-
-// ---------------------------------------------------------------------------
-// Cross-machine memory pool data plane (ports the pre-tensor-pool branch;
-// see `docs/design.md` in the hetero-pool PR). All of it is opt-in behind
-// `DORA_MEMORY_POOL_CROSS_MACHINE=1`; a daemon without the env never opens
-// the direct-TCP data port and never mirrors remote pools.
-// ---------------------------------------------------------------------------
+//! | [`state`] | the state the daemon holds on this extension's behalf |
+//! | [`handlers`] | decoding and servicing node and peer messages |
+//! | [`services`] | what the extension needs *from* the daemon |
 
 /// Opt-in switch for the whole cross-machine memory-pool data plane.
 /// Off by default: no mirror segments, no direct-TCP listener, no
@@ -31,32 +27,49 @@ pub(crate) fn cross_machine_enabled() -> bool {
     )
 }
 
-pub(crate) mod auth;
-pub(crate) mod control;
-pub(crate) mod daemon;
-pub(crate) mod data_plane;
-pub(crate) mod mirror;
-pub(crate) mod state;
+mod auth;
+mod control;
+mod data_plane;
+mod handlers;
+mod mirror;
+mod services;
+mod state;
+
+pub use services::{BoxFuture, DaemonServices, PeerMessageSink};
+pub use state::PoolState;
 
 pub(crate) use auth::*;
 pub(crate) use control::*;
 pub(crate) use data_plane::*;
 pub(crate) use mirror::*;
-pub(crate) use state::{MemoryPoolSubscriber, PoolState};
+pub(crate) use state::MemoryPoolSubscriber;
 
-use super::*;
-// Imports this subsystem owns. They live here rather than in the crate root so
-// that a build without the `tensor-pool` feature pulls in neither the
-// dependencies nor the `unsafe` that comes with them.
+// Shared imports for the submodules below (each does `use super::*`).
+pub(crate) use crate::TensorPoolManager;
+pub(crate) use crate::protocol::{NAMESPACE, NodeRequest, NodeResponse, PeerMessage};
 pub(crate) use dora_core::topics::dataflow_extension_topic;
-pub(crate) use dora_tensor_pool::TensorPoolManager;
-pub(crate) use dora_tensor_pool::protocol::{NAMESPACE, PeerMessage};
+pub(crate) use dora_core::uhlc::HLC;
+pub(crate) use dora_message::{
+    DataflowId, daemon_to_daemon::InterDaemonEvent, daemon_to_node::DaemonReply, id::NodeId,
+    metadata::MetadataParameters, node_to_daemon::Timestamped,
+};
+pub(crate) use eyre::eyre;
 pub(crate) use shared_memory_extended::ShmemConf;
-pub(crate) use std::sync::atomic::AtomicBool;
+pub(crate) use std::collections::{HashMap, HashSet};
+pub(crate) use std::sync::Arc;
+pub(crate) use std::sync::atomic::{self, AtomicBool};
+pub(crate) use tokio::sync::oneshot;
+pub(crate) use uuid::Uuid;
 pub(crate) use zenoh::Wait;
 pub(crate) use zenoh::bytes::ZBytes;
+pub(crate) use zenoh::qos::CongestionControl;
 pub(crate) use zenoh::sample::Locality;
 pub(crate) use zenoh::shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder};
+
+/// How long a cross-machine register waits for the mirror's acknowledgement
+/// before retrying. The remote's subscription is established in parallel with
+/// dataflow startup, so the first publish can precede it.
+pub(crate) const CROSS_REGISTER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 
 #[cfg(test)]
 mod cross_pool_write_tests {

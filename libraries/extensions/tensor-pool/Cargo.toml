@@ -10,7 +10,21 @@ license.workspace = true
 repository.workspace = true
 publish = false
 
+[features]
+# The daemon half: mirror segments, the direct-TCP data plane, and the
+# cross-machine control flow. Enabled by `dora-daemon`'s `tensor-pool`
+# feature; off on its own so the node-side crate does not pull zenoh.
+daemon = ["dep:zenoh", "dep:tokio", "dep:dora-core", "dep:eyre", "dep:shared_memory_extended", "dep:uuid", "dep:serde_json"]
+
 [dependencies]
 tracing = { workspace = true }
 serde = { workspace = true }
 postcard = { workspace = true }
+dora-message = { workspace = true }
+zenoh = { workspace = true, optional = true }
+tokio = { workspace = true, features = ["full"], optional = true }
+dora-core = { workspace = true, features = ["zenoh"], optional = true }
+eyre = { workspace = true, optional = true }
+shared_memory_extended = { version = "0.13.0", optional = true }
+uuid = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }

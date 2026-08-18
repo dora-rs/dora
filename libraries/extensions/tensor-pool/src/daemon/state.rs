@@ -39,7 +39,7 @@ impl MemoryPoolSubscriber {
     }
 }
 
-pub(crate) struct PoolState {
+pub struct PoolState {
     /// Cross-machine memory-pool state: the `cross_pools` table (which pools
     /// this daemon mirrors, and who their peer machine is). The main pool
     /// table is node-side; the daemon only ever needs the cross-machine
@@ -75,7 +75,7 @@ impl PoolState {
     ///
     /// Provider failure is non-fatal: control messages fall back to regular
     /// payloads (see [`publish_pool_message`]).
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         let shm_provider =
             match ShmProviderBuilder::default_backend(MEMORY_POOL_SHM_PROVIDER_SIZE).wait() {
                 Ok(provider) => Some(Arc::new(provider)),
@@ -105,7 +105,7 @@ impl PoolState {
     /// pool segment (a node with `DORA_MACHINE_ID` set names it the same way),
     /// and on the `dora up` path nodes deliberately outlive a daemon restart
     /// (see `daemon-reconnect-e2e`).
-    pub(crate) fn sweep_orphans_at_startup(machine_id: Option<&str>) {
+    pub fn sweep_orphans_at_startup(machine_id: Option<&str>) {
         #[cfg(target_os = "linux")]
         if cross_machine_enabled()
             && let Some(machine_id) = machine_id.filter(|m| !m.is_empty())
@@ -119,15 +119,12 @@ impl PoolState {
     /// Reclaim segments a previous crash of *this dataflow's* nodes left
     /// behind. Scoped to the nodes this daemon spawns, since a co-located
     /// daemon may be starting the other half of the same dataflow right now.
-    pub(crate) fn sweep_orphans_for_dataflow(
-        dataflow_id: Uuid,
-        is_local_node: impl Fn(&str) -> bool,
-    ) {
+    pub fn sweep_orphans_for_dataflow(dataflow_id: Uuid, is_local_node: impl Fn(&str) -> bool) {
         TensorPoolManager::cleanup_orphans(&dataflow_id.to_string(), is_local_node);
     }
 
     /// Stop feeding a dataflow whose spawn failed before it started running.
-    pub(crate) fn abort_subscriber(&mut self, dataflow_id: &DataflowId) {
+    pub fn abort_subscriber(&mut self, dataflow_id: &DataflowId) {
         if let Some(subscriber) = self.subscribers.remove(dataflow_id) {
             subscriber.shutdown();
         }
@@ -137,7 +134,13 @@ impl PoolState {
     /// NOT unlinked: they may still be open by a peer daemon's readers on a
     /// shared host, and [`Self::sweep_orphans_at_startup`] sweeps this
     /// machine's own leftovers on the next start.
-    pub(crate) fn cleanup_all(&self) {
+    pub fn cleanup_all(&self) {
         self.tensor_pool.cleanup_all().ok();
+    }
+}
+
+impl Default for PoolState {
+    fn default() -> Self {
+        Self::new()
     }
 }
