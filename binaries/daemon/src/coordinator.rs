@@ -21,6 +21,7 @@ const DAEMON_COORDINATOR_RETRY_LIMIT: u32 = 50;
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for the cross-machine register flow: awaiting the ResolveMachine
 /// reply here and the RegisterPoolAck in lib.rs.
+#[cfg(feature = "tensor-pool")]
 pub const CROSS_REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug)]
@@ -458,6 +459,7 @@ async fn run_coordinator_ws_reader<Rx, E>(
 /// The coordinator replies over the same `daemon_event` envelope the
 /// request was sent in (params: `Timestamped<ResolveMachineReply>`); the
 /// receive loop in `register` routes the reply here by request id.
+#[cfg(feature = "tensor-pool")]
 pub(crate) async fn resolve_machine(
     coordinator_sender: &CoordinatorSender,
     clock: &Arc<HLC>,
@@ -767,6 +769,12 @@ mod tests {
     /// dropped once already while restructuring this connection: without it
     /// every cross-machine `resolve_machine` falls through to the command
     /// parse, logs a parse failure, and times out returning `None`.
+    ///
+    /// The routing block itself is generic and ungated; this test reaches it
+    /// through `resolve_machine`, its only caller, so it is gated the same way.
+    /// CI runs the daemon's tests in both feature configurations, so the pin
+    /// still holds on every PR.
+    #[cfg(feature = "tensor-pool")]
     #[tokio::test]
     async fn ws_reader_routes_replies_to_pending_daemon_requests() {
         let clock = Arc::new(HLC::default());

@@ -36,14 +36,27 @@ pub(crate) mod control;
 pub(crate) mod daemon;
 pub(crate) mod data_plane;
 pub(crate) mod mirror;
+pub(crate) mod state;
 
 pub(crate) use auth::*;
 pub(crate) use control::*;
 pub(crate) use data_plane::*;
 pub(crate) use mirror::*;
+pub(crate) use state::{MemoryPoolSubscriber, PoolState};
 
 use super::*;
+// Imports this subsystem owns. They live here rather than in the crate root so
+// that a build without the `tensor-pool` feature pulls in neither the
+// dependencies nor the `unsafe` that comes with them.
+pub(crate) use dora_core::topics::dataflow_extension_topic;
+pub(crate) use dora_tensor_pool::TensorPoolManager;
 pub(crate) use dora_tensor_pool::protocol::{NAMESPACE, PeerMessage};
+pub(crate) use shared_memory_extended::ShmemConf;
+pub(crate) use std::sync::atomic::AtomicBool;
+pub(crate) use zenoh::Wait;
+pub(crate) use zenoh::bytes::ZBytes;
+pub(crate) use zenoh::sample::Locality;
+pub(crate) use zenoh::shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder};
 
 #[cfg(test)]
 mod cross_pool_write_tests {

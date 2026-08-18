@@ -10,9 +10,8 @@ use dora_core::{
     },
     topics::{
         DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
-        dataflow_extension_topic, open_zenoh_session_with_listen, reserve_zenoh_endpoint,
-        validate_zenoh_listen, zenoh_bind_address_for, zenoh_daemon_control_topic,
-        zenoh_output_publish_topic,
+        open_zenoh_session_with_listen, reserve_zenoh_endpoint, validate_zenoh_listen,
+        zenoh_bind_address_for, zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
     uhlc::{self, HLC},
 };
@@ -50,7 +49,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
+        atomic::{self, AtomicU32, AtomicU64},
     },
     time::{Duration, Instant},
 };
@@ -186,12 +185,6 @@ use crate::{
     extension_table::{ExtensionKey, ExtensionTable},
     extract_err_from_stderr::extract_err_from_stderr,
 };
-use dora_tensor_pool::TensorPoolManager;
-use shared_memory_extended::ShmemConf;
-use zenoh::Wait;
-use zenoh::bytes::ZBytes;
-use zenoh::sample::Locality;
-use zenoh::shm::{PosixShmProviderBackend, ShmProvider, ShmProviderBuilder};
 
 const STDERR_LOG_LINES_MAX: usize = 500;
 const METRICS_INTERVAL: Duration = Duration::from_secs(2);
@@ -413,41 +406,8 @@ pub(crate) struct PendingDestroy {
     wait: shutdown::DestroyWait,
 }
 
+#[cfg(feature = "tensor-pool")]
 mod memory_pool;
-use crate::memory_pool::*;
-
-/// A dataflow's memory-pool zenoh subscriber, plus the liveness flag the
-/// detached mirror-creation tasks it feeds check before they publish a
-/// mirror into the tensor pool.
-///
-/// Mirror creation runs off the event loop, so a `finish_dataflow` can
-/// land between the handler's liveness check and the task's
-/// `register_cross_pool`. Without the flag that task would register a
-/// segment *behind* the finish-time drain, leaking it for the daemon's
-/// lifetime (dora-rs/dora#3194).
-pub(crate) struct MemoryPoolSubscriber {
-    /// The receive loop has no shutdown branch of its own, so a dropped
-    /// handle would leak the task, its session clone, and its event
-    /// sender for the daemon's lifetime.
-    handle: tokio::task::JoinHandle<()>,
-    /// Cloned into every mirror task; cleared by [`Self::shutdown`].
-    dataflow_live: Arc<AtomicBool>,
-}
-
-impl MemoryPoolSubscriber {
-    /// Stop feeding this dataflow: clear the liveness flag, then abort
-    /// the receive loop.
-    ///
-    /// The flag is cleared *before* the caller drains the cross-pool
-    /// table, which is what makes the drain authoritative: a mirror task
-    /// that still reads `true` after its `register_cross_pool` is
-    /// guaranteed to be visible to that drain, and one that reads `false`
-    /// rolls its own registration back.
-    fn shutdown(self) {
-        self.dataflow_live.store(false, atomic::Ordering::SeqCst);
-        self.handle.abort();
-    }
-}
 
 pub struct Daemon {
     /// This machine's id (as registered with the coordinator), if any.
@@ -497,43 +457,11 @@ pub struct Daemon {
     /// Opaque, dataflow-scoped store for out-of-tree extensions. See
     /// `extension_table` and `docs/extensions.md`.
     pub(crate) extensions: ExtensionTable,
-    /// Cross-machine memory-pool state: the `cross_pools` table (which
-    /// pools this daemon mirrors, and who their peer machine is). The
-    /// main tensor-pool table is node-side; the daemon only ever needs
-    /// the cross-machine entries (mirror tracking, direct-TCP gating,
-    /// targeted frees).
-    pub(crate) tensor_pool: TensorPoolManager,
-    /// SHM provider for inter-daemon memory-pool control notifications
-    /// (RegisterPool / RegisterPoolAck / FreePool). Same-host daemons
-    /// receive the payload as a zero-copy shared-memory reference;
-    /// cross-host receivers get an implicit regular-buffer copy from the
-    /// zenoh transport (SHM only works within a host). `None` when the
-    /// provider could not be created — control events then fall back to
-    /// regular payloads.
-    pub(crate) shm_provider: Option<Arc<ShmProvider<PosixShmProviderBackend>>>,
-    /// The per-dataflow memory-pool zenoh subscribers, retained so
-    /// `finish_dataflow` (and the failed-spawn path) can
-    /// [`MemoryPoolSubscriber::shutdown`] them — otherwise each spawn
-    /// accumulates a task and a duplicate consumer. Membership doubles as
-    /// "this daemon is serving the dataflow", from before the node build
-    /// until finish.
-    pub(crate) memory_pool_subscribers: HashMap<DataflowId, MemoryPoolSubscriber>,
-    /// Port of this daemon's direct-TCP memory-pool data listener (the
-    /// mirror side of the cross-machine data plane), when it was started.
-    /// Reported to the origin in `RegisterPoolAck.data_port`.
-    pub(crate) cross_data_listener_port: Option<u16>,
-    /// Persistent direct-TCP connections to peer daemons' data listeners
-    /// (the origin side of the cross-machine data plane). Keyed by the
-    /// peer's `SocketAddr`; a dead connection is dropped on write failure
-    /// and re-established lazily.
-    pub(crate) cross_data_conns:
-        Arc<std::sync::Mutex<HashMap<std::net::SocketAddr, tokio::net::TcpStream>>>,
-    /// Direct-TCP endpoint per cross-machine pool: (dataflow id, pool id)
-    /// -> peer's `SocketAddr` (the target daemon's IP from the
-    /// coordinator + the mirror's `data_port`). Populated when the
-    /// register ack carries a data port; absent pools fall back to zenoh.
-    pub(crate) cross_data_endpoints:
-        Arc<std::sync::Mutex<HashMap<(Uuid, String), std::net::SocketAddr>>>,
+    /// State owned by the tensor-pool extension. Behind the `tensor-pool`
+    /// feature, so a default daemon carries none of it — see
+    /// `libraries/extensions/tensor-pool/README.md`.
+    #[cfg(feature = "tensor-pool")]
+    pub(crate) pool: memory_pool::PoolState,
     /// Nodes already warned about for sending after their dataflow
     /// finished, so `log_late_node_output` warns once each instead of
     /// once per message. See `MAX_WARNED_LATE_OUTPUT_NODES`.
@@ -1908,21 +1836,6 @@ impl Daemon {
         .wrap_err("failed to open zenoh session")?;
         // Same-host control notifications (RegisterPool/FreePool) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
-        // on the same host map it zero-copy. Cross-host receivers get the
-        // payload copied by the zenoh transport when it leaves the host.
-        // Failure here is non-fatal — control events fall back to regular
-        // payloads (see publish_pool_message).
-        let shm_provider =
-            match ShmProviderBuilder::default_backend(MEMORY_POOL_SHM_PROVIDER_SIZE).wait() {
-                Ok(provider) => Some(Arc::new(provider)),
-                Err(e) => {
-                    tracing::warn!(
-                        "memory pool: zenoh SHM provider creation failed ({e}); \
-                     control events will use regular payloads"
-                    );
-                    None
-                }
-            };
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
             // Same argument as the reservation above: an address the operator
             // named must actually be listening, or this daemon is unreachable
@@ -1994,12 +1907,8 @@ impl Daemon {
             remote_daemon_events_tx,
             git_manager: Default::default(),
             extensions: ExtensionTable::new(),
-            tensor_pool: TensorPoolManager::new(),
-            shm_provider,
-            memory_pool_subscribers: HashMap::new(),
-            cross_data_listener_port: None,
-            cross_data_conns: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            cross_data_endpoints: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            #[cfg(feature = "tensor-pool")]
+            pool: memory_pool::PoolState::new(),
             builds,
             sessions: Default::default(),
             metrics_state: Arc::new(std::sync::Mutex::new(MetricsState::default())),
@@ -2031,23 +1940,12 @@ impl Daemon {
         // caller can re-borrow it on the next reconnect iteration.
         let dora_events = stream::poll_fn(|cx| dora_events_rx.poll_recv(cx));
 
-        // A previous incarnation of this daemon may have been killed
-        // without running shutdown cleanup, leaving stale mirror segments
-        // under this machine's id prefix. Nothing live can own them (this
-        // daemon's own dataflows died with it; sibling daemons use other
-        // prefixes), so sweep them at startup.
-        //
-        // Do not widen this gate: the prefix also matches a *node's own*
-        // local pool segment (a node with `DORA_MACHINE_ID` set names it
-        // the same way), and on the `dora up` path nodes deliberately
-        // outlive a daemon restart (see `daemon-reconnect-e2e`).
-        #[cfg(target_os = "linux")]
-        if cross_machine_enabled()
-            && let Some(machine_id) = self.machine_id.as_deref()
-            && !machine_id.is_empty()
-        {
-            cleanup_orphan_mirrors(machine_id);
-        }
+        // A previous incarnation of this daemon may have been killed without
+        // running shutdown cleanup, so give the extension a chance to reclaim
+        // whatever it left behind. What that means is its business; the daemon
+        // only supplies the machine identity it is scoped to.
+        #[cfg(feature = "tensor-pool")]
+        memory_pool::PoolState::sweep_orphans_at_startup(self.machine_id.as_deref());
 
         let watchdog_clock = self.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
@@ -2411,7 +2309,8 @@ impl Daemon {
         // may still be open by the peer daemon's readers on a shared host,
         // and `cleanup_orphan_mirrors` sweeps this machine's own leftovers
         // on the next startup.
-        self.tensor_pool.cleanup_all().ok();
+        #[cfg(feature = "tensor-pool")]
+        self.pool.cleanup_all();
 
         // `run_inner` borrows `&mut self`, so move the accumulated results out
         // (the daemon may be reused for a reconnect, where these are ignored).
@@ -2662,10 +2561,8 @@ impl Daemon {
                         // so `finish_dataflow` will not run — terminate the
                         // subscriber here or it leaks for the daemon's
                         // lifetime.
-                        if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id)
-                        {
-                            subscriber.shutdown();
-                        }
+                        #[cfg(feature = "tensor-pool")]
+                        self.pool.abort_subscriber(&dataflow_id);
                         (Err(format!("{err:?}")), None)
                     }
                 };
@@ -4194,8 +4091,23 @@ impl Daemon {
                 target_machine,
                 payload,
             } => {
-                self.handle_extension_message(dataflow_id, namespace, target_machine, payload)
-                    .await
+                #[cfg(feature = "tensor-pool")]
+                {
+                    self.handle_extension_message(dataflow_id, namespace, target_machine, payload)
+                        .await
+                }
+                // No extension is compiled in, so nothing can service the
+                // payload. A peer that runs one is not an error here: this
+                // daemon simply takes no part in it.
+                #[cfg(not(feature = "tensor-pool"))]
+                {
+                    let _ = (dataflow_id, target_machine, payload);
+                    tracing::debug!(
+                        "ignoring inter-daemon message for extension {namespace:?}: \
+                         no extension is compiled into this daemon"
+                    );
+                    Ok(())
+                }
             }
             // `InterDaemonEvent` is `#[non_exhaustive]`: a peer daemon running a
             // newer dora may send an event this one predates. Warn and continue —
@@ -4319,106 +4231,6 @@ impl Daemon {
         Ok(task)
     }
 
-    /// Lazily start this daemon's direct-TCP data listener (mirror side):
-    /// the listener opens only when the first `RegisterPool` asks this
-    /// daemon to mirror a pool — daemons that never participate in
-    /// cross-machine pools do not open the port. The bound port is
-    /// reported to origins in `RegisterPoolAck.data_port`. The bind
-    /// address is configurable (`DORA_MEMORY_POOL_DATA_BIND`, default
-    /// `0.0.0.0`) for hosts where the listener must not sit on every
-    /// interface.
-    async fn ensure_cross_data_listener(&mut self) {
-        if !cross_machine_enabled() {
-            return;
-        }
-        if self.cross_data_listener_port.is_some() {
-            return;
-        }
-        let port = std::env::var(CROSS_DATA_PORT_ENV)
-            .ok()
-            .and_then(|p| p.parse().ok())
-            .unwrap_or(CROSS_DATA_PORT_DEFAULT);
-        let bind: String = std::env::var(CROSS_DATA_BIND_ENV)
-            .unwrap_or_else(|_| CROSS_DATA_BIND_DEFAULT.to_string());
-        let listener = match tokio::net::TcpListener::bind((bind.as_str(), port)).await {
-            Ok(l) => l,
-            Err(e) => {
-                tracing::warn!(
-                    "memory pool: direct-TCP data listener bind failed on {bind}:{port}: {e}"
-                );
-                return;
-            }
-        };
-        self.cross_data_listener_port = listener.local_addr().ok().map(|a| a.port());
-        tracing::info!(
-            "memory pool: direct-TCP data listener on port {:?}",
-            self.cross_data_listener_port
-        );
-
-        let tensor_pool = self.tensor_pool.clone();
-        let machine_id = self.machine_id.clone().unwrap_or_default();
-        let session = self.zenoh_session.clone();
-        let clock = self.clock.clone();
-        let shm_provider = self.shm_provider.clone();
-        // Auth is read per connection (env lookup), so the daemon needs no
-        // state here beyond the option the handshake checks.
-        tokio::spawn(async move {
-            loop {
-                let Ok((stream, peer)) = listener.accept().await else {
-                    // Transient errors (ECONNABORTED) are fine to retry
-                    // immediately, but a persistent one (e.g. EMFILE/ENFILE
-                    // fd exhaustion) would otherwise spin at 100% CPU —
-                    // bound the retry with a short sleep.
-                    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-                    continue;
-                };
-                tracing::debug!("memory pool: direct-TCP data connection from {peer}");
-                let (tensor_pool, machine_id, session, clock, shm_provider) = (
-                    tensor_pool.clone(),
-                    machine_id.clone(),
-                    session.clone(),
-                    clock.clone(),
-                    shm_provider.clone(),
-                );
-                tokio::spawn(async move {
-                    let mut stream = stream;
-                    // Auth handshake first, once per connection: a peer
-                    // without the shared token is dropped before any frame
-                    // can touch a mirror segment. Only when the daemon
-                    // itself has a token configured (a token-less daemon
-                    // accepts token-less peers — the handshake is a
-                    // configured-deployment option, both ends set it or
-                    // neither does).
-                    if let Err(e) = cross_data_auth_gate(&mut stream).await {
-                        tracing::warn!("memory pool: direct-TCP auth rejected for {peer}: {e}");
-                        return;
-                    }
-                    loop {
-                        match serve_cross_data_frame(
-                            &tensor_pool,
-                            &machine_id,
-                            &session,
-                            &clock,
-                            shm_provider.as_deref(),
-                            &mut stream,
-                        )
-                        .await
-                        {
-                            Ok(true) => continue,
-                            Ok(false) => break, // clean EOF
-                            Err(e) => {
-                                tracing::warn!(
-                                    "memory pool: direct-TCP data connection closed: {e}"
-                                );
-                                break;
-                            }
-                        }
-                    }
-                });
-            }
-        });
-    }
-
     #[allow(clippy::too_many_arguments)]
     async fn spawn_dataflow(
         &mut self,
@@ -4435,63 +4247,13 @@ impl Daemon {
         // nodes left behind. Scoped to the nodes this daemon spawns, since
         // a co-located daemon may be starting the other half of the same
         // dataflow right now.
-        TensorPoolManager::cleanup_orphans(&dataflow_id.to_string(), |node| {
+        #[cfg(feature = "tensor-pool")]
+        memory_pool::PoolState::sweep_orphans_for_dataflow(dataflow_id, |node| {
             spawn_nodes.iter().any(|id| id.as_ref() == node)
         });
 
-        // Subscribe to the dataflow memory-pool topic for cross-machine
-        // events arriving through Zenoh (WriteMemoryPool, RegisterPool,
-        // RegisterPoolAck, FreePool). Declared FIRST, before the node
-        // build: the sender's sync register fires from its node startup,
-        // and the node build (pip install etc.) can take tens of seconds —
-        // a subscription declared after the build makes the register's
-        // retries land before any subscriber exists (observed: RegisterPool
-        // published into the void, ack timeout). The whole
-        // declare+receive loop runs OFF the event loop: with a degraded
-        // inter-daemon link, declare_subscriber() itself can block, which
-        // would otherwise wedge this spawn handler and stall every
-        // subsequent event (WriteMemoryPool included) — the sender then
-        // hangs on its daemon reply forever. Skipped entirely when the
-        // cross-machine data plane is not enabled.
-        if cross_machine_enabled() {
-            let mp_topic = dataflow_extension_topic(&dataflow_id, NAMESPACE);
-            let mp_session = self.zenoh_session.clone();
-            let mp_events_tx = self.events_tx.clone();
-            let subscriber = tokio::spawn(async move {
-                let Ok(subscriber) = mp_session.declare_subscriber(&mp_topic).await else {
-                    tracing::warn!(
-                        "memory pool: declare_subscriber({mp_topic}) failed; \
-                         cross-machine pool reads will not see remote writes"
-                    );
-                    return;
-                };
-                while let Ok(sample) = subscriber.recv_async().await {
-                    let bytes = sample.payload().to_bytes();
-                    if let Ok(event) =
-                        Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
-                    {
-                        tracing::info!("memory pool: received inter-daemon event on {mp_topic}");
-                        let _ = mp_events_tx
-                            .send(Timestamped {
-                                inner: Event::Daemon(event.inner),
-                                timestamp: event.timestamp,
-                            })
-                            .await;
-                    }
-                }
-            });
-            // Retain the handle: the loop has no shutdown branch, so an
-            // abandoned task would keep the subscriber, its session clone,
-            // and its event sender alive for the daemon's lifetime.
-            // Aborted in `finish_dataflow` and on the failed-spawn path.
-            self.memory_pool_subscribers.insert(
-                dataflow_id,
-                MemoryPoolSubscriber {
-                    handle: subscriber,
-                    dataflow_live: Arc::new(AtomicBool::new(true)),
-                },
-            );
-        }
+        #[cfg(feature = "tensor-pool")]
+        self.pool_subscribe_dataflow(dataflow_id);
 
         let mut logger = self
             .logger
@@ -5401,6 +5163,7 @@ impl Daemon {
                 payload,
                 reply_sender,
             } => {
+                #[cfg(feature = "tensor-pool")]
                 self.handle_extension_request(
                     dataflow_id,
                     node_id,
@@ -5409,6 +5172,16 @@ impl Daemon {
                     reply_sender,
                 )
                 .await?;
+                // The node asked for an extension this daemon was not built
+                // with. Answer explicitly so it fails loudly instead of
+                // waiting on a reply that never comes.
+                #[cfg(not(feature = "tensor-pool"))]
+                {
+                    let _ = payload;
+                    let _ = reply_sender.send(DaemonReply::Result(Err(format!(
+                        "no extension registered under {namespace:?} on this daemon"
+                    ))));
+                }
             }
         }
         Ok(())
@@ -6146,88 +5919,8 @@ impl Daemon {
         // own — terminate it, releasing its session clone and event
         // sender. Without this, repeated or failed spawns accumulate
         // tasks and can create duplicate consumers.
-        if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id) {
-            subscriber.shutdown();
-        }
-
-        // Drain this dataflow's per-(dataflow, pool) cross-write state:
-        // these maps are keyed by a fresh per-dataflow UUID and are never
-        // touched again after finish, so without this a long-lived daemon
-        // cycling many cross-machine dataflows accumulates one entry per
-        // (dataflow, pool) forever. The direct-write lock map and the
-        // write-seq counters; the degradation set is drained too (a pool
-        // that never recovered would otherwise linger).
-        {
-            let mut locks = CROSS_POOL_WRITE_LOCKS_ASYNC.lock().await;
-            locks.retain(|(df, _), _| *df != dataflow_id);
-        }
-        {
-            // The zenoh-relay write lock is the same fresh per-dataflow
-            // UUID key; drain it here too — a relay-path pool whose
-            // dataflow ends without an explicit free (e.g. a node crash,
-            // so no FreePool is published) would otherwise leak its entry
-            // for the daemon's lifetime (bot review 5301862843).
-            let mut locks = CROSS_POOL_WRITE_LOCKS
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            locks.retain(|(df, _), _| *df != dataflow_id);
-        }
-        // Fail any cross-machine write replies still pending for this
-        // dataflow. Without it a node whose write was in flight at finish
-        // hangs until the 120s safety-net timeout, and a relay entry orphaned
-        // by a failover (#3193) would leak for the daemon's lifetime.
-        //
-        // Must run *before* the `CROSS_WRITE_SEQ` retain below: a spawned
-        // write task that fails over concurrently re-keys under the pending
-        // guard, and it bumps the per-pool counter only if it found something
-        // pending. Draining first therefore makes the re-key a no-op instead
-        // of letting it resurrect a counter this function has already cleared
-        // — a resurrected counter restarts at 0, mints a relay seq *below* the
-        // abandoned one (breaking the monotonicity the write path relies on)
-        // and leaks for the daemon's lifetime, since finish runs once.
-        let stranded = drain_cross_write_pending(dataflow_id);
-        if stranded > 0 {
-            tracing::debug!(
-                %dataflow_id,
-                stranded,
-                "failed cross-machine writes still pending at dataflow finish"
-            );
-        }
-        {
-            let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-            seqs.retain(|(df, _), _| *df != dataflow_id);
-        }
-        {
-            let mut degraded = CROSS_DIRECT_DEGRADED
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            degraded.retain(|(df, _)| *df != dataflow_id);
-        }
-        // `cross_data_endpoints` is keyed by the same fresh per-dataflow
-        // UUID (register-ack path); drain it here too so a long-lived
-        // daemon does not accumulate one `SocketAddr` per (dataflow,
-        // pool) forever.
-        {
-            let mut endpoints = self
-                .cross_data_endpoints
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            endpoints.retain(|(df, _), _| *df != dataflow_id);
-        }
-        // Reclaim this dataflow's pools. `cleanup_dataflow` covers the
-        // local pool table; `cleanup_cross_pools` drains the cross-machine
-        // table and unlinks the mirror segments among it (#3194).
-        //
-        // Neither guarantees every local reader is gone: dynamic nodes are
-        // excluded from `should_finish` and may outlive the dataflow, and
-        // an already-mapped reader survives an unlink but a re-open by
-        // name does not. That window is not new — `cleanup_dataflow` has
-        // reclaimed ordinary local pool segments at finish since
-        // dora-rs/dora#2881; mirrors now behave the same way rather than
-        // leaking for the daemon's lifetime.
-        let dataflow_str = dataflow_id.to_string();
-        self.tensor_pool.cleanup_dataflow(&dataflow_str);
-        self.tensor_pool.cleanup_cross_pools(&dataflow_str);
+        #[cfg(feature = "tensor-pool")]
+        self.pool_cleanup_dataflow(dataflow_id).await;
         Ok(())
     }
 
