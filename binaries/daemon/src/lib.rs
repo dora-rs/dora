@@ -5377,11 +5377,14 @@ impl Daemon {
                     if ok {
                         // Track the pool's other machine (the origin) so
                         // the targeted free reaches it, mirroring the
-                        // origin's `{pool -> target}` entry.
+                        // origin's `{pool -> target}` entry. `is_mirror:
+                        // true` — this daemon just created the local mirror
+                        // segment, so it (and only it) unlinks it on finish.
                         tensor_pool.register_cross_pool(
                             dataflow_id.to_string(),
                             shared_memory_id.clone(),
                             origin_machine_id,
+                            true,
                         );
                         tracing::info!(
                             "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
@@ -7147,10 +7150,17 @@ impl Daemon {
                                                 endpoint,
                                             );
                                     }
+                                    // `is_mirror: false` — this is the origin
+                                    // side. The mirror lives on the target
+                                    // machine; the sender node's own live
+                                    // local segment shares the qualified name,
+                                    // so this daemon must never unlink it on
+                                    // finish.
                                     tensor_pool.register_cross_pool(
                                         dataflow_id.to_string(),
                                         shared_memory_id.clone(),
                                         machine_id,
+                                        false,
                                     );
                                     // Make the explicit `name=` segment
                                     // discoverable for the
@@ -7246,7 +7256,7 @@ impl Daemon {
                 let peer = self
                     .tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
-                    .map(|(peer, _)| peer);
+                    .map(|(peer, _, _)| peer);
                 if let Some(peer) = &peer {
                     release_cross_pool(
                         &self.zenoh_session,
@@ -8082,19 +8092,23 @@ impl Daemon {
         // registration cap — resident forever, growing unbounded on a
         // long-lived daemon cycling many such dataflows (#3194). By the time
         // finish runs the local receiver nodes are done, so the unlink is
-        // safe, matching the FreePool handler's unlink. The name is
-        // `machine_id`-qualified, so it only ever matches a segment this
-        // daemon created as the mirror: an origin-side entry resolves to a
-        // name that does not exist locally (a harmless NotFound no-op), which
-        // also keeps it host-safe when two daemons share a host.
-        if let Some(machine_id) = self.machine_id.as_deref().filter(|m| !m.is_empty()) {
-            let dataflow_str = dataflow_id.to_string();
-            for pool_id in self.tensor_pool.cross_pool_ids(&dataflow_str) {
-                if let Some(shmem_name) =
-                    TensorPoolManager::cross_pool_shmem_name(machine_id, &dataflow_str, &pool_id)
-                {
-                    remove_cross_pool_shmem(&shmem_name);
-                }
+        // safe, matching the FreePool handler's unlink (same
+        // `machine_id`-qualified name, `unwrap_or_default` machine id).
+        //
+        // Only *mirror* entries are unlinked. An origin-side entry's
+        // machine-qualified name collides byte-for-byte with the sender
+        // node's own live local pool segment (a node with DORA_MACHINE_ID
+        // set names its segment `dora_pool_{machine}_{df}_{node}_{counter}`),
+        // so unlinking it here would destroy a live segment a same-host
+        // receiver daemon may still be reading directly — exactly what the
+        // FreePool handler's `machine_id` gate prevents.
+        let dataflow_str = dataflow_id.to_string();
+        let machine_id = self.machine_id.as_deref().unwrap_or_default();
+        for pool_id in self.tensor_pool.cross_pool_mirror_ids(&dataflow_str) {
+            if let Some(shmem_name) =
+                TensorPoolManager::cross_pool_shmem_name(machine_id, &dataflow_str, &pool_id)
+            {
+                remove_cross_pool_shmem(&shmem_name);
             }
         }
         // Release this dataflow's cross_pools entries (mirror tracking).
@@ -12666,6 +12680,7 @@ mod cross_pool_write_tests {
             dataflow_id.to_string(),
             pool_id.to_string(),
             "A".to_string(),
+            true,
         );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -12771,6 +12786,7 @@ mod cross_pool_write_tests {
             dataflow_id.to_string(),
             pool_id.to_string(),
             "A".to_string(),
+            true,
         );
 
         // Data listener served by the mirror session's process context.
@@ -12890,6 +12906,7 @@ mod cross_pool_write_tests {
             dataflow_id.to_string(),
             pool_id.to_string(),
             "A".to_string(),
+            true,
         );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -13161,6 +13178,7 @@ mod cross_pool_write_tests {
                 dataflow_id.to_string(),
                 pool_id.to_string(),
                 "A".to_string(),
+                true,
             );
 
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
