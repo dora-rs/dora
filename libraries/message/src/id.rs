@@ -4,10 +4,15 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 /// Validate that a node identifier contains only safe characters: `[a-zA-Z0-9_.-]`,
-/// does not start with `.`, and is not empty.
+/// does not start with `.`, is not empty, and is not the reserved id `dora`.
 ///
 /// NodeIds must NOT contain `/` because `/` is the separator between
 /// `<node_id>/<output_id>` in input mapping syntax.
+///
+/// The exact id `dora` is reserved for the built-in input namespaces
+/// (`dora/timer/...`, `dora/logs`), which `InputMapping::from_str` matches
+/// before any user node. Only the exact string is reserved -- ids that merely
+/// contain or extend it (`dora-node`, `my-dora`, `Dora`) stay valid.
 ///
 /// Leading dots are rejected because the node id is joined into filesystem paths
 /// (e.g. `managed_python_env_dir` appends `node.id` under `.dora/python-envs/`).
@@ -98,6 +103,12 @@ impl std::error::Error for InvalidId {}
 /// [`DataId`], a `NodeId` may **not** contain `/`, which separates
 /// `<node_id>/<output_id>` in input-mapping syntax.
 ///
+/// The exact id `dora` is additionally reserved: it names the built-in input
+/// namespaces (`dora/timer/...`, `dora/logs`), which input-mapping parsing
+/// matches before any user node, so a node called `dora` could never be
+/// subscribed to. Only the exact string is reserved — `dora-node`, `my-dora`
+/// and `Dora` all remain valid.
+///
 /// # Parsing vs. conversion (panic footgun)
 ///
 /// Use [`str::parse`] / [`FromStr`](std::str::FromStr) for untrusted input: it
@@ -113,6 +124,8 @@ impl std::error::Error for InvalidId {}
 /// assert!("node/out".parse::<NodeId>().is_err()); // '/' is not allowed in a NodeId
 /// assert!("".parse::<NodeId>().is_err());         // empty is rejected
 /// assert!(".hidden".parse::<NodeId>().is_err());  // leading '.' is rejected
+/// assert!("dora".parse::<NodeId>().is_err());     // reserved for built-in inputs
+/// assert!("dora-node".parse::<NodeId>().is_ok()); // only the exact id is reserved
 /// ```
 ///
 /// The infallible-looking conversion panics on the same invalid input:
@@ -146,7 +159,10 @@ impl FromStr for NodeId {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters (not in `[a-zA-Z0-9_.-]`).
+/// Panics if `id` is not a valid node id: if it is empty, contains
+/// characters outside `[a-zA-Z0-9_.-]`, starts with `.`, or is the
+/// reserved id `dora`. Pre-validating against the character set alone is
+/// *not* sufficient to make this conversion infallible.
 ///
 /// **For untrusted input, use `id.parse::<NodeId>()`** which calls
 /// `FromStr::from_str` and returns `Result<Self, InvalidId>`.

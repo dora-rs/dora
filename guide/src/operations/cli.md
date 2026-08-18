@@ -1311,7 +1311,7 @@ All inter-component messages are defined in `libraries/message/`:
 
 ```rust
 // Node identification
-struct NodeId(String);      // [a-zA-Z0-9_.-]
+struct NodeId(String);      // [a-zA-Z0-9_.-], no leading `.`, not `dora`
 struct DataId(String);      // same validation
 type DataflowId = uuid::Uuid;
 
