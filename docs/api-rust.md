@@ -509,7 +509,29 @@ dora-node-api = { version = "1", features = ["arrow-v59"] }
 |---|---|---|---|
 | *(none)* | — | `len`, `is_empty`, `null_count`, `type_name`, `TryFrom`, `into_vec` | — |
 | `arrow-v59` | `dora_node_api::arrow_v59` | `as_array`, `into_inner`, `from_array`, `From<ArrayRef>` | free (borrow) |
-| `arrow-v58` | `dora_node_api::arrow_v58` | `from_arrow_v58`, `to_arrow_v58` | one Arrow C Data Interface hop; no buffer copy |
+| `arrow-v58` | `dora_node_api::arrow_v58` | `TryFrom`/`TryInto` in both directions | one Arrow C Data Interface hop; no buffer copy |
+
+Conversions to and from a non-internal major are **fallible** — the Arrow C
+Data Interface cannot represent every array layout, and arrow-rs surfaces that
+as a `Result` — so they are `TryFrom`/`TryInto`, never `From`/`Into`:
+
+```rust
+use dora_node_api::{DoraArray, arrow_v58};
+use arrow_v58::array::{Array, ArrayRef};
+
+// Arrow 58 -> dora. `&dyn Array` (or `&ArrayRef`) is the source type; a
+// generic `&A: Array` impl is not possible, see below.
+let payload = DoraArray::try_from(&my_arrow58_array as &dyn Array)?;
+
+// dora -> Arrow 58.
+let back: ArrayRef = (&payload).try_into()?;
+```
+
+The source types are concrete rather than generic because coherence forbids
+`impl<A: Array> TryFrom<&A> for DoraArray`: it overlaps core's
+`impl<T, U: Into<T>> TryFrom<U> for T`, since a downstream crate may add
+`impl From<&TheirType> for DoraArray` and `A` could be instantiated at
+`TheirType`.
 
 There is deliberately no `pub use arrow;`. A bare `arrow` re-export changes
 meaning silently when dora bumps its internal major. `arrow_v59` cannot: it
@@ -529,8 +551,8 @@ coexist fine (distinct crates, distinct symbols, pure Rust).
   current internal major plus one or two older ones.
 - When dora moves its internal major (say 59 → 60), `arrow-v60` is added and
   becomes the free/borrowing one; `arrow-v59` keeps working but demotes to a
-  *converting* accessor over the C Data Interface, exactly like `arrow-v58`
-  today. Nothing silently changes meaning.
+  *converting* `TryFrom` pair over the C Data Interface, exactly like
+  `arrow-v58` today. Nothing silently changes meaning.
 
 #### Not covered by the guarantee
 

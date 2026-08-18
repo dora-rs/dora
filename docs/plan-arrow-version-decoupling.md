@@ -124,7 +124,14 @@ Cargo also *unifies semver-compatible* versions, so a user who declares
 — which is what makes this safe for people mixing dora with polars or parquet
 on the same major.
 
-### 3. `From`/`Into` impls via the C Data Interface
+### 3. `TryFrom`/`TryInto` impls via the C Data Interface
+
+> **Correction.** This section originally said `From`/`Into`. That was wrong:
+> the C Data Interface hop is **fallible** — arrow-rs's `to_ffi`/`from_ffi`
+> both return `Result`, because not every array layout can be represented over
+> the interface — and an infallible `From` would have to panic on those cases.
+> The fallible counterparts, `TryFrom`/`TryInto`, are the correct traits, and
+> are what shipped. `TryInto` comes free from the blanket impl.
 
 Conversion between majors must be zero-copy or it is a non-starter. The
 mechanism is the Arrow C Data Interface, which exists for exactly this and is
@@ -145,8 +152,19 @@ The hop is `arrow58::ffi::to_ffi(&data)` → reinterpret → `arrow::ffi::from_f
 > interface is designed for, and exactly where a mistake becomes a
 > use-after-free.
 
-Adding a `From` impl later is additive and non-breaking, so extra majors can
+Adding a `TryFrom` impl later is additive and non-breaking, so extra majors can
 land in minors whenever someone wants them.
+
+**Coherence constrains the source type.** A generic
+`impl<A: arrow58::array::Array> TryFrom<&A> for DoraArray` is rejected (E0119):
+it overlaps core's `impl<T, U: Into<T>> TryFrom<U> for T`, because a downstream
+crate may add `impl From<&TheirType> for DoraArray` — RFC 2451 permits
+`impl ForeignTrait<LocalType> for ForeignType` — and `A` could be instantiated
+at `TheirType`. So the source types are concrete: `&dyn arrow58::array::Array`
+and `&arrow58::array::ArrayRef` (the latter separately, because `&Arc<dyn
+Array>` does not unsize-coerce during trait selection). The export direction,
+`impl TryFrom<&DoraArray> for arrow58::array::ArrayRef`, is the RFC 2451 shape
+and is accepted as-is.
 
 ### 4. Support-window policy
 
@@ -173,9 +191,14 @@ down; it is the only ongoing cost of this design.
 
 ## What landed, and where it deviated
 
-All five steps below are implemented. Two things differ from the design as
+All five steps below are implemented. Three things differ from the design as
 written:
 
+- **The cross-major conversions are `TryFrom`/`TryInto`, not `From`/`Into`.**
+  Section 3 asked for the infallible traits, but the C Data Interface hop is
+  fallible, so an infallible `From` would have to panic internally. See the
+  correction in that section, including the coherence constraint that forces
+  the source types to be concrete rather than generic.
 - **`EncodedSample::data_type()` is gated, not replaced by a type URN.**
   `dora_core::types::TypeRegistry` only covers the standard scalar/struct
   catalog; nested lists, dictionaries, unions and timestamps-with-timezone have
@@ -215,7 +238,8 @@ Two additions the design did not call for but the migration needed:
    every consumer.
 2. Replace `pub use arrow;` with gated `arrow_vN` re-exports, `default = []`.
 3. Retype the leaked IPC encoder surface (see below).
-4. Add `arrow-v58` with the FFI bridge as the worked example of an older major.
+4. Add `arrow-v58` with the FFI bridge (`TryFrom`/`TryInto`) as the worked
+   example of an older major.
 5. Write the support-window policy into `docs/api-rust.md`.
 
 Steps 1–3 must precede 1.0. Steps 4–5 are additive, but 4 should land with the

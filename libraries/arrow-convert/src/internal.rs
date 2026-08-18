@@ -13,9 +13,9 @@
 //! is not reachable from the frozen 1.x surface. Do not depend on it from
 //! outside the dora workspace. If you need the Arrow array, enable the feature
 //! that names your major (`arrow-v59`, `arrow-v58`, …) and use
-//! [`DoraArray::as_array`](crate::DoraArray::as_array) /
-//! [`DoraArray::to_arrow_v58`](crate::DoraArray::to_arrow_v58), which are
-//! version-honest and therefore cannot drift under you.
+//! [`DoraArray::as_array`](crate::DoraArray::as_array) or the `TryFrom` impls
+//! in the `ffi_bridge` module, which are version-honest and therefore cannot
+//! drift under you.
 
 use crate::DoraArray;
 

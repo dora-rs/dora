@@ -84,7 +84,7 @@ const _: () = assert!(
 ///
 /// Zero-copy: the resulting array points at the same buffers, and keeps the
 /// Arrow 58 allocation alive through the C interface's `release` callback.
-pub fn v58_to_internal(array: &dyn arrow58::array::Array) -> Result<DoraArray> {
+fn v58_to_internal(array: &dyn arrow58::array::Array) -> Result<DoraArray> {
     let (ffi_array, ffi_schema) = arrow58::ffi::to_ffi(&array.to_data())
         .context("failed to export Arrow 58 array over FFI")?;
 
@@ -106,10 +106,10 @@ pub fn v58_to_internal(array: &dyn arrow58::array::Array) -> Result<DoraArray> {
 
 /// Export a dora payload as an Arrow 58 array.
 ///
-/// Zero-copy, and the mirror image of [`v58_to_internal`]: the Arrow 58 array
+/// Zero-copy, and the mirror image of `v58_to_internal`: the Arrow 58 array
 /// keeps dora's buffers alive through the `release` callback dora's Arrow
 /// installed.
-pub fn internal_to_v58(data: &DoraArray) -> Result<arrow58::array::ArrayRef> {
+fn internal_to_v58(data: &DoraArray) -> Result<arrow58::array::ArrayRef> {
     let (ffi_array, ffi_schema) = arrow::ffi::to_ffi(&crate::internal::array_ref(data).to_data())
         .context("failed to export dora payload over FFI")?;
 
@@ -126,28 +126,78 @@ pub fn internal_to_v58(data: &DoraArray) -> Result<arrow58::array::ArrayRef> {
     Ok(arrow58::array::make_array(imported))
 }
 
-/// Conversions to and from Arrow 58.
+/// Import an Arrow 58 array as a dora payload.
 ///
-/// These are *converting* accessors, not borrowing ones: Arrow 58 is not
+/// ```ignore
+/// use arrow58::array::Array;
+///
+/// let dora = DoraArray::try_from(&concrete_arrow58_array as &dyn Array)?;
+/// ```
+///
+/// The conversion is **fallible**, so this is `TryFrom` and not `From`: the C
+/// Data Interface export/import can reject an array (arrow-rs returns an error
+/// for the layouts it cannot represent over the interface), and an infallible
+/// `From` would have to panic on those.
+///
+/// It is a *converting* conversion, not a borrowing one: Arrow 58 is not
 /// dora's internal major, so reaching it costs a C Data Interface hop. The hop
 /// does not copy buffers, but it does allocate the small FFI structs and a new
-/// `ArrayRef`.
-impl DoraArray {
-    /// Build a dora payload from an Arrow 58 array.
-    pub fn from_arrow_v58(array: &dyn arrow58::array::Array) -> Result<Self> {
+/// array handle.
+///
+/// The source type is `&dyn Array` rather than a generic `&A: Array` because
+/// coherence forbids the generic form: `impl<A: Array> TryFrom<&A> for
+/// DoraArray` collides with core's `impl<T, U: Into<T>> TryFrom<U> for T`,
+/// since a downstream crate may add `impl From<&TheirType> for DoraArray`
+/// (RFC 2451 permits `impl ForeignTrait<LocalType> for ForeignType`), and `A`
+/// could be instantiated at `TheirType`. `&dyn Array` is a concrete foreign
+/// type, so no downstream impl can exist and the overlap goes away. The
+/// `TryFrom<&ArrayRef>` impl below covers the other common source shape.
+impl TryFrom<&dyn arrow58::array::Array> for DoraArray {
+    type Error = eyre::Report;
+
+    fn try_from(array: &dyn arrow58::array::Array) -> Result<Self> {
         v58_to_internal(array)
     }
+}
 
-    /// View this payload as an Arrow 58 array.
-    pub fn to_arrow_v58(&self) -> Result<arrow58::array::ArrayRef> {
-        internal_to_v58(self)
+/// Import an Arrow 58 [`ArrayRef`](arrow58::array::ArrayRef) as a dora payload.
+///
+/// ```ignore
+/// let dora: DoraArray = (&arrow58_array_ref).try_into()?;
+/// ```
+///
+/// Same conversion as the `&dyn Array` impl above; provided separately because
+/// `&Arc<dyn Array>` does not unsize-coerce to `&dyn Array` during trait
+/// selection, so `(&array_ref).try_into()` would otherwise not resolve.
+impl TryFrom<&arrow58::array::ArrayRef> for DoraArray {
+    type Error = eyre::Report;
+
+    fn try_from(array: &arrow58::array::ArrayRef) -> Result<Self> {
+        v58_to_internal(array.as_ref())
+    }
+}
+
+/// Export a dora payload as an Arrow 58 array.
+///
+/// ```ignore
+/// let arrow58_array: arrow58::array::ArrayRef = (&dora).try_into()?;
+/// ```
+///
+/// Fallible for the same reason as the import direction above, and likewise
+/// zero-copy: the Arrow 58 array keeps dora's buffers alive through the
+/// `release` callback dora's Arrow installed.
+impl TryFrom<&DoraArray> for arrow58::array::ArrayRef {
+    type Error = eyre::Report;
+
+    fn try_from(data: &DoraArray) -> Result<Self> {
+        internal_to_v58(data)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow58::array::Array as _;
+    use arrow58::array::{Array, ArrayRef};
 
     /// 58 → 59 → 58. The values must survive both hops, and the schema with
     /// them: a mis-set field in the reinterpreted `FFI_ArrowSchema` shows up
@@ -156,13 +206,13 @@ mod tests {
     fn round_trip_58_59_58() {
         let original = arrow58::array::UInt64Array::from(vec![1u64, 2, 3, 4, 5]);
 
-        let dora = v58_to_internal(&original).expect("58 -> 59");
+        let dora = DoraArray::try_from(&original as &dyn Array).expect("58 -> 59");
         assert_eq!(dora.len(), 5);
         assert_eq!(dora.type_name(), "UInt64");
         let values: Vec<u64> = crate::into_vec(&dora).expect("read back");
         assert_eq!(values, vec![1, 2, 3, 4, 5]);
 
-        let back = internal_to_v58(&dora).expect("59 -> 58");
+        let back = ArrayRef::try_from(&dora).expect("59 -> 58");
         let back = back
             .as_any()
             .downcast_ref::<arrow58::array::UInt64Array>()
@@ -199,10 +249,10 @@ mod tests {
             ),
         ]);
 
-        let dora = v58_to_internal(&original).expect("58 -> 59");
+        let dora = DoraArray::try_from(&original as &dyn Array).expect("58 -> 59");
         assert_eq!(dora.len(), 3);
 
-        let back = internal_to_v58(&dora).expect("59 -> 58");
+        let back = ArrayRef::try_from(&dora).expect("59 -> 58");
         let back = back
             .as_any()
             .downcast_ref::<arrow58::array::StructArray>()
@@ -255,7 +305,7 @@ mod tests {
                     .unwrap(),
             );
 
-            let dora = v58_to_internal(&array).expect("58 -> 59");
+            let dora = DoraArray::try_from(&array as &dyn Array).expect("58 -> 59");
             // Drop every Arrow 58 handle. The allocation must survive, because
             // the imported Arrow 59 array still references it through the C
             // interface.
@@ -309,7 +359,7 @@ mod tests {
                 .unwrap();
             let dora = crate::internal::from_array_data(data);
 
-            let exported = internal_to_v58(&dora).expect("59 -> 58");
+            let exported = ArrayRef::try_from(&dora).expect("59 -> 58");
             drop(dora);
             assert_eq!(
                 releases.load(Ordering::SeqCst),
@@ -332,11 +382,14 @@ mod tests {
     /// assumption in FFI glue.
     #[test]
     fn round_trip_empty_array_preserves_type() {
-        let original = arrow58::array::Float32Array::from(Vec::<f32>::new());
-        let dora = v58_to_internal(&original).expect("58 -> 59");
+        // Also the one place the `&ArrayRef` source impl is exercised, so both
+        // import shapes stay covered.
+        let original: ArrayRef =
+            std::sync::Arc::new(arrow58::array::Float32Array::from(Vec::<f32>::new()));
+        let dora: DoraArray = (&original).try_into().expect("58 -> 59");
         assert_eq!(dora.len(), 0);
         assert_eq!(dora.type_name(), "Float32");
-        let back = internal_to_v58(&dora).expect("59 -> 58");
+        let back: ArrayRef = (&dora).try_into().expect("59 -> 58");
         assert_eq!(back.data_type(), &arrow58::datatypes::DataType::Float32);
         assert_eq!(back.len(), 0);
     }

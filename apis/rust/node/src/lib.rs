@@ -102,9 +102,10 @@ pub use arrow as arrow_v59;
 /// Apache Arrow 58, for nodes that name that major.
 ///
 /// Enabled by the `arrow-v58` feature. Arrow 58 is **not** dora's internal
-/// major, so payloads cross a C Data Interface hop
-/// ([`DoraArray::from_arrow_v58`] / [`DoraArray::to_arrow_v58`]). The hop does
-/// not copy buffers.
+/// major, so payloads cross a C Data Interface hop, exposed as `TryFrom`
+/// impls in both directions (`DoraArray::try_from(&arr as &dyn arrow58 Array)`
+/// and `arrow_v58::array::ArrayRef::try_from(&dora)`). The hop is fallible —
+/// hence `TryFrom` and not `From` — but does not copy buffers.
 #[cfg(feature = "arrow-v58")]
 pub use arrow58 as arrow_v58;
 // Deliberately *not* a glob re-export: `dora_arrow_convert::internal` is an
