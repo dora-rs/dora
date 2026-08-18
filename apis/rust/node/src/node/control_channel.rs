@@ -38,7 +38,7 @@ impl ControlChannel {
                     }
                 }
             }
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
@@ -56,6 +56,13 @@ impl ControlChannel {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
         Ok(Self { channel, clock })
+    }
+
+    /// Drop the underlying daemon channel so this control-channel sender clone
+    /// is released. The testing daemon exits after OutputsDone under shutdown
+    /// independently of remaining EventStream sender clones.
+    pub(crate) fn close_channel(&mut self) {
+        self.channel = DaemonChannel::Interactive(Default::default());
     }
 
     pub fn report_outputs_done(&mut self) -> eyre::Result<()> {

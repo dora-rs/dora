@@ -143,9 +143,9 @@ pub mod bench_support {
 
     /// Run one iteration of the routing hot path using pre-built fixture.
     pub async fn route_message(df: &mut RunningDataflow, fixture: &RoutingFixture, clock: &HLC) {
+        let output_id = OutputId(fixture.sender_id.clone(), fixture.output_id.clone());
         let _ = send_output_to_local_receivers(
-            fixture.sender_id.clone(),
-            fixture.output_id.clone(),
+            &output_id,
             df,
             &fixture.metadata,
             Some(fixture.data_msg.clone()),
@@ -185,7 +185,6 @@ pub(crate) use running_dataflow::{
 use crate::{
     extension_table::{ExtensionKey, ExtensionTable},
     extract_err_from_stderr::extract_err_from_stderr,
-    pending::DataflowStatus,
 };
 use dora_tensor_pool::TensorPoolManager;
 use shared_memory_extended::ShmemConf;
@@ -1844,14 +1843,37 @@ type DaemonRunResult = BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>;
 
 /// Whether a node-connection event belongs to a superseded incarnation.
 ///
-/// Strictly-older comparison, deliberately not equality: generations are
-/// globally monotonic, and the restart loop publishes a successor's
-/// generation to the listener BEFORE spawning it, so a fast successor's
-/// events can carry a generation NEWER than the entry until its
-/// `ProcessHandleReplaced` is processed. Dropping those would eat the
-/// successor's one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
-fn event_generation_is_stale(entry_generation: u64, event_generation: u64) -> bool {
-    event_generation < entry_generation
+/// An event is fresh only when its generation belongs to this entry's own
+/// incarnation lineage: either the currently-registered incarnation
+/// (`entry_generation`) or the successor this entry's OWN restart loop
+/// announced before spawning it (`successor_generation`, published into the
+/// entry's shared `generation_counter` before the successor connects).
+///
+/// The successor exception is why this is not a plain `== entry_generation`
+/// check: the restart loop publishes the successor's generation to the
+/// listener and spawns it BEFORE the daemon processes the matching
+/// `ProcessHandleReplaced` (which advances `entry_generation`), so a fast
+/// successor's `Subscribe`/`SendOut` can arrive while the entry still holds
+/// the predecessor's generation. Dropping those would eat the successor's
+/// one-shot `Subscribe` (dora-rs/dora#2988 review, finding 1).
+///
+/// The reason it is not a plain `event < entry` check either: that wrongly
+/// accepts a *stranger's* higher generation. When `dora node replace` races a
+/// restart of the outgoing node, the outgoing incarnation's restart loop mints
+/// a generation ABOVE the replacement's (both draw from the same global
+/// counter, but the replacement's is minted first, before its slow build). Its
+/// zombie's events would then pass a `<` gate and be applied to the
+/// replacement — reinstalling a dead subscribe channel, closing the
+/// replacement's outputs, injecting spurious output (dora-rs/dora#2997).
+/// Matching on the entry's OWN announced successor rejects that stranger — the
+/// stranger's generation lives in the outgoing lineage's counter, never the
+/// replacement's — while still letting the real successor through.
+fn event_generation_is_stale(
+    entry_generation: u64,
+    successor_generation: u64,
+    event_generation: u64,
+) -> bool {
+    event_generation != entry_generation && event_generation != successor_generation
 }
 
 /// Patch a stored descriptor entry with a replacement node's definition
@@ -2229,6 +2251,21 @@ fn extract_node_results(
 }
 
 impl Daemon {
+    /// Release every extension-table entry owned by `node_id`, notifying the
+    /// nodes that read them. Thin wrapper over the free function so the call
+    /// sites do not each repeat the `running` lookup — the exception is the
+    /// clean-exit site, which holds a `&mut self.logger` borrow and so must
+    /// name the disjoint fields itself.
+    fn reclaim_extensions(&mut self, dataflow_id: DataflowId, node_id: &NodeId) {
+        reclaim_extensions_of_exited_node(
+            &mut self.extensions,
+            self.running.get(&dataflow_id),
+            dataflow_id,
+            node_id,
+            &self.clock,
+        );
+    }
+
     /// Runs the daemon. `zenoh_listen_addr` overrides the address this
     /// daemon's zenoh listener binds, and therefore the locator its peers are
     /// told to dial.
@@ -3159,14 +3196,19 @@ impl Daemon {
                     // replaced or re-added id's old connection must not
                     // mutate the current entry (close its outputs, remove
                     // its subscription, ...) — dora-rs/dora#2926, #2927.
-                    // STRICTLY older only: the restart loop publishes the
-                    // successor's generation before spawning it, so a fast
-                    // successor can connect (and Subscribe) while the entry
-                    // still holds the predecessor's generation — a NEWER
-                    // event generation is that successor racing its own
-                    // `ProcessHandleReplaced` and must not be dropped, or
-                    // its one-shot Subscribe is lost and the incarnation
-                    // stays disconnected. Entry-absent passes through:
+                    // Accept only this entry's own lineage: its current
+                    // generation, or the successor its OWN restart loop
+                    // announced into `generation_counter` before spawning it.
+                    // The successor exception lets a fast successor's Subscribe
+                    // through while the entry still holds the predecessor's
+                    // generation (before its `ProcessHandleReplaced` lands),
+                    // without which its one-shot Subscribe is lost and the
+                    // incarnation stays disconnected. The lineage restriction
+                    // rejects a stranger's HIGHER generation — e.g. a
+                    // concurrent restart of a node being replaced mints a
+                    // generation above the replacement's — instead of
+                    // misapplying its zombie's events to the replacement
+                    // (dora-rs/dora#2997). Entry-absent passes through:
                     // during startup a node can register before its
                     // RunningNode is inserted, and the pending-nodes
                     // barrier owns that window.
@@ -3174,7 +3216,13 @@ impl Daemon {
                         .running
                         .get(&dataflow)
                         .and_then(|df| df.running_nodes.get(&node_id))
-                        .is_some_and(|node| event_generation_is_stale(node.generation, generation));
+                        .is_some_and(|node| {
+                            event_generation_is_stale(
+                                node.generation,
+                                node.generation_counter.load(atomic::Ordering::Acquire),
+                                generation,
+                            )
+                        });
                     if superseded {
                         tracing::debug!(
                             %dataflow,
@@ -3748,7 +3796,14 @@ impl Daemon {
                                 &mut dataflow.cascading_error_causes,
                             )
                             .await?;
-                        if ready {
+                        // Not gated on `dataflow_started` — `start()` is
+                        // idempotent — but it must not resurrect a dataflow that
+                        // is already tearing down (dora-rs/dora#3053). The
+                        // release can legitimately arrive after a local stop: the
+                        // daemon can stop on its own (`trigger_manual_stop`), and
+                        // the coordinator replays `AllNodesReady` to a daemon
+                        // that reconnects.
+                        if ready && !dataflow.stop_sent {
                             logger.log(LogLevel::Info, None,
                                 Some("daemon".into()),
                                 "coordinator reported that all nodes are ready, starting dataflow",
@@ -4322,6 +4377,26 @@ impl Daemon {
                     Ok(())
                 })();
 
+                // Reclaim the removed node's extension-table entries. Its
+                // later `SpawnedNodeResult` exit event is swallowed by the
+                // generation guard (the node is already gone from
+                // `running_nodes`), so the reclaim at that call site is
+                // unreachable for a removed node. Without a reclaim here,
+                // repeated dynamic add/remove cycles of an entry-owning node
+                // leak entries toward the per-dataflow cap and readers never
+                // receive the drop notification (dora-rs/dora#3177,
+                // originally #2881/#3014).
+                //
+                // Reclaiming here rather than only on the node's death also
+                // notifies readers promptly, and is the ONLY release for a
+                // node that never reports an exit at all (a dynamic node has
+                // no process handle to wait on). What it does not cover —
+                // stores made during the stop grace window — is picked up by
+                // the second reclaim on the dropped exit event.
+                if result.is_ok() {
+                    self.reclaim_extensions(dataflow_id, &node_id);
+                }
+
                 // Outside the closure because it is async. Why removal
                 // has to drive the barrier at all: see
                 // `PendingNodes::handle_node_removal`.
@@ -4347,8 +4422,13 @@ impl Daemon {
                                     )
                                     .await;
                                 match status {
-                                    Ok(DataflowStatus::AllNodesReady)
-                                        if !dataflow.dataflow_started =>
+                                    // Removing the last pending cohort member
+                                    // completes the barrier, and a `RemoveNode`
+                                    // can land mid-teardown, so this shares the
+                                    // `!stop_sent` gate with the subscribe and
+                                    // node-death triggers (dora-rs/dora#3053).
+                                    Ok(status)
+                                        if dataflow.should_start_on_barrier_completion(&status) =>
                                     {
                                         logger
                                             .log(
@@ -4643,7 +4723,8 @@ impl Daemon {
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
-                    dataflow.cascading_error_causes.forget(&node_id);
+                    // `forget_node_bookkeeping` also drops the recorded
+                    // cascading-error cause for this id (see its doc comment).
                     dataflow.forget_node_bookkeeping(&node_id);
                     dataflow
                         .node_stderr_most_recent
@@ -4706,6 +4787,19 @@ impl Daemon {
                     // The outgoing (or an even earlier) incarnation's stale
                     // result must not be attributed to the replacement.
                     clear_node_result(&mut self.dataflow_node_results, dataflow_id, &node_id);
+                    // Reclaim the outgoing incarnation's extension-table
+                    // entries. Its exit event is dropped by the generation
+                    // guard, so this is the only reachable point to release
+                    // them (dora-rs/dora#3177, originally #2881/#3014).
+                    //
+                    // Unlike `RemoveNode` this needs no second reclaim on the
+                    // exit event, and it drops only the outgoing incarnation's
+                    // entries: the replacement's higher generation is already
+                    // installed above, and the daemon's event loop is serial,
+                    // so it has not stored anything yet and the outgoing
+                    // incarnation's later stores are dropped as superseded
+                    // (#2926, #2927) instead of landing under the shared id.
+                    self.reclaim_extensions(dataflow_id, &node_id);
                 }
                 let reply = DaemonCoordinatorReply::ReplaceNodeResult(
                     result.map_err(|err| format!("{err:?}")),
@@ -5107,9 +5201,11 @@ impl Daemon {
                     let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                         format!("send out failed: no running dataflow with ID `{dataflow_id}`")
                     })?;
+                    // `node_id` is still needed below for the error logger, so
+                    // clone it into the key; `output_id` is moved.
+                    let output_id_key = OutputId(node_id.clone(), output_id);
                     send_output_to_local_receivers(
-                        node_id.clone(),
-                        output_id.clone(),
+                        &output_id_key,
                         dataflow,
                         &metadata,
                         data.map(DataMessage::Vec),
@@ -6561,21 +6657,26 @@ impl Daemon {
                                 &mut logger,
                             )
                             .await?;
-                        match status {
-                            DataflowStatus::AllNodesReady if !dataflow.dataflow_started => {
-                                logger
-                                    .log(
-                                        LogLevel::Info,
-                                        None,
-                                        Some("daemon".into()),
-                                        "all nodes are ready, starting dataflow",
-                                    )
-                                    .await;
-                                // `start()` sets `dataflow_started`; the guard
-                                // above keeps this to a single spawn.
-                                dataflow.start(&self.events_tx, &self.clock).await?;
-                            }
-                            _ => {}
+                        // `should_start_on_barrier_completion` keeps this to a
+                        // single spawn (`start()` sets `dataflow_started`) and
+                        // suppresses it entirely once `stop_sent` is set. A late
+                        // subscribe during teardown is an expected path, not a
+                        // hypothetical one: `subscribe()` above has a dedicated
+                        // `stop_sent` branch that answers such a node with
+                        // `Stop`. If that node is the last pending cohort member,
+                        // its subscription completes the barrier and would
+                        // otherwise start the dataflow that is already stopping
+                        // (dora-rs/dora#3053).
+                        if dataflow.should_start_on_barrier_completion(&status) {
+                            logger
+                                .log(
+                                    LogLevel::Info,
+                                    None,
+                                    Some("daemon".into()),
+                                    "all nodes are ready, starting dataflow",
+                                )
+                                .await;
+                            dataflow.start(&self.events_tx, &self.clock).await?;
                         }
                     }
                 }
@@ -7438,17 +7539,18 @@ impl Daemon {
             self.log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
             return Ok(());
         };
-        let output_id_key = OutputId(node_id.clone(), output_id.clone());
+        // Build the `(NodeId, DataId)` routing key once by moving `node_id`/
+        // `output_id` in (neither is read past this point). It is used for the
+        // two `contains` lookups below, passed by reference into local delivery,
+        // and reused for the inter-daemon path — avoiding the previous
+        // per-message clone of the `NodeId`/`DataId` on this output-dispatch hot
+        // path.
+        let output_id_key = OutputId(node_id, output_id);
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
-        // `node_id`/`output_id` are not read past this call — the later
-        // inter-daemon path uses `output_id_key` (cloned just above) instead —
-        // so move them in rather than adding a second per-message clone of the
-        // `NodeId`/`DataId` on this output-dispatch hot path.
         let data_bytes = send_output_to_local_receivers(
-            node_id,
-            output_id,
+            &output_id_key,
             dataflow,
             &metadata,
             data,
@@ -7896,8 +7998,12 @@ impl Daemon {
         // and both of those callers start the dataflow here. Do the same, so a
         // non-cohort survivor that was answered `Ok(())` (since #2933) isn't
         // left parked on a dataflow that never starts and never tears down
-        // (#2967). `start()` is idempotent and guarded by `dataflow_started`.
-        if matches!(status, DataflowStatus::AllNodesReady) && !dataflow.dataflow_started {
+        // (#2967). `should_start_on_barrier_completion` keeps that idempotent
+        // (it gates on `dataflow_started`) and additionally suppresses the start
+        // once the dataflow is stopping (dora-rs/dora#3053) — the stop ladder
+        // itself kills a still-pending non-dynamic cohort member, so this
+        // trigger is reachable during teardown.
+        if dataflow.should_start_on_barrier_completion(&status) {
             logger
                 .log(
                     LogLevel::Info,
@@ -8342,6 +8448,10 @@ impl Daemon {
                     .running
                     .get(&dataflow_id)
                     .and_then(|dataflow| dataflow.running_nodes.get(&node_id));
+                // Nothing owns the id: `RemoveNode` took the entry out, or the
+                // dataflow is gone. A mismatching generation with an entry
+                // still present means a replacement or a re-add owns it now.
+                let node_id_unowned = current_generation.is_none();
                 // Deliberate semantics of the entry-absent case: an exit
                 // arriving after `RemoveNode` took the entry out is dropped
                 // here WITHOUT running the finish accounting below. That
@@ -8362,6 +8472,22 @@ impl Daemon {
                             ),
                         )
                         .await;
+                    // A node removed while alive keeps its daemon connection
+                    // for the whole stop grace window — the node-event guard
+                    // deliberately lets its events through once the entry is
+                    // gone — so it can still store extension entries after
+                    // `RemoveNode`'s eager reclaim. This event is that process
+                    // actually dying: the last chance to release them, and
+                    // without it they would live until dataflow finish, which
+                    // is the accumulation dora-rs/dora#3177 set out to stop.
+                    // Only when nothing owns the id: ownership is keyed by node
+                    // id alone (see `ExtensionTable`), so reclaiming for a
+                    // replacement or a re-add would take the live incarnation's
+                    // entries with it. Idempotent — an already-reclaimed exit
+                    // finds nothing.
+                    if node_id_unowned {
+                        self.reclaim_extensions(dataflow_id, &node_id);
+                    }
                     if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                         dataflow
                             .grace_duration_kills
@@ -8534,6 +8660,8 @@ impl Daemon {
                 // A node that crashed cannot withdraw its own descriptors.
                 // Reclaiming here is the reason the extension table lives in
                 // the daemon at all (dora-rs/dora#2881).
+                // The free function, not the `&mut self` wrapper: `logger`
+                // holds a mutable borrow of `self.logger` across this point.
                 reclaim_extensions_of_exited_node(
                     &mut self.extensions,
                     self.running.get(&dataflow_id),
@@ -9124,8 +9252,7 @@ fn note_output_sent_to_local_receivers(
 
 #[allow(clippy::too_many_arguments)]
 async fn send_output_to_local_receivers(
-    node_id: NodeId,
-    output_id: DataId,
+    output_id: &OutputId,
     dataflow: &mut RunningDataflow,
     metadata: &metadata::Metadata,
     data: Option<DataMessage>,
@@ -9135,8 +9262,7 @@ async fn send_output_to_local_receivers(
 ) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
-    let output_id = OutputId(node_id, output_id);
-    let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
+    let local_receivers = dataflow.mappings.get(output_id).unwrap_or(&empty_set);
     let data = data.map(Arc::new);
     let mut closed = Vec::new();
     // Clone the metadata into an `Arc` lazily, on the first actual delivery.
@@ -10278,6 +10404,7 @@ mod debug_topic_tests {
 #[cfg(test)]
 mod fault_tolerance_tests {
     use super::*;
+    use crate::pending::DataflowStatus;
     use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
 
@@ -10403,6 +10530,7 @@ mod fault_tolerance_tests {
         let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
         drop(coordinator_rx);
         let (mut daemon, _events_rx) = Daemon::build_daemon(
+            None,
             Some(coordinator_sender),
             DaemonId::new(None),
             None,
@@ -10462,12 +10590,60 @@ mod fault_tolerance_tests {
         assert!(retried.contains(&dataflow_id.to_string()), "{retried}");
     }
 
+    fn test_logger(clock: Arc<HLC>) -> DaemonLogger {
+        Logger {
+            destination: log::LogDestination::Tracing,
+            daemon_id: DaemonId::new(None),
+            clock,
+        }
+        .for_daemon(DaemonId::new(None))
+    }
+
+    // dora-rs/dora#3053: a startup-barrier completion can arrive *during*
+    // teardown — a pending cohort member subscribing inside the stop grace
+    // window, that member being killed when the window expires (the death
+    // trigger from #2970), or a `RemoveNode` dropping the last pending member.
+    // `should_start_on_barrier_completion` gates all three on `!stop_sent`, so
+    // a stopping dataflow is never (re)started. Drives `stop_all` rather than
+    // assigning `stop_sent`, so the test tracks the real teardown entry point.
+    #[tokio::test]
+    async fn barrier_completion_does_not_start_a_stopping_dataflow() {
+        let clock = Arc::new(HLC::default());
+        let mut daemon_logger = test_logger(clock.clone());
+        let mut logger = daemon_logger.for_dataflow(Uuid::nil());
+        let mut df = test_dataflow();
+
+        // A fresh dataflow whose barrier just completed should start.
+        assert!(df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
+
+        // A `Pending` status never starts.
+        assert!(!df.should_start_on_barrier_completion(&DataflowStatus::Pending));
+
+        // Once the dataflow is stopping, the same completion must not start it.
+        let finish_when = df
+            .stop_all(&mut None, &clock, None, false, &mut logger)
+            .await
+            .unwrap();
+        assert!(matches!(finish_when, FinishDataflowWhen::Now));
+        assert!(df.stop_sent, "stop_all must record that stop was sent");
+        assert!(
+            !df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady),
+            "a stopping dataflow must not be started by a completing startup barrier"
+        );
+
+        // An already-started dataflow is not started again either.
+        let mut df = test_dataflow();
+        df.dataflow_started = true;
+        assert!(!df.should_start_on_barrier_completion(&DataflowStatus::AllNodesReady));
+    }
+
     fn test_running_node() -> RunningNode {
         RunningNode {
             process: None,
             restart_loop_start: None,
             _listener_shutdown: None,
             generation: 7,
+            generation_counter: Arc::new(AtomicU64::new(7)),
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
@@ -10497,23 +10673,45 @@ mod fault_tolerance_tests {
         }
     }
 
-    /// dora-rs/dora#2988 review, finding 1: the Event::Node gate must be
-    /// STRICTLY-older, not exact-match. The restart loop publishes a
-    /// successor's generation before spawning it, so the successor's
-    /// connection can emit its one-shot Subscribe with a generation NEWER
-    /// than the entry — dropping that leaves the incarnation disconnected
-    /// forever.
+    /// dora-rs/dora#2988 review, finding 1 (still upheld) and dora-rs/dora#2997:
+    /// the Event::Node gate accepts only the entry's own lineage — its current
+    /// generation or the successor its own restart loop announced into
+    /// `generation_counter`. It must let a fast successor's early events through
+    /// (or the incarnation stays disconnected forever) yet reject a stranger's
+    /// higher generation (or a replace-vs-restart zombie corrupts the
+    /// replacement).
     #[test]
-    fn node_event_gate_drops_only_strictly_older_generations() {
+    fn node_event_gate_accepts_only_own_lineage() {
+        // No pending successor announced: counter == entry generation.
         // Predecessor's connection after a swap advanced the entry: stale.
-        assert!(event_generation_is_stale(8, 7));
-        // The entry's current incarnation: current.
-        assert!(!event_generation_is_stale(8, 8));
-        // Successor racing its own ProcessHandleReplaced: must pass.
+        assert!(event_generation_is_stale(8, 8, 7));
+        // The entry's current incarnation: fresh.
+        assert!(!event_generation_is_stale(8, 8, 8));
+        // A higher generation with no announced successor is a stranger: stale.
         assert!(
-            !event_generation_is_stale(8, 9),
+            event_generation_is_stale(8, 8, 9),
+            "a newer generation the entry never announced must be dropped"
+        );
+
+        // The entry's own restart loop announced successor generation 9 (into
+        // `generation_counter`) before spawning it. Its early Subscribe races
+        // ahead of `ProcessHandleReplaced`, so the entry still reads generation
+        // 8; that successor's events must pass.
+        assert!(
+            !event_generation_is_stale(8, 9, 9),
             "a successor's early events must not be dropped while the \
              entry still holds the predecessor's generation"
+        );
+
+        // #2997: `dora node replace` minted the replacement at generation 10
+        // (its counter is 10, no successor announced), while a concurrent
+        // restart of the outgoing node minted a zombie at generation 11 in a
+        // DIFFERENT lineage's counter. The zombie's events (gen 11) must not be
+        // applied to the replacement, even though 11 > 10.
+        assert!(
+            event_generation_is_stale(10, 10, 11),
+            "a stranger incarnation's higher generation must be rejected, \
+             not misattributed to the replacement"
         );
     }
 
@@ -11211,6 +11409,7 @@ mod fault_tolerance_tests {
         let input_x: DataId = "input_x".to_string().into();
         let timeout = Duration::from_secs(1);
 
+        let upstream: NodeId = "upstream".to_string().into();
         for node in [&node_a, &node_b] {
             df.input_deadlines.insert(
                 (node.clone(), input_x.clone()),
@@ -11223,6 +11422,9 @@ mod fault_tolerance_tests {
                 .insert((node.clone(), input_x.clone()), timeout);
             df.node_stderr_most_recent
                 .insert(node.clone(), Arc::new(ArrayQueue::new(4)));
+            // Both nodes were recorded as cascading victims of `upstream`.
+            df.cascading_error_causes
+                .report_cascading_error(upstream.clone(), node.clone());
         }
 
         df.forget_node_bookkeeping(&node_a);
@@ -11237,6 +11439,10 @@ mod fault_tolerance_tests {
                 .contains_key(&(node_a.clone(), input_x.clone()))
         );
         assert!(!df.node_stderr_most_recent.contains_key(&node_a));
+        // … including the stale cascading-error cause, so a re-added/replaced
+        // `node_a` incarnation is classified by its own failure, not a stale
+        // upstream cause (dora-rs/dora#2927).
+        assert_eq!(df.cascading_error_causes.error_caused_by(&node_a), None);
 
         // … while node_b's are untouched.
         assert!(
@@ -11248,6 +11454,10 @@ mod fault_tolerance_tests {
                 .contains_key(&(node_b.clone(), input_x.clone()))
         );
         assert!(df.node_stderr_most_recent.contains_key(&node_b));
+        assert_eq!(
+            df.cascading_error_causes.error_caused_by(&node_b),
+            Some(&upstream)
+        );
     }
 
     // -- Test 3: close_input defers AllInputsClosed when broken_inputs exist --
@@ -11607,8 +11817,9 @@ mod fault_tolerance_tests {
         // Send data from upstream
         let metadata = metadata::Metadata::new(clock.new_timestamp());
 
+        let output_id = OutputId(sender, output);
         let result = send_output_to_local_receivers(
-            sender, output, &mut df, &metadata, None, &clock, None, false,
+            &output_id, &mut df, &metadata, None, &clock, None, false,
         )
         .await;
         assert!(result.is_ok());
@@ -11652,9 +11863,9 @@ mod fault_tolerance_tests {
         let mut df = test_dataflow();
         let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
+        let output_id = OutputId(sender.clone(), output.clone());
         let result = send_output_to_local_receivers(
-            sender.clone(),
-            output.clone(),
+            &output_id,
             &mut df,
             &metadata,
             Some(data),
@@ -11679,9 +11890,9 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(receiver.clone(), tx);
         let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
+        let output_id = OutputId(sender, output);
         let result = send_output_to_local_receivers(
-            sender,
-            output,
+            &output_id,
             &mut df,
             &metadata,
             Some(data),
@@ -11757,8 +11968,9 @@ mod fault_tolerance_tests {
         // Step 2: Upstream sends data again — recovery
         let metadata = metadata::Metadata::new(clock.new_timestamp());
 
+        let output_id = OutputId(sender, output);
         let result = send_output_to_local_receivers(
-            sender, output, &mut df, &metadata, None, &clock, None, false,
+            &output_id, &mut df, &metadata, None, &clock, None, false,
         )
         .await;
         assert!(result.is_ok());
@@ -12189,6 +12401,51 @@ mod fault_tolerance_tests {
             window
         ));
     }
+
+    // -- dora#3177: extension entries of removed/replaced nodes --
+
+    fn ext_key(key: &str) -> ExtensionKey {
+        ExtensionKey {
+            dataflow_id: Uuid::nil().to_string(),
+            namespace: "dora-tensor-pool".into(),
+            key: key.into(),
+        }
+    }
+
+    /// The daemon-side half of reclamation, which `extension_table.rs`
+    /// cannot cover: the drop notification actually reaches the reader's
+    /// subscribe channel, so it can release what it derived from the value.
+    /// Every reclaim call site — `RemoveNode`, `ReplaceNode`, and both exit
+    /// paths — goes through this.
+    #[test]
+    fn reclaim_drops_owned_entries_and_notifies_readers() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let owner: NodeId = "owner".to_string().into();
+        let reader: NodeId = "reader".to_string().into();
+
+        let mut extensions = ExtensionTable::new();
+        extensions
+            .store(ext_key("pool_owner_1"), b"descriptor".to_vec(), &owner)
+            .unwrap();
+        extensions.load(&ext_key("pool_owner_1"), &reader).unwrap();
+
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(reader.clone(), tx);
+
+        reclaim_extensions_of_exited_node(&mut extensions, Some(&df), Uuid::nil(), &owner, &clock);
+
+        assert_eq!(extensions.len(), 0, "the owner's entry must be gone");
+        let events = drain_events(&mut rx);
+        assert!(
+            matches!(
+                events.as_slice(),
+                [NodeEvent::ExtensionDropped { namespace, key }]
+                    if namespace == "dora-tensor-pool" && key == "pool_owner_1"
+            ),
+            "reader must be notified exactly once: {events:?}"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -12561,7 +12818,7 @@ mod cross_pool_write_tests {
         let patterns: Vec<Vec<u8>> = (0..WRITERS).map(|w| vec![w; SIZE]).collect();
         for round in 0..200 {
             std::thread::scope(|scope| {
-                for (_w, pattern) in patterns.iter().enumerate() {
+                for pattern in patterns.iter() {
                     let pattern = pattern.as_slice();
                     scope.spawn(move || {
                         write_cross_pool_data(&dataflow_id, "B", pool_id, pattern, SIZE);
@@ -13324,8 +13581,8 @@ mod cross_pool_write_tests {
         auth_handshake_send(&mut client, "test-shared-secret")
             .await
             .unwrap();
-        let verify = server.await.unwrap().unwrap();
-        assert_eq!(verify, (), "shared token must be accepted");
+        server.await.unwrap().unwrap();
+        assert_eq!((), (), "shared token must be accepted");
 
         // Wrong token: rejected on the verify side and an error on the
         // send side (the peer answers AUTH_FAIL).
@@ -13403,7 +13660,7 @@ mod cross_pool_write_tests {
         auth_handshake_send(&mut client2, "test-shared-secret")
             .await
             .unwrap();
-        let gate_ok = server2.await.unwrap().unwrap();
-        assert_eq!(gate_ok, (), "shared token must pass the gate");
+        server2.await.unwrap().unwrap();
+        assert_eq!((), (), "shared token must pass the gate");
     }
 }

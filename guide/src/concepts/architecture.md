@@ -810,7 +810,7 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `SessionId` | `uuid::Uuid` (v7) | Per CLI session |
 | `BuildId` | `uuid::Uuid` (v7) | Per build operation |
 | `DaemonId` | `{ machine_id: Option<String>, uuid: Uuid (v7) }` | Created fresh on each start via `DaemonId::new(machine_id)` |
-| `NodeId` | `String` | Validated: `[a-zA-Z0-9_.-]`, non-empty |
+| `NodeId` | `String` | Validated: `[a-zA-Z0-9_.-]`, non-empty, no leading `.`, not the reserved id `dora` |
 | `DataId` | `String` | Same validation as `NodeId` |
 | `OperatorId` | `String` | No validation |
 | `DropToken` | `Uuid` (v7) | Per shared-memory message |

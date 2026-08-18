@@ -709,6 +709,12 @@ fn normalize_output_routing(
 /// waiting out the 10s only to be force-killed anyway yields a worse (unclean) exit.
 pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Capacity of the testing-mode daemon request channel. Kept comfortably above
+/// the number of concurrent requesters (event stream + close channel + control
+/// channel) so Drop's CloseOutputs send does not block on a full queue while
+/// the daemon thread is busy inside `next_event` (dora-rs/dora#2855).
+const TESTING_DAEMON_CHANNEL_CAPACITY: usize = 256;
+
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -776,6 +782,14 @@ pub struct DoraNode {
     /// (which is drained explicitly at the top of [`Drop`]) so that any
     /// async cleanup triggered by session shutdown can still run.
     _owned_runtime: Option<tokio::runtime::Runtime>,
+
+    /// Join handle for the in-process testing daemon thread spawned by
+    /// [`Self::init_testing`] / the testing branch of `init_with_options`.
+    /// Joined in [`Drop`] after closing the request channel (dora-rs/dora#2855).
+    testing_daemon: Option<std::thread::JoinHandle<()>>,
+    /// Signals the testing daemon to abort a scheduled `next_event` sleep so
+    /// Drop's CloseOutputs handshake can complete.
+    testing_shutdown: Option<Arc<AtomicBool>>,
 }
 
 impl DoraNode {
@@ -1151,8 +1165,8 @@ impl DoraNode {
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
 
-        let daemon_communication = match daemon_communication {
-            Some(comm) => comm.into(),
+        let (daemon_communication, testing_daemon, testing_shutdown) = match daemon_communication {
+            Some(comm) => (comm.into(), None, None),
             None => match testing_communication {
                 Some(comm) => {
                     let TestingCommunication {
@@ -1160,23 +1174,44 @@ impl DoraNode {
                         output,
                         options,
                     } = comm;
-                    let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
-                    let new_communication = DaemonCommunicationWrapper::Testing { channel: sender };
-                    let mut events = IntegrationTestingEvents::new(input, output, options)?;
-                    std::thread::spawn(move || {
-                        while let Some((request, reply_sender)) = receiver.blocking_recv() {
-                            let reply = events.request(&request);
-                            if reply_sender
-                                .send(reply.unwrap_or_else(|err| {
-                                    DaemonReply::Result(Err(format!("{err:?}")))
-                                }))
-                                .is_err()
-                            {
-                                eprintln!("failed to send reply");
+                    let (sender, mut receiver) =
+                        tokio::sync::mpsc::channel(TESTING_DAEMON_CHANNEL_CAPACITY);
+                    let shutdown = Arc::new(AtomicBool::new(false));
+                    let new_communication = DaemonCommunicationWrapper::Testing {
+                        channel: sender,
+                        shutdown: shutdown.clone(),
+                    };
+                    let mut events =
+                        IntegrationTestingEvents::new(input, output, options, shutdown.clone())?;
+                    let shutdown_for_loop = shutdown.clone();
+                    let handle = std::thread::Builder::new()
+                        .name("dora-testing-daemon".into())
+                        .spawn(move || {
+                            while let Some((request, reply_sender)) = receiver.blocking_recv() {
+                                let outputs_done =
+                                    matches!(request.inner, DaemonRequest::OutputsDone);
+                                let reply = events.request(&request);
+                                if reply_sender
+                                    .send(reply.unwrap_or_else(|err| {
+                                        DaemonReply::Result(Err(format!("{err:?}")))
+                                    }))
+                                    .is_err()
+                                {
+                                    eprintln!("failed to send reply");
+                                }
+                                // Exit after OutputsDone under shutdown even if
+                                // EventStream still holds a sender clone — otherwise
+                                // node-first Drop waits forever on blocking_recv
+                                // (dora-rs/dora#2855).
+                                if outputs_done && shutdown_for_loop.load(Ordering::Relaxed) {
+                                    break;
+                                }
                             }
-                        }
-                    });
-                    new_communication
+                        })
+                        .map_err(|e| {
+                            NodeError::Init(format!("failed to spawn testing daemon thread: {e}"))
+                        })?;
+                    (new_communication, Some(handle), Some(shutdown))
                 }
                 None => {
                     return Err(NodeError::Init(
@@ -1390,6 +1425,8 @@ impl DoraNode {
             restart_count,
             runtime_type_checks,
             _owned_runtime: owned_runtime,
+            testing_daemon,
+            testing_shutdown,
         };
 
         if dynamic {
@@ -1663,12 +1700,12 @@ impl DoraNode {
         // OTel Baggage is NOT propagated to avoid leaking sensitive data across
         // node boundaries. If a user explicitly provides this key, it wins.
         #[cfg(feature = "tracing")]
-        if !parameters.contains_key("open_telemetry_context") {
+        if !parameters.contains_key(crate::OPEN_TELEMETRY_CONTEXT) {
             let cx = opentelemetry::Context::current();
             let serialized = dora_tracing::telemetry::serialize_context(&cx);
             if !serialized.is_empty() {
                 parameters.insert(
-                    "open_telemetry_context".to_string(),
+                    crate::OPEN_TELEMETRY_CONTEXT.to_string(),
                     crate::Parameter::String(serialized),
                 );
             }
@@ -2656,6 +2693,13 @@ impl Drop for DoraNode {
         }
 
         // close all outputs first to notify subscribers as early as possible
+        //
+        // Testing mode (dora-rs/dora#2855): signal shutdown *before* the
+        // CloseOutputs handshake so a daemon thread sleeping inside
+        // `next_event` wakes up, replies, and can then process Drop's requests.
+        if let Some(shutdown) = &self.testing_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         if let Err(err) = self
             .control_channel
             .report_closed_outputs(
@@ -2671,6 +2715,17 @@ impl Drop for DoraNode {
         if let Err(err) = self.control_channel.report_outputs_done() {
             tracing::warn!("{err:?}")
         }
+
+        // Drop our channel sender and join the testing daemon. The daemon loop
+        // exits after OutputsDone under shutdown even when EventStream still
+        // holds a sender clone (dora-rs/dora#2855).
+        if let Some(handle) = self.testing_daemon.take() {
+            self.control_channel.close_channel();
+            if handle.join().is_err() {
+                tracing::warn!("testing daemon thread panicked");
+            }
+        }
+        self.testing_shutdown = None;
     }
 }
 
@@ -3609,6 +3664,64 @@ mod tests {
         };
         let (node, event_stream) = DoraNode::init_testing(inputs, outputs, options).unwrap();
         (node, event_stream, rx)
+    }
+
+    /// Comfortably below any multi-second join/sleep budget so node-first Drop
+    /// regressions surface without waiting on an internal timeout boundary.
+    const INIT_TESTING_DROP_BUDGET: Duration = Duration::from_millis(500);
+
+    fn init_testing_node_mid_scheduled_wait() -> (DoraNode, crate::EventStream) {
+        let events = vec![TimedIncomingEvent {
+            // Long enough that a hang is obvious; the shutdown flag must
+            // interrupt well before this elapses.
+            time_offset_secs: 30.0,
+            event: IncomingEvent::Stop,
+        }];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "drop-hang-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = crate::integration_testing::unbounded_channel();
+        let outputs = TestingOutput::ToChannel(tx);
+        let (node, event_stream) =
+            DoraNode::init_testing(inputs, outputs, TestingOptions::default()).unwrap();
+
+        // Give the testing daemon a moment to enter next_event's sleep.
+        std::thread::sleep(Duration::from_millis(50));
+        (node, event_stream)
+    }
+
+    /// Regression for dora-rs/dora#2855: events-then-node Drop while the daemon
+    /// is inside a scheduled `next_event` wait must not hang.
+    #[test]
+    fn init_testing_drop_events_then_node_during_scheduled_wait_does_not_hang() {
+        let (node, event_stream) = init_testing_node_mid_scheduled_wait();
+
+        let start = Instant::now();
+        drop(event_stream);
+        drop(node);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < INIT_TESTING_DROP_BUDGET,
+            "events-then-node Drop hung for {elapsed:?}; expected interruptible testing-daemon shutdown"
+        );
+    }
+
+    /// Regression for dora-rs/dora#2855: node-then-events Drop must exit the
+    /// testing daemon after OutputsDone under shutdown even while EventStream
+    /// still holds a channel sender clone.
+    #[test]
+    fn init_testing_drop_node_then_events_during_scheduled_wait_does_not_hang() {
+        let (node, event_stream) = init_testing_node_mid_scheduled_wait();
+
+        let start = Instant::now();
+        drop(node);
+        drop(event_stream);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < INIT_TESTING_DROP_BUDGET,
+            "node-then-events Drop hung for {elapsed:?}; expected OutputsDone under shutdown to exit the testing daemon"
+        );
     }
 
     #[test]

@@ -2292,32 +2292,31 @@ async fn start_inner(
                 }
             }
             Event::Log(message) => {
-                const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
-                if let Some(dataflow_id) = &message.dataflow_id {
-                    if let Some(dataflow) = running_dataflows.get_mut(dataflow_id) {
+                // `dataflow_id`/`build_id` are `Copy`, so match them by value to
+                // leave `message` free to move into `buffer_log_message`.
+                if let Some(dataflow_id) = message.dataflow_id {
+                    if let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) {
                         if dataflow.log_subscribers.is_empty() {
-                            if dataflow.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                                dataflow.buffered_log_messages.push(message);
-                            } else if dataflow.buffered_log_messages.len()
-                                == MAX_BUFFERED_LOG_MESSAGES
-                            {
+                            if buffer_log_message(&mut dataflow.buffered_log_messages, message) {
                                 tracing::warn!(
-                                    "log buffer full for dataflow {dataflow_id}, dropping new messages"
+                                    "log buffer full for dataflow {dataflow_id} \
+                                     ({MAX_BUFFERED_LOG_MESSAGES} messages); dropping further \
+                                     messages until a log subscriber attaches"
                                 );
                             }
                         } else {
                             send_log_message(&mut dataflow.log_subscribers, &message).await;
                         }
                     }
-                } else if let Some(build_id) = &message.build_id
-                    && let Some(build) = running_builds.get_mut(build_id)
+                } else if let Some(build_id) = message.build_id
+                    && let Some(build) = running_builds.get_mut(&build_id)
                 {
                     if build.log_subscribers.is_empty() {
-                        if build.buffered_log_messages.len() < MAX_BUFFERED_LOG_MESSAGES {
-                            build.buffered_log_messages.push(message);
-                        } else if build.buffered_log_messages.len() == MAX_BUFFERED_LOG_MESSAGES {
+                        if buffer_log_message(&mut build.buffered_log_messages, message) {
                             tracing::warn!(
-                                "log buffer full for build {build_id}, dropping new messages"
+                                "log buffer full for build {build_id} \
+                                 ({MAX_BUFFERED_LOG_MESSAGES} messages); dropping further \
+                                 messages until a log subscriber attaches"
                             );
                         }
                     } else {
@@ -3030,6 +3029,29 @@ fn topic_outputs_by_daemon(
     }
 
     Ok(outputs_by_daemon)
+}
+
+/// Maximum number of log messages buffered per dataflow / build while no log
+/// subscriber is attached. Once full, newer messages are dropped (the older
+/// ones are kept so a subscriber that attaches later still sees the start of
+/// the run).
+const MAX_BUFFERED_LOG_MESSAGES: usize = 10_000;
+
+/// Buffer `message`, or drop it once `buffer` already holds
+/// [`MAX_BUFFERED_LOG_MESSAGES`].
+///
+/// Returns `true` exactly once — on the message that fills the buffer — so the
+/// caller logs a single "buffer full" warning. Further messages are dropped and
+/// return `false`, which is what keeps the warning from re-firing on every
+/// subsequent message once the buffer is full.
+fn buffer_log_message(buffer: &mut Vec<LogMessage>, message: LogMessage) -> bool {
+    if buffer.len() < MAX_BUFFERED_LOG_MESSAGES {
+        let now_full = buffer.len() == MAX_BUFFERED_LOG_MESSAGES - 1;
+        buffer.push(message);
+        now_full
+    } else {
+        false
+    }
 }
 
 /// Handle the success arm of `Event::DataflowSpawnResult`.

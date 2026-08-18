@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,7 +26,10 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper, PatternError,
-    daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
+    daemon_connection::{
+        DaemonChannel,
+        node_integration_testing::{convert_arrow_input_to_json, convert_output_to_json},
+    },
     event_stream::data_conversion::RawData,
     node::{ZENOH_TEARDOWN_TIMEOUT, teardown_with_timeout},
 };
@@ -114,6 +120,10 @@ pub struct EventStream {
     /// Returning `None` here lets the caller exit and drops the
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
+    /// Testing-mode shutdown flag shared with the in-process daemon thread.
+    /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
+    /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
+    testing_shutdown: Option<Arc<AtomicBool>>,
 }
 
 /// Spawn the consumer half of the startup handshake: a thread that answers
@@ -215,9 +225,14 @@ impl EventStream {
                 }
             }
 
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
+        };
+
+        let testing_shutdown = match daemon_communication {
+            DaemonCommunicationWrapper::Testing { shutdown, .. } => Some(shutdown.clone()),
+            _ => None,
         };
 
         let close_channel = match daemon_communication {
@@ -233,7 +248,7 @@ impl EventStream {
                     }
                 }
             }
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
@@ -343,6 +358,7 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
+            testing_shutdown,
         )
     }
 
@@ -359,6 +375,7 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
+        testing_shutdown: Option<Arc<AtomicBool>>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -750,6 +767,7 @@ impl EventStream {
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
             stop_received: false,
+            testing_shutdown,
         })
     }
 
@@ -1057,6 +1075,23 @@ impl EventStream {
                     }
                     _ => None,
                 },
+                // Zenoh-delivered inputs surface to the user as `Event::Input`
+                // exactly like the daemon-path `NodeEvent::Input` above, but
+                // bypass the daemon, so neither this recorder nor the daemon
+                // would otherwise capture them — silently dropping inputs from
+                // the `write_events_to` recording. Record them here too.
+                EventItem::ZenohInput { id, metadata, data } => {
+                    let array = arrow::array::make_array(data.clone());
+                    let mut event_json = convert_arrow_input_to_json(
+                        id,
+                        metadata,
+                        array,
+                        self.start_timestamp,
+                        false,
+                    )?;
+                    event_json.insert("type".into(), "Input".into());
+                    Some(event_json.into())
+                }
                 _ => None,
             };
             if let Some(event_json) = event_json {
@@ -1746,6 +1781,11 @@ impl Drop for EventStream {
             inner: DaemonRequest::EventStreamDropped,
             timestamp: self.clock.new_timestamp(),
         };
+        // Interrupt a testing-daemon `next_event` sleep before the blocking
+        // close handshake so Drop cannot deadlock (dora-rs/dora#2855).
+        if let Some(shutdown) = &self.testing_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         let result = self
             .close_channel
             .request(&request)
@@ -2863,6 +2903,72 @@ mod tests {
         };
         assert!(!user_metadata.parameters.contains_key(SCHEMA_HASH));
         assert!(!user_metadata.parameters.contains_key(FRAMING));
+    }
+
+    /// A zenoh-delivered input must be serializable into the same recording
+    /// JSON shape as a daemon-path input, so `write_events_to` recordings do
+    /// not silently drop inputs that take the direct zenoh data plane.
+    #[test]
+    fn zenoh_input_serializes_into_recording_json() {
+        use crate::daemon_connection::node_integration_testing::convert_arrow_input_to_json;
+
+        let hlc = dora_core::uhlc::HLC::default();
+        let start = hlc.new_timestamp();
+        let metadata = Metadata::new(hlc.new_timestamp());
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
+
+        let json = convert_arrow_input_to_json(
+            &DataId::from("in".to_string()),
+            &metadata,
+            array,
+            start,
+            true,
+        )
+        .expect("zenoh input must serialize");
+
+        assert_eq!(json["id"], "in");
+        assert!(json.contains_key("data"), "recorded event must carry data");
+        assert!(
+            json.contains_key("data_type"),
+            "recorded event must carry data_type"
+        );
+        assert_eq!(
+            json["data"].as_array().map(|a| a.len()),
+            Some(3),
+            "all array elements must be recorded"
+        );
+    }
+
+    /// A zenoh input can carry a remote HLC timestamp that predates this node's
+    /// `start_timestamp`. The recording must clamp the offset to zero instead of
+    /// underflowing the NTP64 subtraction (a debug panic that would kill the
+    /// event loop, or a release wraparound to a garbage offset).
+    #[test]
+    fn zenoh_input_with_earlier_timestamp_does_not_underflow() {
+        use crate::daemon_connection::node_integration_testing::convert_arrow_input_to_json;
+
+        let hlc = dora_core::uhlc::HLC::default();
+        // `input_ts` is created first, so it is strictly before `start`.
+        let input_ts = hlc.new_timestamp();
+        let start = hlc.new_timestamp();
+        let metadata = Metadata::new(input_ts);
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1]));
+
+        // `skip_output_time_offsets = false` exercises the time-offset path.
+        let json = convert_arrow_input_to_json(
+            &DataId::from("in".to_string()),
+            &metadata,
+            array,
+            start,
+            false,
+        )
+        .expect("recording an earlier-timestamped input must not fail");
+        assert_eq!(
+            json["time_offset_secs"], 0.0,
+            "an input predating start must clamp to a zero offset"
+        );
     }
 
     /// The schema-plane FatalError only fires after the grace window: the

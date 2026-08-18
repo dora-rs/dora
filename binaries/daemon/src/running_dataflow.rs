@@ -1,7 +1,9 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator, fault_tolerance::CascadingErrorCauses, pending::PendingNodes,
+    DoraEvent, OutputId, coordinator,
+    fault_tolerance::CascadingErrorCauses,
+    pending::{DataflowStatus, PendingNodes},
     send_with_timestamp,
 };
 use dora_core::{
@@ -95,6 +97,17 @@ pub struct RunningNode {
     /// under this node ID. Lifecycle events from older incarnations must not
     /// mutate this entry or contribute results to it.
     pub(crate) generation: u64,
+    /// Shared counter into which *this entry's own* restart loop publishes its
+    /// successor's generation, before spawning that successor (see
+    /// `RawSpawner::restart_loop`). Because the successor can connect and
+    /// `Subscribe` before the daemon processes the matching
+    /// `ProcessHandleReplaced` (which advances [`Self::generation`]), the event
+    /// gate must accept a generation equal to this announced successor even
+    /// though it is newer than [`Self::generation`]. Crucially it is *this*
+    /// lineage's counter: a stranger incarnation (e.g. a concurrent restart of
+    /// a node being replaced) mints a higher generation into a *different*
+    /// counter, so its events are still rejected (dora-rs/dora#2997).
+    pub(crate) generation_counter: Arc<AtomicU64>,
     pub(crate) node_config: NodeConfig,
     pub(crate) pid: Option<Arc<AtomicU32>>,
     pub(crate) restart_count: Arc<AtomicU32>,
@@ -432,7 +445,7 @@ impl RunningDataflow {
     }
 
     /// Drop per-node bookkeeping that is keyed by node id but not covered by
-    /// the routing-table cleanup in the `RemoveNode` handler.
+    /// the routing-table cleanup in the `RemoveNode` / `ReplaceNode` handlers.
     ///
     /// Without this, removing a node (dynamic reconfiguration) leaves stale
     /// `input_deadlines` / `broken_inputs` entries behind. A never-armed
@@ -442,10 +455,42 @@ impl RunningDataflow {
     /// receipt, which a removed node never sees). Together with the
     /// `node_stderr_most_recent` queue this is an unbounded accumulation
     /// across repeated add/remove cycles.
+    ///
+    /// The recorded cascading-error cause is dropped for the same reason: a
+    /// `caused_by` entry is otherwise never removed (dora-rs/dora#2927), so a
+    /// node id reused by a later incarnation — whether re-added after a
+    /// `RemoveNode` or swapped in by `ReplaceNode` — would have a genuine
+    /// failure of the *new* incarnation misattributed to the stale cause and
+    /// classified as `NodeErrorCause::Cascading`, suppressing its real stderr
+    /// capture.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
+        self.cascading_error_causes.forget(node_id);
+    }
+
+    /// Whether a startup-barrier completion (reported as
+    /// [`DataflowStatus::AllNodesReady`]) should start this dataflow.
+    ///
+    /// Every barrier-completion trigger — a node subscribing, a `RemoveNode`
+    /// dropping the last pending member, and a cohort member dying before it
+    /// subscribed (dora-rs/dora#2970) — can fire *during teardown*, so all three
+    /// share this gate (dora-rs/dora#3053). `stop_all` neither closes the node
+    /// listener nor completes the barrier for still-pending non-dynamic members:
+    /// it only drains the *existing* `subscribe_channels`, drops the pending
+    /// *dynamic* nodes, and schedules a (by default graceful) process stop. A
+    /// pending cohort member can therefore still subscribe within the grace
+    /// window — `Daemon::subscribe` has a dedicated `stop_sent` branch for
+    /// exactly that — or be killed when the window expires, and either way
+    /// completes the barrier.
+    ///
+    /// Starting a stopping dataflow spawns timer tasks that tick into a
+    /// teardown until the dataflow is dropped, and flips `dataflow_started` on,
+    /// which is the flag a racing `AddNode` reads to decide it may spawn timer
+    /// tasks of its own.
+    pub(crate) fn should_start_on_barrier_completion(&self, status: &DataflowStatus) -> bool {
+        matches!(status, DataflowStatus::AllNodesReady) && !self.dataflow_started && !self.stop_sent
     }
 
     pub(crate) async fn start(
@@ -479,7 +524,7 @@ impl RunningDataflow {
                         } else {
                             let mut m = BTreeMap::new();
                             m.insert(
-                                "open_telemetry_context".to_string(),
+                                dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
                                 dora_node_api::Parameter::String(ctx),
                             );
                             m
