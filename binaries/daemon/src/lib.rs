@@ -143,9 +143,9 @@ pub mod bench_support {
 
     /// Run one iteration of the routing hot path using pre-built fixture.
     pub async fn route_message(df: &mut RunningDataflow, fixture: &RoutingFixture, clock: &HLC) {
+        let output_id = OutputId(fixture.sender_id.clone(), fixture.output_id.clone());
         let _ = send_output_to_local_receivers(
-            fixture.sender_id.clone(),
-            fixture.output_id.clone(),
+            &output_id,
             df,
             &fixture.metadata,
             Some(fixture.data_msg.clone()),
@@ -5154,9 +5154,11 @@ impl Daemon {
                     let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
                         format!("send out failed: no running dataflow with ID `{dataflow_id}`")
                     })?;
+                    // `node_id` is still needed below for the error logger, so
+                    // clone it into the key; `output_id` is moved.
+                    let output_id_key = OutputId(node_id.clone(), output_id);
                     send_output_to_local_receivers(
-                        node_id.clone(),
-                        output_id.clone(),
+                        &output_id_key,
                         dataflow,
                         &metadata,
                         data.map(DataMessage::Vec),
@@ -7490,17 +7492,18 @@ impl Daemon {
             self.log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
             return Ok(());
         };
-        let output_id_key = OutputId(node_id.clone(), output_id.clone());
+        // Build the `(NodeId, DataId)` routing key once by moving `node_id`/
+        // `output_id` in (neither is read past this point). It is used for the
+        // two `contains` lookups below, passed by reference into local delivery,
+        // and reused for the inter-daemon path — avoiding the previous
+        // per-message clone of the `NodeId`/`DataId` on this output-dispatch hot
+        // path.
+        let output_id_key = OutputId(node_id, output_id);
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
-        // `node_id`/`output_id` are not read past this call — the later
-        // inter-daemon path uses `output_id_key` (cloned just above) instead —
-        // so move them in rather than adding a second per-message clone of the
-        // `NodeId`/`DataId` on this output-dispatch hot path.
         let data_bytes = send_output_to_local_receivers(
-            node_id,
-            output_id,
+            &output_id_key,
             dataflow,
             &metadata,
             data,
@@ -9209,8 +9212,7 @@ fn note_output_sent_to_local_receivers(
 
 #[allow(clippy::too_many_arguments)]
 async fn send_output_to_local_receivers(
-    node_id: NodeId,
-    output_id: DataId,
+    output_id: &OutputId,
     dataflow: &mut RunningDataflow,
     metadata: &metadata::Metadata,
     data: Option<DataMessage>,
@@ -9220,8 +9222,7 @@ async fn send_output_to_local_receivers(
 ) -> Result<Option<AVec<u8, ConstAlign<128>>>, eyre::ErrReport> {
     let timestamp = metadata.timestamp();
     let empty_set = BTreeSet::new();
-    let output_id = OutputId(node_id, output_id);
-    let local_receivers = dataflow.mappings.get(&output_id).unwrap_or(&empty_set);
+    let local_receivers = dataflow.mappings.get(output_id).unwrap_or(&empty_set);
     let data = data.map(Arc::new);
     let mut closed = Vec::new();
     // Clone the metadata into an `Arc` lazily, on the first actual delivery.
@@ -11711,8 +11712,9 @@ mod fault_tolerance_tests {
         // Send data from upstream
         let metadata = metadata::Metadata::new(clock.new_timestamp());
 
+        let output_id = OutputId(sender, output);
         let result = send_output_to_local_receivers(
-            sender, output, &mut df, &metadata, None, &clock, None, false,
+            &output_id, &mut df, &metadata, None, &clock, None, false,
         )
         .await;
         assert!(result.is_ok());
@@ -11756,9 +11758,9 @@ mod fault_tolerance_tests {
         let mut df = test_dataflow();
         let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
+        let output_id = OutputId(sender.clone(), output.clone());
         let result = send_output_to_local_receivers(
-            sender.clone(),
-            output.clone(),
+            &output_id,
             &mut df,
             &metadata,
             Some(data),
@@ -11783,9 +11785,9 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(receiver.clone(), tx);
         let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
+        let output_id = OutputId(sender, output);
         let result = send_output_to_local_receivers(
-            sender,
-            output,
+            &output_id,
             &mut df,
             &metadata,
             Some(data),
@@ -11861,8 +11863,9 @@ mod fault_tolerance_tests {
         // Step 2: Upstream sends data again — recovery
         let metadata = metadata::Metadata::new(clock.new_timestamp());
 
+        let output_id = OutputId(sender, output);
         let result = send_output_to_local_receivers(
-            sender, output, &mut df, &metadata, None, &clock, None, false,
+            &output_id, &mut df, &metadata, None, &clock, None, false,
         )
         .await;
         assert!(result.is_ok());
