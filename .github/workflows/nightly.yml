@@ -520,7 +520,7 @@ jobs:
     # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
     # built-in exit / --duration / --count). Topic inspection (echo/hz/info)
     # streams over the coordinator WebSocket (PR #238) — requires
-    # `_unstable_debug.publish_all_messages_to_zenoh: true` in the fixture.
+    # `_unstable_debug.enable_debug_inspection: true` in the fixture.
     #
     # Uses Python source nodes (ticker.py / sink.py) so the dataflow runs
     # indefinitely until stopped (rust-dataflow nodes hit tick limits).
@@ -1792,6 +1792,7 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
+          --exclude dora-tensor-pool-python
       - name: Check (cross)
         if: matrix.cross
         run: >
@@ -1801,6 +1802,7 @@ jobs:
           --exclude dora-ros2-bridge-python
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
+          --exclude dora-tensor-pool-python
 
   # ===== ROS2 bridge basic checks =====
   # Keep nightly coverage for ROS2 bridge code that does not require a full ROS
