@@ -755,4 +755,77 @@ mod tests {
         .await
         .expect("WS router deadlocked under outbound backpressure (#3164)");
     }
+
+    /// Regression test for the reply routing `resolve_machine` depends on
+    /// (dora-rs/dora#3079): the coordinator answers a daemon->coordinator
+    /// request inside the same `daemon_event` envelope as an inbound command,
+    /// but with a params type the typed `CoordinatorCommandRaw` parse rejects.
+    /// The reader must therefore route it to the pending caller by id, *before*
+    /// that parse.
+    ///
+    /// Pinned because the routing block sits mid-loop in the reader and was
+    /// dropped once already while restructuring this connection: without it
+    /// every cross-machine `resolve_machine` falls through to the command
+    /// parse, logs a parse failure, and times out returning `None`.
+    #[tokio::test]
+    async fn ws_reader_routes_replies_to_pending_daemon_requests() {
+        let clock = Arc::new(HLC::default());
+
+        // Inbound frames are fed by the test, so the reply can echo the request
+        // id `resolve_machine` picks at call time.
+        let (ws_in_tx, ws_in_rx) = mpsc::channel::<Result<Message, std::io::Error>>(1);
+        let (tx, mut rx) = mpsc::channel::<Timestamped<CoordinatorEvent>>(1);
+        let (internal_tx, mut internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let reader = tokio::spawn(run_coordinator_ws_reader(
+            ReceiverStream::new(ws_in_rx),
+            tx,
+            internal_tx,
+            clock.clone(),
+        ));
+
+        let (sender, mut outbound_rx) = CoordinatorSender::for_test();
+        let resolve = tokio::spawn({
+            let clock = clock.clone();
+            async move { resolve_machine(&sender, &clock, "machine-a").await }
+        });
+
+        // Answer the request the daemon just sent, echoing its id.
+        let request = outbound_rx
+            .recv()
+            .await
+            .expect("resolve_machine must send a request");
+        let request_id = serde_json::from_str::<serde_json::Value>(&request).unwrap()["id"]
+            .as_str()
+            .expect("the envelope carries the request id")
+            .to_owned();
+        let reply = format!(
+            r#"{{"id":"{request_id}","method":"daemon_event","params":{{"inner":{{"ResolveMachineResult":{{"found":true,"address":"127.0.0.1:6021"}}}}}}}}"#
+        );
+        ws_in_tx
+            .send(Ok(Message::Text(reply.into())))
+            .await
+            .unwrap();
+
+        let resolved = tokio::time::timeout(Duration::from_secs(5), resolve)
+            .await
+            .expect(
+                "the reply must reach the pending caller, not fall through to the command parse",
+            )
+            .unwrap();
+        assert_eq!(resolved, Some("127.0.0.1:6021".parse().unwrap()));
+
+        // A routed reply is consumed by the routing block: it must neither be
+        // dispatched to the main loop nor answered on the wire.
+        assert!(
+            rx.try_recv().is_err(),
+            "a routed reply must not reach the daemon main loop"
+        );
+        assert!(
+            internal_rx.try_recv().is_err(),
+            "a routed reply must not produce an outbound response frame"
+        );
+
+        drop(ws_in_tx);
+        reader.await.unwrap();
+    }
 }
