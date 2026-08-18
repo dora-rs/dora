@@ -85,14 +85,13 @@ pub struct Descriptor {
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
 
-    /// Deployment configuration (optional, unstable)
+    /// Deployment configuration (optional).
     #[schemars(skip)]
-    #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
 
-    /// Debug options (optional, unstable)
+    /// Debug options (optional).
     #[schemars(skip)]
-    #[serde(default, rename = "_unstable_debug")]
+    #[serde(default)]
     pub debug: Debug,
 
     /// How often the daemon checks node health (in seconds).
@@ -882,9 +881,8 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_affinity: Option<Vec<usize>>,
 
-    /// Unstable machine deployment configuration
+    /// Machine deployment configuration.
     #[schemars(skip)]
-    #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
 }
 
@@ -1537,11 +1535,38 @@ nodes:
 nodes:
   - id: test
     path: test.py
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
         assert!(desc.debug.enable_debug_inspection);
+    }
+
+    #[test]
+    fn removed_unstable_key_prefix_is_rejected_not_ignored() {
+        // `_unstable_deploy` / `_unstable_debug` lost their prefix for 1.0.
+        // Both must *error*, never deserialize to the default: a dataflow that
+        // still says `_unstable_deploy` would otherwise run every node on the
+        // local daemon while looking like it pinned them to machines, and a
+        // stale `_unstable_debug` would leave `dora topic echo` silently
+        // empty. `deny_unknown_fields` on `Descriptor` is what makes these
+        // diagnosable, so this test guards that attribute as much as the
+        // rename.
+        for (key, block) in [
+            ("_unstable_deploy", "_unstable_deploy:\n  machine: m1\n"),
+            (
+                "_unstable_debug",
+                "_unstable_debug:\n  enable_debug_inspection: true\n",
+            ),
+        ] {
+            let yaml = format!("nodes:\n  - id: test\n    path: test.py\n{block}");
+            let err = serde_yaml::from_str::<Descriptor>(&yaml)
+                .expect_err("the pre-1.0 `_unstable_` key must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "error should name `{key}`, got: {err}"
+            );
+        }
     }
 
     #[test]
@@ -1556,7 +1581,7 @@ _unstable_debug:
 nodes:
   - id: test
     path: test.py
-_unstable_debug:
+debug:
   publish_all_messages_to_zenoh: true
 "#;
         let err = serde_yaml::from_str::<Descriptor>(yaml)

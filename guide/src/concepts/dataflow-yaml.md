@@ -40,8 +40,8 @@ nodes:
 | `strict_types` | bool | `false` | Treat type warnings as errors in `validate` and `build` |
 | `type_rules` | list | `[]` | User-defined type compatibility rules (see [Type Annotations](types.md#user-defined-compatibility-rules)) |
 | `health_check_interval` | float | `5.0` | Seconds between daemon health check sweeps. For each node with `health_check_timeout` set, the daemon checks whether the node has communicated within its timeout; if not, the node is killed and its `restart_policy` is evaluated |
-| `_unstable_deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
-| `_unstable_debug` | object | -- | Debug options (see [Debug](#debug)) |
+| `deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
+| `debug` | object | -- | Debug options (see [Debug](#debug)) |
 
 ## Node Configuration
 
@@ -300,18 +300,18 @@ Example with exponential backoff:
 
 ### Deployment
 
-Assign nodes to specific machines using `_unstable_deploy`:
+Assign nodes to specific machines using `deploy`:
 
 ```yaml
 - id: camera-driver
-  _unstable_deploy:
+  deploy:
     machine: robot-arm
   path: ./target/debug/camera
   outputs:
     - frames
 
 - id: ml-inference
-  _unstable_deploy:
+  deploy:
     machine: gpu-server
     labels:
       gpu: "true"
@@ -500,7 +500,7 @@ QoS can be set at the bridge level (applies to all topics) or per-topic:
 ## Debug
 
 ```yaml
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 ```
 
@@ -522,7 +522,7 @@ See [Communication Patterns](../../../docs/patterns.md) for details and examples
 ```yaml
 health_check_interval: 10.0
 
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 
 nodes:

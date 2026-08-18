@@ -662,7 +662,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       machine: machine-1
 ",
         );
@@ -672,7 +672,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       machine: machine-2
 ",
         );
@@ -693,7 +693,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       working_dir: /tmp/a
 ",
         );
@@ -703,7 +703,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       working_dir: /tmp/b
 ",
         );

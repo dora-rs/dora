@@ -100,8 +100,8 @@ dora cluster down
 | Feature | Command / Config | Description |
 |---------|-----------------|-------------|
 | Cluster lifecycle | `dora cluster up/status/down` | SSH-based daemon management from a single machine |
-| Label scheduling | `_unstable_deploy.labels` | Route nodes to daemons by key-value labels |
-| Binary distribution | `_unstable_deploy.distribute` | local, scp, or http strategies |
+| Label scheduling | `deploy.labels` | Route nodes to daemons by key-value labels |
+| Binary distribution | `deploy.distribute` | local, scp, or http strategies |
 | systemd services | `dora cluster install/uninstall` | Persistent daemon services that survive reboots |
 | Auto-recovery | Automatic | Re-spawn nodes when a daemon reconnects |
 | Rolling upgrade | `dora cluster upgrade` | SCP binary + restart per-machine sequentially |
@@ -175,7 +175,7 @@ machines:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `id` | string | (required) | Unique machine identifier, used in `_unstable_deploy.machine` |
+| `id` | string | (required) | Unique machine identifier, used in `deploy.machine` |
 | `host` | string | (required) | SSH-reachable hostname or IP address |
 | `user` | string | current user | SSH username |
 | `port` | u16 | `22` | SSH port. Set when sshd listens on a non-standard port (e.g., containerized or hardened deployments). Applied to both `ssh` (`-p`) and `scp` (`-P`). |
@@ -412,7 +412,7 @@ dataflow restarted: a1b2c3d4-... -> e5f6a7b8-...
 
 ## Node Scheduling
 
-When the coordinator receives a dataflow, it decides which daemon runs each node based on the `_unstable_deploy` section in the dataflow YAML. Resolution priority: **machine > labels > unnamed**.
+When the coordinator receives a dataflow, it decides which daemon runs each node based on the `deploy` section in the dataflow YAML. Resolution priority: **machine > labels > unnamed**.
 
 ### Machine-based scheduling
 
@@ -421,7 +421,7 @@ Assign a node to a specific machine by its `id` from `cluster.yml`:
 ```yaml
 nodes:
   - id: camera
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./camera-driver
     outputs:
@@ -437,7 +437,7 @@ Assign a node by requiring specific labels on the target daemon:
 ```yaml
 nodes:
   - id: inference
-    _unstable_deploy:
+    deploy:
       labels:
         gpu: "true"
     path: ./ml-model
@@ -451,7 +451,7 @@ The coordinator finds the first connected daemon whose labels are a **superset**
 
 ### Unassigned nodes
 
-Nodes without an `_unstable_deploy` section (or with an empty one) are assigned to the first unnamed daemon -- one that connected without a `--machine-id` flag.
+Nodes without an `deploy` section (or with an empty one) are assigned to the first unnamed daemon -- one that connected without a `--machine-id` flag.
 
 ### How resolve_daemon() works internally
 
@@ -482,7 +482,7 @@ Each daemon builds from source on its own machine. This is the current default b
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01
       distribute: local
     path: ./my-node
@@ -495,7 +495,7 @@ The CLI pushes the locally-built binary to the target machine via SSH/SCP before
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01
       distribute: scp
     path: ./my-node
@@ -508,7 +508,7 @@ The coordinator runs an artifact store. Daemons pull binaries from the coordinat
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01
       distribute: http
     path: ./my-node
@@ -643,14 +643,14 @@ machines:
 ```yaml
 nodes:
   - id: camera
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./camera-driver
     outputs:
       - frames
 
   - id: inference
-    _unstable_deploy:
+    deploy:
       labels:
         gpu: "true"
     path: ./ml-model
@@ -660,7 +660,7 @@ nodes:
       - predictions
 
   - id: actuator
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./actuator-driver
     inputs:
@@ -706,7 +706,7 @@ machines:
 ```yaml
 nodes:
   - id: lidar-driver
-    _unstable_deploy:
+    deploy:
       labels:
         lidar: "true"
     path: ./lidar-driver
@@ -714,7 +714,7 @@ nodes:
       - scans
 
   - id: camera-driver
-    _unstable_deploy:
+    deploy:
       labels:
         camera: rgbd
     path: ./camera-driver
@@ -824,12 +824,12 @@ dora cluster status
 
 ## Deployment YAML Reference
 
-The `_unstable_deploy` section on each node controls placement and distribution. All fields are optional.
+The `deploy` section on each node controls placement and distribution. All fields are optional.
 
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01                # Target machine ID from cluster.yml
       labels:                          # Label requirements (superset match)
         gpu: "true"
@@ -863,6 +863,6 @@ nodes:
 - **Use coordinator persistence** (`dora coordinator --store redb`) with clusters so the coordinator survives restarts. See [Coordinator State Persistence](fault-tolerance.md#coordinator-state-persistence).
 - **Set restart policies on nodes** for per-node resilience. Combine with auto-recovery for defense in depth. See [Restart Policies](fault-tolerance.md#restart-policies).
 - **Monitor with multiple tools**: `dora cluster status` for daemon health, `dora top` for resource usage, `dora logs` for node output.
-- **Test locally first**. Develop with `dora run dataflow.yml`, then deploy to a cluster. The same dataflow YAML works in both modes -- `_unstable_deploy` fields are ignored in local mode.
+- **Test locally first**. Develop with `dora run dataflow.yml`, then deploy to a cluster. The same dataflow YAML works in both modes -- `deploy` fields are ignored in local mode.
 - **Use rolling upgrades** instead of stopping the entire cluster. `dora cluster upgrade` processes one machine at a time to maintain availability.
 - **Keep cluster.yml in version control** alongside your dataflow definitions.

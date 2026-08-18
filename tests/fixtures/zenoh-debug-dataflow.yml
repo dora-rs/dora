@@ -22,5 +22,5 @@ nodes:
     input_types:
       count: std/core/v1/UInt64
 
-_unstable_debug:
+debug:
   enable_debug_inspection: true

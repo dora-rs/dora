@@ -21,7 +21,7 @@ use crate::{
 /// Topic inspection requires debug mode on the dataflow:
 ///
 /// ```yaml
-/// _unstable_debug:
+/// debug:
 ///   enable_debug_inspection: true
 /// ```
 ///

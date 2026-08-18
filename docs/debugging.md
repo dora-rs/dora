@@ -55,7 +55,7 @@ dora run dataflow.yml --debug
 **Option 2: YAML descriptor**
 
 ```yaml
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 ```
 

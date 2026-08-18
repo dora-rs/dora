@@ -200,7 +200,7 @@ State maintained in `session_loop`:
 The dataflow descriptor must enable debug message publishing:
 
 ```yaml
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 ```
 

@@ -41,8 +41,8 @@ nodes:
 | `type_rules` | list | `[]` | User-defined type compatibility rules (see [Type Annotations](types.md#user-defined-compatibility-rules)) |
 | `health_check_interval` | float | `5.0` | Seconds between daemon health check sweeps. For each node with `health_check_timeout` set, the daemon checks whether the node has communicated within its timeout; if not, the node is killed and its `restart_policy` is evaluated |
 | `exit_when_nodes_finish` | bool | `false` | Finish the dataflow once every node has, treating `dora/timer/...` inputs as a clock rather than as work. A timer input has no upstream node, so it never closes: by default a node consuming one is never told its inputs are done and the graph cannot end on its own. Overridden by `--exit-when-nodes-finish[=BOOL]` on `dora run` and `dora start` (see [Completion](#completion)) |
-| `_unstable_deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
-| `_unstable_debug` | object | -- | Debug options (see [Debug](#debug)) |
+| `deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
+| `debug` | object | -- | Debug options (see [Debug](#debug)) |
 
 ## Completion
 
@@ -379,18 +379,18 @@ The daemon applies `sched_setaffinity` before exec. Core indices must be less th
 
 ### Deployment
 
-Assign nodes to specific machines using `_unstable_deploy`:
+Assign nodes to specific machines using `deploy`:
 
 ```yaml
 - id: camera-driver
-  _unstable_deploy:
+  deploy:
     machine: robot-arm
   path: ./target/debug/camera
   outputs:
     - frames
 
 - id: ml-inference
-  _unstable_deploy:
+  deploy:
     machine: gpu-server
     labels:
       gpu: "true"
@@ -550,7 +550,7 @@ QoS can be set at the bridge level (applies to all topics) or per-topic:
 ## Debug
 
 ```yaml
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 ```
 
@@ -572,7 +572,7 @@ See [Communication Patterns](../../../docs/patterns.md) for details and examples
 ```yaml
 health_check_interval: 10.0
 
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 
 nodes:

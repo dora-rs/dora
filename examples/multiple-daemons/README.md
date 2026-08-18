@@ -55,10 +55,10 @@ Execute the following steps in this directory:
       ```
       Replace `<ZENOH_CONFIG_FILE_PATH>`  with the path to a [zenoh configuration file](https://zenoh.io/docs/manual/configuration/#configuration-files) that lists the corresponding `zenohd` instance(s) under `connect.endpoints`.
 
-3. In your `dataflow.yml` file, add an `_unstable_deploy` key to all nodes that should not run on the default machine:
+3. In your `dataflow.yml` file, add an `deploy` key to all nodes that should not run on the default machine:
     ```yml
     - id: example-node
-      _unstable_deploy:
+      deploy:
         machine: laptop        # this should match the <MACHINE_ID> of one daemon
       path: /home/user/dora/target/debug/rust-dataflow-example-node
       inputs: [...]

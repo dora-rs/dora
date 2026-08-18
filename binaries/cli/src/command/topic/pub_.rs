@@ -20,7 +20,7 @@ use eyre::{Context, bail};
 /// The dataflow must have debug mode enabled:
 ///
 /// ```yaml
-/// _unstable_debug:
+/// debug:
 ///   enable_debug_inspection: true
 /// ```
 ///

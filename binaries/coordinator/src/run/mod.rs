@@ -440,13 +440,13 @@ mod tests {
                     {
                         "id": "node-a",
                         "path": "/tmp/dummy-a",
-                        "_unstable_deploy": { "machine": "aaa" },
+                        "deploy": { "machine": "aaa" },
                         "outputs": ["out"]
                     },
                     {
                         "id": "node-b",
                         "path": "/tmp/dummy-b",
-                        "_unstable_deploy": { "machine": "bbb" },
+                        "deploy": { "machine": "bbb" },
                         "inputs": { "in": "node-a/out" }
                     }
                 ]

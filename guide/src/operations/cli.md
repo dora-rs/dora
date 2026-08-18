@@ -185,11 +185,11 @@ nodes:
     max_rotated_files: 5          # number of rotated files to keep (1-100)
 
     # --- Deployment ---
-    _unstable_deploy:
+    deploy:
       machine: A                  # target machine/daemon ID
 
 # Debug settings
-_unstable_debug:
+debug:
   enable_debug_inspection: true   # required for topic echo/hz/info
 ```
 
@@ -239,19 +239,19 @@ nodes:
 
 ### Distributed Deployment
 
-Assign nodes to specific machines using `_unstable_deploy`:
+Assign nodes to specific machines using `deploy`:
 
 ```yaml
 nodes:
   - id: camera-driver
-    _unstable_deploy:
+    deploy:
       machine: robot-arm
     path: ./target/debug/camera
     outputs:
       - frames
 
   - id: ml-inference
-    _unstable_deploy:
+    deploy:
       machine: gpu-server
     path: ./target/debug/inference
     inputs:
@@ -400,7 +400,7 @@ dora build <PATH> [OPTIONS]
 
 **Type checking:** After expanding modules, `build` runs the same type checks as `validate`. Warnings are printed by default; use `--strict-types` (or set `strict_types: true` in the YAML) to fail the build on type mismatches. User-defined types in a `types/` directory next to the dataflow are loaded automatically.
 
-**Build strategy:** If nodes have `_unstable_deploy` sections and a coordinator is reachable, builds are distributed to target machines. Otherwise, builds run locally.
+**Build strategy:** If nodes have `deploy` sections and a coordinator is reachable, builds are distributed to target machines. Otherwise, builds run locally.
 
 **Git sources:** Nodes with a `git:` field are cloned/updated before building. The build command runs from the git repository root.
 
@@ -697,7 +697,7 @@ dora topic echo [OPTIONS] [DATA...]
 | `[DATA...]` | all outputs | Topics to echo (e.g., `node1/output`) |
 | `--format <FMT>` | `table` | Output format: `table\|json`. JSON output uses JSON Lines (one object per decoded message); diagnostics go to stderr |
 
-Requires `_unstable_debug.enable_debug_inspection: true` in the descriptor.
+Requires `debug.enable_debug_inspection: true` in the descriptor.
 
 #### `dora topic hz`
 
@@ -1552,14 +1552,14 @@ dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
 ```yaml
 nodes:
   - id: camera
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./camera-driver
     outputs:
       - frames
 
   - id: inference
-    _unstable_deploy:
+    deploy:
       machine: gpu-server
     path: ./ml-model
     inputs:
@@ -1568,7 +1568,7 @@ nodes:
       - predictions
 
   - id: actuator
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./actuator-driver
     inputs:
@@ -1624,7 +1624,7 @@ State is persisted to `~/.dora/coordinator.redb`. On restart, stale dataflows ar
 - Use `--debug` flag: `dora start dataflow.yml --debug` or `dora run dataflow.yml --debug`
 - Or add to your dataflow YAML:
   ```yaml
-  _unstable_debug:
+  debug:
     enable_debug_inspection: true
   ```
 - Required for `topic echo`, `topic hz`, `topic info`
