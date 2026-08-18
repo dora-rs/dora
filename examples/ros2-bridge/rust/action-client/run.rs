@@ -2,9 +2,7 @@ use dora_cli::{BuildConfig, build, run};
 use eyre::Context;
 use std::path::Path;
 
-use process_wrap::std::{
-    ProcessGroup, StdChildWrapper as ChildWrapper, StdCommandWrap as CommandWrap,
-};
+use process_wrap::std::{ChildWrapper, CommandWrap, ProcessGroup};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -26,11 +24,16 @@ fn main() -> eyre::Result<()> {
         "action_server_member_functions",
     )?;
 
-    dataflow_task
+    let dataflow_result = dataflow_task
         .join()
-        .map_err(|e| eyre::eyre!("the dataflow thread failed: {:?}", e))?;
+        .map_err(|e| eyre::eyre!("the dataflow thread failed: {:?}", e));
 
-    ros_task.kill()?;
+    let kill_result = ros_task
+        .kill()
+        .wrap_err("failed to stop ROS2 action server");
+
+    dataflow_result?;
+    kill_result?;
 
     Ok(())
 }

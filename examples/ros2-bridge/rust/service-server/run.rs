@@ -3,7 +3,7 @@ use eyre::Context;
 use std::{path::Path, sync::mpsc};
 use tokio;
 
-use process_wrap::tokio::{TokioChildWrapper as ChildWrapper, TokioCommandWrap as CommandWrap};
+use process_wrap::tokio::{ChildWrapper, CommandWrap};
 
 fn main() -> eyre::Result<()> {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
@@ -39,7 +39,7 @@ fn main() -> eyre::Result<()> {
                 _ = finish_async_rx.recv() => {
                     break;
                 },
-                _ret = Box::into_pin(client_task.wait()) => {
+                _ret = client_task.wait() => {
                     client_task = run_ros_node("examples_rclcpp_minimal_client", "client_main")?;
                 }
             }

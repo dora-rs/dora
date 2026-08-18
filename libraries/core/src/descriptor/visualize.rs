@@ -11,10 +11,6 @@ use std::{
     time::Duration,
 };
 
-pub fn visualize_nodes(nodes: &BTreeMap<NodeId, ResolvedNode>) -> String {
-    visualize_nodes_with_boundaries(nodes, &ModuleBoundaries::default())
-}
-
 pub fn visualize_nodes_with_boundaries(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     boundaries: &ModuleBoundaries,

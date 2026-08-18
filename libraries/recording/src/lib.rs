@@ -1,3 +1,48 @@
+//! Binary `.drec` recording format for dora dataflow message capture and replay.
+//!
+//! A recording is a [`RecordingHeader`], a sequence of [`RecordEntry`] records,
+//! and an optional [`RecordingFooter`]. Capture a stream with
+//! [`RecordingWriter`] and read it back with [`RecordingReader`]. Both are
+//! generic over any [`std::io::Write`] / [`std::io::Read`], so they work with
+//! files as well as in-memory buffers.
+//!
+//! ```
+//! use dora_recording::{FORMAT_VERSION, RecordEntry, RecordingHeader, RecordingReader, RecordingWriter};
+//! use std::io::Cursor;
+//!
+//! # fn main() -> eyre::Result<()> {
+//! let header = RecordingHeader {
+//!     version: FORMAT_VERSION,
+//!     start_nanos: 0,
+//!     dataflow_id: uuid::Uuid::nil(),
+//!     descriptor_yaml: b"nodes: []".to_vec(),
+//! };
+//!
+//! // Write one entry into an in-memory buffer.
+//! let mut buf: Vec<u8> = Vec::new();
+//! {
+//!     let mut writer = RecordingWriter::new(&mut buf, &header)?;
+//!     writer.write_entry(&RecordEntry {
+//!         node_id: "camera".to_string(),
+//!         output_id: "image".to_string(),
+//!         timestamp_offset_nanos: 0,
+//!         event_bytes: vec![1, 2, 3],
+//!     })?;
+//!     let footer = writer.finish()?;
+//!     assert_eq!(footer.total_messages, 1);
+//! }
+//!
+//! // Read it back.
+//! let mut reader = RecordingReader::open(Cursor::new(buf))?;
+//! assert_eq!(reader.header().dataflow_id, uuid::Uuid::nil());
+//! let entry = reader.next_entry()?.expect("one entry");
+//! assert_eq!(entry.node_id, "camera");
+//! assert_eq!(entry.event_bytes, vec![1, 2, 3]);
+//! assert!(reader.next_entry()?.is_none());
+//! # Ok(())
+//! # }
+//! ```
+
 use std::io::{self, BufReader, BufWriter, Read, Write};
 
 use eyre::Context;
@@ -5,7 +50,26 @@ use uuid::Uuid;
 
 const MAGIC: &[u8; 8] = b"DORAREC\x00";
 const FOOTER_MAGIC: &[u8; 8] = b"DORAEND\x00";
-const FORMAT_VERSION: u16 = 1;
+/// Version stamped into the header of newly written `.drec` files.
+///
+/// Bumped from 1 to 2 when `event_bytes` moved from bincode to postcard: the
+/// container framing is unchanged, but every entry's payload is a
+/// `Timestamped<InterDaemonEvent>` in the new encoding.
+///
+/// Writers must stamp [`RecordingHeader::version`] with this rather than a
+/// literal, or they produce files their own reader rejects.
+pub const FORMAT_VERSION: u16 = 2;
+/// Oldest `.drec` version this build can read.
+///
+/// The entry payloads are opaque to the container, so a version that only the
+/// *payload* encoding changed still has to be rejected here — otherwise the
+/// header check passes and every entry fails to decode further downstream,
+/// surfacing as "corrupt or format-drifted recording" instead of a clear
+/// version error naming the dora release that wrote the file.
+const MIN_SUPPORTED_FORMAT_VERSION: u16 = 2;
+/// A bump that leaves the writers stamping a version below the reader's floor
+/// would make every freshly written recording unreadable by the same build.
+const _: () = assert!(FORMAT_VERSION >= MIN_SUPPORTED_FORMAT_VERSION);
 /// Maximum size for a single record or YAML descriptor in a `.drec` file.
 /// Guards against OOM from crafted files with `u32::MAX` length fields.
 const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024; // 64 MB
@@ -43,6 +107,7 @@ pub struct RecordingWriter<W: Write> {
 }
 
 impl<W: Write> RecordingWriter<W> {
+    /// Create a writer over `inner`, immediately writing the recording header.
     pub fn new(inner: W, header: &RecordingHeader) -> eyre::Result<Self> {
         let mut writer = BufWriter::new(inner);
         write_header(&mut writer, header)?;
@@ -53,6 +118,7 @@ impl<W: Write> RecordingWriter<W> {
         })
     }
 
+    /// Append a single message entry to the recording.
     pub fn write_entry(&mut self, entry: &RecordEntry) -> eyre::Result<()> {
         let node_id_bytes = entry.node_id.as_bytes();
         let output_id_bytes = entry.output_id.as_bytes();
@@ -98,6 +164,7 @@ impl<W: Write> RecordingWriter<W> {
         Ok(())
     }
 
+    /// Write the footer (message/byte totals), flush, and consume the writer.
     pub fn finish(mut self) -> eyre::Result<RecordingFooter> {
         let footer = RecordingFooter {
             total_messages: self.total_messages,
@@ -111,6 +178,7 @@ impl<W: Write> RecordingWriter<W> {
         Ok(footer)
     }
 
+    /// Flush buffered bytes to the underlying writer without finishing.
     pub fn flush(&mut self) -> eyre::Result<()> {
         self.writer.flush().wrap_err("flush failed")
     }
@@ -124,12 +192,14 @@ pub struct RecordingReader<R: Read> {
 }
 
 impl<R: Read> RecordingReader<R> {
+    /// Open a reader over `inner`, immediately parsing and validating the header.
     pub fn open(inner: R) -> eyre::Result<Self> {
         let mut reader = BufReader::new(inner);
         let header = read_header(&mut reader)?;
         Ok(Self { reader, header })
     }
 
+    /// The recording header parsed by [`open`](Self::open).
     pub fn header(&self) -> &RecordingHeader {
         &self.header
     }
@@ -159,9 +229,19 @@ impl<R: Read> RecordingReader<R> {
             eyre::bail!("record too large: {record_len} bytes (max {MAX_RECORD_BYTES})");
         }
         let mut record_buf = vec![0u8; record_len];
-        self.reader
-            .read_exact(&mut record_buf)
-            .wrap_err("truncated record")?;
+        match self.reader.read_exact(&mut record_buf) {
+            Ok(()) => {}
+            // A crash (SIGKILL / Ctrl-C) can flush a record's 4-byte length
+            // prefix but only part of the record body that follows. Treat such
+            // a torn trailing record the same way as a torn length prefix
+            // (handled above): stop gracefully at EOF so every fully-written
+            // record still replays, rather than failing the whole replay with
+            // `truncated record`. Genuine intra-record corruption in a
+            // *complete* record is still rejected below by the bounds checks in
+            // `read_array` / `read_slice`.
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
+            Err(e) => return Err(e).wrap_err("failed to read record"),
+        }
 
         let mut pos = 0;
 
@@ -249,6 +329,13 @@ fn read_header<R: Read>(r: &mut R) -> eyre::Result<RecordingHeader> {
             "unsupported recording format version {version} (max supported: {FORMAT_VERSION})"
         );
     }
+    if version < MIN_SUPPORTED_FORMAT_VERSION {
+        eyre::bail!(
+            "recording format version {version} is no longer supported (min supported: \
+             {MIN_SUPPORTED_FORMAT_VERSION}); it was written by a dora release that encoded \
+             events with bincode. Re-record with this version of dora."
+        );
+    }
 
     let mut nanos_buf = [0u8; 8];
     r.read_exact(&mut nanos_buf)?;
@@ -307,6 +394,31 @@ mod tests {
         let mut cursor = std::io::Cursor::new(&buf);
         let read_back = read_header(&mut cursor).unwrap();
         assert_eq!(header, read_back);
+    }
+
+    /// A v1 `.drec` holds bincode-encoded `event_bytes`, which this build
+    /// cannot decode. The container framing is identical, so nothing downstream
+    /// would notice until every entry failed to deserialize and got skipped as
+    /// "corrupt" — the reader must reject the file up front and say why.
+    #[test]
+    fn pre_postcard_recordings_are_rejected_with_a_version_error() {
+        let mut buf = Vec::new();
+        write_header(
+            &mut buf,
+            &RecordingHeader {
+                version: 1,
+                ..sample_header()
+            },
+        )
+        .unwrap();
+
+        let err = read_header(&mut std::io::Cursor::new(&buf))
+            .expect_err("a bincode-era recording must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("no longer supported"),
+            "error must name the version problem, got: {msg}"
+        );
     }
 
     #[test]
@@ -373,6 +485,32 @@ mod tests {
         let read_entry = reader.next_entry().unwrap().unwrap();
         assert_eq!(entry, read_entry);
         // Should gracefully return None at EOF
+        assert!(reader.next_entry().unwrap().is_none());
+    }
+
+    /// A crash can flush a record's length prefix but only part of its body.
+    /// Replay must return every fully-written record and then stop gracefully
+    /// at the torn tail, rather than failing the whole replay with an error.
+    #[test]
+    fn truncated_record_body_stops_gracefully() {
+        let header = sample_header();
+        let entry = sample_entry("node1", "out1", 10, b"data");
+
+        let mut buf = Vec::new();
+        {
+            let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+            writer.write_entry(&entry).unwrap();
+            writer.flush().unwrap();
+        }
+        // Append a second record's length prefix but only part of its body,
+        // simulating a crash mid-write after the prefix was flushed.
+        buf.extend_from_slice(&64u32.to_le_bytes());
+        buf.extend_from_slice(&[0u8; 10]);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        // The first, complete record still replays.
+        assert_eq!(entry, reader.next_entry().unwrap().unwrap());
+        // The torn trailing record is discarded gracefully (no error).
         assert!(reader.next_entry().unwrap().is_none());
     }
 

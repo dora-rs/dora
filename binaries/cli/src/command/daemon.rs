@@ -18,6 +18,19 @@ use std::{
 use tokio::runtime::Builder;
 use tracing::level_filters::LevelFilter;
 
+/// Parse `--worker-threads`, rejecting 0.
+///
+/// `tokio::runtime::Builder::worker_threads` asserts `val > 0` and would
+/// otherwise abort the daemon with a raw panic ("Worker threads cannot be set
+/// to 0"). Validating here turns that into a normal clap usage error.
+fn parse_worker_threads(s: &str) -> Result<usize, String> {
+    match s.parse::<usize>() {
+        Ok(0) => Err("worker threads must be at least 1".to_string()),
+        Ok(n) => Ok(n),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
 #[derive(Debug, clap::Args)]
 /// Run daemon
 pub struct Daemon {
@@ -49,6 +62,39 @@ pub struct Daemon {
     /// the `zenoh_peer` field in cluster.yml.
     #[clap(long, value_name = "ENDPOINT")]
     zenoh_peer: Option<String>,
+    /// Open zenoh sessions without multicast scouting, for this daemon and the
+    /// nodes it spawns.
+    ///
+    /// Discovery then relies entirely on explicit endpoints — which is already
+    /// how the daemon reaches its nodes (it injects `DORA_ZENOH_CONNECT` into
+    /// each one) and, with `--zenoh-peer`, how daemons reach each other. Use it
+    /// where the scouting socket itself is the problem: a busy DDS/ROS2
+    /// multicast graph can keep zenoh from binding its scouting group, which
+    /// fails session startup outright.
+    ///
+    /// Not for multi-daemon setups without `--zenoh-peer`: those discover each
+    /// other *by* multicast, and this would leave them unable to.
+    ///
+    /// Dynamic nodes need care too. They are started outside the daemon, so
+    /// they inherit neither its environment nor a `DORA_ZENOH_CONNECT`, and
+    /// scouting is symmetric — a dynamic node still scouting finds nothing once
+    /// the daemon has stopped answering. Export `DORA_ZENOH_CONNECT` (the
+    /// daemon's listen endpoint) for them yourself when using this flag.
+    #[clap(long)]
+    zenoh_no_multicast: bool,
+    /// IP address this daemon's Zenoh listener binds (e.g. `--zenoh-listen
+    /// 100.64.0.3`).
+    ///
+    /// Zenoh advertises the address it binds, and remote daemons dial exactly
+    /// that, so this is the address other daemons will use to reach this one.
+    /// By default it is derived from `--coordinator-addr`: loopback when the
+    /// coordinator is local (single-machine), otherwise the local address that
+    /// routes to the coordinator — which is the LAN address on a LAN and the
+    /// tunnel address on a mesh VPN such as Tailscale. Set this explicitly on a
+    /// multi-homed host that would otherwise advertise an interface the other
+    /// daemons cannot reach.
+    #[clap(long, value_name = "IP")]
+    zenoh_listen: Option<IpAddr>,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -59,7 +105,7 @@ pub struct Daemon {
     #[clap(long)]
     allow_shell_nodes: bool,
     /// Number of tokio worker threads (default: number of CPU cores).
-    #[clap(long)]
+    #[clap(long, value_parser = parse_worker_threads)]
     worker_threads: Option<usize>,
     /// Enable real-time profile: mlockall + SCHED_FIFO priority.
     /// Requires CAP_SYS_NICE + CAP_IPC_LOCK capabilities.
@@ -239,7 +285,7 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer).await
+                        dora_daemon::Daemon::run_with_zenoh_listen(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen, self.zenoh_no_multicast).await
                     }
                 }
             })
@@ -257,7 +303,40 @@ fn parse_labels(s: &str) -> Result<BTreeMap<String, String>, String> {
         let (k, v) = pair
             .split_once('=')
             .ok_or_else(|| format!("invalid label `{pair}`, expected key=value"))?;
-        map.insert(k.to_string(), v.to_string());
+        // Trim each half, not just the whole pair: `--labels "gpu = true"`
+        // must yield key `gpu` / value `true`, otherwise the surrounding
+        // whitespace leaks into the label and it silently fails to match a
+        // node's `gpu: true` requirement at scheduling time.
+        let k = k.trim();
+        if k.is_empty() {
+            return Err(format!("invalid label `{pair}`, key must not be empty"));
+        }
+        map.insert(k.to_string(), v.trim().to_string());
     }
     Ok(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_labels;
+
+    #[test]
+    fn parse_labels_trims_keys_and_values() {
+        let map = parse_labels("gpu = true, arch =arm64,zone= eu ").unwrap();
+        assert_eq!(map.get("gpu").map(String::as_str), Some("true"));
+        assert_eq!(map.get("arch").map(String::as_str), Some("arm64"));
+        assert_eq!(map.get("zone").map(String::as_str), Some("eu"));
+    }
+
+    #[test]
+    fn parse_labels_skips_empty_pairs() {
+        let map = parse_labels("a=1,,b=2,").unwrap();
+        assert_eq!(map.len(), 2);
+    }
+
+    #[test]
+    fn parse_labels_rejects_missing_value_and_empty_key() {
+        assert!(parse_labels("gpu").is_err());
+        assert!(parse_labels(" =true").is_err());
+    }
 }

@@ -281,9 +281,10 @@ mod tests {
     /// `DaemonCoordinatorEvent` variant name from each incoming message,
     /// passes the variant to `reply_fn`, and resolves the pending oneshot.
     ///
-    /// Full deserialization of `Timestamped<DaemonCoordinatorEvent>` is
-    /// intentionally skipped because uhlc timestamps use u128, which does
-    /// not round-trip through `serde_json::Value`.
+    /// It also asserts that the params deserialize into a real
+    /// `Timestamped<DaemonCoordinatorEvent>`, so a malformed frame fails here
+    /// rather than being reduced to an empty variant name and silently taking
+    /// the `reply_fn` fallback branch.
     fn mock_daemon(
         reply_fn: impl Fn(&str) -> DaemonCoordinatorReply + Send + 'static,
     ) -> DaemonConnection {
@@ -296,6 +297,13 @@ mod tests {
             while let Some(msg) = rx.recv().await {
                 let v: serde_json::Value = serde_json::from_str(&msg).unwrap();
                 let id: Uuid = v["id"].as_str().unwrap().parse().unwrap();
+
+                // The whole frame must be a well-formed daemon command, not just
+                // something whose `inner` happens to have one key. This runs in
+                // the mock's task, so a failure surfaces as this panic plus the
+                // caller timing out waiting for a reply that never comes.
+                serde_json::from_value::<Timestamped<DaemonCoordinatorEvent>>(v["params"].clone())
+                    .expect("coordinator sent a malformed Timestamped<DaemonCoordinatorEvent>");
 
                 // Extract variant name from `params.inner`. The params field
                 // is embedded as raw JSON (not a string). For externally-tagged

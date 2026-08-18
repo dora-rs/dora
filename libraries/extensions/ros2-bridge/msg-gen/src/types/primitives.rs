@@ -135,20 +135,6 @@ impl NamedType {
         let ident = format_ident!("{package}__{name}");
         quote! { #ident }
     }
-
-    fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
-        let package = Ident::new(package, Span::call_site());
-        let namespace = Ident::new("msg", Span::call_site());
-        let name = format_ident!("{}_Raw", self.0);
-        quote! { crate::#package::#namespace::#name }
-    }
-
-    fn raw_ref_type_tokens(&self, package: &str) -> impl ToTokens {
-        let package = Ident::new(package, Span::call_site());
-        let namespace = Ident::new("msg", Span::call_site());
-        let name = format_ident!("{}_RawRef", self.0);
-        quote! { crate::#package::#namespace::#name }
-    }
 }
 
 impl fmt::Display for NamedType {
@@ -177,20 +163,6 @@ impl NamespacedType {
         let ident = format_ident!("{package}__{name}");
         quote! { #ident }
     }
-
-    fn raw_type_tokens(&self) -> impl ToTokens {
-        let package = Ident::new(&self.package, Span::call_site());
-        let namespace = Ident::new(&self.namespace, Span::call_site());
-        let name = format_ident!("{}_Raw", self.name);
-        quote! { crate::#package::#namespace::#name }
-    }
-
-    fn raw_ref_type_tokens(&self) -> impl ToTokens {
-        let package = Ident::new(&self.package, Span::call_site());
-        let namespace = Ident::new(&self.namespace, Span::call_site());
-        let name = format_ident!("{}_RawRef", self.name);
-        quote! { crate::#package::#namespace::#name }
-    }
 }
 
 impl fmt::Display for NamespacedType {
@@ -218,22 +190,6 @@ impl GenericString {
             quote! { U16String }
         } else {
             quote! { String }
-        }
-    }
-
-    fn raw_type_tokens(self) -> impl ToTokens {
-        if self.is_wide() {
-            quote! { crate::_core::FFIWString }
-        } else {
-            quote! { crate::_core::FFIString }
-        }
-    }
-
-    fn raw_ref_type_tokens(self) -> impl ToTokens {
-        if self.is_wide() {
-            quote! { crate::_core::OwnedFFIWString }
-        } else {
-            quote! { crate::_core::OwnedFFIString }
         }
     }
 
@@ -317,48 +273,6 @@ impl NestableType {
             }
             Self::GenericString(t) => {
                 let token = t.type_tokens();
-                quote! { #token }
-            }
-        }
-    }
-
-    pub fn raw_type_tokens(&self, package: &str) -> impl ToTokens {
-        match self {
-            Self::BasicType(t) => {
-                let token = t.type_tokens();
-                quote! { #token }
-            }
-            Self::NamedType(t) => {
-                let token = t.raw_type_tokens(package);
-                quote! { #token }
-            }
-            Self::NamespacedType(t) => {
-                let token = t.raw_type_tokens();
-                quote! { #token }
-            }
-            Self::GenericString(t) => {
-                let token = t.raw_type_tokens();
-                quote! { #token }
-            }
-        }
-    }
-
-    pub fn raw_ref_type_tokens(&self, package: &str) -> impl ToTokens {
-        match self {
-            Self::BasicType(t) => {
-                let token = t.type_tokens();
-                quote! { #token }
-            }
-            Self::NamedType(t) => {
-                let token = t.raw_ref_type_tokens(package);
-                quote! { #token }
-            }
-            Self::NamespacedType(t) => {
-                let token = t.raw_ref_type_tokens();
-                quote! { #token }
-            }
-            Self::GenericString(t) => {
-                let token = t.raw_ref_type_tokens();
                 quote! { #token }
             }
         }

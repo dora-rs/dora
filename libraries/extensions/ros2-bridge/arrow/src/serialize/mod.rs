@@ -52,13 +52,13 @@ impl serde::Serialize for TypedValue<'_> {
         })?;
         for column_name in input.column_names() {
             if !message.members.iter().any(|m| m.name == column_name) {
-                return Err(error(format!(
+                Err(error(format!(
                     "given struct has unknown field {column_name}"
                 )))?;
             }
         }
         if input.len() > 1 {
-            return Err(error(format!(
+            Err(error(format!(
                 "expected single struct instance, got struct array with {} entries",
                 input.len()
             )))?;
@@ -147,12 +147,14 @@ impl TypedValue<'_> {
                     GenericString::String | GenericString::BoundedString(_) => {
                         let string = if let Some(string_array) = column.as_string_opt::<i32>() {
                             check_single_element(string_array.len(), "StringArray")?;
+                            check_not_null(string_array, "StringArray")?;
                             string_array.value(0)
                         } else {
                             let string_array = column
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array"))?;
                             check_single_element(string_array.len(), "LargeStringArray")?;
+                            check_not_null(string_array, "LargeStringArray")?;
                             string_array.value(0)
                         };
                         if let GenericString::BoundedString(max) = t
@@ -169,12 +171,14 @@ impl TypedValue<'_> {
                     GenericString::WString | GenericString::BoundedWString(_) => {
                         let string = if let Some(string_array) = column.as_string_opt::<i32>() {
                             check_single_element(string_array.len(), "StringArray (WString)")?;
+                            check_not_null(string_array, "StringArray (WString)")?;
                             string_array.value(0)
                         } else {
                             let string_array = column
                                 .as_string_opt::<i64>()
                                 .ok_or_else(|| error("expected string array for WString"))?;
                             check_single_element(string_array.len(), "LargeStringArray (WString)")?;
+                            check_not_null(string_array, "LargeStringArray (WString)")?;
                             string_array.value(0)
                         };
                         if let GenericString::BoundedWString(max) = t {
@@ -236,6 +240,27 @@ fn check_single_element<E: serde::ser::Error>(len: usize, type_name: &str) -> Re
     Ok(())
 }
 
+/// Reject a null in a single-element scalar/string field column.
+///
+/// ROS2 messages (and the CDR wire format) have no null concept, but
+/// `Array::value(0)` returns the physical buffer slot regardless of the
+/// validity bit — for a null it silently yields a default (`0`/`false`/`""`).
+/// Serializing that would invent a value the producer never sent, so reject it
+/// instead, matching the sibling `arrow-convert` and `mavlink2-bridge` layers
+/// which also refuse nulls rather than substitute a default. Callers must have
+/// already checked that the column has exactly one element.
+fn check_not_null<E: serde::ser::Error>(
+    array: &dyn arrow::array::Array,
+    type_name: &str,
+) -> Result<(), E> {
+    if array.is_null(0) {
+        return Err(serde::ser::Error::custom(format!(
+            "{type_name} field is null at row 0, but ROS2 messages cannot represent null"
+        )));
+    }
+    Ok(())
+}
+
 /// Guard for fixed-size array fields: a ROS2 `T[N]` array has no length prefix
 /// on the CDR wire, so the Arrow column must have exactly `expected` elements.
 /// A mismatch would otherwise emit the wrong element count into a fixed tuple
@@ -247,4 +272,107 @@ fn check_array_len<E: serde::ser::Error>(actual: usize, expected: usize) -> Resu
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use arrow::{
+        array::{ArrayRef, Int32Array, StringArray, StructArray},
+        datatypes::{DataType, Field},
+    };
+    use byteorder::LittleEndian;
+    use dora_ros2_bridge_msg_gen::types::{
+        Member, MemberType, Message,
+        primitives::{BasicType, GenericString, NestableType},
+    };
+
+    use super::*;
+
+    /// A one-field message whose single member has the given name/type.
+    fn single_field_message(
+        field: &str,
+        ty: NestableType,
+    ) -> Arc<HashMap<String, HashMap<String, Message>>> {
+        let message = Message {
+            package: "test_msgs".to_string(),
+            name: "OneField".to_string(),
+            members: vec![Member {
+                name: field.to_string(),
+                r#type: MemberType::NestableType(ty),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("OneField".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_msgs".to_string(), package);
+        Arc::new(messages)
+    }
+
+    fn struct_of(field: &str, data_type: DataType, column: ArrayRef) -> ArrayRef {
+        Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new(field, data_type, true)),
+            column,
+        )])) as ArrayRef
+    }
+
+    fn serialize(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        value: &ArrayRef,
+    ) -> Result<Vec<u8>, String> {
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("OneField"),
+            messages: messages.clone(),
+        };
+        let typed = TypedValue {
+            value,
+            type_info: &type_info,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&typed).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn null_scalar_field_is_rejected() {
+        let messages = single_field_message("x", NestableType::BasicType(BasicType::I32));
+        // A present value serializes fine...
+        let ok = struct_of(
+            "x",
+            DataType::Int32,
+            Arc::new(Int32Array::from(vec![Some(7)])),
+        );
+        assert!(serialize(&messages, &ok).is_ok());
+        // ...but a null must be rejected rather than silently encoded as 0.
+        let null = struct_of("x", DataType::Int32, Arc::new(Int32Array::from(vec![None])));
+        let err = serialize(&messages, &null).unwrap_err();
+        assert!(
+            err.to_string().contains("null"),
+            "expected a null-rejection error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn null_string_field_is_rejected() {
+        let messages =
+            single_field_message("s", NestableType::GenericString(GenericString::String));
+        let ok = struct_of(
+            "s",
+            DataType::Utf8,
+            Arc::new(StringArray::from(vec![Some("hi")])),
+        );
+        assert!(serialize(&messages, &ok).is_ok());
+        let null = struct_of(
+            "s",
+            DataType::Utf8,
+            Arc::new(StringArray::from(vec![Option::<&str>::None])),
+        );
+        let err = serialize(&messages, &null).unwrap_err();
+        assert!(
+            err.to_string().contains("null"),
+            "expected a null-rejection error, got: {err}"
+        );
+    }
 }

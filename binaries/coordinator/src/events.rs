@@ -80,15 +80,6 @@ pub enum Event {
         node_id: NodeId,
         clean_stop: bool,
     },
-    /// Internal event scheduled by the coordinator a fixed grace period
-    /// after a `DaemonNodeStopped` to drop the stopped-node entry from
-    /// `node_metrics`, so `dora node list` eventually stops showing
-    /// zombie entries. The grace period gives operators time to see the
-    /// `Stopped` status before the row disappears.
-    NodeMetricsExpire {
-        dataflow_id: Uuid,
-        node_id: NodeId,
-    },
 }
 
 impl Event {
@@ -118,7 +109,6 @@ impl Event {
             Event::DaemonStatusReport { .. } => "DaemonStatusReport",
             Event::DaemonStateCatchUpAck { .. } => "DaemonStateCatchUpAck",
             Event::DaemonNodeStopped { .. } => "DaemonNodeStopped",
-            Event::NodeMetricsExpire { .. } => "NodeMetricsExpire",
         }
     }
 }

@@ -133,6 +133,13 @@ fn resolve_field_type(type_str: &str, registry: &TypeRegistry, depth: u8) -> Opt
         return None;
     }
 
+    // Trim surrounding whitespace so a padded field type (e.g. a quoted
+    // `"Float32 "` in YAML) resolves the same way here as in
+    // `TypeRegistry::field_type_resolves`, which already trims. Without this,
+    // the admission gate would accept the type but this materializer would
+    // return `None`, silently skipping the schema-compatibility check.
+    let type_str = type_str.trim();
+
     // 1. Try primitive Arrow type
     if let Some(dt) = arrow_type_from_name(type_str) {
         return Some(dt);
@@ -190,6 +197,31 @@ pub struct ParsedUrn {
 /// - `std/core/v1/Float32` (no params)
 /// - `std/media/v1/AudioFrame[sample_type=f32]` (with params)
 /// - `std/media/v1/AudioFrame[sample_type=f32,channels=2]` (multiple params)
+///
+/// Returns `None` for malformed input: a `[` with no closing `]`, empty
+/// brackets `[]`, or an empty parameter key or value.
+///
+/// ```
+/// use dora_core::types::parse_urn;
+///
+/// // With parameters:
+/// let Some(parsed) = parse_urn("std/media/v1/AudioFrame[sample_type=f32,channels=2]")
+/// else { unreachable!() };
+/// assert_eq!(parsed.base, "std/media/v1/AudioFrame");
+/// assert_eq!(parsed.params.get("sample_type"), Some(&"f32".to_string()));
+/// assert_eq!(parsed.params.get("channels"), Some(&"2".to_string()));
+///
+/// // No-param URN parses with an empty parameter map:
+/// let Some(plain) = parse_urn("std/core/v1/Float32") else { unreachable!() };
+/// assert_eq!(plain.base, "std/core/v1/Float32");
+/// assert!(plain.params.is_empty());
+///
+/// // Malformed inputs return None:
+/// assert!(parse_urn("std/media/v1/AudioFrame[").is_none()); // no closing ]
+/// assert!(parse_urn("std/media/v1/AudioFrame[]").is_none()); // empty brackets
+/// assert!(parse_urn("std/media/v1/AudioFrame[=f32]").is_none()); // empty key
+/// assert!(parse_urn("").is_none());
+/// ```
 pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
     if urn.is_empty() {
         return None;
@@ -222,6 +254,20 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
     Some(ParsedUrn { base, params })
 }
 
+/// Parameter-agreement rule shared by [`types_match`] and
+/// [`CompatibilityGraph::is_compatible`]: two parameter maps agree when every
+/// key present in *both* maps has an equal value. An empty map on either side is
+/// a wildcard that matches anything.
+///
+/// Keeping this in one place ensures the two type-compatibility code paths can
+/// never silently diverge on the parameter contract.
+fn params_agree(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    a.iter().all(|(k, va)| b.get(k).is_none_or(|vb| vb == va))
+}
+
 /// Check if two type URNs are compatible (considering parameters).
 ///
 /// Rules:
@@ -229,6 +275,29 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
 /// - Same base + one side unparameterized -> compatible (wildcard)
 /// - Same base + different param values -> mismatch
 /// - Different base -> mismatch
+///
+/// Note that "different param values" only rejects when the two sides
+/// disagree on a *shared* key; params on disjoint keys never conflict.
+///
+/// # Examples
+///
+/// ```
+/// use dora_core::types::types_match;
+///
+/// // Identical URNs match.
+/// assert!(types_match("std/media/v1/Image", "std/media/v1/Image"));
+/// // An unparameterized side acts as a wildcard.
+/// assert!(types_match("std/media/v1/Image[encoding=jpeg]", "std/media/v1/Image"));
+/// // Disjoint parameter keys never conflict.
+/// assert!(types_match("x/T[a=1]", "x/T[b=2]"));
+/// // A shared key with different values is a mismatch.
+/// assert!(!types_match(
+///     "std/media/v1/Image[encoding=jpeg]",
+///     "std/media/v1/Image[encoding=png]"
+/// ));
+/// // Different bases never match.
+/// assert!(!types_match("std/core/v1/Int32", "std/core/v1/Int64"));
+/// ```
 pub fn types_match(a: &str, b: &str) -> bool {
     let Some(pa) = parse_urn(a) else {
         return a == b;
@@ -239,19 +308,7 @@ pub fn types_match(a: &str, b: &str) -> bool {
     if pa.base != pb.base {
         return false;
     }
-    // If either side has no params, treat as wildcard
-    if pa.params.is_empty() || pb.params.is_empty() {
-        return true;
-    }
-    // Both have params — all shared keys must agree
-    for (k, va) in &pa.params {
-        if let Some(vb) = pb.params.get(k)
-            && va != vb
-        {
-            return false;
-        }
-    }
-    true
+    params_agree(&pa.params, &pb.params)
 }
 
 /// YAML file format for a type package.
@@ -318,6 +375,32 @@ impl CompatibilityGraph {
     ///
     /// Uses BFS with a depth limit of 3 to prevent surprise transitive chains.
     /// Also handles the universal `* -> Bytes` sink.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dora_core::types::{CompatibilityGraph, TypeRule};
+    ///
+    /// let graph = CompatibilityGraph::new(&[]);
+    /// // Anything widens into the universal `Bytes` sink.
+    /// assert!(graph.is_compatible("std/media/v1/Image", "std/core/v1/Bytes"));
+    /// // Built-in numeric widening, including a two-hop chain (UInt8 -> UInt32 -> UInt64).
+    /// assert!(graph.is_compatible("std/core/v1/UInt8", "std/core/v1/UInt32"));
+    /// assert!(graph.is_compatible("std/core/v1/UInt8", "std/core/v1/UInt64"));
+    /// // Same base with an unparameterized target is a wildcard match.
+    /// assert!(graph.is_compatible("std/media/v1/Image[encoding=jpeg]", "std/media/v1/Image"));
+    ///
+    /// // Transitive chains are bounded at depth 3.
+    /// let rule = |from: &str, to: &str| TypeRule { from: from.into(), to: to.into() };
+    /// let chain = CompatibilityGraph::new(&[
+    ///     rule("a", "b"),
+    ///     rule("b", "c"),
+    ///     rule("c", "d"),
+    ///     rule("d", "e"),
+    /// ]);
+    /// assert!(chain.is_compatible("a", "d")); // three hops: reachable
+    /// assert!(!chain.is_compatible("a", "e")); // four hops: beyond the depth limit
+    /// ```
     pub fn is_compatible(&self, from: &str, to: &str) -> bool {
         // Universal sink: anything -> Bytes
         if to == "std/core/v1/Bytes" {
@@ -335,21 +418,11 @@ impl CompatibilityGraph {
 
         // Check parameterized match using already-parsed URNs
         if from_base == to_base {
-            // Same base — check params. If either has no params, wildcard match.
-            let from_params = from_parsed.as_ref().map(|p| &p.params);
-            let to_params = to_parsed.as_ref().map(|p| &p.params);
-            match (from_params, to_params) {
-                (Some(fp), Some(tp)) if !fp.is_empty() && !tp.is_empty() => {
-                    // Both have params — all shared keys must agree
-                    for (k, va) in fp {
-                        if let Some(vb) = tp.get(k)
-                            && va != vb
-                        {
-                            return false;
-                        }
-                    }
-                }
-                _ => {}
+            // Same base — check params via the shared agreement rule. An
+            // unparsed side (no params map) is treated as a wildcard, matching
+            // the previous behavior.
+            if let (Some(fp), Some(tp)) = (from_parsed.as_ref(), to_parsed.as_ref()) {
+                return params_agree(&fp.params, &tp.params);
             }
             return true;
         }
@@ -461,26 +534,14 @@ pub struct TypeRegistry {
 }
 
 const PACKAGES: &[(&str, &str)] = &[
-    (
-        "std/core/v1",
-        include_str!("../../../types/std/core/v1.yml"),
-    ),
-    (
-        "std/math/v1",
-        include_str!("../../../types/std/math/v1.yml"),
-    ),
+    ("std/core/v1", include_str!("../types/std/core/v1.yml")),
+    ("std/math/v1", include_str!("../types/std/math/v1.yml")),
     (
         "std/control/v1",
-        include_str!("../../../types/std/control/v1.yml"),
+        include_str!("../types/std/control/v1.yml"),
     ),
-    (
-        "std/media/v1",
-        include_str!("../../../types/std/media/v1.yml"),
-    ),
-    (
-        "std/vision/v1",
-        include_str!("../../../types/std/vision/v1.yml"),
-    ),
+    ("std/media/v1", include_str!("../types/std/media/v1.yml")),
+    ("std/vision/v1", include_str!("../types/std/vision/v1.yml")),
 ];
 
 impl TypeRegistry {
@@ -1375,5 +1436,49 @@ mod tests {
         // rejected (return false), not overflow the stack
         let deep = format!("{}Float32{}", "List<".repeat(100_000), ">".repeat(100_000));
         assert!(!reg.field_type_resolves(&deep));
+    }
+
+    #[test]
+    fn padded_field_type_gate_and_schema_agree() {
+        // Regression: `field_type_resolves` trims but `resolve_field_type` did
+        // not, so a whitespace-padded field type (e.g. a quoted `"Float32 "`
+        // in YAML) passed the admission gate yet failed to materialize into a
+        // schema — silently skipping the schema-compatibility check. Both must
+        // now agree.
+        let reg = TypeRegistry::new();
+
+        // The gate accepts the padded primitive and its padded `List<…>` form.
+        assert!(reg.field_type_resolves("Float32 "));
+        assert!(reg.field_type_resolves(" List<Float32> "));
+
+        let def = TypeDef {
+            arrow: "Struct".to_string(),
+            description: None,
+            params: vec![],
+            fields: vec![
+                FieldDef {
+                    name: "x".to_string(),
+                    r#type: "Float32 ".to_string(),
+                    nullable: true,
+                },
+                FieldDef {
+                    name: "xs".to_string(),
+                    r#type: " List<Float32> ".to_string(),
+                    nullable: true,
+                },
+            ],
+            metadata: vec![],
+        };
+
+        // …and the materializer now builds the same fields rather than None.
+        let schema = def
+            .to_arrow_schema_with_registry(&reg)
+            .expect("padded field types should build a schema, matching the gate");
+        assert_eq!(schema.fields().len(), 2);
+        assert_eq!(schema.fields()[0].data_type(), &DataType::Float32);
+        assert!(matches!(
+            schema.fields()[1].data_type(),
+            DataType::LargeList(_)
+        ));
     }
 }

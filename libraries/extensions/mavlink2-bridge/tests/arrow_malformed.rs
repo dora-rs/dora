@@ -8,7 +8,7 @@
 use arrow::array::{Float32Array, RecordBatch, StringArray, UInt8Array, UInt32Array};
 use arrow::datatypes::{DataType, Field, Schema};
 use dora_mavlink2_bridge::MavlinkArrow;
-use dora_mavlink2_bridge::mavlink::common::COMMAND_LONG_DATA;
+use dora_mavlink2_bridge::mavlink::dialects::common::COMMAND_LONG_DATA;
 use std::sync::Arc;
 
 /// All seven `paramN` fields are f32; we keep a single shared row so each

@@ -161,6 +161,12 @@ pub unsafe extern "C" fn read_dora_input_id(
 /// Writes a null pointer and length `0` if the given event is not an input event
 /// or when an input event has no associated data.
 ///
+/// The raw-byte C API can only expose `UInt8` (and empty `Null`) payloads.
+/// A payload of any other Arrow type (for example an `Int32`/`Float` array
+/// from another node) also yields a null pointer and length `0` (and logs an
+/// error), so a null result is not by itself proof that the message carried no
+/// data.
+///
 /// ## Safety
 ///
 /// The `event` argument must be a dora event received through
@@ -176,13 +182,22 @@ pub unsafe extern "C" fn read_dora_input_data(
 ) {
     let event: &Event = unsafe { &*event.cast() };
     match event {
-        Event::Input { data, metadata, .. } => match metadata.type_info.data_type {
+        // The payload is decoded from a self-describing Arrow IPC stream, so the
+        // type is read from the array itself.
+        Event::Input { data, .. } => match data.data_type() {
             dora_node_api::arrow::datatypes::DataType::UInt8 => {
                 let array: &UInt8Array = data.as_primitive();
-                let ptr = array.values().as_ptr();
-                // Use the actual buffer length, not metadata.type_info.len
-                // which comes from remote nodes and could exceed the buffer.
-                let len = array.values().len();
+                let values = array.values();
+                // A zero-length payload carries no data. `values().as_ptr()`
+                // returns a non-null, dangling-but-aligned pointer for an empty
+                // buffer, so report it as "no data" (null pointer, length 0) to
+                // honor the documented `out_ptr == NULL` contract and match the
+                // `Null` arm below; otherwise expose the actual buffer.
+                let (ptr, len) = if values.is_empty() {
+                    (ptr::null(), 0)
+                } else {
+                    (values.as_ptr(), values.len())
+                };
                 unsafe {
                     *out_ptr = ptr;
                     *out_len = len;
@@ -192,7 +207,7 @@ pub unsafe extern "C" fn read_dora_input_data(
                 *out_ptr = ptr::null();
                 *out_len = 0;
             },
-            ref other => {
+            other => {
                 // The raw-byte C API only supports UInt8 payloads. For any
                 // other Arrow type (a routine cross-language case, e.g. an
                 // Int32/Float payload from another node) we cannot expose a
@@ -218,9 +233,13 @@ pub unsafe extern "C" fn read_dora_input_data(
 
 /// Reads out the timestamp of the given input event from metadata.
 ///
+/// Returns `0` if the given event is not an input event.
+///
 /// ## Safety
 ///
-/// Return `0` if the given event is not an input event.
+/// The `event` argument must be a dora event received through
+/// [`dora_next_event`]. The event must be still valid, i.e., not
+/// freed yet.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn read_dora_input_timestamp(event: *const ()) -> core::ffi::c_ulonglong {
     let event: &Event = unsafe { &*event.cast() };
@@ -283,18 +302,49 @@ unsafe fn try_send_output(
     data_ptr: *const u8,
     data_len: usize,
 ) -> eyre::Result<()> {
-    if context.is_null() || id_ptr.is_null() || data_ptr.is_null() {
+    if context.is_null() || id_ptr.is_null() {
         eyre::bail!("null pointer passed to dora_send_output");
     }
     let context: &mut DoraContext = unsafe { &mut *context.cast() };
     let id = std::str::from_utf8(unsafe { slice::from_raw_parts(id_ptr, id_len) })?;
-    let output_id = id.to_owned().into();
-    let data = unsafe { slice::from_raw_parts(data_ptr, data_len) };
+    // Parse via `FromStr` instead of the panicking `From<String>`: an invalid
+    // id (e.g. a typo containing a space) must surface as a `-1` return, not
+    // unwind across the `extern "C"` boundary and abort the node process.
+    // `DataId::from(String)` is documented as panicking on invalid characters
+    // (see `libraries/message/src/id.rs`, `# Panics`).
+    let output_id = id
+        .parse::<dora_node_api::dora_core::config::DataId>()
+        .map_err(|e| eyre::eyre!("invalid output id `{id}`: {e}"))?;
+    let data = unsafe { data_slice(data_ptr, data_len) }?;
     Ok(context
         .node
         .send_output_raw(output_id, Default::default(), data.len(), |out| {
             out.copy_from_slice(data);
         })?)
+}
+
+/// Resolve a C `(ptr, len)` payload pair into a slice, accepting the standard
+/// `(NULL, 0)` idiom for an empty message.
+///
+/// `slice::from_raw_parts` is UB when the pointer is null even for length 0
+/// (the pointer must be non-null and well-aligned regardless of length), so an
+/// empty payload must be handled without dereferencing the pointer. This
+/// mirrors the operator FFI (`dora_send_operator_output`), which already
+/// accepts `(NULL, 0)`; previously a C node emitting an empty output via the
+/// idiomatic `dora_send_output(ctx, id, id_len, NULL, 0)` was rejected.
+///
+/// # Safety
+///
+/// When `data_len > 0`, `data_ptr` must point to `data_len` initialized bytes
+/// valid for the duration of the returned borrow.
+unsafe fn data_slice<'a>(data_ptr: *const u8, data_len: usize) -> eyre::Result<&'a [u8]> {
+    if data_len == 0 {
+        Ok(&[])
+    } else if data_ptr.is_null() {
+        eyre::bail!("dora_send_output: data_ptr is null with non-zero data_len");
+    } else {
+        Ok(unsafe { slice::from_raw_parts(data_ptr, data_len) })
+    }
 }
 
 /// Sends a structured log message from a C node.
@@ -351,28 +401,10 @@ mod tests {
     use super::*;
     use dora_node_api::{
         ArrowData, Metadata,
-        arrow::{
-            array::{ArrayRef, Int32Array},
-            datatypes::DataType,
-        },
-        metadata::ArrowTypeInfo,
+        arrow::array::{ArrayRef, Int32Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
-
-    fn type_info(data_type: DataType) -> ArrowTypeInfo {
-        ArrowTypeInfo {
-            data_type,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        }
-    }
 
     /// Regression test for #2030: a non-UInt8 input (e.g. Int32 from another
     /// node) must not abort the process. The caller should instead observe
@@ -382,7 +414,7 @@ mod tests {
         let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
         let event = Event::Input {
             id: "my_input".into(),
-            metadata: Metadata::new(HLC::default().new_timestamp(), type_info(DataType::Int32)),
+            metadata: Metadata::new(HLC::default().new_timestamp()),
             data: ArrowData(array),
         };
         let event_ptr: *const () = (&event as *const Event).cast();
@@ -401,5 +433,62 @@ mod tests {
             "expected null out_ptr for non-UInt8 input"
         );
         assert_eq!(out_len, 0, "expected zero out_len for non-UInt8 input");
+    }
+
+    /// An empty `UInt8` input payload (a node emitting a zero-length byte
+    /// array) must report "no data" the same way the `Null` arm does: a null
+    /// `out_ptr` and `out_len == 0`. `UInt8Array::values().as_ptr()` returns a
+    /// non-null dangling pointer for an empty buffer, so without the explicit
+    /// zero-length guard a caller following the documented `out_ptr == NULL`
+    /// convention would misread the empty message as carrying data.
+    #[test]
+    fn read_dora_input_data_empty_uint8_returns_null() {
+        let array: ArrayRef = Arc::new(UInt8Array::from(Vec::<u8>::new()));
+        let event = Event::Input {
+            id: "my_input".into(),
+            metadata: Metadata::new(HLC::default().new_timestamp()),
+            data: ArrowData(array),
+        };
+        let event_ptr: *const () = (&event as *const Event).cast();
+
+        // Seed with non-null sentinels so we can prove the function overwrites them.
+        let sentinel: u8 = 0;
+        let mut out_ptr: *const u8 = &sentinel;
+        let mut out_len: usize = 42;
+        unsafe {
+            read_dora_input_data(event_ptr, &mut out_ptr, &mut out_len);
+        }
+
+        assert!(
+            out_ptr.is_null(),
+            "expected null out_ptr for an empty UInt8 payload"
+        );
+        assert_eq!(
+            out_len, 0,
+            "expected zero out_len for an empty UInt8 payload"
+        );
+    }
+
+    #[test]
+    fn data_slice_accepts_null_zero_idiom() {
+        // A C node sending an empty output: `dora_send_output(.., NULL, 0)`.
+        let data =
+            unsafe { data_slice(std::ptr::null(), 0) }.expect("(NULL, 0) is a valid empty payload");
+        assert!(data.is_empty());
+    }
+
+    #[test]
+    fn data_slice_rejects_null_with_nonzero_len() {
+        let err = unsafe { data_slice(std::ptr::null(), 4) }
+            .expect_err("null pointer with a non-zero length must be rejected");
+        assert!(err.to_string().contains("null"), "got: {err}");
+    }
+
+    #[test]
+    fn data_slice_reads_valid_pointer() {
+        let buf = [1u8, 2, 3, 4];
+        let data =
+            unsafe { data_slice(buf.as_ptr(), buf.len()) }.expect("valid pointer yields a slice");
+        assert_eq!(data, &buf);
     }
 }

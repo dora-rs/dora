@@ -242,12 +242,15 @@ rustup component add miri --toolchain nightly
 **Run**:
 
 ```bash
-# metadata.rs — known-good target with focused unit tests
-cargo +nightly miri test -p dora-core metadata::tests
-
-# Add more targets as they gain focused unit tests:
-# cargo +nightly miri test -p dora-coordinator-store
-# cargo +nightly miri test -p dora-arrow-convert
+# No miri-runnable target at present. The former one — dora-core's
+# `metadata::tests`, exercising the unsafe pointer arithmetic in
+# `ArrowTypeInfoExt::from_array` — was removed when the `ArrowTypeInfo`
+# sidecar was dropped for Arrow-IPC framing; dora-core now has zero unsafe.
+# The miri-worthy unsafe moved to dora-node-api's IPC encode/decode paths
+# (`arrow_utils/ipc_encode.rs`, `event_stream`), but that crate links zenoh +
+# shared-memory-server (`shm_open`), which miri cannot run wholesale. Add a
+# tightly-scoped, FFI-free filter here once it has been verified to run clean:
+# cargo +nightly miri test -p dora-node-api <ffi-free-ipc-test-filter>
 ```
 
 **Do NOT** run miri on `shared-memory-server` — its tests call libc's `shm_open` which miri does not support. Every test aborts with "unsupported operation". See `plan-agentic-qa-strategy.md` Section T2.3 for the explanation and the long-term fix (Zenoh SHM migration).

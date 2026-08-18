@@ -18,7 +18,7 @@ use dora_message::{
     coordinator_to_cli::{DataflowResult, LogMessage},
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, Timestamped},
     daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
-    descriptor::Descriptor,
+    descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
 use futures::future::join_all;
@@ -188,6 +188,15 @@ pub(crate) async fn handle_destroy(
         }
     }
 
+    // `stop_dataflow` returns once the daemons have acknowledged the
+    // *request*; the grace → SIGTERM → SIGKILL ladder then runs inside each
+    // daemon, long after this returns. Destroying them here used to race that
+    // ladder and orphan any node that ignored the cooperative `Stop`
+    // (dora-rs/dora#2980). The wait now lives in the daemon's `Destroy`
+    // handler, which reaps its own children before it replies — so this await
+    // is what makes `dora down` return only after the nodes are gone, for
+    // every route that reaches `Destroy` (`dora cluster down`, Ctrl-C, and
+    // any direct control-protocol client).
     destroy_daemons(daemon_connections, clock.new_timestamp()).await?;
     // Brief grace period so daemons have time to flush final messages and
     // close their WS connections before the coordinator shuts down the
@@ -234,23 +243,49 @@ pub(crate) async fn stop_dataflow<'a>(
         timestamp,
     })?;
 
+    // Best-effort: attempt the stop on every daemon even if some fail, so one
+    // unreachable/erroring daemon does not orphan the nodes running on the
+    // remaining healthy daemons. Errors are aggregated and reported after all
+    // daemons have been attempted (mirrors `run::rollback_spawned_daemons`).
+    let mut errors: Vec<(DaemonId, eyre::Report)> = Vec::new();
     for daemon_id in &dataflow.daemons {
-        let daemon_connection = daemon_connections
-            .get_mut(daemon_id)
-            .wrap_err("no daemon connection")?;
+        let result: eyre::Result<()> = async {
+            let daemon_connection = daemon_connections
+                .get_mut(daemon_id)
+                .wrap_err("no daemon connection")?;
 
-        let reply_raw = daemon_connection
-            .send_and_receive(&message)
-            .await
-            .wrap_err("failed to send/receive stop message")?;
-        match serde_json::from_slice(&reply_raw)
-            .wrap_err("failed to deserialize stop reply from daemon")?
-        {
-            DaemonCoordinatorReply::StopResult(result) => result
-                .map_err(|e| eyre!(e))
-                .wrap_err("failed to stop dataflow")?,
-            other => bail!("unexpected reply after sending stop: {other:?}"),
+            let reply_raw = daemon_connection
+                .send_and_receive(&message)
+                .await
+                .wrap_err("failed to send/receive stop message")?;
+            match serde_json::from_slice(&reply_raw)
+                .wrap_err("failed to deserialize stop reply from daemon")?
+            {
+                DaemonCoordinatorReply::StopResult(result) => result
+                    .map_err(|e| eyre!(e))
+                    .wrap_err("failed to stop dataflow")?,
+                other => bail!("unexpected reply after sending stop: {other:?}"),
+            }
+            Ok(())
         }
+        .await;
+
+        if let Err(err) = result {
+            errors.push((daemon_id.clone(), err));
+        }
+    }
+
+    if !errors.is_empty() {
+        let daemon_list = errors
+            .iter()
+            .map(|(id, err)| format!("{id}: {err:#}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(eyre!(
+            "failed to stop dataflow `{dataflow_uuid}` on {} of {} daemon(s): {daemon_list}",
+            errors.len(),
+            dataflow.daemons.len(),
+        ));
     }
 
     tracing::info!("successfully send stop dataflow `{dataflow_uuid}` to all daemons");
@@ -399,6 +434,60 @@ pub(crate) async fn stop_node(
     Ok(())
 }
 
+/// Pick the daemon that runs `node_id`, for a log request.
+///
+/// For a **running** dataflow the coordinator already records the exact
+/// node→daemon assignment in `node_to_daemon`; that daemon is where the node
+/// was spawned and is authoritative. Re-deriving the daemon from the node's
+/// `deploy.machine` (as the archived path must) is wrong for a node without an
+/// explicit machine when more than one *unnamed* daemon is connected: the
+/// machine-`None` branch collects every unnamed daemon and bails with
+/// "multiple matching daemon connections", making `dora logs` unavailable for
+/// a node that is definitely running on one specific daemon.
+///
+/// Archived dataflows keep no `node_to_daemon` map, so they still fall back to
+/// the machine-based derivation. Archived takes priority when a dataflow id is
+/// somehow present in both, matching the previous behavior.
+fn resolve_log_daemon_id(
+    running_node_to_daemon: Option<&BTreeMap<NodeId, DaemonId>>,
+    archived_nodes: Option<&BTreeMap<NodeId, ResolvedNode>>,
+    dataflow_id: Uuid,
+    node_id: &NodeId,
+    daemon_connections: &DaemonConnections,
+) -> eyre::Result<DaemonId> {
+    if let Some(nodes) = archived_nodes {
+        // `nodes` is keyed by `NodeId` and every `ResolvedNode.id` equals its map
+        // key (see `resolve_aliases_and_set_defaults_in_topology`, which also
+        // rejects duplicate ids), so a direct lookup is equivalent to — and
+        // cheaper than — scanning every entry for a matching `id`. The previous
+        // `Vec` scan additionally carried an "more than one machine" arm that the
+        // map key uniqueness made unreachable.
+        let machine_id = match nodes.get(node_id) {
+            Some(node) => node.deploy.as_ref().and_then(|d| d.machine.clone()),
+            None => bail!("No machine contains {}/{}", dataflow_id, node_id),
+        };
+
+        let daemon_ids: Vec<_> = match &machine_id {
+            None => daemon_connections.unnamed().collect(),
+            Some(machine_id) => daemon_connections
+                .get_matching_daemon_id(machine_id)
+                .into_iter()
+                .collect(),
+        };
+        match &daemon_ids[..] {
+            [id] => Ok((*id).clone()),
+            [] => bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
+            _ => bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
+        }
+    } else if let Some(node_to_daemon) = running_node_to_daemon {
+        node_to_daemon.get(node_id).cloned().ok_or_else(|| {
+            eyre!("node `{node_id}` is not part of running dataflow `{dataflow_id}`")
+        })
+    } else {
+        bail!("No dataflow found with UUID `{dataflow_id}`")
+    }
+}
+
 pub(crate) async fn retrieve_logs(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     archived_dataflows: &indexmap::IndexMap<Uuid, ArchivedDataflow>,
@@ -408,13 +497,15 @@ pub(crate) async fn retrieve_logs(
     timestamp: uhlc::Timestamp,
     tail: Option<usize>,
 ) -> eyre::Result<Vec<u8>> {
-    let nodes = if let Some(dataflow) = archived_dataflows.get(&dataflow_id) {
-        dataflow.nodes.clone()
-    } else if let Some(dataflow) = running_dataflows.get(&dataflow_id) {
-        dataflow.nodes.clone()
-    } else {
-        bail!("No dataflow found with UUID `{dataflow_id}`")
-    };
+    let daemon_id = resolve_log_daemon_id(
+        running_dataflows
+            .get(&dataflow_id)
+            .map(|d| &d.node_to_daemon),
+        archived_dataflows.get(&dataflow_id).map(|d| &d.nodes),
+        dataflow_id,
+        &node_id,
+        daemon_connections,
+    )?;
 
     let message = serde_json::to_vec(&Timestamped {
         inner: DaemonCoordinatorEvent::Logs {
@@ -425,36 +516,6 @@ pub(crate) async fn retrieve_logs(
         timestamp,
     })?;
 
-    let machine_ids: Vec<Option<String>> = nodes
-        .values()
-        .filter(|node| node.id == node_id)
-        .map(|node| node.deploy.as_ref().and_then(|d| d.machine.clone()))
-        .collect();
-
-    let machine_id = if let [machine_id] = &machine_ids[..] {
-        machine_id
-    } else if machine_ids.is_empty() {
-        bail!("No machine contains {}/{}", dataflow_id, node_id)
-    } else {
-        bail!(
-            "More than one machine contains {}/{}. However, it should only be present on one.",
-            dataflow_id,
-            node_id
-        )
-    };
-
-    let daemon_ids: Vec<_> = match machine_id {
-        None => daemon_connections.unnamed().collect(),
-        Some(machine_id) => daemon_connections
-            .get_matching_daemon_id(machine_id)
-            .into_iter()
-            .collect(),
-    };
-    let daemon_id = match &daemon_ids[..] {
-        [id] => (*id).clone(),
-        [] => eyre::bail!("no matching daemon connections for machine ID `{machine_id:?}`"),
-        _ => eyre::bail!("multiple matching daemon connections for machine ID `{machine_id:?}`"),
-    };
     let daemon_connection = daemon_connections
         .get_mut(&daemon_id)
         .wrap_err_with(|| format!("no daemon connection to `{daemon_id}`"))?;
@@ -625,6 +686,7 @@ pub(crate) async fn start_dataflow(
             BTreeSet::new()
         },
         exited_before_subscribe: Default::default(),
+        ready_barrier_released: false,
         daemons: daemons.clone(),
         nodes,
         node_to_daemon,
@@ -705,7 +767,73 @@ async fn destroy_daemons(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::DaemonConnection;
     use crate::topic_subscriber::TopicSubscriber;
+
+    fn dummy_connection() -> DaemonConnection {
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        DaemonConnection::new(
+            tx,
+            std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        )
+    }
+
+    #[test]
+    fn running_logs_use_node_to_daemon_with_multiple_unnamed_daemons() {
+        // Two unnamed daemons are connected and the target node has no explicit
+        // deploy machine. The machine-based derivation would collect both and
+        // bail; `node_to_daemon` resolves the exact daemon that runs the node.
+        let node = NodeId::from("worker".to_string());
+        let d1 = DaemonId::new(None);
+        let d2 = DaemonId::new(None);
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(d1.clone(), dummy_connection());
+        daemon_connections.add(d2.clone(), dummy_connection());
+
+        let mut node_to_daemon = BTreeMap::new();
+        node_to_daemon.insert(node.clone(), d2.clone());
+
+        let resolved = resolve_log_daemon_id(
+            Some(&node_to_daemon),
+            None,
+            Uuid::nil(),
+            &node,
+            &daemon_connections,
+        )
+        .expect("running node must resolve to its recorded daemon");
+        assert_eq!(resolved, d2);
+    }
+
+    #[test]
+    fn running_logs_error_when_node_not_in_dataflow() {
+        let node_to_daemon = BTreeMap::new();
+        let daemon_connections = DaemonConnections::default();
+        let err = resolve_log_daemon_id(
+            Some(&node_to_daemon),
+            None,
+            Uuid::nil(),
+            &NodeId::from("ghost".to_string()),
+            &daemon_connections,
+        )
+        .expect_err("a node absent from the dataflow must error");
+        assert!(err.to_string().contains("ghost"), "got: {err}");
+    }
+
+    #[test]
+    fn unknown_dataflow_errors() {
+        let daemon_connections = DaemonConnections::default();
+        let err = resolve_log_daemon_id(
+            None,
+            None,
+            Uuid::nil(),
+            &NodeId::from("n".to_string()),
+            &daemon_connections,
+        )
+        .expect_err("unknown dataflow must error");
+        assert!(err.to_string().contains("No dataflow found"), "got: {err}");
+    }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
     async fn send_topic_frames_resets_timeout_streak_on_successful_send() {
@@ -765,6 +893,162 @@ mod tests {
         assert!(
             !subscribers.contains_key(&subscription_id),
             "subscriber should be evicted after 100 consecutive timeouts"
+        );
+    }
+
+    /// Build a minimal `RunningDataflow` running on exactly `daemons`.
+    fn dataflow_on(uuid: Uuid, daemons: impl IntoIterator<Item = DaemonId>) -> RunningDataflow {
+        let descriptor: Descriptor = serde_json::from_value(serde_json::json!({
+            "nodes": [{ "id": "sender", "outputs": ["message"] }]
+        }))
+        .expect("valid test descriptor");
+
+        RunningDataflow {
+            name: None,
+            uuid,
+            descriptor,
+            daemons: daemons.into_iter().collect(),
+            pending_daemons: BTreeSet::new(),
+            exited_before_subscribe: vec![],
+            nodes: BTreeMap::new(),
+            node_to_daemon: BTreeMap::new(),
+            node_metrics: BTreeMap::new(),
+            node_finalized: BTreeSet::new(),
+            node_stopped_at: BTreeMap::new(),
+            network_metrics: None,
+            ready_barrier_released: false,
+            spawn_result: CachedResult::default(),
+            stop_reply_senders: vec![],
+            buffered_log_messages: vec![],
+            log_subscribers: vec![],
+            topic_subscribers: BTreeMap::new(),
+            pending_spawn_results: BTreeSet::new(),
+            spawn_started_at: std::time::Instant::now(),
+            created_at: 0,
+            store_generation: 0,
+            last_recovery_attempt: BTreeMap::new(),
+            last_replay_attempt: BTreeMap::new(),
+            uv: false,
+            state_log_sequence: 0,
+            state_log: Vec::new(),
+            daemon_ack_sequence: BTreeMap::new(),
+        }
+    }
+
+    /// A connection emulating the ws_daemon handler task for a *healthy* daemon:
+    /// it records each request it receives and completes the matching
+    /// `pending_replies` oneshot with a successful `StopResult`. Returns the
+    /// connection plus the shared log of requests the daemon actually received.
+    fn healthy_daemon() -> (
+        DaemonConnection,
+        std::sync::Arc<tokio::sync::Mutex<Vec<String>>>,
+    ) {
+        let received = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+        let pending: std::sync::Arc<
+            tokio::sync::Mutex<HashMap<Uuid, tokio::sync::oneshot::Sender<String>>>,
+        > = std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
+        let conn = DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+
+        let received_task = received.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = rx.recv().await {
+                let value: serde_json::Value =
+                    serde_json::from_str(&msg).expect("outgoing request is JSON");
+                let id: Uuid = value["id"]
+                    .as_str()
+                    .expect("request carries an id")
+                    .parse()
+                    .expect("id is a uuid");
+                // Record receipt *before* replying, so a returned `Ok` from
+                // `send_and_receive` guarantees the request is already logged.
+                received_task.lock().await.push(msg.clone());
+                let reply = serde_json::to_string(&DaemonCoordinatorReply::StopResult(Ok(())))
+                    .expect("serialize reply");
+                if let Some(sender) = pending.lock().await.remove(&id) {
+                    let _ = sender.send(reply);
+                }
+            }
+        });
+
+        (conn, received)
+    }
+
+    /// A connection whose receiver is dropped, so the very first `send` fails —
+    /// modelling an unreachable/disconnected daemon.
+    fn broken_daemon() -> DaemonConnection {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(rx);
+        DaemonConnection::new(
+            tx,
+            std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+            BTreeMap::new(),
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stop_dataflow_is_best_effort_when_a_daemon_fails() {
+        // A dataflow on two daemons where the one iterated *first* is
+        // unreachable. `DaemonId` orders by machine id, so `broken` (b) sorts
+        // before `healthy` (h) in `dataflow.daemons` (a `BTreeSet`): under the
+        // old first-failure `?` code the healthy daemon would never be reached
+        // and its nodes would be orphaned. Best-effort must still stop it.
+        let dataflow_uuid = Uuid::new_v4();
+        let broken = DaemonId::new(Some("broken".to_string()));
+        let healthy = DaemonId::new(Some("healthy".to_string()));
+
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(broken.clone(), broken_daemon());
+        let (healthy_conn, healthy_received) = healthy_daemon();
+        daemon_connections.add(healthy.clone(), healthy_conn);
+
+        let mut running_dataflows = HashMap::new();
+        running_dataflows.insert(
+            dataflow_uuid,
+            dataflow_on(dataflow_uuid, [broken.clone(), healthy.clone()]),
+        );
+
+        let timestamp = HLC::default().new_timestamp();
+        // `stop_dataflow`'s `Ok` is `&mut RunningDataflow` (not `Debug`), so
+        // destructure by hand rather than via `expect_err`.
+        let err = match stop_dataflow(
+            &mut running_dataflows,
+            dataflow_uuid,
+            &mut daemon_connections,
+            timestamp,
+            None,
+            false,
+        )
+        .await
+        {
+            Ok(_) => panic!("a failing daemon must surface an aggregated error"),
+            Err(err) => err,
+        };
+
+        // The core property: the healthy daemon was still told to stop even
+        // though the daemon iterated before it failed.
+        let received = healthy_received.lock().await;
+        assert_eq!(
+            received.len(),
+            1,
+            "healthy daemon must receive exactly one stop request"
+        );
+        assert!(
+            received[0].contains("StopDataflow"),
+            "healthy daemon must receive a StopDataflow, got: {}",
+            received[0]
+        );
+
+        // The error is aggregated: it reports one of two daemons failed and
+        // names the failing one (so the CLI still learns what broke).
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("1 of 2 daemon(s)"),
+            "error must aggregate the per-daemon outcome: {msg}"
+        );
+        assert!(
+            msg.contains("broken"),
+            "error must name the failed daemon: {msg}"
         );
     }
 }

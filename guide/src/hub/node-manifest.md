@@ -130,7 +130,7 @@ the manifest's.
 ### Shipping custom types
 
 A node may ship its own type definitions (same YAML shape as
-`types/std/*/v1.yml`). They must live **under the package's own namespace** —
+`libraries/core/types/std/*/v1.yml`). They must live **under the package's own namespace** —
 `std/` and other namespaces are rejected:
 
 ```yaml

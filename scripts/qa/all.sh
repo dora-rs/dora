@@ -40,6 +40,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/../.."
 
+# shellcheck source=../cargo-target-dir.sh
+source scripts/cargo-target-dir.sh
+TARGET_DIR="$(cargo_target_dir "$PWD")"
+
 MODE="${1:---fast}"
 FAILED=()
 
@@ -213,9 +217,9 @@ EOF
       cat <<EOF
 ============================================================
 $header
-Runs cargo-mutants --full on 6 critical crates: dora-core, dora-daemon,
-dora-coordinator, dora-message, dora-coordinator-store,
-shared-memory-server. About 1679 mutants last measured.
+Runs cargo-mutants --full on 5 critical crates: dora-core, dora-daemon,
+dora-coordinator, dora-message, dora-coordinator-store. About 1679
+mutants last measured.
 
 A test-quality audit, NOT a code gate. Run when:
   - Investigating low test coverage in a specific crate.
@@ -269,6 +273,7 @@ case "$MODE" in
       --exclude dora-node-api-python \
       --exclude dora-operator-api-python \
       --exclude dora-ros2-bridge-python \
+      --exclude dora-runtime-python \
       --exclude dora-cli-api-python \
       --exclude dora-examples
     run "coverage" scripts/qa/coverage.sh
@@ -299,21 +304,25 @@ case "$MODE" in
       --exclude dora-node-api-python \
       --exclude dora-operator-api-python \
       --exclude dora-ros2-bridge-python \
+      --exclude dora-runtime-python \
       --exclude dora-cli-api-python \
       --exclude dora-examples \
       -- proptest
 
-    # miri requires nightly Rust + miri component. Skip (with note) if missing.
-    #
-    # Scoped to the `metadata::tests::` module only. Those tests were
-    # specifically written to exercise the unsafe pointer-arithmetic
-    # path in `ArrowTypeInfoExt::from_array` under miri (see the
-    # module doc comment and docs/plan-agentic-qa-strategy.md §T2.3).
-    # Running `cargo miri test -p dora-core` without a filter tries
-    # every test in the crate; most fail because they use `tempfile`
-    # or other filesystem ops that miri's isolation sandbox rejects.
-    run_optional "miri" "cargo +nightly miri --version" \
-      cargo +nightly miri test -p dora-core -- metadata::tests
+    # miri: the previous target — dora-core's `metadata::tests`, written to
+    # exercise the unsafe pointer arithmetic in `ArrowTypeInfoExt::from_array`
+    # — was removed when the `ArrowTypeInfo` sidecar was dropped for Arrow-IPC
+    # framing. `libraries/core/src/metadata.rs` no longer exists and dora-core
+    # now has zero `unsafe`, so `-- metadata::tests` matched no tests and the
+    # gate silently reported PASS while testing nothing (worse than an honest
+    # skip). The miri-worthy unsafe moved to `dora-node-api`'s IPC encode/
+    # decode paths (`arrow_utils/ipc_encode.rs`, `event_stream`), but that
+    # crate links zenoh + shared-memory-server (`shm_open`), which miri cannot
+    # run wholesale (same limitation as shared-memory-server itself). Pointing
+    # miri at a tightly-scoped, FFI-free subset of those tests needs a verified
+    # run first; until then, skip explicitly rather than fake-pass.
+    echo
+    echo "=== miri (SKIP: no miri-runnable unsafe target after metadata.rs removal) ==="
 
     # Ambient Python venv for example-smoke. CI smoke jobs all set one up
     # with `uv pip install -e apis/python/node` before running cargo test;
@@ -350,7 +359,7 @@ case "$MODE" in
     elif ! uv python find 3.12 > /dev/null 2>&1; then
       nightly_py_missing "Python 3.12"
     else
-      NIGHTLY_VENV="$(pwd)/target/qa-nightly-venv"
+      NIGHTLY_VENV="$TARGET_DIR/qa-nightly-venv"
       echo
       echo "=== preparing ambient Python venv at $NIGHTLY_VENV ==="
       echo "=== (matches GHA smoke-suite's 'uv pip install -e apis/python/node') ==="

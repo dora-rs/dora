@@ -284,6 +284,12 @@ fn run_app<B: Backend>(
 ) -> eyre::Result<()> {
     let mut app = App::new();
     let mut last_update = Instant::now();
+    // Set by the `r` key to force the next loop iteration to refresh. Using an
+    // explicit flag avoids back-dating `last_update` with an unchecked
+    // `Instant - Duration`, which panics on underflow when `refresh_duration`
+    // exceeds the monotonic clock (e.g. a large `--refresh-interval` on a
+    // low-uptime host).
+    let mut force_refresh = false;
 
     // Reuse coordinator connection
     let session = connect_to_coordinator(coordinator_addr)?;
@@ -326,15 +332,15 @@ fn run_app<B: Backend>(
                     app.toggle_sort(SortColumn::Memory);
                 }
                 KeyCode::Char('r') => {
-                    // Force refresh by resetting last_update
-                    last_update = Instant::now() - refresh_duration;
+                    // Force the next iteration to refresh immediately.
+                    force_refresh = true;
                 }
                 _ => {}
             }
         }
 
-        // Update data if refresh interval has passed
-        if last_update.elapsed() >= refresh_duration {
+        // Update data if a refresh was forced or the refresh interval elapsed.
+        if should_refresh(force_refresh, last_update.elapsed(), refresh_duration) {
             // Query node info every refresh interval to get updated metrics
             let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
             node_infos = expect_reply!(reply, NodeInfoList(infos))?;
@@ -342,8 +348,23 @@ fn run_app<B: Backend>(
             // Update stats with current node info
             app.update_stats(node_infos.clone());
             last_update = Instant::now();
+            force_refresh = false;
         }
     }
+}
+
+/// Decides whether node stats should be refreshed this loop iteration.
+///
+/// A refresh happens either because the user forced one (`r` key) or because
+/// `refresh_duration` has elapsed since the last update. This deliberately uses
+/// only `Duration` comparisons (no `Instant - Duration`) so it can never panic
+/// on underflow, regardless of how large `refresh_duration` is.
+fn should_refresh(
+    force_refresh: bool,
+    since_last_update: Duration,
+    refresh_duration: Duration,
+) -> bool {
+    force_refresh || since_last_update >= refresh_duration
 }
 
 fn ui(f: &mut Frame, app: &mut App, refresh_duration: Duration) {
@@ -466,5 +487,41 @@ fn format_bytes(bytes: u64) -> String {
         format!("{:.1}MB", bytes as f64 / (1024.0 * 1024.0))
     } else {
         format!("{:.1}GB", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn force_refresh_triggers_regardless_of_elapsed() {
+        // Even with zero elapsed time and an enormous refresh interval, a
+        // forced refresh must fire and must not perform any `Instant`
+        // arithmetic that could underflow (regression test for #2681).
+        assert!(should_refresh(
+            true,
+            Duration::ZERO,
+            Duration::from_secs(u64::MAX),
+        ));
+    }
+
+    #[test]
+    fn refresh_waits_for_interval_when_not_forced() {
+        assert!(!should_refresh(
+            false,
+            Duration::from_millis(500),
+            Duration::from_secs(2),
+        ));
+        assert!(should_refresh(
+            false,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        ));
+        assert!(should_refresh(
+            false,
+            Duration::from_secs(3),
+            Duration::from_secs(2),
+        ));
     }
 }

@@ -56,7 +56,7 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 /// Generate a cryptographically random 32-byte token.
 pub fn generate_token() -> AuthToken {
     let mut buf = [0u8; TOKEN_BYTES];
-    getrandom::getrandom(&mut buf).expect("failed to generate random bytes");
+    getrandom::fill(&mut buf).expect("failed to generate random bytes");
     let hex: String = buf.iter().map(|b| format!("{b:02x}")).collect();
     AuthToken(hex)
 }

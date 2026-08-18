@@ -148,6 +148,22 @@ machines:
 | `zenoh_peer` | string | none | Shared Zenoh peer endpoint that all daemons use as a rendezvous for cross-daemon discovery (e.g., `tcp/192.168.1.1:5456`). `dora cluster up` passes it to every daemon via `dora daemon --zenoh-peer <ep>`. The first daemon to bind serves as the gossip hub; the rest fall through to connect-only. **Set this when your network lacks multicast** (dev containers, hardened deployments, many CI runners) — otherwise daemons can't find each other and cross-daemon dataflows hang. |
 | `machines` | array | (required) | Machine list (see below) |
 
+> **Every daemon must be dialable by every other daemon.** Zenoh advertises the
+> address a daemon binds, and remote daemons dial exactly that; since zenoh 1.9
+> peers do not relay for each other, a pair that cannot form a direct link has no
+> fallback and silently exchanges nothing. By default a daemon binds the local
+> address that routes toward `coordinator.addr` — the LAN address on a LAN, the
+> tunnel address on a mesh VPN such as Tailscale — which is correct without
+> configuration. On a multi-homed machine that would otherwise advertise an
+> interface the other daemons cannot reach, override it with
+> `dora daemon --zenoh-listen <IP>`. A daemon whose coordinator is loopback stays
+> on loopback and is not reachable from the network at all.
+>
+> `--zenoh-listen` must be a concrete address: a wildcard (`0.0.0.0`) is rejected
+> because zenoh would bind every interface but advertise a concrete one. An
+> address given explicitly must bind, or the daemon exits rather than starting
+> without a listener.
+
 **coordinator**
 
 | Field | Type | Default | Description |

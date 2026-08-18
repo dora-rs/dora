@@ -7,6 +7,7 @@ use dora_download::download_file;
 use dora_message::{
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
+    descriptor::Deploy,
 };
 use eyre::{Context, ContextCompat, bail};
 use std::{
@@ -17,6 +18,13 @@ use std::{
 };
 use tokio::runtime::Builder;
 use uuid::Uuid;
+
+/// Monomorphic wrapper around `duration_str::parse` for use as a clap
+/// `value_parser` (the generic signature of `parse` in duration-str 0.21+
+/// cannot be used as a parser function directly).
+pub(crate) fn parse_duration(s: &str) -> Result<std::time::Duration, String> {
+    duration_str::parse(s)
+}
 
 /// Whether a coordinator error message indicates the dataflow has already
 /// completed and been dropped from the running-dataflows table.
@@ -260,6 +268,25 @@ pub(crate) fn canonicalize_working_dir(
     }
 }
 
+/// Returns `true` if the node's deploy config routes it to a specific
+/// (possibly remote) daemon rather than the default/unnamed one.
+///
+/// This mirrors the coordinator's `resolve_daemon` priority
+/// (`machine` > `labels` > unnamed): a node is pinned when it either names a
+/// `machine` or carries a non-empty `labels` set, since label-based
+/// scheduling can match a remote daemon just as `machine` can. Only nodes
+/// that pin nothing land on the local/default daemon and may safely reuse the
+/// CLI-side [`local_working_dir`] fast path.
+///
+/// A `deploy` block that merely sets `working_dir` (no `machine`, no `labels`)
+/// does *not* pin a daemon. The previous `map(|d| d.machine.as_ref())`
+/// produced an `Option<Option<_>>` whose `is_none()` was true only when the
+/// whole `deploy` block was absent, so it both disabled the fast path for
+/// harmless `working_dir`-only blocks and ignored `labels` entirely.
+fn deploy_pins_daemon(deploy: Option<&Deploy>) -> bool {
+    deploy.is_some_and(|d| d.machine.is_some() || !d.labels.is_empty())
+}
+
 pub(crate) fn local_working_dir(
     dataflow_path: &Path,
     dataflow_descriptor: &Descriptor,
@@ -269,7 +296,7 @@ pub(crate) fn local_working_dir(
         if dataflow_descriptor
             .nodes
             .iter()
-            .all(|n| n.deploy.as_ref().map(|d| d.machine.as_ref()).is_none())
+            .all(|n| !deploy_pins_daemon(n.deploy.as_ref()))
             && cli_and_daemon_on_same_machine(coordinator_session)?
         {
             Some(
@@ -306,6 +333,7 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeMap;
 
     #[test]
     fn working_dir_or_parent_prefers_override() {
@@ -354,5 +382,56 @@ mod tests {
         let missing = Path::new("/definitely/not/a/real/path/for/tests");
         let dataflow = Path::new("/tmp/does-not-matter.yml");
         assert!(canonicalize_working_dir(Some(missing), dataflow).is_err());
+    }
+
+    /// Pins the duration grammar accepted by `--stop-after`/`--grace`/
+    /// `--since`/`--until` so a future `duration-str` bump can't silently
+    /// change CLI flag behavior.
+    #[test]
+    fn parse_duration_accepts_common_forms() {
+        use std::time::Duration;
+        assert_eq!(parse_duration("10s"), Ok(Duration::from_secs(10)));
+        assert_eq!(parse_duration("500ms"), Ok(Duration::from_millis(500)));
+        assert_eq!(parse_duration("2m"), Ok(Duration::from_secs(120)));
+        assert_eq!(parse_duration("1h30m"), Ok(Duration::from_secs(5400)));
+        // Bare numbers are seconds.
+        assert_eq!(parse_duration("15"), Ok(Duration::from_secs(15)));
+    }
+
+    #[test]
+    fn parse_duration_rejects_garbage() {
+        assert!(parse_duration("").is_err());
+        assert!(parse_duration("abc").is_err());
+        assert!(parse_duration("-5s").is_err());
+    }
+
+    fn deploy_with(machine: Option<&str>) -> Deploy {
+        Deploy {
+            machine: machine.map(str::to_owned),
+            working_dir: None,
+            labels: Default::default(),
+            distribute: Default::default(),
+        }
+    }
+
+    #[test]
+    fn deploy_pins_daemon_on_machine_or_labels() {
+        // No deploy block at all -> not pinned.
+        assert!(!deploy_pins_daemon(None));
+        // Deploy block that only sets working_dir (machine: None, no labels) ->
+        // not pinned. This is the case the old `map(...).is_none()` mishandled:
+        // it disabled the local fast path for any deploy block at all.
+        let mut only_working_dir = deploy_with(None);
+        only_working_dir.working_dir = Some("/some/dir".into());
+        assert!(!deploy_pins_daemon(Some(&only_working_dir)));
+        // Deploy block that pins a machine -> pinned.
+        assert!(deploy_pins_daemon(Some(&deploy_with(Some("gpu-box")))));
+        // Deploy block that only sets labels (machine: None) -> pinned. The
+        // coordinator's `resolve_daemon` routes a labels-only node to a
+        // label-matching daemon, which may be remote, so the local
+        // working-dir fast path must stay disabled.
+        let mut only_labels = deploy_with(None);
+        only_labels.labels = BTreeMap::from([("gpu".to_owned(), "true".to_owned())]);
+        assert!(deploy_pins_daemon(Some(&only_labels)));
     }
 }

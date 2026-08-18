@@ -1,12 +1,13 @@
 use crate::{Event, control::ControlEvent};
 use axum::extract::ws::{Message, WebSocket};
 use dora_message::{
+    TOPIC_DATA_PROTOCOL_VERSION,
     cli_to_coordinator::{ControlRequest, check_cli_version},
     common::Timestamped,
     coordinator_to_cli::ControlRequestReply,
     current_crate_version,
     daemon_to_daemon::InterDaemonEvent,
-    metadata::{ArrowTypeInfo, BufferOffset, Metadata},
+    metadata::{FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter},
     ws_protocol::{WsRequest, WsResponse},
 };
 use futures::{SinkExt, StreamExt};
@@ -16,6 +17,22 @@ use uuid::Uuid;
 
 /// Maximum topics allowed in a single TopicSubscribe request.
 const MAX_TOPICS_PER_SUBSCRIBE: usize = 64;
+
+/// Whether a client's advertised binary-frame encoding is one we can serve.
+///
+/// `Err` carries the rejection message. Split out from the request handler so
+/// the decision is testable without a live WebSocket — the handler itself only
+/// runs inside `handle_control_ws`.
+fn check_topic_protocol(client_version: Option<u16>) -> Result<(), String> {
+    if client_version == Some(TOPIC_DATA_PROTOCOL_VERSION) {
+        Ok(())
+    } else {
+        Err(dora_message::topic_protocol_mismatch_message(
+            "client",
+            client_version,
+        ))
+    }
+}
 
 /// Maximum concurrent topic subscriptions per WebSocket connection.
 const MAX_SUBSCRIPTIONS_PER_CONNECTION: usize = 16;
@@ -45,8 +62,9 @@ async fn send_ws_response(
 
 /// Format a `WsResponse`-shaped JSON envelope using `serde_json::to_string`.
 ///
-/// This is needed (instead of `send_ws_response`) for replies that contain u128
-/// values (e.g. uhlc::ID) which lose fidelity through `serde_json::Value`.
+/// Used instead of `send_ws_response` where the reply is already a concrete
+/// type: it serializes straight into the envelope rather than materializing an
+/// intermediate `serde_json::Value` for the `WsResponse::result` field.
 fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
     match serde_json::to_string(reply) {
         Ok(result_json) => {
@@ -184,7 +202,21 @@ pub(crate) async fn handle_control_ws(
                         let _ = send_ws_response(&mut ws_tx, &resp).await;
                         continue;
                     }
-                    ControlRequest::TopicSubscribe { dataflow_id, topics } => {
+                    ControlRequest::TopicSubscribe {
+                        dataflow_id,
+                        topics,
+                        protocol_version,
+                    } => {
+                        // Reject before doing any work: the frames this
+                        // subscription would produce are positionally encoded,
+                        // so a client on the other encoding misparses them
+                        // instead of erroring (dora-rs/dora#3153).
+                        if let Err(msg) = check_topic_protocol(*protocol_version) {
+                            let resp = WsResponse::err(req.id, msg);
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
+
                         let mut normalized_topics = topics.clone();
                         normalized_topics.sort();
 
@@ -194,6 +226,7 @@ pub(crate) async fn handle_control_ws(
                         }) {
                             let reply = ControlRequestReply::TopicSubscribed {
                                 subscription_id: existing.subscription_id,
+                                protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
                             };
                             let resp_json = format_response_json(req.id, &reply);
                             if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
@@ -262,7 +295,10 @@ pub(crate) async fn handle_control_ws(
                             }
                         };
 
-                        let reply = ControlRequestReply::TopicSubscribed { subscription_id };
+                        let reply = ControlRequestReply::TopicSubscribed {
+                            subscription_id,
+                            protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
+                        };
                         let resp_json = format_response_json(req.id, &reply);
                         if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
                             break;
@@ -305,7 +341,7 @@ pub(crate) async fn handle_control_ws(
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
-                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `_unstable_debug.enable_debug_inspection: true` (previously named `publish_all_messages_to_zenoh`; old name is still accepted)"
+                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `_unstable_debug.enable_debug_inspection: true`"
                                 ),
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;
@@ -370,8 +406,6 @@ pub(crate) async fn handle_control_ws(
 
                 let stop = matches!(reply, ControlRequestReply::CoordinatorStopped);
 
-                // Serialize reply via to_string (not to_value) to preserve u128
-                // fidelity for uhlc::ID inside DataflowResult timestamps.
                 let resp_json = format_response_json(req.id, &reply);
                 if ws_tx.send(Message::Text(resp_json.into())).await.is_err() || stop {
                     break;
@@ -423,27 +457,22 @@ async fn publish_topic(
 ) -> Result<(), String> {
     let topic = dora_core::topics::zenoh_daemon_control_topic(dataflow_id, node_id, output_id);
 
-    // Store JSON as raw UTF-8 bytes in a UInt8 array
-    let data_bytes = data_json.as_bytes();
-    let data = dora_message::aligned_vec::AVec::from_slice(128, data_bytes);
+    // Encode the JSON (as a UInt8 array) into a self-describing Arrow IPC
+    // stream — the framing every data-plane payload now uses, so the receiving
+    // node's IPC decode reconstructs it.
+    let array = arrow::array::UInt8Array::from(data_json.as_bytes().to_vec());
+    let ipc_bytes = encode_topic_ipc(&array)
+        .map_err(|e| format!("failed to Arrow-IPC-encode topic data: {e}"))?;
+    let data = dora_message::aligned_vec::AVec::from_slice(128, &ipc_bytes);
 
-    let type_info = ArrowTypeInfo {
-        data_type: dora_message::arrow_schema::DataType::UInt8,
-        len: data_bytes.len(),
-        null_count: 0,
-        validity: None,
-        offset: 0,
-        buffer_offsets: vec![BufferOffset {
-            offset: 0,
-            len: data_bytes.len(),
-        }],
-        child_data: vec![],
-        field_names: None,
-        schema_hash: None,
-    };
+    let mut params = MetadataParameters::new();
+    params.insert(
+        FRAMING.to_string(),
+        Parameter::String(FRAMING_ARROW_IPC.to_string()),
+    );
 
     let timestamp = clock.new_timestamp();
-    let metadata = Metadata::new(timestamp, type_info);
+    let metadata = Metadata::from_parameters(timestamp, params);
 
     let event = Timestamped {
         inner: InterDaemonEvent::Output {
@@ -476,4 +505,75 @@ async fn publish_topic(
         .map_err(|e| format!("failed to publish to zenoh: {e}"))?;
 
     Ok(())
+}
+
+/// Encode `array` into a single-column Arrow IPC stream (column named `data`),
+/// matching the framing produced by `dora_node_api::arrow_utils::encode_arrow_ipc`
+/// so the node-side IPC decode reconstructs it.
+fn encode_topic_ipc(array: &arrow::array::UInt8Array) -> eyre::Result<Vec<u8>> {
+    use arrow::datatypes::{DataType, Field, Schema};
+    use arrow::ipc::writer::StreamWriter;
+    use arrow::record_batch::RecordBatch;
+    use eyre::Context;
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![Field::new("data", DataType::UInt8, true)]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(array.clone())])
+        .context("failed to create RecordBatch for topic IPC encoding")?;
+
+    let mut buf = Vec::new();
+    {
+        let mut writer = StreamWriter::try_new(&mut buf, &schema)
+            .context("failed to create Arrow IPC StreamWriter")?;
+        writer
+            .write(&batch)
+            .context("failed to write RecordBatch to IPC stream")?;
+        writer
+            .finish()
+            .context("failed to finish Arrow IPC stream")?;
+    }
+    Ok(buf)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The rejection has to be actionable: an operator seeing it should know
+    /// which side is old without reading the source. Both arms name our
+    /// version and say why a mismatch cannot simply be tolerated — binary
+    /// topic frames are positionally encoded, so the wrong encoding misparses
+    /// instead of erroring (dora-rs/dora#3153).
+    /// The accept/reject decision itself, not just its wording: inverting or
+    /// deleting the guard in the request handler must fail here.
+    #[test]
+    fn only_our_exact_protocol_version_is_accepted() {
+        assert!(
+            check_topic_protocol(Some(TOPIC_DATA_PROTOCOL_VERSION)).is_ok(),
+            "our own version must be accepted"
+        );
+        assert!(
+            check_topic_protocol(None).is_err(),
+            "a pre-handshake client must be rejected, not defaulted to compatible"
+        );
+        for version in [0, 1, TOPIC_DATA_PROTOCOL_VERSION + 1, u16::MAX] {
+            assert!(
+                check_topic_protocol(Some(version)).is_err(),
+                "version {version} must be rejected: binary frames are positional, \
+                 so a mismatch misparses rather than failing"
+            );
+        }
+    }
+
+    /// The rejection must actually carry the shared explanation, not an empty
+    /// or generic string — that text is what tells an operator which side is old.
+    #[test]
+    fn rejection_carries_the_shared_mismatch_message() {
+        let err = check_topic_protocol(Some(1)).expect_err("version 1 must be rejected");
+        assert_eq!(
+            err,
+            dora_message::topic_protocol_mismatch_message("client", Some(1)),
+            "should reuse the shared message rather than a local variant"
+        );
+    }
 }

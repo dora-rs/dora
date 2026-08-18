@@ -11,7 +11,7 @@ $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest
 $tag = $release.tag_name
 
 $target = "x86_64-pc-windows-msvc"
-$archive = "https://github.com/$repo/releases/download/$tag/dora-$target.zip"
+$archive = "https://github.com/$repo/releases/download/$tag/dora-cli-$target.zip"
 Write-Host "Installing dora $tag ($target) to $dest"
 
 # Download and extract
@@ -21,7 +21,10 @@ $zip = "$tmp\dora.zip"
 Invoke-WebRequest -Uri $archive -OutFile $zip
 
 New-Item -ItemType Directory -Path $dest -Force | Out-Null
-Expand-Archive -Path $zip -DestinationPath $dest -Force
+# The zip is flat: dora.exe sits at the archive root (unlike the unix
+# tarballs, which nest the binary in a dora-cli-<target>/ directory).
+Expand-Archive -Path $zip -DestinationPath $tmp -Force
+Move-Item -Path "$tmp\dora.exe" -Destination "$dest\dora.exe" -Force
 Remove-Item -Path $tmp -Recurse -Force
 
 # Add to PATH if not already there

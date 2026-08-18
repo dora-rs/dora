@@ -17,6 +17,8 @@ use dora_ros2_bridge::{
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
 
+const ADD_SERVICE_DISCOVERY_POLL_TIMEOUT: Duration = Duration::from_millis(100);
+
 fn main() -> eyre::Result<()> {
     let mut ros_node = init_ros_node()?;
     let turtle_vel_publisher = create_vel_publisher(&mut ros_node)?;
@@ -51,27 +53,8 @@ fn main() -> eyre::Result<()> {
         service_qos.clone(),
     )?;
 
-    // wait until the service server is ready
-    println!("wait for add_two_ints service");
-    let service_ready = async {
-        for _ in 0..10 {
-            let ready = add_client.wait_for_service(&ros_node);
-            futures::pin_mut!(ready);
-            let timeout = futures_timer::Delay::new(Duration::from_secs(2));
-            match futures::future::select(ready, timeout).await {
-                futures::future::Either::Left(((), _)) => {
-                    println!("add_two_ints service is ready");
-                    return Ok(());
-                }
-                futures::future::Either::Right(_) => {
-                    println!("timeout while waiting for add_two_ints service, retrying");
-                }
-            }
-        }
-        eyre::bail!("add_two_ints service not available");
-    };
-    futures::executor::block_on(service_ready)?;
-
+    let mut add_service_ready = false;
+    let add_service_deadline = std::time::Instant::now() + Duration::from_secs(60);
     let output = DataId::from("pose".to_owned());
 
     let (mut node, dora_events) = DoraNode::init_from_env()?;
@@ -107,13 +90,27 @@ fn main() -> eyre::Result<()> {
                         turtle_vel_publisher.publish(direction).unwrap();
                     }
                     "service_timer" => {
-                        let a = rand::random();
-                        let b = rand::random();
-                        let service_result = add_two_ints_request(&add_client, a, b);
-                        let sum = futures::executor::block_on(service_result)
-                            .context("failed to send service request")?;
-                        if sum != a.wrapping_add(b) {
-                            eyre::bail!("unexpected addition result: expected {}, got {sum}", a + b)
+                        if !add_service_ready {
+                            add_service_ready = add_two_ints_service_ready(&add_client, &ros_node);
+                            if add_service_ready {
+                                println!("add_two_ints service is ready");
+                            } else if std::time::Instant::now() >= add_service_deadline {
+                                eyre::bail!("add_two_ints service not available");
+                            }
+                        }
+
+                        if add_service_ready {
+                            let a: i64 = rand::random();
+                            let b: i64 = rand::random();
+                            let expected = a.wrapping_add(b);
+                            let service_result = add_two_ints_request(&add_client, a, b);
+                            let sum = futures::executor::block_on(service_result)
+                                .context("failed to send service request")?;
+                            if sum != expected {
+                                eyre::bail!(
+                                    "unexpected addition result: expected {expected}, got {sum}"
+                                )
+                            }
                         }
                     }
                     other => eprintln!("Ignoring unexpected input `{other}`"),
@@ -140,6 +137,19 @@ fn main() -> eyre::Result<()> {
     }
 
     Ok(())
+}
+
+fn add_two_ints_service_ready(
+    add_client: &ros2_client::Client<AddTwoInts>,
+    ros_node: &ros2_client::Node,
+) -> bool {
+    let ready = add_client.wait_for_service(ros_node);
+    futures::pin_mut!(ready);
+    let timeout = futures_timer::Delay::new(ADD_SERVICE_DISCOVERY_POLL_TIMEOUT);
+    matches!(
+        futures::executor::block_on(futures::future::select(ready, timeout)),
+        futures::future::Either::Left(((), _))
+    )
 }
 
 async fn add_two_ints_request(

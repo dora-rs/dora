@@ -11,10 +11,6 @@ off in the narrow places where a bug is (a) security- or memory-safety-
 critical and (b) lives in pure logic whose input space tests can only sample.
 In dora those places are:
 
-- **Shared-memory boundary arithmetic** — the daemon hands nodes offsets into
-  shared-memory regions; an off-by-one here is a cross-process out-of-bounds
-  read. This exact logic has had two off-by-one bugs historically
-  (`libraries/core/src/metadata.rs`).
 - **Authentication primitives** — the coordinator token comparison must be
   both correct and constant-time (`libraries/message/src/auth.rs`).
 - **Untrusted-input parsers** — descriptor fields parsed from user YAML
@@ -33,10 +29,10 @@ In increasing strength (and cost):
 | Test-quality audit | cargo-mutants | the tests would catch injected logic mutations | `qa-deep` (diff-scoped) |
 | **Model checking** | **Kani (CBMC)** | **the property holds for *every* input in the harness state space** | `make qa-kani` (on demand / pre-release) + nightly CI |
 
-Kani proofs are *bounded model checking*: for loop-free integer logic (like
-the buffer containment helper) the proof is exhaustive over all 2^256
-possible input combinations; for loops the harness states an explicit bound
-(e.g. slices up to length 8) and the proof is exhaustive within it.
+Kani proofs are *bounded model checking*: for loop-free integer logic the
+proof is exhaustive over every possible input combination; for loops the
+harness states an explicit bound (e.g. slices up to length 8, as in the auth
+comparison) and the proof is exhaustive within it.
 
 ## Current proof inventory
 
@@ -44,42 +40,6 @@ Proof harnesses live next to the code they verify, in `#[cfg(kani)] mod
 verification` modules. They are invisible to normal builds, tests, and
 clippy (the `cfg` is registered in `[workspace.lints.rust]` in the root
 `Cargo.toml`; proof crates opt in with `[lints] workspace = true`).
-
-### `dora-core` — shared-memory buffer containment (`libraries/core/src/metadata.rs`)
-
-`buffer_offset_in_region(ptr, len, region_start, region_len)` is the pure
-helper behind `ArrowTypeInfo::from_array`, which converts Arrow buffer
-pointers into offsets relative to a shared-memory region. Proven (exhaustive
-over all `usize` values, no bounds):
-
-1. **Soundness + panic-freedom** (`accepted_buffers_are_contained`): for any
-   input, the helper never panics; if it accepts, then
-   `region_start <= ptr`, the returned offset equals `ptr - region_start`,
-   and `offset + len <= region_len` without overflow.
-2. **Completeness** (`contained_buffers_are_accepted`): every buffer that is
-   genuinely contained in a well-formed region is accepted — the property
-   the two historical off-by-one bugs violated.
-3. **Accurate rejection** (`buffers_before_region_are_rejected`): a buffer
-   starting before the region is always reported as such, never accepted
-   with a wrapped offset.
-
-Hardening that came out of writing the proofs:
-
-- The end-of-region comparison previously used unchecked additions
-  (`region_start as usize + region_len` and `ptr + len`), which wrap in
-  release builds for adversarial values — a wrapped `ptr + len` could
-  *accept* an out-of-region buffer with a bogus offset. The helper states
-  the predicate with guarded subtractions instead, which cannot wrap and
-  also correctly handles regions ending exactly at the top of the address
-  space.
-- The former `ptr.offset_from(region_start)` call (an `unsafe` operation
-  requiring both pointers to share an allocation — a provenance precondition
-  `from_array` cannot locally guarantee) is replaced by proven-safe integer
-  subtraction.
-
-The miri-facing unit tests in `libraries/core/src/metadata/tests.rs` remain:
-they cover the *impure* part (real `ArrayData`, real pointers, provenance)
-that Kani's integer model does not.
 
 ### `dora-message` — auth token comparison (`libraries/message/src/auth.rs`)
 
@@ -120,7 +80,7 @@ make qa-kani-install   # one-time: cargo install kani-verifier && cargo kani set
 make qa-kani           # run all proof harnesses (~5-10 min cold, <1 min warm)
 
 # Single harness while iterating:
-cargo kani -p dora-core --harness contained_buffers_are_accepted
+cargo kani -p dora-message --harness constant_time_eq_matches_slice_equality
 ```
 
 `qa-kani` is deliberately **not** part of the per-commit `qa-fast` loop or
@@ -131,6 +91,30 @@ nightly workflow runs the proofs daily (`kani-proofs` job in
 `.github/workflows/nightly.yml`, mirrored by
 `scripts/qa/ci-nightly-jobs.sh kani-proofs`), so a broken harness is
 caught within a day and auto-filed as a `nightly-regression` issue.
+
+### Proof crates must stay below Kani's bundled toolchain
+
+Kani does not build with the workspace toolchain — it ships its own
+nightly (0.67.0 → `nightly-2025-11-21`, rustc 1.93.0-nightly). Cargo
+refuses to compile a package whose `rust-version` exceeds the running
+rustc, so **a proof crate whose MSRV outruns Kani's rustc stops being
+verified at all**: `cargo kani` fails before codegen, reporting "Found 0
+compilation errors" rather than a failed proof. That is how #3090
+happened — the workspace MSRV went to 1.95 in #3017 and every nightly
+run after it was red with zero proofs run.
+
+So `dora-message` pins its own `rust-version` (currently 1.88.0) instead
+of inheriting `[workspace.package]`, with a comment in its `Cargo.toml`
+saying why. Any crate that gains a `#[kani::proof]` harness needs the
+same treatment. Two guards keep the pin honest: the nightly `msrv` job
+runs `cargo hack check --rust-version`, which fails if the crate no
+longer builds on the version it advertises, and the `kani-proofs` job
+fails if the pin ever climbs past Kani's rustc.
+
+Cargo compares only the release numbers here, ignoring the pre-release
+tag, so `rust-version = "1.93.0"` would be accepted by rustc
+1.93.0-nightly. The pin sits a few releases lower anyway, to leave room
+for a workspace MSRV bump landing before the matching Kani release.
 
 ## Adding a new proof
 
@@ -150,10 +134,14 @@ caught within a day and auto-filed as a `nightly-regression` issue.
    workspace = true
    ```
 
-4. Nothing else: `scripts/qa/kani.sh` discovers proof crates by scanning
+4. In the same `Cargo.toml`, replace `rust-version.workspace = true` with
+   a pin at or below Kani's bundled rustc (see the section above) —
+   otherwise the crate silently drops out of verification the next time
+   the workspace MSRV moves ahead of Kani.
+5. Nothing else: `scripts/qa/kani.sh` discovers proof crates by scanning
    for `#[kani::proof]`, so `make qa-kani` picks the new harness up
    automatically.
-5. State each property in prose in the harness doc comment, and aim for the
+6. State each property in prose in the harness doc comment, and aim for the
    soundness/completeness pair — one-directional proofs silently miss
    "rejects everything" regressions.
 

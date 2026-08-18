@@ -56,6 +56,21 @@ impl RegisterResult {
     }
 }
 
+/// Reply to `CoordinatorRequest::ResolveMachine` — sent by the coordinator
+/// to the requesting daemon over the same request/response channel used for
+/// `RegisterResult`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub enum ResolveMachineReply {
+    /// Reply to `CoordinatorRequest::ResolveMachine`.
+    ResolveMachineResult {
+        found: bool,
+        /// The target daemon's WS peer address as seen by the coordinator
+        /// (set at registration). Used by the memory-pool direct-TCP data
+        /// plane to reach the mirror daemon's data listener.
+        address: Option<std::net::SocketAddr>,
+    },
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
 pub enum DaemonCoordinatorEvent {
@@ -118,6 +133,16 @@ pub enum DaemonCoordinatorEvent {
     RemoveNode {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        grace_duration: Option<Duration>,
+    },
+    /// Atomically replace a running node on this daemon with a new
+    /// definition under the same id (dora-rs/dora#2927): spawn the
+    /// replacement first (a failure leaves the current incarnation
+    /// untouched), then swap the entry and stop the outgoing incarnation.
+    ReplaceNode {
+        dataflow_id: DataflowId,
+        node: crate::descriptor::ResolvedNode,
+        uv: bool,
         grace_duration: Option<Duration>,
     },
     /// Add a mapping (connection) in a running dataflow.

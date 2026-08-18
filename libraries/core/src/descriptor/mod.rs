@@ -7,18 +7,39 @@ use eyre::{Context, OptionExt, Result, bail};
 use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
-    Ros2TopicConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
+    OperatorSource, PythonSource, RUNTIME_PYTHON, RUNTIME_SHARED_LIBRARY, RUNTIME_WASM,
+    ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
+    Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
+
+/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
+/// the filesystem — the executable may not be built yet when this is called.
+///
+/// Used to sanitize untrusted node paths before a containment check, so the
+/// two callers (module expansion and manifest injection) must collapse `..`
+/// identically; keeping a single implementation prevents them from drifting.
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
 
 mod expand;
 pub mod validate;
@@ -31,11 +52,24 @@ pub use expand::{
 
 pub trait DescriptorExt {
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
-    fn visualize_as_mermaid(&self) -> eyre::Result<String>;
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
     ) -> eyre::Result<String>;
+    /// Apply a command-line override to the dataflow's completion policy.
+    ///
+    /// `None` leaves the descriptor's own `exit_when_nodes_finish`
+    /// alone, so a setting written in the YAML stands; `Some(v)`
+    /// overrides it in either direction, so `--exit-when-nodes-finish`
+    /// can force the policy on and `=false` can force it off for a
+    /// descriptor that asks for it (dora-rs/dora#2920).
+    ///
+    /// Shared rather than spelled out at each call site: `dora run`,
+    /// `dora start` and the daemon all have to agree, and three copies
+    /// of the same three lines is how one of them ends up not being
+    /// updated.
+    fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>);
+
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
@@ -55,70 +89,156 @@ pub trait DescriptorExt {
 
 pub const SINGLE_OPERATOR_DEFAULT_ID: &str = "op";
 
-impl DescriptorExt for Descriptor {
-    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
-        let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+/// Prefixes a single-operator node's output id with the operator id
+/// (e.g. `result` -> `op/result`) so downstream references resolve to the
+/// operator-qualified output.
+///
+/// Operator ids are *not* validated against the `DataId` character set when a
+/// descriptor is parsed (`OperatorId` stores its string verbatim), so build the
+/// qualified id fallibly: `DataId::from` panics on characters outside
+/// `[a-zA-Z0-9_./-]`, which would abort `dora check`/`graph`/`build` on an
+/// otherwise-parseable descriptor. Returning an `Err` surfaces it as a clean
+/// descriptor error instead.
+fn prefix_output_with_operator_id(op_name: &OperatorId, output: &DataId) -> eyre::Result<DataId> {
+    format!("{op_name}/{output}")
+        .parse::<DataId>()
+        .map_err(|e| {
+            eyre::eyre!(
+                "operator id `{op_name}` produces an invalid output id `{op_name}/{output}`: {e}"
+            )
+        })
+}
 
-        let single_operator_nodes: HashMap<_, _> = self
-            .nodes
-            .iter()
-            .filter_map(|n| {
-                n.operator
-                    .as_ref()
-                    .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
+/// Like [`DescriptorExt::resolve_aliases_and_set_defaults`], but resolves
+/// `desc` as a node (or nodes) being added to an already-running dataflow
+/// whose current node set is `topology_nodes`.
+///
+/// Whole-descriptor resolution rewrites an input that references a
+/// single-`operator:` producer from the bare output name to the
+/// operator-qualified one (`result` -> `op/result`). The dynamic-topology
+/// `AddNode` path resolves the new node in isolation, so that producer is not
+/// present in the descriptor being resolved and the rewrite is skipped —
+/// leaving the added node subscribed to an output name nobody publishes
+/// (silent data loss, #2877). Supplying the surrounding `topology_nodes` makes
+/// those producers visible so the prefixing is applied.
+///
+/// `topology_nodes` contribute *only* to the single-operator output-prefixing
+/// lookup — they are never themselves resolved or emitted, and nothing else on
+/// the surrounding descriptor (`env`, `deploy`, …) is consulted. Callers that
+/// want the running dataflow's `env` merged in must set it on `desc` (the
+/// `AddNode` handler does, see #2919). `desc`'s own nodes take precedence in
+/// the lookup, so a node id present in both resolves against the copy being
+/// added.
+pub fn resolve_aliases_and_set_defaults_in_topology(
+    desc: &Descriptor,
+    topology_nodes: &[Node],
+) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+    let default_op_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+
+    let single_operator_nodes: HashMap<_, _> = topology_nodes
+        .iter()
+        .chain(desc.nodes.iter())
+        .filter_map(|n| {
+            n.operator
+                .as_ref()
+                .map(|op| (&n.id, op.id.as_ref().unwrap_or(&default_op_id)))
+        })
+        .collect();
+
+    let mut resolved = BTreeMap::new();
+    for mut node in desc.nodes.clone() {
+        // adjust ROS2 bridge input mappings early (before node_kind borrows node)
+        if node.ros2.is_some() {
+            for input in node.inputs.values_mut() {
+                if let InputMapping::User(m) = &mut input.mapping
+                    && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
+                {
+                    m.output = prefix_output_with_operator_id(op_name, &m.output)?;
+                }
+            }
+        }
+
+        // adjust input mappings
+        let mut node_kind = node_kind_mut(&mut node)?;
+        let input_mappings: Vec<_> = match &mut node_kind {
+            NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
+            NodeKindMut::Runtime(node) => node
+                .operators
+                .iter_mut()
+                .flat_map(|op| op.config.inputs.values_mut())
+                .collect(),
+            NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
+            NodeKindMut::Ros2Bridge(_) => vec![],
+        };
+        for mapping in input_mappings
+            .into_iter()
+            .filter_map(|i| match &mut i.mapping {
+                InputMapping::Timer { .. } | InputMapping::Logs(_) => None,
+                InputMapping::User(m) => Some(m),
             })
-            .collect();
-
-        let mut resolved = BTreeMap::new();
-        for mut node in self.nodes.clone() {
-            // adjust ROS2 bridge input mappings early (before node_kind borrows node)
-            if node.ros2.is_some() {
-                for input in node.inputs.values_mut() {
-                    if let InputMapping::User(m) = &mut input.mapping
-                        && let Some(op_name) = single_operator_nodes.get(&m.source).copied()
-                    {
-                        m.output = DataId::from(format!("{op_name}/{}", m.output));
-                    }
-                }
+        {
+            if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
+                mapping.output = prefix_output_with_operator_id(op_name, &mapping.output)?;
             }
+        }
 
-            // adjust input mappings
-            let mut node_kind = node_kind_mut(&mut node)?;
-            let input_mappings: Vec<_> = match &mut node_kind {
-                NodeKindMut::Standard { inputs, .. } => inputs.values_mut().collect(),
-                NodeKindMut::Runtime(node) => node
-                    .operators
-                    .iter_mut()
-                    .flat_map(|op| op.config.inputs.values_mut())
-                    .collect(),
-                NodeKindMut::Custom(node) => node.run_config.inputs.values_mut().collect(),
-                NodeKindMut::Operator(operator) => operator.config.inputs.values_mut().collect(),
-                NodeKindMut::Ros2Bridge(_) => vec![],
-            };
-            for mapping in input_mappings
-                .into_iter()
-                .filter_map(|i| match &mut i.mapping {
-                    InputMapping::Timer { .. } | InputMapping::Logs(_) => None,
-                    InputMapping::User(m) => Some(m),
-                })
-            {
-                if let Some(op_name) = single_operator_nodes.get(&mapping.source).copied() {
-                    mapping.output = DataId::from(format!("{op_name}/{}", mapping.output));
-                }
-            }
+        // resolve nodes
+        let kind = match node_kind {
+            NodeKindMut::Standard {
+                path,
+                source,
+                inputs: _,
+            } => CoreNodeKind::Custom(CustomNode {
+                path: path.clone(),
+                source,
+                path_sha256: node.path_sha256,
+                args: node.args,
+                build: node.build,
+                send_stdout_as: node.send_stdout_as,
+                send_logs_as: node.send_logs_as,
+                min_log_level: node.min_log_level,
+                max_log_size: node.max_log_size,
+                max_rotated_files: node.max_rotated_files,
+                run_config: NodeRunConfig {
+                    inputs: node.inputs,
+                    outputs: node.outputs,
+                    output_types: node.output_types,
+                    output_framing: node.output_framing,
+                    input_types: node.input_types,
+                    shared_memory_pool_size: node.shared_memory_pool_size,
+                },
+                envs: None,
+                restart_policy: node.restart_policy,
+                max_restarts: node.max_restarts,
+                restart_delay: node.restart_delay,
+                max_restart_delay: node.max_restart_delay,
+                restart_window: node.restart_window,
+                health_check_timeout: node.health_check_timeout,
+                finish_grace_secs: node.finish_grace_secs,
+            }),
+            NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
+            NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
+                operators: vec![OperatorDefinition {
+                    id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
+                    config: op.config.clone(),
+                }],
+            }),
+            NodeKindMut::Ros2Bridge(config) => {
+                let bridge_config_json = serde_json::to_string(&config)
+                    .context("failed to serialize ROS2 bridge config")?;
 
-            // resolve nodes
-            let kind = match node_kind {
-                NodeKindMut::Standard {
-                    path,
-                    source,
-                    inputs: _,
-                } => CoreNodeKind::Custom(CustomNode {
-                    path: path.clone(),
-                    source,
-                    path_sha256: node.path_sha256,
+                let mut envs = BTreeMap::new();
+                envs.insert(
+                    "DORA_ROS2_BRIDGE_CONFIG".to_string(),
+                    EnvValue::String(bridge_config_json),
+                );
+
+                CoreNodeKind::Custom(CustomNode {
+                    path: "dora-ros2-bridge-node".to_string(),
+                    source: NodeSource::Local,
+                    path_sha256: None,
                     args: node.args,
-                    build: node.build,
+                    build: None,
                     send_stdout_as: node.send_stdout_as,
                     send_logs_as: node.send_logs_as,
                     min_log_level: node.min_log_level,
@@ -132,7 +252,7 @@ impl DescriptorExt for Descriptor {
                         input_types: node.input_types,
                         shared_memory_pool_size: node.shared_memory_pool_size,
                     },
-                    envs: None,
+                    envs: Some(envs),
                     restart_policy: node.restart_policy,
                     max_restarts: node.max_restarts,
                     restart_delay: node.restart_delay,
@@ -140,87 +260,40 @@ impl DescriptorExt for Descriptor {
                     restart_window: node.restart_window,
                     health_check_timeout: node.health_check_timeout,
                     finish_grace_secs: node.finish_grace_secs,
-                }),
-                NodeKindMut::Custom(node) => CoreNodeKind::Custom(node.clone()),
-                NodeKindMut::Runtime(node) => CoreNodeKind::Runtime(node.clone()),
-                NodeKindMut::Operator(op) => CoreNodeKind::Runtime(RuntimeNode {
-                    operators: vec![OperatorDefinition {
-                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config.clone(),
-                    }],
-                }),
-                NodeKindMut::Ros2Bridge(config) => {
-                    let bridge_config_json = serde_json::to_string(&config)
-                        .context("failed to serialize ROS2 bridge config")?;
-
-                    let mut envs = BTreeMap::new();
-                    envs.insert(
-                        "DORA_ROS2_BRIDGE_CONFIG".to_string(),
-                        EnvValue::String(bridge_config_json),
-                    );
-
-                    CoreNodeKind::Custom(CustomNode {
-                        path: "dora-ros2-bridge-node".to_string(),
-                        source: NodeSource::Local,
-                        path_sha256: None,
-                        args: node.args,
-                        build: None,
-                        send_stdout_as: node.send_stdout_as,
-                        send_logs_as: node.send_logs_as,
-                        min_log_level: node.min_log_level,
-                        max_log_size: node.max_log_size,
-                        max_rotated_files: node.max_rotated_files,
-                        run_config: NodeRunConfig {
-                            inputs: node.inputs,
-                            outputs: node.outputs,
-                            output_types: node.output_types,
-                            output_framing: node.output_framing,
-                            input_types: node.input_types,
-                            shared_memory_pool_size: node.shared_memory_pool_size,
-                        },
-                        envs: Some(envs),
-                        restart_policy: node.restart_policy,
-                        max_restarts: node.max_restarts,
-                        restart_delay: node.restart_delay,
-                        max_restart_delay: node.max_restart_delay,
-                        restart_window: node.restart_window,
-                        health_check_timeout: node.health_check_timeout,
-                        finish_grace_secs: node.finish_grace_secs,
-                    })
-                }
-            };
-
-            if resolved.contains_key(&node.id) {
-                eyre::bail!(
-                    "duplicate node ID `{}` — each node must have a unique `id`",
-                    node.id
-                );
+                })
             }
-            resolved.insert(
-                node.id.clone(),
-                ResolvedNode {
-                    id: node.id,
-                    name: node.name,
-                    description: node.description,
-                    // Merge the dataflow-level `env` into the per-node `env`.
-                    // Per-node keys win on conflict so a node can override a
-                    // shared default (e.g. global `RUST_LOG=info` with one
-                    // verbose node setting `RUST_LOG=debug`).
-                    env: merge_env(self.env.as_ref(), node.env),
-                    cpu_affinity: node.cpu_affinity,
-                    deploy: node.deploy,
-                    kind,
-                },
+        };
+
+        if resolved.contains_key(&node.id) {
+            eyre::bail!(
+                "duplicate node ID `{}` — each node must have a unique `id`",
+                node.id
             );
         }
-
-        Ok(resolved)
+        resolved.insert(
+            node.id.clone(),
+            ResolvedNode {
+                id: node.id,
+                name: node.name,
+                description: node.description,
+                // Merge the dataflow-level `env` into the per-node `env`.
+                // Per-node keys win on conflict so a node can override a
+                // shared default (e.g. global `RUST_LOG=info` with one
+                // verbose node setting `RUST_LOG=debug`).
+                env: merge_env(desc.env.as_ref(), node.env),
+                cpu_affinity: node.cpu_affinity,
+                deploy: node.deploy,
+                kind,
+            },
+        );
     }
 
-    fn visualize_as_mermaid(&self) -> eyre::Result<String> {
-        let resolved = self.resolve_aliases_and_set_defaults()?;
-        let flowchart = visualize::visualize_nodes(&resolved);
-        Ok(flowchart)
+    Ok(resolved)
+}
+
+impl DescriptorExt for Descriptor {
+    fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>> {
+        resolve_aliases_and_set_defaults_in_topology(self, &[])
     }
 
     fn visualize_as_mermaid_with_boundaries(
@@ -230,6 +303,12 @@ impl DescriptorExt for Descriptor {
         let resolved = self.resolve_aliases_and_set_defaults()?;
         let flowchart = visualize::visualize_nodes_with_boundaries(&resolved, boundaries);
         Ok(flowchart)
+    }
+
+    fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>) {
+        if let Some(over) = over {
+            self.exit_when_nodes_finish = Some(over);
+        }
     }
 
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor> {
@@ -261,23 +340,28 @@ impl DescriptorExt for Descriptor {
 }
 
 /// Merge dataflow-level `env` into a node's `env`, with per-node keys winning
-/// on conflict. Returns `None` when both inputs are empty so the resolved
-/// node serializes cleanly when no env vars are set anywhere.
+/// on conflict. Returns `None` when the merged result is empty so the resolved
+/// node serializes cleanly (no empty `env: {}` map) whenever no env vars are
+/// effectively set — regardless of whether the emptiness comes from the global
+/// map, the node map, or both (e.g. a node that declares `env: {}` with no
+/// dataflow-level env).
 fn merge_env(
     global: Option<&BTreeMap<String, EnvValue>>,
     node: Option<BTreeMap<String, EnvValue>>,
 ) -> Option<BTreeMap<String, EnvValue>> {
-    match (global, node) {
-        (None, node) => node,
-        (Some(global), None) if global.is_empty() => None,
-        (Some(global), None) => Some(global.clone()),
+    let merged = match (global, node) {
+        (None, None) => return None,
+        (None, Some(node)) => node,
+        (Some(global), None) => global.clone(),
         (Some(global), Some(node)) => {
             let mut merged = global.clone();
             // Per-node entries override global ones on key conflict.
             merged.extend(node);
-            Some(merged)
+            merged
         }
-    }
+    };
+    // Normalize an empty result to `None` regardless of which side was empty.
+    (!merged.is_empty()).then_some(merged)
 }
 
 pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
@@ -332,11 +416,6 @@ fn node_kind_mut(node: &mut Node) -> eyre::Result<NodeKindMut<'_>> {
             .as_mut()
             .map(NodeKindMut::Runtime)
             .ok_or_eyre("no operators"),
-        NodeKind::Custom(_) => node
-            .custom
-            .as_mut()
-            .map(NodeKindMut::Custom)
-            .ok_or_eyre("no custom"),
         NodeKind::Operator(_) => node
             .operator
             .as_mut()
@@ -382,9 +461,10 @@ pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
         path.to_owned()
     };
 
-    // Search path within current working directory
-    if let Ok(abs_path) = working_dir.join(&path).canonicalize() {
-        Ok(abs_path)
+    // Search path within current working directory.
+    let joined = working_dir.join(&path);
+    if joined.exists() {
+        absolutize_preserving_symlinks(&joined)
     // Otherwise resolve against the `uv`-managed environment first (when `uv`
     // is available), then fall back to the system `$PATH`.
     } else if which::which("uv").is_ok() {
@@ -460,13 +540,37 @@ fn confine(candidate: &Path, root: &Path) -> Result<PathBuf> {
     Ok(resolved)
 }
 
+/// Make an existing executable path absolute WITHOUT following symlinks.
+///
+/// Deliberately not `canonicalize()`: that resolves symlinks, and a
+/// virtualenv's `bin/python` is a symlink whose *location* is what
+/// CPython uses to discover `pyvenv.cfg`. Resolving it before exec runs
+/// the base interpreter with no venv, so imports that work in a shell
+/// fail under dora (dora-rs/dora#2918). `path::absolute` only prepends
+/// the cwd and drops `.` components; symlinks and `..` are left for the
+/// kernel to resolve at exec time, which matches shell behavior.
+///
+/// Errors if the path does not exist (`exists()` traverses symlinks, so
+/// a dangling link counts as missing — same outcome canonicalize gave).
+/// Shared by every [`resolve_path`] branch so the no-symlink-resolution
+/// contract cannot regress in one branch while the tests exercise
+/// another.
+fn absolutize_preserving_symlinks(path: &Path) -> Result<PathBuf> {
+    if !path.exists() {
+        bail!("path {} does not exist", path.display());
+    }
+    std::path::absolute(path)
+        .with_context(|| format!("failed to make path {} absolute", path.display()))
+}
+
 /// Resolve `path` against the `uv`-managed environment by running
 /// `uv run which <path>`, returning an absolute path.
 ///
 /// Unlike a fire-and-forget spawn, this waits for the child, checks its
-/// exit status (so a missing binary surfaces as an error), and canonicalizes
-/// the captured location so the result matches the absolute-path contract of
-/// the other [`resolve_path`] branches.
+/// exit status (so a missing binary surfaces as an error), and verifies
+/// the captured location exists — without resolving symlinks, which
+/// would reintroduce the venv bypass fixed for the working-dir branch
+/// (dora-rs/dora#2918).
 fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
     let which = if cfg!(windows) { "where" } else { "which" };
     let output = Command::new("uv")
@@ -486,9 +590,8 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .map(str::trim)
         .find(|line| !line.is_empty())
         .ok_or_else(|| eyre::eyre!("`uv run {which} {}` produced no output", path.display()))?;
-    PathBuf::from(resolved)
-        .canonicalize()
-        .with_context(|| format!("failed to canonicalize uv-resolved path {resolved}"))
+    absolutize_preserving_symlinks(Path::new(resolved))
+        .with_context(|| format!("uv-resolved path {resolved} is not usable"))
 }
 
 pub trait NodeExt {
@@ -511,26 +614,24 @@ impl NodeExt for Node {
         match (
             &self.path,
             &self.operators,
-            &self.custom,
             &self.operator,
             &self.ros2,
             &self.module,
         ) {
-            (None, None, None, None, None, None) => {
+            (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
-            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
-            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
+            (None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -543,7 +644,6 @@ pub enum NodeKind<'a> {
     Standard(&'a String),
     /// Dora runtime node
     Runtime(&'a RuntimeNode),
-    Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
@@ -560,7 +660,6 @@ enum NodeKindMut<'a> {
     },
     /// Dora runtime node
     Runtime(&'a mut RuntimeNode),
-    Custom(&'a mut CustomNode),
     Operator(&'a mut SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
@@ -568,6 +667,51 @@ enum NodeKindMut<'a> {
 
 #[cfg(test)]
 mod tests {
+    /// dora-rs/dora#2920: the command-line flag beats the descriptor in
+    /// BOTH directions, and its absence beats neither.
+    ///
+    /// The third state matters: if "flag omitted" meant `false`, a YAML
+    /// `exit_when_nodes_finish: true` would be overridden on every
+    /// invocation, and since `dora run` and `dora start` are the only
+    /// ways to start a dataflow, the descriptor field could never take
+    /// effect at all.
+    #[test]
+    fn exit_when_nodes_finish_override_semantics() {
+        use super::DescriptorExt;
+
+        let parse = |yaml: &str| -> Descriptor { serde_yaml::from_str(yaml).expect("parse") };
+        let with_setting = "exit_when_nodes_finish: true\nnodes:\n  - id: a\n    path: ./a\n";
+        let without = "nodes:\n  - id: a\n    path: ./a\n";
+
+        // Omitted: the descriptor decides, either way.
+        let mut d = parse(with_setting);
+        d.apply_exit_when_nodes_finish(None);
+        assert_eq!(
+            d.exit_when_nodes_finish,
+            Some(true),
+            "omitting the flag must not silently disable a policy the \
+             dataflow file asked for"
+        );
+
+        let mut d = parse(without);
+        d.apply_exit_when_nodes_finish(None);
+        assert_eq!(d.exit_when_nodes_finish, None, "and must not invent one");
+
+        // Given: it wins, including against an opposite descriptor value.
+        let mut d = parse(with_setting);
+        d.apply_exit_when_nodes_finish(Some(false));
+        assert_eq!(
+            d.exit_when_nodes_finish,
+            Some(false),
+            "`--exit-when-nodes-finish=false` must be able to turn OFF a \
+             policy the dataflow file turned on"
+        );
+
+        let mut d = parse(without);
+        d.apply_exit_when_nodes_finish(Some(true));
+        assert_eq!(d.exit_when_nodes_finish, Some(true));
+    }
+
     use super::*;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
@@ -597,6 +741,21 @@ mod tests {
     }
 
     #[test]
+    fn merge_env_normalizes_empty_node_map_to_none() {
+        // A node that declares `env: {}` with no dataflow-level env must
+        // resolve to `None`, not `Some({})`, matching the documented contract
+        // (and the `(Some(empty), None)` arm) so the resolved node serializes
+        // without an empty `env:` map.
+        assert!(merge_env(None, Some(env(&[]))).is_none());
+    }
+
+    #[test]
+    fn merge_env_normalizes_empty_global_and_node_maps_to_none() {
+        assert!(merge_env(Some(&env(&[])), Some(env(&[]))).is_none());
+        assert!(merge_env(Some(&env(&[])), None).is_none());
+    }
+
+    #[test]
     fn merge_env_per_node_overrides_global_on_conflict() {
         let global = env(&[("A", "global"), ("B", "global")]);
         let node_env = env(&[("A", "node"), ("C", "node")]);
@@ -604,6 +763,129 @@ mod tests {
         assert_eq!(merged.get("A"), Some(&EnvValue::String("node".into())));
         assert_eq!(merged.get("B"), Some(&EnvValue::String("global".into())));
         assert_eq!(merged.get("C"), Some(&EnvValue::String("node".into())));
+    }
+
+    fn resolved_input_mapping<'a>(
+        resolved: &'a BTreeMap<NodeId, ResolvedNode>,
+        node: &str,
+        input: &str,
+    ) -> &'a InputMapping {
+        let node = resolved
+            .get(&NodeId::from(node.to_string()))
+            .expect("node resolved");
+        let inputs = match &node.kind {
+            CoreNodeKind::Custom(n) => &n.run_config.inputs,
+            CoreNodeKind::Runtime(_) => panic!("expected custom node"),
+        };
+        &inputs
+            .get(&DataId::from(input.to_string()))
+            .expect("input present")
+            .mapping
+    }
+
+    #[test]
+    fn add_node_prefixes_single_operator_producer_input_via_topology() {
+        // A node added to a running dataflow via `AddNode` is resolved against a
+        // single-node descriptor. If its input references an existing
+        // single-`operator:` producer, the `op/` output prefix that
+        // whole-descriptor resolution applies must still be added — sourced
+        // from the surrounding topology — or the node subscribes to an output
+        // name nobody publishes and silently receives no data (#2877).
+        let topology: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: producer
+    operator:
+      python: producer.py
+      outputs:
+        - result
+",
+        )
+        .expect("parse topology");
+
+        let added: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: consumer
+    path: consumer
+    inputs:
+      reading: producer/result
+",
+        )
+        .expect("parse added node");
+
+        // With the topology the input is prefixed to the operator-qualified
+        // output name the runtime actually publishes under (`op/result`).
+        let resolved = resolve_aliases_and_set_defaults_in_topology(&added, &topology.nodes)
+            .expect("resolve in topology");
+        match resolved_input_mapping(&resolved, "consumer", "reading") {
+            InputMapping::User(m) => {
+                assert_eq!(m.source, NodeId::from("producer".to_string()));
+                assert_eq!(m.output, DataId::from("op/result".to_string()));
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
+
+        // Contrast: with no topology the producer is not in scope at all, so
+        // there is nothing to key the rewrite off and the name stays bare.
+        // That is the correct answer for the inputs given — which is exactly
+        // why the `AddNode` path had to stop resolving in isolation.
+        let resolved_isolated = added
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve isolated");
+        match resolved_input_mapping(&resolved_isolated, "consumer", "reading") {
+            InputMapping::User(m) => {
+                assert_eq!(m.output, DataId::from("result".to_string()));
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topology_lookup_prefers_the_node_being_added_over_a_same_id_topology_entry() {
+        // The lookup chains topology nodes *before* `desc`'s own, so a node id
+        // present in both resolves against the copy being added rather than a
+        // stale topology entry. Unreachable through `AddNode` today (duplicate
+        // ids are rejected up front and `RemoveNode` prunes the stored
+        // descriptor), but the precedence should not depend on that.
+        let topology: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: producer
+    operator:
+      id: stale
+      python: producer.py
+      outputs:
+        - result
+",
+        )
+        .expect("parse topology");
+
+        let added: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: producer
+    operator:
+      id: fresh
+      python: producer.py
+      outputs:
+        - result
+  - id: consumer
+    path: consumer
+    inputs:
+      reading: producer/result
+",
+        )
+        .expect("parse added nodes");
+
+        let resolved = resolve_aliases_and_set_defaults_in_topology(&added, &topology.nodes)
+            .expect("resolve in topology");
+        match resolved_input_mapping(&resolved, "consumer", "reading") {
+            InputMapping::User(m) => {
+                assert_eq!(m.output, DataId::from("fresh/result".to_string()));
+            }
+            other => panic!("expected user mapping, got {other:?}"),
+        }
     }
 
     #[test]
@@ -651,6 +933,32 @@ nodes:
     }
 
     #[test]
+    fn invalid_operator_id_prefix_errors_instead_of_panicking() {
+        // A single-operator node whose `operator.id` contains a character
+        // outside the `DataId` set (here a space) is accepted at parse time
+        // (`OperatorId` is unvalidated). When another node references its
+        // output, the resolver prefixes the output with the operator id. That
+        // used to build the qualified id via `DataId::from`, which panics on
+        // invalid characters and aborted `dora check`/`graph`/`build`. It must
+        // now surface as a clean `Err` instead.
+        let yaml = r#"
+nodes:
+  - id: producer
+    operator:
+      id: "bad id"
+      python: op.py
+      outputs: [result]
+  - id: consumer
+    path: ./consumer
+    inputs:
+      x: producer/result
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let result = desc.resolve_aliases_and_set_defaults();
+        assert!(result.is_err(), "expected a clean descriptor error, got Ok");
+    }
+
+    #[test]
     fn resolve_path_errors_for_nonexistent_binary() {
         // Regression for #2016: the `uv` fallback previously spawned
         // `uv run which <path>` fire-and-forget and returned the original
@@ -662,6 +970,77 @@ nodes:
         assert!(
             result.is_err(),
             "expected Err for a binary that exists nowhere, got {result:?}"
+        );
+    }
+
+    /// dora-rs/dora#2918: resolving a node path must NOT follow symlinks.
+    ///
+    /// A virtualenv's `bin/python` is a symlink to the base interpreter,
+    /// and CPython's venv discovery hinges on that: it looks for
+    /// `pyvenv.cfg` relative to the path it was *invoked* as, not the
+    /// symlink's target. Canonicalizing before exec therefore runs the
+    /// base interpreter with no venv — imports that work in a shell
+    /// (`.venv/bin/python -c "import numpy"`) fail under dora with
+    /// `ModuleNotFoundError`.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_preserves_symlinks() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let target = tmp.path().join("base-interpreter.bin");
+        std::fs::write(&target, b"x").unwrap();
+        let link = tmp.path().join("venv-python.bin");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        // relative source resolved against the working dir
+        let resolved = resolve_path("venv-python.bin", tmp.path()).unwrap();
+        assert!(resolved.is_absolute());
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "resolve_path followed the symlink: {} — venv discovery \
+             (pyvenv.cfg) is keyed off the symlink location, so execing \
+             the target bypasses the venv",
+            resolved.display()
+        );
+
+        // absolute source (the shape from the issue: `path: /…/.venv/bin/python`)
+        let resolved = resolve_path(link.to_str().unwrap(), Path::new("/")).unwrap();
+        assert!(
+            resolved.ends_with("venv-python.bin"),
+            "absolute symlink path was canonicalized: {}",
+            resolved.display()
+        );
+
+        // `..` components survive too: they are resolved by the kernel at
+        // exec time, AFTER any symlinked directories — which is the
+        // shell-matching semantic. A lexical "cleanup" that collapses
+        // them would resolve differently through symlinked dirs.
+        std::fs::create_dir(tmp.path().join("sub")).unwrap();
+        let resolved = resolve_path("sub/../venv-python.bin", tmp.path()).unwrap();
+        assert!(
+            resolved.ends_with("sub/../venv-python.bin"),
+            "`..` was normalized away: {}",
+            resolved.display()
+        );
+    }
+
+    /// A dangling symlink is "missing": `exists()` traverses the link, so
+    /// resolution falls through to the uv/$PATH branches and ultimately
+    /// errors — the same outcome the old `canonicalize()` failure gave.
+    /// Pins the branch boundary so a switch to `symlink_metadata()`
+    /// (which would treat the dangling link as present and exec a
+    /// guaranteed-ENOENT path) doesn't slip in silently.
+    #[test]
+    #[cfg(unix)]
+    fn resolve_path_treats_dangling_symlink_as_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let link = tmp.path().join("dangling-2918-regression.bin");
+        std::os::unix::fs::symlink(tmp.path().join("no-such-target"), &link).unwrap();
+
+        let result = resolve_path("dangling-2918-regression.bin", tmp.path());
+        assert!(
+            result.is_err(),
+            "a dangling symlink must not resolve (nothing on uv/$PATH matches \
+             this name either), got {result:?}"
         );
     }
 

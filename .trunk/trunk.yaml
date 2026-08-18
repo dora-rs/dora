@@ -10,10 +10,25 @@ version: 0.1
 # these are the names it waits on before merging. Names must match the
 # GitHub Actions check names exactly.
 #
+# These statuses are produced by `push: trunk-merge/**` triggers on the
+# batch branch, not by a draft PR. Whether Trunk *also* opens a draft PR
+# per batch is the dashboard's "Draft Pull Request Creation" setting
+# (Settings > Repositories > dora-rs/dora > Merge Queue); the workflows
+# report either way, so the setting is a noise choice rather than a
+# correctness one. Leaving it on puts a draft PR in the PR list for every
+# batch, retry, and bisection, and double-runs the cheap tier on each
+# batch SHA — which is why it should stay off.
+#
 # Two tiers, mirroring `.github/workflows/ci.yml`:
 #   - Cheap checks run on every PR (gate queue entry via branch protection).
-#   - Expensive checks are guarded by `if: ... startsWith(github.head_ref,
-#     'trunk-merge/')` and run only on the batch branch.
+#   - Expensive checks are guarded by `if: github.event_name !=
+#     'pull_request'` and so run on the batch branch, not on dev PRs.
+#
+# A required check must be produced on *every* batch branch, or the queue
+# waits forever on a name that never reports. That rules out workflow-level
+# `paths:` filters (a path-filtered workflow emits no check run), which is
+# why `pip-release all green` and `find_package smoke all green` are
+# `if: always()` aggregator jobs in workflows with no `paths:` filter.
 merge:
   required_statuses:
     # Cheap (always run)
@@ -30,3 +45,4 @@ merge:
     - Semantic contract tests
     - Benchmark regression check
     - pip-release all green
+    - find_package smoke all green

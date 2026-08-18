@@ -12,12 +12,7 @@ fn main() -> eyre::Result<()> {
 
     while let Some(event) = events.recv() {
         match event {
-            Event::Input {
-                id,
-                metadata,
-                data: _,
-                ..
-            } if id.as_str() == "tick" => {
+            Event::Input { id, metadata, .. } if id.as_str() == "tick" => {
                 let payload = counter.into_arrow();
                 node.send_output(output.clone(), metadata.parameters, payload)?;
                 counter = counter.wrapping_add(1);

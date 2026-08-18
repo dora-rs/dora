@@ -1,0 +1,33 @@
+# GPU-to-CPU cross-machine throughput test.
+# Sender (GPU) on machine A, receiver (CPU) on machine B.
+nodes:
+  - id: sender_node
+    _unstable_deploy:
+      machine: A
+      working_dir: libraries/extensions/tensor-pool/examples  # relative to the daemon's cwd (repo root), per the multiple-daemons convention
+    build: pip install torch numpy
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+    env:
+      cross_machine: "B"
+      sender_device: cuda:0
+      receiver_device: cpu
+      message_num: 100
+
+  - id: receiver_node
+    _unstable_deploy:
+      machine: B
+      working_dir: libraries/extensions/tensor-pool/examples  # relative to the daemon's cwd (repo root), per the multiple-daemons convention
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy tqdm
+    path: receiver.py
+    inputs:
+      data: sender_node/data
+    outputs:
+      - next_require
+    env:
+      sender_device: cuda:0
+      receiver_device: cpu
+      message_num: 100

@@ -119,7 +119,7 @@ impl Executable for Init {
         println!("Wrote {}.", manifest_path.display());
         println!(
             "Next steps:\n  \
-             1. fill in the typed inputs/outputs (see `types/std/` for available type URNs)\n  \
+             1. fill in the typed inputs/outputs (see `libraries/core/types/std/` for available type URNs)\n  \
              2. check it: dora validate --node-manifest {}",
             manifest_path.display()
         );
@@ -343,7 +343,7 @@ runtime: {runtime}
 entrypoint: {entrypoint}{detected_note}
 
 # Typed contracts: declare your ports so dataflows are checked at compose
-# time. Type URNs come from the standard library (types/std/) or your own
+# time. Type URNs come from the standard library (std/<category>/v1/<Type>) or your own
 # `types:` definitions. Sources may have zero inputs; sinks zero outputs.
 # (When uncommenting the examples, also remove the `{{}}` placeholder.)
 inputs: {{}}

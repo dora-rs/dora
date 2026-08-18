@@ -15,6 +15,6 @@ repository.workspace = true
 arrow = { workspace = true }
 eyre = { workspace = true }
 tracing = { workspace = true }
-half = "2.5.0"
+half = "2.7.1"
 num = "0.4.3"
-chrono = "0.4.39"
+chrono = "0.4.45"

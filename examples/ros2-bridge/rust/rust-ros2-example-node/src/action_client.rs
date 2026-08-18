@@ -1,42 +1,17 @@
-use futures::StreamExt;
 use std::time::{Duration, Instant};
 
-use dora_node_api::{
-    self, DoraNode, Event,
-    merged::{MergeExternal, MergedEvent},
-};
+use dora_node_api::{DoraNode, Event};
 use dora_ros2_bridge::{
-    messages::{
-        self,
-        example_interfaces::action::{Fibonacci, FibonacciGoal},
-    },
+    messages::example_interfaces::action::{Fibonacci, FibonacciGoal},
     ros2_client::{
         self, ActionTypes, NodeOptions,
         action::{GoalId, GoalStatusEnum},
+        service::RmwRequestId,
     },
     rustdds::{self, policy},
 };
 use eyre::{Context, eyre};
 use futures::task::SpawnExt;
-
-#[derive(Debug)]
-enum ActionEvent<T>
-where
-    T: ActionTypes,
-{
-    Result {
-        id: GoalId,
-        result: Result<(GoalStatusEnum, T::ResultType), ros2_client::service::CallServiceError<()>>,
-    },
-    Feedback {
-        id: GoalId,
-        feedback: rustdds::dds::result::ReadResult<T::FeedbackType>,
-    },
-    Status {
-        id: GoalId,
-        status: rustdds::dds::result::ReadResult<messages::action_msgs::msg::GoalStatus>,
-    },
-}
 
 fn main() -> eyre::Result<()> {
     let mut ros_node = init_ros_node()?;
@@ -53,18 +28,13 @@ fn main() -> eyre::Result<()> {
     })
     .context("failed to spawn ros2 spinner")?;
 
-    let client = create_action_client(&mut ros_node)?; // should be after the spiner started
-    let (client_stream, mut client_stream_handle) =
-        futures_concurrency_dynamic::dynamic_merge_with_handle::<ActionEvent<Fibonacci>>();
+    let mut client = create_action_client(&mut ros_node)?; // should be after the spiner started
     let (_node, dora_events) = DoraNode::init_from_env()?;
-    let merged_events = dora_events.merge_external(Box::pin(client_stream));
-    let mut events = futures::executor::block_on_stream(merged_events);
+    let mut events = futures::executor::block_on_stream(dora_events);
 
-    // Fail fast instead of hanging: the upstream get_result round-trip can wedge
-    // the node forever (it never returns on ~20% of cold starts). The dora timer
-    // ticks at 2 Hz, so this loop always wakes to check the deadline.
     let deadline = Instant::now() + Duration::from_secs(60);
-    let mut sent = false;
+    let mut sent_goal: Option<GoalId> = None;
+    let mut pending_results: Vec<RmwRequestId> = Vec::new();
     loop {
         if Instant::now() >= deadline {
             eyre::bail!("timed out waiting for a terminal Fibonacci action result");
@@ -75,87 +45,92 @@ fn main() -> eyre::Result<()> {
         };
 
         match event {
-            MergedEvent::Dora(event) => match event {
-                Event::Input {
-                    id,
-                    metadata: _,
-                    data: _,
-                } => match id.as_str() {
-                    "tick" => {
-                        if !sent {
-                            let goal = FibonacciGoal { order: 10 };
-                            futures::executor::block_on(async {
-                                if let Ok((goal_id, goal_resp)) = client.async_send_goal(goal).await
-                                {
-                                    println!("goal_resp: {:?}", goal_resp);
-                                    if goal_resp.accepted {
-                                        let feedback_stream =
-                                            client.feedback_stream(goal_id).map(move |feedback| {
-                                                ActionEvent::Feedback {
-                                                    id: goal_id,
-                                                    feedback,
-                                                }
-                                            });
-                                        let status_stream =
-                                            client.status_stream(goal_id).map(move |status| {
-                                                ActionEvent::Status {
-                                                    id: goal_id,
-                                                    status: status.map(|status| status.into()),
-                                                }
-                                            });
-
-                                        client_stream_handle.push(feedback_stream);
-                                        client_stream_handle.push(result_stream(&client, goal_id));
-                                        client_stream_handle.push(status_stream);
-                                        sent = true;
-                                    }
-                                }
-                            });
+            Event::Input {
+                id,
+                metadata: _,
+                data: _,
+            } => match id.as_str() {
+                "tick" => {
+                    if sent_goal.is_none() {
+                        let goal = FibonacciGoal { order: 10 };
+                        let (goal_id, goal_resp) = futures::executor::block_on(
+                            client.async_send_goal(goal),
+                        )
+                        .map_err(|err| eyre::eyre!("failed to send Fibonacci goal: {err:?}"))?;
+                        println!("goal_resp: {:?}", goal_resp);
+                        if !goal_resp.accepted {
+                            eyre::bail!("Fibonacci goal was rejected by the action server");
                         }
+                        sent_goal = Some(goal_id);
                     }
-                    other => eprintln!("Ignoring unexpected input `{other}`"),
-                },
-                Event::Stop(_) => println!("Received stop"),
-                other => eprintln!("Received unexpected input: {other:?}"),
-            },
-            MergedEvent::External(action_event) => match action_event {
-                ActionEvent::Result { id, result } => match result {
-                    Ok((GoalStatusEnum::Unknown, _)) => {
-                        // there are tons of unknown status :(
-                        client_stream_handle.push(result_stream(&client, id));
+
+                    if let Some(goal_id) = sent_goal
+                        && pending_results.is_empty()
+                    {
+                        pending_results.push(request_result(&client, goal_id)?);
                     }
-                    Ok((_, result)) => {
-                        println!("status: {:?}", result);
-                        break;
+
+                    match receive_result(&mut client, &mut pending_results)? {
+                        Some((GoalStatusEnum::Unknown, _)) => {}
+                        Some((GoalStatusEnum::Succeeded, result)) => {
+                            println!("status: {:?}", result);
+                            break;
+                        }
+                        Some((GoalStatusEnum::Canceled, _)) => {
+                            eyre::bail!("Fibonacci goal was canceled");
+                        }
+                        Some((GoalStatusEnum::Aborted, _)) => {
+                            eyre::bail!("Fibonacci goal was aborted");
+                        }
+                        Some((status, _)) => {
+                            println!("Fibonacci goal still running with status: {status:?}");
+                        }
+                        None => {}
                     }
-                    Err(err) => eyre::bail!("get_result service call failed: {err:?}"),
-                },
-                other => {
-                    println!("{:?}", other);
                 }
+                other => eprintln!("Ignoring unexpected input `{other}`"),
             },
+            Event::Stop(_) => println!("Received stop"),
+            other => eprintln!("Received unexpected input: {other:?}"),
         }
     }
 
     Ok(())
 }
 
-fn result_stream<T>(
+fn request_result<T>(
     client: &ros2_client::action::ActionClient<T>,
     goal_id: GoalId,
-) -> impl futures::stream::Stream<Item = ActionEvent<T>>
+) -> eyre::Result<RmwRequestId>
 where
     T: ActionTypes,
     <T as ActionTypes>::ResultType: 'static,
 {
-    let fut = client.async_request_result(goal_id);
-    futures::stream::once(async move {
-        ActionEvent::Result {
-            id: goal_id,
-            result: fut.await,
+    client
+        .request_result(goal_id)
+        .map_err(|err| eyre::eyre!("failed to request Fibonacci result: {err:?}"))
+}
+
+fn receive_result<T>(
+    client: &mut ros2_client::action::ActionClient<T>,
+    pending_results: &mut Vec<RmwRequestId>,
+) -> eyre::Result<Option<(GoalStatusEnum, T::ResultType)>>
+where
+    T: ActionTypes,
+    <T as ActionTypes>::ResultType: 'static,
+{
+    loop {
+        match client.result_client().receive_response() {
+            Ok(Some((incoming_req_id, response))) => {
+                if let Some(pos) = pending_results.iter().position(|id| *id == incoming_req_id) {
+                    pending_results.remove(pos);
+                    break Ok(Some((response.status, response.result)));
+                }
+            }
+            Ok(None) => break Ok(None),
+            Err(err) => eyre::bail!("failed to receive Fibonacci result: {err:?}"),
         }
-    })
-    .fuse()
+    }
 }
 
 fn init_ros_node() -> eyre::Result<ros2_client::Node> {
@@ -201,7 +176,7 @@ fn create_action_client(
     println!("wait for fibonacci action server");
     let server_ready = async {
         for _ in 0..10 {
-            let ready = fib_client.goal_client().wait_for_service(&ros_node);
+            let ready = fib_client.goal_client().wait_for_service(ros_node);
             futures::pin_mut!(ready);
             let timeout = futures_timer::Delay::new(Duration::from_secs(2));
             match futures::future::select(ready, timeout).await {

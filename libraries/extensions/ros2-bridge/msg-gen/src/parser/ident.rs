@@ -1,10 +1,10 @@
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
-    character::complete::{alphanumeric0, char, one_of},
+    character::complete::{char, one_of, satisfy},
     combinator::{opt, recognize},
-    multi::{many1, separated_list0, separated_list1},
-    sequence::{pair, tuple},
+    multi::{many0_count, many1, separated_list0, separated_list1},
+    sequence::pair,
 };
 
 fn upperalpha(s: &str) -> IResult<&str, char> {
@@ -20,30 +20,42 @@ fn numeric(s: &str) -> IResult<&str, char> {
 }
 
 pub fn package_name(s: &str) -> IResult<&str, &str> {
-    recognize(tuple((
+    recognize((
         loweralpha,
         opt(char('_')),
         separated_list1(char('_'), many1(alt((loweralpha, numeric)))),
-    )))(s)
+    ))
+    .parse(s)
 }
 
 pub fn member_name(s: &str) -> IResult<&str, &str> {
-    recognize(tuple((
+    recognize((
         loweralpha,
         opt(char('_')),
         separated_list0(char('_'), many1(alt((loweralpha, numeric)))),
-    )))(s)
+    ))
+    .parse(s)
 }
 
 pub fn message_name(s: &str) -> IResult<&str, &str> {
-    recognize(pair(upperalpha, alphanumeric0))(s)
+    // Note: consume the trailing alphanumerics char by char instead of using
+    // `alphanumeric0`. In nom 8.0.0, `&str`'s `split_at_position_complete`
+    // returns a remainder pointing at the *start* of the input when the parser
+    // consumes everything, which makes the offset-based `recognize` return an
+    // empty slice.
+    recognize(pair(
+        upperalpha,
+        many0_count(satisfy(|c| c.is_ascii_alphanumeric())),
+    ))
+    .parse(s)
 }
 
 pub fn constant_name(s: &str) -> IResult<&str, &str> {
     recognize(separated_list1(
         char('_'),
         many1(alt((upperalpha, numeric))),
-    ))(s)
+    ))
+    .parse(s)
 }
 
 #[cfg(test)]

@@ -14,6 +14,6 @@ repository.workspace = true
 proc-macro = true
 
 [dependencies]
-syn = { version = "1.0.81", features = ["full"] }
-quote = "1.0.10"
-proc-macro2 = "1.0.32"
+syn = { version = "2.0.118", features = ["full"] }
+quote = "1.0.46"
+proc-macro2 = "1.0.106"

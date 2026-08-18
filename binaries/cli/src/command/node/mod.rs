@@ -22,6 +22,7 @@ pub(crate) fn parse_node_port(s: &str) -> eyre::Result<(NodeId, DataId)> {
 mod info;
 mod list;
 mod remove;
+mod replace;
 mod restart;
 mod stop;
 
@@ -31,6 +32,7 @@ pub use disconnect::Disconnect;
 pub use info::Info;
 pub use list::List;
 pub use remove::Remove;
+pub use replace::Replace;
 pub use restart::Restart;
 pub use stop::Stop;
 
@@ -41,6 +43,7 @@ pub enum Node {
     Info(Info),
     Add(Add),
     Remove(Remove),
+    Replace(Replace),
     Connect(Connect),
     Disconnect(Disconnect),
     Restart(Restart),
@@ -54,6 +57,7 @@ impl Executable for Node {
             Node::Info(cmd) => cmd.execute(),
             Node::Add(cmd) => cmd.execute(),
             Node::Remove(cmd) => cmd.execute(),
+            Node::Replace(cmd) => cmd.execute(),
             Node::Connect(cmd) => cmd.execute(),
             Node::Disconnect(cmd) => cmd.execute(),
             Node::Restart(cmd) => cmd.execute(),

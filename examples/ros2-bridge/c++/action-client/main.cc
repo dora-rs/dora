@@ -35,6 +35,7 @@ int main()
 
     client->wait_for_action(node);
     std::unique_ptr<::rust::Box<::ActionGoalId>> goal_id;
+    bool result_requested = false;
     for(int count = 0; count < 3;) {
         auto event = merged_events.next();
         if (event.is_dora()) { // Event from Dora
@@ -47,8 +48,12 @@ int main()
                     auto goal = example_interfaces::Fibonacci_Goal{ .order = 10 + count };
                     goal_id = std::make_unique<::rust::Box<::ActionGoalId>>(
                         client->send_goal(goal));
+                    result_requested = false;
                     std::cout << "Goal have been sent" << std::endl;
+                }
+                if (!result_requested) {
                     client->request_result(*goal_id);
+                    result_requested = true;
                 }
             } else if (ty == DoraEventType::Stop || ty == DoraEventType::AllInputsClosed) {
                 std::cout << "Received stop event" << std::endl;
@@ -71,11 +76,16 @@ int main()
             if(status == ::ActionStatusEnum::Succeeded) {
                 std::cout << "Goal succeeded" << std::endl;
                 goal_id = nullptr;
+                result_requested = false;
                 count += 1;
             } else if(status == ::ActionStatusEnum::Aborted) {
                 std::cerr << "Goal aborted" << std::endl;
+                return 1;
             } else if(status == ::ActionStatusEnum::Canceled) {
                 std::cerr << "Goal canceled" << std::endl;
+                return 1;
+            } else {
+                result_requested = false;
             }
         } else if (client->matches_status(event)) { // Feedback Event from ActionClient
             std::cout << "Get status event" << std::endl;

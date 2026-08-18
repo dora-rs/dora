@@ -86,7 +86,7 @@
 ### Ecosystem
 
 - **Communication patterns** -- built-in [service (request/reply)](docs/patterns.md#2-service-requestreply), [action (goal/feedback/result)](docs/patterns.md#3-action-goalfeedbackresult), and [streaming (session/segment/chunk)](docs/patterns.md#4-streaming-sessionsegmentchunk) patterns via well-known metadata keys; no daemon or YAML changes required
-- **ROS2 bridge** -- bidirectional interop with ROS2 topics, services, and actions; QoS mapping; Arrow-native type conversion
+- **ROS2 bridge** -- bidirectional topics, services, and actions over DDS or native `rmw_zenoh_cpp`-compatible Zenoh; QoS mapping; Arrow-native type conversion
 - **Node Hub (package manager)** -- pull a reusable node into a dataflow with one line -- `hub: dora-yolo@^0.5` -- with cargo-style versioned resolution, reproducible lockfiles (`--locked`), and typed contracts checked at build time; backed by a git-based [public catalog](https://github.com/dora-rs/dora-hub/) of ready-made nodes for cameras, YOLO, LLMs, TTS, and more. See the [Hub guide](guide/src/hub/overview.md) *(unstable)*
 - **In-process operators** -- lightweight functions that run inside a shared runtime, avoiding per-node process overhead for simple transformations
 
@@ -423,7 +423,6 @@ binaries/
 libraries/
   core/                 # Descriptor parsing, build utilities
   message/              # Inter-component message types
-  shared-memory-server/ # Zero-copy IPC
   arrow-convert/        # Arrow data conversion
   recording/            # .drec recording format
   log-utils/            # Log parsing, merging, formatting
@@ -593,6 +592,7 @@ cargo build -p dora-cli
 ```bash
 # Run all tests
 cargo test --all \
+  --exclude dora-runtime-python \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python

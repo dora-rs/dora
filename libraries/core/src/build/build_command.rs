@@ -33,6 +33,18 @@ struct LocalDoraPythonSource {
     fingerprint: String,
 }
 
+/// Split a (possibly multi-line) `build:` command into the individual command
+/// lines to execute.
+///
+/// Each line is spawned as a separate command, so blank or whitespace-only
+/// lines carry no program to run. They are skipped here rather than passed on
+/// to the splitter, where an empty token stream would otherwise abort the whole
+/// build with `build command is empty` — a surprising failure for a multi-line
+/// block that merely uses blank lines for readability.
+fn build_command_lines(build: &str) -> impl Iterator<Item = &str> {
+    build.lines().filter(|line| !line.trim().is_empty())
+}
+
 pub async fn run_build_command(
     build: &str,
     working_dir: &Path,
@@ -43,8 +55,7 @@ pub async fn run_build_command(
 ) -> eyre::Result<()> {
     std::fs::create_dir_all(working_dir).context("failed to create working directory")?;
 
-    let lines = build.lines().collect::<Vec<_>>();
-    for build_line in lines {
+    for build_line in build_command_lines(build) {
         let mut split = splitty::split_unquoted_whitespace(build_line).unwrap_quotes(true);
 
         let program = split
@@ -301,10 +312,20 @@ async fn ensure_managed_python_runtime(
         )
     })?;
     if !exit_status.success() {
-        return Err(eyre!(
+        let mut err = eyre!(
             "managed Python runtime installation `{}` returned {exit_status}",
             python_env_dir.display()
-        ));
+        );
+        if local_source.is_none() {
+            err = err.wrap_err(format!(
+                "failed to install dora-rs=={} from PyPI. If you are running a \
+                 pre-release/dev build of dora, that version is not published — \
+                 either run the dataflow from inside a dora source checkout, or \
+                 set DORA_PYTHON_RUNTIME_SOURCE=<dora-repo>/apis/python/node",
+                env!("CARGO_PKG_VERSION")
+            ));
+        }
+        return Err(err);
     }
 
     if let Some(source) = local_source {
@@ -344,6 +365,18 @@ async fn managed_python_can_import_dora(
 /// directory containing it if found (so in-tree dev workflows install the local Python
 /// package instead of pulling from PyPI).
 fn local_dora_python_package_dir(working_dir: &Path) -> Option<PathBuf> {
+    // Explicit override for dataflows outside a dora source checkout running
+    // against a pre-release CLI whose dora-rs version is not on PyPI.
+    if let Ok(source) = std::env::var("DORA_PYTHON_RUNTIME_SOURCE") {
+        let package_dir = PathBuf::from(source);
+        if package_dir.join("pyproject.toml").is_file() {
+            return Some(package_dir);
+        }
+        tracing::warn!(
+            "DORA_PYTHON_RUNTIME_SOURCE `{}` has no pyproject.toml — ignoring override",
+            package_dir.display()
+        );
+    }
     working_dir.ancestors().find_map(|dir| {
         let package_dir = dir.join("apis").join("python").join("node");
         package_dir
@@ -745,7 +778,7 @@ async fn forward_build_output<R1, R2>(
 #[cfg(test)]
 mod tests {
     use super::{
-        cleanup_stale_local_dora_python_wheel_dirs, dora_runtime_install_args,
+        build_command_lines, cleanup_stale_local_dora_python_wheel_dirs, dora_runtime_install_args,
         find_local_dora_python_wheel, forward_build_output, local_dora_python_package_dir,
         local_dora_python_shared_wheel_dir, local_dora_python_source_fingerprint,
         local_dora_python_wheel_root, local_runtime_marker_matches,
@@ -753,6 +786,29 @@ mod tests {
     };
     use std::{ffi::OsString, fs, time::Duration};
     use tokio::io::{AsyncWriteExt, BufReader};
+
+    #[test]
+    fn build_command_lines_skips_blank_and_whitespace_lines() {
+        let build = "pip install -r requirements.txt\n\n  \t \nmaturin develop\n";
+        let lines: Vec<&str> = build_command_lines(build).collect();
+        assert_eq!(
+            lines,
+            vec!["pip install -r requirements.txt", "maturin develop"]
+        );
+    }
+
+    #[test]
+    fn build_command_lines_single_line_is_unchanged() {
+        assert_eq!(
+            build_command_lines("cargo build --release").collect::<Vec<_>>(),
+            vec!["cargo build --release"]
+        );
+    }
+
+    #[test]
+    fn build_command_lines_empty_input_yields_no_commands() {
+        assert!(build_command_lines("\n   \n\t\n").next().is_none());
+    }
 
     #[test]
     fn local_runtime_install_discovers_workspace_package() {

@@ -1,11 +1,11 @@
 use super::{Executable, default_tracing};
+use crate::common::parse_duration;
 use crate::common::{
     CoordinatorOptions, expect_reply, handle_dataflow_result, query_running_dataflows,
     send_control_request,
 };
 use crate::ws_client::WsSession;
 use dora_message::cli_to_coordinator::ControlRequest;
-use duration_str::parse;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -30,14 +30,15 @@ pub struct Stop {
     /// Specifically, it does the following:
     /// 1. Sends `Event::Stop` to all nodes of the dataflow.
     /// 2. After DURATION, performs a soft kill (sending SIGTERM, or Ctrl-Break on Windows).
-    /// 3. If the dataflow is still running after DURATION * 0.5, terminates all its processes.
+    /// 3. If the dataflow is still running after a further DURATION / 2 (i.e. DURATION * 1.5 in
+    ///    total), forcibly terminates (SIGKILL) all its processes.
     #[clap(
         long,
         value_name = "DURATION",
         group = "strategy",
         verbatim_doc_comment
     )]
-    #[arg(value_parser = parse)]
+    #[arg(value_parser = parse_duration)]
     grace_duration: Option<Duration>,
     /// Force stop the dataflow by immediately terminating all its processes
     #[clap(short, long, action, group = "strategy")]
@@ -121,7 +122,7 @@ fn stop_dataflow_interactive(
     Ok(())
 }
 
-fn stop_dataflow(
+pub(crate) fn stop_dataflow(
     uuid: Uuid,
     grace_duration: Option<Duration>,
     force: bool,

@@ -98,6 +98,10 @@ pub(crate) struct DaemonConnection {
     pub(crate) sender: mpsc::Sender<String>,
     /// Shared with the ws_daemon handler task to resolve correlation-based replies.
     pub(crate) pending_replies: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    /// The daemon's WS peer address as seen by the coordinator (set at
+    /// registration). Lets other daemons reach this daemon's direct-TCP
+    /// memory-pool data listener.
+    pub(crate) peer_addr: Option<std::net::SocketAddr>,
     pub(crate) last_heartbeat: Instant,
     pub(crate) labels: BTreeMap<String, String>,
     /// Latest fault tolerance stats from this daemon (updated on each heartbeat).
@@ -113,6 +117,15 @@ pub(crate) struct DaemonConnection {
     pub(crate) connection_id: Uuid,
 }
 
+/// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
+/// daemon replies with a WS-level `error` instead of a result. `deny_unknown_fields`
+/// keeps it from ever matching a real `DaemonCoordinatorReply` payload.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WsErrorEnvelope {
+    ws_error: String,
+}
+
 impl DaemonConnection {
     pub(crate) fn new(
         sender: mpsc::Sender<String>,
@@ -122,6 +135,7 @@ impl DaemonConnection {
         Self {
             sender,
             pending_replies,
+            peer_addr: None,
             last_heartbeat: Instant::now(),
             labels,
             ft_stats: None,
@@ -141,8 +155,8 @@ impl DaemonConnection {
 
     /// Send a message to the daemon and wait for a reply.
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
@@ -180,13 +194,25 @@ impl DaemonConnection {
                 }
             };
 
+        // A WS-level failure on the daemon side arrives as a `{"ws_error": ...}`
+        // envelope (see `handle_daemon_response` in `ws_daemon.rs`). It matches
+        // no `DaemonCoordinatorReply` variant, so returning it verbatim would
+        // make every caller fail with an opaque "failed to deserialize ... reply"
+        // and drop the daemon's real error text (it would survive only in a log
+        // line). Surface it as an `Err` carrying that text instead.
+        if let Ok(WsErrorEnvelope { ws_error }) =
+            serde_json::from_str::<WsErrorEnvelope>(&response_json)
+        {
+            return Err(eyre!("daemon returned error: {ws_error}"));
+        }
+
         Ok(response_json.into_bytes())
     }
 
     /// Send a message to the daemon without waiting for a reply (fire-and-forget).
     ///
-    /// Embeds raw JSON bytes directly to preserve u128 fidelity
-    /// for uhlc::ID inside timestamps.
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send(&self, message: &[u8]) -> eyre::Result<()> {
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
@@ -228,6 +254,22 @@ pub(crate) struct RunningDataflow {
     /// IDs of daemons that are waiting until all nodes are started.
     pub(crate) pending_daemons: BTreeSet<DaemonId>,
     pub(crate) exited_before_subscribe: Vec<NodeId>,
+    /// Whether the ready barrier has already been broadcast for this
+    /// dataflow.
+    ///
+    /// The broadcast goes to `daemons` at the moment it fires, so a daemon
+    /// that is disconnected then never receives it — and nothing replays it
+    /// on reconnect, leaving every node it owns parked in `init_from_env()`
+    /// forever (dora-rs/dora#2998). Remembering the release lets the
+    /// reconnect path re-send it to just that daemon.
+    ///
+    /// Mirrored into the persisted record (`make_record`) and restored by
+    /// [`RunningDataflow::recovered`], because this entry does not survive
+    /// orphan reclaim or a coordinator restart. It cannot be left in memory
+    /// only and reconstructed later from a fresh `ReadyOnDaemon`: the daemon
+    /// never sends one, since `PendingNodes::reported_init_to_coordinator` is
+    /// set once and never reset.
+    pub(crate) ready_barrier_released: bool,
     pub(crate) nodes: BTreeMap<NodeId, ResolvedNode>,
     /// Maps each node to the daemon it's running on
     pub(crate) node_to_daemon: BTreeMap<NodeId, DaemonId>,
@@ -379,10 +421,19 @@ impl RunningDataflow {
 
     /// Prune log entries that all daemons have acknowledged.
     pub(crate) fn prune_state_log(&mut self) {
+        // Gate pruning on the acks of *live* daemons only. A daemon that
+        // disconnects is removed from `self.daemons`, but its (now frozen)
+        // `daemon_ack_sequence` entry is deliberately retained for a possible
+        // reclaim. Counting that stale entry here would pin `min_ack` at the
+        // disconnected daemon's last ack forever, so the log could never shrink
+        // — it would grow until the `MAX_STATE_LOG_ENTRIES` hard cap, forcing a
+        // full param replay for *every* daemon (including healthy ones). If a
+        // disconnected daemon reconnects after its missed entries were pruned,
+        // `state_log_delta` already falls back to a full replay for it.
         let min_ack = self
-            .daemon_ack_sequence
-            .values()
-            .copied()
+            .daemons
+            .iter()
+            .map(|daemon| self.daemon_ack_sequence.get(daemon).copied().unwrap_or(0))
             .min()
             .unwrap_or(0);
         self.state_log.retain(|entry| entry.sequence > min_ack);
@@ -393,6 +444,18 @@ impl RunningDataflow {
     /// should fall back to a full param replay).
     pub(crate) fn state_log_delta(&self, last_ack: u64) -> Option<Vec<StateCatchUpEntry>> {
         if self.state_log.is_empty() {
+            // An empty log only means "up to date" when nothing newer than
+            // `last_ack` ever existed. If `last_ack < state_log_sequence`, the
+            // entries the daemon still needs (`last_ack+1..=state_log_sequence`)
+            // were pruned away — the daemon must fall back to a full replay,
+            // not be told it is current. This happens on relink: a daemon that
+            // was never seeded into `daemon_ack_sequence` queries with
+            // `last_ack == 0` after peers acked and drained the log
+            // (dora-rs/dora#2601). It also covers a disconnected daemon whose
+            // stale ack is now excluded from pruning (see `prune_state_log`).
+            if last_ack < self.state_log_sequence {
+                return None;
+            }
             return Some(Vec::new());
         }
         let oldest = self.state_log[0].sequence;
@@ -436,7 +499,17 @@ impl RunningDataflow {
             descriptor,
             daemons: daemons.clone(),
             pending_daemons: BTreeSet::new(),
-            exited_before_subscribe: Vec::new(),
+            // Restored, not reset: the live entry is destroyed by orphan
+            // reclaim and by coordinator restart, and the daemon cannot prompt
+            // a fresh broadcast because its `reported_init_to_coordinator` is
+            // never reset. Dropping the verdict here is what left a
+            // reconnecting daemon hanging forever (dora-rs/dora#2998).
+            exited_before_subscribe: record
+                .barrier_exited_before_subscribe
+                .iter()
+                .map(|n| NodeId::from(n.clone()))
+                .collect(),
+            ready_barrier_released: record.ready_barrier_released,
             nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
@@ -444,7 +517,9 @@ impl RunningDataflow {
             node_stopped_at: BTreeMap::new(),
             network_metrics: None,
             spawn_result: CachedResult::Cached {
-                result: Ok(ControlRequestReply::DataflowSpawned { uuid: record.uuid }),
+                result: Box::new(Ok(ControlRequestReply::DataflowSpawned {
+                    uuid: record.uuid,
+                })),
             },
             stop_reply_senders: Vec::new(),
             buffered_log_messages: Vec::new(),
@@ -488,6 +563,12 @@ impl RunningDataflow {
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect(),
             uv: self.uv,
+            ready_barrier_released: self.ready_barrier_released,
+            barrier_exited_before_subscribe: self
+                .exited_before_subscribe
+                .iter()
+                .map(|n| n.to_string())
+                .collect(),
             generation: self.store_generation,
             created_at: self.created_at,
             updated_at: now_millis(),
@@ -499,8 +580,11 @@ pub(crate) enum CachedResult {
     Pending {
         result_senders: Vec<oneshot::Sender<eyre::Result<ControlRequestReply>>>,
     },
+    // Boxed because `ControlRequestReply` is large: without the box the
+    // `Cached` variant dwarfs `Pending`, which trips clippy's
+    // `large_enum_variant` on some targets (e.g. Windows) but not others (#2979).
     Cached {
-        result: eyre::Result<ControlRequestReply>,
+        result: Box<eyre::Result<ControlRequestReply>>,
     },
 }
 
@@ -531,7 +615,9 @@ impl CachedResult {
                 for sender in result_senders.drain(..) {
                     Self::send_result_to(&result, sender);
                 }
-                *self = CachedResult::Cached { result };
+                *self = CachedResult::Cached {
+                    result: Box::new(result),
+                };
             }
             CachedResult::Cached { .. } => {}
         }
@@ -550,7 +636,7 @@ impl CachedResult {
     /// the spawn-timeout watchdog (or any other terminal-failure path)
     /// has already marked as failed.
     pub(crate) fn is_terminal_error(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Err(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_err())
     }
 
     /// Returns `true` if a successful result has been cached, i.e. the dataflow
@@ -559,7 +645,7 @@ impl CachedResult {
     /// that are past spawn — spawn-pending ones remain the spawn-timeout
     /// watchdog's domain. See #2028.
     pub(crate) fn is_cached_ok(&self) -> bool {
-        matches!(self, CachedResult::Cached { result: Ok(_) })
+        matches!(self, CachedResult::Cached { result } if result.is_ok())
     }
 
     fn send_result_to(
@@ -587,14 +673,6 @@ impl From<&RunningDataflow> for ArchivedDataflow {
         }
     }
 }
-
-impl PartialEq for RunningDataflow {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.uuid == other.uuid && self.daemons == other.daemons
-    }
-}
-
-impl Eq for RunningDataflow {}
 
 #[cfg(test)]
 mod hub_capability_tests {
@@ -645,6 +723,46 @@ mod send_and_receive_tests {
         assert!(
             pending.lock().await.is_empty(),
             "pending reply leaked after send failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn ws_error_envelope_surfaces_as_err() {
+        // The daemon-side WS error path delivers a `{"ws_error": ...}` string to
+        // the pending reply (see `handle_daemon_response` in `ws_daemon.rs`).
+        // `send_and_receive` must turn that into an `Err` carrying the daemon's
+        // text — not return an envelope its callers cannot deserialize, which
+        // would surface as an opaque "failed to deserialize ... reply".
+        let (tx, mut rx) = mpsc::channel::<String>(1);
+        let pending: Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>> =
+            Arc::new(Mutex::new(HashMap::new()));
+        let conn = DaemonConnection::new(tx, pending.clone(), BTreeMap::new());
+
+        let pending_bg = pending.clone();
+        tokio::spawn(async move {
+            let outgoing = rx.recv().await.expect("request should be sent");
+            let value: serde_json::Value =
+                serde_json::from_str(&outgoing).expect("outgoing request is JSON");
+            let id: Uuid = value["id"]
+                .as_str()
+                .expect("request carries an id")
+                .parse()
+                .expect("id is a UUID");
+            let sender = pending_bg
+                .lock()
+                .await
+                .remove(&id)
+                .expect("pending reply is registered before the send");
+            let _ = sender.send(r#"{"ws_error":"daemon blew up"}"#.to_string());
+        });
+
+        let err = conn
+            .send_and_receive(b"{}")
+            .await
+            .expect_err("ws_error envelope must be surfaced as an error");
+        assert!(
+            err.to_string().contains("daemon blew up"),
+            "error should carry the daemon's message, got: {err}"
         );
     }
 }

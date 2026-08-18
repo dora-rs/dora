@@ -1,5 +1,5 @@
 use dora_node_api::{self, DoraNode, dora_core::config::DataId};
-use rand::RngCore;
+use rand::Rng;
 use std::time::Duration;
 
 /// Number of latency samples per payload size.
@@ -29,7 +29,7 @@ fn main() -> eyre::Result<()> {
 
     let data = sizes.map(|size| {
         let mut data = vec![0u8; size];
-        rand::thread_rng().fill_bytes(&mut data);
+        rand::rng().fill_bytes(&mut data);
         data
     });
 

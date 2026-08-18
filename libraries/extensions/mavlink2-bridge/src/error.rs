@@ -5,9 +5,6 @@ pub enum BridgeError {
     #[error("Arrow error: {0}")]
     Arrow(#[from] arrow::error::ArrowError),
 
-    #[error("transport error: {0}")]
-    Transport(#[from] std::io::Error),
-
     #[error("config error: {0}")]
     Config(String),
 

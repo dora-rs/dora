@@ -5,7 +5,7 @@ use arrow::{
 };
 use core::fmt;
 use dora_ros2_bridge_msg_gen::types::Message;
-use std::{borrow::Cow, collections::HashMap, fmt::Display, sync::Arc};
+use std::{borrow::Cow, fmt::Display, sync::Arc};
 
 mod array;
 mod primitive;
@@ -119,30 +119,21 @@ impl<'de> serde::de::DeserializeSeed<'de> for StructDeserializer<'_> {
     where
         D: serde::Deserializer<'de>,
     {
-        let empty = HashMap::new();
-        let package_messages = self
-            .type_info
-            .messages
-            .get(self.type_info.package_name.as_ref())
-            .unwrap_or(&empty);
-        let message = package_messages
-            .get(self.type_info.message_name.as_ref())
-            .ok_or_else(|| {
-                error(format!(
-                    "could not find message type {}::{}",
-                    self.type_info.package_name, self.type_info.message_name
-                ))
-            })?;
+        let type_info = self.type_info.as_ref();
+        let message = lookup_message(type_info).map_err(error)?;
 
-        let visitor = StructVisitor {
-            type_info: self.type_info.as_ref(),
-        };
+        let visitor = StructVisitor { type_info, message };
         deserializer.deserialize_tuple_struct(DUMMY_STRUCT_NAME, message.members.len(), visitor)
     }
 }
 
 struct StructVisitor<'a> {
     type_info: &'a TypeInfo<'a>,
+    /// Message definition for `type_info`, resolved once in `deserialize` and
+    /// reused here so `visit_seq` does not repeat the `messages` lookup (and the
+    /// throwaway `HashMap` allocation) for every struct — including every
+    /// element of a `sequence<struct>` / `struct[N]`.
+    message: &'a Message,
 }
 
 impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
@@ -156,20 +147,7 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
     where
         A: serde::de::SeqAccess<'de>,
     {
-        let empty = HashMap::new();
-        let package_messages = self
-            .type_info
-            .messages
-            .get(self.type_info.package_name.as_ref())
-            .unwrap_or(&empty);
-        let message = package_messages
-            .get(self.type_info.message_name.as_ref())
-            .ok_or_else(|| {
-                error(format!(
-                    "could not find message type {}::{}",
-                    self.type_info.package_name, self.type_info.message_name
-                ))
-            })?;
+        let message = self.message;
 
         let mut fields = vec![];
         for member in &message.members {
@@ -239,7 +217,15 @@ impl<'de> serde::de::Visitor<'de> for StructVisitor<'_> {
             ));
         }
 
-        let struct_array: StructArray = fields.into();
+        // A message type with zero fields (e.g. `std_msgs/msg/Empty`) yields an
+        // empty `fields` vec. `StructArray::from(Vec<..>)` panics on an empty vec
+        // because the array length is ambiguous, so build a length-1 empty-fields
+        // struct explicitly instead.
+        let struct_array: StructArray = if fields.is_empty() {
+            StructArray::new_empty_fields(1, None)
+        } else {
+            fields.into()
+        };
 
         Ok(struct_array.into())
     }
@@ -263,6 +249,7 @@ mod tests {
         primitives::{BasicType, NamedType, NestableType},
         sequences::Sequence,
     };
+    use std::collections::HashMap;
 
     fn member(name: &str, r#type: MemberType) -> Member {
         Member {
@@ -350,5 +337,44 @@ mod tests {
         // ...but the child type is the correct `Point` struct.
         assert!(matches!(inner.data_type(), DataType::Struct(fields)
             if fields.len() == 1 && fields[0].name() == "x"));
+    }
+
+    /// Regression test for #2804: a message type with zero fields (e.g.
+    /// `std_msgs/msg/Empty`) must not panic the deserializer. Previously
+    /// `StructArray::from(Vec<..>)` panicked on the empty field vec because the
+    /// array length was ambiguous, which poisoned the DDS cache lock held on the
+    /// take path and killed the whole participant.
+    #[test]
+    fn empty_message_deserializes() {
+        let empty = Message {
+            package: "test_pkg".to_string(),
+            name: "Empty".to_string(),
+            members: vec![],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("Empty".to_string(), empty);
+        let mut messages = HashMap::new();
+        messages.insert("test_pkg".to_string(), package);
+
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_pkg"),
+            message_name: Cow::Borrowed("Empty"),
+            messages: Arc::new(messages),
+        };
+
+        // An empty message has no fields, so the CDR body is empty.
+        let bytes: Vec<u8> = Vec::new();
+
+        let seed = StructDeserializer::new(Cow::Owned(type_info));
+        let mut deserializer = cdr_encoding::CdrDeserializer::<LittleEndian>::new(&bytes);
+        let data = serde::de::DeserializeSeed::deserialize(seed, &mut deserializer)
+            .expect("empty message must deserialize successfully");
+
+        let array = make_array(data);
+        let empty = array.as_struct();
+        // One struct row with no columns.
+        assert_eq!(empty.len(), 1);
+        assert_eq!(empty.num_columns(), 0);
     }
 }

@@ -3,13 +3,20 @@
 //! Each test encodes a synthetic MAVLink message struct into a 1-row
 //! Arrow `RecordBatch`, decodes it back, and asserts every field matches.
 
+// This suite deliberately exercises upstream-deprecated items (SET_MODE,
+// superseded by MAV_CMD_DO_SET_MODE, kept for legacy autopilots — see the
+// limitation note in arrow_convert.rs — plus MavMode/MAV_FRAME_GLOBAL_INT
+// sentinels), so silence the deprecation lint file-wide.
+#![allow(deprecated)]
+
 use dora_mavlink2_bridge::MavlinkArrow;
-use dora_mavlink2_bridge::mavlink::common::{
+use dora_mavlink2_bridge::mavlink::dialects::common::SET_MODE_DATA;
+use dora_mavlink2_bridge::mavlink::dialects::common::{
     ATTITUDE_DATA, ATTITUDE_QUATERNION_DATA, COMMAND_ACK_DATA, COMMAND_LONG_DATA,
     GLOBAL_POSITION_INT_DATA, GPS_RAW_INT_DATA, GpsFixType, HEARTBEAT_DATA,
     LOCAL_POSITION_NED_DATA, MISSION_CURRENT_DATA, MavAutopilot, MavCmd, MavFrame, MavMode,
     MavModeFlag, MavResult, MavState, MavSysStatusSensor, MavType, PositionTargetTypemask,
-    RC_CHANNELS_DATA, RC_CHANNELS_OVERRIDE_DATA, SERVO_OUTPUT_RAW_DATA, SET_MODE_DATA,
+    RC_CHANNELS_DATA, RC_CHANNELS_OVERRIDE_DATA, SERVO_OUTPUT_RAW_DATA,
     SET_POSITION_TARGET_GLOBAL_INT_DATA, SET_POSITION_TARGET_LOCAL_NED_DATA, SYS_STATUS_DATA,
     SYSTEM_TIME_DATA,
 };
@@ -317,7 +324,7 @@ fn set_mode_arrow_roundtrip() {
     let original = SET_MODE_DATA {
         custom_mode: 42,
         target_system: 7,
-        // Must be one of mavlink-rust 0.13's strict MavMode variants
+        // Must be one of mavlink-rust 0.18's strict MavMode variants
         // (see the SET_MODE limitation note in arrow_convert.rs); a raw
         // ArduPilot custom-mode base_mode would not round-trip.
         base_mode: MavMode::MAV_MODE_GUIDED_ARMED,

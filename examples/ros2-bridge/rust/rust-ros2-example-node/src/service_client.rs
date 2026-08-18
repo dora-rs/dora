@@ -104,8 +104,8 @@ fn create_service_client(
 
     println!("wait for add_two_ints service");
     let service_ready = async {
-        for _ in 0..10 {
-            let ready = add_client.wait_for_service(&ros_node);
+        for _ in 0..30 {
+            let ready = add_client.wait_for_service(ros_node);
             futures::pin_mut!(ready);
             let timeout = futures_timer::Delay::new(Duration::from_secs(2));
             match futures::future::select(ready, timeout).await {

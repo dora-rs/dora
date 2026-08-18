@@ -2,7 +2,7 @@ use std::path::Path;
 
 use dora_message::common::DaemonId;
 use eyre::{Result, WrapErr, eyre};
-use redb::{Database, ReadableTable, TableDefinition};
+use redb::{Database, ReadableDatabase, ReadableTable, TableDefinition};
 use uuid::Uuid;
 
 use dora_message::id::NodeId;
@@ -17,7 +17,17 @@ const BUILDS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("builds");
 const NODE_PARAMS: TableDefinition<&str, &[u8]> = TableDefinition::new("node_params");
 
 /// Bump this when the serialization format of any stored record changes.
-const SCHEMA_VERSION: u32 = 2; // Sprint 9: added node_to_daemon, uv, Recovering status
+///
+/// postcard is not self-describing, so `#[serde(default)]` on a struct/enum
+/// field does NOT make old persisted bytes decodable -- it only fills in the
+/// field when the deserializer already knows the field is absent, which for
+/// postcard's positional encoding never happens (a missing trailing field
+/// reads past the end of the buffer and fails). Any change to a persisted
+/// type's shape -- including adding a `#[serde(default)]` field -- MUST bump
+/// this constant, so `open()` rejects old-format databases up front instead
+/// of decoding old rows into errors that get silently dropped by the
+/// `list_*` methods below.
+const SCHEMA_VERSION: u32 = 5; // v5: record encoding moved from bincode to postcard
 const SCHEMA_VERSION_KEY: &str = "schema_version";
 
 /// Run `f` with umask set to `0o077` (owner-only) on Unix, restoring afterwards.
@@ -52,8 +62,27 @@ impl RedbStore {
     /// table. On subsequent opens, validates that the stored version matches
     /// the compiled-in version and returns an error if they differ.
     pub fn open(path: &Path) -> Result<Self> {
-        let db = with_restrictive_umask(|| Database::create(path))
-            .wrap_err("failed to open redb database")?;
+        let db = match with_restrictive_umask(|| Database::create(path)) {
+            Ok(db) => db,
+            // redb 3 dropped the v2 on-disk format, so a store written by a
+            // dora built against redb 2.x cannot be read at all (#2449). redb
+            // reports this as a bare "Manual upgrade required", which tells the
+            // user nothing about how to recover, so translate it into the same
+            // marked error a schema bump produces -- `dora up` matches the
+            // marker to suggest `--recreate-store`, which archives the old file
+            // rather than deleting it.
+            Err(redb::DatabaseError::UpgradeRequired(version)) => {
+                return Err(eyre!(
+                    "{marker}: database at `{path}` uses the redb v{version} file format, \
+                     which this binary cannot read. \
+                     Move the file aside and restart to create a fresh database, \
+                     or use `--store memory` to bypass persistence.",
+                    marker = crate::SCHEMA_MISMATCH_MARKER,
+                    path = path.display()
+                ));
+            }
+            Err(err) => return Err(err).wrap_err("failed to open redb database"),
+        };
 
         // Restrict file permissions to owner-only on Unix.
         // NOTE: On Windows, file permissions are governed by ACLs and not
@@ -78,11 +107,12 @@ impl RedbStore {
             match stored {
                 Some(v) if v != SCHEMA_VERSION => {
                     return Err(eyre!(
-                        "redb schema version mismatch: database at `{}` has v{v}, \
+                        "{marker}: database at `{path}` has v{v}, \
                          but this binary expects v{SCHEMA_VERSION}. \
                          Delete the file and restart to create a fresh database, \
                          or use `--store memory` to bypass persistence.",
-                        path.display()
+                        marker = crate::SCHEMA_MISMATCH_MARKER,
+                        path = path.display()
                     ));
                 }
                 Some(_) => {} // version matches
@@ -109,21 +139,36 @@ impl RedbStore {
 // Serialisation helpers
 // ---------------------------------------------------------------------------
 
-fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
-    bincode::serde::encode_to_vec(value, bincode::config::standard())
-        .map_err(|e| eyre!("encode error: {e}"))
+/// Maximum size of a single serialized record. `decode` refuses to *read*
+/// beyond this, and `encode` refuses to *write* beyond it. The two limits must
+/// match: a record that encodes larger than `decode` will accept is silently
+/// unreadable — `put_dataflow` would persist it, but every later
+/// `get_dataflow` returns a decode error and `list_dataflows` skips it as
+/// "corrupt" (dora-rs/dora#2027), dropping a perfectly valid dataflow from
+/// startup recovery. Guarding at write time turns that silent data loss into an
+/// explicit error at the source.
+const MAX_RECORD_BYTES: usize = 64 * 1024 * 1024;
+
+/// The one place the limit is applied, so `encode` and `decode` cannot drift.
+fn check_record_size(len: usize, direction: &str) -> Result<()> {
+    if len > MAX_RECORD_BYTES {
+        eyre::bail!(
+            "record too large to {direction}: {len} bytes exceeds the {MAX_RECORD_BYTES}-byte limit"
+        );
+    }
+    Ok(())
 }
 
-/// Decode uses a separate config with a 64 MiB limit that `encode` intentionally
-/// omits: encoding our own data needs no guard, but decoding potentially corrupt
-/// data must cap allocation sizes to prevent OOM from malformed varint length
-/// prefixes. The limit type is a const generic in bincode 2.x, so it cannot
-/// share a single `const` with the unlimited encode config.
+fn encode<T: serde::Serialize>(value: &T) -> Result<Vec<u8>> {
+    let bytes = dora_message::encode(value).map_err(|e| eyre!("encode error: {e}"))?;
+    check_record_size(bytes.len(), "store")?;
+    Ok(bytes)
+}
+
 fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Result<T> {
-    let config = bincode::config::standard().with_limit::<{ 64 * 1024 * 1024 }>();
-    let (val, _) =
-        bincode::serde::decode_from_slice(bytes, config).map_err(|e| eyre!("decode error: {e}"))?;
-    Ok(val)
+    // The codec has no built-in decode cap, so mirror `encode`'s limit here.
+    check_record_size(bytes.len(), "read").map_err(|e| eyre!("decode error: {e}"))?;
+    dora_message::decode(bytes).map_err(|e| eyre!("decode error: {e:#}"))
 }
 
 // ---------------------------------------------------------------------------
@@ -422,6 +467,28 @@ mod tests {
         (store, dir)
     }
 
+    /// A record that serializes beyond `MAX_RECORD_BYTES` is rejected at write
+    /// time (`encode`) rather than persisted and then silently skipped as
+    /// "corrupt" by the `list_*` recovery paths. Write and read limits must
+    /// stay symmetric — see the `MAX_RECORD_BYTES` doc (dora-rs/dora#2027).
+    #[test]
+    fn encode_rejects_record_larger_than_decode_limit() {
+        // Serializes to just over the limit (raw bytes + a small length prefix),
+        // exactly the size `decode`'s `with_limit` would refuse to read back.
+        let oversized = vec![0u8; MAX_RECORD_BYTES + 1];
+        let err = encode(&oversized).unwrap_err();
+        assert!(
+            err.to_string().contains("too large"),
+            "expected 'too large' error, got: {err}"
+        );
+
+        // A normal-sized record still encodes and round-trips.
+        let small = vec![1u8, 2, 3];
+        let bytes = encode(&small).unwrap();
+        let decoded: Vec<u8> = decode(&bytes).unwrap();
+        assert_eq!(decoded, small);
+    }
+
     #[test]
     fn daemon_crud() {
         let (store, _dir) = temp_store();
@@ -457,6 +524,8 @@ mod tests {
             updated_at: 1000,
             node_to_daemon: Default::default(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
         };
 
         store.put_dataflow(&record).unwrap();
@@ -512,6 +581,8 @@ mod tests {
                 updated_at: 1,
                 node_to_daemon: Default::default(),
                 uv: false,
+                ready_barrier_released: false,
+                barrier_exited_before_subscribe: Vec::new(),
             })
             .unwrap();
 
@@ -540,6 +611,97 @@ mod tests {
         assert_eq!(flows[0].uuid, uuid);
     }
 
+    /// #2471: `#[serde(default)]` on `DataflowStatus::Failed::terminal` does NOT
+    /// make encoded bytes from before the field existed decodable --
+    /// postcard is positional, not self-describing. `status` is not the last
+    /// field of `DataflowRecord`, so a missing `terminal` byte doesn't reliably
+    /// fail to decode the way a standalone `DataflowStatus` would: the decoder
+    /// instead reads the next record field's first byte as `terminal` and keeps
+    /// going, shifted by one byte, into `daemon_ids`/`node_to_daemon`/`uv`/
+    /// `generation`/timestamps. Depending on the field values that land on
+    /// each shifted position, this either surfaces much later as a confusing,
+    /// unrelated decode error (a bad-bool or bad-length failure on one of the
+    /// shifted trailing fields -- nothing about it points at `terminal` or
+    /// `status`) or -- for other field-value combinations -- could silently
+    /// succeed with a structurally valid but corrupted record.
+    /// Neither outcome is the clean, predictable "missing field" failure the
+    /// `terminal` doc comment implies, and both confirm the actual safety net
+    /// is the `SCHEMA_VERSION` bump: a database written before `terminal`
+    /// existed carries the pre-bump version and is rejected at `open()` (see
+    /// `older_schema_version_is_rejected`), so `list_dataflows`/`get_dataflow`
+    /// never reach this undecodable-or-corrupted row in the first place.
+    #[test]
+    fn old_dataflow_record_without_terminal_field_misdecodes_silently() {
+        // Mirrors `DataflowStatus` variant-for-variant, except `Failed` has no
+        // `terminal` field -- i.e. the exact byte layout written by a
+        // pre-#1854 coordinator.
+        #[derive(serde::Serialize)]
+        #[allow(dead_code)]
+        enum OldDataflowStatus {
+            Pending,
+            Running,
+            Recovering,
+            Stopping,
+            Succeeded,
+            Failed { error: String },
+        }
+
+        // Mirrors `DataflowRecord` field-for-field, using `OldDataflowStatus`
+        // for `status` -- the exact pre-#1854 `DataflowRecord` byte layout.
+        #[derive(serde::Serialize)]
+        struct OldDataflowRecord {
+            uuid: Uuid,
+            name: Option<String>,
+            descriptor_json: String,
+            status: OldDataflowStatus,
+            daemon_ids: Vec<DaemonId>,
+            node_to_daemon: std::collections::BTreeMap<String, String>,
+            uv: bool,
+            generation: u64,
+            created_at: u64,
+            updated_at: u64,
+        }
+
+        let uuid = Uuid::new_v4();
+        let old_record = OldDataflowRecord {
+            uuid,
+            name: None,
+            descriptor_json: "nodes: []".into(),
+            status: OldDataflowStatus::Failed {
+                error: "boom".into(),
+            },
+            daemon_ids: vec![], // empty -> length-prefix byte is 0x00
+            node_to_daemon: Default::default(),
+            uv: false,
+            generation: 42,
+            created_at: 1000,
+            updated_at: 2000,
+        };
+        let old_bytes = dora_message::encode(&old_record).unwrap();
+
+        // Decoding as the current `DataflowRecord` must NOT reproduce the
+        // encoded values: it either errors out on a shifted trailing field
+        // (with nothing in the message mentioning `terminal`), or --
+        // for other field-value combinations -- silently misdecodes into a
+        // structurally valid but wrong record. Either outcome is unsafe to
+        // serve from `list_dataflows`/`get_dataflow`, which is exactly why old
+        // databases must be rejected at `open()` instead.
+        match decode::<crate::DataflowRecord>(&old_bytes) {
+            Err(_) => {} // the common case for these field values; see doc comment above
+            Ok(decoded) => {
+                assert_eq!(decoded.uuid, uuid, "fields before `status` are unaffected");
+                assert!(
+                    decoded.generation != 42
+                        || decoded.created_at != 1000
+                        || decoded.updated_at != 2000,
+                    "decode succeeded AND reproduced the original trailing fields -- \
+                     the byte-shift this test exists to demonstrate did not occur; \
+                     re-check postcard's encoding of an empty Vec/BTreeMap length prefix"
+                );
+            }
+        }
+    }
+
     #[test]
     fn dataflow_update_persists() {
         let (store, _dir) = temp_store();
@@ -555,6 +717,8 @@ mod tests {
             updated_at: 1000,
             node_to_daemon: Default::default(),
             uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
         };
 
         store.put_dataflow(&record).unwrap();
@@ -588,6 +752,8 @@ mod tests {
                 updated_at: 2000,
                 node_to_daemon: Default::default(),
                 uv: false,
+                ready_barrier_released: false,
+                barrier_exited_before_subscribe: Vec::new(),
             };
             store.put_dataflow(&record).unwrap();
         }
@@ -658,8 +824,59 @@ mod tests {
                     msg.contains("schema version mismatch"),
                     "expected schema version mismatch error, got: {msg}"
                 );
+                assert!(
+                    !msg.contains("dora up --recreate-store"),
+                    "custom redb paths must not receive default-store recovery advice: {msg}"
+                );
             }
         }
+    }
+
+    /// redb 3 dropped support for the v2 on-disk format, so a store written by
+    /// an older dora (redb 2.x) is unreadable after the redb 4 upgrade (#2449).
+    /// That failure must carry [`crate::SCHEMA_MISMATCH_MARKER`] like a record
+    /// schema bump does, so `dora up` offers the same `--recreate-store`
+    /// recovery instead of surfacing a bare redb error the user cannot act on.
+    #[test]
+    fn redb_v2_file_format_is_reported_as_a_store_mismatch() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2-format.redb");
+
+        // Create a healthy store, then downgrade its header to the v2 file
+        // format. redb's super-header holds two 128-byte commit slots at
+        // offsets 64 and 192, each starting with a one-byte format version;
+        // it checks that byte before the slot checksum, so stamping both is
+        // enough to make redb reject the file as `UpgradeRequired`.
+        const SLOT_OFFSETS: [u64; 2] = [64, 192];
+        const FILE_FORMAT_VERSION2: u8 = 2;
+        RedbStore::open(&path).unwrap();
+        {
+            use std::io::{Seek, SeekFrom, Write};
+            let mut file = std::fs::OpenOptions::new().write(true).open(&path).unwrap();
+            for offset in SLOT_OFFSETS {
+                file.seek(SeekFrom::Start(offset)).unwrap();
+                file.write_all(&[FILE_FORMAT_VERSION2]).unwrap();
+            }
+            file.sync_all().unwrap();
+        }
+
+        let Err(err) = RedbStore::open(&path) else {
+            panic!("a v2-format store must be rejected");
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains(crate::SCHEMA_MISMATCH_MARKER),
+            "a v2-format store must be reported with the `{}` marker so `dora up` \
+             can offer `--recreate-store`, got: {msg}",
+            crate::SCHEMA_MISMATCH_MARKER
+        );
+        // Guards the hand-stamped header above: if redb's slot layout ever
+        // moves, the patch stops producing an upgrade error and this fails
+        // rather than silently passing on some unrelated open failure.
+        assert!(
+            msg.contains("file format"),
+            "expected a file-format diagnostic naming the incompatible format, got: {msg}"
+        );
     }
 
     // --- Focused tests for redb_store edge cases (added 2026-04-08) ---
@@ -1028,7 +1245,87 @@ mod tests {
         }
     }
 
-    /// A corrupt bincode blob in the dataflows table surfaces as an error
+    /// #2471 review follow-up: `older_schema_version_is_rejected` is
+    /// parameterized on `SCHEMA_VERSION - 1`, so it auto-follows the
+    /// constant and would keep passing even if a future bump moved the
+    /// rejected version away from `2` -- it doesn't pin the actual decision
+    /// being made here. That decision is deliberate and literal: schema `2`
+    /// is permanently ambiguous (v1.0.0-rc.1 stamped pre-`terminal` records
+    /// as v2; v1.0.0-rc.2 stamped post-`terminal` records as v2 too, because
+    /// the version bump that should have accompanied #1854 never happened),
+    /// so *every* v2 database is rejected at `open()` -- even one written by
+    /// rc.2 whose stored row would, on its own, decode perfectly fine under
+    /// the current (terminal-carrying) shape. This test locks in that
+    /// blanket-rejection decision with a hardcoded `2u32`, independent of
+    /// whatever `SCHEMA_VERSION` becomes in the future, and independent of
+    /// whether the specific stored row is decodable.
+    #[test]
+    fn schema_v2_is_rejected_even_though_this_particular_row_would_decode() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v2-decodable-row.redb");
+
+        let uuid = Uuid::new_v4();
+        // An rc.2-shaped row: current `DataflowRecord`/`DataflowStatus` types,
+        // `terminal` included. This is fully decodable by the current
+        // `decode()` -- the version guard is the only thing standing between
+        // this store and a successful `open()`.
+        let record = DataflowRecord {
+            uuid,
+            name: None,
+            descriptor_json: "nodes: []".into(),
+            status: crate::DataflowStatus::Failed {
+                error: "boom".into(),
+                terminal: true,
+            },
+            daemon_ids: vec![],
+            node_to_daemon: Default::default(),
+            uv: false,
+            ready_barrier_released: false,
+            barrier_exited_before_subscribe: Vec::new(),
+            generation: 1,
+            created_at: 1,
+            updated_at: 1,
+        };
+        let bytes = encode(&record).unwrap();
+
+        // Sanity check: the row really is decodable under the current shape,
+        // so the rejection below (via a real `RedbStore::open`) is caused by
+        // the version guard alone, not by an incidental encoding mismatch.
+        assert!(decode::<DataflowRecord>(&bytes).is_ok());
+
+        {
+            let db = Database::create(&path).unwrap();
+            let txn = db.begin_write().unwrap();
+            {
+                let mut meta = txn.open_table(META).unwrap();
+                // Hardcoded `2`, not `SCHEMA_VERSION - 1`: this is the
+                // specific historical version both rc.1 and rc.2 stamped
+                // their (mutually incompatible) stores with.
+                meta.insert(SCHEMA_VERSION_KEY, 2u32).unwrap();
+
+                let mut table = txn.open_table(DATAFLOWS).unwrap();
+                table
+                    .insert(record.uuid.as_bytes().as_slice(), bytes.as_slice())
+                    .unwrap();
+            }
+            txn.commit().unwrap();
+        }
+
+        match RedbStore::open(&path) {
+            Ok(_) => panic!(
+                "a v2-stamped database must be rejected at open() regardless of \
+                 whether this particular row would decode -- v2 is ambiguous \
+                 between the pre-#1854 (rc.1) and post-#1854 (rc.2) shapes, so \
+                 blanket rejection is the only simple, safe option"
+            ),
+            Err(err) => assert!(
+                err.to_string().contains("schema version mismatch"),
+                "expected schema version mismatch, got: {err}"
+            ),
+        }
+    }
+
+    /// A corrupt record blob in the dataflows table surfaces as an error
     /// on the read path, not a panic. This is the file-corruption scenario
     /// from plan-fault-injection.md section 3.3 at the API level.
     #[test]
@@ -1043,7 +1340,7 @@ mod tests {
             let txn = store.db.begin_write().unwrap();
             {
                 let mut table = txn.open_table(DATAFLOWS).unwrap();
-                let garbage: &[u8] = b"not a valid bincode record XXXXXXXX";
+                let garbage: &[u8] = b"not a valid postcard record XXXXXXXX";
                 let key: &[u8] = uuid.as_bytes();
                 table.insert(key, garbage).unwrap();
             }

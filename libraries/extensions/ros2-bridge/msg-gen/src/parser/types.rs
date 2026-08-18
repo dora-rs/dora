@@ -1,11 +1,11 @@
 use anyhow::anyhow;
 use nom::{
-    IResult,
+    IResult, Parser,
     branch::alt,
     bytes::complete::tag,
     character::complete::{char, space1},
     combinator::{eof, map, map_res, opt, peek},
-    sequence::{delimited, pair, preceded, tuple},
+    sequence::{delimited, pair, preceded},
 };
 
 use super::{
@@ -20,7 +20,7 @@ use crate::types::{
 
 pub fn parse_member_type(s: &str) -> IResult<&str, MemberType> {
     map_res(
-        tuple((
+        (
             nestable_type,
             opt(delimited(
                 char('['),
@@ -28,7 +28,7 @@ pub fn parse_member_type(s: &str) -> IResult<&str, MemberType> {
                 char(']'),
             )),
             peek(alt((space1, eof))),
-        )),
+        ),
         |(value_type, seq_info, _)| {
             Ok(match seq_info {
                 None => value_type.into(),
@@ -44,23 +44,25 @@ pub fn parse_member_type(s: &str) -> IResult<&str, MemberType> {
                 }
             })
         },
-    )(s)
+    )
+    .parse(s)
 }
 
 pub fn parse_constant_type(s: &str) -> IResult<&str, ConstantType> {
     map(
-        tuple((
+        (
             primitive_type,
             opt(delimited(char('['), usize_literal, char(']'))),
             peek(alt((space1, eof))),
-        )),
+        ),
         |(value_type, size, _)| {
             size.map_or_else(
                 || value_type.into(),
                 |size| PrimitiveArray { value_type, size }.into(),
             )
         },
-    )(s)
+    )
+    .parse(s)
 }
 
 fn basic_type(s: &str) -> IResult<&str, BasicType> {
@@ -83,22 +85,24 @@ fn basic_type(s: &str) -> IResult<&str, BasicType> {
             tag("byte"),
         )),
         |s| BasicType::parse(s).unwrap(),
-    )(s)
+    )
+    .parse(s)
 }
 
 fn named_type(s: &str) -> IResult<&str, NamedType> {
-    map(message_name, |name| NamedType(name.into()))(s)
+    map(message_name, |name| NamedType(name.into())).parse(s)
 }
 
 fn namespaced_type(s: &str) -> IResult<&str, NamespacedType> {
     map(
-        tuple((package_name, char('/'), message_name)),
+        (package_name, char('/'), message_name),
         |(package, _, name)| NamespacedType {
             package: package.into(),
             namespace: "msg".into(),
             name: name.into(),
         },
-    )(s)
+    )
+    .parse(s)
 }
 
 fn generic_string(s: &str) -> IResult<&str, GenericString> {
@@ -121,7 +125,8 @@ fn generic_string(s: &str) -> IResult<&str, GenericString> {
                 },
             )
         },
-    )(s)
+    )
+    .parse(s)
 }
 
 fn generic_unbounded_string(s: &str) -> IResult<&str, GenericUnboundedString> {
@@ -132,7 +137,8 @@ fn generic_unbounded_string(s: &str) -> IResult<&str, GenericUnboundedString> {
             "wstring" => GenericUnboundedString::WString,
             _ => unreachable!(),
         },
-    )(s)
+    )
+    .parse(s)
 }
 
 fn nestable_type(s: &str) -> IResult<&str, NestableType> {
@@ -141,14 +147,16 @@ fn nestable_type(s: &str) -> IResult<&str, NestableType> {
         map(generic_string, |type_| type_.into()),
         map(namespaced_type, |type_| type_.into()),
         map(named_type, |type_| type_.into()),
-    ))(s)
+    ))
+    .parse(s)
 }
 
 fn primitive_type(s: &str) -> IResult<&str, PrimitiveType> {
     alt((
         map(basic_type, |type_| type_.into()),
         map(generic_unbounded_string, |type_| type_.into()),
-    ))(s)
+    ))
+    .parse(s)
 }
 
 #[cfg(test)]

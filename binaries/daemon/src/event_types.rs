@@ -34,6 +34,11 @@ pub enum Event {
     Node {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        /// The process incarnation this event's connection belongs to,
+        /// stamped by the per-spawn listener. Events from a superseded
+        /// incarnation (replaced or re-added id) must not mutate the
+        /// current entry's state (dora-rs/dora#2926, #2927).
+        generation: u64,
         event: DaemonNodeEvent,
     },
     Coordinator(CoordinatorEvent),
@@ -41,6 +46,8 @@ pub enum Event {
     Dora(DoraEvent),
     DynamicNode(DynamicNodeEventWrapper),
     HeartbeatInterval,
+    /// Re-check whether a pending `Destroy`'s nodes have exited (#2980).
+    DestroyTick,
     MetricsInterval,
     NodeHealthCheckInterval,
     CtrlC,
@@ -97,6 +104,7 @@ impl Event {
             Event::Dora(_) => "Dora",
             Event::DynamicNode(_) => "DynamicNode",
             Event::HeartbeatInterval => "HeartbeatInterval",
+            Event::DestroyTick => "DestroyTick",
             Event::MetricsInterval => "MetricsInterval",
             Event::NodeHealthCheckInterval => "NodeHealthCheckInterval",
             Event::CtrlC => "CtrlC",
@@ -139,16 +147,53 @@ pub enum DaemonNodeEvent {
     EventStreamDropped {
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: metadata::Metadata,
+    ExtensionStore {
+        namespace: String,
+        key: String,
+        value: Vec<u8>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
-    ReadPinnedMemory {
-        shared_memory_id: String,
-        free: bool,
+    ExtensionLoad {
+        namespace: String,
+        key: String,
+        remove: bool,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
+    ExtensionDrop {
+        namespace: String,
+        key: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    /// Write tensor data to a memory pool, with cross-machine forwarding.
+    /// The daemon serialises the payload and pushes it to remote daemons
+    /// via Zenoh so the mirror pool can be updated in place.
+    WriteMemoryPool {
+        shared_memory_id: String,
+        tensor_data: Vec<u8>,
+        size: usize,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    /// Register a memory pool on another machine: resolve the target
+    /// machine through the coordinator, publish `RegisterPool` over the
+    /// memory-pool topic, and await the remote `RegisterPoolAck` before
+    /// replying (synchronous cross-machine register).
+    RegisterCrossMachinePool {
+        shared_memory_id: String,
+        /// The sender's local segment name — forwarded to the mirror
+        /// daemon so same-host readers can open it directly.
+        shmem_name: String,
+        size: usize,
+        dtype: String,
+        shape: Vec<i64>,
+        device: String,
+        machine_id: String,
+        reply_sender: oneshot::Sender<DaemonReply>,
+    },
+    /// Release a (possibly cross-machine) memory pool. Cross-machine pools
+    /// get their tracking entry removed and a targeted `FreePool` published
+    /// to the peer; the local /dev/shm mirror is unlinked. Local-only
+    /// pools (table managed by the node-side tensor-pool extension) are
+    /// simply acknowledged.
     FreePinnedMemory {
         shared_memory_id: String,
         reply_sender: oneshot::Sender<DaemonReply>,
@@ -175,10 +220,12 @@ pub enum DoraEvent {
     SpawnedNodeResult {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        generation: u64,
         dynamic_node: bool,
         exit_status: NodeExitStatus,
         restart: bool,
         restart_count: u32,
+        pid: u32,
     },
     /// The per-node `restart_loop` spawned a fresh process after an exit
     /// and now wants the daemon to swap the tracked `ProcessHandle` in
@@ -190,6 +237,8 @@ pub enum DoraEvent {
     ProcessHandleReplaced {
         dataflow_id: DataflowId,
         node_id: NodeId,
+        previous_generation: u64,
+        new_generation: u64,
         new_handle: crate::ProcessHandle,
     },
 }

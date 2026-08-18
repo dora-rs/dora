@@ -12,12 +12,12 @@ repository.workspace = true
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-opentelemetry = { version = "0.31", features = ["metrics"] }
-opentelemetry-otlp = { version = "0.31", features = [
+opentelemetry = { version = "0.32", features = ["metrics"] }
+opentelemetry-otlp = { version = "0.32", features = [
     "tonic",
     "metrics",
     "grpc-tonic",
 ] }
-opentelemetry_sdk = { version = "0.31", features = ["rt-tokio", "metrics"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio", "metrics"] }
 eyre = { workspace = true }
-opentelemetry-system-metrics = { version = "0.31.0" }
+opentelemetry-system-metrics = { version = "0.32.0" }

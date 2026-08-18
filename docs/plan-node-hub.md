@@ -47,7 +47,7 @@ parallel machinery:
 
 | Existing capability | Where | Role in Hub |
 |---|---|---|
-| Type URNs + registry (`std/core/v1/UInt64`, nested structs, user types, compat graph) | `libraries/core/src/types.rs`, `types/std/` | The contract language of the manifest |
+| Type URNs + registry (`std/core/v1/UInt64`, nested structs, user types, compat graph) | `libraries/core/src/types.rs`, `libraries/core/types/std/` | The contract language of the manifest |
 | Descriptor type annotations + validation (`input_types`/`output_types`, `strict_types`) | `descriptor.rs`, `validate.rs` | Compose-time contract checking |
 | Git node sources with commit pinning (`git:`/`branch:`/`tag:`/`rev:`) | `NodeSource::GitBranch`, `GitManager` | **What `hub:` desugars to** — the whole source-fetch path |
 | URL binary fetch + sha256 (`path: <url>`) | `dora-download`, `source_is_url`/`resolve_path` | The opt-in binary form (§8.2) |
@@ -393,7 +393,7 @@ system automatically improves Hub nodes.
 ### 6.3 Custom types shipped with nodes
 
 A node may ship type definitions (`types:` in the manifest, same YAML shape as
-`types/std/*/v1.yml`). At resolution time these are materialized into the hub
+`libraries/core/types/std/*/v1.yml`). At resolution time these are materialized into the hub
 cache and added to the `TypeRegistry` load path for that dataflow (today the
 registry loads `<working_dir>/types`; one new search path). Namespace rule:
 shipped types must live under the package's index namespace

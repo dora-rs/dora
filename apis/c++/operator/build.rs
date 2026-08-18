@@ -1,7 +1,9 @@
 use std::path::{Path, PathBuf};
 
-const CONFIG_TEMPLATE: &str = include_str!("../../c/node/cmake/dora-api-config.cmake.in");
-const CONFIG_VERSION: &str = include_str!("../../c/node/cmake/dora-api-version.cmake.in");
+// Crate-local copies of apis/c/node/cmake/*.cmake.in — `cargo package`
+// cannot include files that live outside the crate directory.
+const CONFIG_TEMPLATE: &str = include_str!("cmake/dora-api-config.cmake.in");
+const CONFIG_VERSION: &str = include_str!("cmake/dora-api-version.cmake.in");
 
 const PACKAGE: &str = "dora-operator-api-cxx";
 const LIB_UNIX: &str = "libdora_operator_api_cxx.a";
@@ -10,12 +12,12 @@ const LIB_WIN: &str = "dora_operator_api_cxx.lib";
 fn main() {
     let _ = cxx_build::bridge("src/lib.rs");
     println!("cargo:rerun-if-changed=src/lib.rs");
-    // Cross-package `include_str!` targets aren't auto-tracked by cargo
-    // once any `rerun-if-changed` directive is set — without these the
-    // cmake config goes stale on incremental builds when the templates
-    // are edited.
-    println!("cargo:rerun-if-changed=../../c/node/cmake/dora-api-config.cmake.in");
-    println!("cargo:rerun-if-changed=../../c/node/cmake/dora-api-version.cmake.in");
+    // `include_str!` targets aren't auto-tracked by cargo once any
+    // `rerun-if-changed` directive is set — without these the cmake
+    // config goes stale on incremental builds when the templates are
+    // edited.
+    println!("cargo:rerun-if-changed=cmake/dora-api-config.cmake.in");
+    println!("cargo:rerun-if-changed=cmake/dora-api-version.cmake.in");
 
     // Generate cmake config files alongside the cxxbridge artefacts so the
     // `xtask stage` post-build step can pick them up and assemble a

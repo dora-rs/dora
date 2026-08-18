@@ -1,10 +1,10 @@
 use anyhow::{Result, ensure};
 use nom::{
+    Parser,
     bytes::complete::is_not,
     character::complete::{char, space0, space1},
     combinator::{eof, recognize},
     multi::separated_list1,
-    sequence::tuple,
 };
 
 use super::{error::RclMsgError, ident, literal, types};
@@ -39,6 +39,8 @@ fn validate_value(r#type: ConstantType, value: &str) -> Result<Vec<String>> {
                 let (rest, values) = literal::string_literal_sequence(value)
                     .map_err(|_| RclMsgError::ParseDefaultValueError(value.into()))?;
                 ensure!(rest.is_empty());
+                ensure!(values.len() == array_t.size);
+
                 Ok(values)
             }
         },
@@ -46,7 +48,7 @@ fn validate_value(r#type: ConstantType, value: &str) -> Result<Vec<String>> {
 }
 
 pub fn constant_def(line: &str) -> Result<Constant> {
-    let (_, (r#type, _, name, _, _, _, value, _, _)) = tuple((
+    let (_, (r#type, _, name, _, _, _, value, _, _)) = (
         types::parse_constant_type,
         space1,
         ident::constant_name,
@@ -56,11 +58,12 @@ pub fn constant_def(line: &str) -> Result<Constant> {
         recognize(separated_list1(space1, is_not(" \t"))),
         space0,
         eof,
-    ))(line)
-    .map_err(|e| RclMsgError::ParseConstantError {
-        reason: e.to_string(),
-        input: line.into(),
-    })?;
+    )
+        .parse(line)
+        .map_err(|e| RclMsgError::ParseConstantError {
+            reason: e.to_string(),
+            input: line.into(),
+        })?;
 
     Ok(Constant {
         name: name.into(),
@@ -81,5 +84,31 @@ mod test {
         assert_eq!(result.r#type, BasicType::I32.into());
         assert_eq!(result.value, vec!["30"]);
         Ok(())
+    }
+
+    #[test]
+    fn parse_string_array_constant_matching_size() -> Result<()> {
+        let result = constant_def(r#"string[3] NAMES=["a", "b", "c"]"#)?;
+        assert_eq!(result.name, "NAMES");
+        assert_eq!(result.value, vec!["a", "b", "c"]);
+        // The declared size matches the literal count, so codegen must not panic.
+        let _ = result.r#type.value_tokens(&result.value);
+        Ok(())
+    }
+
+    #[test]
+    fn string_array_constant_with_wrong_element_count_errors() {
+        // A fixed-size string-array constant whose literal element count does not
+        // match the declared size must be rejected at parse time with a clean
+        // error, mirroring the basic-type array branch — not accepted here and
+        // then panicked on later in `ConstantType::value_tokens`.
+        assert!(constant_def(r#"string[3] NAMES=["a", "b"]"#).is_err());
+        assert!(constant_def(r#"string[1] NAMES=["a", "b"]"#).is_err());
+    }
+
+    #[test]
+    fn basic_type_array_constant_with_wrong_element_count_errors() {
+        // Regression guard for the already-correct basic-type branch.
+        assert!(constant_def("uint8[3] NUMS=[1, 2]").is_err());
     }
 }

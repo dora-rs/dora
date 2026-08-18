@@ -8,7 +8,7 @@ This guide covers how to run, write, and troubleshoot tests across the Dora work
 
 ## Prerequisites
 
-- Rust toolchain — MSRV is the workspace `rust-version` in `Cargo.toml` (currently 1.88.0)
+- Rust toolchain — MSRV is the workspace `rust-version` in `Cargo.toml` (currently 1.95.0)
 - Python 3 with `numpy` and `pyarrow` installed (`pip install numpy pyarrow`) — required for Python smoke tests
 
 ## Quick Start (5-minute validation)
@@ -28,6 +28,7 @@ cargo clippy --all \
 
 # 3. Unit + integration tests (~90s first run)
 cargo test --all \
+  --exclude dora-runtime-python \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python
@@ -303,14 +304,14 @@ fn test_main_function() -> eyre::Result<()> {
     let inputs = TestingInput::Input(
         IntegrationTestInput::new("node_id".parse().unwrap(), events),
     );
-    let (tx, rx) = flume::unbounded();
+    let (tx, mut rx) = integration_testing::unbounded_channel();
     let outputs = TestingOutput::ToChannel(tx);
     let options = TestingOptions { skip_output_time_offsets: true };
 
     integration_testing::setup_integration_testing(inputs, outputs, options);
     crate::main()?;
 
-    let outputs = rx.try_iter().collect::<Vec<_>>();
+    let outputs = integration_testing::drain_outputs(&mut rx);
     assert_eq!(outputs, expected_outputs);
     Ok(())
 }
@@ -378,6 +379,7 @@ Add new test files in the `tests/` directory. For tests that need the full CLI s
 Always exclude Python packages:
 ```bash
 cargo test --all \
+  --exclude dora-runtime-python \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python
@@ -437,3 +439,18 @@ MyCustomIdent = "MyCustomIdent"
 - CI runs on Ubuntu; check for platform-specific assumptions (paths, process signals)
 - CI uses `rust-cache` so dependency versions may differ from your local lockfile
 - Ensure `cargo fmt --all -- --check` passes (CI enforces this)
+# ROS2 native Zenoh interoperability
+
+The real-peer matrix uses digest-pinned ROS images and version-pinned
+`rmw_zenoh_cpp` packages:
+
+```bash
+scripts/ros2-zenoh-interop.sh humble all
+scripts/ros2-zenoh-interop.sh kilted all
+```
+
+Run one case by replacing `all` with `topic-pub`, `topic-sub`,
+`service-client`, `service-server`, `action-client`, `action-server`, `graph`,
+`domain`, `namespace`, or `qos-transient-local`. The driver has bounded waits
+and always removes its containers. An environment-dependent skip is not proof
+of compatibility and must keep that profile incomplete.

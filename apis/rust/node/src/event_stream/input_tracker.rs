@@ -17,20 +17,29 @@ use super::event::Event;
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
+/// use dora_node_api::{Event, InputState, InputTracker};
+///
+/// // Create a tracker up front (e.g. during node init).
 /// let mut tracker = InputTracker::new();
-/// while let Some(event) = events.recv().await {
-///     tracker.process_event(&event);
-///     match event {
-///         Event::Input { id, data, .. } => { /* use fresh data */ }
-///         Event::InputClosed { id } => {
-///             if let Some(stale) = tracker.last_value(&id) {
-///                 /* degrade gracefully using cached value */
-///             }
+///
+/// // Freshly created, no input is tracked yet.
+/// assert_eq!(tracker.state(&"camera".into()), None);
+/// assert!(!tracker.any_closed());
+/// assert_ne!(tracker.state(&"camera".into()), Some(InputState::Healthy));
+///
+/// // In your event loop, feed every event through the tracker, then fall
+/// // back to the last cached value for any input that has closed instead of
+/// // crashing. `Event` is `#[non_exhaustive]`, so match with a `_` arm.
+/// fn on_event(tracker: &mut InputTracker, event: &Event) {
+///     tracker.process_event(event);
+///     for id in tracker.closed_inputs() {
+///         if let Some(_stale) = tracker.last_value(id) {
+///             // degrade gracefully using the cached `ArrowData`
 ///         }
-///         _ => {}
 ///     }
 /// }
+/// # let _ = on_event; // used from the real event loop
 /// ```
 pub struct InputTracker {
     states: HashMap<DataId, InputState>,
@@ -164,25 +173,14 @@ mod tests {
     use super::*;
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType;
-    use dora_message::metadata::{ArrowTypeInfo, Metadata};
+    use dora_message::metadata::Metadata;
 
     fn empty_data() -> ArrowData {
         ArrowData(new_empty_array(&DataType::Null))
     }
 
     fn test_metadata() -> Metadata {
-        let type_info = ArrowTypeInfo {
-            data_type: DataType::Null,
-            len: 0,
-            null_count: 0,
-            validity: None,
-            offset: 0,
-            buffer_offsets: vec![],
-            child_data: vec![],
-            field_names: None,
-            schema_hash: None,
-        };
-        Metadata::new(dora_core::uhlc::HLC::default().new_timestamp(), type_info)
+        Metadata::new(dora_core::uhlc::HLC::default().new_timestamp())
     }
 
     fn make_input(id: &str, data: ArrowData) -> Event {

@@ -181,7 +181,8 @@ impl TracingBuilder {
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
         let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
             .wrap_err("failed to initialize OTLP tracing exporter")?;
-        let meter_provider = metrics::init_meter_provider();
+        let meter_provider = metrics::init_meter_provider(&endpoint)
+            .wrap_err("failed to initialize OTLP metrics exporter")?;
 
         // TODO: Maybe this needs to be removed in favor of application level global.
         // global::set_meter_provider(meter_provider.clone());
@@ -210,8 +211,9 @@ impl TracingBuilder {
 
     /// Add a layer that captures completed spans into the given store.
     ///
-    /// Only captures spans from `dora_*` crates at info level to avoid noise
-    /// from third-party dependencies.
+    /// Only captures spans from the `dora_coordinator` and `dora_core` crates
+    /// at info level (all other targets are filtered out) to avoid noise from
+    /// third-party dependencies.
     pub fn with_span_capture(mut self, store: span_store::SharedSpanStore) -> Self {
         let filter = EnvFilter::new("off")
             .add_directive(directive("dora_coordinator=info"))

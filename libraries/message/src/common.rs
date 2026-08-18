@@ -50,13 +50,13 @@ impl From<LogMessageHelper> for LogMessage {
         LogMessage {
             build_id: helper.build_id.or(fields
                 .and_then(|f| f.get("build_id").cloned())
-                .and_then(|id| Uuid::parse_str(&id).ok().map(BuildId))),
+                .and_then(|id| BuildId::from_display_str(&id))),
             dataflow_id: helper.dataflow_id.or(fields
                 .and_then(|f| f.get("dataflow_id").cloned())
                 .and_then(|id| Uuid::parse_str(&id).ok())),
-            node_id: helper
-                .node_id
-                .or(fields.and_then(|f| f.get("node_id").cloned()).map(NodeId)),
+            node_id: helper.node_id.or(fields
+                .and_then(|f| f.get("node_id").cloned())
+                .and_then(|id| id.parse::<NodeId>().ok())),
             daemon_id: helper.daemon_id.or(fields
                 .and_then(|f| f.get("daemon_id").cloned())
                 .and_then(|id| DaemonId::from_display_str(&id))),
@@ -93,8 +93,15 @@ pub enum LogLevelOrStdout {
 impl LogLevelOrStdout {
     /// Returns true if a message at this level passes the given minimum level filter.
     ///
-    /// Ordering: Stdout < Error < Warn < Info < Debug < Trace.
-    /// A message passes if its level is "at or above" (i.e. <=) the minimum.
+    /// `Stdout` is treated as a distinct channel rather than a severity, so it
+    /// does not participate in the `Error < Warn < Info < Debug < Trace`
+    /// ordering (where `Error` is the most severe and `Trace` the least):
+    ///
+    /// - A `Stdout` message passes only a `Stdout` filter; it is never
+    ///   delivered to a severity filter.
+    /// - A `LogLevel` message always passes a `Stdout` filter (the most
+    ///   permissive), and passes a `LogLevel` filter `min` when its severity is
+    ///   at least as severe as `min` (`msg <= min` in log-crate ordering).
     pub fn passes(&self, min: &LogLevelOrStdout) -> bool {
         match (self, min) {
             (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
@@ -140,8 +147,8 @@ impl std::fmt::Display for NodeError {
                     13 => "SIGPIPE".into(),
                     14 => "SIGALRM".into(),
                     15 => "SIGTERM".into(),
-                    22 => "SIGABRT".into(),
-                    23 => "NSIG".into(),
+                    22 => "SIGTTOU".into(),
+                    23 => "SIGURG".into(),
                     other => other.to_string().into(),
                 };
                 if matches!(self.cause, NodeErrorCause::GraceDuration) {
@@ -234,18 +241,15 @@ pub struct Timestamped<T> {
     pub timestamp: uhlc::Timestamp,
 }
 
-impl<T> Timestamped<T>
-where
-    T: serde::Serialize,
-{
-    pub fn serialize(&self) -> eyre::Result<Vec<u8>> {
-        bincode::serialize(self).wrap_err("failed to serialize timestamped message")
-    }
-}
-
 impl Timestamped<InterDaemonEvent> {
+    /// Encode this event for the zenoh data plane and `dora record` files.
+    pub fn serialize(&self) -> eyre::Result<Vec<u8>> {
+        crate::encode_presized(self, self.inner.encode_size_hint())
+            .wrap_err("failed to serialize timestamped message")
+    }
+
     pub fn deserialize_inter_daemon_event(bytes: &[u8]) -> eyre::Result<Self> {
-        bincode::deserialize(bytes).wrap_err("failed to deserialize InterDaemonEvent")
+        crate::decode(bytes).wrap_err("failed to deserialize InterDaemonEvent")
     }
 }
 
@@ -253,15 +257,28 @@ pub type SharedMemoryId = String;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum DataMessage {
-    Vec(AVec<u8, ConstAlign<128>>),
+    Vec(#[serde(with = "crate::bulk_bytes")] AVec<u8, ConstAlign<128>>),
+}
+
+impl DataMessage {
+    /// Byte length of the carried payload.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Vec(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for DataMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Vec(v) => f
+            Self::Vec(_) => f
                 .debug_struct("Vec")
-                .field("len", &v.len())
+                .field("len", &self.len())
                 .finish_non_exhaustive(),
         }
     }
@@ -387,6 +404,35 @@ pub struct BinaryPin {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn node_error_with_signal(signal: i32) -> NodeError {
+        NodeError {
+            timestamp: uhlc::HLC::default().new_timestamp(),
+            cause: NodeErrorCause::Other {
+                stderr: String::new(),
+            },
+            exit_status: NodeExitStatus::Signal(signal),
+        }
+    }
+
+    #[test]
+    fn node_error_signal_display_uses_linux_signal_names() {
+        for (signal, name) in [(6, "SIGABRT"), (22, "SIGTTOU"), (23, "SIGURG")] {
+            assert_eq!(
+                node_error_with_signal(signal).to_string(),
+                format!("exited because of signal {name}")
+            );
+        }
+    }
+
+    #[test]
+    fn node_error_signal_display_falls_back_to_signal_number() {
+        assert_eq!(
+            node_error_with_signal(40).to_string(),
+            "exited because of signal 40"
+        );
+    }
+
     #[test]
     fn test_log_message_serialization() {
         let log_message = LogMessage {
@@ -412,6 +458,87 @@ mod tests {
     fn stdout_passes_stdout_filter() {
         let stdout = LogLevelOrStdout::Stdout;
         assert!(stdout.passes(&LogLevelOrStdout::Stdout));
+    }
+
+    /// A `node_id` recovered from the untrusted `fields` map must go through
+    /// `NodeId` validation. It was previously wrapped via the raw tuple
+    /// constructor (`.map(NodeId)`), bypassing `validate_node_id` and yielding
+    /// a `NodeId` that could contain `/` or dot-segments -- the very
+    /// path-traversal characters the newtype exists to forbid. Every other
+    /// field recovered here (`build_id`, `dataflow_id`, `daemon_id`) already
+    /// parses defensively; `node_id` was the odd one out.
+    #[test]
+    fn node_id_recovered_from_fields_is_validated() {
+        let make = |node_id: &str| LogMessageHelper {
+            build_id: None,
+            dataflow_id: None,
+            node_id: None,
+            daemon_id: None,
+            level: LogLevelOrStdout::Stdout,
+            target: None,
+            module_path: None,
+            file: None,
+            line: None,
+            message: Some("m".to_string()),
+            timestamp: Utc::now(),
+            fields: Some(BTreeMap::from([(
+                "node_id".to_string(),
+                node_id.to_string(),
+            )])),
+        };
+
+        // A valid id is promoted to the typed field.
+        assert_eq!(
+            LogMessage::from(make("sensor")).node_id,
+            Some("sensor".parse().unwrap())
+        );
+
+        // Invalid ids (path separator / dot-segment) are rejected rather than
+        // silently wrapped into an unvalidated NodeId.
+        assert_eq!(LogMessage::from(make("a/b")).node_id, None);
+        assert_eq!(LogMessage::from(make("../evil")).node_id, None);
+    }
+
+    /// A `build_id` back-filled from the `fields` map must survive a
+    /// `Display` round trip. `BuildId`'s `Display` wraps the UUID as
+    /// `BuildId(<uuid>)` -- the exact string emitted by the idiomatic
+    /// `tracing::info!(build_id = %build_id, ...)` (e.g. the coordinator's
+    /// build warnings). Recovery previously used `Uuid::parse_str`, which
+    /// rejects that wrapper and silently dropped the id; it now goes through
+    /// `BuildId::from_display_str`, matching how `daemon_id` is recovered.
+    #[test]
+    fn build_id_recovered_from_fields_survives_display_round_trip() {
+        let build_id = BuildId(Uuid::new_v4());
+        let make = |value: &str| LogMessageHelper {
+            build_id: None,
+            dataflow_id: None,
+            node_id: None,
+            daemon_id: None,
+            level: LogLevelOrStdout::Stdout,
+            target: None,
+            module_path: None,
+            file: None,
+            line: None,
+            message: Some("m".to_string()),
+            timestamp: Utc::now(),
+            fields: Some(BTreeMap::from([(
+                "build_id".to_string(),
+                value.to_string(),
+            )])),
+        };
+
+        // The `Display` form (`BuildId(<uuid>)`) is recovered...
+        assert_eq!(
+            LogMessage::from(make(&build_id.to_string())).build_id,
+            Some(build_id)
+        );
+        // ...and a bare UUID still works, for backward compatibility.
+        assert_eq!(
+            LogMessage::from(make(&build_id.uuid().to_string())).build_id,
+            Some(build_id)
+        );
+        // Garbage is rejected rather than wrapped into a bogus id.
+        assert_eq!(LogMessage::from(make("not-a-build-id")).build_id, None);
     }
 
     /// #2027: `DaemonId` must survive a `Display` -> `from_display_str` round

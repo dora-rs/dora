@@ -7,10 +7,10 @@
 # Never split dora and ROS2 across containers: Docker Desktop for Mac has no
 # host networking to macOS and drops multicast SPDP, so discovery silently fails.
 #
-# Pins match CI: ROS2 Humble, Rust 1.92.0, Python 3.12.
+# Pins match CI: ROS2 Humble, Rust 1.97.1, Python 3.12.
 FROM ros:humble
 
-ARG RUST_VERSION=1.92.0
+ARG RUST_VERSION=1.97.1
 
 ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/usr/local/rustup \

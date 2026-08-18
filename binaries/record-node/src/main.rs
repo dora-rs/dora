@@ -1,14 +1,59 @@
 use std::{collections::HashMap, fs::File, time::SystemTime};
 
-use aligned_vec::AVec;
+use aligned_vec::{AVec, ConstAlign};
 use dora_message::{
     common::Timestamped,
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
 };
-use dora_node_api::{DoraNode, Event, arrow_utils};
+use dora_node_api::{DoraNode, Event, arrow::datatypes::DataType, arrow_utils};
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::Context;
+
+/// Parse `DORA_RECORD_TOPICS` (`{ "input_id": "source_node/source_output" }`)
+/// into a lookup from the record node's own input id to the validated
+/// `(source_node, source_output)` ids.
+///
+/// The node and output ids are parsed via [`str::parse`] (`FromStr`), which
+/// *validates* the character set and returns an error, rather than the
+/// panicking `NodeId::from`/`DataId::from` (`From<String>`) conversions. A
+/// malformed topic (e.g. a source node id containing a space) therefore fails
+/// the node cleanly at startup instead of panicking mid-run when the offending
+/// event is first recorded.
+fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId, DataId)>> {
+    let topic_map: HashMap<String, String> =
+        serde_json::from_str(topics_json).wrap_err("failed to parse DORA_RECORD_TOPICS")?;
+
+    let mut reverse_map: HashMap<String, (NodeId, DataId)> = HashMap::new();
+    for (input_id, source) in &topic_map {
+        let (node_id, output_id) = source
+            .split_once('/')
+            .ok_or_else(|| eyre::eyre!("invalid topic format: {source}"))?;
+        let node_id: NodeId = node_id
+            .parse()
+            .wrap_err_with(|| format!("invalid source node id in topic `{source}`"))?;
+        let output_id: DataId = output_id
+            .parse()
+            .wrap_err_with(|| format!("invalid source output id in topic `{source}`"))?;
+        reverse_map.insert(input_id.clone(), (node_id, output_id));
+    }
+    Ok(reverse_map)
+}
+
+/// Nanoseconds since the Unix epoch, saturating to 0 when the wall clock reads
+/// a pre-epoch time.
+///
+/// `SystemTime::duration_since(UNIX_EPOCH)` returns `Err` whenever the clock is
+/// set before 1970 — common on battery-less embedded/robotics hardware that
+/// boots at (or before) the epoch until NTP/GPS sync lands. This runs once per
+/// recorded message, so an `.unwrap()` here would abort the recorder mid-capture.
+/// Saturating to 0 matches the `saturating_sub` already used when computing the
+/// per-entry offset from `start_nanos`.
+fn unix_nanos(now: SystemTime) -> u64 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
 
 fn main() -> eyre::Result<()> {
     let output_file =
@@ -17,31 +62,15 @@ fn main() -> eyre::Result<()> {
         std::env::var("DORA_RECORD_TOPICS").wrap_err("DORA_RECORD_TOPICS env var not set")?;
     let descriptor_yaml = std::env::var("DORA_RECORD_DESCRIPTOR").unwrap_or_default();
 
-    // Parse topic map: { "input_id_on_record_node": "source_node/source_output" }
-    let topic_map: HashMap<String, String> =
-        serde_json::from_str(&topics_json).wrap_err("failed to parse DORA_RECORD_TOPICS")?;
-
-    // Build reverse map: input_id -> (source_node_id, source_output_id)
-    let mut reverse_map: HashMap<String, (String, String)> = HashMap::new();
-    for (input_id, source) in &topic_map {
-        let (node_id, output_id) = source
-            .split_once('/')
-            .ok_or_else(|| eyre::eyre!("invalid topic format: {source}"))?;
-        reverse_map.insert(
-            input_id.clone(),
-            (node_id.to_string(), output_id.to_string()),
-        );
-    }
+    // Build reverse map: input_id -> (source_node_id, source_output_id).
+    let reverse_map = build_reverse_map(&topics_json)?;
 
     let (_node, mut events) = DoraNode::init_from_env()?;
 
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    let start_nanos = unix_nanos(SystemTime::now());
 
     let header = RecordingHeader {
-        version: 1,
+        version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id: uuid::Uuid::new_v4(),
         descriptor_yaml: descriptor_yaml.into_bytes(),
@@ -62,21 +91,56 @@ fn main() -> eyre::Result<()> {
                     None => continue,
                 };
 
+                // Record the payload as a self-describing Arrow IPC stream so
+                // replay can reconstruct the array without a type sidecar.
                 let arrow_data = data.to_data();
-                let data_size = arrow_utils::required_data_size(&arrow_data);
-                let raw_data = if data_size > 0 {
-                    let mut buf = vec![0u8; data_size];
-                    arrow_utils::copy_array_into_sample(&mut buf, &arrow_data);
-                    Some(AVec::from_slice(128, &buf))
-                } else {
+                let raw_data = if matches!(arrow_data.data_type(), DataType::Null)
+                    && arrow_data.is_empty()
+                {
+                    // Exactly the unit array that replay rebuilds from an absent
+                    // payload (`NullArray::new(0)`) — record `None` to skip the
+                    // IPC framing.
                     None
+                } else {
+                    // Encode every other array — including a zero-length *typed*
+                    // array (e.g. an empty `Float32Array`) and a non-empty
+                    // `NullArray` — as a self-describing IPC stream, so replay
+                    // preserves the declared type and length instead of
+                    // collapsing it to `NullArray::new(0)`. (The deleted
+                    // `type_info` sidecar used to preserve this; #2027/#2083.)
+                    //
+                    // Use the hand-rolled 1-copy fast path when the array type
+                    // is eligible — it copies each buffer straight into the
+                    // aligned target — falling back to the official writer
+                    // otherwise, mirroring `DoraNode::send_output_array`. The
+                    // previous code always went through the official writer
+                    // (which stages the body in an internal `Vec`, ~2 payload
+                    // copies) and then copied the result a third time into the
+                    // `AVec`, on every recorded message.
+                    let encoded: AVec<u8, ConstAlign<128>> =
+                        match arrow_utils::ipc_encode::ipc_fast_path_len(&arrow_data) {
+                            Some(len) => {
+                                let mut buf: AVec<u8, ConstAlign<128>> =
+                                    AVec::__from_elem(128, 0, len);
+                                arrow_utils::ipc_encode::encode_ipc_into(&arrow_data, &mut buf)
+                                    .wrap_err("failed to Arrow-IPC-encode recorded output")?;
+                                buf
+                            }
+                            None => {
+                                let ipc_bytes =
+                                    arrow_utils::ipc_encode::encode_ipc_to_vec(&arrow_data)
+                                        .wrap_err("failed to Arrow-IPC-encode recorded output")?;
+                                AVec::from_slice(128, &ipc_bytes)
+                            }
+                        };
+                    Some(encoded)
                 };
 
                 let timestamp = metadata.timestamp();
                 let inter_event = InterDaemonEvent::Output {
                     dataflow_id: uuid::Uuid::nil(),
-                    node_id: NodeId::from(source_node.clone()),
-                    output_id: DataId::from(source_output.clone()),
+                    node_id: source_node.clone(),
+                    output_id: source_output.clone(),
                     metadata,
                     data: raw_data,
                 };
@@ -87,14 +151,11 @@ fn main() -> eyre::Result<()> {
                 };
                 let event_bytes = timestamped.serialize()?;
 
-                let now_nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64;
+                let now_nanos = unix_nanos(SystemTime::now());
 
                 let entry = RecordEntry {
-                    node_id: source_node.clone(),
-                    output_id: source_output.clone(),
+                    node_id: source_node.to_string(),
+                    output_id: source_output.to_string(),
                     timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
                     event_bytes,
                 };
@@ -113,4 +174,57 @@ fn main() -> eyre::Result<()> {
     eprintln!("  File:     {output_file}");
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_reverse_map, unix_nanos};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn unix_nanos_saturates_on_pre_epoch_clock() {
+        // A pre-epoch wall clock must not panic the recorder mid-capture.
+        let before_epoch = SystemTime::UNIX_EPOCH - Duration::from_secs(60);
+        assert_eq!(unix_nanos(before_epoch), 0);
+        // The epoch itself is 0, and a post-epoch time is its offset in nanos.
+        assert_eq!(unix_nanos(SystemTime::UNIX_EPOCH), 0);
+        assert_eq!(
+            unix_nanos(SystemTime::UNIX_EPOCH + Duration::from_nanos(1_500)),
+            1_500
+        );
+    }
+
+    #[test]
+    fn valid_topics_parse() {
+        let map = build_reverse_map(r#"{"in":"camera/image"}"#).unwrap();
+        let (node, output) = map.get("in").unwrap();
+        assert_eq!(node.to_string(), "camera");
+        assert_eq!(output.to_string(), "image");
+    }
+
+    #[test]
+    fn missing_slash_is_an_error() {
+        assert!(build_reverse_map(r#"{"in":"camera"}"#).is_err());
+    }
+
+    // A source node id with an invalid character (a space) must yield a clean
+    // startup error, not a panic from the `NodeId::from(String)` conversion
+    // that the recorder used to call in its hot loop.
+    #[test]
+    fn invalid_node_id_is_an_error_not_a_panic() {
+        let err = build_reverse_map(r#"{"in":"my node/image"}"#).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid source node id"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn invalid_output_id_is_an_error_not_a_panic() {
+        let err = build_reverse_map(r#"{"in":"camera/bad output"}"#).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("invalid source output id"),
+            "unexpected error: {err:#}"
+        );
+    }
 }
