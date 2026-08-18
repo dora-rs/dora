@@ -2423,51 +2423,21 @@ impl DoraNode {
         self.control_channel
             .extension_drop(namespace.into(), key.into())
     }
-    /// Write tensor bytes to a pinned memory pool via the daemon. The
-    /// daemon forwards the payload to remote daemons so the mirror pool
-    /// is updated in place.
-    pub fn write_pinned_memory(
+
+    /// Send an opaque request to the extension registered under
+    /// `namespace` on this node's daemon, and return its opaque reply.
+    ///
+    /// Companion to [`DoraNode::extension_store`] / [`DoraNode::extension_load`]:
+    /// those broker a descriptor's lifetime, this one carries a call the
+    /// extension's daemon half must service. dora interprets neither the
+    /// namespace nor the bytes — see `docs/extensions.md`.
+    pub fn extension_request(
         &mut self,
-        shared_memory_id: String,
-        tensor_data: Vec<u8>,
-        size: usize,
-    ) -> Result<(), eyre::Error> {
+        namespace: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, eyre::Error> {
         self.control_channel
-            .write_pinned_memory(shared_memory_id, tensor_data, size)
-    }
-
-    /// Register a memory pool on a remote machine via the daemon. The
-    /// daemon resolves the machine through the coordinator and mirrors
-    /// the pool there with a synchronous confirmation, returning
-    /// `Ok(Ok(()))` on success or `Ok(Err(msg))` when the mirror failed
-    /// (unresolved machine, remote pool creation failure, or ack
-    /// timeout).
-    #[allow(clippy::too_many_arguments)]
-    pub fn register_cross_machine_pool(
-        &mut self,
-        shared_memory_id: String,
-        shmem_name: String,
-        size: usize,
-        dtype: String,
-        shape: Vec<i64>,
-        device: String,
-        machine_id: String,
-    ) -> Result<(Result<(), String>, bool), eyre::Error> {
-        self.control_channel.register_cross_machine_pool(
-            shared_memory_id,
-            shmem_name,
-            size,
-            dtype,
-            shape,
-            device,
-            machine_id,
-        )
-    }
-
-    /// Release a memory pool through the daemon (see
-    /// [`ControlChannel::free_pinned_memory`]).
-    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
-        self.control_channel.free_pinned_memory(shared_memory_id)
+            .extension_request(namespace.into(), payload)
     }
 }
 

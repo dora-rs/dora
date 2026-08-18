@@ -55,28 +55,17 @@ pub enum DaemonRequest {
         namespace: String,
         key: String,
     },
-    /// Release a pinned-memory pool.
-    FreePinnedMemory {
-        shared_memory_id: String,
-    },
-    WritePinnedMemory {
-        shared_memory_id: String,
-        tensor_data: Vec<u8>,
-        size: usize,
-    },
-    /// Cross-machine memory pool registration: the daemon resolves the
-    /// target machine via the coordinator and mirrors the pool there.
-    RegisterCrossMachinePool {
-        shared_memory_id: String,
-        /// The local /dev/shm segment name (explicit `name=` or
-        /// machine-qualified auto name) — forwarded to the mirror daemon
-        /// as a remote reference for same-host direct reads.
-        shmem_name: String,
-        size: usize,
-        dtype: String,
-        shape: Vec<i64>,
-        device: String,
-        machine_id: String,
+    /// An opaque request from a node to the extension registered under
+    /// `namespace` on its daemon. dora never interprets either field.
+    ///
+    /// Complements the extension table (`ExtensionStore`/`ExtensionLoad`/
+    /// `ExtensionDrop`), which brokers descriptor *lifetime*. This one
+    /// carries a call the extension's daemon half must service — the
+    /// tensor-pool uses it for cross-machine registration and pool writes.
+    ExtensionRequest {
+        namespace: String,
+        #[serde(with = "crate::bulk_bytes::vec")]
+        payload: Vec<u8>,
     },
 }
 
@@ -102,9 +91,7 @@ impl DaemonRequest {
             // The stored value dominates; the namespace and key are short.
             DaemonRequest::ExtensionStore { value, .. } => value.len(),
             DaemonRequest::ExtensionLoad { .. } | DaemonRequest::ExtensionDrop { .. } => 0,
-            DaemonRequest::WritePinnedMemory { tensor_data, .. } => tensor_data.len(),
-            DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::RegisterCrossMachinePool { .. } => 0,
+            DaemonRequest::ExtensionRequest { payload, .. } => payload.len(),
         }
     }
 
@@ -120,9 +107,7 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::WritePinnedMemory { .. }
-            | DaemonRequest::RegisterCrossMachinePool { .. }
+            | DaemonRequest::ExtensionRequest { .. }
             | DaemonRequest::ExtensionStore { .. }
             | DaemonRequest::ExtensionLoad { .. }
             | DaemonRequest::ExtensionDrop { .. } => true,
@@ -141,9 +126,7 @@ impl DaemonRequest {
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::WritePinnedMemory { .. }
-            | DaemonRequest::RegisterCrossMachinePool { .. }
+            | DaemonRequest::ExtensionRequest { .. }
             | DaemonRequest::ExtensionStore { .. }
             | DaemonRequest::ExtensionLoad { .. }
             | DaemonRequest::ExtensionDrop { .. } => false,

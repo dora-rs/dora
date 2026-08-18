@@ -21,6 +21,7 @@ telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
 dora-tensor-pool = { workspace = true }
+postcard = { workspace = true }
 eyre = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }

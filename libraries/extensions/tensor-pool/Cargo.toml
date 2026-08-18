@@ -12,3 +12,5 @@ publish = false
 
 [dependencies]
 tracing = { workspace = true }
+serde = { workspace = true }
+postcard = { workspace = true }

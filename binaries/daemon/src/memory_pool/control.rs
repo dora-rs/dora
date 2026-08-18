@@ -2,26 +2,41 @@
 
 use super::*;
 
-/// Publish an inter-daemon memory-pool event over the dataflow topic.
+/// Publish one [`PeerMessage`] to the dataflow's extension topic, wrapped in
+/// dora's opaque [`InterDaemonEvent::ExtensionMessage`] envelope.
+///
+/// `target_machine` addresses a single daemon (`None` = every daemon in the
+/// dataflow); dora drops the message on every daemon it does not name, so
+/// this side needs no gating of its own.
+///
 /// serialize + declare + put all run off the event loop (Block congestion
 /// control can block declare_publisher on a degraded link). Logs the
-/// declare and put timing — postcard::serialize of the 61.44MB
-/// WriteMemoryPool payload takes hundreds of ms (3s+ in debug builds),
-/// so the timing is worth knowing on every publish path.
-pub(crate) async fn publish_memory_pool_event(
+/// declare and put timing — encoding the 61.44MB write payload takes
+/// hundreds of ms (3s+ in debug builds), so the timing is worth knowing on
+/// every publish path.
+pub(crate) async fn publish_pool_message(
     session: &zenoh::Session,
     clock: &Arc<HLC>,
     dataflow_id: &Uuid,
-    event: &InterDaemonEvent,
+    target_machine: Option<&str>,
+    message: &PeerMessage,
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
 ) -> eyre::Result<()> {
+    let is_bulk = matches!(message, PeerMessage::Write { .. });
+    let event = InterDaemonEvent::ExtensionMessage {
+        dataflow_id: *dataflow_id,
+        namespace: NAMESPACE.to_string(),
+        target_machine: target_machine.map(str::to_string),
+        payload: postcard::to_allocvec(message)
+            .map_err(|e| eyre!("memory pool: encoding peer message failed: {e}"))?,
+    };
     let serialized = Timestamped {
-        inner: event.clone(),
+        inner: event,
         timestamp: clock.new_timestamp(),
     }
     .serialize()?;
     let payload_len = serialized.len();
-    let topic = dataflow_memory_pool_topic(dataflow_id);
+    let topic = dataflow_extension_topic(dataflow_id, NAMESPACE);
     // Zenoh errors are boxed trait objects — eyre's `From` conversion
     // needs a Sized error, so convert explicitly instead of `?`.
     let declared = std::time::Instant::now();
@@ -40,13 +55,13 @@ pub(crate) async fn publish_memory_pool_event(
         declared.elapsed()
     );
     let started = std::time::Instant::now();
-    // Control events (RegisterPool/RegisterPoolAck/FreePool) go over zenoh
-    // SHM when a provider exists: same-host daemons map the payload
-    // zero-copy, cross-host receivers get an implicit copy from the zenoh
-    // transport. MemoryPoolWrite carries the cross-machine tensor data and
-    // only ever happens cross-host, where an SHM segment would be an extra
-    // copy with no benefit — keep it on the plain path.
-    let put_result = if matches!(event, InterDaemonEvent::MemoryPoolWrite { .. }) {
+    // Control messages (Register/RegisterAck/Free) go over zenoh SHM when a
+    // provider exists: same-host daemons map the payload zero-copy,
+    // cross-host receivers get an implicit copy from the zenoh transport.
+    // A Write carries the cross-machine tensor data and only ever happens
+    // cross-host, where an SHM segment would be an extra copy with no
+    // benefit — keep it on the plain path.
+    let put_result = if is_bulk {
         publisher.put(serialized).await
     } else if let Some(provider) = shm_provider {
         // Synchronous wait: control payloads are KB-scale, so the shm
@@ -100,20 +115,19 @@ pub(crate) async fn release_cross_pool(
         return;
     }
     tracing::info!("memory pool: forwarding free of {shared_memory_id} to peer {peer_machine_id}");
-    if let Err(e) = publish_memory_pool_event(
+    if let Err(e) = publish_pool_message(
         session,
         clock,
         dataflow_id,
-        &InterDaemonEvent::FreePool {
-            dataflow_id: *dataflow_id,
-            machine_id: peer_machine_id.to_string(),
+        Some(peer_machine_id),
+        &PeerMessage::Free {
             shared_memory_id: shared_memory_id.to_string(),
         },
         shm_provider,
     )
     .await
     {
-        tracing::warn!("memory pool: failed to publish FreePool for {shared_memory_id}: {e}");
+        tracing::warn!("memory pool: failed to publish the free of {shared_memory_id}: {e}");
     }
 }
 

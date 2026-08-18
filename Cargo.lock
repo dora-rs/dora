@@ -2269,6 +2269,7 @@ dependencies = [
  "itertools 0.15.0",
  "libc",
  "memchr",
+ "postcard",
  "process-wrap",
  "serde",
  "serde_json",
@@ -2792,6 +2793,8 @@ dependencies = [
 name = "dora-tensor-pool"
 version = "1.0.0-rc.4"
 dependencies = [
+ "postcard",
+ "serde",
  "tracing",
 ]
 
@@ -2802,7 +2805,9 @@ dependencies = [
  "arrow 59.0.0",
  "dora-message",
  "dora-node-api",
+ "dora-tensor-pool",
  "eyre",
+ "postcard",
  "pyo3",
  "serde_json",
  "shared_memory_extended",

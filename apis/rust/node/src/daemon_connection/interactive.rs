@@ -79,11 +79,8 @@ impl InteractiveEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
-            DaemonRequest::FreePinnedMemory { .. } | DaemonRequest::WritePinnedMemory { .. } => {
-                DaemonReply::Result(Ok(()))
-            }
-            DaemonRequest::RegisterCrossMachinePool { .. } => {
-                eyre::bail!("cross-machine pool registration is not supported in interactive mode")
+            DaemonRequest::ExtensionRequest { namespace, .. } => {
+                eyre::bail!("extension {namespace} is not available in interactive mode")
             }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")

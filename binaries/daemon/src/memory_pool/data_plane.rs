@@ -121,12 +121,12 @@ pub(crate) async fn serve_cross_data_frame(
         Ok(Some((dataflow_id, shared_memory_id, seq))) => {
             // Remote commit ack via zenoh (the origin's pending reply
             // waits on it).
-            publish_memory_pool_event(
+            publish_pool_message(
                 session,
                 clock,
                 &dataflow_id,
-                &InterDaemonEvent::MemoryPoolWriteAck {
-                    dataflow_id,
+                None,
+                &PeerMessage::WriteAck {
                     shared_memory_id,
                     seq,
                     ok: true,
@@ -135,7 +135,7 @@ pub(crate) async fn serve_cross_data_frame(
                 shm_provider,
             )
             .await
-            .map_err(|e| format!("failed to publish MemoryPoolWriteAck: {e}"))?;
+            .map_err(|e| format!("failed to publish the write ack: {e}"))?;
             Ok(true)
         }
         Ok(None) => Ok(false),
@@ -145,12 +145,12 @@ pub(crate) async fn serve_cross_data_frame(
             // segment missing, bounds violation) instead of making it
             // wait out the commit-ack timeout.
             if let Some((dataflow_id, shared_memory_id, seq)) = err.ack
-                && let Err(e) = publish_memory_pool_event(
+                && let Err(e) = publish_pool_message(
                     session,
                     clock,
                     &dataflow_id,
-                    &InterDaemonEvent::MemoryPoolWriteAck {
-                        dataflow_id,
+                    None,
+                    &PeerMessage::WriteAck {
                         shared_memory_id,
                         seq,
                         ok: false,
@@ -160,9 +160,7 @@ pub(crate) async fn serve_cross_data_frame(
                 )
                 .await
             {
-                tracing::warn!(
-                    "memory pool: failed to publish failed-write MemoryPoolWriteAck: {e}"
-                );
+                tracing::warn!("memory pool: failed to publish failed-write ack: {e}");
             }
             Err(err.message)
         }

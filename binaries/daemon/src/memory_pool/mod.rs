@@ -33,6 +33,7 @@ pub(crate) fn cross_machine_enabled() -> bool {
 
 pub(crate) mod auth;
 pub(crate) mod control;
+pub(crate) mod daemon;
 pub(crate) mod data_plane;
 pub(crate) mod mirror;
 
@@ -42,6 +43,7 @@ pub(crate) use data_plane::*;
 pub(crate) use mirror::*;
 
 use super::*;
+pub(crate) use dora_tensor_pool::protocol::{NAMESPACE, PeerMessage};
 
 #[cfg(test)]
 mod cross_pool_write_tests {
@@ -570,7 +572,7 @@ mod cross_pool_write_tests {
 
         // Origin-side subscriber on the memory-pool topic (the daemon's
         // per-dataflow loop in miniature).
-        let topic = dataflow_memory_pool_topic(&dataflow_id);
+        let topic = dataflow_extension_topic(&dataflow_id, NAMESPACE);
         let subscriber = origin_session.declare_subscriber(&topic).await.unwrap();
         // The serve layer publishes the failed-write ack exactly once
         // (event-driven, no retry — fine in production, where the
@@ -600,13 +602,22 @@ mod cross_pool_write_tests {
                         Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
                             .unwrap();
                     match event.inner {
-                        InterDaemonEvent::MemoryPoolWriteAck {
+                        InterDaemonEvent::ExtensionMessage {
                             dataflow_id: df,
-                            shared_memory_id,
-                            seq,
-                            ok,
-                            error,
+                            namespace,
+                            payload,
+                            ..
                         } => {
+                            assert_eq!(namespace, NAMESPACE);
+                            let PeerMessage::WriteAck {
+                                shared_memory_id,
+                                seq,
+                                ok,
+                                error,
+                            } = postcard::from_bytes(&payload).unwrap()
+                            else {
+                                panic!("expected a WriteAck")
+                            };
                             assert_eq!(df, dataflow_id);
                             assert_eq!(shared_memory_id, pool_id);
                             assert_eq!(seq, 1);
@@ -798,7 +809,7 @@ mod cross_pool_write_tests {
         let df = Uuid::new_v4();
         let pool = "pool_sender_node_1".to_string();
         let seq = 7u64;
-        let topic = dataflow_memory_pool_topic(&df);
+        let topic = dataflow_extension_topic(&df, NAMESPACE);
 
         // Origin-side subscriber, mirroring the daemon's per-dataflow loop.
         let subscriber = origin_session.declare_subscriber(&topic).await.unwrap();
@@ -818,12 +829,12 @@ mod cross_pool_write_tests {
         let clock = Arc::new(HLC::default());
         let mut ack_received = false;
         for _ in 0..10 {
-            publish_memory_pool_event(
+            publish_pool_message(
                 &mirror_session,
                 &clock,
                 &df,
-                &InterDaemonEvent::MemoryPoolWriteAck {
-                    dataflow_id: df,
+                None,
+                &PeerMessage::WriteAck {
                     shared_memory_id: pool.clone(),
                     seq,
                     ok: true,
@@ -843,13 +854,22 @@ mod cross_pool_write_tests {
                         Timestamped::<InterDaemonEvent>::deserialize_inter_daemon_event(&bytes)
                             .unwrap();
                     match event.inner {
-                        InterDaemonEvent::MemoryPoolWriteAck {
+                        InterDaemonEvent::ExtensionMessage {
                             dataflow_id,
-                            shared_memory_id,
-                            seq: ack_seq,
-                            ok,
-                            error,
+                            namespace,
+                            payload,
+                            ..
                         } => {
+                            assert_eq!(namespace, NAMESPACE);
+                            let PeerMessage::WriteAck {
+                                shared_memory_id,
+                                seq: ack_seq,
+                                ok,
+                                error,
+                            } = postcard::from_bytes(&payload).unwrap()
+                            else {
+                                panic!("expected a WriteAck")
+                            };
                             assert_eq!(dataflow_id, df);
                             assert_eq!(shared_memory_id, pool);
                             assert_eq!(ack_seq, seq);
