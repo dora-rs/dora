@@ -50,7 +50,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicU32, AtomicU64},
+        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
     },
     time::{Duration, Instant},
 };
@@ -1504,8 +1504,28 @@ fn remove_cross_pool_shmem(shmem_name: &str) {
     }
     #[cfg(not(target_os = "linux"))]
     {
-        tracing::warn!("memory pool: shmem removal only implemented on Linux");
+        // Not an anomaly worth a warning per pool per free/finish: the
+        // whole cross-machine mirror path is Linux-only.
+        tracing::debug!("memory pool: shmem removal only implemented on Linux");
     }
+}
+
+/// Unlink the `/dev/shm` segment a cross-machine pool resolves to under
+/// `machine_id`, returning whether the name could be derived.
+///
+/// Used by the free paths that only know the pool id. Paths that hold
+/// the name the segment was created under should unlink that instead —
+/// see `cross_pool_shmem_name`'s own warning: "create, write, and the
+/// free paths must agree or a mirror leaks under a name nobody unlinks."
+fn unlink_cross_pool_segment(machine_id: &str, dataflow_id: &str, shared_memory_id: &str) -> bool {
+    let Some(shmem_name) =
+        TensorPoolManager::cross_pool_shmem_name(machine_id, dataflow_id, shared_memory_id)
+    else {
+        tracing::warn!("memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror");
+        return false;
+    };
+    remove_cross_pool_shmem(&shmem_name);
+    true
 }
 
 /// Publish an inter-daemon memory-pool event over the dataflow topic.
@@ -1602,15 +1622,9 @@ async fn release_cross_pool(
     shared_memory_id: &str,
     shm_provider: Option<&ShmProvider<PosixShmProviderBackend>>,
 ) {
-    let Some(shmem_name) = TensorPoolManager::cross_pool_shmem_name(
-        machine_id,
-        &dataflow_id.to_string(),
-        shared_memory_id,
-    ) else {
-        tracing::warn!("memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror");
+    if !unlink_cross_pool_segment(machine_id, &dataflow_id.to_string(), shared_memory_id) {
         return;
-    };
-    remove_cross_pool_shmem(&shmem_name);
+    }
     tracing::info!("memory pool: forwarding free of {shared_memory_id} to peer {peer_machine_id}");
     if let Err(e) = publish_memory_pool_event(
         session,
@@ -1846,6 +1860,39 @@ fn drain_cross_write_pending(dataflow_id: Uuid) -> usize {
 /// on the plain path and never allocates from here.
 const MEMORY_POOL_SHM_PROVIDER_SIZE: usize = 8 * 1024 * 1024;
 
+/// A dataflow's memory-pool zenoh subscriber, plus the liveness flag the
+/// detached mirror-creation tasks it feeds check before they publish a
+/// mirror into the tensor pool.
+///
+/// Mirror creation runs off the event loop, so a `finish_dataflow` can
+/// land between the handler's liveness check and the task's
+/// `register_cross_pool`. Without the flag that task would register a
+/// segment *behind* the finish-time drain, leaking it for the daemon's
+/// lifetime (dora-rs/dora#3194).
+pub(crate) struct MemoryPoolSubscriber {
+    /// The receive loop has no shutdown branch of its own, so a dropped
+    /// handle would leak the task, its session clone, and its event
+    /// sender for the daemon's lifetime.
+    handle: tokio::task::JoinHandle<()>,
+    /// Cloned into every mirror task; cleared by [`Self::shutdown`].
+    dataflow_live: Arc<AtomicBool>,
+}
+
+impl MemoryPoolSubscriber {
+    /// Stop feeding this dataflow: clear the liveness flag, then abort
+    /// the receive loop.
+    ///
+    /// The flag is cleared *before* the caller drains the cross-pool
+    /// table, which is what makes the drain authoritative: a mirror task
+    /// that still reads `true` after its `register_cross_pool` is
+    /// guaranteed to be visible to that drain, and one that reads `false`
+    /// rolls its own registration back.
+    fn shutdown(self) {
+        self.dataflow_live.store(false, atomic::Ordering::SeqCst);
+        self.handle.abort();
+    }
+}
+
 pub struct Daemon {
     /// This machine's id (as registered with the coordinator), if any.
     /// Used to gate which daemon mirrors a cross-machine pool and to
@@ -1907,14 +1954,13 @@ pub struct Daemon {
     /// provider could not be created — control events then fall back to
     /// regular payloads.
     pub(crate) shm_provider: Option<Arc<ShmProvider<PosixShmProviderBackend>>>,
-    /// Handles of the per-dataflow memory-pool zenoh subscriber tasks.
-    /// Retained so `finish_dataflow` (and the failed-spawn path) can
-    /// abort them: the receive loops have no shutdown branch of their
-    /// own, and a discarded handle would leak the subscriber, its
-    /// session clone, and its event sender for the daemon's lifetime —
-    /// accumulating one task per spawn (and duplicate consumers on
-    /// repeated spawns).
-    pub(crate) memory_pool_subscribers: HashMap<DataflowId, tokio::task::JoinHandle<()>>,
+    /// The per-dataflow memory-pool zenoh subscribers, retained so
+    /// `finish_dataflow` (and the failed-spawn path) can
+    /// [`MemoryPoolSubscriber::shutdown`] them — otherwise each spawn
+    /// accumulates a task and a duplicate consumer. Membership doubles as
+    /// "this daemon is serving the dataflow", from before the node build
+    /// until finish.
+    pub(crate) memory_pool_subscribers: HashMap<DataflowId, MemoryPoolSubscriber>,
     /// Port of this daemon's direct-TCP memory-pool data listener (the
     /// mirror side of the cross-machine data plane), when it was started.
     /// Reported to the origin in `RegisterPoolAck.data_port`.
@@ -3180,6 +3226,11 @@ impl Daemon {
         // under this machine's id prefix. Nothing live can own them (this
         // daemon's own dataflows died with it; sibling daemons use other
         // prefixes), so sweep them at startup.
+        //
+        // Do not widen this gate: the prefix also matches a *node's own*
+        // local pool segment (a node with `DORA_MACHINE_ID` set names it
+        // the same way), and on the `dora up` path nodes deliberately
+        // outlive a daemon restart (see `daemon-reconnect-e2e`).
         #[cfg(target_os = "linux")]
         if cross_machine_enabled()
             && let Some(machine_id) = self.machine_id.as_deref()
@@ -3803,7 +3854,7 @@ impl Daemon {
                         // lifetime.
                         if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id)
                         {
-                            subscriber.abort();
+                            subscriber.shutdown();
                         }
                         (Err(format!("{err:?}")), None)
                     }
@@ -5453,6 +5504,25 @@ impl Daemon {
                 {
                     return Ok(());
                 }
+                // Never mirror for a dataflow this daemon has finished —
+                // see [`MemoryPoolSubscriber`]. Gated on the subscriber
+                // registry rather than `self.running`: the subscriber is
+                // declared before the node build, while the dataflow has
+                // not reached `self.running` yet, and the origin's sync
+                // register fires from its node startup — so a `running`
+                // check would reject legitimate registrations during a
+                // slow build.
+                let Some(dataflow_live) = self
+                    .memory_pool_subscribers
+                    .get(&dataflow_id)
+                    .map(|s| s.dataflow_live.clone())
+                else {
+                    tracing::debug!(
+                        "memory pool: ignoring RegisterPool for {shared_memory_id}: \
+                         dataflow {dataflow_id} is no longer running"
+                    );
+                    return Ok(());
+                };
                 let session = self.zenoh_session.clone();
                 let clock = self.clock.clone();
                 // The gating above guarantees this daemon IS the target
@@ -5474,11 +5544,12 @@ impl Daemon {
                 // `cross_pool_shmem_name`; the sender node never runs on
                 // this host, so the node-exit reclaim never fires —
                 // FreePool drops the entry explicitly.
-                if let Some(mirror_shmem_name) = TensorPoolManager::cross_pool_shmem_name(
+                let mirror_shmem_name = TensorPoolManager::cross_pool_shmem_name(
                     self.machine_id.as_deref().unwrap_or_default(),
                     &dataflow_id.to_string(),
                     &shared_memory_id,
-                ) {
+                );
+                if let Some(mirror_shmem_name) = &mirror_shmem_name {
                     // Fallible owner parse: the node id segment comes from
                     // the wire (`pool_{node}_{counter}`), and
                     // `NodeId::from(String)` panics on an invalid id
@@ -5503,7 +5574,7 @@ impl Daemon {
                         key: shared_memory_id.clone(),
                     };
                     let value =
-                        build_mirror_descriptor(size, &dtype, &shape, &mirror_shmem_name, &device);
+                        build_mirror_descriptor(size, &dtype, &shape, mirror_shmem_name, &device);
                     if let Err(e) = self.extensions.store(ext_key, value, &owner) {
                         tracing::warn!(
                             "memory pool: failed to store mirror descriptor for {shared_memory_id}: {e}"
@@ -5559,26 +5630,50 @@ impl Daemon {
                             Some(&shmem_name),
                         )
                     };
-                    let (ok, error) = match result {
+                    let (mut ok, mut error) = match result {
                         Ok(()) => (true, None),
                         Err(e) => (false, Some(e.to_string())),
                     };
                     // Same-host detection: if this daemon can open the
                     // sender's segment (shared /dev/shm), readers can read
                     // it directly and the origin can skip the data push.
-                    let direct = ok && ShmemConf::new().os_id(&shmem_name).open().is_ok();
+                    let mut direct = ok && ShmemConf::new().os_id(&shmem_name).open().is_ok();
                     if ok {
                         // Track the pool's other machine (the origin) so
                         // the targeted free reaches it, mirroring the
-                        // origin's `{pool -> target}` entry.
+                        // origin's `{pool -> target}` entry, and record the
+                        // segment just created so the finish-time drain can
+                        // unlink exactly it.
                         tensor_pool.register_cross_pool(
                             dataflow_id.to_string(),
                             shared_memory_id.clone(),
                             origin_machine_id,
+                            mirror_shmem_name.clone(),
                         );
-                        tracing::info!(
-                            "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
-                        );
+                        // The dataflow may have finished while this task
+                        // ran; see [`MemoryPoolSubscriber`]. Registering
+                        // behind the finish-time drain would strand the
+                        // segment for the daemon's lifetime, so undo it.
+                        if dataflow_live.load(atomic::Ordering::SeqCst) {
+                            tracing::info!(
+                                "memory pool: mirrored cross-machine pool {shared_memory_id} (size {size})"
+                            );
+                        } else {
+                            tensor_pool
+                                .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id);
+                            if let Some(name) = &mirror_shmem_name {
+                                remove_cross_pool_shmem(name);
+                            }
+                            // Report the failure rather than returning
+                            // early: the origin would otherwise sit
+                            // through its 5s ack timeout three times over
+                            // for a dataflow that is already gone.
+                            ok = false;
+                            direct = false;
+                            error = Some(format!(
+                                "dataflow {dataflow_id} finished before the mirror was registered"
+                            ));
+                        }
                     } else {
                         tracing::warn!(
                             "memory pool: failed to mirror pool {shared_memory_id}: {}",
@@ -5654,17 +5749,13 @@ impl Daemon {
                     .await
                     .remove(&(dataflow_id, shared_memory_id.to_string()));
                 // Same machine-qualified id as `create_cross_pool_shmem`.
-                let Some(shmem_name) = TensorPoolManager::cross_pool_shmem_name(
+                if !unlink_cross_pool_segment(
                     self.machine_id.as_deref().unwrap_or_default(),
                     &dataflow_id.to_string(),
                     &shared_memory_id,
-                ) else {
-                    tracing::warn!(
-                        "memory pool: invalid pool id {shared_memory_id}, cannot unlink mirror"
-                    );
+                ) {
                     return Ok(());
-                };
-                remove_cross_pool_shmem(&shmem_name);
+                }
                 tracing::info!("memory pool: freed cross-machine pool {shared_memory_id}");
                 Ok(())
             }
@@ -5955,7 +6046,13 @@ impl Daemon {
             // abandoned task would keep the subscriber, its session clone,
             // and its event sender alive for the daemon's lifetime.
             // Aborted in `finish_dataflow` and on the failed-spawn path.
-            self.memory_pool_subscribers.insert(dataflow_id, subscriber);
+            self.memory_pool_subscribers.insert(
+                dataflow_id,
+                MemoryPoolSubscriber {
+                    handle: subscriber,
+                    dataflow_live: Arc::new(AtomicBool::new(true)),
+                },
+            );
         }
 
         let mut logger = self
@@ -7349,10 +7446,17 @@ impl Daemon {
                                                 endpoint,
                                             );
                                     }
+                                    // No mirror name: this is the origin
+                                    // side, which created no segment of its
+                                    // own — the mirror lives on the target
+                                    // machine. The sender node's live local
+                                    // segment is tracked separately, by the
+                                    // `register_tensor_pool` below.
                                     tensor_pool.register_cross_pool(
                                         dataflow_id.to_string(),
                                         shared_memory_id.clone(),
                                         machine_id,
+                                        None,
                                     );
                                     // Make the explicit `name=` segment
                                     // discoverable for the
@@ -7448,7 +7552,7 @@ impl Daemon {
                 let peer = self
                     .tensor_pool
                     .unregister_cross_pool(&dataflow_id.to_string(), &shared_memory_id)
-                    .map(|(peer, _)| peer);
+                    .map(|entry| entry.peer_machine);
                 if let Some(peer) = &peer {
                     release_cross_pool(
                         &self.zenoh_session,
@@ -8235,7 +8339,7 @@ impl Daemon {
         // sender. Without this, repeated or failed spawns accumulate
         // tasks and can create duplicate consumers.
         if let Some(subscriber) = self.memory_pool_subscribers.remove(&dataflow_id) {
-            subscriber.abort();
+            subscriber.shutdown();
         }
 
         // Drain this dataflow's per-(dataflow, pool) cross-write state:
@@ -8302,12 +8406,20 @@ impl Daemon {
                 .unwrap_or_else(|e| e.into_inner());
             endpoints.retain(|(df, _), _| *df != dataflow_id);
         }
-        // Release this dataflow's cross_pools entries (mirror tracking).
-        // Mirrors never enter the tensor-pool table, so this covers them;
-        // the local pool table is node-side and not touched here.
-        self.tensor_pool.cleanup_dataflow(&dataflow_id.to_string());
-        self.tensor_pool
-            .cleanup_cross_pools(&dataflow_id.to_string());
+        // Reclaim this dataflow's pools. `cleanup_dataflow` covers the
+        // local pool table; `cleanup_cross_pools` drains the cross-machine
+        // table and unlinks the mirror segments among it (#3194).
+        //
+        // Neither guarantees every local reader is gone: dynamic nodes are
+        // excluded from `should_finish` and may outlive the dataflow, and
+        // an already-mapped reader survives an unlink but a re-open by
+        // name does not. That window is not new — `cleanup_dataflow` has
+        // reclaimed ordinary local pool segments at finish since
+        // dora-rs/dora#2881; mirrors now behave the same way rather than
+        // leaking for the daemon's lifetime.
+        let dataflow_str = dataflow_id.to_string();
+        self.tensor_pool.cleanup_dataflow(&dataflow_str);
+        self.tensor_pool.cleanup_cross_pools(&dataflow_str);
         Ok(())
     }
 
@@ -12822,6 +12934,58 @@ mod cross_pool_write_tests {
         let _ = std::fs::remove_file(format!("{dir}/{local}"));
     }
 
+    /// `finish_dataflow` must unlink the mirror segments this daemon
+    /// created for the finishing dataflow (dora-rs/dora#3194) — an
+    /// explicit `FreePool` never arrives when the dataflow ends by node
+    /// crash, `dora stop`, or abort — and must leave alone both the
+    /// origin-side entry (which owns no segment) and another dataflow's
+    /// still-live mirrors.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn finish_unlinks_own_mirrors_only() {
+        let finishing = Uuid::new_v4().to_string();
+        let other = Uuid::new_v4().to_string();
+
+        let name = |dataflow_id: &str, pool_id: &str| {
+            TensorPoolManager::cross_pool_shmem_name("finishB", dataflow_id, pool_id).unwrap()
+        };
+        // (dataflow, pool, is a mirror this daemon created, survives finish)
+        let fixture = [
+            (&finishing, "pool_node_0", true, false),
+            (&finishing, "pool_node_1", true, false),
+            // Origin-side entry of the finishing dataflow: no segment of
+            // its own, so the sender's live local pool must survive.
+            (&finishing, "pool_sender_0", false, true),
+            // Mirror of a dataflow that is still running.
+            (&other, "pool_node_0", true, true),
+        ];
+
+        let tensor_pool = TensorPoolManager::new();
+        let mut cleanup = Vec::new();
+        for (dataflow_id, pool_id, is_mirror, _) in fixture {
+            let shmem_name = name(dataflow_id, pool_id);
+            std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 4096]).unwrap();
+            cleanup.push(ShmemCleanup(shmem_name.clone()));
+            tensor_pool.register_cross_pool(
+                dataflow_id.to_string(),
+                pool_id.to_string(),
+                "A".to_string(),
+                is_mirror.then_some(shmem_name),
+            );
+        }
+
+        assert_eq!(tensor_pool.cleanup_cross_pools(&finishing), 2);
+
+        for (dataflow_id, pool_id, _, survives) in fixture {
+            let path = format!("/dev/shm/{}", name(dataflow_id, pool_id));
+            assert_eq!(
+                std::path::Path::new(&path).exists(),
+                survives,
+                "{pool_id} of {dataflow_id}"
+            );
+        }
+    }
+
     /// A stale mirror segment (leftover from a killed daemon that never
     /// ran shutdown cleanup) must be replaced on re-register instead of
     /// failing with EEXIST.
@@ -13120,6 +13284,7 @@ mod cross_pool_write_tests {
             dataflow_id.to_string(),
             pool_id.to_string(),
             "A".to_string(),
+            Some(shmem_name.clone()),
         );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -13225,6 +13390,7 @@ mod cross_pool_write_tests {
             dataflow_id.to_string(),
             pool_id.to_string(),
             "A".to_string(),
+            Some(shmem_name.clone()),
         );
 
         // Data listener served by the mirror session's process context.
@@ -13344,6 +13510,7 @@ mod cross_pool_write_tests {
             dataflow_id.to_string(),
             pool_id.to_string(),
             "A".to_string(),
+            Some(shmem_name.clone()),
         );
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -13615,6 +13782,7 @@ mod cross_pool_write_tests {
                 dataflow_id.to_string(),
                 pool_id.to_string(),
                 "A".to_string(),
+                Some(shmem_name.clone()),
             );
 
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();

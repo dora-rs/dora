@@ -86,12 +86,31 @@ pub struct CleanupSummary {
     pub released_count: usize,
 }
 
+/// One side's record of a cross-machine pool. Both sides store an
+/// otherwise symmetric record (each keeps "the other machine"), so
+/// `mirror_shmem_name` is what tells them apart.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrossPoolEntry {
+    /// The pool's *other* machine: the target on the origin side, the
+    /// origin on the mirror side.
+    pub peer_machine: String,
+    /// The local `/dev/shm` segment this side created to mirror the
+    /// pool — `Some` only on the mirror side, `None` on the origin.
+    ///
+    /// Storing the name the mirror was actually created under (rather
+    /// than a flag plus a re-derivation at free time) is what keeps the
+    /// unlink honest: the origin side's *derived* name would be the
+    /// sender node's own live local pool segment, so a free path that
+    /// re-derives has to remember to exclude it. `None` here simply has
+    /// nothing to unlink.
+    pub mirror_shmem_name: Option<String>,
+}
+
 /// Cross-machine pools this manager participates in: (dataflow id, pool
-/// id) -> (peer machine id, dataflow id). Unlike the main table these
-/// entries describe *mirrors* (pools that live on another machine's
-/// /dev/shm), written on register ack (origin side) and on mirror
-/// creation (mirror side), drained by `cleanup_all` on daemon exit.
-type CrossPoolTable = HashMap<(String, String), (String, String)>;
+/// id) -> [`CrossPoolEntry`]. Written on register ack (origin side) and
+/// on mirror creation (mirror side), drained by `cleanup_all` on daemon
+/// exit.
+type CrossPoolTable = HashMap<(String, String), CrossPoolEntry>;
 
 /// Manager for tensor pool allocations.
 #[derive(Clone)]
@@ -354,17 +373,46 @@ impl TensorPoolManager {
         released
     }
 
-    /// Drop every cross-machine entry of a finished dataflow.
+    /// Drop every cross-machine entry of a finished dataflow, unlinking
+    /// the mirror segments among them. Returns how many were unlinked.
     ///
     /// `cross_pools` is keyed by the same per-dataflow UUIDs as the main
     /// table, so a daemon that outlives the dataflow (`dora up`) would
-    /// otherwise hold one entry per (dataflow, pool) forever. Unlinks are
-    /// deliberately not done here: freeing a cross-machine pool publishes
-    /// `FreePool` (the peer unlinks its side); this is only the local
-    /// bookkeeping drain for dataflows whose nodes never got to free.
-    pub fn cleanup_cross_pools(&self, dataflow_id: &str) {
-        self.lock_cross_pools()
-            .retain(|(df, _), _| df != dataflow_id);
+    /// otherwise hold one entry per (dataflow, pool) forever.
+    ///
+    /// The unlink matters because an explicit `FreePool` may never reach
+    /// the mirror — node crash, `dora stop`, origin-daemon crash, dropped
+    /// publish — and those segments, sized up to the registration cap,
+    /// would then stay resident until the daemon exits, growing unbounded
+    /// on a long-lived daemon cycling many cross-machine dataflows
+    /// (dora-rs/dora#3194). Only entries carrying a
+    /// [`CrossPoolEntry::mirror_shmem_name`] have a segment to unlink;
+    /// origin-side entries drop out as pure bookkeeping.
+    ///
+    /// The table lock is released before the unlinks, matching
+    /// [`Self::release_matching`]: the `remove_file` syscalls must not
+    /// serialize unrelated pool operations.
+    pub fn cleanup_cross_pools(&self, dataflow_id: &str) -> usize {
+        let mirrors: Vec<String> = {
+            let mut table = self.lock_cross_pools();
+            table
+                .extract_if(|(df, _), _| df == dataflow_id)
+                .filter_map(|(_, entry)| entry.mirror_shmem_name)
+                .collect()
+        };
+        let mut unlinked = 0;
+        for shmem_name in &mirrors {
+            match self.free_shared_memory(shmem_name) {
+                Ok(()) => unlinked += 1,
+                Err(err) => tracing::warn!("failed to unlink mirror segment: {err}"),
+            }
+        }
+        if unlinked > 0 {
+            tracing::info!(
+                "Unlinked {unlinked} mirror segment(s) of finished dataflow {dataflow_id}"
+            );
+        }
+        unlinked
     }
 
     /// Drop the entries of `dataflow_id` that `should_release` accepts and
@@ -481,9 +529,13 @@ impl TensorPoolManager {
             }
         }
 
-        // Cross-machine entries carry no segment of their own on the
-        // freeing side (the peer unlinks its mirror via FreePool), so
-        // they are drained without side effects.
+        // Drained without unlinking, unlike `cleanup_cross_pools`:
+        // mirror entries *do* own a segment, but the daemon may exit
+        // while its own nodes still hold the mapping, and a same-host
+        // peer daemon's readers may be mid-drain. The daemon's startup
+        // sweep (`cleanup_orphan_mirrors`) reclaims whatever is left
+        // under this machine's prefix instead — nothing live can own it
+        // by then.
         self.lock_cross_pools().clear();
 
         let released_count = unreleased_count - errors.len();
@@ -514,9 +566,24 @@ impl TensorPoolManager {
     /// after creating the mirror segment. Keyed by dataflow so concurrently
     /// running dataflows (whose node processes each restart their pool
     /// counter from zero) cannot alias each other's entries.
-    pub fn register_cross_pool(&self, dataflow_id: String, pool_id: String, peer_machine: String) {
-        self.lock_cross_pools()
-            .insert((dataflow_id.clone(), pool_id), (peer_machine, dataflow_id));
+    ///
+    /// `mirror_shmem_name` must be the `/dev/shm` name this side created
+    /// for the mirror, and `None` on the origin side — see
+    /// [`CrossPoolEntry::mirror_shmem_name`].
+    pub fn register_cross_pool(
+        &self,
+        dataflow_id: String,
+        pool_id: String,
+        peer_machine: String,
+        mirror_shmem_name: Option<String>,
+    ) {
+        self.lock_cross_pools().insert(
+            (dataflow_id, pool_id),
+            CrossPoolEntry {
+                peer_machine,
+                mirror_shmem_name,
+            },
+        );
     }
 
     /// Forget a cross-machine pool (called on free).
@@ -524,7 +591,7 @@ impl TensorPoolManager {
         &self,
         dataflow_id: &str,
         pool_id: &str,
-    ) -> Option<(String, String)> {
+    ) -> Option<CrossPoolEntry> {
         self.lock_cross_pools()
             .remove(&(dataflow_id.to_string(), pool_id.to_string()))
     }
@@ -533,7 +600,7 @@ impl TensorPoolManager {
     pub fn cross_peer(&self, dataflow_id: &str, pool_id: &str) -> Option<String> {
         self.lock_cross_pools()
             .get(&(dataflow_id.to_string(), pool_id.to_string()))
-            .map(|(peer, _)| peer.clone())
+            .map(|entry| entry.peer_machine.clone())
     }
 
     /// Whether `pool_id` (of `dataflow_id`) is a cross-machine pool this
@@ -630,6 +697,60 @@ mod tests {
             TensorPoolManager::cross_pool_shmem_name("M", "df", "pool_node_42"),
             Some("dora_pool_M_df_node_42".to_string())
         );
+    }
+
+    #[test]
+    fn cleanup_cross_pools_is_scoped_to_one_dataflow() {
+        // The finishing dataflow's entries go; a concurrently running
+        // dataflow's — whose mirrors are still live — must not. The
+        // segment unlinking this drives is covered by the daemon's
+        // `finish_unlinks_own_mirrors_only`, which works on real
+        // /dev/shm files; here only the bookkeeping is under test.
+        let mgr = TensorPoolManager::new();
+        let mirror = |name: &str| Some(format!("dora_pool_M_{name}"));
+        mgr.register_cross_pool(
+            "df_a".into(),
+            "pool_x_1".into(),
+            "origin".into(),
+            mirror("x1"),
+        );
+        mgr.register_cross_pool("df_a".into(), "pool_y_2".into(), "target".into(), None);
+        mgr.register_cross_pool(
+            "df_b".into(),
+            "pool_z_3".into(),
+            "origin".into(),
+            mirror("z3"),
+        );
+
+        mgr.cleanup_cross_pools("df_a");
+
+        assert!(!mgr.is_cross("df_a", "pool_x_1"));
+        assert!(!mgr.is_cross("df_a", "pool_y_2"));
+        assert!(mgr.is_cross("df_b", "pool_z_3"));
+        assert_eq!(
+            mgr.cross_peer("df_b", "pool_z_3").as_deref(),
+            Some("origin")
+        );
+    }
+
+    /// Only entries that actually created a segment are reported as
+    /// unlinked — an origin-side entry has nothing to reclaim.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn cleanup_cross_pools_counts_only_mirror_entries() {
+        let mgr = TensorPoolManager::new();
+        let shmem_name = "dora_pool_M_cleanupcount_node_0";
+        std::fs::write(format!("/dev/shm/{shmem_name}"), vec![0u8; 64]).unwrap();
+        mgr.register_cross_pool(
+            "df_c".into(),
+            "pool_node_0".into(),
+            "origin".into(),
+            Some(shmem_name.to_string()),
+        );
+        mgr.register_cross_pool("df_c".into(), "pool_sender_0".into(), "target".into(), None);
+
+        assert_eq!(mgr.cleanup_cross_pools("df_c"), 1);
+        assert!(!std::path::Path::new(&format!("/dev/shm/{shmem_name}")).exists());
     }
 
     #[test]
