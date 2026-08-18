@@ -45,9 +45,12 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///
 /// ## Example
 ///
-/// ```yaml
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use dora_message::descriptor::Descriptor;
+/// let yaml = r#"
 /// nodes:
-///  - id: webcam
+///   - id: webcam
 ///     operator:
 ///       python: webcam.py
 ///       inputs:
@@ -59,6 +62,11 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///       python: plot.py
 ///       inputs:
 ///         image: webcam/image
+/// "#;
+/// let descriptor: Descriptor = serde_yaml::from_str(yaml)?;
+/// assert_eq!(descriptor.nodes.len(), 2);
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
