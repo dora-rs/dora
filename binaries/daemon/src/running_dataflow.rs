@@ -445,7 +445,7 @@ impl RunningDataflow {
     }
 
     /// Drop per-node bookkeeping that is keyed by node id but not covered by
-    /// the routing-table cleanup in the `RemoveNode` handler.
+    /// the routing-table cleanup in the `RemoveNode` / `ReplaceNode` handlers.
     ///
     /// Without this, removing a node (dynamic reconfiguration) leaves stale
     /// `input_deadlines` / `broken_inputs` entries behind. A never-armed
@@ -455,10 +455,19 @@ impl RunningDataflow {
     /// receipt, which a removed node never sees). Together with the
     /// `node_stderr_most_recent` queue this is an unbounded accumulation
     /// across repeated add/remove cycles.
+    ///
+    /// The recorded cascading-error cause is dropped for the same reason: a
+    /// `caused_by` entry is otherwise never removed (dora-rs/dora#2927), so a
+    /// node id reused by a later incarnation — whether re-added after a
+    /// `RemoveNode` or swapped in by `ReplaceNode` — would have a genuine
+    /// failure of the *new* incarnation misattributed to the stale cause and
+    /// classified as `NodeErrorCause::Cascading`, suppressing its real stderr
+    /// capture.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
+        self.cascading_error_causes.forget(node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
