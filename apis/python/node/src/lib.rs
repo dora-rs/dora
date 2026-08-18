@@ -415,21 +415,7 @@ impl Node {
     ) -> eyre::Result<()> {
         let parameters = pydict_to_metadata(metadata)?;
 
-        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
-            let data = py_bytes.as_bytes();
-            self.node
-                .get_mut()
-                .send_output_bytes(output_id.into(), parameters, data.len(), data)
-                .wrap_err("failed to send output")?;
-        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
-            self.node.get_mut().send_output(
-                output_id.into(),
-                parameters,
-                arrow::array::make_array(arrow_array),
-            )?;
-        } else {
-            eyre::bail!("invalid `data` type, must by `PyBytes` or arrow array")
-        }
+        self.send_payload(output_id, parameters, &data, py, "failed to send output")?;
 
         Ok(())
     }
@@ -534,21 +520,13 @@ impl Node {
             dora_message::metadata::Parameter::String(request_id.clone()),
         );
 
-        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
-            let data = py_bytes.as_bytes();
-            self.node
-                .get_mut()
-                .send_output_bytes(output_id.into(), parameters, data.len(), data)
-                .wrap_err("failed to send service request")?;
-        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
-            self.node.get_mut().send_output(
-                output_id.into(),
-                parameters,
-                arrow::array::make_array(arrow_array),
-            )?;
-        } else {
-            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
-        }
+        self.send_payload(
+            output_id,
+            parameters,
+            &data,
+            py,
+            "failed to send service request",
+        )?;
 
         Ok(request_id)
     }
@@ -580,21 +558,13 @@ impl Node {
             );
         }
 
-        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
-            let data = py_bytes.as_bytes();
-            self.node
-                .get_mut()
-                .send_output_bytes(output_id.into(), parameters, data.len(), data)
-                .wrap_err("failed to send service response")?;
-        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
-            self.node.get_mut().send_output(
-                output_id.into(),
-                parameters,
-                arrow::array::make_array(arrow_array),
-            )?;
-        } else {
-            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
-        }
+        self.send_payload(
+            output_id,
+            parameters,
+            &data,
+            py,
+            "failed to send service response",
+        )?;
 
         Ok(())
     }
@@ -1100,6 +1070,37 @@ impl<'a> MergeExternalSend<'a, Py<PyAny>> for EventsInner {
 impl Node {
     pub fn id(&self) -> String {
         self.node_id.to_string()
+    }
+
+    /// Dispatch a payload to `output_id`: a `PyBytes` value is sent as raw
+    /// bytes, a pyarrow array is sent as an Arrow array, and anything else is an
+    /// error. `bytes_context` labels a failure of the byte-path send. Shared by
+    /// `send_output`, `send_service_request`, and `send_service_response`, which
+    /// previously each carried an identical copy of this dispatch.
+    fn send_payload(
+        &self,
+        output_id: String,
+        parameters: dora_node_api::MetadataParameters,
+        data: &Py<PyAny>,
+        py: Python,
+        bytes_context: &'static str,
+    ) -> eyre::Result<()> {
+        if let Ok(py_bytes) = data.cast_bound::<PyBytes>(py) {
+            let bytes = py_bytes.as_bytes();
+            self.node
+                .get_mut()
+                .send_output_bytes(output_id.into(), parameters, bytes.len(), bytes)
+                .wrap_err(bytes_context)?;
+        } else if let Ok(arrow_array) = arrow::array::ArrayData::from_pyarrow_bound(data.bind(py)) {
+            self.node.get_mut().send_output(
+                output_id.into(),
+                parameters,
+                arrow::array::make_array(arrow_array),
+            )?;
+        } else {
+            eyre::bail!("invalid `data` type, must be `PyBytes` or arrow array")
+        }
+        Ok(())
     }
 
     /// Borrow this node as the tensor-pool extension's context.
