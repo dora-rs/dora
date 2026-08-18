@@ -2033,36 +2033,6 @@ fn event_generation_is_stale(
     event_generation != entry_generation && event_generation != successor_generation
 }
 
-/// Patch a stored descriptor entry with a replacement node's definition
-/// (dora-rs/dora#2988 review, finding 2). The stored descriptor is
-/// serialized into every spawned process's `DORA_NODE_CONFIG`, so the
-/// replacement must not receive the outgoing incarnation's path, env, or
-/// restart configuration through `DoraNode::dataflow_descriptor()`.
-/// Only `CoreNodeKind::Custom` reaches here — ReplaceNode's v1 scope
-/// rejects other kinds up front.
-fn patch_descriptor_entry(
-    entry: &mut dora_message::descriptor::Node,
-    resolved: &dora_core::descriptor::ResolvedNode,
-) {
-    if let CoreNodeKind::Custom(custom) = &resolved.kind {
-        entry.path = Some(custom.path.clone());
-        entry.args = custom.args.clone();
-        entry.env = resolved.env.clone();
-        entry.inputs = custom.run_config.inputs.clone();
-        entry.outputs = custom.run_config.outputs.clone();
-        entry.restart_policy = custom.restart_policy;
-        entry.max_restarts = custom.max_restarts;
-        entry.restart_delay = custom.restart_delay;
-        entry.max_restart_delay = custom.max_restart_delay;
-        entry.restart_window = custom.restart_window;
-        entry.health_check_timeout = custom.health_check_timeout;
-        entry.finish_grace_secs = custom.finish_grace_secs;
-        entry.send_stdout_as = custom.send_stdout_as.clone();
-        entry.send_logs_as = custom.send_logs_as.clone();
-        entry.min_log_level = custom.min_log_level.clone();
-    }
-}
-
 fn clear_node_result(results: &mut DaemonRunResult, dataflow_id: Uuid, node_id: &NodeId) {
     let remove_dataflow = results.get_mut(&dataflow_id).is_some_and(|node_results| {
         node_results.remove(node_id);
@@ -4833,6 +4803,7 @@ impl Daemon {
             DaemonCoordinatorEvent::ReplaceNode {
                 dataflow_id,
                 node,
+                unresolved_node,
                 uv,
                 grace_duration,
             } => {
@@ -4988,15 +4959,20 @@ impl Daemon {
                     // Fresh stderr buffer for the new incarnation; installed
                     // into the map only after the spawn succeeds.
                     let node_stderr = Arc::new(ArrayQueue::new(STDERR_LOG_LINES_MAX));
-                    // Patch the descriptor CLONE handed to the spawner with
+                    // Replace the descriptor CLONE handed to the spawner with
                     // the replacement's definition before it is serialized
                     // into the child's DORA_NODE_CONFIG — the stored
                     // descriptor still describes the outgoing incarnation
                     // at this point (state mutations are deferred until the
-                    // spawn succeeds).
+                    // spawn succeeds). Assigning the coordinator-supplied
+                    // original YAML-shape node wholesale keeps every field
+                    // (path/checksum/build/type maps/cpu_affinity/deploy/
+                    // git-source/log-rotation/…) paired with the replacement,
+                    // with no field list to drift as new fields are added to
+                    // `Node` (dora-rs/dora#2988 review, finding 2).
                     let mut descriptor = dataflow.descriptor.clone();
                     if let Some(entry) = descriptor.nodes.iter_mut().find(|n| n.id == node_id) {
-                        patch_descriptor_entry(entry, &node);
+                        *entry = unresolved_node.clone();
                     }
                     let spawner = Spawner {
                         dataflow_id,
@@ -5121,18 +5097,18 @@ impl Daemon {
                         }
                     }
 
-                    // Update the stored descriptor entry to the
-                    // replacement's definition — the same patch applied to
-                    // the spawn-time clone, so later spawns (and restart
-                    // respawns of OTHER nodes) serialize the replacement,
-                    // not the outgoing incarnation.
+                    // Commit the same wholesale assignment on the stored
+                    // descriptor so later spawns (and restart respawns of
+                    // OTHER nodes) serialize the replacement, not the
+                    // outgoing incarnation. Mirrors the coordinator's own
+                    // `*existing = original_node` commit.
                     if let Some(entry) = dataflow
                         .descriptor
                         .nodes
                         .iter_mut()
                         .find(|n| n.id == node_id)
                     {
-                        patch_descriptor_entry(entry, &node);
+                        *entry = unresolved_node.clone();
                     }
 
                     running_node.mark_registered();
@@ -11194,6 +11170,12 @@ mod fault_tolerance_tests {
              not misattributed to the replacement"
         );
     }
+
+    // The old `patch_descriptor_entry` unit test was removed together with the
+    // function: `ReplaceNode` now assigns the descriptor entry wholesale from
+    // the original YAML-shape `Node` the coordinator ships, so there is no
+    // per-field enumeration left to unit-test — the type-level identity of the
+    // assignment IS the correctness guarantee.
 
     #[test]
     fn running_node_rejects_stale_generation() {
