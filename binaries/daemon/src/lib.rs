@@ -1757,6 +1757,42 @@ fn fire_cross_write_timeout(dataflow_id: Uuid, shared_memory_id: String, seq: u6
     }
 }
 
+/// Re-key a pending cross-machine write from `seq` to a fresh relay seq for the
+/// zenoh fallback hop, advancing `effective_seq` to match. Returns the new
+/// relay seq, or `None` if nothing was pending under `seq` (already resolved).
+///
+/// The re-key drops the stale direct-plane `ok:false` (published the instant a
+/// mid-frame direct read fails) via the first-wins resolver, and keeps the
+/// per-pool counter monotonic so the next write cannot collide with the
+/// re-keyed seq. Advancing `effective_seq` is the crucial half: the safety-net
+/// timeout task reads it, so a relay ack lost after the re-key is still
+/// reclaimed rather than hanging the node forever (#3193).
+fn rekey_cross_write_to_relay(
+    dataflow_id: Uuid,
+    shared_memory_id: &str,
+    seq: u64,
+    effective_seq: &std::sync::atomic::AtomicU64,
+) -> Option<u64> {
+    let tx = CROSS_WRITE_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&(dataflow_id, shared_memory_id.to_string(), seq))?;
+    let relay_seq = {
+        let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+        let counter = seqs
+            .entry((dataflow_id, shared_memory_id.to_string()))
+            .or_insert(0);
+        *counter += 1;
+        *counter
+    };
+    CROSS_WRITE_PENDING
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert((dataflow_id, shared_memory_id.to_string(), relay_seq), tx);
+    effective_seq.store(relay_seq, std::sync::atomic::Ordering::SeqCst);
+    Some(relay_seq)
+}
+
 /// Fail and drop every cross-machine write reply still pending for
 /// `dataflow_id`, unblocking any node stuck in `WritePinnedMemory`. Returns the
 /// number of stranded writes reclaimed.
@@ -6930,35 +6966,18 @@ impl Daemon {
                                 // byte-for-byte. Re-key the pending entry to
                                 // a fresh seq for the relay hop so the stale
                                 // ok:false is dropped by the first-wins
-                                // resolver, and keep the per-pool counter
-                                // monotonic so the next write cannot
-                                // collide with this re-keyed seq (bot
-                                // review 5307022693).
-                                let rekeyed = CROSS_WRITE_PENDING
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .remove(&(dataflow_id, shared_memory_id.clone(), seq));
-                                if let Some(tx) = rekeyed {
-                                    let mut seqs =
-                                        CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-                                    let counter = seqs
-                                        .entry((dataflow_id, shared_memory_id.clone()))
-                                        .or_insert(0);
-                                    *counter += 1;
-                                    relay_seq = *counter;
-                                    drop(seqs);
-                                    CROSS_WRITE_PENDING
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .insert(
-                                            (dataflow_id, shared_memory_id.clone(), relay_seq),
-                                            tx,
-                                        );
-                                    // Point the safety-net timeout at the
-                                    // re-keyed entry so it can still reclaim
-                                    // it if the relay ack is lost (#3193).
-                                    effective_seq
-                                        .store(relay_seq, std::sync::atomic::Ordering::SeqCst);
+                                // resolver, keep the per-pool counter
+                                // monotonic so the next write cannot collide
+                                // with this re-keyed seq (bot review
+                                // 5307022693), and advance `effective_seq`
+                                // so the safety-net timeout follows it (#3193).
+                                if let Some(new_seq) = rekey_cross_write_to_relay(
+                                    dataflow_id,
+                                    &shared_memory_id,
+                                    seq,
+                                    &effective_seq,
+                                ) {
+                                    relay_seq = new_seq;
                                 }
                             }
                         }
@@ -9964,7 +9983,7 @@ mod cross_mirror_descriptor_tests {
 mod cross_write_failover_tests {
     use super::{
         CROSS_WRITE_PENDING, CROSS_WRITE_SEQ, drain_cross_write_pending, fire_cross_write_timeout,
-        resolve_cross_write_ack,
+        rekey_cross_write_to_relay, resolve_cross_write_ack,
     };
     use dora_message::DataflowId;
     use dora_message::daemon_to_node::DaemonReply;
@@ -10040,42 +10059,56 @@ mod cross_write_failover_tests {
     }
 
     #[test]
-    fn safety_net_timeout_follows_the_relay_rekey() {
-        // #3193: after a direct-TCP → zenoh failover re-keys the pending
-        // entry from `seq` to `relay_seq`, the safety-net timeout must fire
-        // against `relay_seq`. Keyed to the pre-failover `seq` (as it was),
-        // the timeout is a silent no-op and the node's write hangs forever.
+    fn rekey_advances_effective_seq_so_the_timeout_follows_it() {
+        // #3193: drives the production re-key path (`rekey_cross_write_to_relay`,
+        // the direct-TCP → zenoh failover arm) and pins the actual fix — that
+        // it advances the shared `effective_seq` the safety-net timeout reads.
+        // Deleting the `effective_seq.store(relay_seq)` inside the helper makes
+        // the `effective_seq` assertion below fail, and the timeout then reads
+        // the stale seq (a no-op) so the final resolve fails too — i.e. this
+        // test fails exactly when the write would hang forever.
         let df = DataflowId::new_v4();
-        let pool = "pool_timeout_follows_rekey".to_string();
+        let pool = "pool_rekey_atomic".to_string();
         let (tx, mut rx) = tokio::sync::oneshot::channel();
 
-        // Insert under the original seq, then re-key to a fresh relay seq
-        // (mirrors the direct-failure arm of the WriteMemoryPool handler).
+        // Allocate the seq exactly as the handler does (counter 0 -> 1) and
+        // insert the pending reply under it.
+        let seq = {
+            let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+            let counter = seqs.entry((df, pool.clone())).or_insert(0);
+            *counter += 1;
+            *counter
+        };
         CROSS_WRITE_PENDING
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .insert((df, pool.clone(), 1), tx);
-        let tx = CROSS_WRITE_PENDING
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&(df, pool.clone(), 1))
-            .expect("pending entry present");
-        CROSS_WRITE_PENDING
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((df, pool.clone(), 2), tx);
+            .insert((df, pool.clone(), seq), tx);
+        let effective_seq = std::sync::atomic::AtomicU64::new(seq);
 
-        // Timing out on the pre-failover seq is the bug: a no-op that leaves
-        // the write pending.
-        assert!(!fire_cross_write_timeout(df, pool.clone(), 1));
+        // Run the real re-key the handler runs on a direct-send failure.
+        let relay_seq = rekey_cross_write_to_relay(df, &pool, seq, &effective_seq)
+            .expect("a pending entry under the original seq");
+        assert_ne!(relay_seq, seq, "re-key must allocate a fresh monotonic seq");
+        // The crux of the fix: the atomic the timeout task reads was advanced
+        // to the re-keyed seq.
+        assert_eq!(
+            effective_seq.load(std::sync::atomic::Ordering::SeqCst),
+            relay_seq,
+            "re-key must advance the effective seq the timeout follows"
+        );
+
+        // Timing out on the pre-failover seq is now a no-op (the entry moved).
+        assert!(!fire_cross_write_timeout(df, pool.clone(), seq));
         assert!(
             rx.try_recv().is_err(),
             "write must still be pending after a timeout keyed to the stale seq"
         );
 
-        // The effective (relay) seq resolves it: the node's write fails
-        // cleanly instead of hanging.
-        assert!(fire_cross_write_timeout(df, pool.clone(), 2));
+        // The safety-net timeout task keys off the atomic; reading it and
+        // firing resolves the re-keyed entry, failing the node's write cleanly
+        // instead of hanging.
+        let timeout_seq = effective_seq.load(std::sync::atomic::Ordering::SeqCst);
+        assert!(fire_cross_write_timeout(df, pool.clone(), timeout_seq));
         assert!(
             matches!(rx.try_recv(), Ok(DaemonReply::Result(Err(_)))),
             "the timeout keyed to the effective seq must fail the node's write"
