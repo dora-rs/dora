@@ -1735,26 +1735,36 @@ fn resolve_cross_write_ack(
 }
 
 /// Fire the safety-net timeout for a pending cross-machine write: remove the
-/// entry under `seq` and fail the node's blocked `WritePinnedMemory`. Returns
-/// whether an entry existed.
+/// entry under the write's *effective* seq and fail the node's blocked
+/// `WritePinnedMemory`. Returns whether an entry existed.
 ///
-/// The caller passes the write's *effective* seq — the one the entry is live
-/// under now, which advances from the original `seq` to a fresh `relay_seq` on
-/// a direct-TCP → zenoh failover. Keying the timeout to the pre-failover seq
-/// makes it a no-op after a re-key, leaving the write hung forever (#3193).
-fn fire_cross_write_timeout(dataflow_id: Uuid, shared_memory_id: String, seq: u64) -> bool {
-    if let Some(tx) = CROSS_WRITE_PENDING
+/// `effective_seq` is the seq the entry is live under now, which advances from
+/// the original `seq` to a fresh `relay_seq` on a direct-TCP → zenoh failover.
+/// Keying the timeout to the pre-failover seq makes it a no-op after a re-key,
+/// leaving the write hung forever (#3193).
+///
+/// The load happens *under the pending-map guard*, the same one
+/// `rekey_cross_write_to_relay` holds while it re-keys and stores. Loading
+/// outside it would reopen #3193 as a race: a failover landing between the load
+/// and the `remove` would leave the removal targeting a key that has already
+/// moved, and nothing retries.
+fn fire_cross_write_timeout(
+    dataflow_id: Uuid,
+    shared_memory_id: &str,
+    effective_seq: &std::sync::atomic::AtomicU64,
+) -> bool {
+    let mut pending = CROSS_WRITE_PENDING
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&(dataflow_id, shared_memory_id, seq))
-    {
-        let _ = tx.send(DaemonReply::Result(Err(
-            "cross-machine write timed out waiting for the remote commit ack".to_string(),
-        )));
-        true
-    } else {
-        false
-    }
+        .unwrap_or_else(|e| e.into_inner());
+    let seq = effective_seq.load(std::sync::atomic::Ordering::SeqCst);
+    let Some(tx) = pending.remove(&(dataflow_id, shared_memory_id.to_string(), seq)) else {
+        return false;
+    };
+    drop(pending);
+    let _ = tx.send(DaemonReply::Result(Err(
+        "cross-machine write timed out waiting for the remote commit ack".to_string(),
+    )));
+    true
 }
 
 /// Re-key a pending cross-machine write from `seq` to a fresh relay seq for the
@@ -1773,10 +1783,18 @@ fn rekey_cross_write_to_relay(
     seq: u64,
     effective_seq: &std::sync::atomic::AtomicU64,
 ) -> Option<u64> {
-    let tx = CROSS_WRITE_PENDING
+    // Remove, re-key and store under a *single* pending-map guard. Releasing
+    // it between the remove and the insert would leave the entry in no map at
+    // all, so a concurrent `drain_cross_write_pending` walks past it and the
+    // re-insert then outlives `finish_dataflow` — the node stays blocked until
+    // the 120s safety net and the entry leaks past the dataflow it belongs to.
+    // The counter bump nests `CROSS_WRITE_SEQ` inside this guard; that is the
+    // only nesting of the two (every other site drops the seq lock before
+    // touching the pending map), so the order cannot deadlock.
+    let mut pending = CROSS_WRITE_PENDING
         .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&(dataflow_id, shared_memory_id.to_string(), seq))?;
+        .unwrap_or_else(|e| e.into_inner());
+    let tx = pending.remove(&(dataflow_id, shared_memory_id.to_string(), seq))?;
     let relay_seq = {
         let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
         let counter = seqs
@@ -1785,10 +1803,9 @@ fn rekey_cross_write_to_relay(
         *counter += 1;
         *counter
     };
-    CROSS_WRITE_PENDING
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert((dataflow_id, shared_memory_id.to_string(), relay_seq), tx);
+    pending.insert((dataflow_id, shared_memory_id.to_string(), relay_seq), tx);
+    // Still under the guard: `fire_cross_write_timeout` loads this while
+    // holding the same lock, so it can never observe a stale seq (#3193).
     effective_seq.store(relay_seq, std::sync::atomic::Ordering::SeqCst);
     Some(relay_seq)
 }
@@ -7013,14 +7030,14 @@ impl Daemon {
                     }
                 });
                 // Safety net: if the ack never arrives (peer restart,
-                // lost ack), fail the write rather than hang the node. Read
-                // the effective seq *after* sleeping so the removal follows
-                // any direct-TCP → relay re-key that happened meanwhile
-                // (#3193).
+                // lost ack), fail the write rather than hang the node.
+                // `fire_cross_write_timeout` reads the effective seq itself,
+                // under the pending-map guard, so the removal follows any
+                // direct-TCP → relay re-key that happened meanwhile — including
+                // one that lands while this task is waking up (#3193).
                 tokio::spawn(async move {
                     tokio::time::sleep(CROSS_WRITE_ACK_TIMEOUT).await;
-                    let seq = timeout_seq.load(std::sync::atomic::Ordering::SeqCst);
-                    fire_cross_write_timeout(dataflow_id, timeout_pool, seq);
+                    fire_cross_write_timeout(dataflow_id, &timeout_pool, &timeout_seq);
                 });
             }
             DaemonNodeEvent::RegisterCrossMachinePool {
@@ -8137,15 +8154,31 @@ impl Daemon {
                 .unwrap_or_else(|e| e.into_inner());
             locks.retain(|(df, _), _| *df != dataflow_id);
         }
-        {
-            let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-            seqs.retain(|(df, _), _| *df != dataflow_id);
-        }
         // Fail any cross-machine write replies still pending for this
         // dataflow. Without it a node whose write was in flight at finish
         // hangs until the 120s safety-net timeout, and a relay entry orphaned
         // by a failover (#3193) would leak for the daemon's lifetime.
-        drain_cross_write_pending(dataflow_id);
+        //
+        // Must run *before* the `CROSS_WRITE_SEQ` retain below: a spawned
+        // write task that fails over concurrently re-keys under the pending
+        // guard, and it bumps the per-pool counter only if it found something
+        // pending. Draining first therefore makes the re-key a no-op instead
+        // of letting it resurrect a counter this function has already cleared
+        // — a resurrected counter restarts at 0, mints a relay seq *below* the
+        // abandoned one (breaking the monotonicity the write path relies on)
+        // and leaks for the daemon's lifetime, since finish runs once.
+        let stranded = drain_cross_write_pending(dataflow_id);
+        if stranded > 0 {
+            tracing::debug!(
+                %dataflow_id,
+                stranded,
+                "failed cross-machine writes still pending at dataflow finish"
+            );
+        }
+        {
+            let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
+            seqs.retain(|(df, _), _| *df != dataflow_id);
+        }
         {
             let mut degraded = CROSS_DIRECT_DEGRADED
                 .lock()
@@ -10013,25 +10046,12 @@ mod cross_write_failover_tests {
             .unwrap_or_else(|e| e.into_inner())
             .insert((df, pool.clone(), seq), tx);
 
-        // Rekey (mirrors the direct-failure arm): remove the old seq,
-        // bump the per-pool counter, re-insert under the fresh seq. The
-        // counter is what guarantees relay_seq != seq (the seq always
-        // derives from it).
-        let tx = CROSS_WRITE_PENDING
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&(df, pool.clone(), seq))
+        // Rekey via the production helper the direct-failure arm calls, so
+        // this asserts against the real path rather than a copy of it.
+        let effective_seq = std::sync::atomic::AtomicU64::new(seq);
+        let relay_seq = rekey_cross_write_to_relay(df, &pool, seq, &effective_seq)
             .expect("pending entry present");
-        let mut seqs = CROSS_WRITE_SEQ.lock().unwrap_or_else(|e| e.into_inner());
-        let counter = seqs.entry((df, pool.clone())).or_insert(0);
-        *counter += 1;
-        let relay_seq = *counter;
-        drop(seqs);
         assert_ne!(relay_seq, seq, "rekey must produce a fresh seq");
-        CROSS_WRITE_PENDING
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert((df, pool.clone(), relay_seq), tx);
 
         // The stale direct-plane ok:false arrives first: no pending entry
         // under the old seq, so it is dropped without touching the node.
@@ -10097,18 +10117,20 @@ mod cross_write_failover_tests {
             "re-key must advance the effective seq the timeout follows"
         );
 
-        // Timing out on the pre-failover seq is now a no-op (the entry moved).
-        assert!(!fire_cross_write_timeout(df, pool.clone(), seq));
+        // A timeout still keyed to the pre-failover seq is a no-op: the entry
+        // moved. This is the #3193 regression, reproduced by handing the
+        // helper an atomic frozen at the stale seq.
+        let stale_seq = std::sync::atomic::AtomicU64::new(seq);
+        assert!(!fire_cross_write_timeout(df, &pool, &stale_seq));
         assert!(
             rx.try_recv().is_err(),
             "write must still be pending after a timeout keyed to the stale seq"
         );
 
-        // The safety-net timeout task keys off the atomic; reading it and
-        // firing resolves the re-keyed entry, failing the node's write cleanly
-        // instead of hanging.
-        let timeout_seq = effective_seq.load(std::sync::atomic::Ordering::SeqCst);
-        assert!(fire_cross_write_timeout(df, pool.clone(), timeout_seq));
+        // The real safety net passes the shared atomic the re-key advanced —
+        // the helper loads it under the pending guard — so it resolves the
+        // re-keyed entry and fails the node's write cleanly instead of hanging.
+        assert!(fire_cross_write_timeout(df, &pool, &effective_seq));
         assert!(
             matches!(rx.try_recv(), Ok(DaemonReply::Result(Err(_)))),
             "the timeout keyed to the effective seq must fail the node's write"
