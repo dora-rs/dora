@@ -59,15 +59,49 @@ Rust nodes get the same four operations on `DoraNode`
 - **A dropped notification is best-effort.** If the target's channel is full or
   closed the daemon logs it rather than blocking the drop.
 
+## Reaching an extension that runs in the daemon
+
+Some transports need a half that runs *in* the daemon — a peer daemon to talk
+to, a machine to resolve, a listener to own. Three more opaque carriers cover
+that, and they are the whole of it:
+
+| | |
+|---|---|
+| node → its own daemon's extension | `DaemonRequest::ExtensionRequest { namespace, payload }`, answered by `DaemonReply::ExtensionReply { payload }` |
+| daemon → the same extension on its peers | `InterDaemonEvent::ExtensionMessage { dataflow_id, namespace, target_machine, payload }`, on `dataflow_extension_topic(dataflow_id, namespace)` |
+| what the extension may ask of the daemon | the `DaemonServices` trait: machine id, zenoh session, clock, the two extension-table operations, machine resolution, and a sink for decoded peer messages |
+
+dora reads exactly two fields: `namespace`, to pick an extension, and
+`target_machine`, to drop a dataflow-scope broadcast on daemons it does not
+name. The payload is bytes it never parses.
+
 ## What dora deliberately does not provide
 
 No shared-memory helpers, no CUDA, no wire vocabulary for any particular
-transport. The protocol variants are `ExtensionStore` / `ExtensionLoad` /
-`ExtensionDrop` — deliberately generic, so that adding a second extension needs
-no change to dora at all.
+transport. Every protocol variant above is generic: a second extension needs no
+new variant, no new topic, and no change to any of the three carriers.
+
+**The daemon's dispatch is not yet generic, though.** `Daemon` holds one
+concrete `PoolState` field and hands *every* namespace to it; the tensor-pool
+then filters on its own namespace and answers "no extension registered under
+{ns}" for anything else — a claim it is not actually in a position to make. A
+second extension would therefore need a field on `Daemon`, its own
+`#[cfg(feature)]` at each lifecycle site, and an if/else across namespaces.
+
+The generic form is a registry — `HashMap<String, Box<dyn DaemonExtension>>` —
+which turns dispatch into a lookup and moves that error to where it is true.
+It was left undone deliberately: `DaemonServices` and the handlers are `async`,
+so dyn-compatibility means boxed futures throughout the trait, and building
+that for a hypothetical second consumer is the speculative generality this
+document otherwise argues against. Build it when the second extension arrives —
+the protocol will not need to change, only the routing.
 
 If you find yourself wanting dora to grow a variant named after your transport,
-that is the signal the seam is being used wrong.
+that is the signal the seam is being used wrong. It has happened once already:
+[#3079](https://github.com/dora-rs/dora/pull/3079) landed twelve pool-named
+wire variants, an unconditional dependency on the extension crate, and 47
+`unsafe` sites in `daemon/src/lib.rs`. Everything in this document is what
+undoing that restored.
 
 ## Why not just send a dataflow message?
 
@@ -89,10 +123,16 @@ by default) and **outside the 1.0 compatibility guarantees** — that combinatio
 is the point: a transport can ship in-tree, be built and used, and still not
 freeze anything into dora's stable surface.
 
-It was previously integrated directly: ~3,000 lines inside the Python binding
-with 64 `unsafe` sites, 950 lines of daemon lifecycle logic, and pool-specific
-wire-protocol variants. Reworking it onto this channel removed all of that from
-dora proper while keeping the feature usable.
+Its daemon half — mirror segments, the DORADMA header, the seqlock, the
+direct-TCP data plane, CUDA IPC — lives in that same crate, behind its own
+`daemon` feature, and reaches the daemon only through `DaemonServices`. The
+daemon's side of the seam is one file,
+[`binaries/daemon/src/pool_extension.rs`](../binaries/daemon/src/pool_extension.rs):
+the capability implementations and the lifecycle call sites, and nothing else.
 
 That is the shape this seam exists to produce: an extension is a package that
-uses these four operations, not a fork of the framework.
+uses these operations, not a fork of the framework. The test for whether it is
+holding is mechanical — a default `cargo tree -p dora-daemon` contains no
+extension crate, and `dora-daemon` contains no `unsafe` beyond the seven
+platform sites in `shutdown.rs`, `running_dataflow.rs` and
+`spawn/prepared.rs`.

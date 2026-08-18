@@ -630,7 +630,7 @@ impl TensorPoolManager {
             .strip_prefix("pool_")
             .and_then(|s| s.rsplit_once('_'))?;
         // Defense in depth: `node_id`/`counter` come from the wire
-        // (RegisterPool from a peer daemon). The free path rejects names
+        // (`PeerMessage::Register` from a peer daemon). The free path rejects names
         // containing '/' or '..' explicitly; the create/mirror path must
         // agree or a crafted id could slip past the asymmetry. glibc
         // shm_open rejects an embedded '/' today, but the guard belongs

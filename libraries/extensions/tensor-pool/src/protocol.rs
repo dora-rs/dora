@@ -74,6 +74,12 @@ pub enum PeerMessage {
     /// receiver reads its local segment zero-copy.
     Write {
         shared_memory_id: String,
+        /// Same bulk treatment dora gives its own payloads (#3198 applied it to
+        /// the wire variant this replaces). Without it serde walks a 40 MB
+        /// frame one `u8` at a time on both encode and decode — and the frame
+        /// is encoded twice now: once into this message, once into the opaque
+        /// envelope that carries it.
+        #[serde(with = "dora_message::bulk_bytes::vec")]
         tensor_data: Vec<u8>,
         size: usize,
         /// Per-pool sequence assigned by the origin, echoed in

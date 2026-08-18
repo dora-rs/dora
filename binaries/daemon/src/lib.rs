@@ -1834,7 +1834,7 @@ impl Daemon {
         )
         .await
         .wrap_err("failed to open zenoh session")?;
-        // Same-host control notifications (RegisterPool/FreePool) go over
+        // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
             // Same argument as the reservation above: an address the operator

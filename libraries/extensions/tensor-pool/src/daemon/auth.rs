@@ -13,7 +13,7 @@ use super::*;
 /// review 5301862843).
 ///
 /// Scope: the token authenticates the direct-TCP data plane only. The
-/// zenoh control/relay plane (RegisterPool/FreePool/MemoryPoolWrite over
+/// zenoh control/relay plane (`PeerMessage` Register/Free/Write over
 /// `dataflow_extension_topic`) is unauthenticated — dora's mesh-daemon
 /// model treats peers as trusted. When this token is relied on over an
 /// untrusted link (edge↔cloud WAN), the zenoh transport itself must be

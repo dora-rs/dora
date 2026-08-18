@@ -204,7 +204,7 @@ impl PoolState {
                 // sender node id, derived from the pool id like
                 // `cross_pool_shmem_name`; the sender node never runs on
                 // this host, so the node-exit reclaim never fires —
-                // FreePool drops the entry explicitly.
+                // `PeerMessage::Free` drops the entry explicitly.
                 let mirror_shmem_name = TensorPoolManager::cross_pool_shmem_name(
                     svc.machine_id().unwrap_or_default().as_str(),
                     &dataflow_id.to_string(),
@@ -266,13 +266,13 @@ impl PoolState {
                         }
                     });
                 tokio::spawn(async move {
-                    // Mirror allocation cap: the RegisterPool event's
+                    // Mirror allocation cap: the `PeerMessage::Register` event's
                     // `size` comes from a remote daemon (untrusted
                     // cross-machine input). Without a cap, a buggy or
                     // corrupted peer could drive an unbounded /dev/shm
                     // allocation here (memory-exhaustion DoS). Matches
                     // the 1 GiB registration cap enforced on the local
-                    // side; the error flows back through RegisterPoolAck.
+                    // side; the error flows back through `PeerMessage::RegisterAck`.
                     let result = if size > 1024 * 1024 * 1024 {
                         Err(eyre::eyre!(
                             "cross-machine pool size {size} exceeds the 1 GiB mirror cap"
@@ -467,7 +467,7 @@ impl PoolState {
                 // declare_publisher() itself — either one wedges the daemon
                 // event loop (heartbeats + node replies + output delivery
                 // included), backing up the event channels until the
-                // sender's WritePinnedMemory hangs forever.
+                // sender's `NodeRequest::Write` hangs forever.
                 if !self
                     .tensor_pool
                     .is_cross(&dataflow_id.to_string(), &shared_memory_id)
@@ -525,7 +525,7 @@ impl PoolState {
                 let shm_provider = self.shm_provider.clone();
                 // Remote commit acknowledgement: the reply is withheld
                 // until the mirror daemon confirms the segment write
-                // (MemoryPoolWriteAck). Otherwise the send_output
+                // (`PeerMessage::WriteAck`). Otherwise the send_output
                 // notification that follows this write can overtake the
                 // tensor data and the receiver returns the previous
                 // stable frame.
@@ -726,8 +726,8 @@ impl PoolState {
                 machine_id,
             } => {
                 // Resolve the machine via the coordinator, publish
-                // RegisterPool over the memory-pool topic, and await the
-                // remote RegisterPoolAck before replying (sync register).
+                // `PeerMessage::Register` over the memory-pool topic, and await the
+                // remote `PeerMessage::RegisterAck` before replying (sync register).
                 // The ack is delivered through this daemon's own event
                 // loop (`handle_inter_daemon_event`), so awaiting it on
                 // the loop itself would deadlock — the loop could never
@@ -776,10 +776,10 @@ impl PoolState {
                                 r#"machine "{machine_id}" could not be resolved: no such machine on the coordinator (or no coordinator); cross-machine memory pool not created"#
                             ));
                         };
-                        // Publish RegisterPool and await the ack, retrying on
+                        // Publish `PeerMessage::Register` and await the ack, retrying on
                         // timeout: the remote daemon's memory-pool
                         // subscription is established in parallel during
-                        // dataflow startup, so the first RegisterPool can
+                        // dataflow startup, so the first `PeerMessage::Register` can
                         // be published before the subscription exists and
                         // be lost (no subscriber yet) — observed as the
                         // register timing out while the remote never
@@ -792,7 +792,7 @@ impl PoolState {
                         for attempt in 0..3 {
                             // Register the ack channel BEFORE publishing:
                             // the remote acks as soon as it receives
-                            // RegisterPool, so a late registration could
+                            // `PeerMessage::Register`, so a late registration could
                             // race the ack and spuriously time out.
                             let (ack_tx, ack_rx) = oneshot::channel();
                             CROSS_REGISTER_PENDING
@@ -839,10 +839,10 @@ impl PoolState {
                             let publisher = match session
                                 .declare_publisher(topic.clone())
                                 .congestion_control(CongestionControl::Block)
-                                // Remote-only: the local echo of RegisterPool
+                                // Remote-only: the local echo of `PeerMessage::Register`
                                 // would fail to mirror (EEXIST — this node
                                 // already created the pool) and publish a
-                                // false ok=false RegisterPoolAck that beats
+                                // false ok=false `PeerMessage::RegisterAck` that beats
                                 // the remote's real ack, failing every sync
                                 // register.
                                 .allowed_destination(Locality::Remote)
@@ -858,7 +858,7 @@ impl PoolState {
                                     ));
                                 }
                             };
-                            // RegisterPool is a control notification — go
+                            // `PeerMessage::Register` is a control notification — go
                             // over zenoh SHM when available (same-host
                             // zero-copy; cross-host the transport copies),
                             // falling back to the plain payload on any
@@ -1023,7 +1023,7 @@ impl PoolState {
             }
             NodeRequest::Free { shared_memory_id } => {
                 // Drop the cross_pools entry and, when the pool was
-                // cross-machine, publish the targeted FreePool and unlink
+                // cross-machine, publish the targeted `PeerMessage::Free` and unlink
                 // this machine's mirror.
                 let peer = self
                     .tensor_pool
@@ -1062,11 +1062,11 @@ impl PoolState {
                     tracing::debug!("memory pool: no pool-table entry for {shared_memory_id}: {e}");
                 }
                 // Drop this machine's replicated mirror descriptor. The
-                // sender-free path reaches it via the FreePool event; the
+                // sender-free path reaches it via the `PeerMessage::Free` event; the
                 // receiver-free path lands here directly and would
                 // otherwise leave the descriptor (and any receiver's
                 // ExtensionDropped notification) until dataflow finish —
-                // asymmetric with the FreePool path (self-review,
+                // asymmetric with the `PeerMessage::Free` path (self-review,
                 // 2026-08-16). A no-op for pools whose registration never
                 // completed (drop_key returns None).
                 let ext_key = shared_memory_id.clone();
@@ -1180,12 +1180,12 @@ impl PoolState {
     /// messages arriving over zenoh.
     pub fn subscribe_dataflow(&mut self, svc: &mut dyn DaemonServices, dataflow_id: Uuid) {
         // Subscribe to the dataflow memory-pool topic for cross-machine
-        // events arriving through Zenoh (WriteMemoryPool, RegisterPool,
-        // RegisterPoolAck, FreePool). Declared FIRST, before the node
+        // events arriving through Zenoh (WriteMemoryPool, `PeerMessage::Register`,
+        // `PeerMessage::RegisterAck`, `PeerMessage::Free`). Declared FIRST, before the node
         // build: the sender's sync register fires from its node startup,
         // and the node build (pip install etc.) can take tens of seconds —
         // a subscription declared after the build makes the register's
-        // retries land before any subscriber exists (observed: RegisterPool
+        // retries land before any subscriber exists (observed: `PeerMessage::Register`
         // published into the void, ack timeout). The whole
         // declare+receive loop runs OFF the event loop: with a degraded
         // inter-daemon link, declare_subscriber() itself can block, which
@@ -1250,7 +1250,7 @@ impl PoolState {
             // The zenoh-relay write lock is the same fresh per-dataflow
             // UUID key; drain it here too — a relay-path pool whose
             // dataflow ends without an explicit free (e.g. a node crash,
-            // so no FreePool is published) would otherwise leak its entry
+            // so no `PeerMessage::Free` is published) would otherwise leak its entry
             // for the daemon's lifetime (bot review 5301862843).
             let mut locks = CROSS_POOL_WRITE_LOCKS
                 .lock()

@@ -44,9 +44,9 @@ pub(crate) async fn publish_pool_message(
         .declare_publisher(topic.clone())
         .congestion_control(CongestionControl::Block)
         // Remote-only: with the default Locality::Any the publisher's own
-        // subscriber receives its own put, and on the RegisterPoolAck path
+        // subscriber receives its own put, and on the `PeerMessage::RegisterAck` path
         // that local echo would be a self-ack that races (and beats) the
-        // remote ack (see the RegisterPool handler).
+        // remote ack (see the `PeerMessage::Register` handler).
         .allowed_destination(Locality::Remote)
         .await
         .map_err(|e| eyre!("memory pool: declare_publisher({topic}) failed: {e}"))?;
@@ -236,7 +236,7 @@ pub(crate) fn resolve_cross_write_ack(
 
 /// Fire the safety-net timeout for a pending cross-machine write: remove the
 /// entry under the write's *effective* seq and fail the node's blocked
-/// `WritePinnedMemory`. Returns whether an entry existed.
+/// `NodeRequest::Write`. Returns whether an entry existed.
 ///
 /// `effective_seq` is the seq the entry is live under now, which advances from
 /// the original `seq` to a fresh `relay_seq` on a direct-TCP → zenoh failover.
@@ -311,7 +311,7 @@ pub(crate) fn rekey_cross_write_to_relay(
 }
 
 /// Fail and drop every cross-machine write reply still pending for
-/// `dataflow_id`, unblocking any node stuck in `WritePinnedMemory`. Returns the
+/// `dataflow_id`, unblocking any node stuck in `NodeRequest::Write`. Returns the
 /// number of stranded writes reclaimed.
 ///
 /// Called from `finish_dataflow`: the per-write safety-net timeout normally
@@ -342,9 +342,9 @@ pub(crate) fn drain_cross_write_pending(dataflow_id: Uuid) -> usize {
 }
 
 /// Size of the daemon's zenoh SHM provider segment. Memory-pool control
-/// notifications (RegisterPool/RegisterPoolAck/FreePool) are KB-scale,
+/// notifications (`PeerMessage` Register/RegisterAck/Free) are KB-scale,
 /// so a small segment carries all in-flight control traffic with headroom;
-/// the cross-machine tensor payload (MemoryPoolWrite) deliberately stays
+/// the cross-machine tensor payload (`PeerMessage::Write`) deliberately stays
 /// on the plain path and never allocates from here.
 pub(crate) const MEMORY_POOL_SHM_PROVIDER_SIZE: usize = 8 * 1024 * 1024;
 

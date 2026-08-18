@@ -16,7 +16,7 @@
 
 /// Opt-in switch for the whole cross-machine memory-pool data plane.
 /// Off by default: no mirror segments, no direct-TCP listener, no
-/// RegisterPool/RegisterCrossMachinePool processing. Deployments that
+/// `PeerMessage::Register`/`NodeRequest::RegisterCrossMachine` processing. Deployments that
 /// enable it must set the same value on every participating daemon.
 pub(crate) const CROSS_MACHINE_ENV: &str = "DORA_MEMORY_POOL_CROSS_MACHINE";
 
@@ -306,7 +306,7 @@ mod cross_pool_write_tests {
     /// The write-commit ack resolves only the seq-matched pending reply.
     ///
     /// The same-host cross-daemon smoke test reads via the `direct ==
-    /// true` path and bypasses the MemoryPoolWrite/MemoryPoolWriteAck
+    /// true` path and bypasses the `PeerMessage::Write`/`PeerMessage::WriteAck`
     /// machinery entirely (only the manual two-host runs exercise it), so
     /// this test pins the ack semantics directly: a stale ack (a previous
     /// write's seq) must not resolve anything, the seq-matched ack
@@ -1020,6 +1020,10 @@ mod cross_pool_write_tests {
         });
     }
 
+    // The guard is held across the awaits on purpose: the point is to keep
+    // the env var stable for the whole handshake, and an async mutex would
+    // let a sibling test's `set_var` interleave at the first await.
+    #[allow(clippy::await_holding_lock)]
     /// The direct-TCP auth handshake: with `DORA_MEMORY_POOL_AUTH_TOKEN`
     /// set, a sender with the shared token is accepted and its frame
     /// served; a sender without it (or with the wrong token) is rejected
@@ -1093,6 +1097,10 @@ mod cross_pool_write_tests {
         );
     }
 
+    // The guard is held across the awaits on purpose: the point is to keep
+    // the env var stable for the whole handshake, and an async mutex would
+    // let a sibling test's `set_var` interleave at the first await.
+    #[allow(clippy::await_holding_lock)]
     /// The listener's auth gate, driven through a real socket: a peer
     /// with the wrong token must be rejected (no frame may be served)
     /// and a peer with the shared token must pass. This pins the

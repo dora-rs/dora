@@ -20,7 +20,7 @@ const DAEMON_COORDINATOR_RETRY_MAX: Duration = Duration::from_secs(30);
 const DAEMON_COORDINATOR_RETRY_LIMIT: u32 = 50;
 const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 /// Timeout for the cross-machine register flow: awaiting the ResolveMachine
-/// reply here and the RegisterPoolAck in lib.rs.
+/// reply here and the register ack in the tensor-pool extension.
 #[cfg(feature = "tensor-pool")]
 pub const CROSS_REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 

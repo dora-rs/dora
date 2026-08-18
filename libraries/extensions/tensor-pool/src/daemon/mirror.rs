@@ -128,7 +128,7 @@ pub(crate) fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
 }
 
 /// The pool descriptor replicated into this daemon's extension table when
-/// a cross-machine pool is mirrored (RegisterPool). The sender's node
+/// a cross-machine pool is mirrored (`PeerMessage::Register`). The sender's node
 /// stores the descriptor on its own daemon only; without this replication
 /// a receiver's daemon query (`load_metadata`) misses, so a GPU receiver
 /// never obtains the daemon-trusted size it requires before HtoD staging
@@ -141,7 +141,7 @@ pub(crate) fn cleanup_orphan_mirrors(machine_id: &str) -> usize {
 /// the same keys. `pinned_type` carries the receiver device ("cuda:0")
 /// exactly like the mirror header JSON (same input, same value).
 /// NOT cfg-gated: it only builds a JSON descriptor (no /dev/shm access),
-/// and the RegisterPool handler calls it unconditionally — gating it
+/// and the `PeerMessage::Register` handler calls it unconditionally — gating it
 /// broke the macOS daemon build (何勇 review 5302853212).
 pub(crate) fn build_mirror_descriptor(
     size: usize,
@@ -210,10 +210,10 @@ pub(crate) fn create_cross_pool_shmem(
     )
     .ok_or_else(|| eyre::eyre!("invalid pool id: {shared_memory_id}"))?;
     // `device` is the receiver's device (the mirror's consumer): the
-    // sender relays it in RegisterPool. A GPU receiver ("cuda:0") reads
+    // sender relays it in `PeerMessage::Register`. A GPU receiver ("cuda:0") reads
     // the mirror's CPU data region and stages it HtoD into its own GPU
     // buffer; "cpu" readers consume the data region directly.
-    // `dtype`/`device` arrive from the remote RegisterPool event
+    // `dtype`/`device` arrive from the remote `PeerMessage::Register` event
     // (untrusted cross-machine strings) — build the header JSON with
     // serde_json so quotes/backslashes are escaped instead of corrupting
     // or injecting into the parsed structure.
@@ -293,7 +293,7 @@ pub(crate) fn create_cross_pool_shmem(
 /// DORADMA seqlock protocol (odd gen during write, even after).
 ///
 /// A 61.44MB mirror write is a 10-30ms synchronous memcpy, so callers
-/// must not run it on the event loop — spawn it (see the MemoryPoolWrite
+/// must not run it on the event loop — spawn it (see the `PeerMessage::Write`
 /// handler). Not async: there is nothing to await, the work is the copy.
 /// Returns whether the mirror write completed (the caller publishes the
 /// commit ack with this outcome).
