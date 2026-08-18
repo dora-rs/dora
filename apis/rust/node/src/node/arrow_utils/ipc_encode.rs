@@ -353,6 +353,28 @@ pub fn ipc_fast_path_len(array: &ArrayData) -> Option<usize> {
 /// small/medium messages.
 ///
 /// The emitted bytes are identical to [`encode_ipc_into`].
+///
+/// # Example
+///
+/// ```
+/// # fn main() -> eyre::Result<()> {
+/// use dora_node_api::arrow::array::{Array, UInt64Array};
+/// use dora_node_api::arrow_utils::decode_arrow_ipc;
+/// use dora_node_api::arrow_utils::ipc_encode::PreparedIpc;
+///
+/// let data = UInt64Array::from(vec![1, 2, 3]).into_data();
+///
+/// // Prepare once, size the destination from `byte_len()`, then encode into it.
+/// let prepared = PreparedIpc::new(&data).expect("primitive array is fast-path eligible");
+/// let mut buffer = vec![0u8; prepared.byte_len()];
+/// prepared.encode_into(&mut buffer)?;
+///
+/// // The buffer is a self-describing IPC stream, identical to `encode_ipc_into`.
+/// let decoded = decode_arrow_ipc(&buffer)?;
+/// assert_eq!(decoded, UInt64Array::from(vec![1, 2, 3]).into_data());
+/// # Ok(())
+/// # }
+/// ```
 pub struct PreparedIpc(Prepared);
 
 impl PreparedIpc {

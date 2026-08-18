@@ -173,14 +173,6 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 .iter_mut()
                 .flat_map(|op| op.config.inputs.values_mut())
                 .collect(),
-            classify::NodeClass::Custom => node
-                .custom
-                .as_mut()
-                .ok_or_eyre("no custom")?
-                .run_config
-                .inputs
-                .values_mut()
-                .collect(),
             classify::NodeClass::Operator => node
                 .operator
                 .as_mut()
@@ -235,10 +227,6 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     health_check_timeout: node.health_check_timeout,
                     finish_grace_secs: node.finish_grace_secs,
                 })
-            }
-            classify::NodeClass::Custom => {
-                let custom = node.custom.as_ref().ok_or_eyre("no custom")?;
-                CoreNodeKind::Custom(custom.clone())
             }
             classify::NodeClass::Runtime => {
                 let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
@@ -587,26 +575,24 @@ impl NodeExt for Node {
         match (
             &self.path,
             &self.operators,
-            &self.custom,
             &self.operator,
             &self.ros2,
             &self.module,
         ) {
-            (None, None, None, None, None, None) => {
+            (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
-            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
-            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
+            (None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -619,7 +605,6 @@ pub enum NodeKind<'a> {
     Standard(&'a String),
     /// Dora runtime node
     Runtime(&'a RuntimeNode),
-    Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),

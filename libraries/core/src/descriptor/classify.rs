@@ -21,7 +21,6 @@ use eyre::{Result, bail};
 #[derive(Debug)]
 pub(super) enum NodeClass {
     Standard { source: NodeSource },
-    Custom,
     Runtime,
     Operator,
     Ros2Bridge,
@@ -86,10 +85,6 @@ fn classify_inner(node: &Node) -> Result<NodeClassOrModule> {
         NodeKind::Operator(_) => {
             check_operator(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Operator))
-        }
-        NodeKind::Custom(_) => {
-            check_custom(node)?;
-            Ok(NodeClassOrModule::Class(NodeClass::Custom))
         }
         NodeKind::Runtime(_) => {
             check_runtime(node)?;
@@ -273,15 +268,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
         unknown.join(", ")
     );
 
-    // Custom-specific hint for misplaced fields
-    if kind_name == "Custom" {
-        msg.push_str(
-            "these fields should be placed inside the `custom:` block \
-             (e.g. `custom.outputs`, `custom.restart_policy`)",
-        );
-    } else {
-        msg.push_str("these fields are not consumed by this node kind; remove them from the node");
-    }
+    msg.push_str("these fields are not consumed by this node kind; remove them from the node");
 
     bail!(msg)
 }
@@ -333,19 +320,6 @@ fn check_standard(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(STANDARD_ALLOWED);
     validate_against_whitelist(node, &allowed, "Standard")
-}
-
-/// Custom node whitelist:
-/// custom, cpu_affinity (+ shared: id/name/description/env/deploy)
-///
-/// Fields that belong inside `custom:` are rejected with a hint
-/// pointing to the correct location.
-const CUSTOM_ALLOWED: &[&str] = &["custom", "cpu_affinity"];
-
-fn check_custom(node: &Node) -> Result<()> {
-    let mut allowed = SHARED_FIELDS.to_vec();
-    allowed.extend(CUSTOM_ALLOWED);
-    validate_against_whitelist(node, &allowed, "Custom")
 }
 
 /// Runtime node whitelist:
@@ -569,15 +543,6 @@ output_metadata:
 pattern: service-server
 "#,
             r#"
-id: custom
-custom:
-  path: ./node.py
-  source: Local
-  inputs:
-    in: source/out
-  outputs: [out]
-"#,
-            r#"
 id: runtime
 operators:
   - id: op
@@ -635,17 +600,6 @@ params:
 "#,
                 "Standard",
                 "params",
-            ),
-            (
-                r#"
-id: custom
-custom:
-  path: ./node.py
-  source: Local
-outputs: [out]
-"#,
-                "Custom",
-                "outputs",
             ),
             (
                 r#"
@@ -719,7 +673,7 @@ build: cargo build
         actual.insert("deploy");
         let mut classified: BTreeSet<_> = SHARED_FIELDS.iter().copied().collect();
         classified.extend(ALL_CHECKABLE_FIELDS.iter().map(|field| field.name));
-        classified.extend(["custom", "operators", "operator", "ros2", "module"]);
+        classified.extend(["operators", "operator", "ros2", "module"]);
 
         assert_eq!(actual, classified);
     }

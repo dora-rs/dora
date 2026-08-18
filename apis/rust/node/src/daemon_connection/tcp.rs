@@ -9,7 +9,7 @@ use std::{
 };
 
 enum Serializer {
-    Bincode,
+    Postcard,
     SerdeJson,
 }
 pub fn request(
@@ -17,8 +17,8 @@ pub fn request(
     request: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<DaemonReply> {
     send_message(connection, request)?;
-    if request.inner.expects_tcp_bincode_reply() {
-        receive_reply(connection, Serializer::Bincode)
+    if request.inner.expects_tcp_binary_reply() {
+        receive_reply(connection, Serializer::Postcard)
             .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
     // Use serde json for message with variable length
     } else if request.inner.expects_tcp_json_reply() {
@@ -33,7 +33,8 @@ fn send_message(
     connection: &mut TcpStream,
     message: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<()> {
-    let serialized = bincode::serialize(&message).wrap_err("failed to serialize DaemonRequest")?;
+    let serialized = dora_message::encode_presized(message, message.inner.encode_size_hint())
+        .wrap_err("failed to serialize DaemonRequest")?;
     tcp_send(connection, &serialized).wrap_err("failed to send DaemonRequest")?;
     Ok(())
 }
@@ -57,7 +58,7 @@ fn receive_reply(
             },
         };
     match serializer {
-        Serializer::Bincode => bincode::deserialize(&raw)
+        Serializer::Postcard => dora_message::decode(&raw)
             .wrap_err("failed to deserialize DaemonReply")
             .map(Some),
         Serializer::SerdeJson => serde_json::from_slice(&raw)

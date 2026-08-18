@@ -18,4 +18,3 @@ dora-node-api = { workspace = true, default-features = false }
 dora-recording = { workspace = true }
 dora-message = { workspace = true }
 eyre = { workspace = true }
-bincode = { workspace = true }

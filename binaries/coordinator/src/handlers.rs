@@ -456,20 +456,15 @@ fn resolve_log_daemon_id(
     daemon_connections: &DaemonConnections,
 ) -> eyre::Result<DaemonId> {
     if let Some(nodes) = archived_nodes {
-        let machine_ids: Vec<Option<String>> = nodes
-            .values()
-            .filter(|node| node.id == *node_id)
-            .map(|node| node.deploy.as_ref().and_then(|d| d.machine.clone()))
-            .collect();
-
-        let machine_id = match &machine_ids[..] {
-            [machine_id] => machine_id.clone(),
-            [] => bail!("No machine contains {}/{}", dataflow_id, node_id),
-            _ => bail!(
-                "More than one machine contains {}/{}. However, it should only be present on one.",
-                dataflow_id,
-                node_id
-            ),
+        // `nodes` is keyed by `NodeId` and every `ResolvedNode.id` equals its map
+        // key (see `resolve_aliases_and_set_defaults_in_topology`, which also
+        // rejects duplicate ids), so a direct lookup is equivalent to — and
+        // cheaper than — scanning every entry for a matching `id`. The previous
+        // `Vec` scan additionally carried an "more than one machine" arm that the
+        // map key uniqueness made unreachable.
+        let machine_id = match nodes.get(node_id) {
+            Some(node) => node.deploy.as_ref().and_then(|d| d.machine.clone()),
+            None => bail!("No machine contains {}/{}", dataflow_id, node_id),
         };
 
         let daemon_ids: Vec<_> = match &machine_id {

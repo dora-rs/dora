@@ -30,7 +30,6 @@ fn case_error(name: &str) -> String {
 fn valid_descriptor_field_cases_resolve() {
     for name in [
         "valid-standard.yml",
-        "valid-custom.yml",
         "valid-runtime.yml",
         "valid-operator.yml",
         "valid-ros2-metadata.yml",
@@ -49,7 +48,6 @@ fn valid_descriptor_field_cases_resolve() {
 fn invalid_descriptor_field_cases_report_rejected_fields() {
     for (name, expected) in [
         ("invalid-standard-params.yml", "params"),
-        ("invalid-custom-outputs.yml", "outputs"),
         ("invalid-runtime-outputs.yml", "outputs"),
         ("invalid-operator-outputs.yml", "outputs"),
         ("invalid-ros2-git.yml", "git"),

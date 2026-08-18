@@ -40,6 +40,21 @@ fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId,
     Ok(reverse_map)
 }
 
+/// Nanoseconds since the Unix epoch, saturating to 0 when the wall clock reads
+/// a pre-epoch time.
+///
+/// `SystemTime::duration_since(UNIX_EPOCH)` returns `Err` whenever the clock is
+/// set before 1970 — common on battery-less embedded/robotics hardware that
+/// boots at (or before) the epoch until NTP/GPS sync lands. This runs once per
+/// recorded message, so an `.unwrap()` here would abort the recorder mid-capture.
+/// Saturating to 0 matches the `saturating_sub` already used when computing the
+/// per-entry offset from `start_nanos`.
+fn unix_nanos(now: SystemTime) -> u64 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -52,13 +67,10 @@ fn main() -> eyre::Result<()> {
 
     let (_node, mut events) = DoraNode::init_from_env()?;
 
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    let start_nanos = unix_nanos(SystemTime::now());
 
     let header = RecordingHeader {
-        version: 1,
+        version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id: uuid::Uuid::new_v4(),
         descriptor_yaml: descriptor_yaml.into_bytes(),
@@ -139,10 +151,7 @@ fn main() -> eyre::Result<()> {
                 };
                 let event_bytes = timestamped.serialize()?;
 
-                let now_nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64;
+                let now_nanos = unix_nanos(SystemTime::now());
 
                 let entry = RecordEntry {
                     node_id: source_node.to_string(),
@@ -169,7 +178,21 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_reverse_map;
+    use super::{build_reverse_map, unix_nanos};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn unix_nanos_saturates_on_pre_epoch_clock() {
+        // A pre-epoch wall clock must not panic the recorder mid-capture.
+        let before_epoch = SystemTime::UNIX_EPOCH - Duration::from_secs(60);
+        assert_eq!(unix_nanos(before_epoch), 0);
+        // The epoch itself is 0, and a post-epoch time is its offset in nanos.
+        assert_eq!(unix_nanos(SystemTime::UNIX_EPOCH), 0);
+        assert_eq!(
+            unix_nanos(SystemTime::UNIX_EPOCH + Duration::from_nanos(1_500)),
+            1_500
+        );
+    }
 
     #[test]
     fn valid_topics_parse() {

@@ -757,6 +757,15 @@ mod tests {
             .to_string()
     }
 
+    // A `file://` URL for a local absolute path. `format!("file://{}", p.display())`
+    // is not portable: on Windows it yields `file://C:\...`, which puts the drive
+    // letter in the authority and leaves the backslashes as non-separators, so
+    // libgit2 refuses to resolve it (#3137). `Url::from_file_path` emits the
+    // well-formed `file:///C:/...` on every platform.
+    fn file_url(path: &Path) -> Url {
+        Url::from_file_path(path).expect("test repo path must be absolute")
+    }
+
     #[test]
     fn clone_dir_path_keeps_a_file_url_drive_letter_out_of_the_on_disk_path() {
         // A `file://` URL to a Windows-style absolute path parses with the
@@ -922,7 +931,8 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let commit = init_repo_with_commit(&repo_path);
-        let repo_url_str = format!("file://{}", repo_path.display());
+        let repo_url = file_url(&repo_path);
+        let repo_url_str = repo_url.to_string();
         let target_dir = tempfile::tempdir().unwrap();
 
         let mut manager = GitManager::default();
@@ -945,8 +955,7 @@ mod tests {
         // before it's a valid, HEAD-resolvable repo). Session B must see
         // this as owned by an in-flight build, not as a finished clone to
         // verify.
-        let parsed = Url::parse(&repo_url_str).unwrap();
-        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &parsed, &commit).unwrap();
+        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &repo_url, &commit).unwrap();
         std::fs::create_dir_all(&clone_dir).unwrap();
 
         let session_b = SessionId::generate();
@@ -981,7 +990,8 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let commit = init_repo_with_commit(&repo_path);
-        let repo_url_str = format!("file://{}", repo_path.display());
+        let repo_url = file_url(&repo_path);
+        let repo_url_str = repo_url.to_string();
         let target_dir = tempfile::tempdir().unwrap();
 
         let mut manager = GitManager::default();
@@ -1012,8 +1022,7 @@ mod tests {
         // The dir shows up on disk, then A finishes and drops its claim.
         // B is still writing, so a third session must not get a commit to
         // verify.
-        let parsed = Url::parse(&repo_url_str).unwrap();
-        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &parsed, &commit).unwrap();
+        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &repo_url, &commit).unwrap();
         std::fs::create_dir_all(&clone_dir).unwrap();
         drop(folder_a);
 
@@ -1077,7 +1086,7 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let old_commit = init_repo_with_commit(&repo_path);
-        let repo_url = format!("file://{}", repo_path.display());
+        let repo_url = file_url(&repo_path).to_string();
 
         let target_dir = tempfile::tempdir().unwrap();
         let mut manager = GitManager::default();
@@ -1255,8 +1264,7 @@ mod tests {
     // Clone `origin` into `dest` so `dest` carries an `origin` remote that
     // `fetch_changes` can pull from — the shape the Copy/Rename arms expect.
     fn clone_from_origin(origin: &Path, dest: &Path) {
-        let url = format!("file://{}", origin.display());
-        git2::Repository::clone(&url, dest).unwrap();
+        git2::Repository::clone(file_url(origin).as_str(), dest).unwrap();
     }
 
     fn head_commit(dir: &Path) -> String {
@@ -1335,7 +1343,7 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let commit = init_repo_with_commit(&repo_path);
-        let repo_url = Url::parse(&format!("file://{}", repo_path.display())).unwrap();
+        let repo_url = file_url(&repo_path);
 
         let base = tempfile::tempdir().unwrap();
         let target = base.path().join("localhost").join(&commit);
@@ -1367,7 +1375,7 @@ mod tests {
         std::fs::create_dir_all(target.parent().unwrap()).unwrap();
         // A file:// URL to a path that isn't a git repo -> clone fails.
         let missing = base.path().join("does-not-exist");
-        let repo_url = Url::parse(&format!("file://{}", missing.display())).unwrap();
+        let repo_url = file_url(&missing);
 
         let folder = GitFolder {
             reuse: ReuseOptions::NewClone {
