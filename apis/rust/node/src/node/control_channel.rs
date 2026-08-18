@@ -211,32 +211,6 @@ impl ControlChannel {
         }
     }
 
-    /// Read a memory pool's metadata from the daemon. The cross-machine
-    /// data plane itself never needs this (mirror segments are derived by
-    /// name), but the legacy node-side path keeps it as a fallback for
-    /// pools registered with an explicit `name=`. On a daemon that no
-    /// longer serves the pool table this returns an error; callers treat
-    /// it as a soft miss.
-    pub fn read_pinned_memory(
-        &mut self,
-        shared_memory_id: String,
-        _free: bool,
-    ) -> eyre::Result<Metadata> {
-        let request = DaemonRequest::ReadPinnedMemory { shared_memory_id };
-        let reply = self
-            .channel
-            .request(&Timestamped {
-                inner: request,
-                timestamp: self.clock.new_timestamp(),
-            })
-            .wrap_err("failed to send ReadPinnedMemory request to dora-daemon")?;
-        match reply {
-            DaemonReply::PinnedMemoryMetadata { metadata } => Ok(metadata),
-            DaemonReply::Result(Err(e)) => bail!("{e}"),
-            other => bail!("unexpected ReadPinnedMemory reply: {other:?}"),
-        }
-    }
-
     pub fn write_pinned_memory(
         &mut self,
         shared_memory_id: String,

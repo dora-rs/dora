@@ -114,14 +114,6 @@ pub enum DaemonReply {
         result: Result<(), String>,
         direct: bool,
     },
-    /// Reply to [`DaemonRequest::ReadPinnedMemory`]. Appended last for the
-    /// same reason as [`DaemonReply::CrossMachinePoolRegistered`]: the
-    /// enum is encoded by variant index, and a mid-enum insertion would
-    /// shift the wire indices of `ExtensionValue`/`Empty` for version-
-    /// skewed node/daemon pairs (the Python node API ships separately).
-    PinnedMemoryMetadata {
-        metadata: Metadata,
-    },
 }
 
 impl DaemonReply {
@@ -142,7 +134,6 @@ impl DaemonReply {
             // its own length is the whole hint.
             DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
             DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
-            DaemonReply::PinnedMemoryMetadata { metadata } => metadata.parameters.len(),
             DaemonReply::CrossMachinePoolRegistered { .. } => 0,
         }
     }

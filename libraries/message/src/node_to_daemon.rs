@@ -55,17 +55,6 @@ pub enum DaemonRequest {
         namespace: String,
         key: String,
     },
-    /// Register a pinned-memory pool with the daemon (single-machine
-    /// legacy protocol; the tensor-pool extension prefers the extension
-    /// table, these requests remain for the cross-machine work).
-    RegisterPinnedMemory {
-        shared_memory_id: String,
-        metadata: Metadata,
-    },
-    /// Read pinned-memory pool metadata from the daemon.
-    ReadPinnedMemory {
-        shared_memory_id: String,
-    },
     /// Release a pinned-memory pool.
     FreePinnedMemory {
         shared_memory_id: String,
@@ -114,9 +103,7 @@ impl DaemonRequest {
             DaemonRequest::ExtensionStore { value, .. } => value.len(),
             DaemonRequest::ExtensionLoad { .. } | DaemonRequest::ExtensionDrop { .. } => 0,
             DaemonRequest::WritePinnedMemory { tensor_data, .. } => tensor_data.len(),
-            DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. }
+            DaemonRequest::FreePinnedMemory { .. }
             | DaemonRequest::RegisterCrossMachinePool { .. } => 0,
         }
     }
@@ -133,8 +120,6 @@ impl DaemonRequest {
             | DaemonRequest::OutputsDone
             | DaemonRequest::NextEvent
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. }
             | DaemonRequest::WritePinnedMemory { .. }
             | DaemonRequest::RegisterCrossMachinePool { .. }
@@ -156,8 +141,6 @@ impl DaemonRequest {
             | DaemonRequest::SendMessage { .. }
             | DaemonRequest::OutputSent { .. }
             | DaemonRequest::EventStreamDropped
-            | DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
             | DaemonRequest::FreePinnedMemory { .. }
             | DaemonRequest::WritePinnedMemory { .. }
             | DaemonRequest::RegisterCrossMachinePool { .. }

@@ -140,10 +140,9 @@ impl IntegrationTestingEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
-            DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
+            DaemonRequest::FreePinnedMemory { .. } | DaemonRequest::WritePinnedMemory { .. } => {
+                DaemonReply::Result(Ok(()))
+            }
             DaemonRequest::RegisterCrossMachinePool { .. } => {
                 eyre::bail!(
                     "cross-machine pool registration is not supported in integration-testing mode"
