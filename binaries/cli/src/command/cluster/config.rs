@@ -105,6 +105,20 @@ impl ClusterConfig {
             if m.host.is_empty() {
                 bail!("machine `{}` host must not be empty", m.id);
             }
+            // `host`/`user` are folded into the ssh *target* (`{user}@{host}`)
+            // and passed to the local `ssh` binary. They are deliberately not
+            // run through `validate_shell_safe` (a target legitimately carries
+            // `:`/`[`/`]` for IPv6 literals, `@`, etc.), but a value that begins
+            // with `-` is parsed by `ssh`'s own argument parser as an *option*
+            // rather than a hostname — e.g. `-oProxyCommand=...` executes an
+            // arbitrary command on the local machine before connecting (the
+            // classic ssh/git argument-injection class, cf. CVE-2017-1000117).
+            // Reject a leading dash on both fields; `run_ssh` additionally
+            // passes `--` before the target as defense-in-depth.
+            validate_no_leading_dash(&format!("machine `{}` host", m.id), &m.host)?;
+            if let Some(user) = &m.user {
+                validate_no_leading_dash(&format!("machine `{}` user", m.id), user)?;
+            }
             // Reject daemon_port = 0: the daemon would bind an ephemeral port
             // but exports DORA_DAEMON_LOCAL_LISTEN_PORT=0 to spawned nodes
             // (binaries/cli/src/command/daemon.rs), so they fail to connect.
@@ -125,6 +139,17 @@ fn validate_shell_safe(what: &str, value: &str) -> eyre::Result<()> {
         .find(|c| !c.is_ascii_alphanumeric() && *c != '_' && *c != '-' && *c != '.')
     {
         bail!("{what} contains invalid character `{ch}` -- only [a-zA-Z0-9_.-] are allowed");
+    }
+    Ok(())
+}
+
+/// Reject a value that begins with `-`, which the local `ssh` binary would
+/// otherwise parse as an option rather than a hostname/user (argument
+/// injection). Unlike [`validate_shell_safe`] this places no charset
+/// restriction, so IPv6 literals and normal `user@host` values stay valid.
+fn validate_no_leading_dash(what: &str, value: &str) -> eyre::Result<()> {
+    if value.starts_with('-') {
+        bail!("{what} must not start with `-` (would be parsed as an ssh option)");
     }
     Ok(())
 }
@@ -338,6 +363,51 @@ mod tests {
         );
         let cfg = ClusterConfig::load(f.path()).unwrap();
         assert_eq!(cfg.zenoh_peer.as_deref(), Some("tcp/[::1]:7447"));
+    }
+
+    #[test]
+    fn reject_host_with_leading_dash() {
+        // A `host` beginning with `-` is parsed by the local `ssh` binary as an
+        // option (e.g. `-oProxyCommand=touch /tmp/pwned;false`), giving arbitrary
+        // local command execution before any network connection is made.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: \"-oProxyCommand=touch /tmp/pwned;false\"\n",
+        );
+        let err = ClusterConfig::load(f.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("must not start with `-`") && err.contains("host"),
+            "host with leading dash should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn reject_user_with_leading_dash() {
+        // `ssh_target` yields `{user}@{host}`, so a `user` beginning with `-`
+        // produces a target string that also starts with `-` — same vector.
+        let f = write_yaml(
+            "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: h\n    user: \"-oProxyCommand=x\"\n",
+        );
+        let err = ClusterConfig::load(f.path()).unwrap_err().to_string();
+        assert!(
+            err.contains("must not start with `-`") && err.contains("user"),
+            "user with leading dash should be rejected, got: {err}"
+        );
+    }
+
+    #[test]
+    fn accept_ipv6_host() {
+        // An IPv6 literal host carries `:` (and may be bracketed) — the id
+        // charset would reject it, but host/user are only checked for a leading
+        // dash, so it must stay valid.
+        for host in ["::1", "2001:db8::1", "192.168.1.10"] {
+            let f = write_yaml(&format!(
+                "coordinator:\n  addr: 10.0.0.1\nmachines:\n  - id: a\n    host: \"{host}\"\n"
+            ));
+            assert!(
+                ClusterConfig::load(f.path()).is_ok(),
+                "host `{host}` should be accepted"
+            );
+        }
     }
 
     #[test]
