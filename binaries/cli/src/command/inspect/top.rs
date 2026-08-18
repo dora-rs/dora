@@ -30,7 +30,10 @@ use super::super::{Executable, default_tracing};
 /// so this works for distributed dataflows across multiple machines.
 ///
 /// Note:
-/// - Values are averaged over the last refresh period
+/// - Columns report over different time bases: CPU% is averaged over the last
+///   refresh interval and I/O READ and I/O WRITE are per-interval rates; MEMORY
+///   and QUEUE are instantaneous snapshots; NET TX, NET RX and RESTARTS are
+///   cumulative totals since the dataflow started
 /// - CPU percentage is of a single core (values can add to more than 100% if multiple cores are used)
 /// - Nodes can run on different machines with potentially different CPUs, so percentages are not comparable across machines
 #[derive(Debug, Args)]
