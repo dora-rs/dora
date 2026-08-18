@@ -1786,10 +1786,8 @@ pub struct Daemon {
     pub(crate) sessions: BTreeMap<SessionId, BuildId>,
     pub(crate) builds: BTreeMap<BuildId, BuildInfo>,
     pub(crate) git_manager: GitManager,
-    pub(crate) metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
-    /// Wall-clock instant of the previous successful metrics refresh, used to
-    /// compute the real disk-I/O sampling window. `None` until the first refresh.
-    pub(crate) metrics_last_refresh: Arc<std::sync::Mutex<Option<Instant>>>,
+    /// Carry-over state for the `dora top` metrics sampler. See [`MetricsState`].
+    pub(crate) metrics_state: Arc<std::sync::Mutex<MetricsState>>,
     /// Opaque, dataflow-scoped store for out-of-tree extensions. See
     /// `extension_table` and `docs/extensions.md`.
     pub(crate) extensions: ExtensionTable,
@@ -1926,13 +1924,108 @@ struct DataflowMetricsSnapshot {
     net_publish_failures: Arc<AtomicU64>,
 }
 
+/// Everything the metrics sampler carries from one refresh to the next: the
+/// sysinfo `System` and the record of what its per-process I/O counters are
+/// measured against.
+///
+/// These belong together. `Process::disk_usage()` reports bytes since the
+/// *previous refresh of that process*, so a delta only becomes a rate alongside
+/// the `System` that produced it (`last_refresh` gives the divisor) and only
+/// counts as a delta for processes that `System` had already seen
+/// (`processes`). A process observed for the first time — a node in a second
+/// dataflow on a long-lived daemon, a restart with a fresh PID, a freshly
+/// spawned descendant — reports everything it has read or written since it
+/// started, which divided by a two-second window is a large one-sample spike.
+///
+/// Holding all three in one mutex is what keeps that pairing honest: a
+/// collection takes the whole state at once, so a concurrent collection starts
+/// from `Default` — an empty `System` *and* an empty baseline — and reports no
+/// rate, rather than dividing one collection's total-since-start bytes by the
+/// other's plausible-looking window.
+#[derive(Default)]
+pub(crate) struct MetricsState {
+    /// The sysinfo handle whose per-process counters the deltas come from.
+    system: sysinfo::System,
+    /// Wall-clock instant of the refresh that produced `system`. `None` when
+    /// there is no baseline: before the first refresh, and after a panicked
+    /// refresh resets the state.
+    last_refresh: Option<Instant>,
+    /// `pid -> start_time` for every process `system` observed. The start time
+    /// distinguishes a long-lived process from a recycled PID, which sysinfo
+    /// treats as a new process with no baseline.
+    processes: HashMap<sysinfo::Pid, u64>,
+}
+
+/// Record which processes the just-refreshed `System` observed, to serve as the
+/// baseline for the next cycle.
+fn snapshot_processes(sys: &sysinfo::System) -> HashMap<sysinfo::Pid, u64> {
+    sys.processes()
+        .iter()
+        .map(|(pid, process)| (*pid, process.start_time()))
+        .collect()
+}
+
+/// Whether `pid` was already observed in the previous refresh, so its
+/// `disk_usage()` covers only the sampling window (see [`MetricsState`]). A
+/// `start_time` mismatch means the PID was recycled: a different process.
+fn has_disk_baseline(
+    previous: &HashMap<sysinfo::Pid, u64>,
+    pid: sysinfo::Pid,
+    start_time: u64,
+) -> bool {
+    previous.get(&pid) == Some(&start_time)
+}
+
+/// Running total of one node's disk I/O across its process tree.
+///
+/// Only processes that already had a baseline may be summed (see
+/// [`MetricsState`]); a newcomer would contribute total-since-start bytes and
+/// spike the rate. Leaving one out under-reports that single window —
+/// it is counted from the next refresh on — which beats both the spike and
+/// blanking the row for a node that spawns a short-lived child every tick. When
+/// nothing could be summed at all (the node's own first observation) there is no
+/// measurement, and [`DiskDelta::window`] reports none.
+#[derive(Default)]
+struct DiskDelta {
+    read: u64,
+    written: u64,
+    /// Whether any process contributed, i.e. whether these totals mean anything.
+    any_baseline: bool,
+}
+
+impl DiskDelta {
+    /// Add `process`'s bytes, if it was already observed in the previous refresh.
+    fn add(
+        &mut self,
+        previous: &HashMap<sysinfo::Pid, u64>,
+        pid: sysinfo::Pid,
+        process: &sysinfo::Process,
+    ) {
+        if !has_disk_baseline(previous, pid, process.start_time()) {
+            return;
+        }
+        let usage = process.disk_usage();
+        self.read += usage.read_bytes;
+        self.written += usage.written_bytes;
+        self.any_baseline = true;
+    }
+
+    /// The window these bytes were measured over, or `None` if nothing was.
+    fn window(&self, refresh_window: Option<Duration>) -> Option<Duration> {
+        if self.any_baseline {
+            refresh_window
+        } else {
+            None
+        }
+    }
+}
+
 /// Convert a byte delta observed over `window` into a bytes-per-second rate.
 ///
-/// `window` is the wall-clock time since the previous successful refresh.
-/// Returns `None` when there is no usable measurement window: the first sample
-/// after the metrics `System` is (re)initialized has no prior baseline — sysinfo
-/// then reports the process's total-since-start I/O, which divided by any window
-/// is a spurious spike — and a near-zero window would similarly explode the rate.
+/// `window` is the wall-clock time since the previous successful refresh, or
+/// `None` when the delta has no baseline to be a delta against (see
+/// [`MetricsState`]). Returns `None` in that case, and also when the window
+/// is so short that dividing by it would explode into a spurious spike.
 fn disk_rate_bytes_per_sec(bytes: u64, window: Option<Duration>) -> Option<u64> {
     let secs = window?.as_secs_f64();
     if secs < MIN_METRICS_WINDOW_SECS {
@@ -1974,14 +2067,83 @@ mod disk_rate_tests {
             Some(2_000_000)
         );
     }
+
+    #[test]
+    fn only_processes_seen_last_refresh_have_a_baseline() {
+        let previous = HashMap::from([(sysinfo::Pid::from_u32(10), 1_700_000_000)]);
+
+        // Same PID, same start time: `disk_usage()` is a real per-window delta.
+        assert!(has_disk_baseline(
+            &previous,
+            sysinfo::Pid::from_u32(10),
+            1_700_000_000
+        ));
+        // Never seen before — a node from a later dataflow, or a freshly spawned
+        // descendant: `disk_usage()` is total-since-start.
+        assert!(!has_disk_baseline(
+            &previous,
+            sysinfo::Pid::from_u32(11),
+            1_700_000_000
+        ));
+        // Same PID, later start time: the PID was recycled, so no baseline.
+        assert!(!has_disk_baseline(
+            &previous,
+            sysinfo::Pid::from_u32(10),
+            1_700_000_500
+        ));
+    }
+
+    #[test]
+    fn a_node_with_nothing_summed_has_no_window() {
+        let refresh_window = Some(Duration::from_secs(2));
+
+        // Nothing could be summed — the node's own first observation. A valid
+        // refresh window must not turn total-since-start bytes into a rate.
+        assert_eq!(DiskDelta::default().window(refresh_window), None);
+
+        // Something was summed, so the refresh window is the one it spans, even
+        // if a newcomer's bytes were left out of it.
+        let summed = DiskDelta {
+            any_baseline: true,
+            ..Default::default()
+        };
+        assert_eq!(summed.window(refresh_window), refresh_window);
+    }
+
+    #[test]
+    fn a_refresh_records_a_baseline_a_previous_one_did_not_have() {
+        use sysinfo::{ProcessRefreshKind, ProcessesToUpdate};
+
+        // What `snapshot_processes` writes must be what `has_disk_baseline`
+        // accepts, for a real process out of a real `System`.
+        let pid = sysinfo::Pid::from_u32(std::process::id());
+        let mut system = sysinfo::System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[pid]),
+            true,
+            ProcessRefreshKind::nothing().with_disk_usage(),
+        );
+
+        let start_time = system
+            .process(pid)
+            .expect("sysinfo sees the current process")
+            .start_time();
+        let snapshot = snapshot_processes(&system);
+
+        // This refresh observed us for the first time, so the state it replaced
+        // — an empty one, as after a panicked refresh — holds no baseline: the
+        // `disk_usage()` it just reported is total-since-start, not a delta.
+        assert!(!has_disk_baseline(&HashMap::new(), pid, start_time));
+        // Having now been recorded, the *next* refresh's delta is a real one.
+        assert!(has_disk_baseline(&snapshot, pid, start_time));
+    }
 }
 
 /// Collect and send metrics in the background. Errors are returned to the
 /// caller (the spawned task logs them).
 async fn collect_and_send_metrics_bg(
     dataflows: Vec<DataflowMetricsSnapshot>,
-    metrics_system: Arc<std::sync::Mutex<sysinfo::System>>,
-    metrics_last_refresh: Arc<std::sync::Mutex<Option<Instant>>>,
+    metrics_state: Arc<std::sync::Mutex<MetricsState>>,
     sender: coordinator::CoordinatorSender,
     daemon_id: DaemonId,
     clock: Arc<uhlc::HLC>,
@@ -1993,14 +2155,24 @@ async fn collect_and_send_metrics_bg(
         .iter()
         .any(|df| df.nodes.iter().any(|n| n.pid.is_some()));
 
-    // Refresh sysinfo on a blocking thread if any nodes are running.
-    // Use try_lock to skip if a previous collection is still in progress.
-    // `refresh_ok` tracks whether we hold a valid per-process I/O baseline: it
-    // is false when the refresh panicked (the `System` is then reset to empty,
-    // losing every baseline) so the next cycle is treated as a first sample.
-    let mut refresh_ok = false;
-    let refreshed_system = if has_any_running {
-        let sys = match metrics_system.try_lock() {
+    // Refresh sysinfo on a blocking thread if any nodes are running. `try_lock`
+    // skips the cycle when a previous collection is still in progress.
+    //
+    // Taking the whole `MetricsState` (see its docs) keeps each delta together
+    // with the window and the observed-process set that make it meaningful.
+    // Dividing by that measured window rather than a constant also fixes a
+    // catch-up cycle, which spans ~2 intervals but was divided by one.
+    //
+    // A cycle with no running nodes deliberately leaves the state untouched
+    // rather than clearing it: nothing refreshed, so the stored baseline still
+    // describes the stored `System`, and the next refresh's delta and window
+    // both simply span the longer gap.
+    let (refreshed_state, refresh_window, previous_processes) = if has_any_running {
+        let MetricsState {
+            system,
+            last_refresh,
+            processes: previous_processes,
+        } = match metrics_state.try_lock() {
             Ok(mut guard) => std::mem::take(&mut *guard),
             Err(_) => {
                 tracing::debug!("metrics: skipping, previous collection still running");
@@ -2012,57 +2184,46 @@ async fn collect_and_send_metrics_bg(
             .with_memory()
             .with_disk_usage();
         match tokio::task::spawn_blocking(move || {
-            let mut sys = sys;
-            sys.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
-            sys
+            let mut system = system;
+            system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
+            // Snapshot here rather than after the `await`: it is derived purely
+            // from `system`, so it belongs on the blocking thread with the
+            // refresh instead of on a reactor thread.
+            let processes = snapshot_processes(&system);
+            (system, processes)
         })
         .await
         {
-            Ok(sys) => {
-                refresh_ok = true;
-                Some(sys)
+            Ok((system, processes)) => {
+                let now = Instant::now();
+                let window = last_refresh.map(|prev| now.saturating_duration_since(prev));
+                (
+                    Some(MetricsState {
+                        system,
+                        last_refresh: Some(now),
+                        processes,
+                    }),
+                    window,
+                    previous_processes,
+                )
             }
             Err(e) => {
                 tracing::error!("sysinfo refresh panicked: {e}");
-                // The `System` (and its per-process I/O baseline) is gone.
-                Some(sysinfo::System::new())
+                // The `System` and every baseline it held are gone. The `take`
+                // above already left an empty state behind, so the next refresh
+                // starts over as a first sample; report nothing this cycle.
+                (None, None, HashMap::new())
             }
         }
     } else {
-        None
-    };
-
-    // Measure the real time since the previous successful refresh so the
-    // disk-I/O rate reflects the actual sampling window rather than a hard-coded
-    // interval. The constant divisor over-reported whenever the window differed
-    // from `METRICS_INTERVAL` — e.g. after a skipped/catch-up cycle (~2x) or on
-    // the first sample, when there is no baseline at all.
-    //
-    // Only a successful refresh establishes a baseline for the *next* delta, so
-    // the timestamp is recorded only then. When the refresh was skipped (no
-    // nodes) or panicked (System reset to empty), clear the timestamp so the
-    // next successful refresh is treated as a first sample instead of dividing
-    // total-since-start I/O by the gap. `None` (first sample or a poisoned lock)
-    // suppresses the rate until a real window exists.
-    let disk_window = if refresh_ok {
-        let now = Instant::now();
-        match metrics_last_refresh.lock() {
-            Ok(mut guard) => guard
-                .replace(now)
-                .map(|prev| now.saturating_duration_since(prev)),
-            Err(_) => None,
-        }
-    } else {
-        if let Ok(mut guard) = metrics_last_refresh.lock() {
-            *guard = None;
-        }
-        None
+        (None, None, HashMap::new())
     };
 
     for df in &dataflows {
         let mut metrics = BTreeMap::new();
 
-        if let Some(ref sys) = refreshed_system {
+        if let Some(state) = &refreshed_state {
+            let sys = &state.system;
             // Pre-build parent->children map once per refresh.
             let mut children_map: HashMap<sysinfo::Pid, Vec<sysinfo::Pid>> = HashMap::new();
             for (pid, proc_info) in sys.processes() {
@@ -2078,9 +2239,11 @@ async fn collect_and_send_metrics_bg(
                     if let Some(process) = sys.process(sys_pid) {
                         let mut cpu_usage = process.cpu_usage();
                         let mut memory_bytes = process.memory();
-                        let disk_usage = process.disk_usage();
-                        let mut disk_read = disk_usage.read_bytes;
-                        let mut disk_written = disk_usage.written_bytes;
+                        // CPU and memory are instantaneous readings, so every
+                        // process contributes; disk I/O is a delta, so `DiskDelta`
+                        // decides which ones may.
+                        let mut disk = DiskDelta::default();
+                        disk.add(&previous_processes, sys_pid, process);
 
                         // Recursively aggregate all descendants.
                         let mut stack = vec![sys_pid];
@@ -2090,14 +2253,14 @@ async fn collect_and_send_metrics_bg(
                                     if let Some(child) = sys.processes().get(&child_pid) {
                                         cpu_usage += child.cpu_usage();
                                         memory_bytes += child.memory();
-                                        let child_disk = child.disk_usage();
-                                        disk_read += child_disk.read_bytes;
-                                        disk_written += child_disk.written_bytes;
+                                        disk.add(&previous_processes, child_pid, child);
                                     }
                                     stack.push(child_pid);
                                 }
                             }
                         }
+
+                        let disk_window = disk.window(refresh_window);
 
                         let restart_count = node.restart_count.load(atomic::Ordering::Acquire);
                         let status = if !node.broken_inputs.is_empty() {
@@ -2112,9 +2275,9 @@ async fn collect_and_send_metrics_bg(
                                 pid,
                                 cpu_usage,
                                 memory_bytes,
-                                disk_read_bytes: disk_rate_bytes_per_sec(disk_read, disk_window),
+                                disk_read_bytes: disk_rate_bytes_per_sec(disk.read, disk_window),
                                 disk_write_bytes: disk_rate_bytes_per_sec(
-                                    disk_written,
+                                    disk.written,
                                     disk_window,
                                 ),
                                 restart_count,
@@ -2207,11 +2370,12 @@ async fn collect_and_send_metrics_bg(
         }
     }
 
-    // Return the refreshed System to the shared mutex for reuse.
-    if let Some(sys) = refreshed_system
-        && let Ok(mut guard) = metrics_system.lock()
+    // Return the refreshed System and its matching baseline to the shared mutex
+    // for the next cycle.
+    if let Some(state) = refreshed_state
+        && let Ok(mut guard) = metrics_state.lock()
     {
-        *guard = sys;
+        *guard = state;
     }
 
     Ok(())
@@ -3095,8 +3259,7 @@ impl Daemon {
             cross_data_endpoints: Arc::new(std::sync::Mutex::new(HashMap::new())),
             builds,
             sessions: Default::default(),
-            metrics_system: Arc::new(std::sync::Mutex::new(sysinfo::System::new())),
-            metrics_last_refresh: Arc::new(std::sync::Mutex::new(None)),
+            metrics_state: Arc::new(std::sync::Mutex::new(MetricsState::default())),
         };
 
         Ok((daemon, dora_events_rx))
@@ -5092,16 +5255,14 @@ impl Daemon {
             })
             .collect();
 
-        let metrics_system = self.metrics_system.clone();
-        let metrics_last_refresh = self.metrics_last_refresh.clone();
+        let metrics_state = self.metrics_state.clone();
         let daemon_id = self.daemon_id.clone();
         let clock = self.clock.clone();
 
         tokio::spawn(async move {
             if let Err(e) = collect_and_send_metrics_bg(
                 dataflow_snapshots,
-                metrics_system,
-                metrics_last_refresh,
+                metrics_state,
                 sender,
                 daemon_id,
                 clock,
