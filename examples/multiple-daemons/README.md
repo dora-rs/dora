@@ -31,6 +31,12 @@ Execute the following steps in this directory:
 
 # Usage Across Multiple Machines
 
+The steps below start each daemon by hand. For a managed cluster — machine list
+in a `cluster.yml`, SSH lifecycle commands, label-based scheduling, systemd
+services — see the [Distributed Deployment Guide](../../docs/distributed-deployment.md),
+which also documents how each daemon picks the address it advertises to the
+others.
+
 1. Start the dora coordinator on some machine that is reachable by IP by all other machines
     ```bash
     dora coordinator
@@ -47,13 +53,20 @@ Execute the following steps in this directory:
       You can **omit the `--machine-id` argument on one machine**. This will be the default machine for nodes that don't specify deploy information.
 
       The `RUST_LOG=debug` environment variable is optional. It enables some interesting debug output about the dataflow run.
-    - If daemons/coordinator are in **different networks** (e.g. behind a [NAT](https://en.wikipedia.org/wiki/Network_address_translation)), you need to set up one or multiple [zenoh routers](https://zenoh.io/docs/getting-started/deployment/#zenoh-router). This requires running a [`zenohd`](https://zenoh.io/docs/getting-started/installation/) instance for every subnet. This is also possible [using a Docker container](https://zenoh.io/docs/getting-started/quick-test/).
+    - If daemons/coordinator are in **different networks** (e.g. behind a [NAT](https://en.wikipedia.org/wiki/Network_address_translation)), put the machines on a **mesh VPN** such as [Tailscale](https://tailscale.com/), [WireGuard](https://www.wireguard.com/), or [Nebula](https://github.com/slackhq/nebula). This is the recommended setup: once every machine has a tunnel address, the machines are mutually dialable and dora needs no extra zenoh configuration. Each daemon binds the local address that routes toward the coordinator — the tunnel address, when the coordinator is reached through the tunnel — and advertises exactly that to the other daemons.
+      ```bash
+      RUST_LOG=debug dora daemon --coordinator-addr <COORDINATOR_TUNNEL_IP> --machine-id <MACHINE_ID> \
+        --zenoh-peer tcp/<COORDINATOR_TUNNEL_IP>:5456
+      ```
+      A mesh VPN carries no multicast, so daemons cannot find each other by scouting. `--zenoh-peer` gives them an explicit rendezvous instead: pass the *same* endpoint to every daemon, and the first one to bind it serves as the rendezvous for the others. On a multi-homed machine that would otherwise advertise an interface the other daemons cannot reach, name the address explicitly with `--zenoh-listen <TUNNEL_IP>`.
 
-      Once your `zenohd` instances are running, you can start the `dora daemon` instances as before, but now with a `ZENOH_CONFIG` environment variable set:
+      A [zenoh router](https://zenoh.io/docs/getting-started/deployment/#zenoh-router) is **not** a substitute for this. Since zenoh 1.9, peers no longer relay for each other, and peers that sit under one router in a single region are no exception: two NAT'd daemons will discover each other through a `zenohd` and still exchange nothing. A router helps only where the daemons are mutually dialable anyway (it then supplies discovery, which `--zenoh-peer` also does), or where the peers are split into separate router subregions.
+
+      If you do run your own [`zenohd`](https://zenoh.io/docs/getting-started/installation/) instances, point dora at them with a `ZENOH_CONFIG` environment variable:
       ```bash
       ZENOH_CONFIG=<ZENOH_CONFIG_FILE_PATH> RUST_LOG=debug dora daemon --coordinator-addr <IP> --machine-id <MACHINE_ID>
       ```
-      Replace `<ZENOH_CONFIG_FILE_PATH>`  with the path to a [zenoh configuration file](https://zenoh.io/docs/manual/configuration/#configuration-files) that lists the corresponding `zenohd` instance(s) under `connect.endpoints`.
+      Replace `<ZENOH_CONFIG_FILE_PATH>` with the path to a [zenoh configuration file](https://zenoh.io/docs/manual/configuration/#configuration-files) that lists the corresponding `zenohd` instance(s) under `connect.endpoints`. Note that this variable replaces dora's zenoh configuration **wholesale**, including the direct node-to-node links the daemon plans for same-machine communication — so same-machine traffic is relayed through the router too, which is slower and, if the router runs on another host, sends that traffic off the machine and back.
 
 3. In your `dataflow.yml` file, add an `deploy` key to all nodes that should not run on the default machine:
     ```yml
