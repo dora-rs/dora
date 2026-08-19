@@ -8,7 +8,12 @@ readme.workspace = true
 description = "Daemon-side helper for the tensor-pool extension: reclaims orphaned /dev/shm segments. Not covered by dora's 1.0 compatibility guarantees — see libraries/extensions/tensor-pool/README.md."
 license.workspace = true
 repository.workspace = true
-publish = false
+# Must be published: `dora-daemon` carries an (optional) `=1.0.0` dependency on
+# this crate, and `cargo publish` resolves *every* path dependency against
+# crates.io -- optional ones included, and `--no-verify` does not skip that
+# resolution. Leaving it unpublished aborts the release run at `dora-daemon`,
+# after the 16 crates before it are already live and unrecoverable (#3233).
+# Publishing it does not make it public API; see README.md.
 
 [features]
 # The daemon half: mirror segments, the direct-TCP data plane, and the
