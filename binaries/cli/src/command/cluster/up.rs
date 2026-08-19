@@ -61,13 +61,32 @@ impl Executable for Up {
 
         // 2. SSH into each machine to start a daemon
         let zenoh_peer_arg = format_zenoh_peer_arg(config.zenoh_peer.as_deref());
+        // Wire the daemons into an explicit zenoh mesh where the config allows
+        // it. Falling back is deliberate: a partial mesh is worse than none,
+        // since explicit connect endpoints turn multicast scouting off for the
+        // daemons that have them while the rest still depend on it.
+        let zenoh_mesh_args = config.zenoh_mesh_args();
+        if zenoh_mesh_args.is_none() && config.zenoh_peer.is_none() && config.machines.len() > 1 {
+            eprintln!(
+                "WARNING: not all machines have a dialable zenoh address (an IP in `host`, \
+                 or `zenoh_addr`), so the daemons are left to discover each other by \
+                 multicast. On a network without multicast — a mesh VPN carries none — \
+                 they will not find each other. Set `zenoh_addr` per machine, or a shared \
+                 `zenoh_peer` rendezvous."
+            );
+        }
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
             let daemon_port_arg = format_daemon_port_arg(machine.daemon_port);
+            let mesh_arg = zenoh_mesh_args
+                .as_ref()
+                .and_then(|args| args.get(machine.id.as_str()))
+                .map(String::as_str)
+                .unwrap_or_default();
             let remote_cmd = format!(
-                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{zenoh_peer_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
+                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{zenoh_peer_arg}{mesh_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
