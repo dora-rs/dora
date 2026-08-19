@@ -239,8 +239,20 @@ This checks:
 - Valid YAML structure
 - Module header is present with required `name`, optional `inputs`/`outputs`, and no unknown header fields
 - All `_mod/` references correspond to declared inputs or optional inputs
-- Every declared output is produced by a direct child node or by a nested module's declared output (counting `operator:`/`operators:` and legacy `custom:` outputs)
+- Every declared output is produced by exactly one direct child node or nested module declared output (counting `operator:`/`operators:` and legacy `custom:` outputs)
+- No duplicate node IDs
+- Internal wiring is consistent
 - Nested module files exist, are relative paths, are acyclic, and stay within the nesting depth limit
+
+Every check above runs recursively: a nested module file is validated in full,
+not just read for its declared outputs.
+
+A declared output must have **exactly one** producer. If two inner nodes emit
+the same output name and that name is also listed in `module.outputs`,
+expansion fails rather than silently picking the first producer. `module.outputs`
+is a plain list with no `output: node/port` mapping syntax, so the fix is to
+rename the internal signal that is not being exported. This applies to
+`dora run` and `dora build`, not just `dora expand`.
 
 ## Security
 

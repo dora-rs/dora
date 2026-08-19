@@ -181,7 +181,8 @@ fn check_module_file_inner(
 
     if !seen.insert(canonical.to_path_buf()) {
         bail!(
-            "circular module reference detected while checking module file: {}",
+            "circular module reference detected while checking module file: {}\n\
+             hint: check that module files do not reference each other in a cycle",
             canonical.display()
         );
     }
@@ -272,7 +273,12 @@ fn check_module_file_inner(
                 &nested_module.module,
                 &node.inputs,
             )?;
-            check_module_file_inner(&nested_canonical, depth + 1, seen)?;
+            check_module_file_inner(&nested_canonical, depth + 1, seen).with_context(|| {
+                format!(
+                    "module `{}`: while checking nested module `{}` referenced by node `{}`",
+                    module_file.module.name, nested_module.module.name, node.id,
+                )
+            })?;
             for output in &nested_module.module.outputs {
                 inner_outputs
                     .entry(output.to_string())
@@ -800,7 +806,7 @@ fn expand_module_node(
         rewrite_external_refs(&mut final_nodes, &nested_output_maps)?;
     }
 
-    // Phase 3: build output map from fully-expanded flat nodes. A producer may
+    // Phase 3: build output map from direct children only. A producer may
     // be a plain node, a runtime node's operator, or a legacy custom node, so
     // the lookup goes through `node_output_refs` — which also yields the form
     // consumers must use to address the output (see #2817).
@@ -809,11 +815,11 @@ fn expand_module_node(
         let declared = declared_output.to_string();
         let target = match direct_output_targets.get(&declared).map(Vec::as_slice) {
             None | Some([]) => {
-                return Err(eyre::eyre!(
+                bail!(
                     "module `{}` declares output `{}` but no inner node produces it",
                     module_file.module.name,
                     declared_output,
-                ));
+                );
             }
             Some([(_, target)]) => target.clone(),
             Some(targets) => {
@@ -2875,10 +2881,98 @@ nodes:
 
         let result = check_module_file(&path);
         assert!(result.is_err());
-        let msg = result.unwrap_err().to_string();
+        let msg = format!("{:#}", result.unwrap_err());
         assert!(msg.contains("leaf"), "got: {msg}");
         assert!(msg.contains("out"), "got: {msg}");
         assert!(msg.contains("no inner node produces it"), "got: {msg}");
+        // The breadcrumb must name the referencing node so a failure several
+        // levels down is findable.
+        assert!(msg.contains("nested"), "got: {msg}");
+    }
+
+    /// The `seen` set must reject a module that includes itself. Without the
+    /// `seen.insert` guard this recurses to the depth limit and reports a
+    /// misleading depth error instead of naming the cycle.
+    #[test]
+    fn check_module_file_rejects_self_referencing_module() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "self.yml",
+            r#"
+module:
+  name: selfref
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: me
+    module: self.yml
+"#,
+        );
+
+        let msg = format!("{:#}", check_module_file(&path).unwrap_err());
+        assert!(msg.contains("circular module reference"), "got: {msg}");
+    }
+
+    /// `seen.remove` on the success path must keep a diamond (`a -> b -> d`
+    /// and `a -> c -> d`) accepted. Drop that line and every shared nested
+    /// module starts failing as a false "circular reference".
+    #[test]
+    fn check_module_file_accepts_diamond_module_graph() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "d.yml",
+            r#"
+module:
+  name: d
+  inputs: []
+  outputs: [dout]
+
+nodes:
+  - id: leaf
+    path: leaf.py
+    outputs:
+      - dout
+"#,
+        );
+        for name in ["b.yml", "c.yml"] {
+            write_file(
+                base,
+                name,
+                r#"
+module:
+  name: mid
+  inputs: []
+  outputs: [dout]
+
+nodes:
+  - id: nd
+    module: d.yml
+"#,
+            );
+        }
+        let path = write_file(
+            base,
+            "a.yml",
+            r#"
+module:
+  name: a
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: nb
+    module: b.yml
+  - id: nc
+    module: c.yml
+"#,
+        );
+
+        check_module_file(&path).unwrap();
     }
 
     #[test]
@@ -2912,12 +3006,9 @@ nodes:
 
         let result = check_module_file(&base.join("level0_module.yml"));
         assert!(result.is_err());
-        assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("nesting exceeds depth limit")
-        );
+        // `{:#}` renders the whole context chain: the nested-module breadcrumb
+        // wraps the underlying depth-limit error.
+        assert!(format!("{:#}", result.unwrap_err()).contains("nesting exceeds depth limit"));
     }
 
     /// Regression test for #2851: `check_module_file` must accept a nested
