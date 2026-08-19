@@ -264,7 +264,7 @@ impl IntegrationTestingEvents {
 
 enum OutputWriter {
     Writer(Box<dyn Write + Send>),
-    Channel(tokio::sync::mpsc::UnboundedSender<serde_json::Map<String, serde_json::Value>>),
+    Channel(crate::integration_testing::OutputSender),
 }
 
 pub fn convert_output_to_json(
