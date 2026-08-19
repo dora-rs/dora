@@ -135,7 +135,7 @@ fn recorded_pid(path: &Path) -> Option<u32> {
 /// returned and then idles until it is stopped.
 fn node_yaml(id: &str, machine: Option<&str>, pid_file: &Path) -> String {
     let deploy = match machine {
-        Some(machine) => format!("_unstable_deploy:\n  machine: {machine}\n"),
+        Some(machine) => format!("deploy:\n  machine: {machine}\n"),
         None => String::new(),
     };
     format!(
@@ -291,7 +291,7 @@ fn node_added_to_distributed_dataflow_finishes_init() {
         deployment.logs.push(log);
     }
 
-    // `dora start` rejects a `_unstable_deploy.machine` whose daemon has
+    // `dora start` rejects a `deploy.machine` whose daemon has
     // not registered yet, so wait for both rather than race them.
     if !wait_until(
         || {

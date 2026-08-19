@@ -2,8 +2,74 @@
 //!
 pub mod ipc_encode;
 
+use aligned_vec::{AVec, ConstAlign};
 use arrow::array::ArrayData;
+use dora_arrow_convert::{
+    DoraArray,
+    internal::{array_ref, from_array_data},
+};
 use eyre::Context;
+
+/// A byte buffer holding an Arrow IPC stream, ready to decode.
+///
+/// A dora-owned wrapper: the receive path needs to hand the decoder a buffer
+/// whose backing allocation it does not copy, but the Arrow buffer type that
+/// makes that possible must not appear in dora's frozen public API (it would
+/// pin 1.x to one Arrow major — see
+/// `docs/plan-arrow-version-decoupling.md`). Construct one from the payload
+/// you have; decoding is zero-copy when the payload is 64-byte aligned, which
+/// dora's own 128-byte-aligned and page-aligned shared-memory payloads always
+/// are.
+#[derive(Debug, Clone)]
+pub struct IpcPayload(arrow::buffer::Buffer);
+
+impl IpcPayload {
+    /// Wrap a 128-byte-aligned payload buffer without copying it.
+    pub fn from_aligned_vec(data: AVec<u8, ConstAlign<128>>) -> Self {
+        let ptr = std::ptr::NonNull::new(data.as_ptr() as *mut u8)
+            .expect("AVec allocation pointer is never null");
+        let len = data.len();
+        // SAFETY: `ptr`/`len` describe `data`'s allocation, and `data` itself is
+        // moved into the `Arc` that owns the buffer, so the allocation outlives
+        // every reference the `Buffer` hands out.
+        Self(unsafe {
+            arrow::buffer::Buffer::from_custom_allocation(ptr, len, std::sync::Arc::new(data))
+        })
+    }
+
+    /// Take ownership of a `Vec` payload without copying it.
+    ///
+    /// A plain `Vec` carries no alignment guarantee, so the decoder may have to
+    /// realign individual buffers; use [`from_aligned_vec`](Self::from_aligned_vec)
+    /// on the hot path.
+    pub fn from_vec(data: Vec<u8>) -> Self {
+        Self(arrow::buffer::Buffer::from_vec(data))
+    }
+
+    /// Copy a payload out of a slice.
+    pub fn from_slice(data: &[u8]) -> Self {
+        Self(arrow::buffer::Buffer::from_slice_ref(data))
+    }
+
+    /// The payload length in bytes.
+    pub fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    /// Whether the payload is empty.
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// The payload bytes.
+    pub fn as_slice(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    pub(crate) fn into_arrow(self) -> arrow::buffer::Buffer {
+        self.0
+    }
+}
 
 /// Maximum Arrow IPC payload size (256 MB).
 const MAX_IPC_BYTES: usize = 256 * 1024 * 1024;
@@ -28,20 +94,25 @@ const _: () = assert!(ARROW_BUFFER_ALIGNMENT.is_power_of_two());
 ///
 /// ```
 /// # fn main() -> eyre::Result<()> {
-/// use dora_node_api::arrow::array::{Array, UInt64Array};
+/// use dora_node_api::IntoArrow;
 /// use dora_node_api::arrow_utils::{decode_arrow_ipc, encode_arrow_ipc};
 ///
-/// let array = UInt64Array::from(vec![1, 2, 3]);
-/// let ipc = encode_arrow_ipc(&array.into_data())?;
+/// let ipc = encode_arrow_ipc(&vec![1u64, 2, 3].into_arrow())?;
 ///
 /// // The stream is self-describing: decoding recovers the original data
 /// // without any external type information.
 /// let decoded = decode_arrow_ipc(&ipc)?;
-/// assert_eq!(decoded, UInt64Array::from(vec![1, 2, 3]).into_data());
+/// let values: Vec<u64> = (&decoded).try_into()?;
+/// assert_eq!(values, vec![1, 2, 3]);
 /// # Ok(())
 /// # }
 /// ```
-pub fn encode_arrow_ipc(arrow_array: &ArrayData) -> eyre::Result<Vec<u8>> {
+pub fn encode_arrow_ipc(array: &DoraArray) -> eyre::Result<Vec<u8>> {
+    encode_arrow_ipc_data(&array_ref(array).to_data())
+}
+
+/// Same, for dora-internal callers that already hold an [`ArrayData`].
+pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec<u8>> {
     use arrow::ipc::writer::StreamWriter;
     use arrow::record_batch::RecordBatch;
     use arrow_schema::{Field, Schema};
@@ -99,16 +170,22 @@ pub fn encode_arrow_ipc(arrow_array: &ArrayData) -> eyre::Result<Vec<u8>> {
 ///
 /// ```
 /// # fn main() -> eyre::Result<()> {
-/// use dora_node_api::arrow::array::{Array, StringArray};
+/// use dora_node_api::IntoArrow;
 /// use dora_node_api::arrow_utils::{decode_arrow_ipc, encode_arrow_ipc};
 ///
-/// let ipc = encode_arrow_ipc(&StringArray::from(vec!["a", "b"]).into_data())?;
+/// let ipc = encode_arrow_ipc(&"hello".to_string().into_arrow())?;
 /// let decoded = decode_arrow_ipc(&ipc)?;
-/// assert_eq!(decoded, StringArray::from(vec!["a", "b"]).into_data());
+/// let text: String = (&decoded).try_into()?;
+/// assert_eq!(text, "hello");
 /// # Ok(())
 /// # }
 /// ```
-pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
+pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<DoraArray> {
+    decode_arrow_ipc_data(ipc_buf).map(from_array_data)
+}
+
+/// Same, for dora-internal callers that want the raw [`ArrayData`].
+pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
     use arrow::ipc::reader::StreamReader;
     use std::io::Cursor;
 
@@ -159,17 +236,22 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 ///
 /// ```
 /// # fn main() -> eyre::Result<()> {
-/// use dora_node_api::arrow::array::{Array, UInt64Array};
-/// use dora_node_api::arrow::buffer::Buffer;
-/// use dora_node_api::arrow_utils::{decode_arrow_ipc_zero_copy, encode_arrow_ipc};
+/// use dora_node_api::IntoArrow;
+/// use dora_node_api::arrow_utils::{IpcPayload, decode_arrow_ipc_zero_copy, encode_arrow_ipc};
 ///
-/// let ipc = encode_arrow_ipc(&UInt64Array::from(vec![1, 2, 3]).into_data())?;
-/// let decoded = decode_arrow_ipc_zero_copy(Buffer::from_vec(ipc))?;
-/// assert_eq!(decoded, UInt64Array::from(vec![1, 2, 3]).into_data());
+/// let ipc = encode_arrow_ipc(&vec![1u64, 2, 3].into_arrow())?;
+/// let decoded = decode_arrow_ipc_zero_copy(IpcPayload::from_vec(ipc))?;
+/// let values: Vec<u64> = (&decoded).try_into()?;
+/// assert_eq!(values, vec![1, 2, 3]);
 /// # Ok(())
 /// # }
 /// ```
-pub fn decode_arrow_ipc_zero_copy(
+pub fn decode_arrow_ipc_zero_copy(payload: IpcPayload) -> eyre::Result<DoraArray> {
+    decode_arrow_ipc_zero_copy_raw(payload.into_arrow()).map(from_array_data)
+}
+
+/// Same, for dora-internal callers that already hold an Arrow buffer.
+pub(crate) fn decode_arrow_ipc_zero_copy_raw(
     mut buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
     use arrow::ipc::reader::StreamDecoder;
@@ -224,8 +306,8 @@ mod tests {
     fn ipc_roundtrip_primitive() {
         let array = UInt64Array::from(vec![1, 2, 3, 4, 5]);
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
-        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+        let decoded = decode_arrow_ipc_data(&encoded).unwrap();
         assert_eq!(data, decoded);
     }
 
@@ -239,8 +321,8 @@ mod tests {
         // Body just over the 256 MB cap; the framing pushes the stream over too.
         let array = UInt8Array::from(vec![0u8; MAX_IPC_BYTES + 1]);
         let data = array.into_data();
-        let err =
-            encode_arrow_ipc(&data).expect_err("oversized payload must be rejected by the encoder");
+        let err = encode_arrow_ipc_data(&data)
+            .expect_err("oversized payload must be rejected by the encoder");
         assert!(
             err.to_string().contains("too large"),
             "unexpected error: {err}"
@@ -272,9 +354,9 @@ mod tests {
     fn ipc_zero_copy_roundtrip_primitive() {
         let array = UInt64Array::from((0..1000u64).collect::<Vec<_>>());
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
         let (buffer, _, _) = aligned_buffer_from(&encoded);
-        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+        let decoded = decode_arrow_ipc_zero_copy_raw(buffer).unwrap();
         assert_eq!(data, decoded);
     }
 
@@ -290,7 +372,7 @@ mod tests {
         // would be unmistakable.
         let array = UInt64Array::from((0..100_000u64).collect::<Vec<_>>());
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
 
         // 1) Proof via the strict decoder: require_alignment(true) errors if any
         //    buffer would need realigning. A clean decode proves the body
@@ -315,7 +397,7 @@ mod tests {
         //    input allocation's address range.
         {
             let (buffer, base, len) = aligned_buffer_from(&encoded);
-            let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+            let decoded = decode_arrow_ipc_zero_copy_raw(buffer).unwrap();
             let data_ptr = decoded.buffers()[0].as_ptr() as usize;
             assert!(
                 data_ptr >= base && data_ptr < base + len,
@@ -333,7 +415,7 @@ mod tests {
     fn ipc_zero_copy_decoder_handles_misaligned_input() {
         let array = UInt64Array::from(vec![1, 2, 3, 4, 5, 6, 7, 8]);
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
 
         // Force a 1-byte-offset (deliberately misaligned) backing buffer.
         let mut shifted = Vec::with_capacity(encoded.len() + 1);
@@ -341,7 +423,7 @@ mod tests {
         shifted.extend_from_slice(&encoded);
         let buffer = arrow::buffer::Buffer::from_vec(shifted).slice(1);
 
-        let decoded = decode_arrow_ipc_zero_copy(buffer).unwrap();
+        let decoded = decode_arrow_ipc_zero_copy_raw(buffer).unwrap();
         assert_eq!(data, decoded);
     }
 
@@ -349,8 +431,8 @@ mod tests {
     fn ipc_roundtrip_string() {
         let array = StringArray::from(vec!["hello", "world"]);
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
-        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+        let decoded = decode_arrow_ipc_data(&encoded).unwrap();
         assert_eq!(data, decoded);
     }
 
@@ -358,8 +440,8 @@ mod tests {
     fn ipc_roundtrip_empty_array() {
         let array = UInt64Array::from(Vec::<u64>::new());
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
-        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+        let decoded = decode_arrow_ipc_data(&encoded).unwrap();
         assert_eq!(data.len(), decoded.len());
     }
 
@@ -372,8 +454,8 @@ mod tests {
     fn ipc_roundtrip_empty_typed_array_preserves_type() {
         use arrow::array::Float32Array;
         let data = Float32Array::from(Vec::<f32>::new()).into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
-        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+        let decoded = decode_arrow_ipc_data(&encoded).unwrap();
         assert_eq!(decoded.data_type(), &arrow_schema::DataType::Float32);
         assert_eq!(decoded.len(), 0);
     }
@@ -382,8 +464,8 @@ mod tests {
     fn ipc_roundtrip_with_nulls() {
         let array = UInt64Array::from(vec![Some(1), None, Some(3)]);
         let data = array.into_data();
-        let encoded = encode_arrow_ipc(&data).unwrap();
-        let decoded = decode_arrow_ipc(&encoded).unwrap();
+        let encoded = encode_arrow_ipc_data(&data).unwrap();
+        let decoded = decode_arrow_ipc_data(&encoded).unwrap();
         assert_eq!(data, decoded);
     }
 }

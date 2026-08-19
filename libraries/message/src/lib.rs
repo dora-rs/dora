@@ -133,7 +133,10 @@ pub fn topic_protocol_mismatch_message(peer: &str, peer_version: Option<u16>) ->
 }
 
 pub mod auth;
-pub(crate) mod bulk_bytes;
+/// Bulk-payload serde helpers. Public so an out-of-tree extension can give its
+/// own opaque payloads the same treatment dora gives its own, rather than
+/// duplicating the visitor — see `docs/extensions.md`.
+pub mod bulk_bytes;
 pub mod common;
 pub mod config;
 /// Dataflow descriptor types for YAML-based dataflow specifications.
