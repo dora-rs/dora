@@ -16,10 +16,20 @@ if ! command -v cargo-semver-checks >/dev/null; then
   exit 2
 fi
 
+# Only the crates covered by dora's 1.0 stability guarantee — see the
+# "Stability scope at 1.0" section of docs/api-rust.md.
+#
+# Deliberately absent:
+#   dora-core         internal; published only because dora-node-api and
+#                     dora-cli depend on it, and cargo requires a published
+#                     crate's dependencies to be published
+#   dora-operator-api shipped outside the guarantee (experimental), so a
+#                     breaking change here is expected, not a regression
+#   dora-cli          its Rust lib target is internal; the surface 1.0 covers
+#                     is the `dora` command and the dataflow YAML schema,
+#                     neither of which cargo-semver-checks can see
 PUBLIC_CRATES=(
   dora-node-api
-  dora-operator-api
-  dora-core
   dora-message
   dora-arrow-convert
 )

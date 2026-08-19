@@ -756,11 +756,16 @@ pub fn zenoh_daemon_control_topic(
     format!("dora/{network_id}/{dataflow_id}/control/{node_id}/{output_id}")
 }
 
-/// Zenoh topic for cross-machine memory pool data forwarding.
-/// All daemons in the dataflow subscribe to this topic.
-pub fn dataflow_memory_pool_topic(dataflow_id: &uuid::Uuid) -> String {
+/// Zenoh topic carrying [`InterDaemonEvent::ExtensionMessage`][msg] for one
+/// extension within one dataflow. Every daemon in the dataflow subscribes.
+///
+/// Per-namespace rather than one shared topic, so two extensions in the same
+/// dataflow never see each other's traffic.
+///
+/// [msg]: dora_message::daemon_to_daemon::InterDaemonEvent::ExtensionMessage
+pub fn dataflow_extension_topic(dataflow_id: &uuid::Uuid, namespace: &str) -> String {
     let network_id = "default";
-    format!("dora/{network_id}/{dataflow_id}/memory-pool")
+    format!("dora/{network_id}/{dataflow_id}/ext/{namespace}")
 }
 
 #[cfg(test)]

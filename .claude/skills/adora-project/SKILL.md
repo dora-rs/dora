@@ -98,7 +98,7 @@ nodes:
     args: "-v --some-flag foo"       # String, not a list
     restart_policy: on-failure       # never | on-failure | always
     health_check_timeout: 2.0        # seconds (per node)
-    _unstable_deploy:                # unstable, may change
+    deploy:                # unstable, may change
       machine: gpu-server
 ```
 

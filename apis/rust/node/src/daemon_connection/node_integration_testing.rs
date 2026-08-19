@@ -140,14 +140,8 @@ impl IntegrationTestingEvents {
                 println!("{}", "node reports EventStreamDropped".blue());
                 DaemonReply::Result(Ok(()))
             }
-            DaemonRequest::RegisterPinnedMemory { .. }
-            | DaemonRequest::ReadPinnedMemory { .. }
-            | DaemonRequest::FreePinnedMemory { .. }
-            | DaemonRequest::WritePinnedMemory { .. } => DaemonReply::Result(Ok(())),
-            DaemonRequest::RegisterCrossMachinePool { .. } => {
-                eyre::bail!(
-                    "cross-machine pool registration is not supported in integration-testing mode"
-                )
+            DaemonRequest::ExtensionRequest { namespace, .. } => {
+                eyre::bail!("extension {namespace} is not available in integration-testing mode")
             }
             DaemonRequest::NodeConfig { .. } => {
                 eyre::bail!("unexpected NodeConfig in interactive mode")
@@ -237,7 +231,10 @@ impl IntegrationTestingEvents {
 
                     // The receive side decodes a self-describing Arrow IPC
                     // stream, so encode the array into one here.
-                    let buf = encode_arrow_ipc(&array).with_context(|| {
+                    let buf = encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(
+                        array,
+                    ))
+                    .with_context(|| {
                         format!("failed to IPC-encode input event at offset {time_offset_secs}s ")
                     })?;
 
