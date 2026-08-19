@@ -4871,7 +4871,17 @@ fn release_barrier_message(
 /// write itself is not.** A successful barrier promotes to `Running`; a failed
 /// barrier must never promote, so it preserves the record's current status when
 /// it can be read and otherwise falls back to `Pending` (a non-promoting status
-/// the reconcile path can still advance). Previously the failed path skipped the
+/// the reconcile path can still advance).
+///
+/// That fallback deliberately trades status fidelity for release durability: a
+/// record that was `Stopping` or `Failed { terminal: true }` on disk is lowered
+/// to `Pending`, which a later `DaemonStatusReport` can promote to `Running`.
+/// Accepted because the release flag is the load-bearing invariant here -- a
+/// lost release parks a daemon's nodes forever, while a wrong status is
+/// re-derived from the next daemon report -- and because the successful-barrier
+/// arm above already writes `Running` with no read at all.
+///
+/// Previously the failed path skipped the
 /// entire write when the status read failed or returned `None`, which left the
 /// in-memory flag `true` but no durable record -- re-opening the #2998 window on
 /// exactly the store-I/O-trouble path where durability matters most (#3115).
@@ -5592,11 +5602,13 @@ mod tests {
             record.ready_barrier_released,
             "persisted record must carry ready_barrier_released == true"
         );
-        // A failed barrier must never be promoted to Running.
-        assert!(
-            !matches!(record.status, StoreDataflowStatus::Running),
-            "failed barrier must not promote to Running, got: {:?}",
-            record.status
+        // A failed barrier must never be promoted to Running; when the status
+        // cannot be read the documented fallback is `Pending` specifically, so
+        // pin that rather than merely "not Running".
+        assert_eq!(
+            record.status,
+            StoreDataflowStatus::Pending,
+            "failed barrier must fall back to Pending, never promote to Running"
         );
     }
 
@@ -5621,7 +5633,7 @@ mod tests {
             .expect("store read")
             .expect("failed-barrier release must be persisted even with no prior record");
         assert!(record.ready_barrier_released);
-        assert!(!matches!(record.status, StoreDataflowStatus::Running));
+        assert_eq!(record.status, StoreDataflowStatus::Pending);
     }
 
     /// A *successful* barrier still promotes the record to `Running`.
