@@ -3630,10 +3630,10 @@ mod tests {
         drop(events);
     }
 
-    use crate::integration_testing::{OutputJson, UnboundedReceiver, drain_outputs};
+    use crate::integration_testing::{OutputJson, OutputReceiver, drain_outputs};
 
     /// Helper: create a minimal test node with a channel output.
-    fn test_node() -> (DoraNode, crate::EventStream, UnboundedReceiver<OutputJson>) {
+    fn test_node() -> (DoraNode, crate::EventStream, OutputReceiver) {
         let events = vec![TimedIncomingEvent {
             time_offset_secs: 0.1,
             event: IncomingEvent::Stop,
@@ -3642,7 +3642,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, rx) = crate::integration_testing::unbounded_channel();
+        let (tx, rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -3666,7 +3666,7 @@ mod tests {
             "drop-hang-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = crate::integration_testing::unbounded_channel();
+        let (tx, _rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let (node, event_stream) =
             DoraNode::init_testing(inputs, outputs, TestingOptions::default()).unwrap();
