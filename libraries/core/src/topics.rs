@@ -144,6 +144,152 @@ fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
         .map(String::from)
 }
 
+/// Path to a JSON5 file whose contents are layered on top of the zenoh config
+/// dora computes.
+///
+/// The additive counterpart to [`ZENOH_CONFIG_PATH_ENV`], which replaces the
+/// whole config — including the per-node connect/listen plan the daemon builds,
+/// so a router named there ends up relaying even same-machine traffic. An
+/// overlay keeps that plan and adds to it, which is what "point this deployment
+/// at my routers" actually means. Setting both is refused rather than merged.
+///
+/// Inherited by spawned nodes (like [`ZENOH_CONFIG_PATH_ENV`]) so one variable
+/// covers a whole process tree, and refused from a descriptor's `env:` for the
+/// same reason: it is deployment wiring, not per-node configuration.
+#[cfg(feature = "zenoh")]
+pub const DORA_ZENOH_CONFIG_OVERLAY_ENV: &str = "DORA_ZENOH_CONFIG_OVERLAY";
+
+/// Operator-supplied zenoh settings to layer onto dora's computed config.
+///
+/// Split into the two endpoint lists, which **merge** with what dora computed,
+/// and everything else, which **replaces** it. Merging is what makes the
+/// overlay additive where it matters: naming a router under
+/// `connect.endpoints` adds a path to it without deleting the direct node links
+/// dora planned, which is exactly the difference from a wholesale
+/// [`ZENOH_CONFIG_PATH_ENV`].
+#[cfg(feature = "zenoh")]
+#[derive(Debug, Default, Clone)]
+pub struct ZenohOverlay {
+    /// Extra peers to dial, appended to dora's `connect/endpoints`.
+    pub connect_endpoints: Vec<String>,
+    /// Extra addresses to bind, appended to dora's `listen/endpoints`.
+    pub listen_endpoints: Vec<String>,
+    /// Every other setting, applied after dora's own inserts.
+    rest: serde_json::Map<String, serde_json::Value>,
+}
+
+#[cfg(feature = "zenoh")]
+impl ZenohOverlay {
+    /// Read the overlay named by [`DORA_ZENOH_CONFIG_OVERLAY_ENV`], if any.
+    ///
+    /// A named file that cannot be read or parsed is a hard error: the operator
+    /// asked for these settings, and a session silently opened without them is
+    /// the kind of "runs but talks to nobody" outcome that takes hours to
+    /// diagnose.
+    pub fn from_env() -> eyre::Result<Option<Self>> {
+        use eyre::Context;
+
+        let Some(path) = std::env::var_os(DORA_ZENOH_CONFIG_OVERLAY_ENV) else {
+            return Ok(None);
+        };
+        let path = std::path::PathBuf::from(path);
+        let contents = std::fs::read_to_string(&path).wrap_err_with(|| {
+            format!(
+                "failed to read the zenoh config overlay at `{}` named by {}",
+                path.display(),
+                DORA_ZENOH_CONFIG_OVERLAY_ENV
+            )
+        })?;
+        Self::parse(&contents)
+            .wrap_err_with(|| format!("invalid zenoh config overlay at `{}`", path.display()))
+            .map(Some)
+    }
+
+    /// Parse an overlay from JSON5 — zenoh's own config dialect, so an operator
+    /// can paste a fragment of a zenoh config file, comments and all.
+    pub fn parse(json5_str: &str) -> eyre::Result<Self> {
+        use eyre::{Context, eyre};
+
+        let value: serde_json::Value = json5::from_str(json5_str)
+            .map_err(|err| eyre!("{err}"))
+            .wrap_err(
+                "overlay must be a JSON5 object of zenoh config keys, e.g. \
+                 `{ connect: { endpoints: [\"tcp/10.0.0.1:7447\"] } }`",
+            )?;
+        let serde_json::Value::Object(mut object) = value else {
+            eyre::bail!("overlay must be a JSON5 object, not a bare value");
+        };
+
+        let mut overlay = Self::default();
+        for (key, endpoints) in [
+            ("connect", &mut overlay.connect_endpoints),
+            ("listen", &mut overlay.listen_endpoints),
+        ] {
+            let Some(serde_json::Value::Object(section)) = object.get_mut(key) else {
+                continue;
+            };
+            // Taken out of `rest` so the merged list survives: re-inserting the
+            // section wholesale afterwards would overwrite it.
+            let Some(value) = section.remove("endpoints") else {
+                continue;
+            };
+            let serde_json::Value::Array(list) = value else {
+                eyre::bail!("`{key}.endpoints` must be an array of endpoint strings");
+            };
+            for entry in list {
+                match entry {
+                    serde_json::Value::String(endpoint) => endpoints.push(endpoint),
+                    other => eyre::bail!(
+                        "`{key}.endpoints` must contain endpoint strings, found `{other}`"
+                    ),
+                }
+            }
+            // An emptied section would otherwise be re-inserted as `{}`.
+            if section.is_empty() {
+                object.remove(key);
+            }
+        }
+        overlay.rest = object;
+        Ok(overlay)
+    }
+
+    /// Apply everything except the endpoint lists, which the caller has already
+    /// merged into its own.
+    ///
+    /// Each setting is inserted at its deepest path, so an overlay touching one
+    /// subkey leaves its siblings alone. A path zenoh rejects is retried one
+    /// level up, because some sections only accept a whole-object write —
+    /// `insert_json5("gateway/south", ..)` is refused where
+    /// `insert_json5("gateway", ..)` is accepted (dora-rs/dora#2721).
+    fn apply(&self, config: &mut zenoh::Config) -> eyre::Result<()> {
+        for (key, value) in &self.rest {
+            insert_overlay_value(config, key, value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Insert one overlay value, descending into objects and falling back to a
+/// whole-object write when a subpath is rejected. See [`ZenohOverlay::apply`].
+#[cfg(feature = "zenoh")]
+fn insert_overlay_value(
+    config: &mut zenoh::Config,
+    path: &str,
+    value: &serde_json::Value,
+) -> eyre::Result<()> {
+    if let serde_json::Value::Object(fields) = value
+        && !fields.is_empty()
+        && fields.iter().all(|(field, child)| {
+            insert_overlay_value(config, &format!("{path}/{field}"), child).is_ok()
+        })
+    {
+        return Ok(());
+    }
+    config
+        .insert_json5(path, &value.to_string())
+        .map_err(|err| eyre::eyre!("failed to apply zenoh config overlay key `{path}`: {err}"))
+}
+
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
     // Nodes and the coordinator have no in-process way to know, so
@@ -266,8 +412,27 @@ pub async fn open_zenoh_session_with_listen(
     // (not their requested endpoint) to advertise the listener to peers.
     let mut effective_listen_endpoint: Option<String> = None;
 
+    let overlay = ZenohOverlay::from_env()?;
+
     let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
         Ok(path) => {
+            if overlay.is_some() {
+                // Merging the two would be guesswork: the file replaces the
+                // config dora computed, so there is no dora-side endpoint list
+                // left for the overlay's to append to, and "append to whatever
+                // the file happened to set" is not a rule anyone could predict.
+                eyre::bail!(
+                    "both {} and {} are set. {} replaces the whole zenoh \
+                     configuration, while {} layers onto the one dora computes — \
+                     keep one. Prefer the overlay: it adds your endpoints \
+                     without discarding the direct node-to-node links the daemon \
+                     plans for this dataflow.",
+                    zenoh::Config::DEFAULT_CONFIG_PATH_ENV,
+                    DORA_ZENOH_CONFIG_OVERLAY_ENV,
+                    zenoh::Config::DEFAULT_CONFIG_PATH_ENV,
+                    DORA_ZENOH_CONFIG_OVERLAY_ENV,
+                );
+            }
             let zenoh_config = zenoh::Config::from_file(&path)
                 .map_err(|e| eyre!(e))
                 .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?;
@@ -354,6 +519,9 @@ pub async fn open_zenoh_session_with_listen(
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
             }
+            if let Some(overlay) = &overlay {
+                connect_eps.extend(overlay.connect_endpoints.iter().cloned());
+            }
             // A duplicate dial is not fatal, but it is a wasted connection
             // attempt per duplicate and, when the peer is unreachable, a
             // second retry loop against it — which is exactly what keeps the
@@ -432,6 +600,9 @@ pub async fn open_zenoh_session_with_listen(
             if let Some(peer) = inter_daemon_peer {
                 listen_eps.push(peer.to_string());
             }
+            if let Some(overlay) = &overlay {
+                listen_eps.extend(overlay.listen_endpoints.iter().cloned());
+            }
             if !listen_eps.is_empty() {
                 let json = format!(
                     "[{}]",
@@ -492,6 +663,12 @@ pub async fn open_zenoh_session_with_listen(
                     .insert_json5("connect/endpoints", &coordinator_connect_endpoints(addr))
             {
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
+            }
+            // Last, so an operator's setting wins over dora's default for the
+            // same key. The endpoint lists are already merged above rather than
+            // overwritten here — that is what makes the overlay additive.
+            if let Some(overlay) = &overlay {
+                overlay.apply(&mut zenoh_config)?;
             }
             match zenoh::open(zenoh_config).await {
                 Ok(zenoh_session) => {
@@ -1198,6 +1375,81 @@ mod tests {
             .parse::<ZenohListen>()
             .expect_err("garbage must be rejected");
         assert!(err.contains("neither"), "unexpected error: {err}");
+    }
+
+    // The endpoint lists merge with dora's rather than replacing them — the
+    // whole difference between an overlay and `ZENOH_CONFIG`. Naming a router
+    // must add a path to it, not delete the direct node links dora planned.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_overlay_splits_off_the_endpoint_lists() {
+        let overlay = ZenohOverlay::parse(
+            r#"{
+                // a router of our own, plus a second listen address
+                connect: { endpoints: ["tcp/10.0.0.1:7447"], timeout_ms: 5000 },
+                listen: { endpoints: ["tcp/10.0.0.2:7448"] },
+                scouting: { multicast: { enabled: true } },
+            }"#,
+        )
+        .expect("valid overlay");
+
+        assert_eq!(overlay.connect_endpoints, ["tcp/10.0.0.1:7447"]);
+        assert_eq!(overlay.listen_endpoints, ["tcp/10.0.0.2:7448"]);
+        // `endpoints` is taken out of the sections so re-applying them cannot
+        // overwrite the merged list; a section left empty is dropped entirely.
+        assert!(overlay.rest.contains_key("connect"));
+        assert!(!overlay.rest.contains_key("listen"));
+        assert!(overlay.rest.contains_key("scouting"));
+    }
+
+    // An overlay is applied to a real config: the values must land where zenoh
+    // expects them, and a subkey must not wipe its siblings.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_overlay_applies_onto_a_zenoh_config() {
+        let mut config = zenoh::Config::default();
+        config
+            .insert_json5("connect/endpoints", r#"["tcp/127.0.0.1:1"]"#)
+            .expect("dora's own endpoints");
+
+        ZenohOverlay::parse(r#"{ connect: { timeout_ms: 5000 }, mode: "peer" }"#)
+            .expect("valid overlay")
+            .apply(&mut config)
+            .expect("overlay applies");
+
+        let rendered = config.to_string();
+        assert!(
+            rendered.contains("5000"),
+            "overlay value missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("tcp/127.0.0.1:1"),
+            "writing a sibling subkey must not wipe dora's endpoints: {rendered}"
+        );
+    }
+
+    // A malformed overlay must fail loudly: the operator asked for these
+    // settings, and a session quietly opened without them is the "runs but
+    // talks to nobody" outcome that takes hours to diagnose.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn a_malformed_overlay_is_rejected() {
+        for (bad, expected) in [
+            ("not an object", "object"),
+            (
+                r#"{ connect: { endpoints: "tcp/10.0.0.1:7447" } }"#,
+                "array",
+            ),
+            (r#"{ listen: { endpoints: [7447] } }"#, "endpoint strings"),
+        ] {
+            let err = ZenohOverlay::parse(bad)
+                .expect_err("must be rejected")
+                .to_string();
+            assert!(
+                err.contains(expected),
+                "unexpected error for `{bad}`: {err}"
+            );
+        }
     }
 
     // Concrete addresses pass validation whether or not they exist on this host:

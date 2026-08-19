@@ -11,8 +11,8 @@ use dora_core::{
     config::{Input, InputMapping, NodeId},
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
     topics::{
-        DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV,
-        DORA_ZENOH_MULTICAST_ENV, ZENOH_CONFIG_PATH_ENV,
+        DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, DORA_ZENOH_CONNECT_ENV,
+        DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV, ZENOH_CONFIG_PATH_ENV,
     },
     uhlc::HLC,
 };
@@ -53,6 +53,12 @@ const ENV_DENYLIST: &[&str] = &[
 /// custom search path gets it from the environment the daemon runs in
 /// (#2991 review).
 const SEARCH_PATH_ENV: &[&str] = &["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"];
+
+/// Zenoh configuration a *deployment* sets, not a dataflow: refused from a
+/// descriptor's `env:` like the control-plane wiring below, but deliberately
+/// still inherited (see [`deny_inherited_env`]), so one variable on the daemon
+/// covers every node it spawns.
+const DEPLOYMENT_ZENOH_ENV: &[&str] = &[ZENOH_CONFIG_PATH_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV];
 
 /// Control-plane variables the daemon injects into every node it spawns.
 /// Descriptor `env:` / `envs:` entries must not override them: they configure
@@ -106,7 +112,7 @@ fn is_denied_env(key: &str) -> bool {
         true
     } else if CONTROL_PLANE_ENV
         .iter()
-        .chain(std::iter::once(&ZENOH_CONFIG_PATH_ENV))
+        .chain(DEPLOYMENT_ZENOH_ENV)
         .any(|d| env_key_matches(key, d))
     {
         tracing::warn!(
@@ -161,7 +167,7 @@ fn apply_descriptor_env(
 /// that started the daemon cannot wrongly wire nodes the daemon deliberately
 /// left unwired.
 ///
-/// [`ZENOH_CONFIG_PATH_ENV`] and [`SEARCH_PATH_ENV`] are deliberately absent:
+/// [`DEPLOYMENT_ZENOH_ENV`] and [`SEARCH_PATH_ENV`] are deliberately absent:
 /// refused from a descriptor, but inheriting them is how a deployment points
 /// every process at a custom zenoh config, and how a node linked against a
 /// sourced ROS or CUDA install finds its libraries.
@@ -950,12 +956,14 @@ mod tests {
                 "`{key}` is daemon-managed control-plane wiring and must be denied"
             );
         }
-        assert!(
-            is_denied_env(ZENOH_CONFIG_PATH_ENV),
-            "`{ZENOH_CONFIG_PATH_ENV}` builds the whole zenoh session from a file, \
-             skipping every DORA_ZENOH_* variable — denying those and not this one \
-             leaves the bypass open"
-        );
+        for key in DEPLOYMENT_ZENOH_ENV {
+            assert!(
+                is_denied_env(key),
+                "`{key}` reconfigures the node's zenoh session wholesale, skipping \
+                 or overriding the DORA_ZENOH_* wiring — denying those and not this \
+                 one leaves the bypass open"
+            );
+        }
         assert!(
             !is_denied_env("MY_APP_SETTING"),
             "ordinary variables must still pass through"
@@ -999,7 +1007,7 @@ mod tests {
         let spawner = spawner_for(Some("tcp/127.0.0.1:7447"), true);
         let forged: BTreeMap<String, EnvValue> = CONTROL_PLANE_ENV
             .iter()
-            .chain(std::iter::once(&ZENOH_CONFIG_PATH_ENV))
+            .chain(DEPLOYMENT_ZENOH_ENV)
             .map(|key| (key.to_string(), EnvValue::String("FORGED".into())))
             .collect();
         let ordinary: BTreeMap<String, EnvValue> = [(
@@ -1033,11 +1041,13 @@ mod tests {
             Some(OsStr::new("off")),
             "the daemon's multicast decision must win"
         );
-        assert_eq!(
-            env(ZENOH_CONFIG_PATH_ENV),
-            None,
-            "a descriptor must not hand the node its own zenoh config file"
-        );
+        for key in DEPLOYMENT_ZENOH_ENV {
+            assert_eq!(
+                env(key),
+                None,
+                "a descriptor must not hand the node its own zenoh config via `{key}`"
+            );
+        }
         assert_eq!(
             env("MY_APP_SETTING").as_deref(),
             Some(OsStr::new("kept")),
@@ -1096,11 +1106,14 @@ mod tests {
                 "`{key}` must be removed from the inherited environment, not merely unset"
             );
         }
-        assert_eq!(
-            env_of(&command, ZENOH_CONFIG_PATH_ENV),
-            None,
-            "a daemon-level zenoh config must still reach its nodes by inheritance"
-        );
+        for key in DEPLOYMENT_ZENOH_ENV {
+            assert_eq!(
+                env_of(&command, key),
+                None,
+                "a daemon-level zenoh config (`{key}`) must still reach its nodes \
+                 by inheritance"
+            );
+        }
     }
 
     /// dora-rs/dora#2856: under `dora run` the daemon *is* the CLI process, so

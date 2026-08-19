@@ -4,7 +4,7 @@ use dora_core::{
     descriptor::DescriptorExt,
     topics::{
         DORA_COORDINATOR_PORT_WS_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
-        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST, ZenohListen,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, LOCALHOST, ZenohListen,
     },
 };
 
@@ -116,6 +116,20 @@ pub struct Daemon {
     /// daemon-to-daemon links to gossip.
     #[clap(long, value_name = "ENDPOINT", value_delimiter = ',')]
     zenoh_connect: Vec<String>,
+    /// JSON5 file of zenoh settings to layer on top of the configuration dora
+    /// computes, for this daemon and the nodes it spawns.
+    ///
+    /// Use it to point a deployment at zenoh routers you run yourself:
+    /// `{ connect: { endpoints: ["tcp/10.0.0.1:7447"] } }`. The two endpoint
+    /// lists (`connect.endpoints`, `listen.endpoints`) are *added* to dora's;
+    /// every other key replaces dora's value for that key.
+    ///
+    /// This is the additive counterpart to the `ZENOH_CONFIG` environment
+    /// variable, which builds the session entirely from its file — discarding
+    /// the direct node-to-node links the daemon plans, so same-machine traffic
+    /// ends up relayed through your router too. Setting both is an error.
+    #[clap(long, value_name = "PATH")]
+    zenoh_config_overlay: Option<PathBuf>,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -151,6 +165,13 @@ impl Executable for Daemon {
                 DORA_DAEMON_LOCAL_LISTEN_PORT_ENV,
                 self.local_listen_port.to_string(),
             );
+        }
+        // Exported rather than passed down: the nodes this daemon spawns
+        // inherit it, so one flag configures the whole process tree the same
+        // way `ZENOH_CONFIG` does.
+        if let Some(overlay) = &self.zenoh_config_overlay {
+            // SAFETY: as above — no threads yet.
+            unsafe { std::env::set_var(DORA_ZENOH_CONFIG_OVERLAY_ENV, overlay) };
         }
 
         let mut builder = Builder::new_multi_thread();

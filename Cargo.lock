@@ -2223,6 +2223,7 @@ dependencies = [
  "fs_extra",
  "git2",
  "itertools 0.15.0",
+ "json5",
  "log",
  "proptest",
  "schemars 1.2.2",
