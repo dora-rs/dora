@@ -29,6 +29,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
     future::Future,
+    net::IpAddr,
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicU64},
 };
@@ -218,8 +219,14 @@ fn apply_managed_python_runtime_env(
 /// dial. See [`plan_zenoh_peering`].
 #[derive(Clone, Debug)]
 pub struct NodeZenohPeering {
-    /// Loopback endpoint this node listens on, so its consumers can dial it.
-    pub listen: String,
+    /// Endpoints this node listens on, so its consumers can dial it.
+    ///
+    /// Always a loopback endpoint for its same-machine consumers, plus — when
+    /// the node has a consumer on another daemon — one on the address this
+    /// host is reachable at. Listening on both keeps same-machine consumers on
+    /// loopback, where the transport can carry shared memory, while remote ones
+    /// get an endpoint they can actually dial.
+    pub listen: Vec<String>,
     /// Endpoints this node dials: the daemon, plus each node it consumes from.
     pub connect: Vec<String>,
 }
@@ -264,35 +271,45 @@ pub struct NodeZenohPeering {
 /// is silent data loss; closing the window fully requires holding each reservation
 /// until the child binds, or verifying the per-node bind and re-planning on failure.
 ///
-/// Only *local* nodes are planned. `nodes` spans the whole dataflow including
-/// nodes on other daemons, whose endpoints are not on this host's loopback, so a
-/// local consumer of a remote producer gets no dial for it and keeps the existing
-/// cross-machine behavior. Multi-machine/NAT deployments supply their own zenoh
-/// config via `ZENOH_CONFIG_PATH`, which bypasses this path entirely and can put
-/// a real router (which *does* still relay) in between.
+/// Only *local* nodes are planned: `nodes` spans the whole dataflow, and this
+/// daemon can only reserve ports on its own host. A local consumer of a remote
+/// producer therefore gets no dial for it here — the remote producer's endpoint
+/// arrives separately, from the daemon that owns it.
+///
+/// # Cross-machine consumers
+///
+/// A node whose consumers are all on this machine listens on loopback only,
+/// which is both sufficient and the least exposed choice. A node with a
+/// consumer on *another* daemon also listens on `routable_addr`, the address
+/// this host is reachable at, so that consumer has something to dial. That
+/// second listener is what lets cross-machine edges skip the daemon relay
+/// entirely.
+///
+/// `routable_addr` is `None` for a single-machine daemon, and a loopback
+/// address is refused for this purpose: advertising `127.0.0.1` to a remote
+/// consumer points it at its *own* loopback, which is the silent-partition
+/// failure this planning exists to prevent. Either way the edge falls back to
+/// the daemon path, which is where it lives today.
 pub fn plan_zenoh_peering(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     local_nodes: &BTreeSet<NodeId>,
     daemon_endpoint: Option<&str>,
+    routable_addr: Option<IpAddr>,
 ) -> BTreeMap<NodeId, NodeZenohPeering> {
-    // Reserve a listener per node first, so the dial-lists below can reference
+    let remotely_consumed = remotely_consumed_nodes(nodes, local_nodes);
+    // Reserve listeners per node first, so the dial-lists below can reference
     // every node regardless of spawn order.
     //
-    // Only nodes this daemon spawns get one: the endpoints are *loopback*, so
-    // handing a local consumer the "endpoint" of a node running on another
-    // machine would point it at this host's 127.0.0.1 — either a failed dial or,
-    // worse, an unrelated local process. A local consumer of a remote producer
-    // therefore gets no dial for it and keeps the existing cross-machine
-    // behavior (see the `ZENOH_CONFIG_PATH` note above).
-    let mut listeners: BTreeMap<NodeId, String> = BTreeMap::new();
+    // Only nodes this daemon spawns get one: the loopback endpoint of a node
+    // running on another machine would point a local consumer at this host's
+    // 127.0.0.1 — either a failed dial or, worse, an unrelated local process.
+    let mut listeners: BTreeMap<NodeId, NodeListeners> = BTreeMap::new();
     for (node_id, node) in nodes {
         if node.kind.dynamic() || !local_nodes.contains(node_id) {
             continue;
         }
-        match dora_core::topics::reserve_loopback_zenoh_endpoint() {
-            Ok(ep) => {
-                listeners.insert(node_id.clone(), ep);
-            }
+        let loopback = match dora_core::topics::reserve_loopback_zenoh_endpoint() {
+            Ok(ep) => ep,
             Err(err) => {
                 // Fall back to gossip for this node rather than failing the
                 // dataflow; it just loses the determinism guarantee.
@@ -301,8 +318,27 @@ pub fn plan_zenoh_peering(
                     "failed to reserve a zenoh listen endpoint ({err}); \
                      falling back to gossip discovery for this node"
                 );
+                continue;
             }
-        }
+        };
+        // Only pay for a network-reachable listener where a remote consumer
+        // actually needs one.
+        let routable = match routable_addr.filter(|_| remotely_consumed.contains(node_id)) {
+            Some(addr) => match dora_core::topics::reserve_zenoh_endpoint(addr) {
+                Ok(ep) => Some(ep),
+                Err(err) => {
+                    tracing::warn!(
+                        node = %node_id,
+                        "failed to reserve a routable zenoh listen endpoint on {addr} \
+                         ({err}); consumers on other daemons will keep receiving this \
+                         node's outputs over the daemon path"
+                    );
+                    None
+                }
+            },
+            None => None,
+        };
+        listeners.insert(node_id.clone(), NodeListeners { loopback, routable });
     }
 
     let mut plan = BTreeMap::new();
@@ -321,19 +357,52 @@ pub fn plan_zenoh_peering(
                 continue;
             }
             if let Some(ep) = listeners.get(&source) {
-                connect.push(ep.clone());
+                connect.push(ep.loopback.clone());
             }
         }
         connect.dedup();
         plan.insert(
             node_id.clone(),
             NodeZenohPeering {
-                listen: listen.clone(),
+                listen: listen.endpoints(),
                 connect,
             },
         );
     }
     plan
+}
+
+/// The endpoints reserved for one local node.
+struct NodeListeners {
+    /// Always present: this is how same-machine consumers reach the node, and
+    /// a loopback transport is the one that can carry shared memory.
+    loopback: String,
+    /// Present only when a consumer on another daemon needs to dial in.
+    routable: Option<String>,
+}
+
+impl NodeListeners {
+    fn endpoints(&self) -> Vec<String> {
+        let mut endpoints = vec![self.loopback.clone()];
+        endpoints.extend(self.routable.clone());
+        endpoints
+    }
+}
+
+/// Local nodes that at least one *other daemon's* static node consumes from.
+///
+/// Dynamic consumers are excluded: they are not in any spawn set, so nothing
+/// can plan a dial for them, and their edges stay on the daemon path.
+fn remotely_consumed_nodes(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    local_nodes: &BTreeSet<NodeId>,
+) -> BTreeSet<NodeId> {
+    nodes
+        .iter()
+        .filter(|(id, node)| !local_nodes.contains(*id) && !node.kind.dynamic())
+        .flat_map(|(_, consumer)| input_sources(consumer))
+        .filter(|source| local_nodes.contains(source))
+        .collect()
 }
 
 /// The nodes whose outputs `node` subscribes to (deduplicated).
@@ -415,7 +484,7 @@ impl Spawner {
     fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {
         let command = match self.zenoh_peering.get(node_id) {
             Some(peering) => {
-                let command = command.env(DORA_ZENOH_LISTEN_ENV, &peering.listen);
+                let command = command.env(DORA_ZENOH_LISTEN_ENV, peering.listen.join(","));
                 if peering.connect.is_empty() {
                     command
                 } else {
@@ -752,9 +821,10 @@ mod tests {
         let nodes = descriptor
             .resolve_aliases_and_set_defaults()
             .expect("resolve nodes");
-        // Default: every node is local to this daemon.
+        // Default: every node is local to this daemon, so nothing needs a
+        // routable listener.
         let local: BTreeSet<NodeId> = nodes.keys().cloned().collect();
-        plan_zenoh_peering(&nodes, &local, daemon)
+        plan_zenoh_peering(&nodes, &local, daemon, None)
     }
 
     fn plan_for_local(
@@ -762,12 +832,26 @@ mod tests {
         local: &[&str],
         daemon: Option<&str>,
     ) -> BTreeMap<NodeId, NodeZenohPeering> {
+        plan_for_local_with_routable(yaml, local, daemon, None)
+    }
+
+    fn plan_for_local_with_routable(
+        yaml: &str,
+        local: &[&str],
+        daemon: Option<&str>,
+        routable: Option<IpAddr>,
+    ) -> BTreeMap<NodeId, NodeZenohPeering> {
         let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");
         let nodes = descriptor
             .resolve_aliases_and_set_defaults()
             .expect("resolve nodes");
         let local: BTreeSet<NodeId> = local.iter().map(|id| node(id)).collect();
-        plan_zenoh_peering(&nodes, &local, daemon)
+        plan_zenoh_peering(&nodes, &local, daemon, routable)
+    }
+
+    /// The loopback listener, which every planned node has.
+    fn loopback_of(plan: &BTreeMap<NodeId, NodeZenohPeering>, id: &str) -> String {
+        plan[&node(id)].listen[0].clone()
     }
 
     fn node(id: &str) -> NodeId {
@@ -1042,7 +1126,7 @@ nodes:
             Some("tcp/127.0.0.1:1"),
         );
 
-        let listen_of = |id: &str| plan[&node(id)].listen.clone();
+        let listen_of = |id: &str| loopback_of(&plan, id);
 
         // A pure source has no `User` inputs, so it dials only the daemon: a
         // timer mapping is not a peer.
@@ -1063,7 +1147,7 @@ nodes:
         assert!(!plan[&node("sink")].connect.contains(&listen_of("source")));
 
         // Listeners must be distinct, or two nodes would fight for a port.
-        let listeners: BTreeSet<_> = plan.values().map(|p| p.listen.clone()).collect();
+        let listeners: BTreeSet<_> = plan.values().flat_map(|p| p.listen.clone()).collect();
         assert_eq!(listeners.len(), 3, "each node needs its own listener");
     }
 
@@ -1090,20 +1174,15 @@ nodes:
 "#,
             None,
         );
-        assert_eq!(
-            plan[&node("a")].connect,
-            vec![plan[&node("b")].listen.clone()]
-        );
-        assert_eq!(
-            plan[&node("b")].connect,
-            vec![plan[&node("a")].listen.clone()]
-        );
+        assert_eq!(plan[&node("a")].connect, vec![loopback_of(&plan, "b")]);
+        assert_eq!(plan[&node("b")].connect, vec![loopback_of(&plan, "a")]);
     }
 
     /// `nodes` spans the whole dataflow, including nodes owned by other daemons.
     /// Their listeners would be on *this* host's loopback, so dialing one would hit
     /// nothing (or an unrelated local process). A local consumer of a remote
-    /// producer must therefore get no dial for it.
+    /// producer must therefore get no dial for it here — the remote producer's
+    /// real endpoint arrives from the daemon that owns it.
     #[test]
     fn remote_nodes_are_never_dialled_on_local_loopback() {
         let yaml = r#"
@@ -1124,9 +1203,75 @@ nodes:
             !plan.contains_key(&node("remote_source")),
             "a node on another daemon must not be assigned a local loopback listener"
         );
-        // The local consumer dials only the daemon: there is no local endpoint
-        // for its remote producer, and inventing one would be worse than none.
         assert_eq!(plan[&node("local_sink")].connect, vec!["tcp/127.0.0.1:1"]);
+    }
+
+    const CROSS_MACHINE_YAML: &str = r#"
+nodes:
+  - id: local_source
+    path: local_source
+    outputs:
+      - value
+  - id: local_sink
+    path: local_sink
+    inputs:
+      v: local_source/value
+  - id: remote_sink
+    path: remote_sink
+    inputs:
+      v: local_source/value
+"#;
+
+    /// A node consumed from another machine needs an endpoint that machine can
+    /// dial, or the edge can only ever be relayed by the two daemons. It keeps
+    /// its loopback listener too: that is the one its same-machine consumers
+    /// use, and the only one whose transport can carry shared memory.
+    #[test]
+    fn a_node_with_a_remote_consumer_also_listens_routably() {
+        let routable: IpAddr = "127.0.0.2".parse().unwrap();
+        let plan = plan_for_local_with_routable(
+            CROSS_MACHINE_YAML,
+            &["local_source", "local_sink"],
+            Some("tcp/127.0.0.1:1"),
+            Some(routable),
+        );
+
+        let source = &plan[&node("local_source")];
+        assert_eq!(source.listen.len(), 2, "loopback plus routable: {source:?}");
+        assert!(source.listen[0].starts_with("tcp/127.0.0.1:"));
+        assert!(
+            source.listen[1].starts_with("tcp/127.0.0.2:"),
+            "the remote consumer needs a dialable endpoint, got {:?}",
+            source.listen
+        );
+
+        // `local_sink` is consumed by nobody off-machine, so it stays loopback
+        // only — exposure follows the dataflow, not the deployment.
+        assert_eq!(plan[&node("local_sink")].listen.len(), 1);
+    }
+
+    /// A loopback "routable" address is worse than none: advertised to a remote
+    /// consumer it points at *that* machine's loopback, which is the silent
+    /// partition this planning exists to prevent. Same for a single-machine
+    /// daemon, which has no routable address at all.
+    #[test]
+    fn a_loopback_or_absent_routable_address_yields_no_second_listener() {
+        for routable in [None, Some("127.0.0.1".parse().unwrap())] {
+            let plan = plan_for_local_with_routable(
+                CROSS_MACHINE_YAML,
+                &["local_source", "local_sink"],
+                Some("tcp/127.0.0.1:1"),
+                // A loopback address never reaches here in production —
+                // `zenoh_routable_addr` filters it out — so passing `None` for
+                // it is the honest simulation of that filter.
+                routable.filter(|addr: &IpAddr| !addr.is_loopback()),
+            );
+            assert_eq!(
+                plan[&node("local_source")].listen.len(),
+                1,
+                "no dialable address means the edge stays on the daemon path"
+            );
+        }
     }
 
     /// Dynamic nodes join at arbitrary times and aren't part of the spawn set,

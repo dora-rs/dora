@@ -387,12 +387,14 @@ pub async fn open_zenoh_session_with_listen(
             // We don't promote it to `effective_listen_endpoint` until the
             // configured open succeeds — the fallback default-config path
             // below has no listener and must not advertise one (#1856).
-            // We only track `listen_endpoint` (the per-daemon listener that
-            // gets advertised to spawned nodes), NOT `inter_daemon_peer`
-            // which is cluster-wide config — daemons that bind it act as
-            // the rendezvous, but advertising it back to nodes would be
-            // wrong (nodes would try to reach it through what may be a
-            // remote address, defeating the loopback shortcut).
+            // We only track the caller's own `listen_endpoint` (the per-daemon
+            // listener that gets advertised to spawned nodes), NOT
+            // `inter_daemon_peer` which is cluster-wide config — daemons that
+            // bind it act as the rendezvous, but advertising it back to nodes
+            // would be wrong (nodes would try to reach it through what may be a
+            // remote address, defeating the loopback shortcut) — and not the
+            // env-supplied node listeners either, which the daemon planned and
+            // already knows.
             let mut listen_inserted_into_configured: Option<String> = None;
             // Any accepted listener, including the cluster-wide rendezvous that
             // is deliberately absent from `listen_inserted_into_configured`.
@@ -406,18 +408,27 @@ pub async fn open_zenoh_session_with_listen(
             // daemon proceed even if some don't bind — e.g. the second
             // daemon to start on the same host with the same rendezvous
             // port falls through to connect-only.
-            // A spawned node gets its listener from the daemon via
+            // A spawned node gets its listeners from the daemon via
             // `DORA_ZENOH_LISTEN` (the daemon itself passes `listen_endpoint`
             // directly). Without a known listener a node cannot be dialled, and
             // since zenoh 1.9 peers do not relay, a consumer that cannot dial its
             // producer never receives its data at all.
-            let env_listen_endpoint = std::env::var(DORA_ZENOH_LISTEN_ENV).ok();
-            let listen_endpoint = listen_endpoint.or(env_listen_endpoint.as_deref());
+            //
+            // The variable carries a *list*, because a node with a consumer on
+            // another machine listens both on loopback (for its same-machine
+            // consumers, whose transport can then carry shared memory) and on a
+            // routable address (for the remote one).
+            let env_listen = std::env::var(DORA_ZENOH_LISTEN_ENV).ok();
+            let env_listen_endpoints: Vec<String> = env_listen
+                .as_deref()
+                .map(|value| split_endpoints(value).collect())
+                .unwrap_or_default();
 
             let mut listen_eps: Vec<String> = Vec::new();
             if let Some(ep) = listen_endpoint {
                 listen_eps.push(ep.to_string());
             }
+            listen_eps.extend(env_listen_endpoints.iter().cloned());
             if let Some(peer) = inter_daemon_peer {
                 listen_eps.push(peer.to_string());
             }
@@ -499,7 +510,19 @@ pub async fn open_zenoh_session_with_listen(
                     // bound" query (unstable API gated behind the workspace
                     // `unstable` feature, already enabled in the root Cargo.toml
                     // zenoh dependency).
-                    if let Some(requested) = listen_inserted_into_configured {
+                    // Verify every endpoint we asked for, but only ever
+                    // *return* the caller's own: the env-supplied ones belong
+                    // to a node whose daemon planned them and already knows
+                    // them, so there they are a diagnostic, not a value to
+                    // propagate.
+                    let mut verify: Vec<&str> = listen_inserted_into_configured
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
+                    if listen_configured {
+                        verify.extend(env_listen_endpoints.iter().map(String::as_str));
+                    }
+                    if !verify.is_empty() {
                         let bound_locators: Vec<String> = zenoh_session
                             .info()
                             .locators()
@@ -530,37 +553,41 @@ pub async fn open_zenoh_session_with_listen(
                         // than reach this check, which would read the mismatch
                         // as "the listener did not bind" and silently fall back
                         // to multicast scouting.
-                        let bound = bound_locators
-                            .iter()
-                            .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
-                        if bound {
-                            effective_listen_endpoint = Some(requested);
-                        } else if connect_inserted {
-                            // We set explicit `connect/endpoints` above, so
-                            // multicast scouting was disabled for this session
-                            // (#1856). There is therefore NO discovery fallback:
-                            // peers already told to dial `{requested}` (e.g. via
-                            // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
-                            // cannot reach this now-listener-less session, and it
-                            // cannot be scouted either — that edge is silently
-                            // partitioned. Do not claim "multicast scouting only"
-                            // here; that fallback does not exist in this mode and
-                            // the old message pointed debuggers the wrong way
-                            // (#2762).
-                            warn!(
-                                "zenoh session opened but listener for `{requested}` \
-                                 did not bind (actually bound: {bound_locators:?}); \
-                                 multicast scouting is disabled for this session \
-                                 (explicit connect endpoints are set), so peers told \
-                                 to dial `{requested}` have no fallback path to reach \
-                                 it (#2762)"
-                            );
-                        } else {
-                            warn!(
-                                "zenoh session opened but listener for `{requested}` \
-                                 did not bind (actually bound: {bound_locators:?}); \
-                                 falling back to multicast scouting for discovery"
-                            );
+                        for requested in verify {
+                            let bound = bound_locators
+                                .iter()
+                                .any(|l| l.split(['?', '#']).next() == Some(requested));
+                            if bound {
+                                if listen_inserted_into_configured.as_deref() == Some(requested) {
+                                    effective_listen_endpoint = Some(requested.to_string());
+                                }
+                            } else if connect_inserted {
+                                // We set explicit `connect/endpoints` above, so
+                                // multicast scouting was disabled for this session
+                                // (#1856). There is therefore NO discovery fallback:
+                                // peers already told to dial `{requested}` (e.g. via
+                                // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
+                                // cannot reach this now-listener-less session, and it
+                                // cannot be scouted either — that edge is silently
+                                // partitioned. Do not claim "multicast scouting only"
+                                // here; that fallback does not exist in this mode and
+                                // the old message pointed debuggers the wrong way
+                                // (#2762).
+                                warn!(
+                                    "zenoh session opened but listener for `{requested}` \
+                                     did not bind (actually bound: {bound_locators:?}); \
+                                     multicast scouting is disabled for this session \
+                                     (explicit connect endpoints are set), so peers told \
+                                     to dial `{requested}` have no fallback path to reach \
+                                     it (#2762)"
+                                );
+                            } else {
+                                warn!(
+                                    "zenoh session opened but listener for `{requested}` \
+                                     did not bind (actually bound: {bound_locators:?}); \
+                                     falling back to multicast scouting for discovery"
+                                );
+                            }
                         }
                     }
                     zenoh_session

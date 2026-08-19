@@ -441,6 +441,13 @@ pub struct Daemon {
     /// peer without multicast (#1778). `None` when the OS rejected the
     /// reservation; nodes then fall back to multicast scouting.
     pub(crate) zenoh_listen_endpoint: Option<String>,
+    /// Address other machines reach this host at, when there is one.
+    ///
+    /// `None` for a single-machine daemon, whose zenoh listener is on loopback:
+    /// handing that address to a consumer on another machine would point it at
+    /// its own loopback. Used to give a node with cross-machine consumers a
+    /// second, network-reachable listener (see `plan_zenoh_peering`).
+    pub(crate) zenoh_routable_addr: Option<IpAddr>,
     /// Whether this daemon opened its zenoh session without multicast
     /// scouting. Forwarded to spawned nodes so they discover the same way the
     /// daemon does (see `DORA_ZENOH_MULTICAST`).
@@ -1961,6 +1968,9 @@ impl Daemon {
             ft_stats: Default::default(),
             zenoh_session,
             zenoh_listen_endpoint,
+            // A loopback bind is not an address anyone else can dial, so it is
+            // not a routable one; see the field docs.
+            zenoh_routable_addr: Some(zenoh_bind.addr()).filter(|addr| !addr.is_loopback()),
             disable_multicast,
             bind_nodes_to_parent,
             pending_destroy: None,
@@ -4342,6 +4352,7 @@ impl Daemon {
             &nodes,
             &spawn_nodes,
             self.zenoh_listen_endpoint.as_deref(),
+            self.zenoh_routable_addr,
         ));
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
