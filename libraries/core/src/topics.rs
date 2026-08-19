@@ -148,10 +148,47 @@ fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
     // Nodes and the coordinator have no in-process way to know, so
     // [`DORA_ZENOH_MULTICAST_ENV`] (honored inside) is their only channel.
-    let (session, _) =
-        open_zenoh_session_with_listen(coordinator_addr, None, None, MulticastScouting::Allowed)
-            .await?;
+    let (session, _) = open_zenoh_session_with_listen(ZenohSessionParams {
+        coordinator_addr,
+        ..Default::default()
+    })
+    .await?;
     Ok(session)
+}
+
+/// How a dora process wants its zenoh session wired.
+///
+/// A struct rather than a parameter list because every field is optional and
+/// most callers set one of them: the positional form made
+/// `open_zenoh_session_with_listen(None, None, None, Allowed)` a common sight,
+/// where a misplaced `None` is a silent partition rather than a type error.
+/// [`Default`] gives "a plain peer with whatever the environment says", which
+/// is what nodes and the coordinator want.
+#[cfg(feature = "zenoh")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ZenohSessionParams<'a> {
+    /// Coordinator to reach through a zenoh router/peer pair. Unused by every
+    /// in-tree caller today; see the `coordinator_addr` branch below.
+    pub coordinator_addr: Option<IpAddr>,
+    /// Endpoint this session listens on and advertises to its peers, e.g.
+    /// `tcp/127.0.0.1:43217` for a single-machine daemon or `tcp/10.0.2.100:5456`
+    /// for one in a cluster. Verified against `info().locators()` after open;
+    /// see the return value.
+    pub listen_endpoint: Option<&'a str>,
+    /// Shared rendezvous endpoint for daemon-to-daemon discovery when multicast
+    /// isn't available: added to *both* listen and connect endpoints, so the
+    /// first daemon to bind it becomes the gossip hub and the rest fall through
+    /// to connect-only.
+    pub inter_daemon_peer: Option<&'a str>,
+    /// Peers this session dials, in addition to whatever
+    /// [`DORA_ZENOH_CONNECT_ENV`] carries. This is how a deployment wires its
+    /// daemons into an explicit mesh instead of relying on gossip through a
+    /// single rendezvous: every daemon dials every other one, which is the
+    /// clique zenoh 1.9 requires of a peer region.
+    pub connect_endpoints: &'a [String],
+    /// Whether this session may scout by multicast. A request, not a command —
+    /// see the `#1856` guard below.
+    pub multicast: MulticastScouting,
 }
 
 /// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
@@ -168,11 +205,18 @@ fn coordinator_connect_endpoints(addr: IpAddr) -> String {
     format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
 }
 
-/// Like [`open_zenoh_session`], but also configures the session to listen on
-/// the given endpoint (e.g. `tcp/127.0.0.1:43217`, or a routable address such as
-/// `tcp/10.0.2.100:43217` for a daemon in a cluster). The daemon uses this so
+/// Like [`open_zenoh_session`], but takes the full [`ZenohSessionParams`]: a
+/// listen endpoint to bind and advertise (e.g. `tcp/127.0.0.1:43217`, or a
+/// routable address such as `tcp/10.0.2.100:5456` for a daemon in a cluster),
+/// extra peers to dial, and the multicast request. The daemon uses this so
 /// spawned nodes can connect via `DORA_ZENOH_CONNECT` without multicast
 /// scouting, and so that other daemons can dial it.
+///
+/// `connect_endpoints` are dialed in addition to whatever
+/// [`DORA_ZENOH_CONNECT_ENV`] carries, deduplicated against it. They are
+/// dial-only, which is what distinguishes an explicit mesh (each daemon
+/// listens on its own endpoint and dials its peers') from the rendezvous
+/// below (every daemon both listens on and dials the *same* endpoint).
 ///
 /// `inter_daemon_peer` is an optional shared endpoint used as the
 /// rendezvous for daemon-to-daemon discovery when multicast isn't
@@ -204,13 +248,18 @@ fn coordinator_connect_endpoints(addr: IpAddr) -> String {
 /// ends up reachable some other way (see the `#1856` guard below).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
-    coordinator_addr: Option<IpAddr>,
-    listen_endpoint: Option<&str>,
-    inter_daemon_peer: Option<&str>,
-    multicast: MulticastScouting,
+    params: ZenohSessionParams<'_>,
 ) -> eyre::Result<(zenoh::Session, Option<String>)> {
     use eyre::{Context, eyre};
     use tracing::warn;
+
+    let ZenohSessionParams {
+        coordinator_addr,
+        listen_endpoint,
+        inter_daemon_peer,
+        connect_endpoints,
+        multicast,
+    } = params;
 
     // Source-of-truth for the listener: stays `None` unless we actually
     // accepted `listen/endpoints` into the config below. Callers use this
@@ -283,23 +332,38 @@ pub async fn open_zenoh_session_with_listen(
             // bytes onto the wire (i.e. copied) instead of sent as a ~16-byte
             // descriptor.
 
-            // Build the connect-endpoint list from two sources:
+            // Build the connect-endpoint list from three sources:
             //   1. DORA_ZENOH_CONNECT env var — daemon-bootstrapped local
             //      discovery for spawned nodes (#1778).
-            //   2. `inter_daemon_peer` — shared rendezvous for daemon-to-
+            //   2. `connect_endpoints` — peers this process was told to dial,
+            //      i.e. the explicit daemon↔daemon mesh (`--zenoh-connect`).
+            //      Unlike (3) this is dial-only: a mesh member listens on its
+            //      own advertised endpoint, not on its peers'.
+            //   3. `inter_daemon_peer` — shared rendezvous for daemon-to-
             //      daemon discovery (extends #1778 to the daemon↔daemon
             //      hop). One daemon binds it as a listener, others connect
             //      and gossip-discover their peers via it.
-            // Both are explicit endpoints; if we set any of them we
+            // All are explicit endpoints; if we set any of them we
             // disable multicast scouting so we don't end up with mixed
             // discovery modes.
             let mut connect_eps: Vec<String> = Vec::new();
             if let Ok(eps) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
                 connect_eps.extend(split_endpoints(&eps));
             }
+            connect_eps.extend(connect_endpoints.iter().cloned());
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
             }
+            // A duplicate dial is not fatal, but it is a wasted connection
+            // attempt per duplicate and, when the peer is unreachable, a
+            // second retry loop against it — which is exactly what keeps the
+            // net runtime busy (#2776). Callers can legitimately overlap:
+            // `--zenoh-connect` may name the same endpoint the environment
+            // already carries. `retain` over a seen-set rather than `dedup`,
+            // which only collapses *adjacent* equals and would leave the
+            // env/param/rendezvous interleaving untouched.
+            let mut seen_connect = std::collections::HashSet::new();
+            connect_eps.retain(|ep| seen_connect.insert(ep.clone()));
             let mut connect_inserted = false;
             if !connect_eps.is_empty() {
                 let json = format!(
@@ -524,6 +588,32 @@ pub async fn open_zenoh_session_with_listen(
     Ok((zenoh_session, effective_listen_endpoint))
 }
 
+/// Default TCP port for a daemon's inter-daemon zenoh listener.
+///
+/// Only used when a deployment *names* the port — `--zenoh-listen <IP>` alone
+/// still reserves an ephemeral one. An explicit mesh needs a port its peers can
+/// predict, since they must dial the endpoint before the daemon has told anyone
+/// what it bound. 5456 is the port dora already uses for a zenoh peer in
+/// [`coordinator_connect_endpoints`] and in every deployment doc example.
+pub const DORA_ZENOH_LISTEN_PORT_DEFAULT: u16 = 5456;
+
+/// Format `addr:port` as a zenoh TCP endpoint string.
+///
+/// The address goes through [`SocketAddr`], whose `Display` brackets IPv6 —
+/// which is also zenoh's locator grammar (`tcp/[::1]:7447`). Interpolating a
+/// bare [`IpAddr`] instead would emit `tcp/::1:7447`, where the port colon is
+/// indistinguishable from the address colons and `insert_json5` rejects the
+/// result (#3041).
+///
+/// Unlike [`reserve_zenoh_endpoint`] this binds nothing, so there is no
+/// reserve→bind window for another process to slip into: a named port is
+/// either free when zenoh binds it or it is not, and the
+/// `info().locators()` check in [`open_zenoh_session_with_listen`] tells the
+/// caller which.
+pub fn zenoh_endpoint(addr: IpAddr, port: u16) -> String {
+    format!("tcp/{}", SocketAddr::new(addr, port))
+}
+
 /// Reserve an unused TCP port on `bind` for use as a zenoh listen endpoint.
 /// Returns a string suitable for the zenoh `listen/endpoints` config
 /// (e.g. `tcp/127.0.0.1:43217`, or `tcp/[::1]:43217` for IPv6).
@@ -563,9 +653,7 @@ pub fn reserve_zenoh_endpoint(bind: IpAddr) -> std::io::Result<String> {
     let listener = std::net::TcpListener::bind((bind, 0))?;
     let port = listener.local_addr()?.port();
     drop(listener);
-    // `SocketAddr`'s Display brackets IPv6 for us, which is also zenoh's
-    // endpoint syntax (`tcp/[::1]:7447`).
-    Ok(format!("tcp/{}", SocketAddr::new(bind, port)))
+    Ok(zenoh_endpoint(bind, port))
 }
 
 /// Loopback case of [`reserve_zenoh_endpoint`] — the right choice when every
@@ -926,6 +1014,33 @@ mod tests {
                 "error should tell the operator to pass a concrete address, got: {err}"
             );
         }
+    }
+
+    // An IPv6 endpoint must bracket its address, or the port colon is
+    // indistinguishable from the address colons and `insert_json5` rejects the
+    // locator outright (#3041). A named-port endpoint has to match the shape
+    // `reserve_zenoh_endpoint` produces, because both end up in the same
+    // `listen/endpoints` list and are compared verbatim against
+    // `info().locators()` after open.
+    #[test]
+    fn zenoh_endpoint_brackets_ipv6_and_matches_the_reserved_shape() {
+        assert_eq!(
+            zenoh_endpoint("10.0.2.100".parse().unwrap(), 5456),
+            "tcp/10.0.2.100:5456"
+        );
+        assert_eq!(
+            zenoh_endpoint("::1".parse().unwrap(), 5456),
+            "tcp/[::1]:5456"
+        );
+
+        let reserved = reserve_zenoh_endpoint(LOCALHOST).expect("loopback reservation");
+        let port = reserved
+            .rsplit_once(':')
+            .expect("reserved endpoint carries a port")
+            .1
+            .parse()
+            .expect("reserved port is numeric");
+        assert_eq!(zenoh_endpoint(LOCALHOST, port), reserved);
     }
 
     // Concrete addresses pass validation whether or not they exist on this host:

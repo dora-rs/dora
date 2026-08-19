@@ -1832,18 +1832,19 @@ impl Daemon {
         // the listen/endpoints insert. Otherwise we must not inject
         // `DORA_ZENOH_CONNECT` into spawned nodes — they would try to connect
         // to an endpoint that nothing is listening on (#1856).
-        let (zenoh_session, zenoh_listen_endpoint) = open_zenoh_session_with_listen(
-            None,
-            requested_listen_endpoint.as_deref(),
-            inter_daemon_peer.as_deref(),
-            if disable_multicast {
-                MulticastScouting::Disabled
-            } else {
-                MulticastScouting::Allowed
-            },
-        )
-        .await
-        .wrap_err("failed to open zenoh session")?;
+        let (zenoh_session, zenoh_listen_endpoint) =
+            open_zenoh_session_with_listen(dora_core::topics::ZenohSessionParams {
+                listen_endpoint: requested_listen_endpoint.as_deref(),
+                inter_daemon_peer: inter_daemon_peer.as_deref(),
+                multicast: if disable_multicast {
+                    MulticastScouting::Disabled
+                } else {
+                    MulticastScouting::Allowed
+                },
+                ..Default::default()
+            })
+            .await
+            .wrap_err("failed to open zenoh session")?;
         // Same-host control notifications (`PeerMessage::Register`/`PeerMessage::Free`) go over
         // zenoh SHM: the payload stays in shared memory and peer daemons
         if requested_listen_endpoint.is_some() && zenoh_listen_endpoint.is_none() {
