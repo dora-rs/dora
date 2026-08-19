@@ -120,7 +120,8 @@ coordinator:
   addr: 10.0.0.1            # IP address the coordinator binds to (required)
   port: 6013                 # WebSocket port (default: 6013)
 
-zenoh_peer: tcp/10.0.0.1:5456  # Shared inter-daemon Zenoh rendezvous (optional)
+zenoh_peer: tcp/10.0.0.1:5456  # Shared inter-daemon Zenoh rendezvous (optional;
+                               # mutually exclusive with the mesh below)
 
 machines:
   - id: edge-01              # Unique machine identifier (required)
@@ -128,6 +129,8 @@ machines:
     user: ubuntu              # SSH user (optional, defaults to current user)
     port: 2222                # SSH port (optional, defaults to 22)
     daemon_port: 53291        # Daemon local-listen port (optional, defaults to 53291)
+    zenoh_addr: 10.0.0.2      # Address peers dial (optional, defaults to `host`)
+    zenoh_port: 5456          # Zenoh listen port (optional, defaults to 5456)
     labels:                   # Key-value labels for scheduling (optional)
       gpu: "true"
       arch: arm64
@@ -151,18 +154,33 @@ machines:
 > **Every daemon must be dialable by every other daemon.** Zenoh advertises the
 > address a daemon binds, and remote daemons dial exactly that; since zenoh 1.9
 > peers do not relay for each other, a pair that cannot form a direct link has no
-> fallback and silently exchanges nothing. By default a daemon binds the local
-> address that routes toward `coordinator.addr` — the LAN address on a LAN, the
-> tunnel address on a mesh VPN such as Tailscale — which is correct without
-> configuration. On a multi-homed machine that would otherwise advertise an
-> interface the other daemons cannot reach, override it with
-> `dora daemon --zenoh-listen <IP>`. A daemon whose coordinator is loopback stays
-> on loopback and is not reachable from the network at all.
+> fallback and silently exchanges nothing.
 >
-> `--zenoh-listen` must be a concrete address: a wildcard (`0.0.0.0`) is rejected
-> because zenoh would bind every interface but advertise a concrete one. An
-> address given explicitly must bind, or the daemon exits rather than starting
-> without a listener.
+> When every machine has a dialable address, `dora cluster up` wires the daemons
+> into an explicit mesh: each one gets
+> `--zenoh-listen <its addr>:<its port> --zenoh-connect <every other machine>`.
+> That needs no multicast and no gossip, which is what makes it the right shape
+> for a mesh VPN — a tailnet carries no multicast. The addresses come from `host`
+> when it is an IP, so the common case needs no extra configuration.
+>
+> If any machine has no dialable address (a hostname in `host` and no
+> `zenoh_addr`), `dora cluster up` warns and derives **nothing**, leaving the
+> whole cluster on the old discovery path. A partial mesh would be worse than
+> none: explicit connect endpoints turn multicast scouting off for the daemons
+> that have them, so the unmeshed remainder is left with no way to be found.
+>
+> `zenoh_peer` selects the older rendezvous shape instead — one shared endpoint
+> every daemon binds and dials, with the daemon-to-daemon links left to gossip.
+> Setting it *and* per-machine addresses is rejected rather than silently
+> resolved.
+>
+> Running daemons by hand, the same applies via `dora daemon --zenoh-listen
+> <IP>[:<PORT>]` and `--zenoh-connect <endpoint>,...`. Naming a port is what lets
+> peers dial a daemon before it has announced anything; without one the OS picks
+> the port and peers can only learn it by discovery. `--zenoh-listen` must be a
+> concrete address — a wildcard (`0.0.0.0`) is rejected because zenoh would bind
+> every interface but advertise a concrete one — and an address given explicitly
+> must bind, or the daemon exits rather than starting without a listener.
 
 **coordinator**
 
@@ -180,6 +198,8 @@ machines:
 | `user` | string | current user | SSH username |
 | `port` | u16 | `22` | SSH port. Set when sshd listens on a non-standard port (e.g., containerized or hardened deployments). Applied to both `ssh` (`-p`) and `scp` (`-P`). |
 | `daemon_port` | u16 | `53291` | Daemon local-listen port (passed to `dora daemon --local-listen-port`). Set when running multiple `dora daemon` instances on the same host so each daemon binds a unique port. See [`examples/multiple-daemons/`](../examples/multiple-daemons/). |
+| `zenoh_addr` | IP address | `host` | Address the *other daemons* dial to reach this machine. Defaults to `host` when that is an IP, which is the common case: on a mesh VPN the tunnel address is both how you SSH in and how peers dial. Set it when the two differ — an SSH-only jump address, a hostname rather than an IP, or a multi-homed machine whose SSH interface is not the one other daemons can reach. Must be an address, not a hostname: only the remote machine could resolve a name, and the daemon has to *bind* it. |
+| `zenoh_port` | u16 | `5456` | Port this machine's Zenoh listener binds. Per-machine like `daemon_port`, so two daemons on one host stay expressible. |
 | `labels` | map | empty | Key-value pairs for label-based scheduling |
 
 ### Validation Rules
@@ -187,7 +207,64 @@ machines:
 - At least one machine must be defined.
 - Machine IDs must be non-empty and unique.
 - Machine hosts must be non-empty.
+- `zenoh_addr` must be an IP address; `zenoh_port` and `daemon_port` must not be 0.
+- `zenoh_peer` and per-machine zenoh addresses are mutually exclusive.
 - Unknown fields are rejected (`deny_unknown_fields`).
+
+## Cross-Machine Node Communication
+
+Once the daemons can reach each other, the nodes do too. A node whose output is
+consumed on another machine listens on an address that machine can dial, the
+daemons trade those endpoints before spawning anything, and the consumer dials
+the producer directly. The daemon is then out of the data path entirely:
+producer node → consumer node, one Zenoh hop, instead of node → daemon → daemon
+→ node.
+
+The switch is proven, not assumed. The producer keeps every output on the
+lossless daemon path until the consumer's startup ack comes back over the
+direct link, so an edge that fails to wire up degrades to the old path rather
+than losing messages. Edges that stay on the daemon path:
+
+- a **dynamic** consumer on another machine — it joins at an arbitrary time, so
+  no endpoint can be planned for it;
+- a producer with **no dialable address** — a daemon bound to loopback has
+  nothing a remote consumer could dial;
+- an endpoint exchange that **timed out** (default 1.5s; set
+  `DORA_ZENOH_ENDPOINT_EXCHANGE_TIMEOUT_MS` to allow longer, or `0` to keep
+  every cross-machine edge on the daemon path).
+
+Node processes therefore accept connections on the cluster network wherever a
+dataflow spans machines. That is intended to sit inside a tailnet or behind
+ACLs; where it must be hardened further, Zenoh's TLS and authentication
+settings can be layered on with the config overlay below.
+
+## Custom Zenoh Configuration
+
+Two ways to change the Zenoh configuration dora computes, for the daemon and
+every node it spawns:
+
+| | `--zenoh-config-overlay <PATH>` / `DORA_ZENOH_CONFIG_OVERLAY` | `ZENOH_CONFIG` |
+|---|---|---|
+| Effect | Layers a JSON5 file **onto** dora's config | Builds the session **entirely** from the file |
+| `connect.endpoints` / `listen.endpoints` | Added to dora's | Replace dora's |
+| Other keys | Replace dora's value for that key | — |
+| Per-node links | Kept | **Discarded** |
+
+Prefer the overlay. Because `ZENOH_CONFIG` discards the per-node connect/listen
+plan, a router named there ends up relaying same-machine traffic too — off the
+host and back, if the router runs elsewhere — and the direct zero-copy path is
+lost. Setting both is an error.
+
+```json5
+// routers.json5 — also reach these routers, keep everything dora planned
+{
+  connect: { endpoints: ["tcp/10.0.0.1:7447"] },
+}
+```
+
+```bash
+dora daemon --machine-id edge-01 --coordinator-addr 10.0.0.1   --zenoh-config-overlay routers.json5
+```
 
 ### Example: 3-Machine GPU Cluster
 
