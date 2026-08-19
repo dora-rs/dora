@@ -461,29 +461,52 @@ mod tests {
 
         // Close stdin so `read` hits EOF and the wrapper exits. No `wait()`:
         // without the reap it stays a zombie, which is the state under test.
-        // Spin until the kernel has actually gotten there — callers pause the
-        // test clock, so this waits on the OS, not on tokio.
         drop(wrapper.stdin.take());
-        let deadline = std::time::Instant::now() + Duration::from_secs(5);
-        loop {
-            let mut system = System::new();
-            system.refresh_processes_specifics(
-                ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
-                true,
-                ProcessRefreshKind::nothing(),
-            );
-            let zombie = system
-                .process(Pid::from_u32(pid))
-                .is_some_and(|process| process.status() == ProcessStatus::Zombie);
-            if zombie {
-                break;
-            }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "the wrapper never became a zombie"
-            );
-            std::thread::sleep(Duration::from_millis(20));
-        }
+
+        // Block until the kernel says it has exited, *without* reaping it.
+        // `WNOWAIT` leaves the status pending, so the process stays a zombie
+        // for the assertions below and for `kill_group_and_reap` to clean up.
+        //
+        // This replaces a poll for `ProcessStatus::Zombie` (dora-rs/dora#3150):
+        // that made the precondition depend on `sysinfo` *observing* the
+        // zombie, which is a platform question, not the one under test. The
+        // poll timed out on macOS nightly while passing on Linux. `waitid` is
+        // POSIX and answers the actual question — has it exited yet — with no
+        // deadline to lose.
+        //
+        // SAFETY: `waitid` only reads the exit state of a child this test
+        // spawned; `WNOWAIT` means it does not consume it.
+        let rc = unsafe {
+            let mut info: libc::siginfo_t = std::mem::zeroed();
+            libc::waitid(
+                libc::P_PID,
+                pid as libc::id_t,
+                &mut info,
+                libc::WEXITED | libc::WNOWAIT,
+            )
+        };
+        assert_eq!(rc, 0, "waitid on the wrapper failed");
+
+        // The wrapper is now definitively an unreaped zombie. If `sysinfo`
+        // disagrees, that is a platform gap worth knowing about rather than a
+        // flake: `live_children` treats an unseen pid as *not* recycled
+        // (`pid_recycled_into_stranger` returns false for `None`), so a pid
+        // recycled into a stranger's zombie would be attributed to us and its
+        // group killed — the #3067 case. Fail loudly and name it.
+        let mut system = System::new();
+        system.refresh_processes_specifics(
+            ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+            true,
+            ProcessRefreshKind::nothing(),
+        );
+        let seen = system.process(Pid::from_u32(pid)).map(|p| p.status());
+        assert_eq!(
+            seen,
+            Some(ProcessStatus::Zombie),
+            "`waitid` confirms the wrapper exited unreaped, but sysinfo \
+             reports {seen:?}. The zombie checks in `is_live_child` and \
+             `pid_recycled_into_stranger` cannot work on this platform."
+        );
         (wrapper, pid)
     }
 
