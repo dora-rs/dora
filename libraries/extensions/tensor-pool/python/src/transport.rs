@@ -47,7 +47,10 @@ fn random_u64_seed() -> u64 {
 /// Build a memory pool's shared-memory name from the
 /// `(machine_id, dataflow_id, node_id, counter)` tuple.
 ///
-/// This is the single source of truth for the on-wire pool-id format;
+/// This is the single source of truth for the on-wire pool-id format *within
+/// this crate*; the daemon half derives the same names independently in
+/// `TensorPoolManager::cross_pool_shmem_name` and `cleanup_orphans`.
+///
 /// [`parse_pool_counter`] recovers the counter from it. Keeping the two
 /// together means a change to the format can only be made in one place
 /// (dora-rs/dora#3015).
@@ -90,10 +93,11 @@ fn parse_pool_counter(pool_id: &str) -> Option<u64> {
 /// The counter is combined with the `(dataflow_id, node_id)` pair — both of
 /// which are stable across a crash-restart — into the pool's shared-memory
 /// name, so a deterministic `0` seed makes a restarted node re-derive the
-/// exact name its previous incarnation used. If the old segment is still live
-/// (its receiver is still reading it, so #2881's reclaim deliberately kept it),
-/// `ShmemConf::create()` collides and the restarted node can never register its
-/// pool — a crash-restart loop that never recovers. A random per-incarnation
+/// exact name its previous incarnation used. The old segment is still there:
+/// the daemon's pool sweeps run only at daemon start, dataflow spawn and
+/// dataflow finish, so a crash-restart inside a live dataflow unlinks nothing.
+/// `ShmemConf::create()` is `O_EXCL`, so it collides and the restarted node can
+/// never register its pool -- a crash-restart loop that never recovers. A random per-incarnation
 /// seed keeps the id unique across restarts while the component stays a plain
 /// `u64`, so both existing name parsers keep working unchanged.
 ///
@@ -480,8 +484,12 @@ mod pool_id_tests {
     /// dora-rs/dora#3015: the per-process pool counter is now seeded from
     /// `random_u64_seed()` so a restarted node does not re-derive its previous
     /// incarnation's shared-memory name and collide on a still-live segment.
-    /// The seed must vary from call to call (a proxy for varying from process
-    /// to process — `RandomState` reseeds on each `new()`).
+    /// The seed must vary from call to call. This is a *weak* proxy for the
+    /// property #3015 actually needs (variation from process to process):
+    /// `RandomState::new()` bumps its cached `k0` on every call within a
+    /// thread, so successive draws would differ even if the OS seeding were
+    /// removed. Only a literal-constant implementation turns this RED; a real
+    /// cross-process check would need a spawned subprocess.
     #[test]
     fn random_seed_is_not_constant() {
         let seeds: std::collections::HashSet<u64> = (0..8).map(|_| random_u64_seed()).collect();
@@ -1248,8 +1256,11 @@ fn warn_missing_tensor_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
 /// `pool_{node_id}_{counter}` buffer id, but only when `node_id` owns the pool.
 ///
 /// The sender-side `PINNED_POOL`/`TRANSIT_META` maps are keyed by the bare
-/// per-process counter, *not* namespaced by node id, and every process's
-/// counters restart at 1. So a node that frees a *peer's* pool (a receiver
+/// per-process counter, *not* namespaced by node id. Before #3015 every
+/// process's counters started at 1, so two processes' low counters aliased
+/// outright; the random seed makes that collision improbable rather than
+/// certain, and this guard stays the actual defense rather than becoming
+/// redundant. So a node that frees a *peer's* pool (a receiver
 /// releasing a pool it read) would otherwise reclaim its *own* same-counter
 /// slot — freeing a live GPU buffer whose IPC handle is still exported to a
 /// downstream node (dora-rs/dora#3168). Guarding on the owner segment keeps the
