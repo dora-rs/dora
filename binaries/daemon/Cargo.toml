@@ -15,12 +15,16 @@ repository.workspace = true
 default = ["tracing", "telemetry"]
 tracing = ["dep:dora-tracing"]
 bench = []
+# Opt-in cross-machine tensor-pool transport. NOT covered by dora's 1.0
+# compatibility guarantees, and the only source of `unsafe` in this crate —
+# see libraries/extensions/tensor-pool/README.md.
+tensor-pool = ["dep:dora-tensor-pool", "dora-tensor-pool?/daemon"]
 # telemetry flag enables to trace dora-daemon as well as send ticks with opentelemetry context
 # for distributed tracing.
 telemetry = ["dep:tracing-opentelemetry"]
 
 [dependencies]
-dora-tensor-pool = { workspace = true }
+dora-tensor-pool = { workspace = true, optional = true }
 eyre = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
 tokio-stream = { version = "0.1.18", features = ["net"] }
@@ -34,12 +38,11 @@ flume = { workspace = true }
 dora-download = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 dora-arrow-convert = { workspace = true }
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true  }
 dora-message = { workspace = true }
 serde_yaml = { workspace = true }
 uuid = { workspace = true }
 futures = { workspace = true }
-shared_memory_extended = "0.13.0"
 aligned-vec = "0.6.4"
 ctrlc = "3.5.2"
 which = "8"

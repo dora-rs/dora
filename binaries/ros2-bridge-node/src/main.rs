@@ -231,7 +231,7 @@ fn run_zenoh_topic_mode(
                 for publisher in &publishers {
                     if publisher.input == id.as_str() {
                         let value = TypedValue {
-                            value: &data,
+                            value: data.as_array(),
                             type_info: &publisher.type_info,
                         };
                         let cdr = serialize_raw_cdr(&value)?;
@@ -305,7 +305,7 @@ fn run_zenoh_service_mode(
                 match event {
                     Event::Input { data, .. } => {
                         let request = serialize_raw_cdr(&TypedValue {
-                            value: &data,
+                            value: data.as_array(),
                             type_info: &request_info,
                         })?;
                         let Some(response) = peer_value_or_warn(
@@ -418,7 +418,7 @@ fn run_zenoh_service_mode(
                             && let Some((id, _)) = pending.remove(key)
                         {
                             let response = serialize_raw_cdr(&TypedValue {
-                                value: &data,
+                                value: data.as_array(),
                                 type_info: &response_info,
                             })?;
                             // A slow local handler can let the request expire before we
@@ -618,7 +618,7 @@ fn run_zenoh_action_client(
                     let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
                     serialize_cdr(&SendGoalRequest {
                         goal_id,
-                        goal: BridgeMessage(Some(data.to_data())),
+                        goal: BridgeMessage(Some(data.as_array().to_data())),
                     })?
                 };
                 let Some(response) = peer_value_or_warn(
@@ -931,7 +931,7 @@ fn run_zenoh_action_server(
                             let _guard = TypeInfoGuard::serialize(feedback_type_info.clone());
                             serialize_cdr(&FeedbackMessage {
                                 goal_id: goal.id,
-                                feedback: BridgeMessage(Some(data.to_data())),
+                                feedback: BridgeMessage(Some(data.as_array().to_data())),
                             })?
                         };
                         futures::executor::block_on(server.feedback.publish(&payload))?;
@@ -946,7 +946,7 @@ fn run_zenoh_action_server(
                             let _guard = TypeInfoGuard::serialize(result_type_info.clone());
                             serialize_cdr(&GetResultResponse {
                                 status: goal.status,
-                                result: BridgeMessage(Some(data.to_data())),
+                                result: BridgeMessage(Some(data.as_array().to_data())),
                             })?
                         };
                         let delivered = if let Some(request_id) = goal.result_request.take() {
@@ -1188,7 +1188,7 @@ fn run_service_client(
                 metadata: _,
                 data,
             } => {
-                let array_data = data.to_data();
+                let array_data = data.as_array().to_data();
 
                 // Serialize request (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(request_type_info.clone());
@@ -1271,7 +1271,7 @@ fn run_service_server(
                 let rid = get_string_param(&metadata.parameters, REQUEST_ID);
                 if let Some(rid) = rid {
                     if let Some((rmw_id, _)) = pending_requests.remove(rid) {
-                        let array_data = data.to_data();
+                        let array_data = data.as_array().to_data();
                         let _ser_guard = TypeInfoGuard::serialize(response_type_info.clone());
                         futures::executor::block_on(
                             server.async_send_response(rmw_id, BridgeMessage(Some(array_data))),
@@ -1455,7 +1455,7 @@ fn run_action_client(
                     }
                 };
 
-                let array_data = data.to_data();
+                let array_data = data.as_array().to_data();
 
                 // Send goal with timeout (guard clears thread-local on drop)
                 let _guard = TypeInfoGuard::serialize(goal_type_info.clone());
@@ -1673,7 +1673,7 @@ fn run_action_server(
                     "feedback" => {
                         if let Some(handle) = executing_goals.get(&goal_id) {
                             let handle = handle.clone();
-                            let array_data = data.to_data();
+                            let array_data = data.as_array().to_data();
                             let _guard = TypeInfoGuard::serialize(feedback_type_info.clone());
                             if let Err(e) = futures::executor::block_on(
                                 server.publish_feedback(handle, BridgeMessage(Some(array_data))),
@@ -1688,7 +1688,7 @@ fn run_action_server(
                     }
                     "result" => {
                         if let Some(handle) = executing_goals.remove(&goal_id) {
-                            let array_data = data.to_data();
+                            let array_data = data.as_array().to_data();
                             let status = match get_string_param(&metadata.parameters, GOAL_STATUS) {
                                 Some(s) => match s {
                                     GOAL_STATUS_SUCCEEDED => {
@@ -1822,7 +1822,7 @@ fn run_publish_only(
                 metadata: _,
                 data,
             } => {
-                handle_publish_input(&id, &data, &publishers, messages)?;
+                handle_publish_input(&id, data.as_array(), &publishers, messages)?;
             }
             Event::Stop(_) => break,
             _ => {}
@@ -1864,7 +1864,7 @@ fn run_single_subscriber(
                 metadata: _,
                 data,
             }) => {
-                handle_publish_input(&id, &data, &publishers, messages)?;
+                handle_publish_input(&id, data.as_array(), &publishers, messages)?;
             }
             MergedEvent::Dora(Event::Stop(_)) => break,
             MergedEvent::Dora(_) => {}
@@ -1929,7 +1929,7 @@ fn run_multi_subscriber(
                 metadata: _,
                 data,
             }) => {
-                handle_publish_input(&id, &data, &publishers, messages)?;
+                handle_publish_input(&id, data.as_array(), &publishers, messages)?;
             }
             MergedEvent::Dora(Event::Stop(_)) => break,
             MergedEvent::Dora(_) => {}

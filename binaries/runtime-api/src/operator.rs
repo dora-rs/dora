@@ -2,9 +2,7 @@ use dora_core::{
     config::{DataId, NodeId},
     descriptor::{Descriptor, OperatorDefinition},
 };
-use dora_node_api::{
-    EncodedSample, Event, MetadataParameters, SampleAllocator, arrow::array::ArrayData,
-};
+use dora_node_api::{DoraArray, EncodedSample, Event, MetadataParameters, SampleAllocator};
 use eyre::Result;
 use std::any::Any;
 use std::sync::{Arc, OnceLock};
@@ -46,7 +44,7 @@ impl RuntimeHandle {
         &self,
         output_id: DataId,
         parameters: MetadataParameters,
-        array: &ArrayData,
+        array: &DoraArray,
     ) -> Result<()> {
         let allocator = self
             .allocator
@@ -179,11 +177,13 @@ mod tests {
             _backing: backing,
         });
         let buffer = unsafe { Buffer::from_custom_allocation(ptr, 4096, owner) };
-        let array = ArrayData::builder(dora_node_api::arrow::datatypes::DataType::UInt8)
-            .len(4096)
-            .add_buffer(buffer)
-            .build()
-            .expect("valid UInt8 array");
+        let array = dora_node_api::DoraArray::from_array(arrow::array::make_array(
+            arrow::array::ArrayData::builder(dora_node_api::arrow_v59::datatypes::DataType::UInt8)
+                .len(4096)
+                .add_buffer(buffer)
+                .build()
+                .expect("valid UInt8 array"),
+        ));
 
         let (events_tx, mut events_rx) = tokio::sync::mpsc::channel(1);
         let allocator: SharedAllocator = Arc::new(OnceLock::new());
@@ -224,7 +224,7 @@ mod tests {
     fn send_output_before_node_init_is_a_clear_error() {
         let (events_tx, _events_rx) = tokio::sync::mpsc::channel(1);
         let handle = RuntimeHandle::new(events_tx, SharedAllocator::default());
-        let array = ArrayData::new_null(&dora_node_api::arrow::datatypes::DataType::UInt8, 1);
+        let array = dora_node_api::DoraArray::from_array(arrow::array::NullArray::new(1));
 
         let err = handle
             .send_output(

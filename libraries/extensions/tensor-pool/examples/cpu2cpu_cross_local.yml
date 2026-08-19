@@ -8,7 +8,7 @@ env:
   cross_machine: "B"
 nodes:
   - id: sender_node
-    _unstable_deploy:
+    deploy:
       machine: A
       working_dir: libraries/extensions/tensor-pool/examples  # relative to the daemon's cwd (repo root), per the multiple-daemons convention
     build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy
@@ -18,7 +18,7 @@ nodes:
     outputs:
       - data
   - id: receiver_node
-    _unstable_deploy:
+    deploy:
       machine: B
       working_dir: libraries/extensions/tensor-pool/examples  # relative to the daemon's cwd (repo root), per the multiple-daemons convention
     build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy tqdm
