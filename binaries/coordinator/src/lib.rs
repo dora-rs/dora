@@ -3007,7 +3007,11 @@ fn topic_outputs_by_daemon(
         .get(&dataflow_id)
         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
 
-    let resolved_nodes = dataflow.descriptor.resolve_aliases_and_set_defaults()?;
+    // `RunningDataflow.nodes` is the result of `resolve_aliases_and_set_defaults`
+    // on this exact descriptor (`spawn_dataflow`), kept in sync by `AddNode` and
+    // `ReplaceNode`. Re-resolving would clone and re-walk every node on every
+    // subscribe, and add a failure mode this path otherwise doesn't have.
+    let resolved_nodes = &dataflow.nodes;
 
     let mut outputs_by_daemon: BTreeMap<
         DaemonId,
@@ -3015,9 +3019,17 @@ fn topic_outputs_by_daemon(
     > = BTreeMap::new();
     for (node_id, data_id) in topics {
         let Some(node) = resolved_nodes.get(node_id) else {
-            eyre::bail!("no output `{node_id}/{data_id}` in dataflow `{dataflow_id}`");
+            eyre::bail!(
+                "no output `{node_id}/{data_id}` in dataflow `{dataflow_id}`\n\n  \
+                 hint: available nodes: {}",
+                resolved_nodes
+                    .keys()
+                    .map(|n| n.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
         };
-        let resolved_data_id = resolved_topic_output_id(&node.kind, data_id)?;
+        let resolved_data_id = resolved_topic_output_id(node_id, dataflow_id, &node.kind, data_id)?;
         let daemon_id = dataflow
             .node_to_daemon
             .get(node_id)
@@ -3031,24 +3043,48 @@ fn topic_outputs_by_daemon(
     Ok(outputs_by_daemon)
 }
 
-fn resolved_topic_output_id(kind: &CoreNodeKind, data_id: &DataId) -> eyre::Result<DataId> {
-    if resolved_node_outputs(kind).contains(data_id) {
+/// Translate a subscription request's public output id into the id the daemon
+/// keys its debug watchers by.
+///
+/// A single-operator runtime node's `image` is `op/image` after resolution, and
+/// the descriptor's own `inputs:` mappings use the bare form -- so the bare form
+/// is the only one a user can have seen. A node with two or more operators has
+/// no bare form at all (nothing in a descriptor can reference one), so an
+/// unqualified id there is rejected rather than guessed at; the error lists the
+/// qualified names so the fix is visible.
+fn resolved_topic_output_id(
+    node_id: &dora_message::id::NodeId,
+    dataflow_id: DataflowId,
+    kind: &CoreNodeKind,
+    data_id: &DataId,
+) -> eyre::Result<DataId> {
+    let outputs = resolved_node_outputs(kind);
+    if outputs.contains(data_id) {
         return Ok(data_id.clone());
     }
 
-    match kind {
-        CoreNodeKind::Custom(_) => eyre::bail!("unknown output `{data_id}` for custom node"),
-        CoreNodeKind::Runtime(node) if node.operators.len() == 1 => {
-            let operator = &node.operators[0];
-            if operator.config.outputs.contains(data_id) {
-                return format!("{}/{}", operator.id, data_id)
-                    .parse::<DataId>()
-                    .map_err(|e| eyre::eyre!("failed to resolve topic output id: {e}"));
-            }
-            eyre::bail!("unknown output `{data_id}` for runtime node")
-        }
-        CoreNodeKind::Runtime(_) => eyre::bail!("unknown output `{data_id}` for runtime node"),
+    if let CoreNodeKind::Runtime(node) = kind
+        && let [operator] = node.operators.as_slice()
+        && operator.config.outputs.contains(data_id)
+    {
+        return format!("{}/{}", operator.id, data_id)
+            .parse::<DataId>()
+            .map_err(|e| eyre::eyre!("failed to resolve topic output id: {e}"));
     }
+
+    let available = if outputs.is_empty() {
+        "none".to_string()
+    } else {
+        outputs
+            .iter()
+            .map(|o| o.to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    eyre::bail!(
+        "no output `{node_id}/{data_id}` in dataflow `{dataflow_id}`\n\n  \
+         hint: outputs of `{node_id}`: {available}"
+    )
 }
 
 fn resolved_node_outputs(kind: &CoreNodeKind) -> BTreeSet<DataId> {
@@ -5462,6 +5498,14 @@ mod tests {
             }]
         }))
         .expect("valid test descriptor");
+        // Production writes `descriptor` and `nodes` together (`spawn_dataflow`,
+        // and the `AddNode`/`ReplaceNode` handlers), and readers treat `nodes`
+        // as the authoritative resolved view. A fixture that leaves it empty
+        // while handing out a real descriptor is a state production never
+        // produces, so keep them in step here too.
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("test descriptor should resolve");
 
         RunningDataflow {
             name: None,
@@ -5471,7 +5515,7 @@ mod tests {
             pending_daemons: BTreeSet::new(),
             exited_before_subscribe: vec![],
             ready_barrier_released: false,
-            nodes: BTreeMap::new(),
+            nodes,
             node_to_daemon,
             node_metrics: BTreeMap::new(),
             node_finalized: BTreeSet::new(),
@@ -5533,6 +5577,13 @@ mod tests {
         let mut dataflow =
             test_running_dataflow(dataflow_id, daemon_id.clone(), single_node.clone());
         dataflow.descriptor = descriptor;
+        // Mirror what `spawn_dataflow` (and `AddNode`/`ReplaceNode`) do: the
+        // resolved map is the authoritative one and is always written together
+        // with the descriptor.
+        dataflow.nodes = dataflow
+            .descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("test descriptor should resolve");
         dataflow
             .node_to_daemon
             .insert(legacy_node.clone(), daemon_id.clone());
@@ -6987,6 +7038,13 @@ mod tests {
                 "outputs": [data_id.clone()],
             }));
         dataflow.descriptor = serde_json::from_value(descriptor_json).unwrap();
+        // Mirror what `spawn_dataflow` (and `AddNode`/`ReplaceNode`) do: the
+        // resolved map is the authoritative one and is always written together
+        // with the descriptor.
+        dataflow.nodes = dataflow
+            .descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("test descriptor should resolve");
         running_dataflows.insert(dataflow_id, dataflow);
 
         let err = start_topic_debug_stream(

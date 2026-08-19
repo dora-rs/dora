@@ -689,6 +689,15 @@ CPU values are per-core (can exceed 100% with multiple cores). Metrics come from
 dora top --once | jq '.[].cpu_usage'
 ```
 
+#### How operator-node topics are named
+
+A topic is addressed as `<node>/<output>`, but operator nodes need one clarification:
+
+- A node with a single `operator:` block uses the **bare** output name — `webcam/image` — the same name you would write in another node's `inputs:` mapping.
+- A node with an `operators:` list uses the **operator-qualified** name — `runtime/op/status` — because several operators can declare the same output name.
+
+This holds across `list`, `echo`, `hz`, `info`, `record` and `replay`. Internally the daemon reports a single-operator node's output under the qualified form (`webcam/op/image`); the CLI translates in both directions, so you never have to type or read that form.
+
 #### `dora topic list`
 
 List all topics (outputs) in a running dataflow.

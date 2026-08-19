@@ -1,6 +1,12 @@
-use std::{collections::BTreeMap, io::Write, path::PathBuf, time::SystemTime};
+use std::{
+    collections::{BTreeMap, HashMap},
+    io::Write,
+    path::PathBuf,
+    time::SystemTime,
+};
 
 use clap::Args;
+use dora_core::descriptor::Descriptor;
 use dora_message::{
     common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
     id::NodeId,
@@ -8,7 +14,7 @@ use dora_message::{
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::{Context, bail};
 
-use crate::command::{Executable, Run, default_tracing};
+use crate::command::{Executable, Run, default_tracing, topic::selector::public_topic_output_id};
 
 /// Record dataflow messages to a file for offline replay.
 ///
@@ -93,11 +99,6 @@ fn discover_descriptor_outputs(
     for node in nodes {
         let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         extend_outputs(&mut outputs, node_id, node.get("outputs"));
-        extend_outputs(
-            &mut outputs,
-            node_id,
-            node.get("custom").and_then(|v| v.get("outputs")),
-        );
         extend_outputs(
             &mut outputs,
             node_id,
@@ -331,6 +332,12 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     let descriptor: serde_yaml::Value =
         serde_yaml::from_slice(&yaml_bytes).wrap_err("failed to parse descriptor YAML")?;
 
+    // A second, typed parse, used only to translate wire output ids back to
+    // public ones below. Deliberately non-fatal: the untyped walk above is what
+    // `--proxy` needs to work, and a descriptor that fails the typed parse
+    // should still record -- just without the translation.
+    let typed_descriptor: Option<Descriptor> = serde_yaml::from_slice(&yaml_bytes).ok();
+
     let all_topics = discover_descriptor_outputs(&descriptor)?;
 
     // Filter topics if --topics specified
@@ -493,6 +500,14 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     })
     .wrap_err("failed to set ctrl-c handler")?;
 
+    // Node lookup for the wire -> public output-id translation below. Empty
+    // when the typed parse failed, which just means no translation.
+    let nodes: HashMap<_, _> = typed_descriptor
+        .iter()
+        .flat_map(|d| d.nodes.iter())
+        .map(|n| (n.id.clone(), n))
+        .collect();
+
     let mut msg_count: u64 = 0;
     loop {
         // Check for Ctrl-C
@@ -504,18 +519,44 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
             Ok(Ok(payload)) => {
                 // The payload is already `Timestamped<InterDaemonEvent>` postcard bytes.
                 // Parse it to extract node_id and output_id for the recording entry.
-                let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
+                let mut event = match Timestamped::deserialize_inter_daemon_event(&payload) {
                     Ok(e) => e,
                     Err(_) => continue,
                 };
 
-                let (node_id, output_id) = match &event.inner {
+                // The daemon reports the *wire* output id, which for a single
+                // `operator:` node is `op/image` where the descriptor (and
+                // `replay_node_outputs`) call it `image`. Rewrite it to the
+                // public id in both the entry index and the embedded event, so
+                // a `--proxy` recording is shaped exactly like one from the
+                // record node -- which stores the bare `source_output` in both
+                // places. Left as-is, replay declares `outputs: [image]` and
+                // then calls `send_output("op/image", ..)`; `validate_output`
+                // rejects it, `send_output` still returns `Ok(())`, and every
+                // message is dropped with a single warning (dora-rs/dora#2893).
+                let (node_id, output_id) = match &mut event.inner {
                     InterDaemonEvent::Output {
                         node_id, output_id, ..
-                    } => (node_id.to_string(), output_id.to_string()),
+                    } => {
+                        if let Some(node) = nodes.get(node_id) {
+                            *output_id = public_topic_output_id(node, output_id);
+                        }
+                        (node_id.to_string(), output_id.to_string())
+                    }
                     InterDaemonEvent::OutputClosed { .. } => continue,
                     // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
                     _ => continue,
+                };
+
+                // Re-serialize rather than storing `payload`: the id inside the
+                // event is what `replay-node` re-emits, so an untouched payload
+                // would carry the wire id no matter what the entry says.
+                let event_bytes = match event.serialize() {
+                    Ok(bytes) => bytes,
+                    Err(e) => {
+                        tracing::warn!("failed to re-encode recorded event: {e}");
+                        continue;
+                    }
                 };
 
                 let now_nanos = SystemTime::now()
@@ -527,7 +568,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     node_id,
                     output_id,
                     timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
-                    event_bytes: payload,
+                    event_bytes,
                 };
                 writer.write_entry(&entry)?;
                 msg_count += 1;
@@ -647,6 +688,9 @@ mod tests {
 
     #[test]
     fn discovers_recordable_outputs_from_all_descriptor_node_kinds() {
+        // `custom:` is deliberately absent: `Node` is `deny_unknown_fields` and
+        // has no `custom` field, so such a descriptor cannot deserialize and
+        // `--proxy` (which needs a running dataflow) can never see one.
         let topics = discovered_topics(concat!(
             "nodes:\n",
             "- id: standard\n",
@@ -658,11 +702,6 @@ mod tests {
             "    python: single.py\n",
             "    outputs:\n",
             "      - image\n",
-            "- id: legacy\n",
-            "  custom:\n",
-            "    source: legacy.py\n",
-            "    outputs:\n",
-            "      - buffer\n",
             "- id: runtime\n",
             "  operators:\n",
             "  - id: op\n",
@@ -673,12 +712,7 @@ mod tests {
 
         assert_eq!(
             topics,
-            vec![
-                "standard/status",
-                "single/image",
-                "legacy/buffer",
-                "runtime/op/status",
-            ]
+            vec!["standard/status", "single/image", "runtime/op/status"]
         );
     }
 

@@ -9,7 +9,7 @@ use tabwriter::TabWriter;
 use crate::{
     command::{
         Executable, default_tracing,
-        topic::selector::{DataflowSelector, node_topic_outputs},
+        topic::selector::{DataflowSelector, node_topic_inputs, node_topic_outputs},
     },
     common::CoordinatorOptions,
     formatting::OutputFormat,
@@ -64,7 +64,7 @@ fn list(
 
     let mut subscribers = BTreeMap::<(NodeId, DataId), Vec<(NodeId, DataId)>>::new();
     for node in &descriptor.nodes {
-        for (input_id, input) in &node.inputs {
+        for (input_id, input) in node_topic_inputs(node) {
             if let InputMapping::User(user) = &input.mapping {
                 subscribers
                     .entry((user.source.clone(), user.output.clone()))

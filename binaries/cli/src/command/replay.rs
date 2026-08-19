@@ -302,10 +302,6 @@ fn replay_node_outputs(node: &serde_yaml::Value) -> serde_yaml::Value {
     append_outputs(&mut outputs, node.get("outputs"));
     append_outputs(
         &mut outputs,
-        node.get("custom").and_then(|v| v.get("outputs")),
-    );
-    append_outputs(
-        &mut outputs,
         node.get("operator").and_then(|v| v.get("outputs")),
     );
     if let Some(operators) = node.get("operators").and_then(|v| v.as_sequence()) {
@@ -485,6 +481,8 @@ mod tests {
 
     #[test]
     fn replay_replacement_preserves_outputs_from_all_descriptor_node_kinds() {
+        // `custom:` is deliberately absent: `Node` is `deny_unknown_fields` and
+        // has no `custom` field, so such a descriptor cannot deserialize.
         let out = replaced_with_replay(
             concat!(
                 "nodes:\n",
@@ -493,11 +491,6 @@ mod tests {
                 "    python: single.py\n",
                 "    outputs:\n",
                 "      - image\n",
-                "- id: legacy\n",
-                "  custom:\n",
-                "    source: legacy.py\n",
-                "    outputs:\n",
-                "      - buffer\n",
                 "- id: runtime\n",
                 "  operators:\n",
                 "  - id: op\n",
@@ -507,21 +500,18 @@ mod tests {
                 "- id: sink\n",
                 "  inputs:\n",
                 "    image: single/image\n",
-                "    buffer: legacy/buffer\n",
                 "    status: runtime/op/status\n",
             ),
-            &["single", "legacy", "runtime"],
+            &["single", "runtime"],
         );
         let parsed: serde_yaml::Value = serde_yaml::from_str(&out).unwrap();
 
         assert_eq!(parsed["nodes"][0]["outputs"][0].as_str(), Some("image"));
         assert!(parsed["nodes"][0].get("operator").is_none());
-        assert_eq!(parsed["nodes"][1]["outputs"][0].as_str(), Some("buffer"));
-        assert!(parsed["nodes"][1].get("custom").is_none());
-        assert_eq!(parsed["nodes"][2]["outputs"][0].as_str(), Some("op/status"));
-        assert!(parsed["nodes"][2].get("operators").is_none());
+        assert_eq!(parsed["nodes"][1]["outputs"][0].as_str(), Some("op/status"));
+        assert!(parsed["nodes"][1].get("operators").is_none());
         assert_eq!(
-            parsed["nodes"][3]["inputs"]["image"].as_str(),
+            parsed["nodes"][2]["inputs"]["image"].as_str(),
             Some("single/image")
         );
     }
@@ -638,5 +628,67 @@ mod tests {
             parsed["nodes"][0]["inputs"]["feedback"].as_str(),
             Some("other/data")
         );
+    }
+
+    /// `record --proxy` and `replay` must agree on the output id.
+    ///
+    /// The daemon reports a single-`operator:` node's `image` as `op/image`.
+    /// If the recording stores that wire id verbatim, replay declares
+    /// `outputs: [image]` and then calls `send_output("op/image", ..)`;
+    /// `validate_output` rejects it, `send_output` still returns `Ok(())`, and
+    /// every message is silently dropped. Pin that the id the proxy path stores
+    /// is one the replacement node actually declares (dora-rs/dora#2893).
+    #[test]
+    fn proxy_recorded_output_id_is_declared_by_the_replay_node() {
+        const YAML: &str = "\
+nodes:
+  - id: single
+    operator:
+      python: single.py
+      outputs:
+        - image
+  - id: runtime
+    operators:
+      - id: op
+        python: runtime.py
+        outputs:
+          - status
+";
+        let typed: dora_core::descriptor::Descriptor =
+            serde_yaml::from_str(YAML).expect("parse typed descriptor");
+        let untyped: serde_yaml::Value = serde_yaml::from_str(YAML).expect("parse untyped");
+        let untyped_nodes = untyped["nodes"].as_sequence().expect("nodes array");
+
+        // (node id, id the daemon reports on the wire)
+        for (node_id, wire) in [("single", "op/image"), ("runtime", "op/status")] {
+            let typed_node = typed
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == node_id)
+                .expect("node in fixture");
+            let untyped_node = untyped_nodes
+                .iter()
+                .find(|n| n["id"].as_str() == Some(node_id))
+                .expect("node in fixture");
+
+            let stored = crate::command::topic::selector::public_topic_output_id(
+                typed_node,
+                &wire.to_string().into(),
+            );
+            let declared: Vec<String> = replay_node_outputs(untyped_node)
+                .as_sequence()
+                .expect("outputs sequence")
+                .iter()
+                .map(|v| v.as_str().expect("output id").to_string())
+                .collect();
+
+            assert!(
+                declared
+                    .iter()
+                    .any(|d| d.as_str() == AsRef::<str>::as_ref(&stored)),
+                "`{node_id}`: recorded `{stored}` (from wire `{wire}`) is not in the \
+                 replay node's declared outputs {declared:?}",
+            );
+        }
     }
 }

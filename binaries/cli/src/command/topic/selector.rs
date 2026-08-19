@@ -6,14 +6,14 @@ use std::{
 use crate::common::resolve_dataflow_identifier_interactive;
 use crate::ws_client::WsSession;
 use dora_core::{
-    config::InputMapping,
-    descriptor::{Descriptor, Node},
+    config::{Input, InputMapping},
+    descriptor::{Descriptor, Node, SINGLE_OPERATOR_DEFAULT_ID},
 };
 use dora_message::{
     DataflowId,
     cli_to_coordinator::ControlRequest,
     coordinator_to_cli::ControlRequestReply,
-    id::{DataId, NodeId},
+    id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, ContextCompat, bail};
 use uuid::Uuid;
@@ -68,6 +68,69 @@ impl fmt::Display for TopicIdentifier {
     }
 }
 
+/// Map a debug frame's *wire* output id back to the public id that
+/// [`node_topic_outputs`] hands out.
+///
+/// The daemon keys and reports outputs by their post-resolution ids: a single
+/// `operator:` node's `image` is `op/image` on the wire, because
+/// `resolve_aliases_and_set_defaults` injects the operator segment that
+/// runtime nodes require. The coordinator translates a subscription *request*
+/// into that form, so frames come back carrying the wire id while the caller
+/// only ever knew the public one. Every consumer -- echo's label, hz's
+/// per-topic index, `record --proxy`'s stored entry -- has to undo the
+/// translation before matching, displaying, or persisting it, or it silently
+/// works on a name that never matches (dora-rs/dora#2893).
+///
+/// Multi-operator `operators:` nodes are already qualified on both sides and
+/// plain nodes are never qualified, so both pass through unchanged.
+pub(crate) fn public_topic_output_id(node: &Node, wire_output: &DataId) -> DataId {
+    let Some(operator) = &node.operator else {
+        return wire_output.clone();
+    };
+    let default_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+    let operator_id = operator.id.as_ref().unwrap_or(&default_id);
+    match wire_output.strip_prefix(&format!("{operator_id}/")) {
+        Some(bare) => DataId::from(bare.to_string()),
+        None => wire_output.clone(),
+    }
+}
+
+/// Every `(local_input_id, mapping)` a node consumes.
+///
+/// Mirror of [`node_topic_outputs`]: `node.inputs` is empty for `operator:` and
+/// `operators:` nodes -- they wire their inputs through `operator.config.inputs`
+/// / `operators[].config.inputs` -- so iterating `node.inputs` alone leaves
+/// every operator-node consumer out of the subscriber listing
+/// (dora-rs/dora#2893).
+pub(crate) fn node_topic_inputs(node: &Node) -> Vec<(&DataId, &Input)> {
+    let mut inputs: Vec<_> = node.inputs.iter().collect();
+
+    if let Some(operator) = &node.operator {
+        inputs.extend(operator.config.inputs.iter());
+    }
+    if let Some(runtime) = &node.operators {
+        for operator in &runtime.operators {
+            inputs.extend(operator.config.inputs.iter());
+        }
+    }
+
+    inputs
+}
+
+/// Inverse of [`public_topic_output_id`]: the id the daemon reports a frame
+/// under, given the public id [`node_topic_outputs`] hands out.
+///
+/// Use this to key a lookup table that is consulted per frame, so the
+/// translation is paid once at setup instead of on every message.
+pub(crate) fn wire_topic_output_id(node: &Node, public_output: &DataId) -> DataId {
+    let Some(operator) = &node.operator else {
+        return public_output.clone();
+    };
+    let default_id = OperatorId::from(SINGLE_OPERATOR_DEFAULT_ID.to_string());
+    let operator_id = operator.id.as_ref().unwrap_or(&default_id);
+    DataId::from(format!("{operator_id}/{public_output}"))
+}
+
 pub(crate) fn node_topic_outputs(node: &Node) -> BTreeSet<DataId> {
     let mut outputs = node.outputs.clone();
 
@@ -90,19 +153,14 @@ pub(crate) fn node_topic_outputs(node: &Node) -> BTreeSet<DataId> {
 }
 
 impl TopicSelector {
-    pub fn resolve(
-        &self,
-        session: &WsSession,
-    ) -> eyre::Result<(DataflowId, BTreeSet<TopicIdentifier>)> {
-        let (dataflow_id, topics, _descriptor) = self.resolve_with_descriptor(session)?;
-        Ok((dataflow_id, topics))
-    }
-
-    /// Like [`Self::resolve`], but also returns the dataflow descriptor that
-    /// was fetched to resolve the topics. Callers that additionally need the
-    /// descriptor (e.g. to enumerate subscribers) should use this to avoid a
-    /// second `Info` round-trip — and, when the dataflow is ambiguous, a second
-    /// interactive selection prompt.
+    /// Resolve the selected topics, returning the dataflow descriptor that was
+    /// fetched to do it.
+    ///
+    /// Every caller needs the descriptor: to enumerate subscribers, or to
+    /// translate between the public output ids this returns and the wire ids
+    /// the daemon reports on frames (see [`public_topic_output_id`]). Handing
+    /// it back avoids a second `Info` round-trip — and, when the dataflow is
+    /// ambiguous, a second interactive selection prompt.
     pub fn resolve_with_descriptor(
         &self,
         session: &WsSession,
@@ -341,5 +399,138 @@ nodes:
             topics,
             vec!["standard/status", "single/image", "runtime/op/status"]
         );
+    }
+
+    /// The public id the selector hands out and the wire id the daemon reports
+    /// a frame under must round-trip, in both directions and for all three node
+    /// kinds. Without this the two never meet for a single-`operator:` node:
+    /// `hz` indexed by the public id and matched frames by the wire id, so it
+    /// reported 0 samples; `record --proxy` stored the wire id, which replay
+    /// then could not send (dora-rs/dora#2893).
+    #[test]
+    fn public_and_wire_output_ids_round_trip() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: standard
+    path: standard
+    outputs:
+      - status
+  - id: single
+    operator:
+      python: single.py
+      outputs:
+        - image
+  - id: named
+    operator:
+      id: myop
+      python: named.py
+      outputs:
+        - image
+  - id: runtime
+    operators:
+      - id: op
+        python: runtime.py
+        outputs:
+          - status
+",
+        )
+        .expect("parse descriptor");
+        let node = |id: &str| {
+            descriptor
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .expect("node in fixture")
+                .clone()
+        };
+        let d = |s: &str| DataId::from(s.to_string());
+
+        // A single `operator:` node is the only kind where the two differ: the
+        // default operator id `op` is injected during resolution.
+        assert_eq!(
+            wire_topic_output_id(&node("single"), &d("image")),
+            d("op/image")
+        );
+        assert_eq!(
+            public_topic_output_id(&node("single"), &d("op/image")),
+            d("image")
+        );
+
+        // An explicit operator id is used instead of the default.
+        assert_eq!(
+            wire_topic_output_id(&node("named"), &d("image")),
+            d("myop/image")
+        );
+        assert_eq!(
+            public_topic_output_id(&node("named"), &d("image")),
+            d("image")
+        );
+        assert_eq!(
+            public_topic_output_id(&node("named"), &d("myop/image")),
+            d("image")
+        );
+
+        // Plain and multi-operator nodes pass through untouched -- `operators:`
+        // outputs are already qualified on both sides.
+        for (id, output) in [("standard", "status"), ("runtime", "op/status")] {
+            assert_eq!(wire_topic_output_id(&node(id), &d(output)), d(output));
+            assert_eq!(public_topic_output_id(&node(id), &d(output)), d(output));
+        }
+
+        // Every id the selector hands out must survive a full round-trip.
+        for id in ["standard", "single", "named", "runtime"] {
+            let n = node(id);
+            for public in node_topic_outputs(&n) {
+                let wire = wire_topic_output_id(&n, &public);
+                assert_eq!(
+                    public_topic_output_id(&n, &wire),
+                    public,
+                    "round-trip failed for {id}/{public}"
+                );
+            }
+        }
+    }
+
+    /// `node.inputs` is empty for operator-backed nodes, so a subscriber
+    /// listing built from it alone silently omits them.
+    #[test]
+    fn node_topic_inputs_include_operator_backed_consumers() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: camera
+    path: camera
+    outputs:
+      - frame
+  - id: detect
+    operator:
+      python: detect.py
+      inputs:
+        image: camera/frame
+  - id: plot
+    operators:
+      - id: op
+        python: plot.py
+        inputs:
+          image: camera/frame
+  - id: log
+    path: log
+    inputs:
+      image: camera/frame
+",
+        )
+        .expect("parse descriptor");
+
+        for id in ["detect", "plot", "log"] {
+            let node = descriptor
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .expect("node in fixture");
+            let inputs = node_topic_inputs(node);
+            assert_eq!(inputs.len(), 1, "{id} should have one input");
+            assert_eq!(inputs[0].0.to_string(), "image", "{id}");
+        }
     }
 }
