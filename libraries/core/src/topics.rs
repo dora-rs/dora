@@ -279,11 +279,20 @@ fn insert_overlay_value(
 ) -> eyre::Result<()> {
     if let serde_json::Value::Object(fields) = value
         && !fields.is_empty()
-        && fields.iter().all(|(field, child)| {
-            insert_overlay_value(config, &format!("{path}/{field}"), child).is_ok()
-        })
     {
-        return Ok(());
+        let mut written = true;
+        for (field, child) in fields {
+            if insert_overlay_value(config, &format!("{path}/{field}"), child).is_err() {
+                written = false;
+                break;
+            }
+        }
+        if written {
+            return Ok(());
+        }
+        // Falling through re-writes the fields that did land, with the same
+        // values — `value` still contains them — so a partial descent is not
+        // left half-applied.
     }
     config
         .insert_json5(path, &value.to_string())

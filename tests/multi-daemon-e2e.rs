@@ -68,14 +68,13 @@ fn ensure_built() {
 /// The local address another machine would reach this host at, or `None` when
 /// there is no route out (an offline sandbox).
 ///
-/// `connect` on a UDP socket sends no packets — it only asks the routing table
-/// which source address applies — which is the same trick the daemon uses to
-/// derive its own zenoh bind address.
+/// Derived by the same helper the daemon uses for its own zenoh bind address,
+/// so the test asks the routing table exactly the question the daemon would.
+/// It answers loopback when it learns nothing, which here means "cannot test".
 fn routable_local_addr() -> Option<std::net::IpAddr> {
-    let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
-    socket.connect("8.8.8.8:53").ok()?;
-    let addr = socket.local_addr().ok()?.ip();
-    (!addr.is_loopback() && !addr.is_unspecified()).then_some(addr)
+    let off_host = SocketAddr::from(([8, 8, 8, 8], 53));
+    let addr = dora_core::topics::zenoh_bind_address_for(off_host);
+    (!addr.is_loopback()).then_some(addr)
 }
 
 /// Wait for a child to exit, killing it if it outstays `timeout`.
@@ -451,7 +450,8 @@ fn cross_machine_nodes_link_directly_over_an_explicit_mesh() {
 
     let ports = free_ports(4);
     let (coordinator_port, zenoh_a, zenoh_b) = (ports[0], ports[1], ports[2]);
-    let mut daemon_listen_ports = [ports[3]].into_iter();
+    // Only one daemon can hold the default node-listen port on a shared host.
+    let node_listen_ports = [None, Some(ports[3])];
     let coord_log = tmp.path().join("coordinator.log");
     let coord_out = std::fs::File::create(&coord_log).expect("create coordinator log");
     let coord_err = coord_out.try_clone().expect("clone coordinator log");
@@ -484,7 +484,9 @@ fn cross_machine_nodes_link_directly_over_an_explicit_mesh() {
     // the other one, with multicast off. No rendezvous, no gossip — the shape
     // `dora cluster up` derives from a cluster.yml.
     let daemon_log = |machine: &str| tmp.path().join(format!("daemon-{machine}.log"));
-    for (machine, listen, connect) in [("A", zenoh_a, zenoh_b), ("B", zenoh_b, zenoh_a)] {
+    let daemons = [("A", zenoh_a, zenoh_b), ("B", zenoh_b, zenoh_a)];
+    for ((machine, listen, connect), node_listen_port) in daemons.into_iter().zip(node_listen_ports)
+    {
         let log = daemon_log(machine);
         let out = std::fs::File::create(&log).expect("create daemon log");
         let err = out.try_clone().expect("clone daemon log");
@@ -505,8 +507,7 @@ fn cross_machine_nodes_link_directly_over_an_explicit_mesh() {
             .env("RUST_LOG", "dora_daemon=debug")
             .stdout(Stdio::from(out))
             .stderr(Stdio::from(err));
-        // Only one daemon can hold the default node port on a shared host.
-        if let Some(port) = daemon_listen_ports.next() {
+        if let Some(port) = node_listen_port {
             command.arg("--local-listen-port").arg(port.to_string());
         }
         deployment

@@ -79,7 +79,7 @@ impl MachineConfig {
     /// A hostname in `host` yields `None`: `--zenoh-listen` needs an address to
     /// *bind*, which only the remote machine could resolve, and dora will not
     /// guess on its behalf.
-    fn zenoh_addr(&self) -> Option<IpAddr> {
+    fn dialable_addr(&self) -> Option<IpAddr> {
         match &self.zenoh_addr {
             Some(addr) => addr.parse().ok(),
             None => self.host.parse().ok(),
@@ -225,7 +225,7 @@ impl ClusterConfig {
         }
         let mut endpoints: Vec<(&str, IpAddr, u16)> = Vec::new();
         for machine in &self.machines {
-            let Some(addr) = machine.zenoh_addr() else {
+            let Some(addr) = machine.dialable_addr() else {
                 return ZenohMesh::Unavailable(format!(
                     "machine `{}` has no dialable zenoh address (`host` is not an \
                      IP address and `zenoh_addr` is unset)",
