@@ -2273,7 +2273,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
- "shared_memory_extended",
  "shellexpand 3.1.2",
  "shlex",
  "sysinfo 0.39.6",
@@ -2792,7 +2791,17 @@ dependencies = [
 name = "dora-tensor-pool"
 version = "1.0.0-rc.4"
 dependencies = [
+ "dora-core",
+ "dora-message",
+ "eyre",
+ "postcard",
+ "serde",
+ "serde_json",
+ "shared_memory_extended",
+ "tokio",
  "tracing",
+ "uuid",
+ "zenoh",
 ]
 
 [[package]]
@@ -2802,7 +2811,9 @@ dependencies = [
  "arrow 59.0.0",
  "dora-message",
  "dora-node-api",
+ "dora-tensor-pool",
  "eyre",
+ "postcard",
  "pyo3",
  "serde_json",
  "shared_memory_extended",

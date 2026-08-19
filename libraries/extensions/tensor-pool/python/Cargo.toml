@@ -12,6 +12,8 @@ publish = false
 
 [dependencies]
 dora-node-api = { workspace = true  }
+dora-tensor-pool = { workspace = true }
+postcard = { workspace = true }
 dora-message = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 eyre = { workspace = true }
