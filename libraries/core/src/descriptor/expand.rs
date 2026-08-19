@@ -815,8 +815,8 @@ fn propagate_module_node_env(
     }
 }
 
-/// Substitute `${_param.name}` references in a node's args and inject params
-/// into the node's env map as `EnvValue::String` entries.
+/// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
+/// and inject params into the node's env map as `EnvValue::String` entries.
 fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
     // Substitute in args
     if let Some(ref mut args) = node.args {
@@ -833,8 +833,15 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
     }
 }
 
-/// Replace every `${_param.<key>}` token with its parameter value in a single
-/// left-to-right pass.
+/// Replace every parameter reference with its value in a single left-to-right
+/// pass. Two forms are accepted:
+///
+/// - `${_param.<key>}` -- delimited; the key is matched case-sensitively and
+///   the closing brace terminates it.
+/// - `$PARAM_<KEY>` -- the documented shell-style form (see `docs/modules.md`),
+///   matched against the upper-cased key. Having no delimiter it extends over
+///   the maximal run of `[A-Za-z0-9_]`, so `$PARAM_SPEED_LIMIT` is a single
+///   token and never partially matches a declared `speed` (#2901).
 ///
 /// A previous implementation looped over the params calling `String::replace`
 /// on the accumulating result, which had two problems: the outcome depended on
@@ -2075,7 +2082,11 @@ nodes:
     }
 
     #[test]
-    fn expand_params_in_env_style_args_replaces_longest_names_first() {
+    fn expand_params_in_env_style_args_distinguishes_overlapping_keys() {
+        // `speed` and `speed_limit` overlap as prefixes. The scanner takes the
+        // maximal `[A-Za-z0-9_]` run as the key, so each token resolves to the
+        // key it names exactly -- no ordering between the params is involved.
+        // (The old implementation needed a longest-first sort here.)
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
 
