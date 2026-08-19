@@ -63,9 +63,139 @@ Features and code that existed in dora 0.x but are absent from 1.0. If you depen
 | Daemon `state.rs` module (172 lines) | Removed | Refactored into `running_dataflow.rs` + `event_types.rs`. Same state handling, clearer separation of concerns. |
 | Upstream `libraries/extensions/ros2-bridge/python/src/typed/deserialize/string.rs` | Moved | Functionality is in `libraries/extensions/ros2-bridge/arrow/src/deserialize/string.rs` and additionally supports `WStringDeserializer` (which was `todo!()` in 0.x). |
 
+## Descriptor changes (dataflow YAML)
+
+These landed during the 1.0 RC window. All are rejected with an error naming
+the offending field rather than being silently ignored — `Descriptor` and
+`Debug` both use `deny_unknown_fields`, which matters: a silently-dropped
+`deploy` block would run every node on the local daemon while the YAML looks
+like it pinned them to machines.
+
+### `custom:` removed (#3158)
+
+Use the top-level fields directly.
+
+```yaml
+# 0.x
+- id: my-node
+  custom:
+    path: node.py
+    args: --flag
+    inputs:
+      tick: dora/timer/millis/100
+    outputs: [data]
+
+# 1.0
+- id: my-node
+  path: node.py
+  args: --flag
+  inputs:
+    tick: dora/timer/millis/100
+  outputs: [data]
+```
+
+`custom.envs` has no direct replacement — use the node-level `env:` map.
+
+### `_unstable_` key prefix dropped (#3220)
+
+```yaml
+# 0.x                    # 1.0
+_unstable_deploy:        deploy:
+  machine: m1              machine: m1
+_unstable_debug:         debug:
+  enable_debug_inspection: true
+```
+
+Both the dataflow-level and the per-node `deploy` key are affected.
+
+### `publish_all_messages_to_zenoh` alias removed (#3158)
+
+```yaml
+# 0.x                                    # 1.0
+debug:                                   debug:
+  publish_all_messages_to_zenoh: true      enable_debug_inspection: true
+```
+
+### `communication:` block removed (#3158)
+
+Delete it. `_unstable_local` and `_unstable_remote` were single-variant enums
+whose only value was the default, so the block never changed behaviour.
+
+## Rust API changes
+
+### Arrow types are no longer in dora's public API (#3213)
+
+The largest change for node authors. `dora-node-api` no longer names an Arrow
+type, so dora can move to a newer Arrow major in a minor release without
+breaking your build. See the Arrow version policy in
+[`api-rust.md`](api-rust.md).
+
+**`ArrowData` is now `DoraArray`**, with a private field rather than
+`pub ArrayRef` and no `Deref` to `ArrayRef`:
+
+```rust
+// 0.x
+Event::Input { id, data, .. } => {
+    let arr: &ArrayRef = &data;          // via Deref
+    let v: u32 = (&data).try_into()?;
+}
+
+// 1.0
+Event::Input { id, data, .. } => {
+    let v: u32 = (&data).try_into()?;    // unchanged
+    // for raw Arrow access, enable the `arrow-v59` feature:
+    let arr = data.as_array();
+}
+```
+
+**`IntoArrow` lost its associated type.** If you implemented it by hand:
+
+```rust
+// 0.x
+impl IntoArrow for MyType {
+    type A = arrow::array::UInt32Array;
+    fn into_arrow(self) -> Self::A { ... }
+}
+
+// 1.0
+impl IntoArrow for MyType {
+    fn into_arrow(self) -> DoraArray { ... }
+}
+```
+
+**`pub use arrow;` is now feature-gated and version-suffixed.** A bare `arrow`
+re-export changes meaning silently when dora bumps; `arrow_v59` cannot.
+
+```toml
+# 1.0 — only if you name Arrow types directly
+dora-node-api = { version = "1", features = ["arrow-v59"] }
+```
+
+```rust
+// 0.x                              // 1.0
+use dora_node_api::arrow;           use dora_node_api::arrow_v59 as arrow;
+```
+
+Most nodes need neither: `value.into_arrow()` and `(&data).try_into()?` never
+name an Arrow type, which is why the `dora new` templates were unchanged.
+
+### `dora_core` re-export narrowed (#3221)
+
+`dora_node_api::dora_core` now exposes only `config::{DataId, NodeId,
+OperatorId}` and `uhlc`. The scaffolded path is unchanged:
+
+```rust
+use dora_node_api::dora_core::config::DataId;   // still works
+```
+
+If you reached `dora_node_api::dora_core::{descriptor, topics, build,
+manifest, types}`, depend on `dora-core` directly instead — but note it is an
+internal crate outside the 1.0 guarantee (see "Stability scope at 1.0" in
+[`api-rust.md`](api-rust.md)).
+
 ## Still to do (this guide)
 
-- Per-API before/after code snippets for the 10 most-used 0.x APIs
+- ~~Per-API before/after code snippets~~ — done for the RC-window breaking changes above; older 0.x-era API deltas still uncovered
 - Dedicated section on the C/C++ API (headers stable, call signatures unchanged)
 - Dedicated section on the Python API
 - ~~`dora migrate` subcommand usage~~ — **dropped per #297 resolution**. No migration tool ships in 1.0; manual steps above + release-note hard-break callout only.
