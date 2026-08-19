@@ -205,6 +205,7 @@ impl WsSession {
             &dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
                 dataflow_id,
                 topics,
+                protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
             },
         )
         .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
@@ -438,6 +439,16 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
     }
 }
 
+/// Error for a `TopicSubscribed` ack whose binary-frame encoding does not match
+/// ours. Wraps the shared message so both sides of the handshake explain a
+/// mismatch identically.
+fn topic_protocol_mismatch_error(coordinator_version: Option<u16>) -> eyre::Report {
+    eyre!(dora_message::topic_protocol_mismatch_message(
+        "coordinator",
+        coordinator_version
+    ))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_response(
     id: Uuid,
@@ -471,9 +482,27 @@ fn handle_response(
             match reply {
                 Ok(dora_message::coordinator_to_cli::ControlRequestReply::TopicSubscribed {
                     subscription_id,
+                    protocol_version,
                 }) => {
-                    topic_subscribers.insert(subscription_id, data_tx);
-                    let _ = ack_tx.send(Ok(subscription_id));
+                    // A coordinator on the other encoding would send frames we
+                    // would misparse rather than fail on, so refuse the
+                    // subscription instead of consuming them (dora-rs/dora#3153).
+                    //
+                    // We deliberately don't send `TopicUnsubscribe` here. Only
+                    // a *pre-handshake* coordinator reaches this branch having
+                    // actually created a subscription (a current one rejects
+                    // before creating anything), and every `subscribe_topics`
+                    // caller propagates this error with `?`, dropping the
+                    // `WsSession` — which closes the connection and makes the
+                    // coordinator tear its subscriptions down. Threading an
+                    // outgoing sender into `handle_response` to save that
+                    // already-closing subscription would not earn its keep.
+                    if protocol_version != Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION) {
+                        let _ = ack_tx.send(Err(topic_protocol_mismatch_error(protocol_version)));
+                    } else {
+                        topic_subscribers.insert(subscription_id, data_tx);
+                        let _ = ack_tx.send(Ok(subscription_id));
+                    }
                 }
                 Ok(dora_message::coordinator_to_cli::ControlRequestReply::Error(e)) => {
                     let _ = ack_tx.send(Err(eyre!("{e}")));
@@ -645,7 +674,10 @@ mod tests {
 
         handle_response(
             id,
-            Some(raw(json!({"TopicSubscribed": {"subscription_id": sub_id}}))),
+            Some(raw(json!({"TopicSubscribed": {
+                "subscription_id": sub_id,
+                "protocol_version": dora_message::TOPIC_DATA_PROTOCOL_VERSION,
+            }}))),
             None,
             &mut pending,
             &mut subscribes,
@@ -657,6 +689,74 @@ mod tests {
         let result_id = ack_rx.try_recv().unwrap().unwrap();
         assert_eq!(result_id, sub_id);
         assert!(topic_subs.contains_key(&sub_id));
+    }
+
+    /// Binary topic frames are positionally encoded, so a coordinator on a
+    /// different encoding produces plausible garbage rather than a decode
+    /// error. The ack must be refused, and the subscription must not be
+    /// registered — otherwise frames would be dispatched to a consumer that
+    /// cannot read them (dora-rs/dora#3153).
+    fn ack_with_protocol_version(version: Option<u16>) -> (eyre::Result<Uuid>, bool) {
+        let id = Uuid::new_v4();
+        let sub_id = Uuid::new_v4();
+        let (ack_tx, mut ack_rx) = oneshot::channel();
+        let (data_tx, _data_rx) = std_mpsc::channel();
+        let mut pending = HashMap::new();
+        let mut subscribes = HashMap::new();
+        let mut subs = Vec::new();
+        let mut topic_pending = HashMap::new();
+        topic_pending.insert(id, (ack_tx, data_tx));
+        let mut topic_subs = HashMap::new();
+
+        let result = match version {
+            Some(version) => json!({"TopicSubscribed": {
+                "subscription_id": sub_id, "protocol_version": version,
+            }}),
+            // A pre-handshake coordinator omits the field entirely.
+            None => json!({"TopicSubscribed": {"subscription_id": sub_id}}),
+        };
+
+        handle_response(
+            id,
+            Some(raw(result)),
+            None,
+            &mut pending,
+            &mut subscribes,
+            &mut subs,
+            &mut topic_pending,
+            &mut topic_subs,
+        );
+
+        (ack_rx.try_recv().unwrap(), topic_subs.contains_key(&sub_id))
+    }
+
+    #[test]
+    fn topic_subscribe_ack_rejects_older_protocol_version() {
+        let (ack, registered) = ack_with_protocol_version(Some(1));
+        let err = ack.expect_err("an older protocol version must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("version 1") && msg.contains("misparse"),
+            "error should name the peer's version and why it is fatal, got: {msg}"
+        );
+        assert!(
+            !registered,
+            "a rejected subscription must not be registered for frame dispatch"
+        );
+    }
+
+    #[test]
+    fn topic_subscribe_ack_rejects_missing_protocol_version() {
+        let (ack, registered) = ack_with_protocol_version(None);
+        let err = ack.expect_err("a pre-handshake coordinator must be rejected");
+        assert!(
+            format!("{err}").contains("predates"),
+            "error should say the coordinator predates the handshake, got: {err}"
+        );
+        assert!(
+            !registered,
+            "a rejected subscription must not be registered for frame dispatch"
+        );
     }
 
     #[tokio::test]

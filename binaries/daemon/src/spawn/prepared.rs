@@ -18,7 +18,7 @@ use dora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use dora_node_api::{Metadata, arrow::array::ArrayData, arrow_utils::encode_arrow_ipc};
+use dora_node_api::{DoraArray, Metadata, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::CommandWrap;
 use std::{
@@ -40,7 +40,7 @@ use tokio::{
 /// parameter (so the node-side receive path decodes it). Returns `None` if
 /// encoding fails (logged by the caller).
 fn ipc_log_payload(
-    array: &ArrayData,
+    array: &DoraArray,
     clock: &dora_core::uhlc::HLC,
 ) -> Option<(DataMessage, Metadata)> {
     let ipc_bytes = encode_arrow_ipc(array)
@@ -86,6 +86,20 @@ fn truncate_log_line(content: &mut String) {
         content.truncate(boundary);
         content.push_str("... [truncated]");
     }
+}
+
+/// Drop a single trailing line terminator (`\n`, or `\r\n`) from an owned
+/// log line, in place. `content` holds one logical line (the reader stops at
+/// the first `\n`), so this reproduces what `content.lines().next()` would
+/// yield without allocating a new `String`.
+fn strip_trailing_newline(mut content: String) -> String {
+    if content.ends_with('\n') {
+        content.pop();
+        if content.ends_with('\r') {
+            content.pop();
+        }
+    }
+    content
 }
 
 /// Read a single log line from `reader`, buffering at most
@@ -201,6 +215,7 @@ impl PreparedNode {
             restart_loop_start: Some(registered_tx),
             _listener_shutdown: Some(self.listener_shutdown.clone()),
             generation: self.generation,
+            generation_counter: self.generation_counter.clone(),
             node_config: self.node_config.clone(),
             restart_policy: self.restart_policy(),
             disable_restart: disable_restart.clone(),
@@ -924,7 +939,6 @@ impl PreparedNode {
                 if let Some(stdout_output_name) = &send_stdout_to {
                     // Convert logs to a self-describing Arrow IPC DataMessage.
                     let array = content.as_str().into_arrow();
-                    let array: ArrayData = array.into();
                     if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
                         let output_id = OutputId(
                             node_id.clone(),
@@ -948,10 +962,11 @@ impl PreparedNode {
                     }
                 }
 
-                let formatted = content.lines().fold(String::default(), |mut output, line| {
-                    output.push_str(line);
-                    output
-                });
+                // `content` is a single logical line (the reader stops at the
+                // first `\n`), so this only needs to drop the trailing line
+                // terminator. Reuse the already-owned buffer instead of
+                // allocating and copying a fresh String on every log line.
+                let formatted = strip_trailing_newline(content);
 
                 // Build a LogMessage for both file writing and channel forwarding
                 let log_message = match serde_json::de::from_str::<LogMessageHelper>(&formatted) {
@@ -1008,7 +1023,6 @@ impl PreparedNode {
                     && let Ok(json) = serde_json::to_string(&log_message)
                 {
                     let array = json.as_str().into_arrow();
-                    let array: ArrayData = array.into();
                     if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
                         let output_id =
                             OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
@@ -1156,6 +1170,38 @@ struct RestartLoopReceivers {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn strip_trailing_newline_matches_lines_for_single_line() {
+        // The previous implementation was
+        // `content.lines().fold(String::new(), |mut o, l| { o.push_str(l); o })`.
+        // For the single-line inputs the reader produces, the in-place strip
+        // must be byte-for-byte identical.
+        let old = |content: &str| -> String {
+            content.lines().fold(String::new(), |mut output, line| {
+                output.push_str(line);
+                output
+            })
+        };
+        for case in [
+            "hello",
+            "hello\n",
+            "hello\r\n",
+            "hello\r",
+            "",
+            "\n",
+            "\r\n",
+            "a\rb\n",
+            "trailing spaces  \n",
+            "... [truncated]",
+        ] {
+            assert_eq!(
+                strip_trailing_newline(case.to_string()),
+                old(case),
+                "mismatch for {case:?}"
+            );
+        }
+    }
 
     /// Deserialize from YAML (mirroring `dora_core::build` tests) to avoid
     /// coupling this fixture to ResolvedNode's exact field list.

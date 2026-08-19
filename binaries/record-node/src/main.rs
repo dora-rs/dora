@@ -6,7 +6,7 @@ use dora_message::{
     daemon_to_daemon::InterDaemonEvent,
     id::{DataId, NodeId},
 };
-use dora_node_api::{DoraNode, Event, arrow::datatypes::DataType, arrow_utils};
+use dora_node_api::{DoraNode, Event, arrow_utils, arrow_v59::datatypes::DataType};
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
 use eyre::Context;
 
@@ -40,6 +40,21 @@ fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId,
     Ok(reverse_map)
 }
 
+/// Nanoseconds since the Unix epoch, saturating to 0 when the wall clock reads
+/// a pre-epoch time.
+///
+/// `SystemTime::duration_since(UNIX_EPOCH)` returns `Err` whenever the clock is
+/// set before 1970 — common on battery-less embedded/robotics hardware that
+/// boots at (or before) the epoch until NTP/GPS sync lands. This runs once per
+/// recorded message, so an `.unwrap()` here would abort the recorder mid-capture.
+/// Saturating to 0 matches the `saturating_sub` already used when computing the
+/// per-entry offset from `start_nanos`.
+fn unix_nanos(now: SystemTime) -> u64 {
+    now.duration_since(SystemTime::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -52,13 +67,10 @@ fn main() -> eyre::Result<()> {
 
     let (_node, mut events) = DoraNode::init_from_env()?;
 
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    let start_nanos = unix_nanos(SystemTime::now());
 
     let header = RecordingHeader {
-        version: 1,
+        version: dora_recording::FORMAT_VERSION,
         start_nanos,
         dataflow_id: uuid::Uuid::new_v4(),
         descriptor_yaml: descriptor_yaml.into_bytes(),
@@ -81,8 +93,8 @@ fn main() -> eyre::Result<()> {
 
                 // Record the payload as a self-describing Arrow IPC stream so
                 // replay can reconstruct the array without a type sidecar.
-                let arrow_data = data.to_data();
-                let raw_data = if matches!(arrow_data.data_type(), DataType::Null)
+                let arrow_data = &data;
+                let raw_data = if matches!(arrow_data.as_array().data_type(), DataType::Null)
                     && arrow_data.is_empty()
                 {
                     // Exactly the unit array that replay rebuilds from an absent
@@ -106,17 +118,17 @@ fn main() -> eyre::Result<()> {
                     // copies) and then copied the result a third time into the
                     // `AVec`, on every recorded message.
                     let encoded: AVec<u8, ConstAlign<128>> =
-                        match arrow_utils::ipc_encode::ipc_fast_path_len(&arrow_data) {
+                        match arrow_utils::ipc_encode::ipc_fast_path_len(arrow_data) {
                             Some(len) => {
                                 let mut buf: AVec<u8, ConstAlign<128>> =
                                     AVec::__from_elem(128, 0, len);
-                                arrow_utils::ipc_encode::encode_ipc_into(&arrow_data, &mut buf)
+                                arrow_utils::ipc_encode::encode_ipc_into(arrow_data, &mut buf)
                                     .wrap_err("failed to Arrow-IPC-encode recorded output")?;
                                 buf
                             }
                             None => {
                                 let ipc_bytes =
-                                    arrow_utils::ipc_encode::encode_ipc_to_vec(&arrow_data)
+                                    arrow_utils::ipc_encode::encode_ipc_to_vec(arrow_data)
                                         .wrap_err("failed to Arrow-IPC-encode recorded output")?;
                                 AVec::from_slice(128, &ipc_bytes)
                             }
@@ -139,10 +151,7 @@ fn main() -> eyre::Result<()> {
                 };
                 let event_bytes = timestamped.serialize()?;
 
-                let now_nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64;
+                let now_nanos = unix_nanos(SystemTime::now());
 
                 let entry = RecordEntry {
                     node_id: source_node.to_string(),
@@ -169,7 +178,21 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::build_reverse_map;
+    use super::{build_reverse_map, unix_nanos};
+    use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn unix_nanos_saturates_on_pre_epoch_clock() {
+        // A pre-epoch wall clock must not panic the recorder mid-capture.
+        let before_epoch = SystemTime::UNIX_EPOCH - Duration::from_secs(60);
+        assert_eq!(unix_nanos(before_epoch), 0);
+        // The epoch itself is 0, and a post-epoch time is its offset in nanos.
+        assert_eq!(unix_nanos(SystemTime::UNIX_EPOCH), 0);
+        assert_eq!(
+            unix_nanos(SystemTime::UNIX_EPOCH + Duration::from_nanos(1_500)),
+            1_500
+        );
+    }
 
     #[test]
     fn valid_topics_parse() {

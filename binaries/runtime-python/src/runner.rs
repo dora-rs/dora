@@ -213,7 +213,7 @@ pub fn run(
                     let cx = span.context();
                     let string_cx = serialize_context(&cx);
                     metadata.parameters.insert(
-                        "open_telemetry_context".to_string(),
+                        dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
                         Parameter::String(string_cx),
                     );
                 }
@@ -346,7 +346,7 @@ mod callback_impl {
             #[cfg(feature = "telemetry")]
             {
                 let otel = if let Some(dora_node_api::Parameter::String(otel)) =
-                    parameters.get("open_telemetry_context")
+                    parameters.get(dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT)
                 {
                     otel.to_string()
                 } else {
@@ -378,6 +378,8 @@ mod callback_impl {
             // The encode inside needs no GIL, so run detached: it is the same
             // single copy the node used to make, just on this side of the
             // channel, and other Python threads stay runnable meanwhile.
+            let arrow_array =
+                dora_node_api::DoraArray::from_array(arrow::array::make_array(arrow_array));
             py.detach(|| {
                 self.handle
                     .send_output(output.to_owned().into(), parameters, &arrow_array)

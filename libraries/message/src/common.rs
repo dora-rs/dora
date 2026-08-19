@@ -241,18 +241,15 @@ pub struct Timestamped<T> {
     pub timestamp: uhlc::Timestamp,
 }
 
-impl<T> Timestamped<T>
-where
-    T: serde::Serialize,
-{
-    pub fn serialize(&self) -> eyre::Result<Vec<u8>> {
-        bincode::serialize(self).wrap_err("failed to serialize timestamped message")
-    }
-}
-
 impl Timestamped<InterDaemonEvent> {
+    /// Encode this event for the zenoh data plane and `dora record` files.
+    pub fn serialize(&self) -> eyre::Result<Vec<u8>> {
+        crate::encode_presized(self, self.inner.encode_size_hint())
+            .wrap_err("failed to serialize timestamped message")
+    }
+
     pub fn deserialize_inter_daemon_event(bytes: &[u8]) -> eyre::Result<Self> {
-        bincode::deserialize(bytes).wrap_err("failed to deserialize InterDaemonEvent")
+        crate::decode(bytes).wrap_err("failed to deserialize InterDaemonEvent")
     }
 }
 
@@ -260,15 +257,28 @@ pub type SharedMemoryId = String;
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub enum DataMessage {
-    Vec(AVec<u8, ConstAlign<128>>),
+    Vec(#[serde(with = "crate::bulk_bytes")] AVec<u8, ConstAlign<128>>),
+}
+
+impl DataMessage {
+    /// Byte length of the carried payload.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Vec(v) => v.len(),
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
 }
 
 impl fmt::Debug for DataMessage {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Vec(v) => f
+            Self::Vec(_) => f
                 .debug_struct("Vec")
-                .field("len", &v.len())
+                .field("len", &self.len())
                 .finish_non_exhaustive(),
         }
     }

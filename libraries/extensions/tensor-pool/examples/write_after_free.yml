@@ -1,9 +1,9 @@
-# Negative-path test: daemon releases an unreleased memory pool on shutdown.
+# Negative-path test: sender writes to a freed tensor pool.
 env:
   sender_device: cpu
   receiver_device: cpu
   message_num: 2
-  memory_pool_scenario: auto_cleanup
+  tensor_pool_scenario: write_after_free
 nodes:
   - id: sender_node
     build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy

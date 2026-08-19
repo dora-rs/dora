@@ -552,15 +552,22 @@ try:
 except Exception:
     sys.exit(1)
 " 2>/dev/null; then
-        run_networked "memory-pool-cpu2cpu"            "examples/memory-pool/cpu2cpu.yml" 60
-        run_local     "local-memory-pool-cpu2cpu"      "examples/memory-pool/cpu2cpu.yml" 60
-        run_local     "local-memory-pool-auto-cleanup" "examples/memory-pool/auto_cleanup.yml" 10
-        run_local     "local-memory-pool-duplicate-free"    "examples/memory-pool/duplicate_free.yml" 10
-        run_local     "local-memory-pool-read-after-free"   "examples/memory-pool/read_after_free.yml" 10
-        run_local     "local-memory-pool-write-after-free"  "examples/memory-pool/write_after_free.yml" 10
+        run_networked "memory-pool-cpu2cpu"            "libraries/extensions/tensor-pool/examples/cpu2cpu.yml" 60
+        run_local     "local-memory-pool-cpu2cpu"      "libraries/extensions/tensor-pool/examples/cpu2cpu.yml" 60
+        run_local     "local-memory-pool-auto-cleanup" "libraries/extensions/tensor-pool/examples/auto_cleanup.yml" 10
+        run_local     "local-memory-pool-duplicate-free"    "libraries/extensions/tensor-pool/examples/duplicate_free.yml" 10
+        run_local     "local-memory-pool-read-after-free"   "libraries/extensions/tensor-pool/examples/read_after_free.yml" 10
+        run_local     "local-memory-pool-write-after-free"  "libraries/extensions/tensor-pool/examples/write_after_free.yml" 10
+        # Same-host cross-daemon: needs two daemons (machine A/B); the
+        # example-smoke harness starts them.
+        run_local     "local-memory-pool-cpu2cpu-cross-local" "libraries/extensions/tensor-pool/examples/cpu2cpu_cross_local.yml" 150
+        # The true cross-machine examples (cpu2cpu/cpu2cuda/cuda2cpu/
+        # cuda2cuda `_cross.yml`) need two hosts and are not run on CI.
     else
         log_skip "memory-pool" "download.pytorch.org unreachable (run on a machine with PyPI access to exercise this suite)"
     fi
+
+
 fi
 
 # ---------------------------------------------------------------------------

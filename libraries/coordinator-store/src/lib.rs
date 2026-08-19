@@ -1,3 +1,13 @@
+//! **Internal to dora — not a public API.**
+//!
+//! This crate is published to crates.io only because cargo requires every
+//! dependency of a published crate to be published; `dora-node-api` and
+//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! guarantee and may change in any release, including a patch.
+//!
+//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
+//! section of `docs/api-rust.md`.
+//!
 mod in_memory;
 
 #[cfg(feature = "redb-backend")]
@@ -143,9 +153,9 @@ pub enum DataflowStatus {
         /// store-vs-CLI view across coordinator restarts.
         ///
         /// `#[serde(default)]` documents the intended semantics for a
-        /// missing value, but with the bincode encoding used by
+        /// missing value, but with the postcard encoding used by
         /// `RedbStore` it does NOT make old bytes decodable on its own
-        /// (bincode is not self-describing, so a missing trailing field
+        /// (postcard is not self-describing, so a missing trailing field
         /// fails to decode rather than falling back to `Default`). Records
         /// written before this field existed require a `SCHEMA_VERSION`
         /// bump (see `redb_store.rs`) so old databases are rejected at

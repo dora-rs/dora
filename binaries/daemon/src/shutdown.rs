@@ -121,9 +121,16 @@ impl DestroyWait {
     /// `uv run python node.py` dies to the ladder's SIGTERM while the
     /// interpreter it spawned ignores it; watching only the leader would call
     /// that node gone and let the destroy finish, leaving exactly the orphan
-    /// one level down that this module exists to prevent (#3004 review). A
-    /// group is only ever consulted for a pid confirmed to be ours while it
-    /// was alive, so a recycled pid cannot drag in a stranger's group.
+    /// one level down that this module exists to prevent (#3004 review).
+    ///
+    /// The group is only consulted for a pid confirmed ours while alive, and
+    /// only while that pid has not been recycled out from under us. Once a
+    /// leader exits, a process group can outlive it and the leader pid is free
+    /// for the OS to reuse: if it is recycled into an unrelated process that
+    /// leads that same group id, a bare `kill(-pid, 0)` probe would pass and
+    /// drag the stranger's group in as ours. See
+    /// [`pid_recycled_into_stranger`] for what separates that from the
+    /// legitimate remnant (#3067).
     fn live_children(&mut self, pids: &[u32]) -> Vec<u32> {
         if pids.is_empty() {
             return Vec::new();
@@ -137,14 +144,13 @@ impl DestroyWait {
 
         let mut alive = Vec::new();
         for pid in pids.iter().copied() {
-            let leader_alive = self
-                .system
-                .process(Pid::from_u32(pid))
-                .is_some_and(|process| is_live_child(process, self.own_pid));
+            let process = self.system.process(Pid::from_u32(pid));
+            let leader_alive = process.is_some_and(|process| is_live_child(process, self.own_pid));
+            let recycled = pid_recycled_into_stranger(pid, process, self.own_pid);
             if leader_alive {
                 self.confirmed.insert(pid);
                 alive.push(pid);
-            } else if self.confirmed.contains(&pid) && process_group_has_members(pid) {
+            } else if self.confirmed.contains(&pid) && !recycled && process_group_has_members(pid) {
                 alive.push(pid);
             }
         }
@@ -183,8 +189,9 @@ fn kill_process_group(pid: u32) -> bool {
     #[cfg(unix)]
     {
         // SAFETY: `killpg`/`kill` on a pid this process spawned as a group
-        // leader. A pid the OS recycled is already excluded by the parentage
-        // check in `live_children`.
+        // leader. A pid the OS recycled is excluded upstream in
+        // `live_children` — by the parentage check on the leader path and by
+        // the recycled-stranger guard on the group-fallback path (#3067).
         let killed = unsafe { libc::killpg(pid as i32, libc::SIGKILL) } == 0;
         if killed {
             return true;
@@ -206,6 +213,50 @@ fn kill_process_group(pid: u32) -> bool {
         system
             .process(Pid::from_u32(pid))
             .is_some_and(|process| process.kill())
+    }
+}
+
+/// Whether `pid` has been recycled by the OS into a process that is not ours
+/// *and* leads the group we would otherwise still attribute to the node.
+///
+/// Only meaningful once the leader has failed [`is_live_child`], which is the
+/// one place this is consulted. A process still occupying the pid is then
+/// either our own not-yet-reaped zombie leader or a stranger, and parentage —
+/// not zombie status — is what separates them: a stranger's unreaped process
+/// fails `is_live_child` exactly like our own zombie does, so testing for
+/// `!= Zombie` would wave it through. A pid that is simply gone was never
+/// recycled at all; its group remnant is genuinely ours.
+///
+/// A stranger only makes the group ambiguous if it actually leads group `pid`.
+/// Most processes inherit their parent's group instead, and nothing can join a
+/// group whose leader is gone, so when the new owner sits elsewhere the members
+/// the probe found are still our orphans — giving up on them would re-open the
+/// leak the fallback exists to close (#3004). Hence both conditions (#3067).
+fn pid_recycled_into_stranger(pid: u32, process: Option<&sysinfo::Process>, own_pid: u32) -> bool {
+    let Some(process) = process else {
+        return false;
+    };
+    if process.parent() == Some(Pid::from_u32(own_pid)) {
+        return false;
+    }
+    leads_own_group(pid)
+}
+
+/// Whether the process at `pid` is the leader of the group with that id.
+fn leads_own_group(pid: u32) -> bool {
+    #[cfg(unix)]
+    {
+        // SAFETY: `getpgid` only reads scheduling metadata and cannot affect
+        // the target. `-1` (ESRCH — the process vanished under us) is not a
+        // match, so a disappearing stranger is not treated as a leader.
+        unsafe { libc::getpgid(pid as i32) == pid as i32 }
+    }
+    #[cfg(not(unix))]
+    {
+        // No process groups here; `process_group_has_members` already returns
+        // false, so the fallback this gates is unreachable.
+        let _ = pid;
+        false
     }
 }
 
@@ -380,6 +431,153 @@ mod tests {
         assert!(
             foreign.killed_pids.is_empty(),
             "a stranger's pid must never be signalled"
+        );
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    /// A group leader that spawns a child into its group, exits, and is left
+    /// **unreaped**, so it presents as a zombie rather than disappearing from
+    /// the process table. Returns the handle (for cleanup) and its pid.
+    ///
+    /// Same shape as `a_wrapper_that_exits_does_not_hide_its_surviving_child`,
+    /// including the `read`-on-stdin trick that makes the wrapper exit exactly
+    /// where the caller wants rather than racing the first poll (#3023).
+    #[cfg(unix)]
+    fn spawn_unreaped_wrapper() -> (std::process::Child, u32) {
+        use std::os::unix::process::CommandExt as _;
+
+        let mut wrapper = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 300 & read line")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("failed to spawn wrapper");
+        let pid = wrapper.id();
+
+        // Close stdin so `read` hits EOF and the wrapper exits. No `wait()`:
+        // without the reap it stays a zombie, which is the state under test.
+        // Spin until the kernel has actually gotten there — callers pause the
+        // test clock, so this waits on the OS, not on tokio.
+        drop(wrapper.stdin.take());
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let mut system = System::new();
+            system.refresh_processes_specifics(
+                ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
+                true,
+                ProcessRefreshKind::nothing(),
+            );
+            let zombie = system
+                .process(Pid::from_u32(pid))
+                .is_some_and(|process| process.status() == ProcessStatus::Zombie);
+            if zombie {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the wrapper never became a zombie"
+            );
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        (wrapper, pid)
+    }
+
+    #[cfg(unix)]
+    fn kill_group_and_reap(mut wrapper: std::process::Child, pid: u32) {
+        // SAFETY: killing the group this test created as a group leader.
+        unsafe { libc::killpg(pid as i32, libc::SIGKILL) };
+        let _ = wrapper.wait();
+    }
+
+    /// One half of the #3067 guard: an *unreaped* leader of ours is not a
+    /// recycled pid. It fails `is_live_child` exactly like a stranger would,
+    /// so the fallback has to keep trusting its group — otherwise the orphan
+    /// #3004 is about slips through whenever the daemon has not gotten around
+    /// to reaping the wrapper yet.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn an_unreaped_leader_of_ours_still_covers_its_surviving_child() {
+        let (wrapper, pid) = spawn_unreaped_wrapper();
+
+        let mut wait = DestroyWait::new();
+        wait.confirmed.insert(pid);
+        assert_eq!(
+            wait.live_children(&[pid]),
+            vec![pid],
+            "an unreaped leader of ours is not a recycled pid — its group, \
+             which still holds the surviving child, stays ours"
+        );
+
+        kill_group_and_reap(wrapper, pid);
+    }
+
+    /// The other half: zombie status alone does not make a pid ours. A pid
+    /// recycled into a stranger that has itself exited but not been reaped is
+    /// a zombie too, and testing for `!= Zombie` would wave its group through
+    /// to `killpg`. Parentage is what separates the two cases.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_strangers_zombie_at_a_recycled_pid_does_not_make_its_group_ours() {
+        let (wrapper, pid) = spawn_unreaped_wrapper();
+
+        // Present the zombie as parented elsewhere, exactly as a pid recycled
+        // into a stranger that then exited would. It still leads group `pid`
+        // and the group still has a live member, so the bare probe passes and
+        // only the parentage check keeps it out.
+        let mut wait = DestroyWait::new();
+        wait.own_pid = std::process::id() + 424_242;
+        wait.confirmed.insert(pid);
+        assert!(
+            wait.live_children(&[pid]).is_empty(),
+            "a zombie parented elsewhere is a recycled pid, not our unreaped \
+             leader — its group must not be attributed to us"
+        );
+
+        kill_group_and_reap(wrapper, pid);
+    }
+
+    /// #3067: once a leader pid is gone we fall back to watching its process
+    /// group, but the pid is then free for the OS to reuse. If it is recycled
+    /// into a live, unrelated group leader, that stranger's group must not be
+    /// attributed to us and killed — even though the pid is still in
+    /// `confirmed` and the bare group probe passes.
+    #[cfg(unix)]
+    #[tokio::test(start_paused = true)]
+    async fn a_recycled_leader_pid_does_not_drag_in_a_strangers_group() {
+        use std::os::unix::process::CommandExt as _;
+
+        // Spawn a sleeper as its own group leader, so `kill(-pid, 0)` (the
+        // group probe) sees a member and the fallback branch is reachable.
+        let mut child = Command::new("sleep")
+            .arg("300")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .process_group(0)
+            .spawn()
+            .expect("failed to spawn sleeper");
+        let pid = child.id();
+
+        let mut wait = DestroyWait::new();
+        assert_eq!(wait.live_children(&[pid]), vec![pid]);
+        assert!(
+            wait.confirmed.contains(&pid),
+            "leader confirmed while alive"
+        );
+
+        // Now make the process at `pid` present as a live non-child, exactly
+        // as a recycled leader pid would: alive, non-zombie, parented
+        // elsewhere. The group probe still passes, so only the recycle guard
+        // keeps it out of the live set.
+        wait.own_pid = std::process::id() + 424_242;
+        assert!(
+            wait.live_children(&[pid]).is_empty(),
+            "a confirmed leader pid recycled into a live non-child must not \
+             drag its group in as ours"
         );
 
         let _ = child.kill();

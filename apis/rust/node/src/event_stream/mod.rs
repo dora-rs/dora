@@ -2,7 +2,10 @@ use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::PathBuf,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
     time::{Duration, Instant},
 };
 
@@ -23,7 +26,10 @@ use scheduler::{NON_INPUT_EVENT, Scheduler};
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
     DaemonCommunicationWrapper, PatternError,
-    daemon_connection::{DaemonChannel, node_integration_testing::convert_output_to_json},
+    daemon_connection::{
+        DaemonChannel,
+        node_integration_testing::{convert_arrow_input_to_json, convert_output_to_json},
+    },
     event_stream::data_conversion::RawData,
     node::{ZENOH_TEARDOWN_TIMEOUT, teardown_with_timeout},
 };
@@ -38,10 +44,10 @@ pub use scheduler::Scheduler as EventScheduler;
 
 mod data_conversion;
 mod event;
+/// Drop notifications for the daemon's opaque extension table.
+pub mod extensions;
 /// Tracks input health (timeouts, liveness) for circuit-breaker recovery.
 pub mod input_tracker;
-/// Cross-process memory-pool cleanup coordination via daemon broadcast.
-pub mod memory_pool;
 /// Merged event streams combining internal and external event sources.
 pub mod merged;
 mod scheduler;
@@ -114,6 +120,10 @@ pub struct EventStream {
     /// Returning `None` here lets the caller exit and drops the
     /// `EventStream`, which signals subscriber shutdown.
     stop_received: bool,
+    /// Testing-mode shutdown flag shared with the in-process daemon thread.
+    /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
+    /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
+    testing_shutdown: Option<Arc<AtomicBool>>,
 }
 
 /// Spawn the consumer half of the startup handshake: a thread that answers
@@ -159,7 +169,7 @@ fn spawn_startup_acker(
                     node_id.as_ref(),
                     input_id.as_ref(),
                 );
-                let attachment = match bincode::serialize(&metadata) {
+                let attachment = match dora_message::encode(&metadata) {
                     Ok(bytes) => bytes,
                     Err(e) => {
                         tracing::debug!(input = %input_id, "failed to serialize startup ack ({e})");
@@ -215,9 +225,14 @@ impl EventStream {
                 }
             }
 
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
+        };
+
+        let testing_shutdown = match daemon_communication {
+            DaemonCommunicationWrapper::Testing { shutdown, .. } => Some(shutdown.clone()),
+            _ => None,
         };
 
         let close_channel = match daemon_communication {
@@ -233,7 +248,7 @@ impl EventStream {
                     }
                 }
             }
-            DaemonCommunicationWrapper::Testing { channel } => {
+            DaemonCommunicationWrapper::Testing { channel, .. } => {
                 DaemonChannel::IntegrationTestChannel(channel.clone())
             }
         };
@@ -343,6 +358,7 @@ impl EventStream {
             total_queue_capacity,
             zenoh_session,
             &input_config,
+            testing_shutdown,
         )
     }
 
@@ -359,6 +375,7 @@ impl EventStream {
         channel_capacity: usize,
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
+        testing_shutdown: Option<Arc<AtomicBool>>,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -490,7 +507,7 @@ impl EventStream {
                                     use dora_message::metadata::Metadata;
                                     let metadata = match sample.attachment() {
                                         Some(att) => {
-                                            match bincode::deserialize::<Metadata>(&att.to_bytes())
+                                            match dora_message::decode::<Metadata>(&att.to_bytes())
                                             {
                                                 // A version mismatch that still happens
                                                 // to deserialize: reject with a clear
@@ -514,7 +531,7 @@ impl EventStream {
                                                     // A pre-1.0 peer (old ArrowTypeInfo
                                                     // sidecar layout) misaligns here; name
                                                     // the likely cause so the failure isn't
-                                                    // a bare bincode error.
+                                                    // a bare deserialization error.
                                                     tracing::warn!(
                                                         "zenoh metadata deserialization failed \
                                                      (possibly a peer using an incompatible \
@@ -750,6 +767,7 @@ impl EventStream {
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
             stop_received: false,
+            testing_shutdown,
         })
     }
 
@@ -922,7 +940,8 @@ impl EventStream {
             && !crate::node::carries_pattern_correlation(&metadata.parameters)
             && let Some(expected) = self.input_type_checks.remove(id)
         {
-            let actual = data.data_type();
+            let raw = dora_arrow_convert::internal::array_ref(data);
+            let actual = raw.data_type();
             // Skip check for Null type (timer ticks, empty payloads)
             // to avoid spurious warnings on annotated timer inputs.
             if *actual != arrow_schema::DataType::Null && *actual != expected {
@@ -1057,6 +1076,23 @@ impl EventStream {
                     }
                     _ => None,
                 },
+                // Zenoh-delivered inputs surface to the user as `Event::Input`
+                // exactly like the daemon-path `NodeEvent::Input` above, but
+                // bypass the daemon, so neither this recorder nor the daemon
+                // would otherwise capture them — silently dropping inputs from
+                // the `write_events_to` recording. Record them here too.
+                EventItem::ZenohInput { id, metadata, data } => {
+                    let array = arrow::array::make_array(data.clone());
+                    let mut event_json = convert_arrow_input_to_json(
+                        id,
+                        metadata,
+                        array,
+                        self.start_timestamp,
+                        false,
+                    )?;
+                    event_json.insert("type".into(), "Input".into());
+                    Some(event_json.into())
+                }
                 _ => None,
             };
             if let Some(event_json) = event_json {
@@ -1376,7 +1412,7 @@ impl EventStream {
                             Event::Input {
                                 id,
                                 metadata,
-                                data: data.into(),
+                                data: dora_arrow_convert::internal::from_array_ref(data),
                             }
                         }
                         Err(err) => Event::Error(format!("{err:?}")),
@@ -1414,7 +1450,7 @@ impl EventStream {
                     id,
                     metadata,
                     // Already decoded in the subscriber callback (receipt order).
-                    data: arrow::array::make_array(data).into(),
+                    data: dora_arrow_convert::internal::from_array_data(data),
                 }
             }
 
@@ -1536,7 +1572,7 @@ fn declare_schema_subscriber(
                     guard.reset();
                     guard
                 });
-                if let Err(e) = decoder.set_schema(hash, buffer) {
+                if let Err(e) = decoder.set_schema_raw(hash, buffer) {
                     tracing::warn!(input = %input_id_cb, "failed to prime decoder from @schema sample: {e}");
                 }
             }));
@@ -1586,17 +1622,19 @@ fn decode_zenoh_sample(
     metadata: &dora_message::metadata::Metadata,
     payload: zenoh::bytes::ZBytes,
 ) -> eyre::Result<Option<arrow::array::ArrayData>> {
-    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+    use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
     use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
 
     if payload.is_empty() {
-        return Ok(Some(().into_arrow().into()));
+        return Ok(Some(
+            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+        ));
     }
     let buffer = zenoh_payload_to_buffer(payload);
     match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
         Some(hash) => {
             tracing::debug!("received schema-less batch with SCHEMA_HASH={}", hash);
-            decoder.decode_batch(buffer, hash as u64)
+            decoder.decode_batch_raw(buffer, hash as u64)
         }
         None => {
             tracing::debug!("received full IPC stream (no SCHEMA_HASH)");
@@ -1606,7 +1644,7 @@ fn decode_zenoh_sample(
             if !crate::node::carries_pattern_correlation(&metadata.parameters) {
                 prime_in_band(decoder, &buffer);
             }
-            decode_arrow_ipc_zero_copy(buffer).map(Some)
+            decode_arrow_ipc_zero_copy_raw(buffer).map(Some)
         }
     }
 }
@@ -1640,7 +1678,7 @@ fn prime_in_band(
     // Copy the schema block out of the payload: retaining a slice of an
     // SHM-backed buffer would pin the whole segment for the decoder's lifetime.
     let schema = arrow::buffer::Buffer::from(schema);
-    if let Err(e) = decoder.set_schema(hash, schema) {
+    if let Err(e) = decoder.set_schema_raw(hash, schema) {
         tracing::debug!("in-band schema priming failed: {e}");
     }
 }
@@ -1746,6 +1784,11 @@ impl Drop for EventStream {
             inner: DaemonRequest::EventStreamDropped,
             timestamp: self.clock.new_timestamp(),
         };
+        // Interrupt a testing-daemon `next_event` sleep before the blocking
+        // close handshake so Drop cannot deadlock (dora-rs/dora#2855).
+        if let Some(shutdown) = &self.testing_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         let result = self
             .close_channel
             .request(&request)
@@ -1921,14 +1964,14 @@ mod tests {
     }
 
     /// Regression test for the daemon↔node wire protocol: `NodeEvent`
-    /// is sent over TCP with bincode, so any field type that uses
+    /// is sent over TCP with postcard, so any field type that uses
     /// `Deserializer::deserialize_any` (like `serde_json::Value`)
     /// breaks the channel and kills the node at the next receive.
     /// `NodeEvent::ParamUpdate` carries its value as JSON-encoded
     /// bytes for that reason. This test pins the invariant so we
     /// don't regress back to a `deserialize_any` field.
     #[test]
-    fn node_event_param_update_round_trips_through_bincode() {
+    fn node_event_param_update_round_trips_through_postcard() {
         let cases = [
             serde_json::json!(42),
             serde_json::json!(1.5),
@@ -1942,8 +1985,8 @@ mod tests {
                 key: "rate".into(),
                 value_json: serde_json::to_vec(&value).unwrap(),
             };
-            let bytes = bincode::serialize(&event).expect("bincode serialize");
-            let back: NodeEvent = bincode::deserialize(&bytes).expect("bincode deserialize");
+            let bytes = dora_message::encode(&event).expect("serialize");
+            let back: NodeEvent = dora_message::decode(&bytes).expect("deserialize");
             match back {
                 NodeEvent::ParamUpdate { key, value_json } => {
                     assert_eq!(key, "rate");
@@ -2110,7 +2153,7 @@ mod tests {
 
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType as ArrowDataType;
-    use dora_arrow_convert::ArrowData;
+    use dora_arrow_convert::internal::from_array_ref;
     use dora_message::metadata::{
         GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
         MetadataParameters, Parameter, REQUEST_ID,
@@ -2124,7 +2167,7 @@ mod tests {
         Event::Input {
             id: id.into(),
             metadata: make_metadata(params),
-            data: ArrowData(new_empty_array(&ArrowDataType::Null)),
+            data: from_array_ref(new_empty_array(&ArrowDataType::Null)),
         }
     }
 
@@ -2353,7 +2396,9 @@ mod tests {
             node.send_output(
                 "out".parse().unwrap(),
                 Default::default(),
-                Int32Array::from(vec![i]),
+                dora_arrow_convert::internal::from_array_ref(std::sync::Arc::new(
+                    Int32Array::from(vec![i]),
+                )),
             )
             .unwrap();
         }
@@ -2668,7 +2713,9 @@ mod tests {
     /// no type sidecar involved).
     #[test]
     fn zenoh_payload_ipc_roundtrip_and_empty_is_unit() {
-        use crate::arrow_utils::ipc_encode::{InputDecoder, encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::ipc_encode::{
+            InputDecoder, encode_ipc_into_data, ipc_fast_path_len_data,
+        };
         use arrow::array::{Array, Int32Array};
 
         // A standalone full stream (no SCHEMA_HASH parameter) decodes directly.
@@ -2688,9 +2735,9 @@ mod tests {
 
         // Non-empty IPC payload round-trips to the original array.
         let data = Int32Array::from(vec![10, 20, 30]).into_data();
-        let len = ipc_fast_path_len(&data).expect("primitive is fast-path eligible");
+        let len = ipc_fast_path_len_data(&data).expect("primitive is fast-path eligible");
         let mut buf = vec![0u8; len];
-        encode_ipc_into(&data, &mut buf).unwrap();
+        encode_ipc_into_data(&data, &mut buf).unwrap();
 
         let decoded = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(buf))
             .unwrap()
@@ -2709,8 +2756,8 @@ mod tests {
     #[test]
     fn full_stream_primes_decoder_in_band_for_schema_less_batches() {
         use crate::arrow_utils::ipc_encode::{
-            InputDecoder, batch_fast_path_len, encode_batch_into, encode_ipc_into,
-            ipc_fast_path_len, schema_block_len,
+            InputDecoder, batch_fast_path_len_data, encode_batch_into_data, encode_ipc_into_data,
+            ipc_fast_path_len_data, schema_block_len,
         };
         use arrow::array::{Array, Int32Array};
         use dora_message::metadata::{Metadata, Parameter, SCHEMA_HASH};
@@ -2721,8 +2768,8 @@ mod tests {
         // Message 1: full stream (no SCHEMA_HASH), as the producer sends while
         // the schema is not yet confirmed published on the `@schema` plane.
         let first = Int32Array::from(vec![1, 2]).into_data();
-        let mut full = vec![0u8; ipc_fast_path_len(&first).unwrap()];
-        encode_ipc_into(&first, &mut full).unwrap();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&first).unwrap()];
+        encode_ipc_into_data(&first, &mut full).unwrap();
         let block = schema_block_len(&full).unwrap();
         let hash = dora_message::metadata::fnv1a(&full[..block]);
 
@@ -2736,8 +2783,8 @@ mod tests {
         // `set_schema` call happened — decoding must succeed purely from the
         // in-band priming above.
         let second = Int32Array::from(vec![3]).into_data();
-        let mut batch = vec![0u8; batch_fast_path_len(&second).unwrap()];
-        encode_batch_into(&second, &mut batch).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&second).unwrap()];
+        encode_batch_into_data(&second, &mut batch).unwrap();
         let mut tagged = Metadata::new(hlc.new_timestamp());
         tagged
             .parameters
@@ -2756,8 +2803,8 @@ mod tests {
     #[test]
     fn pattern_correlated_full_stream_does_not_prime_in_band() {
         use crate::arrow_utils::ipc_encode::{
-            InputDecoder, batch_fast_path_len, encode_batch_into, encode_ipc_into,
-            ipc_fast_path_len, schema_block_len,
+            InputDecoder, batch_fast_path_len_data, encode_batch_into_data, encode_ipc_into_data,
+            ipc_fast_path_len_data, schema_block_len,
         };
         use arrow::array::{Array, Int32Array};
         use dora_message::metadata::{Metadata, Parameter, REQUEST_ID, SCHEMA_HASH};
@@ -2766,8 +2813,8 @@ mod tests {
         let mut decoder = InputDecoder::new();
 
         let reply = Int32Array::from(vec![7]).into_data();
-        let mut full = vec![0u8; ipc_fast_path_len(&reply).unwrap()];
-        encode_ipc_into(&reply, &mut full).unwrap();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&reply).unwrap()];
+        encode_ipc_into_data(&reply, &mut full).unwrap();
         let block = schema_block_len(&full).unwrap();
         let hash = dora_message::metadata::fnv1a(&full[..block]);
 
@@ -2783,8 +2830,8 @@ mod tests {
 
         // …but must not have primed the decoder for its schema hash.
         let batch_array = Int32Array::from(vec![8]).into_data();
-        let mut batch = vec![0u8; batch_fast_path_len(&batch_array).unwrap()];
-        encode_batch_into(&batch_array, &mut batch).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&batch_array).unwrap()];
+        encode_batch_into_data(&batch_array, &mut batch).unwrap();
         let mut tagged = Metadata::new(hlc.new_timestamp());
         tagged
             .parameters
@@ -2863,6 +2910,72 @@ mod tests {
         };
         assert!(!user_metadata.parameters.contains_key(SCHEMA_HASH));
         assert!(!user_metadata.parameters.contains_key(FRAMING));
+    }
+
+    /// A zenoh-delivered input must be serializable into the same recording
+    /// JSON shape as a daemon-path input, so `write_events_to` recordings do
+    /// not silently drop inputs that take the direct zenoh data plane.
+    #[test]
+    fn zenoh_input_serializes_into_recording_json() {
+        use crate::daemon_connection::node_integration_testing::convert_arrow_input_to_json;
+
+        let hlc = dora_core::uhlc::HLC::default();
+        let start = hlc.new_timestamp();
+        let metadata = Metadata::new(hlc.new_timestamp());
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1, 2, 3]));
+
+        let json = convert_arrow_input_to_json(
+            &DataId::from("in".to_string()),
+            &metadata,
+            array,
+            start,
+            true,
+        )
+        .expect("zenoh input must serialize");
+
+        assert_eq!(json["id"], "in");
+        assert!(json.contains_key("data"), "recorded event must carry data");
+        assert!(
+            json.contains_key("data_type"),
+            "recorded event must carry data_type"
+        );
+        assert_eq!(
+            json["data"].as_array().map(|a| a.len()),
+            Some(3),
+            "all array elements must be recorded"
+        );
+    }
+
+    /// A zenoh input can carry a remote HLC timestamp that predates this node's
+    /// `start_timestamp`. The recording must clamp the offset to zero instead of
+    /// underflowing the NTP64 subtraction (a debug panic that would kill the
+    /// event loop, or a release wraparound to a garbage offset).
+    #[test]
+    fn zenoh_input_with_earlier_timestamp_does_not_underflow() {
+        use crate::daemon_connection::node_integration_testing::convert_arrow_input_to_json;
+
+        let hlc = dora_core::uhlc::HLC::default();
+        // `input_ts` is created first, so it is strictly before `start`.
+        let input_ts = hlc.new_timestamp();
+        let start = hlc.new_timestamp();
+        let metadata = Metadata::new(input_ts);
+        let array: arrow::array::ArrayRef =
+            std::sync::Arc::new(arrow::array::Int32Array::from(vec![1]));
+
+        // `skip_output_time_offsets = false` exercises the time-offset path.
+        let json = convert_arrow_input_to_json(
+            &DataId::from("in".to_string()),
+            &metadata,
+            array,
+            start,
+            false,
+        )
+        .expect("recording an earlier-timestamped input must not fail");
+        assert_eq!(
+            json["time_offset_secs"], 0.0,
+            "an input predating start must clamp to a zero offset"
+        );
     }
 
     /// The schema-plane FatalError only fires after the grace window: the

@@ -254,6 +254,20 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
     Some(ParsedUrn { base, params })
 }
 
+/// Parameter-agreement rule shared by [`types_match`] and
+/// [`CompatibilityGraph::is_compatible`]: two parameter maps agree when every
+/// key present in *both* maps has an equal value. An empty map on either side is
+/// a wildcard that matches anything.
+///
+/// Keeping this in one place ensures the two type-compatibility code paths can
+/// never silently diverge on the parameter contract.
+fn params_agree(a: &BTreeMap<String, String>, b: &BTreeMap<String, String>) -> bool {
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    a.iter().all(|(k, va)| b.get(k).is_none_or(|vb| vb == va))
+}
+
 /// Check if two type URNs are compatible (considering parameters).
 ///
 /// Rules:
@@ -261,6 +275,29 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
 /// - Same base + one side unparameterized -> compatible (wildcard)
 /// - Same base + different param values -> mismatch
 /// - Different base -> mismatch
+///
+/// Note that "different param values" only rejects when the two sides
+/// disagree on a *shared* key; params on disjoint keys never conflict.
+///
+/// # Examples
+///
+/// ```
+/// use dora_core::types::types_match;
+///
+/// // Identical URNs match.
+/// assert!(types_match("std/media/v1/Image", "std/media/v1/Image"));
+/// // An unparameterized side acts as a wildcard.
+/// assert!(types_match("std/media/v1/Image[encoding=jpeg]", "std/media/v1/Image"));
+/// // Disjoint parameter keys never conflict.
+/// assert!(types_match("x/T[a=1]", "x/T[b=2]"));
+/// // A shared key with different values is a mismatch.
+/// assert!(!types_match(
+///     "std/media/v1/Image[encoding=jpeg]",
+///     "std/media/v1/Image[encoding=png]"
+/// ));
+/// // Different bases never match.
+/// assert!(!types_match("std/core/v1/Int32", "std/core/v1/Int64"));
+/// ```
 pub fn types_match(a: &str, b: &str) -> bool {
     let Some(pa) = parse_urn(a) else {
         return a == b;
@@ -271,19 +308,7 @@ pub fn types_match(a: &str, b: &str) -> bool {
     if pa.base != pb.base {
         return false;
     }
-    // If either side has no params, treat as wildcard
-    if pa.params.is_empty() || pb.params.is_empty() {
-        return true;
-    }
-    // Both have params — all shared keys must agree
-    for (k, va) in &pa.params {
-        if let Some(vb) = pb.params.get(k)
-            && va != vb
-        {
-            return false;
-        }
-    }
-    true
+    params_agree(&pa.params, &pb.params)
 }
 
 /// YAML file format for a type package.
@@ -350,6 +375,32 @@ impl CompatibilityGraph {
     ///
     /// Uses BFS with a depth limit of 3 to prevent surprise transitive chains.
     /// Also handles the universal `* -> Bytes` sink.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dora_core::types::{CompatibilityGraph, TypeRule};
+    ///
+    /// let graph = CompatibilityGraph::new(&[]);
+    /// // Anything widens into the universal `Bytes` sink.
+    /// assert!(graph.is_compatible("std/media/v1/Image", "std/core/v1/Bytes"));
+    /// // Built-in numeric widening, including a two-hop chain (UInt8 -> UInt32 -> UInt64).
+    /// assert!(graph.is_compatible("std/core/v1/UInt8", "std/core/v1/UInt32"));
+    /// assert!(graph.is_compatible("std/core/v1/UInt8", "std/core/v1/UInt64"));
+    /// // Same base with an unparameterized target is a wildcard match.
+    /// assert!(graph.is_compatible("std/media/v1/Image[encoding=jpeg]", "std/media/v1/Image"));
+    ///
+    /// // Transitive chains are bounded at depth 3.
+    /// let rule = |from: &str, to: &str| TypeRule { from: from.into(), to: to.into() };
+    /// let chain = CompatibilityGraph::new(&[
+    ///     rule("a", "b"),
+    ///     rule("b", "c"),
+    ///     rule("c", "d"),
+    ///     rule("d", "e"),
+    /// ]);
+    /// assert!(chain.is_compatible("a", "d")); // three hops: reachable
+    /// assert!(!chain.is_compatible("a", "e")); // four hops: beyond the depth limit
+    /// ```
     pub fn is_compatible(&self, from: &str, to: &str) -> bool {
         // Universal sink: anything -> Bytes
         if to == "std/core/v1/Bytes" {
@@ -367,21 +418,11 @@ impl CompatibilityGraph {
 
         // Check parameterized match using already-parsed URNs
         if from_base == to_base {
-            // Same base — check params. If either has no params, wildcard match.
-            let from_params = from_parsed.as_ref().map(|p| &p.params);
-            let to_params = to_parsed.as_ref().map(|p| &p.params);
-            match (from_params, to_params) {
-                (Some(fp), Some(tp)) if !fp.is_empty() && !tp.is_empty() => {
-                    // Both have params — all shared keys must agree
-                    for (k, va) in fp {
-                        if let Some(vb) = tp.get(k)
-                            && va != vb
-                        {
-                            return false;
-                        }
-                    }
-                }
-                _ => {}
+            // Same base — check params via the shared agreement rule. An
+            // unparsed side (no params map) is treated as a wildcard, matching
+            // the previous behavior.
+            if let (Some(fp), Some(tp)) = (from_parsed.as_ref(), to_parsed.as_ref()) {
+                return params_agree(&fp.params, &tp.params);
             }
             return true;
         }

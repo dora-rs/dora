@@ -27,6 +27,15 @@ fn normalize_for_cmake(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
+    match args.lang {
+        crate::Lang::Rust => rust::create(args, use_path_deps),
+        crate::Lang::Python => python::create(args, use_path_deps),
+        crate::Lang::C => c::create(args, use_path_deps),
+        crate::Lang::Cxx => cxx::create(args, use_path_deps),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -40,14 +49,5 @@ mod tests {
         let normalized = normalize_for_cmake(r"C:\Users\example\dora");
         assert_eq!(normalized, "C:/Users/example/dora");
         assert!(!normalized.contains('\\'));
-    }
-}
-
-pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
-    match args.lang {
-        crate::Lang::Rust => rust::create(args, use_path_deps),
-        crate::Lang::Python => python::create(args, use_path_deps),
-        crate::Lang::C => c::create(args, use_path_deps),
-        crate::Lang::Cxx => cxx::create(args, use_path_deps),
     }
 }

@@ -9,6 +9,7 @@ use axum::{
     response::IntoResponse,
     routing::get,
 };
+use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
 use dora_message::auth::AuthToken;
 use std::{
@@ -81,7 +82,11 @@ pub(crate) struct WsState {
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
     pub artifact_store: Arc<ArtifactStore>,
+    pub store: Arc<dyn CoordinatorStore>,
     pub rate_limiter: IpRateLimiter,
+    /// DaemonId -> WS peer address (set at registration). Lets daemons
+    /// reach each other's direct-TCP memory-pool data listeners.
+    pub daemon_peer_addrs: Arc<std::sync::RwLock<std::collections::HashMap<String, SocketAddr>>>,
 }
 
 /// Query parameters for backward compatibility — old clients may send `?token=...`.
@@ -177,7 +182,14 @@ async fn ws_daemon_handler(
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
         .on_upgrade(move |socket| {
-            handle_daemon_ws(socket, state.event_tx.clone(), state.clock.clone())
+            handle_daemon_ws(
+                socket,
+                state.event_tx.clone(),
+                state.clock.clone(),
+                state.store.clone(),
+                addr,
+                state.daemon_peer_addrs.clone(),
+            )
         }))
 }
 
@@ -222,6 +234,8 @@ pub(crate) async fn serve(
     clock: Arc<HLC>,
     auth_token: Option<AuthToken>,
     artifact_store: Arc<ArtifactStore>,
+    store: Arc<dyn CoordinatorStore>,
+    daemon_peer_addrs: Arc<std::sync::RwLock<std::collections::HashMap<String, SocketAddr>>>,
 ) -> eyre::Result<(
     u16,
     ShutdownTrigger,
@@ -234,7 +248,9 @@ pub(crate) async fn serve(
         clock,
         auth_token,
         artifact_store,
+        store,
         rate_limiter: IpRateLimiter::new(),
+        daemon_peer_addrs,
     };
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();

@@ -3,7 +3,7 @@ use std::{ptr::NonNull, sync::Arc};
 use aligned_vec::{AVec, ConstAlign};
 use dora_arrow_convert::IntoArrow;
 
-use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
 
 pub enum RawData {
     Empty,
@@ -15,7 +15,9 @@ impl RawData {
         match self {
             // A metadata-only message with no payload. Any real array is a
             // non-empty IPC stream, so an empty payload maps to the unit array.
-            RawData::Empty => Ok(().into_arrow().into()),
+            RawData::Empty => {
+                Ok(dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data())
+            }
             RawData::Vec(data) => {
                 // Wrap the 128-byte-aligned `AVec` as an Arrow `Buffer` without
                 // copying (the buffer aliases the allocation), then let the
@@ -26,7 +28,7 @@ impl RawData {
                 let raw_buffer = unsafe {
                     arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(data))
                 };
-                decode_arrow_ipc_zero_copy(raw_buffer)
+                decode_arrow_ipc_zero_copy_raw(raw_buffer)
             }
         }
     }
@@ -45,7 +47,7 @@ mod tests {
     use arrow::array::{Array, Float32Array};
     use dora_message::node_to_daemon::DataMessage;
 
-    /// The daemon/TCP fallback carries the IPC stream as a bincode-serialized
+    /// The daemon/TCP fallback carries the IPC stream as a postcard-serialized
     /// `DataMessage::Vec`. A round-trip through that serialization must preserve
     /// both the payload and its 128-byte alignment, so the receiver still
     /// decodes zero-copy via `decode_arrow_ipc_zero_copy`.
@@ -55,14 +57,14 @@ mod tests {
 
         // Encode the IPC stream into a 128-byte-aligned AVec, exactly as the
         // send path does for the daemon fallback.
-        let len = ipc_encode::ipc_fast_path_len(&data).unwrap();
+        let len = ipc_encode::ipc_fast_path_len_data(&data).unwrap();
         let mut avec: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
-        ipc_encode::encode_ipc_into(&data, &mut avec).unwrap();
+        ipc_encode::encode_ipc_into_data(&data, &mut avec).unwrap();
         let message = DataMessage::Vec(avec);
 
-        // bincode round-trip = what the node->daemon->node TCP hops do.
-        let bytes = bincode::serialize(&message).unwrap();
-        let restored: DataMessage = bincode::deserialize(&bytes).unwrap();
+        // Same encode/decode entry points the node->daemon->node TCP hops use.
+        let bytes = dora_message::encode(&message).unwrap();
+        let restored: DataMessage = dora_message::decode(&bytes).unwrap();
         let DataMessage::Vec(avec) = restored;
         assert_eq!(
             avec.as_ptr() as usize % 128,
@@ -82,6 +84,9 @@ mod tests {
     #[test]
     fn empty_payload_decodes_to_unit_array() {
         let decoded = RawData::Empty.into_arrow_array().unwrap();
-        assert_eq!(decoded, ().into_arrow().into());
+        assert_eq!(
+            decoded,
+            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data()
+        );
     }
 }

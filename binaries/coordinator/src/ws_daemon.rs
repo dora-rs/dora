@@ -3,10 +3,12 @@ use crate::{
     state::DaemonConnection,
 };
 use axum::extract::ws::{Message, WebSocket};
+use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
+    coordinator_to_daemon::ResolveMachineReply,
+    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
     ws_protocol::WsResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -22,6 +24,11 @@ pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
+    store: Arc<dyn CoordinatorStore>,
+    peer_addr: std::net::SocketAddr,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
 ) {
     let (mut ws_tx, mut ws_rx) = socket.split();
 
@@ -74,9 +81,14 @@ pub(crate) async fn handle_daemon_ws(
                         &clock,
                         &cmd_tx,
                         &pending_replies,
+                        &store,
                         &mut tracked_daemon_id,
                         &mut tracked_connection_id,
-                    ).await {
+                        peer_addr,
+                        daemon_peer_addrs.clone(),
+                    )
+                    .await
+                    {
                         break;
                     }
                 } else {
@@ -112,20 +124,29 @@ pub(crate) async fn handle_daemon_ws(
 /// instead of going through the `serde_json::Value` used for routing.
 #[derive(serde::Deserialize)]
 struct DaemonWsRequestRaw {
+    /// Request id from the daemon envelope — echoed back in replies so
+    /// the daemon can route the reply to its pending caller.
+    id: Uuid,
     params: dora_message::daemon_to_coordinator::Timestamped<
         dora_message::daemon_to_coordinator::CoordinatorRequest,
     >,
 }
 
 /// Handle a daemon request (event or register). Returns false if the event channel closed.
+#[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
+    store: &Arc<dyn CoordinatorStore>,
     tracked_daemon_id: &mut Option<DaemonId>,
     tracked_connection_id: &mut Option<Uuid>,
+    peer_addr: std::net::SocketAddr,
+    daemon_peer_addrs: Arc<
+        std::sync::RwLock<std::collections::HashMap<String, std::net::SocketAddr>>,
+    >,
 ) -> bool {
     let parsed: DaemonWsRequestRaw = match serde_json::from_str(raw_text) {
         Ok(m) => m,
@@ -135,6 +156,7 @@ async fn handle_daemon_request(
         }
     };
     let message = parsed.params;
+    let request_id = parsed.id;
 
     if let Err(err) = clock.update_with_timestamp(&message.timestamp) {
         tracing::warn!("failed to update coordinator clock: {err}");
@@ -165,6 +187,7 @@ async fn handle_daemon_request(
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
+            connection.peer_addr = Some(peer_addr);
             // Capture the connection_id before moving `connection` into the event.
             let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
@@ -208,6 +231,59 @@ async fn handle_daemon_request(
             } else {
                 true
             }
+        }
+        CoordinatorRequest::ResolveMachine { machine_id } => {
+            // Resolve the machine id against the registered-daemon store;
+            // unknown machines (or store errors) resolve to `found: false`.
+            // Also report the target daemon's WS peer address so the
+            // requesting daemon can reach its direct-TCP data listener.
+            let (found, address) = match store.get_daemon_by_machine(&machine_id) {
+                Ok(Some(d)) => (
+                    true,
+                    daemon_peer_addrs
+                        .read()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&d.to_string())
+                        .copied(),
+                ),
+                Ok(None) => (false, None),
+                Err(e) => {
+                    tracing::warn!("failed to resolve machine `{machine_id}`: {e}");
+                    (false, None)
+                }
+            };
+            // Reply over the same WS envelope the Register flow uses
+            // (`{"id", "method": "daemon_event", "params": <Timestamped<...>>}`),
+            // mirroring `DaemonConnection::send`.
+            let reply = Timestamped {
+                inner: ResolveMachineReply::ResolveMachineResult { found, address },
+                timestamp: clock.new_timestamp(),
+            };
+            let params = match serde_json::to_string(&reply) {
+                Ok(params) => params,
+                Err(err) => {
+                    tracing::warn!("failed to serialize ResolveMachine reply: {err}");
+                    return true;
+                }
+            };
+            // Echo the request id so the daemon can route this reply to
+            // its pending caller (COORDINATOR_PENDING).
+            let json =
+                format!(r#"{{"id":"{request_id}","method":"daemon_event","params":{params}}}"#);
+            if cmd_tx.send(json).await.is_err() {
+                return false;
+            }
+            true
+        }
+        // `CoordinatorRequest` is `#[non_exhaustive]`: a newer daemon may send a
+        // variant this coordinator predates. Keep the connection open and drop
+        // the request rather than tearing down a daemon over an unknown message.
+        _ => {
+            tracing::warn!(
+                "ignoring unrecognized request from daemon (daemon is likely newer than this coordinator)"
+            );
+
+            true
         }
     }
 }
@@ -297,6 +373,13 @@ fn translate_daemon_event(
             node_id,
             clean_stop,
         }),
+        // `DaemonEvent` is `#[non_exhaustive]`: a newer daemon may report an
+        // event this coordinator has no translation for. `None` is already the
+        // "nothing to forward" signal, so an unknown event is dropped quietly.
+        _ => {
+            tracing::debug!("ignoring unrecognized daemon event from `{daemon_id}`");
+            None
+        }
     }
 }
 

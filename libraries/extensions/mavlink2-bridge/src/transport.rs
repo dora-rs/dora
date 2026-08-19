@@ -89,15 +89,36 @@ fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> +
             "missing device path in '{url}'"
         )));
     }
-    let baud = parse_baud(url).unwrap_or(DEFAULT_SERIAL_BAUD);
+    let baud = parse_baud(url)?;
     let version = parse_proto_query(url)?;
     open_mavlink_versioned(&format!("serial:{device}:{baud}"), version)
 }
 
-fn parse_baud(url: &Url) -> Option<u32> {
-    url.query_pairs()
-        .find(|(k, _)| k == "baud")
-        .and_then(|(_, v)| v.parse::<u32>().ok())
+/// Resolve the serial baud rate from an optional `?baud=` query parameter.
+///
+/// - absent → the [`DEFAULT_SERIAL_BAUD`] default;
+/// - a positive integer → that rate;
+/// - anything else (unparseable, or `0`) → a [`BridgeError::Config`].
+///
+/// The explicit error on an invalid value is deliberate and mirrors
+/// [`parse_proto_query`]: a typo such as `?baud=57600x` (or a stray `?baud=0`)
+/// previously fell back to `115_200` silently, so a misconfigured endpoint
+/// connected at the wrong baud with no diagnostic — producing a garbled or
+/// dead serial link. An absent parameter is distinct from an invalid one and
+/// still defaults quietly.
+fn parse_baud(url: &Url) -> BridgeResult<u32> {
+    match url.query_pairs().find(|(k, _)| k == "baud") {
+        None => Ok(DEFAULT_SERIAL_BAUD),
+        Some((_, v)) => v
+            .parse::<u32>()
+            .ok()
+            .filter(|&baud| baud > 0)
+            .ok_or_else(|| {
+                BridgeError::Config(format!(
+                    "invalid serial baud '{v}' in '{url}' (expected a positive integer)"
+                ))
+            }),
+    }
 }
 
 fn open_mavlink_versioned(
@@ -141,19 +162,34 @@ mod tests {
     #[test]
     fn parses_baud_query() {
         let url = Url::parse("serial:///dev/tty.usbmodem1?baud=57600").unwrap();
-        assert_eq!(parse_baud(&url), Some(57600));
+        assert_eq!(parse_baud(&url).unwrap(), 57600);
     }
 
     #[test]
     fn parses_baud_missing() {
+        // An absent `?baud=` defaults quietly — omission is not a misconfiguration.
         let url = Url::parse("serial:///dev/tty.usbmodem1").unwrap();
-        assert_eq!(parse_baud(&url), None);
+        assert_eq!(parse_baud(&url).unwrap(), DEFAULT_SERIAL_BAUD);
     }
 
     #[test]
-    fn parses_baud_garbage() {
+    fn rejects_baud_garbage() {
+        // A present-but-invalid `?baud=` is a hard error, not a silent fallback
+        // to 115200 (which would connect at the wrong baud with no diagnostic).
         let url = Url::parse("serial:///dev/tty.usbmodem1?baud=fast").unwrap();
-        assert_eq!(parse_baud(&url), None);
+        let err = parse_baud(&url).unwrap_err();
+        assert!(
+            matches!(err, BridgeError::Config(_)),
+            "expected a Config error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn rejects_baud_zero() {
+        // `?baud=0` parses as a u32 but is not a usable rate; reject it rather
+        // than handing `serial:/dev/...:0` to the mavlink layer.
+        let url = Url::parse("serial:///dev/tty.usbmodem1?baud=0").unwrap();
+        assert!(parse_baud(&url).is_err());
     }
 
     #[test]

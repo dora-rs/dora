@@ -21,7 +21,7 @@ use crate::{
 /// Topic inspection requires debug mode on the dataflow:
 ///
 /// ```yaml
-/// _unstable_debug:
+/// debug:
 ///   enable_debug_inspection: true
 /// ```
 ///
@@ -195,6 +195,8 @@ fn info(
                             stats_clone.record(data_size, data_type, Instant::now());
                         }
                         InterDaemonEvent::OutputClosed { .. } => break,
+                        // `InterDaemonEvent` is `#[non_exhaustive]`: skip events this build predates.
+                        _ => continue,
                     }
                 }
                 Ok(Err(_)) => continue,

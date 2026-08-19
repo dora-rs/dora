@@ -6,24 +6,14 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 use eyre::ContextCompat;
 use half::f16;
 
-use crate::ArrowData;
+use crate::{DoraArray, internal::array_ref};
 
-impl From<ArrowData> for arrow::array::ArrayRef {
-    fn from(value: ArrowData) -> Self {
-        value.0
-    }
-}
-
-impl From<arrow::array::ArrayRef> for ArrowData {
-    fn from(value: arrow::array::ArrayRef) -> Self {
-        Self(value)
-    }
-}
-
-impl TryFrom<&ArrowData> for bool {
+impl TryFrom<&DoraArray> for bool {
     type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-        let bool_array = value.as_boolean_opt().context("not a bool array")?;
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
+        let bool_array = array_ref(value)
+            .as_boolean_opt()
+            .context("not a bool array")?;
         if bool_array.is_empty() {
             eyre::bail!("empty array");
         }
@@ -40,12 +30,11 @@ impl TryFrom<&ArrowData> for bool {
 macro_rules! impl_try_from_arrow_data {
     ($($t:ty => $arrow_type:ident),*) => {
         $(
-            impl TryFrom<&ArrowData> for $t {
+            impl TryFrom<&DoraArray> for $t {
                 type Error = eyre::Report;
 
-                fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
-                    let array = value
-                        .as_primitive_opt::<arrow::datatypes::$arrow_type>()
+                fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
+                    let array = array_ref(value).as_primitive_opt::<arrow::datatypes::$arrow_type>()
                         .context(concat!("not a primitive ", stringify!($arrow_type), " array"))?;
                     extract_single_primitive(array)
                 }
@@ -53,12 +42,11 @@ macro_rules! impl_try_from_arrow_data {
         )*
 
         $(
-            impl<'a> TryFrom<&'a ArrowData> for &'a [$t] {
+            impl<'a> TryFrom<&'a DoraArray> for &'a [$t] {
                 type Error = eyre::Report;
 
-                fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-                    let array: &PrimitiveArray<arrow::datatypes::$arrow_type> = value
-                        .as_primitive_opt()
+                fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
+                    let array: &PrimitiveArray<arrow::datatypes::$arrow_type> = array_ref(value).as_primitive_opt()
                         .wrap_err(concat!("not a primitive ", stringify!($arrow_type), " array"))?;
                     if array.null_count() != 0 {
                         eyre::bail!("array has nulls");
@@ -69,10 +57,10 @@ macro_rules! impl_try_from_arrow_data {
         )*
 
         $(
-            impl<'a> TryFrom<&'a ArrowData> for Vec<$t> {
+            impl<'a> TryFrom<&'a DoraArray> for Vec<$t> {
                 type Error = eyre::Report;
 
-                fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
+                fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
                     value
                         .try_into()
                         .map(|slice: &'a [$t]| slice.to_vec())
@@ -96,10 +84,12 @@ impl_try_from_arrow_data!(
     f64 => Float64Type
 );
 
-impl<'a> TryFrom<&'a ArrowData> for &'a str {
+impl<'a> TryFrom<&'a DoraArray> for &'a str {
     type Error = eyre::Report;
-    fn try_from(value: &'a ArrowData) -> Result<Self, Self::Error> {
-        let array: &StringArray = value.as_string_opt().wrap_err("not a string array")?;
+    fn try_from(value: &'a DoraArray) -> Result<Self, Self::Error> {
+        let array: &StringArray = array_ref(value)
+            .as_string_opt()
+            .wrap_err("not a string array")?;
         if array.is_empty() {
             eyre::bail!("empty array");
         }
@@ -113,9 +103,9 @@ impl<'a> TryFrom<&'a ArrowData> for &'a str {
     }
 }
 
-impl TryFrom<&ArrowData> for String {
+impl TryFrom<&DoraArray> for String {
     type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
         // Delegate to the `&str` impl so the single-element validation lives in
         // one place and the two conversions can never drift apart.
         let s: &str = value.try_into()?;
@@ -123,14 +113,17 @@ impl TryFrom<&ArrowData> for String {
     }
 }
 
-impl TryFrom<&ArrowData> for NaiveDate {
+impl TryFrom<&DoraArray> for NaiveDate {
     type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
         const CTX: &str = "data type cannot be converted to NaiveDate";
-        if let Some(array) = value.as_any().downcast_ref::<arrow::array::Date32Array>() {
+        if let Some(array) = array_ref(value)
+            .as_any()
+            .downcast_ref::<arrow::array::Date32Array>()
+        {
             return single_temporal(array, |a, i| a.value_as_date(i), CTX);
         }
-        let array = value
+        let array = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::Date64Array>()
             .context("Reference is neither to a Date32Array nor a Date64Array")?;
@@ -138,58 +131,58 @@ impl TryFrom<&ArrowData> for NaiveDate {
     }
 }
 
-impl TryFrom<&ArrowData> for NaiveTime {
+impl TryFrom<&DoraArray> for NaiveTime {
     type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
         const CTX: &str = "data type cannot be converted to NaiveTime";
-        if let Some(array) = value
+        if let Some(array) = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::Time32SecondArray>()
         {
             return single_temporal(array, |a, i| a.value_as_time(i), CTX);
         }
-        if let Some(array) = value
+        if let Some(array) = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::Time32MillisecondArray>()
         {
             return single_temporal(array, |a, i| a.value_as_time(i), CTX);
         }
-        if let Some(array) = value
+        if let Some(array) = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::Time64MicrosecondArray>()
         {
             return single_temporal(array, |a, i| a.value_as_time(i), CTX);
         }
-        let array = value
+        let array = array_ref(value)
             .as_primitive_opt::<arrow::datatypes::Time64NanosecondType>()
             .context("not any of the primitive Time arrays")?;
         single_temporal(array, |a, i| a.value_as_time(i), CTX)
     }
 }
 
-impl TryFrom<&ArrowData> for NaiveDateTime {
+impl TryFrom<&DoraArray> for NaiveDateTime {
     type Error = eyre::Report;
-    fn try_from(value: &ArrowData) -> Result<Self, Self::Error> {
+    fn try_from(value: &DoraArray) -> Result<Self, Self::Error> {
         const CTX: &str = "data type cannot be converted to NaiveDateTime";
-        if let Some(array) = value
+        if let Some(array) = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::TimestampSecondArray>()
         {
             return single_temporal(array, |a, i| a.value_as_datetime(i), CTX);
         }
-        if let Some(array) = value
+        if let Some(array) = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::TimestampMillisecondArray>()
         {
             return single_temporal(array, |a, i| a.value_as_datetime(i), CTX);
         }
-        if let Some(array) = value
+        if let Some(array) = array_ref(value)
             .as_any()
             .downcast_ref::<arrow::array::TimestampMicrosecondArray>()
         {
             return single_temporal(array, |a, i| a.value_as_datetime(i), CTX);
         }
-        let array = value
+        let array = array_ref(value)
             .as_primitive_opt::<arrow::datatypes::TimestampNanosecondType>()
             .context("not any of the primitive Timestamp arrays")?;
         single_temporal(array, |a, i| a.value_as_datetime(i), CTX)
@@ -198,7 +191,7 @@ impl TryFrom<&ArrowData> for NaiveDateTime {
 
 /// Extract the single scalar out of a length-1, non-null temporal array.
 ///
-/// Every temporal `TryFrom<&ArrowData>` arm above shares the exact same shape:
+/// Every temporal `TryFrom<&DoraArray>` arm above shares the exact same shape:
 /// validate that the array holds exactly one non-null element, then convert
 /// element 0 via one of arrow's `value_as_{date,time,datetime}` accessors.
 /// Centralizing it here removes ~8 near-verbatim copies and keeps the
@@ -246,13 +239,13 @@ where
 mod tests {
     use arrow::array::{PrimitiveArray, make_array};
 
-    use crate::ArrowData;
+    use crate::{DoraArray, internal::from_array_ref};
 
     #[test]
     fn test_u8() {
         let array =
             make_array(PrimitiveArray::<arrow::datatypes::UInt8Type>::from(vec![42]).into());
-        let data: ArrowData = array.into();
+        let data: DoraArray = from_array_ref(array);
         let value: u8 = (&data).try_into().unwrap();
         assert_eq!(value, 42);
     }

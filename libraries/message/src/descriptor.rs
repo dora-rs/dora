@@ -1,7 +1,7 @@
 #![warn(missing_docs)]
 
 use crate::{
-    config::{ByteSize, CommunicationConfig, Input, NodeRunConfig},
+    config::{ByteSize, Input, NodeRunConfig},
     id::{DataId, NodeId, OperatorId},
 };
 use schemars::JsonSchema;
@@ -40,7 +40,6 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 ///
 /// A dataflow consists of:
 /// - **Nodes**: The computational units that process data
-/// - **Communication**: Optional communication configuration
 /// - **Deployment**: Optional deployment configuration (unstable)
 /// - **Debug options**: Optional development and debugging settings (unstable)
 ///
@@ -86,19 +85,13 @@ pub struct Descriptor {
     /// Most of the other node fields are optional, but you typically want to specify at least some `inputs` and/or `outputs`.
     pub nodes: Vec<Node>,
 
-    /// Communication configuration (optional, uses defaults)
+    /// Deployment configuration (optional).
     #[schemars(skip)]
-    #[serde(default)]
-    pub communication: CommunicationConfig,
-
-    /// Deployment configuration (optional, unstable)
-    #[schemars(skip)]
-    #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
 
-    /// Debug options (optional, unstable)
+    /// Debug options (optional).
     #[schemars(skip)]
-    #[serde(default, rename = "_unstable_debug")]
+    #[serde(default)]
     pub debug: Debug,
 
     /// How often the daemon checks node health (in seconds).
@@ -243,16 +236,12 @@ pub enum DistributeStrategy {
 
 /// Debug options for dataflow development and troubleshooting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Debug {
     /// When true, daemons mirror every node output to the coordinator WebSocket
     /// so that `dora topic echo`, `dora topic hz`, and `dora topic info` can
     /// inspect runtime messages.
-    ///
-    /// The field was previously named `publish_all_messages_to_zenoh` (from
-    /// before the CLI inspection path moved off zenoh in PR #238). Serde still
-    /// accepts the old name as an alias for backward compatibility with
-    /// existing dataflow YAML; the alias will be removed in a future release.
-    #[serde(default, alias = "publish_all_messages_to_zenoh")]
+    #[serde(default)]
     pub enable_debug_inspection: bool,
 }
 
@@ -442,12 +431,6 @@ pub struct Node {
     /// ```
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ros2: Option<Ros2BridgeConfig>,
-
-    /// Legacy node configuration (deprecated).
-    ///
-    /// Please use the top-level [`path`](Self::path), [`args`](Self::args), etc. fields instead.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub custom: Option<CustomNode>,
 
     /// Output data identifiers produced by this node.
     ///
@@ -686,7 +669,17 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<String>,
 
-    /// Hub package reference (unstable).
+    /// Hub package reference.
+    ///
+    /// **Outside the 1.0 stability guarantee.** This field, the way it is
+    /// resolved, and the `HubProvenance` recorded in the lockfile may change
+    /// or be removed in a minor release. `dora build` and `dora validate`
+    /// print a warning whenever a dataflow uses it.
+    ///
+    /// The reason is readiness rather than scope: stabilizing `hub:` would
+    /// promise a typed-contract guarantee that no package in the catalog
+    /// currently delivers. The path to stabilization is the node-typing
+    /// workstream, not more code here — see `docs/plan-node-hub.md` §14 (P3.5).
     ///
     /// References a node published in the Dora Hub index:
     /// `[<namespace>/]<name>@<semver-requirement>`. A bare name is shorthand
@@ -898,9 +891,8 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpu_affinity: Option<Vec<usize>>,
 
-    /// Unstable machine deployment configuration
+    /// Machine deployment configuration.
     #[schemars(skip)]
-    #[serde(rename = "_unstable_deploy")]
     pub deploy: Option<Deploy>,
 }
 
@@ -1134,9 +1126,11 @@ pub struct CustomNode {
     /// Args for the executable.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub args: Option<String>,
-    /// Environment variables for the custom nodes
+    /// Environment variables injected during resolution.
     ///
-    /// Deprecated, use outer-level `env` field instead.
+    /// Not user-writable: [`Node::env`] is the YAML surface. Resolution folds
+    /// it into this field, and the ROS2 bridge desugaring uses it to pass
+    /// `DORA_ROS2_BRIDGE_CONFIG` to the spawned bridge binary.
     pub envs: Option<BTreeMap<String, EnvValue>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub build: Option<String>,
@@ -1551,7 +1545,7 @@ nodes:
 nodes:
   - id: test
     path: test.py
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 "#;
         let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
@@ -1559,19 +1553,53 @@ _unstable_debug:
     }
 
     #[test]
-    fn debug_flag_accepts_legacy_alias() {
-        // Backward-compat regression guard (#240): dataflow YAML in the wild
-        // still uses `publish_all_messages_to_zenoh`. The serde alias must
-        // keep deserializing that into the renamed field.
+    fn removed_unstable_key_prefix_is_rejected_not_ignored() {
+        // `_unstable_deploy` / `_unstable_debug` lost their prefix for 1.0.
+        // Both must *error*, never deserialize to the default: a dataflow that
+        // still says `_unstable_deploy` would otherwise run every node on the
+        // local daemon while looking like it pinned them to machines, and a
+        // stale `_unstable_debug` would leave `dora topic echo` silently
+        // empty. `deny_unknown_fields` on `Descriptor` is what makes these
+        // diagnosable, so this test guards that attribute as much as the
+        // rename.
+        for (key, block) in [
+            ("_unstable_deploy", "_unstable_deploy:\n  machine: m1\n"),
+            (
+                "_unstable_debug",
+                "_unstable_debug:\n  enable_debug_inspection: true\n",
+            ),
+        ] {
+            let yaml = format!("nodes:\n  - id: test\n    path: test.py\n{block}");
+            let err = serde_yaml::from_str::<Descriptor>(&yaml)
+                .expect_err("the pre-1.0 `_unstable_` key must be rejected");
+            assert!(
+                err.to_string().contains(key),
+                "error should name `{key}`, got: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn debug_flag_rejects_the_removed_legacy_alias() {
+        // The `publish_all_messages_to_zenoh` alias was removed for 1.0. It
+        // must *error* rather than deserialize to the default: silently
+        // ignoring it would leave debug inspection off while the dataflow
+        // looks like it enabled it, and `dora topic echo` would return
+        // nothing with no explanation. `deny_unknown_fields` on `Debug` is
+        // what turns that into a diagnosable failure.
         let yaml = r#"
 nodes:
   - id: test
     path: test.py
-_unstable_debug:
+debug:
   publish_all_messages_to_zenoh: true
 "#;
-        let desc: Descriptor = serde_yaml::from_str(yaml).unwrap();
-        assert!(desc.debug.enable_debug_inspection);
+        let err = serde_yaml::from_str::<Descriptor>(yaml)
+            .expect_err("removed alias must be rejected, not silently ignored");
+        assert!(
+            err.to_string().contains("publish_all_messages_to_zenoh"),
+            "error should name the offending field, got: {err}"
+        );
     }
 
     #[test]

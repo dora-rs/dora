@@ -2,25 +2,23 @@ use std::{fs::File, thread, time::Duration};
 
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use dora_node_api::{
-    DoraNode,
-    arrow::array::{ArrayData, NullArray, make_array},
-    arrow_utils::decode_arrow_ipc,
+    DoraArray, DoraNode, IntoArrow, arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
 };
 use dora_recording::RecordingReader;
 use eyre::Context;
 
-/// Decode a recorded output payload back into Arrow [`ArrayData`].
+/// Decode a recorded output payload back into a dora payload.
 ///
 /// The recorded payload is a self-describing Arrow IPC stream, or `None` for
 /// a metadata-only message (which replays as an empty null array). A decode
 /// failure is returned as an `Err` so the caller can skip that single record
 /// rather than aborting the whole replay.
-fn decode_recorded_payload(data: Option<&[u8]>) -> eyre::Result<ArrayData> {
+fn decode_recorded_payload(data: Option<&[u8]>) -> eyre::Result<DoraArray> {
     match data {
         Some(bytes) => {
             decode_arrow_ipc(bytes).wrap_err("failed to decode recorded Arrow IPC payload")
         }
-        None => Ok(NullArray::new(0).into()),
+        None => Ok(NullArray::new(0).into_arrow()),
     }
 }
 
@@ -89,9 +87,8 @@ fn main() -> eyre::Result<()> {
             }
             prev_offset = entry.timestamp_offset_nanos;
 
-            // Deserialize the InterDaemonEvent from raw bincode
             let timestamped: Timestamped<InterDaemonEvent> =
-                match bincode::deserialize(&entry.event_bytes) {
+                match Timestamped::deserialize_inter_daemon_event(&entry.event_bytes) {
                     Ok(event) => event,
                     Err(e) => {
                         eprintln!(
@@ -119,7 +116,7 @@ fn main() -> eyre::Result<()> {
                         Err(e) => {
                             // A single corrupt-but-complete payload must not
                             // abort the whole replay. Skip it, matching the
-                            // bincode branch above and the recording layer's
+                            // event-decode branch above and the recording layer's
                             // torn-record resilience (dropping a bad record
                             // rather than failing the run).
                             eprintln!(
@@ -130,12 +127,18 @@ fn main() -> eyre::Result<()> {
                             continue;
                         }
                     };
-                    node.send_output(output_id, metadata.parameters, make_array(array))
+                    node.send_output(output_id, metadata.parameters, array)
                         .wrap_err("failed to send replay output")?;
                     replayed += 1;
                 }
                 InterDaemonEvent::OutputClosed { .. } => {
                     // Skip close events during replay
+                }
+                // `InterDaemonEvent` is `#[non_exhaustive]`: a recording made by a
+                // newer dora may carry events this replay node predates. Skip them
+                // rather than aborting an otherwise-replayable recording.
+                _ => {
+                    skipped += 1;
                 }
             }
         }
@@ -170,8 +173,9 @@ fn main() -> eyre::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{decode_recorded_payload, pacing_sleep_nanos, replay_emitted_nothing_usable};
-    use dora_node_api::arrow::array::{Array, Int32Array};
+    use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
+    use dora_node_api::arrow_v59::array::Int32Array;
 
     #[test]
     fn first_entry_honors_its_initial_offset() {
@@ -214,11 +218,11 @@ mod tests {
     #[test]
     fn valid_ipc_payload_round_trips() {
         // A well-formed recorded IPC stream decodes back to its data.
-        let original = Int32Array::from(vec![1, 2, 3]);
-        let bytes = encode_arrow_ipc(&original.to_data()).expect("encode");
+        let original = DoraArray::from_array(Int32Array::from(vec![1, 2, 3]));
+        let bytes = encode_arrow_ipc(&original).expect("encode");
         let decoded = decode_recorded_payload(Some(&bytes)).expect("valid IPC must decode");
         assert_eq!(decoded.len(), 3);
-        assert_eq!(&decoded, &original.to_data());
+        assert_eq!(decoded.as_array(), original.as_array());
     }
 
     #[test]

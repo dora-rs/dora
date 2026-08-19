@@ -145,6 +145,14 @@ jobs:
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
           -- -D warnings
+      # `--all` does not enable opt-in features, so neither the extension's
+      # daemon half nor the daemon's wiring for it would otherwise be linted.
+      # `--all-targets` on the extension covers its tests, which live with the
+      # code it tests.
+      - name: Clippy (tensor-pool extension)
+        run: >
+          cargo clippy -p dora-tensor-pool --features daemon --all-targets -- -D warnings
+          && cargo clippy -p dora-daemon --features tensor-pool -- -D warnings
 
   # Cheap compile gate on every PR. `cargo check` skips codegen/link,
   # so it's much faster than the full `test` job below. Exposed as the
@@ -190,6 +198,19 @@ jobs:
           -p dora-operator-api-python
           -p dora-ros2-bridge-python
           -p dora-runtime-python
+      # The C/C++ bindings name Arrow types directly, so they depend on
+      # `dora-node-api`'s `arrow-v59` feature. `cargo check --all` above does
+      # NOT catch a missing opt-in: another workspace member (the C++ binding)
+      # enables the feature, and cargo unifies features across a whole-workspace
+      # build, so the C binding compiles by accident. Built per-crate the
+      # unification is gone and the break appears. Without this, the first place
+      # it surfaces is `find_package smoke`, which is skipped on `pull_request`
+      # and only runs on a merge-queue batch — one wasted batch cycle per
+      # attempt (#3213).
+      - name: Check C/C++ bindings compile standalone
+        run: |
+          cargo check -p dora-node-api-c
+          cargo check -p dora-node-api-cxx
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.
@@ -252,6 +273,21 @@ jobs:
           --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+
+      # The tensor-pool transport is opt-in (see docs/extensions.md), so the
+      # workspace run above builds the extension's node half only — its daemon
+      # half and that half's tests compile out. ~5s on top of an already-warm
+      # target dir, cheap enough to keep the CPU paths honest on every PR. The
+      # GPU paths remain uncovered: dora's CI has no GPU runners.
+      #
+      # The daemon run covers its own feature-gated tests, which include the
+      # `ws_reader_routes_replies_to_pending_daemon_requests` pin: the routing
+      # block it guards is generic, but `resolve_machine` — the only way to
+      # reach it — is gated, so the test is too.
+      - name: Test (tensor-pool extension)
+        run: >
+          cargo test -p dora-tensor-pool --features daemon
+          && cargo test -p dora-daemon --features tensor-pool
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.
@@ -448,6 +484,15 @@ jobs:
       - name: Run finish-straggler watchdog E2E
         run: >
           cargo test -p dora-examples --test finish-straggler-e2e -- --test-threads=1
+        timeout-minutes: 10
+      # Coordinator Stop-vs-Restart race regression: a `Stop` landing while
+      # a `Restart` is pending must cancel the restart and actually stop the
+      # dataflow, not report success while a new incarnation keeps running.
+      # Lives in `dora-examples` (excluded from the bulk `cargo test --all`
+      # step), so it needs an explicit invocation.
+      - name: Run coordinator stop/restart race E2E
+        run: >
+          cargo test -p dora-examples --test stop-restart-race-e2e -- --test-threads=1
         timeout-minutes: 10
 
   # Semantic contract tests — promoted from nightly per #1632.
@@ -687,7 +732,15 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-deny
+          tool: cargo-deny
+      # Pin cargo-audit via cargo install: install-action's "latest"
+      # raced between runner caches, and older cached releases crash
+      # parsing this Cargo.lock's multi-target windows-sys (webbrowser's
+      # windows-only 0.48.0 target dependency — "invalid Cargo.lock
+      # dependency tree: failed to find dependency: windows-sys 0.48.0").
+      # 0.22.2 parses it cleanly (verified locally against this lock).
+      - name: Install cargo-audit (pinned)
+        run: cargo install cargo-audit --locked --version 0.22.2
       - run: make qa-audit
 
   unwrap-budget:
