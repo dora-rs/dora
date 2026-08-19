@@ -815,8 +815,8 @@ fn propagate_module_node_env(
     }
 }
 
-/// Substitute `${_param.name}` references in a node's args and inject params
-/// into the node's env map as `EnvValue::String` entries.
+/// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
+/// and inject params into the node's env map as `EnvValue::String` entries.
 fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
     // Substitute in args
     if let Some(ref mut args) = node.args {
@@ -833,8 +833,15 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
     }
 }
 
-/// Replace every `${_param.<key>}` token with its parameter value in a single
-/// left-to-right pass.
+/// Replace every parameter reference with its value in a single left-to-right
+/// pass. Two forms are accepted:
+///
+/// - `${_param.<key>}` -- delimited; the key is matched case-sensitively and
+///   the closing brace terminates it.
+/// - `$PARAM_<KEY>` -- the documented shell-style form (see `docs/modules.md`),
+///   matched against the upper-cased key. Having no delimiter it extends over
+///   the maximal run of `[A-Za-z0-9_]`, so `$PARAM_SPEED_LIMIT` is a single
+///   token and never partially matches a declared `speed` (#2901).
 ///
 /// A previous implementation looped over the params calling `String::replace`
 /// on the accumulating result, which had two problems: the outcome depended on
@@ -845,34 +852,70 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
 /// verbatim, matching the old behavior of only replacing keys present in
 /// `params`.
 fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> String {
-    const PREFIX: &str = "${_param.";
+    const BRACED: &str = "${_param.";
+    const ENV_STYLE: &str = "$PARAM_";
+
+    // `$PARAM_<KEY>` matches against the uppercased param name, the same
+    // mapping `substitute_params_in_node` uses for the injected env vars.
+    // Keys that differ only in case are rejected before we get here, so this
+    // map cannot silently drop a param.
+    let env_style: BTreeMap<String, &String> = params
+        .iter()
+        .map(|(key, value)| (key.to_uppercase(), value))
+        .collect();
+
     let mut result = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(start) = rest.find(PREFIX) {
+    while let Some(start) = rest.find('$') {
         result.push_str(&rest[..start]);
-        let after_prefix = &rest[start + PREFIX.len()..];
-        match after_prefix.find('}') {
-            Some(end) => {
-                let key = &after_prefix[..end];
-                match params.get(key) {
-                    Some(value) => result.push_str(value),
-                    // Unknown key: emit the token unchanged rather than dropping it.
-                    None => {
-                        result.push_str(PREFIX);
-                        result.push_str(key);
-                        result.push('}');
+        let at_token = &rest[start..];
+
+        if let Some(after_prefix) = at_token.strip_prefix(BRACED) {
+            match after_prefix.find('}') {
+                Some(end) => {
+                    let key = &after_prefix[..end];
+                    match params.get(key) {
+                        Some(value) => result.push_str(value),
+                        // Unknown key: emit the token unchanged rather than dropping it.
+                        None => {
+                            result.push_str(BRACED);
+                            result.push_str(key);
+                            result.push('}');
+                        }
                     }
+                    // Continue *after* the closing brace so a substituted value is
+                    // never re-scanned for further tokens.
+                    rest = &after_prefix[end + 1..];
                 }
-                // Continue *after* the closing brace so a substituted value is
-                // never re-scanned for further tokens.
-                rest = &after_prefix[end + 1..];
+                // No closing brace: emit the prefix literally and continue past it
+                // (guarantees progress, so the loop always terminates).
+                None => {
+                    result.push_str(BRACED);
+                    rest = after_prefix;
+                }
             }
-            // No closing brace: emit the prefix literally and continue past it
-            // (guarantees progress, so the loop always terminates).
-            None => {
-                result.push_str(PREFIX);
-                rest = after_prefix;
+        } else if let Some(after_prefix) = at_token.strip_prefix(ENV_STYLE) {
+            // The undelimited form ends at the first character that cannot be
+            // part of a shell identifier, so `$PARAM_SPEED_LIMIT` is one token
+            // and never matches a declared `speed` as a prefix (#2901).
+            let end = after_prefix
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(after_prefix.len());
+            let key = &after_prefix[..end];
+            match env_style.get(key) {
+                Some(value) => result.push_str(value),
+                // Unknown key: emit the token unchanged rather than dropping it.
+                None => {
+                    result.push_str(ENV_STYLE);
+                    result.push_str(key);
+                }
             }
+            rest = &after_prefix[end..];
+        } else {
+            // A bare `$` that starts neither form: emit it and step past, so
+            // the loop always makes progress.
+            result.push('$');
+            rest = &at_token[1..];
         }
     }
     result.push_str(rest);
@@ -1989,6 +2032,110 @@ nodes:
     }
 
     #[test]
+    fn expand_params_in_documented_env_style_args() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "args_module.yml",
+            r#"
+module:
+  name: with_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    args: --speed $PARAM_SPEED --mode $PARAM_MODE
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+      mode: turbo
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --mode turbo"));
+    }
+
+    #[test]
+    fn expand_params_in_env_style_args_distinguishes_overlapping_keys() {
+        // `speed` and `speed_limit` overlap as prefixes. The scanner takes the
+        // maximal `[A-Za-z0-9_]` run as the key, so each token resolves to the
+        // key it names exactly -- no ordering between the params is involved.
+        // (The old implementation needed a longest-first sort here.)
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "args_module.yml",
+            r#"
+module:
+  name: with_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    args: --short $PARAM_SPEED --long $PARAM_SPEED_LIMIT
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+      speed_limit: "4.5"
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        assert_eq!(proc.args.as_deref(), Some("--short 2.0 --long 4.5"));
+    }
+
+    #[test]
     fn substitute_params_basic_and_unknown() {
         let params = BTreeMap::from([
             ("speed".to_string(), "2.0".to_string()),
@@ -2013,6 +2160,44 @@ nodes:
             substitute_params_in_str("prefix ${_param.speed", &params),
             "prefix ${_param.speed"
         );
+    }
+
+    #[test]
+    fn substitute_params_env_style_requires_an_identifier_boundary() {
+        // `$PARAM_<KEY>` has no terminator, so the key must run to the end of
+        // the shell-identifier characters. A declared param that is only a
+        // *prefix* of the token must not match (#2901).
+        let params = BTreeMap::from([("speed".to_string(), "2.0".to_string())]);
+        assert_eq!(
+            substitute_params_in_str("--flag $PARAM_SPEED_LIMIT", &params),
+            "--flag $PARAM_SPEED_LIMIT"
+        );
+        // The exact token still substitutes, and a non-identifier character
+        // terminates it.
+        assert_eq!(
+            substitute_params_in_str("--flag $PARAM_SPEED --x", &params),
+            "--flag 2.0 --x"
+        );
+        assert_eq!(
+            substitute_params_in_str("$PARAM_SPEED,$PARAM_SPEED", &params),
+            "2.0,2.0"
+        );
+        // A bare `$` and an unknown token are both emitted verbatim.
+        assert_eq!(
+            substitute_params_in_str("cost $5 $PARAM_MISSING", &params),
+            "cost $5 $PARAM_MISSING"
+        );
+    }
+
+    #[test]
+    fn substitute_params_env_style_is_not_re_expanded() {
+        // A value that itself looks like a token is inserted verbatim, never
+        // re-scanned — the property the single-pass scanner exists for.
+        let params = BTreeMap::from([
+            ("a".to_string(), "$PARAM_B".to_string()),
+            ("b".to_string(), "x".to_string()),
+        ]);
+        assert_eq!(substitute_params_in_str("$PARAM_A", &params), "$PARAM_B");
     }
 
     #[test]
