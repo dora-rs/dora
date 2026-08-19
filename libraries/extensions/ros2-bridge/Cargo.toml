@@ -24,8 +24,14 @@ dora-ros2-bridge-msg-gen = { workspace = true }
 serde = { workspace = true }
 serde-big-array = "0.5.1"
 widestring = "1.2.1"
-ros2-client = "0.8.0"
-rustdds = "=0.11.4" # pinned because of https://github.com/Atostek/RustDDS/issues/375
+# Version + ROS distro feature are set in `[workspace.dependencies]`.
+ros2-client = { workspace = true }
+# No longer pinned to `=0.11.4`. That pin existed because rustdds 0.11.5-0.13.x
+# depended unconditionally on `pnet`, whose `pnet_datalink` links `Packet.lib`
+# on Windows (https://github.com/Atostek/RustDDS/issues/375). 0.14 replaced
+# `pnet` with `netdev`, which uses `windows-sys` and needs no npcap SDK, so the
+# issue is closed and Windows builds the bridge again.
+rustdds = "0.14"
 eyre = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3.23"
@@ -33,7 +39,7 @@ flume = "0.12.0"
 futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.4"
 thiserror = { workspace = true }
-cdr-encoding = "=0.10.2"
+cdr-encoding = { workspace = true }
 byteorder = "1"
 zenoh = { workspace = true, optional = true }
 zenoh-ext = { workspace = true, optional = true }

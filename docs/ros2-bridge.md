@@ -1043,6 +1043,17 @@ have their own notes under [Discovery & RMW notes](#discovery--rmw-notes-native-
 - **Max 8 concurrent action goals**: Additional goals receive `Aborted` status when the limit is reached.
 - **Max 64 pending service requests (server)**: Requests are dropped when the queue is full.
 
+### Distro constraint
+
+This applies to **all** bridge surfaces (YAML and native code APIs).
+
+- **Built for ROS 2 Humble**: The bridge enables `ros2-client`'s `humble`
+  distro feature, which selects the **24-byte `Gid`** used by
+  `rmw_dds_common` graph discovery. ROS 2 changed `Gid` from 24 to 16 bytes
+  between Humble and Iron, so graph *discovery* against an Iron-or-newer stack
+  will not match. Topic, service, and action **payloads are unaffected** --
+  those are ordinary CDR and interoperate across distros regardless.
+
 ---
 
 ## Best Practices

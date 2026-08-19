@@ -79,7 +79,7 @@ fn create_cmakefile(root: PathBuf, use_path_deps: bool) -> Result<(), eyre::ErrR
     const CMAKEFILE: &str = include_str!("cmake-template.txt");
 
     let cmake_file = if use_path_deps {
-        CMAKEFILE.replace("__DORA_PATH__", super::workspace_dir()?)
+        CMAKEFILE.replace("__DORA_PATH__", &super::workspace_dir()?)
     } else {
         CMAKEFILE.replace("__DORA_PATH__", "")
     };
@@ -132,7 +132,7 @@ fn create_node_cmakefile(
     let cmake_content = if use_path_deps {
         NODE_CMAKE
             .replace("___name___", name)
-            .replace("__DORA_PATH__", super::workspace_dir()?)
+            .replace("__DORA_PATH__", &super::workspace_dir()?)
     } else {
         NODE_CMAKE
             .replace("___name___", name)

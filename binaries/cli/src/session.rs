@@ -7,7 +7,7 @@ use dora_core::build::BuildInfo;
 use dora_message::{
     BuildId, SessionId,
     common::GitSource,
-    descriptor::{CoreNodeKind, NodeSource, OperatorSource, ResolvedNode},
+    descriptor::{CoreNodeKind, NodeSource, ResolvedNode},
     id::NodeId,
 };
 use eyre::{Context, ContextCompat};
@@ -272,11 +272,7 @@ impl DataflowSession {
                         //
                         // Kind tag still flips when switching kinds (Python ->
                         // SharedLibrary etc.), which IS a build-system change.
-                        let kind_tag = match &op.config.source {
-                            OperatorSource::SharedLibrary(_) => "shared-library",
-                            OperatorSource::Python(_) => "python",
-                            OperatorSource::Wasm(_) => "wasm",
-                        };
+                        let kind_tag = op.config.source.runtime_name();
                         canonical.push_str("    source-kind:");
                         canonical.push_str(kind_tag);
                         canonical.push('\n');
@@ -666,7 +662,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       machine: machine-1
 ",
         );
@@ -676,7 +672,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       machine: machine-2
 ",
         );
@@ -697,7 +693,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       working_dir: /tmp/a
 ",
         );
@@ -707,7 +703,7 @@ nodes:
   - id: a
     path: ./a
     build: cargo build
-    _unstable_deploy:
+    deploy:
       working_dir: /tmp/b
 ",
         );

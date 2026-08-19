@@ -1,0 +1,21 @@
+# Negative-path test: receiver frees the same tensor pool twice.
+env:
+  sender_device: cpu
+  receiver_device: cpu
+  message_num: 2
+  tensor_pool_scenario: duplicate_free
+nodes:
+  - id: sender_node
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy
+    path: sender.py
+    inputs:
+      next_require: receiver_node/next_require
+    outputs:
+      - data
+  - id: receiver_node
+    build: pip install torch --extra-index-url https://download.pytorch.org/whl/cpu numpy tqdm
+    path: receiver.py
+    inputs:
+      latency: sender_node/data
+    outputs:
+      - next_require

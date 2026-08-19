@@ -29,7 +29,8 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-use dora_node_api::arrow::array::{Array, Float32Array};
+use arrow::array::Float32Array;
+use dora_node_api::DoraArray;
 use dora_node_api::arrow_utils::ipc_encode::{
     encode_ipc_into, encode_ipc_to_vec, encode_uint8_ipc_header, ipc_fast_path_len, uint8_ipc_len,
 };
@@ -76,8 +77,10 @@ fn allocated_during<R>(f: impl FnOnce() -> R) -> (usize, R) {
 const ELEMENTS: usize = 1_048_576; // 1M f32 = 4 MiB payload
 const PAYLOAD: usize = ELEMENTS * 4;
 
-fn big_array() -> dora_node_api::arrow::array::ArrayData {
-    Float32Array::from((0..ELEMENTS).map(|i| i as f32).collect::<Vec<_>>()).into_data()
+fn big_array() -> DoraArray {
+    DoraArray::from_array(Float32Array::from(
+        (0..ELEMENTS).map(|i| i as f32).collect::<Vec<_>>(),
+    ))
 }
 
 /// Generous ceiling for "no payload-sized intermediate": headers, the flatbuffer

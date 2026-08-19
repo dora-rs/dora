@@ -29,13 +29,26 @@ pub enum PublisherMode {
     },
 }
 
+/// Validate a `KeepLast` history depth and return it as a sample count.
+///
+/// The depth is a ROS `i32` and must be positive; a non-positive value
+/// (`<= 0`) is rejected rather than cast. Casting a negative `i32` straight to
+/// `usize` would wrap to a near-`usize::MAX` sample count — a nonsensical,
+/// memory-abusive cache config — so both the publisher and the subscriber
+/// route their `depth` through this one check to stay in agreement.
+fn keep_last_samples(depth: i32) -> Result<usize, PubSubError> {
+    usize::try_from(depth)
+        .ok()
+        .filter(|&samples| samples > 0)
+        .ok_or(PubSubError::InvalidDepth(depth))
+}
+
 impl PublisherMode {
     pub fn from_qos(qos: &Ros2Qos) -> Result<Self, PubSubError> {
         let block = matches!(qos.reliability, Reliability::Reliable { .. })
             || matches!(qos.history, History::KeepAll);
         let depth = match qos.history {
-            History::KeepLast { depth } if depth > 0 => Some(depth as usize),
-            History::KeepLast { depth } => return Err(PubSubError::InvalidDepth(depth)),
+            History::KeepLast { depth } => Some(keep_last_samples(depth)?),
             History::KeepAll => None,
         };
         let transient_local = qos.durability == Durability::TransientLocal;
@@ -361,7 +374,7 @@ impl<T: Send + 'static> RawSubscription<T> {
             use zenoh_ext::AdvancedSubscriberBuilderExt;
             let mut history = zenoh_ext::HistoryConfig::default().detect_late_publishers();
             if let Some(History::KeepLast { depth }) = qos.map(|value| value.history) {
-                history = history.max_samples(depth as usize);
+                history = history.max_samples(keep_last_samples(depth)?);
             }
             NativeSubscriber::Advanced {
                 _subscriber: builder
@@ -496,4 +509,35 @@ pub enum PubSubError {
     Session(String),
     #[error("failed to declare ROS graph endpoint: {0}")]
     Token(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PubSubError, keep_last_samples};
+
+    #[test]
+    fn keep_last_samples_accepts_positive_depth() {
+        assert_eq!(keep_last_samples(1).unwrap(), 1);
+        assert_eq!(keep_last_samples(10).unwrap(), 10);
+        assert_eq!(keep_last_samples(i32::MAX).unwrap(), i32::MAX as usize);
+    }
+
+    #[test]
+    fn keep_last_samples_rejects_zero_and_negative_depth() {
+        // A non-positive depth must be an error, not a `depth as usize` cast
+        // that would wrap `-1` into a near-`usize::MAX` sample count. This is
+        // the same rule the publisher path enforces.
+        assert!(matches!(
+            keep_last_samples(0),
+            Err(PubSubError::InvalidDepth(0))
+        ));
+        assert!(matches!(
+            keep_last_samples(-1),
+            Err(PubSubError::InvalidDepth(-1))
+        ));
+        assert!(matches!(
+            keep_last_samples(i32::MIN),
+            Err(PubSubError::InvalidDepth(i32::MIN))
+        ));
+    }
 }

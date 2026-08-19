@@ -144,11 +144,11 @@ fn event_stream_loop(
                 close_tx = true;
             }
 
-            // FreeMemoryPool is an internal daemon→node notification —
-            // do not forward to user code.  The language binding is
-            // expected to poll for pending frees before each event.
-            if let NodeEvent::FreeMemoryPool { shared_memory_id } = &inner {
-                crate::event_stream::memory_pool::push_freed_pool(shared_memory_id.clone());
+            // Out-of-band: an extension's bookkeeping, not a dataflow input.
+            // Consume it so user code never has to match on an event it did
+            // not ask for; the extension drains the queue on its own schedule.
+            if let NodeEvent::ExtensionDropped { namespace, key } = &inner {
+                crate::event_stream::extensions::push_dropped(namespace.clone(), key.clone());
                 continue;
             }
 

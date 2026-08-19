@@ -11,6 +11,7 @@ use self::{arrow_utils::ipc_encode, control_channel::ControlChannel};
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::{Array, ArrayData};
 use colored::Colorize;
+use dora_arrow_convert::{DoraArray, IntoArrow};
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
@@ -406,7 +407,7 @@ fn declare_ack_subscribers(
                 let Some(attachment) = sample.attachment() else {
                     return;
                 };
-                let Ok(metadata) = bincode::deserialize::<Metadata>(&attachment.to_bytes()) else {
+                let Ok(metadata) = dora_message::decode::<Metadata>(&attachment.to_bytes()) else {
                     // Not a dora ack (foreign publisher on the ack key): ignore.
                     return;
                 };
@@ -524,7 +525,7 @@ impl StartupHandshake {
                             continue;
                         };
                         let metadata = Metadata::startup_marker(clock.new_timestamp());
-                        let attachment = match bincode::serialize(&metadata) {
+                        let attachment = match dora_message::encode(&metadata) {
                             Ok(bytes) => bytes,
                             Err(e) => {
                                 debug!(output = %state.output_id, "failed to serialize startup marker ({e})");
@@ -709,6 +710,12 @@ fn normalize_output_routing(
 /// waiting out the 10s only to be force-killed anyway yields a worse (unclean) exit.
 pub(crate) const ZENOH_TEARDOWN_TIMEOUT: Duration = Duration::from_secs(3);
 
+/// Capacity of the testing-mode daemon request channel. Kept comfortably above
+/// the number of concurrent requesters (event stream + close channel + control
+/// channel) so Drop's CloseOutputs send does not block on a full queue while
+/// the daemon thread is busy inside `next_event` (dora-rs/dora#2855).
+const TESTING_DAEMON_CHANNEL_CAPACITY: usize = 256;
+
 /// Allows sending outputs and retrieving node information.
 ///
 /// The main purpose of this struct is to send outputs via Dora. There are also functions available
@@ -776,6 +783,14 @@ pub struct DoraNode {
     /// (which is drained explicitly at the top of [`Drop`]) so that any
     /// async cleanup triggered by session shutdown can still run.
     _owned_runtime: Option<tokio::runtime::Runtime>,
+
+    /// Join handle for the in-process testing daemon thread spawned by
+    /// [`Self::init_testing`] / the testing branch of `init_with_options`.
+    /// Joined in [`Drop`] after closing the request channel (dora-rs/dora#2855).
+    testing_daemon: Option<std::thread::JoinHandle<()>>,
+    /// Signals the testing daemon to abort a scheduled `next_event` sleep so
+    /// Drop's CloseOutputs handshake can complete.
+    testing_shutdown: Option<Arc<AtomicBool>>,
 }
 
 impl DoraNode {
@@ -1151,8 +1166,8 @@ impl DoraNode {
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
 
-        let daemon_communication = match daemon_communication {
-            Some(comm) => comm.into(),
+        let (daemon_communication, testing_daemon, testing_shutdown) = match daemon_communication {
+            Some(comm) => (comm.into(), None, None),
             None => match testing_communication {
                 Some(comm) => {
                     let TestingCommunication {
@@ -1160,23 +1175,44 @@ impl DoraNode {
                         output,
                         options,
                     } = comm;
-                    let (sender, mut receiver) = tokio::sync::mpsc::channel(5);
-                    let new_communication = DaemonCommunicationWrapper::Testing { channel: sender };
-                    let mut events = IntegrationTestingEvents::new(input, output, options)?;
-                    std::thread::spawn(move || {
-                        while let Some((request, reply_sender)) = receiver.blocking_recv() {
-                            let reply = events.request(&request);
-                            if reply_sender
-                                .send(reply.unwrap_or_else(|err| {
-                                    DaemonReply::Result(Err(format!("{err:?}")))
-                                }))
-                                .is_err()
-                            {
-                                eprintln!("failed to send reply");
+                    let (sender, mut receiver) =
+                        tokio::sync::mpsc::channel(TESTING_DAEMON_CHANNEL_CAPACITY);
+                    let shutdown = Arc::new(AtomicBool::new(false));
+                    let new_communication = DaemonCommunicationWrapper::Testing {
+                        channel: sender,
+                        shutdown: shutdown.clone(),
+                    };
+                    let mut events =
+                        IntegrationTestingEvents::new(input, output, options, shutdown.clone())?;
+                    let shutdown_for_loop = shutdown.clone();
+                    let handle = std::thread::Builder::new()
+                        .name("dora-testing-daemon".into())
+                        .spawn(move || {
+                            while let Some((request, reply_sender)) = receiver.blocking_recv() {
+                                let outputs_done =
+                                    matches!(request.inner, DaemonRequest::OutputsDone);
+                                let reply = events.request(&request);
+                                if reply_sender
+                                    .send(reply.unwrap_or_else(|err| {
+                                        DaemonReply::Result(Err(format!("{err:?}")))
+                                    }))
+                                    .is_err()
+                                {
+                                    eprintln!("failed to send reply");
+                                }
+                                // Exit after OutputsDone under shutdown even if
+                                // EventStream still holds a sender clone — otherwise
+                                // node-first Drop waits forever on blocking_recv
+                                // (dora-rs/dora#2855).
+                                if outputs_done && shutdown_for_loop.load(Ordering::Relaxed) {
+                                    break;
+                                }
                             }
-                        }
-                    });
-                    new_communication
+                        })
+                        .map_err(|e| {
+                            NodeError::Init(format!("failed to spawn testing daemon thread: {e}"))
+                        })?;
+                    (new_communication, Some(handle), Some(shutdown))
                 }
                 None => {
                     return Err(NodeError::Init(
@@ -1390,6 +1426,8 @@ impl DoraNode {
             restart_count,
             runtime_type_checks,
             _owned_runtime: owned_runtime,
+            testing_daemon,
+            testing_shutdown,
         };
 
         if dynamic {
@@ -1485,10 +1523,13 @@ impl DoraNode {
         // place: pre-write the UInt8 IPC header into the (shared-memory) sample,
         // then let the caller write their bytes straight into the data region —
         // zero payload copies (and the SHM sample is moved into zenoh's `put`).
-        let total = ipc_encode::uint8_ipc_len(data_len)
+        // Prepare the UInt8 IPC header once, then size and fill the sample from
+        // it — avoids rebuilding the layout + IPC headers for the length query.
+        let prepared = ipc_encode::PreparedUint8Ipc::new(data_len)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
-        let mut sample = self.allocate_data_sample(total)?;
-        let offset = ipc_encode::encode_uint8_ipc_header(&mut sample, data_len)
+        let mut sample = self.allocate_data_sample(prepared.byte_len())?;
+        let offset = prepared
+            .encode_header_into(&mut sample)
             .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
         data(&mut sample[offset..offset + data_len]);
 
@@ -1512,16 +1553,17 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
 
-        let arrow_array = data.to_data();
+        let data = data.into_arrow();
+        let arrow_array = dora_arrow_convert::internal::array_ref(&data).to_data();
         self.check_output_type(&output_id, arrow_array.data_type(), &parameters)?;
 
-        let encoded = self.sample_allocator.encode_arrow(&arrow_array)?;
+        let encoded = self.sample_allocator.encode_arrow_data(&arrow_array)?;
         self.send_encoded_unchecked(output_id, parameters, encoded.sample)
     }
 
@@ -1660,12 +1702,12 @@ impl DoraNode {
         // OTel Baggage is NOT propagated to avoid leaking sensitive data across
         // node boundaries. If a user explicitly provides this key, it wins.
         #[cfg(feature = "tracing")]
-        if !parameters.contains_key("open_telemetry_context") {
+        if !parameters.contains_key(crate::OPEN_TELEMETRY_CONTEXT) {
             let cx = opentelemetry::Context::current();
             let serialized = dora_tracing::telemetry::serialize_context(&cx);
             if !serialized.is_empty() {
                 parameters.insert(
-                    "open_telemetry_context".to_string(),
+                    crate::OPEN_TELEMETRY_CONTEXT.to_string(),
                     crate::Parameter::String(serialized),
                 );
             }
@@ -1877,7 +1919,7 @@ impl DoraNode {
             .expect("a declared publisher implies a zenoh session");
 
         // Serialize metadata as zenoh attachment.
-        let metadata_bytes = match bincode::serialize(metadata) {
+        let metadata_bytes = match dora_message::encode(metadata) {
             Ok(bytes) => bytes,
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
@@ -1945,24 +1987,43 @@ impl DoraNode {
                         .wait()
                     {
                         Ok(mut sbuf) => {
-                            sbuf.as_mut().copy_from_slice(&avec);
-                            if diag {
-                                tracing::warn!(
-                                    "output `{output_id}`: entering zenoh put of a \
-                                     copied SHM buffer (dora-rs/dora#2742 diagnostic)"
-                                );
-                            }
-                            return match publisher.put(sbuf).attachment(&metadata_bytes[..]).wait()
-                            {
-                                Ok(()) => Ok(PublishOutcome::Published),
-                                Err(e) => {
+                            // Mirror the guard in `allocate_data_sample`: only
+                            // copy into the SHM buffer when it is exactly the
+                            // requested size. zenoh 1.8 guarantees the logical
+                            // length matches the request, but `copy_from_slice`
+                            // requires equal lengths and would panic on the
+                            // node's send thread if a future provider ever
+                            // over-allocated. Fall through to the reliable
+                            // daemon path instead of risking that panic.
+                            if sbuf.as_mut().len() == avec.len() {
+                                sbuf.as_mut().copy_from_slice(&avec);
+                                if diag {
                                     tracing::warn!(
-                                        "zenoh SHM publish failed ({e}); \
-                                         falling back to daemon path"
+                                        "output `{output_id}`: entering zenoh put of a \
+                                         copied SHM buffer (dora-rs/dora#2742 diagnostic)"
                                     );
-                                    Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
                                 }
-                            };
+                                return match publisher
+                                    .put(sbuf)
+                                    .attachment(&metadata_bytes[..])
+                                    .wait()
+                                {
+                                    Ok(()) => Ok(PublishOutcome::Published),
+                                    Err(e) => {
+                                        tracing::warn!(
+                                            "zenoh SHM publish failed ({e}); \
+                                             falling back to daemon path"
+                                        );
+                                        Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)))
+                                    }
+                                };
+                            }
+                            tracing::debug!(
+                                "zenoh SHM alloc returned {} bytes for a {}-byte \
+                                 request; using daemon path",
+                                sbuf.as_ref().len(),
+                                avec.len()
+                            );
                         }
                         Err(e) => {
                             tracing::debug!("SHM alloc failed ({e}), using heap buffer");
@@ -2139,8 +2200,10 @@ impl DoraNode {
         self.log_with_fields(level, message, target, None);
     }
 
-    /// Maximum total size of log fields before they are dropped (60 KB).
-    /// Matches the downstream 64 KB parse limit with headroom for the message envelope.
+    /// Maximum serialized size of the log `fields` object before it is
+    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
+    /// for the message envelope. Measured on the serialized JSON (see
+    /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
     /// Send a structured log message with optional key-value fields.
@@ -2173,12 +2236,12 @@ impl DoraNode {
             entry["target"] = serde_json::Value::String(target.to_string());
         }
         if let Some(fields) = fields {
-            let total: usize = fields.iter().map(|(k, v)| k.len() + v.len()).sum();
-            if total <= Self::MAX_LOG_FIELDS_BYTES {
-                entry["fields"] = serde_json::json!(fields);
-            } else {
-                eprintln!("dora log: fields too large ({total} bytes), dropping fields");
-                entry["fields_dropped"] = serde_json::Value::Bool(true);
+            match log_fields_within_budget(fields, Self::MAX_LOG_FIELDS_BYTES) {
+                Some(value) => entry["fields"] = value,
+                None => {
+                    eprintln!("dora log: fields too large, dropping fields");
+                    entry["fields_dropped"] = serde_json::Value::Bool(true);
+                }
             }
         }
         match serde_json::to_string(&entry) {
@@ -2243,7 +2306,7 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<String> {
         if parameters.contains_key(dora_message::metadata::REQUEST_ID) {
             tracing::warn!("send_service_request: caller-provided request_id will be overwritten");
@@ -2265,7 +2328,7 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         self.send_output(output_id, parameters, data)
     }
@@ -2282,7 +2345,7 @@ impl DoraNode {
         output_id: DataId,
         segment: &mut StreamSegment,
         fin: bool,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         self.send_output(output_id, segment.chunk(fin), data)
     }
@@ -2317,35 +2380,94 @@ impl DoraNode {
         }
     }
 
-    /// Register a pinned memory pool with the daemon for lifecycle tracking.
+    /// Store an opaque value in the daemon's dataflow-scoped extension table.
     ///
-    /// Send the memory pool metadata to the daemon so it can track the pool
-    /// and provide it to other nodes for zero-copy access.
-    pub fn register_pinned_memory(
+    /// This is the seam for transports that live outside the dora tree: dora
+    /// brokers the value's lifetime and nothing else — it never interprets
+    /// `namespace`, `key` or `value`. See `docs/extensions.md`.
+    ///
+    /// The daemon remembers which nodes touched a key so that dropping it
+    /// notifies them, and reclaims the entry when the dataflow ends or the
+    /// storing node exits. Drain the notifications with
+    /// [`event_stream::extensions::drain_dropped_keys`](crate::event_stream::extensions::drain_dropped_keys).
+    pub fn extension_store(
         &mut self,
-        shared_memory_id: String,
-        metadata: Metadata,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        value: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         self.control_channel
-            .register_pinned_memory(shared_memory_id, metadata)
+            .extension_store(namespace.into(), key.into(), value)
     }
 
-    /// Read pinned memory metadata from the daemon.
+    /// Read an opaque value back, optionally removing it in the same round trip.
     ///
-    /// When `free` is true, the daemon also frees the pool after reading.
-    pub fn read_pinned_memory(
+    /// Returns `None` if the key is not in the table — never stored, or
+    /// already dropped.
+    pub fn extension_load(
         &mut self,
-        shared_memory_id: String,
-        free: bool,
-    ) -> Result<Metadata, eyre::Error> {
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+        remove: bool,
+    ) -> Result<Option<Vec<u8>>, eyre::Error> {
         self.control_channel
-            .read_pinned_memory(shared_memory_id, free)
+            .extension_load(namespace.into(), key.into(), remove)
     }
 
-    /// Free a pinned memory pool via the daemon.
-    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
-        self.control_channel.free_pinned_memory(shared_memory_id)
+    /// Drop an opaque value, notifying every node that stored or loaded it.
+    pub fn extension_drop(
+        &mut self,
+        namespace: impl Into<String>,
+        key: impl Into<String>,
+    ) -> Result<(), eyre::Error> {
+        self.control_channel
+            .extension_drop(namespace.into(), key.into())
     }
+
+    /// Send an opaque request to the extension registered under
+    /// `namespace` on this node's daemon, and return its opaque reply.
+    ///
+    /// Companion to [`DoraNode::extension_store`] / [`DoraNode::extension_load`]:
+    /// those broker a descriptor's lifetime, this one carries a call the
+    /// extension's daemon half must service. dora interprets neither the
+    /// namespace nor the bytes — see `docs/extensions.md`.
+    pub fn extension_request(
+        &mut self,
+        namespace: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, eyre::Error> {
+        self.control_channel
+            .extension_request(namespace.into(), payload)
+    }
+}
+
+/// Return the serialized log `fields` object when it fits `limit`, else `None`.
+///
+/// The budget guards a downstream JSON-line parse limit, so it must measure
+/// the *serialized* size: `"fields":{...}` adds structural bytes (quotes,
+/// colons, commas) and JSON escaping — a value full of `"`/`\` doubles and
+/// control characters expand ~6x via `\uXXXX`. Summing raw key/value byte
+/// lengths can pass a map whose serialized form is well over the limit, which
+/// the downstream parser then drops or truncates whole.
+fn log_fields_within_budget(
+    fields: &std::collections::BTreeMap<String, String>,
+    limit: usize,
+) -> Option<serde_json::Value> {
+    // Count the serialized bytes without allocating a throwaway string, then
+    // build the JSON value only when it fits.
+    struct ByteCounter(usize);
+    impl std::io::Write for ByteCounter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0 += buf.len();
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = ByteCounter(0);
+    serde_json::to_writer(&mut counter, fields).ok()?;
+    (counter.0 <= limit).then(|| serde_json::json!(fields))
 }
 
 /// Builder for initializing a node with custom connection parameters.
@@ -2531,6 +2653,13 @@ impl Drop for DoraNode {
         }
 
         // close all outputs first to notify subscribers as early as possible
+        //
+        // Testing mode (dora-rs/dora#2855): signal shutdown *before* the
+        // CloseOutputs handshake so a daemon thread sleeping inside
+        // `next_event` wakes up, replies, and can then process Drop's requests.
+        if let Some(shutdown) = &self.testing_shutdown {
+            shutdown.store(true, Ordering::Relaxed);
+        }
         if let Err(err) = self
             .control_channel
             .report_closed_outputs(
@@ -2546,6 +2675,17 @@ impl Drop for DoraNode {
         if let Err(err) = self.control_channel.report_outputs_done() {
             tracing::warn!("{err:?}")
         }
+
+        // Drop our channel sender and join the testing daemon. The daemon loop
+        // exits after OutputsDone under shutdown even when EventStream still
+        // holds a sender clone (dora-rs/dora#2855).
+        if let Some(handle) = self.testing_daemon.take() {
+            self.control_channel.close_channel();
+            if handle.join().is_err() {
+                tracing::warn!("testing daemon thread panicked");
+            }
+        }
+        self.testing_shutdown = None;
     }
 }
 
@@ -2561,7 +2701,28 @@ pub struct EncodedSample {
 }
 
 impl EncodedSample {
+    /// A human-readable name for the Arrow type the payload was encoded from,
+    /// e.g. `"UInt8"`.
+    ///
+    /// Returned as a `String` rather than an `arrow_schema::DataType` because
+    /// `arrow-schema` is the one non-umbrella Arrow crate dora's public API
+    /// used to name, and naming it would pin 1.x to a single Arrow major.
+    /// For the real type, enable `arrow-v59` and use
+    /// [`data_type`](Self::data_type).
+    pub fn type_name(&self) -> String {
+        format!("{:?}", self.data_type)
+    }
+
     /// The Arrow type the payload was encoded from.
+    ///
+    /// Gated on `arrow-v59` — dora's current internal Arrow major — because
+    /// `arrow_schema::DataType` is an Arrow type. It is not returned as a
+    /// dora-owned type-URN (`dora_core::types::TypeRegistry`) because the URN
+    /// catalog only covers the standard scalar/struct types: nested lists,
+    /// dictionaries, timestamps-with-timezone and unions have no URN, so a
+    /// URN-returning accessor would be lossy for exactly the outputs whose
+    /// type a caller most needs to inspect.
+    #[cfg(feature = "arrow-v59")]
     pub fn data_type(&self) -> &arrow_schema::DataType {
         &self.data_type
     }
@@ -2656,16 +2817,24 @@ impl SampleAllocator {
     /// The returned sample shares no memory with `array`, so the caller may —
     /// and, when the payload is owned by a foreign runtime, **must** — drop
     /// `array` on its own thread rather than let it travel to the node.
-    pub fn encode_arrow(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
-        let sample = match ipc_encode::ipc_fast_path_len(array) {
-            Some(len) => {
-                let mut sample = self.allocate(len)?;
-                ipc_encode::encode_ipc_into(array, &mut sample)
+    pub fn encode_arrow(&self, array: &DoraArray) -> NodeResult<EncodedSample> {
+        self.encode_arrow_data(&dora_arrow_convert::internal::array_ref(array).to_data())
+    }
+
+    /// Same, for dora-internal callers that already hold an [`ArrayData`].
+    pub(crate) fn encode_arrow_data(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
+        let sample = match ipc_encode::PreparedIpc::from_data(array) {
+            Some(prepared) => {
+                // Prepare once: size the sample from the prepared layout, then
+                // encode into it — avoids rebuilding the layout + IPC headers.
+                let mut sample = self.allocate(prepared.byte_len())?;
+                prepared
+                    .encode_into(&mut sample)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 sample
             }
             None => {
-                let bytes = ipc_encode::encode_ipc_to_vec(array)
+                let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 let mut sample = self.allocate(bytes.len())?;
                 sample.copy_from_slice(&bytes);
@@ -2949,7 +3118,7 @@ fn publish_schema_once(
             metadata
                 .parameters
                 .insert(SCHEMA_HASH.to_string(), Parameter::Integer(hash as i64));
-            bincode::serialize(&metadata).ok()
+            dora_message::encode(&metadata).ok()
         }
     }
 }
@@ -3089,6 +3258,43 @@ pub fn init_tracing(
 ///
 /// Manages session/segment IDs and auto-incrementing sequence numbers
 /// for real-time streaming patterns (voice, video, sensor streams).
+///
+/// The state transitions are easy to get subtly wrong, so they are worth
+/// spelling out: [`chunk`](Self::chunk) stamps the current `(segment_id, seq)`
+/// and then auto-increments `seq`; [`next_segment`](Self::next_segment) bumps
+/// `segment_id` and resets `seq` to 0; and [`flush`](Self::flush) advances to a
+/// new segment and emits a chunk marked `flush = true`, `fin = false` (the
+/// prior segment is discarded, not completed, so it intentionally never gets a
+/// `fin = true`).
+///
+/// # Example
+///
+/// ```
+/// use dora_node_api::{
+///     StreamSegment,
+///     metadata::{FIN, FLUSH, SEGMENT_ID, SEQ, get_bool_param, get_integer_param},
+/// };
+///
+/// let mut seg = StreamSegment::with_session_id("session-1".to_string());
+///
+/// // `chunk` stamps the current (segment, seq), then advances seq.
+/// let first = seg.chunk(false);
+/// assert_eq!(get_integer_param(&first, SEGMENT_ID), Some(0));
+/// assert_eq!(get_integer_param(&first, SEQ), Some(0));
+/// assert_eq!(get_bool_param(&first, FIN), Some(false));
+///
+/// let second = seg.chunk(true); // mark this chunk as the end of the segment
+/// assert_eq!(get_integer_param(&second, SEQ), Some(1)); // seq auto-incremented
+/// assert_eq!(get_bool_param(&second, FIN), Some(true));
+///
+/// // `flush` starts a new segment (seq reset to 0) and marks flush=true,
+/// // fin=false: the old queued data is discarded, not completed.
+/// let flushed = seg.flush();
+/// assert_eq!(get_integer_param(&flushed, SEGMENT_ID), Some(1));
+/// assert_eq!(get_integer_param(&flushed, SEQ), Some(0));
+/// assert_eq!(get_bool_param(&flushed, FLUSH), Some(true));
+/// assert_eq!(get_bool_param(&flushed, FIN), Some(false));
+/// ```
 pub struct StreamSegment {
     session_id: String,
     segment_id: i64,
@@ -3181,7 +3387,6 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
-    use arrow::array::NullArray;
 
     fn required_acker(node: &str, input: &str) -> dora_message::daemon_to_node::RequiredAcker {
         dora_message::daemon_to_node::RequiredAcker {
@@ -3197,6 +3402,28 @@ mod tests {
             &BTreeSet::from([required_acker(acker.0, acker.1)]),
             Arc::new(AtomicBool::new(false)),
         ))
+    }
+
+    #[test]
+    fn log_fields_budget_measures_serialized_json_not_raw_bytes() {
+        use std::collections::BTreeMap;
+        let limit = DoraNode::MAX_LOG_FIELDS_BYTES;
+
+        // A small map fits.
+        let mut small = BTreeMap::new();
+        small.insert("k".to_string(), "v".to_string());
+        assert!(log_fields_within_budget(&small, limit).is_some());
+
+        // A value that is 20 KB of raw bytes — comfortably under the 60 KB
+        // budget by the old raw-sum measure — but made entirely of control
+        // characters, each of which JSON-escapes to `` (6 bytes). Its
+        // serialized form is ~120 KB, over the budget, so it must be dropped.
+        // The pre-fix raw-byte check would have let it through and blown the
+        // downstream parse limit.
+        let mut big = BTreeMap::new();
+        big.insert("k".to_string(), "\u{1}".repeat(20 * 1024));
+        assert!(big.values().map(String::len).sum::<usize>() < limit);
+        assert!(log_fields_within_budget(&big, limit).is_none());
     }
 
     #[test]
@@ -3305,7 +3532,7 @@ mod tests {
         state.record("sink", "camera");
 
         let start = Instant::now();
-        wait_for_grace(&[state.clone()], Duration::from_secs(30));
+        wait_for_grace(std::slice::from_ref(&state), Duration::from_secs(30));
         wait_for_grace(&[], Duration::from_secs(30));
 
         assert!(!state.is_frozen());
@@ -3424,12 +3651,70 @@ mod tests {
         (node, event_stream, rx)
     }
 
+    /// Comfortably below any multi-second join/sleep budget so node-first Drop
+    /// regressions surface without waiting on an internal timeout boundary.
+    const INIT_TESTING_DROP_BUDGET: Duration = Duration::from_millis(500);
+
+    fn init_testing_node_mid_scheduled_wait() -> (DoraNode, crate::EventStream) {
+        let events = vec![TimedIncomingEvent {
+            // Long enough that a hang is obvious; the shutdown flag must
+            // interrupt well before this elapses.
+            time_offset_secs: 30.0,
+            event: IncomingEvent::Stop,
+        }];
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "drop-hang-node".parse().unwrap(),
+            events,
+        ));
+        let (tx, _rx) = crate::integration_testing::unbounded_channel();
+        let outputs = TestingOutput::ToChannel(tx);
+        let (node, event_stream) =
+            DoraNode::init_testing(inputs, outputs, TestingOptions::default()).unwrap();
+
+        // Give the testing daemon a moment to enter next_event's sleep.
+        std::thread::sleep(Duration::from_millis(50));
+        (node, event_stream)
+    }
+
+    /// Regression for dora-rs/dora#2855: events-then-node Drop while the daemon
+    /// is inside a scheduled `next_event` wait must not hang.
+    #[test]
+    fn init_testing_drop_events_then_node_during_scheduled_wait_does_not_hang() {
+        let (node, event_stream) = init_testing_node_mid_scheduled_wait();
+
+        let start = Instant::now();
+        drop(event_stream);
+        drop(node);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < INIT_TESTING_DROP_BUDGET,
+            "events-then-node Drop hung for {elapsed:?}; expected interruptible testing-daemon shutdown"
+        );
+    }
+
+    /// Regression for dora-rs/dora#2855: node-then-events Drop must exit the
+    /// testing daemon after OutputsDone under shutdown even while EventStream
+    /// still holds a channel sender clone.
+    #[test]
+    fn init_testing_drop_node_then_events_during_scheduled_wait_does_not_hang() {
+        let (node, event_stream) = init_testing_node_mid_scheduled_wait();
+
+        let start = Instant::now();
+        drop(node);
+        drop(event_stream);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < INIT_TESTING_DROP_BUDGET,
+            "node-then-events Drop hung for {elapsed:?}; expected OutputsDone under shutdown to exit the testing daemon"
+        );
+    }
+
     #[test]
     fn send_service_request_returns_valid_id_and_sends_output() {
         let (mut node, events, mut rx) = test_node();
 
         let request_id = node
-            .send_service_request("request".into(), Default::default(), NullArray::new(0))
+            .send_service_request("request".into(), Default::default(), ())
             .unwrap();
 
         // Returned ID should be a valid UUID
@@ -3448,10 +3733,10 @@ mod tests {
         let (mut node, events, _rx) = test_node();
 
         let id1 = node
-            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .send_service_request("out".into(), Default::default(), ())
             .unwrap();
         let id2 = node
-            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .send_service_request("out".into(), Default::default(), ())
             .unwrap();
 
         assert_ne!(id1, id2, "successive request IDs should differ");
@@ -3470,7 +3755,7 @@ mod tests {
             dora_message::metadata::REQUEST_ID.to_string(),
             dora_message::metadata::Parameter::String("test-req-id".into()),
         );
-        node.send_service_response("response".into(), params, NullArray::new(0))
+        node.send_service_response("response".into(), params, ())
             .unwrap();
 
         drop(node);
@@ -3523,16 +3808,16 @@ mod tests {
     /// plane relies on (zenoh can't be smoke-tested here, so this stands in).
     #[test]
     fn send_output_ipc_roundtrip() {
-        use crate::arrow_utils::decode_arrow_ipc_zero_copy;
-        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
+        use crate::arrow_utils::ipc_encode::{encode_ipc_into_data, ipc_fast_path_len_data};
         use arrow::array::{ArrayRef, Float32Array, StringArray, StructArray, UInt64Array};
         use arrow_schema::{DataType, Field};
         use std::ptr::NonNull;
 
         fn roundtrip(data: ArrayData) {
-            let len = ipc_fast_path_len(&data).expect("array should be fast-path eligible");
+            let len = ipc_fast_path_len_data(&data).expect("array should be fast-path eligible");
             let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
-            encode_ipc_into(&data, &mut buf).expect("fast-path IPC encode");
+            encode_ipc_into_data(&data, &mut buf).expect("fast-path IPC encode");
 
             // Wrap the aligned sample as an Arrow Buffer (no copy), mirroring the
             // receive path, then decode.
@@ -3541,7 +3826,7 @@ mod tests {
             // SAFETY: ptr/len describe `buf`; the Arc keeps it alive.
             let buffer =
                 unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, blen, Arc::new(buf)) };
-            let decoded = decode_arrow_ipc_zero_copy(buffer).expect("zero-copy IPC decode");
+            let decoded = decode_arrow_ipc_zero_copy_raw(buffer).expect("zero-copy IPC decode");
             assert_eq!(
                 data, decoded,
                 "IPC send->receive round-trip must preserve the array"
@@ -3806,7 +4091,7 @@ mod tests {
         let (mut node, events, mut rx) = test_node();
         let mut seg = StreamSegment::with_session_id("s1".into());
 
-        node.send_stream_chunk("audio".into(), &mut seg, false, NullArray::new(0))
+        node.send_stream_chunk("audio".into(), &mut seg, false, ())
             .unwrap();
 
         drop(node);
@@ -3937,7 +4222,7 @@ mod operator_boundary_tests {
         let (array, released) = foreign_owned_array(8192);
 
         let sample = allocator
-            .encode_arrow(&array)
+            .encode_arrow_data(&array)
             .expect("encoding a UInt8 array must succeed");
 
         assert!(
@@ -3960,9 +4245,9 @@ mod operator_boundary_tests {
         let allocator = SampleAllocator::heap();
         let (array, _released) = foreign_owned_array(1024);
 
-        let encoded = allocator.encode_arrow(&array).expect("encode");
-        assert_eq!(encoded.data_type(), array.data_type());
-        let decoded = crate::node::arrow_utils::decode_arrow_ipc(encoded.as_bytes())
+        let encoded = allocator.encode_arrow_data(&array).expect("encode");
+        assert_eq!(encoded.type_name(), format!("{:?}", array.data_type()));
+        let decoded = crate::node::arrow_utils::decode_arrow_ipc_data(encoded.as_bytes())
             .expect("the sample must be a well-formed Arrow IPC stream");
 
         assert_eq!(decoded, array);

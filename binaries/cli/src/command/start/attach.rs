@@ -83,14 +83,17 @@ pub fn attach_dataflow(
             {
                 for path in paths {
                     if let Some((dataflow_id, node_id, operator_id)) = node_path_lookup.get(&path) {
-                        watcher_tx
-                            .send(AttachEvent::Control(ControlRequest::Reload {
-                                dataflow_id: *dataflow_id,
-                                node_id: node_id.clone(),
-                                operator_id: operator_id.clone(),
-                            }))
-                            .context("Could not send reload request to the cli loop")
-                            .unwrap();
+                        // A filesystem event can arrive on the watcher thread
+                        // after the control loop has stopped and dropped `rx`
+                        // (the dataflow finished or errored out). A closed
+                        // channel just means the CLI is shutting down, so drop
+                        // the reload instead of panicking the watcher thread —
+                        // matching the ctrl-c and log senders in this function.
+                        let _ = watcher_tx.send(AttachEvent::Control(ControlRequest::Reload {
+                            dataflow_id: *dataflow_id,
+                            node_id: node_id.clone(),
+                            operator_id: operator_id.clone(),
+                        }));
                     }
                 }
                 // TODO: Manage different file event

@@ -48,9 +48,11 @@ pub struct Run {
     /// similar to pressing Ctrl-C. This gracefully stops all nodes in the dataflow.
     ///
     /// Examples:
-    ///   --stop-after 30      # 30 seconds
-    ///   --stop-after 30s     # 30 seconds
+    ///   --stop-after 30      # 30 seconds (a bare number is seconds)
+    ///   --stop-after 10s     # 10 seconds
     ///   --stop-after 5m      # 5 minutes
+    ///   --stop-after 1h30m   # 1 hour 30 minutes
+    ///   --stop-after 500ms   # 500 milliseconds
     #[clap(long, value_name = "DURATION", verbatim_doc_comment)]
     #[arg(value_parser = parse_duration)]
     pub stop_after: Option<Duration>,
@@ -288,6 +290,7 @@ impl Executable for Run {
         let exit_when_nodes_finish = self.exit_when_nodes_finish;
         let handle = rt.spawn(async move {
             Daemon::run_dataflow_with(
+                None,
                 &dataflow_path_for_daemon,
                 dataflow_session.build_id,
                 dataflow_session.local_build,

@@ -164,7 +164,7 @@ async fn receive_message(
             }
         },
     };
-    bincode::deserialize(&raw)
+    dora_message::decode(&raw)
         .wrap_err("failed to deserialize DaemonRequest")
         .map(Some)
 }

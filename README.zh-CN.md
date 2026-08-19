@@ -479,6 +479,7 @@ cargo build -p dora-cli
 ```bash
 # 运行所有测试
 cargo test --all \
+  --exclude dora-runtime-python \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python

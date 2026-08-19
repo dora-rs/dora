@@ -296,9 +296,9 @@ fn raise_replayed_input_queue_sizes(
             continue;
         }
 
-        // Inputs can live at the node level, under the legacy `custom:` key,
-        // under a single `operator:`, or per-entry in an `operators:` list.
-        for holder_key in ["inputs", "custom", "operator"] {
+        // Inputs can live at the node level, under a single `operator:`, or
+        // per-entry in an `operators:` list.
+        for holder_key in ["inputs", "operator"] {
             let Some(holder) = node.get_mut(holder_key) else {
                 continue;
             };
@@ -452,7 +452,7 @@ mod tests {
     }
 
     #[test]
-    fn operator_and_custom_inputs_are_rewritten() {
+    fn operator_inputs_are_rewritten() {
         let out = run_rewrite(
             concat!(
                 "nodes:\n",
@@ -465,10 +465,6 @@ mod tests {
                 "  operator:\n",
                 "    inputs:\n",
                 "      image: source/status\n",
-                "- id: legacy\n",
-                "  custom:\n",
-                "    inputs:\n",
-                "      image: source/status\n",
             ),
             &["source"],
             &[("source", "status", 100)],
@@ -477,7 +473,6 @@ mod tests {
         for input in [
             &parsed["nodes"][0]["operators"][0]["inputs"]["image"],
             &parsed["nodes"][1]["operator"]["inputs"]["image"],
-            &parsed["nodes"][2]["custom"]["inputs"]["image"],
         ] {
             assert_eq!(input["queue_size"].as_u64(), Some(100));
             assert_eq!(input["queue_policy"].as_str(), Some("backpressure"));

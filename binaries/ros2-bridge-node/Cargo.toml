@@ -10,7 +10,7 @@ name = "dora-ros2-bridge-node"
 path = "src/main.rs"
 
 [dependencies]
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true , features = ["arrow-v59"] }
 dora-ros2-bridge = { path = "../../libraries/extensions/ros2-bridge", default-features = false, features = ["rmw-zenoh"] }
 dora-ros2-bridge-arrow = { path = "../../libraries/extensions/ros2-bridge/arrow" }
 dora-ros2-bridge-msg-gen = { workspace = true }

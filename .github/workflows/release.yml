@@ -76,7 +76,6 @@ jobs:
             dora-tracing
             dora-metrics
             dora-hub-client
-            dora-memory-pool
             dora-operator-api-types
             dora-operator-api-macros
             dora-operator-api
@@ -86,7 +85,9 @@ jobs:
             dora-coordinator
             dora-daemon
             dora-operator-api-python
-            dora-runtime
+            dora-runtime-api
+            dora-runtime-shared-lib
+            dora-runtime-python
             dora-cli
             dora-ros2-bridge-msg-gen
             dora-ros2-bridge

@@ -72,11 +72,25 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: rustup default ${{ env.RUST_VERSION }}
       - run: rustup update ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          cache-provider: buildjet
-          # only save caches for `main` branch
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+      # No rust-cache step here, deliberately. This job used to run
+      # `Swatinem/rust-cache@v2` with `cache-provider: buildjet`, which
+      # kept these cross-builds off the 10 GB GitHub cache budget.
+      # BuildJet is shutting down its GitHub Actions service, so
+      # rust-cache v2.9.2 dropped the provider and the step started
+      # erroring out ("The `cache-provider` `buildjet` is not valid").
+      #
+      # It is not worth re-pointing at `cache-provider: github`:
+      #   - rust-cache does not put the matrix in the cache key, and the
+      #     workspace has a single Cargo.lock, so all 8 expansions of
+      #     this job shared ONE ~2.25 GB entry. That blob is polluted
+      #     across 4 target triples and 2 crates — whichever expansion
+      #     wins the save race populates it for everyone else.
+      #   - Measured accordingly: job durations are identical with the
+      #     cache warm and with it removed entirely (12-19 min either
+      #     way). It was buying ~0.
+      #   - 2.25 GB is ~23% of the repo-wide budget, which already runs
+      #     at ~9.7/10 GB. Saving it would LRU-evict the ci.yml
+      #     workspace/e2e caches that the PR loop actually depends on.
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
@@ -87,7 +101,8 @@ jobs:
           # object, flooding the 10 GB repo-wide cache with thousands of
           # micro-entries that evict the workspace caches PR CI relies on.
           # These release cross-builds don't help the PR loop, so keep it
-          # off. rust-cache above already caches deps (via BuildJet).
+          # off. See the note above for why there is no rust-cache
+          # step to fall back on either.
           sccache: "false"
           working-directory: ${{ matrix.repository.path }}
           before-script-linux: |

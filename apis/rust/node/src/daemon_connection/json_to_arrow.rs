@@ -10,9 +10,14 @@ pub fn read_json_bytes_as_arrow(data: &[u8]) -> eyre::Result<ArrayData> {
     match arrow_json::reader::infer_json_schema(wrapped(data), None) {
         Ok((schema, _)) => read_from_json_with_schema(wrapped(data), schema),
         Err(_) => {
-            // try again with quoting the input to treat it as a string
-            match arrow_json::reader::infer_json_schema(wrapped_quoted(data), None) {
-                Ok((schema, _)) => read_from_json_with_schema(wrapped_quoted(data), schema),
+            // Try again by treating the input as a plain string. The bytes may
+            // contain characters that are not valid on their own inside a JSON
+            // string literal (`"`, `\`, raw control characters), so JSON-escape
+            // them first instead of wrapping the raw bytes in quotes — otherwise
+            // any such input produces invalid JSON and is rejected.
+            let quoted = json_quote(data);
+            match arrow_json::reader::infer_json_schema(wrapped(quoted.as_bytes()), None) {
+                Ok((schema, _)) => read_from_json_with_schema(wrapped(quoted.as_bytes()), schema),
                 Err(err) => eyre::bail!("failed to infer JSON schema: {err}"),
             }
         }
@@ -31,6 +36,9 @@ fn read_from_json_with_schema(
         .context("no record batch in JSON")?
         .context("failed to read record batch")?;
 
+    if batch.num_columns() == 0 {
+        eyre::bail!("JSON record batch has no columns");
+    }
     Ok(batch.column(0).to_data())
 }
 
@@ -39,10 +47,12 @@ fn wrapped(data: impl BufRead) -> impl BufRead {
     "{ \"inner\":".as_bytes().chain(data).chain("}".as_bytes())
 }
 
-// wrap data into JSON object to also allow bare JSON values
-fn wrapped_quoted(data: impl BufRead) -> impl BufRead {
-    let quoted = "\"".as_bytes().chain(data).chain("\"".as_bytes());
-    wrapped(quoted)
+/// JSON-encode the given bytes as a quoted string literal, escaping any
+/// characters that are not valid inside a JSON string (`"`, `\`, control
+/// characters). Non-UTF-8 bytes are replaced lossily.
+fn json_quote(data: &[u8]) -> String {
+    // Serializing a `String` into JSON never fails.
+    serde_json::Value::String(String::from_utf8_lossy(data).into_owned()).to_string()
 }
 
 /// convert the given JSON object to the closed arrow representation
@@ -60,5 +70,67 @@ pub fn read_json_value_as_arrow(
         .flush()
         .context("failed to read record batch")?
         .context("no record batch in JSON")?;
+    if batch.num_columns() == 0 {
+        eyre::bail!("JSON record batch has no columns");
+    }
     Ok(batch.column(0).to_data())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{StringArray, make_array};
+    use arrow_schema::Schema;
+
+    fn as_single_string(data: ArrayData) -> String {
+        let array = make_array(data);
+        let strings = array
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("expected a string array");
+        assert_eq!(strings.len(), 1);
+        strings.value(0).to_owned()
+    }
+
+    #[test]
+    fn empty_field_schema_errors_instead_of_panicking() {
+        // A caller-supplied schema with no fields yields a zero-column record
+        // batch; `column(0)` would otherwise index out of bounds and panic.
+        let schema = Arc::new(Schema::empty());
+        let values = [serde_json::json!({})];
+        let result = read_json_value_as_arrow(&values, schema);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn plain_text_with_double_quotes_round_trips() {
+        // Previously this produced invalid JSON (`{ "inner":"say "hi""}`) and
+        // was rejected instead of being treated as a plain string.
+        let data = read_json_bytes_as_arrow(br#"say "hi""#).unwrap();
+        assert_eq!(as_single_string(data), r#"say "hi""#);
+    }
+
+    #[test]
+    fn plain_text_with_backslash_round_trips() {
+        let data = read_json_bytes_as_arrow(br"C:\Users\node").unwrap();
+        assert_eq!(as_single_string(data), r"C:\Users\node");
+    }
+
+    #[test]
+    fn plain_text_with_control_characters_round_trips() {
+        let data = read_json_bytes_as_arrow(b"line1\nline2\ttab").unwrap();
+        assert_eq!(as_single_string(data), "line1\nline2\ttab");
+    }
+
+    #[test]
+    fn bare_json_values_still_parse_natively() {
+        // A bare JSON number is parsed as a number, not wrapped as a string.
+        let data = read_json_bytes_as_arrow(b"42").unwrap();
+        let array = make_array(data);
+        assert_eq!(array.len(), 1);
+        assert!(
+            array.as_any().downcast_ref::<StringArray>().is_none(),
+            "bare JSON number should not be parsed as a string"
+        );
+    }
 }

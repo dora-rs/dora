@@ -19,12 +19,16 @@ impl Metadata {
     /// Current metadata wire-format version, stamped on every outgoing message.
     ///
     /// Bumped from 0 to 1 when the `ArrowTypeInfo` sidecar was dropped and the
-    /// wire format became Arrow-IPC-only. A receiver can compare
+    /// wire format became Arrow-IPC-only, and from 1 to 2 when the binary
+    /// encoding moved from bincode to postcard (varint integers and length
+    /// prefixes, so the byte layout differs even though the field order does
+    /// not). A receiver can compare
     /// [`metadata_version`](Self::metadata_version) against this to detect a peer
     /// speaking an incompatible format and report it clearly instead of failing
     /// with a cryptic positional-deserialization error.
-    pub const CURRENT_VERSION: u16 = 1;
+    pub const CURRENT_VERSION: u16 = 2;
 
+    /// Create metadata with the given timestamp and no user parameters.
     pub fn new(timestamp: uhlc::Timestamp) -> Self {
         Self::from_parameters(timestamp, Default::default())
     }
@@ -79,6 +83,8 @@ impl Metadata {
         Some((consumer, input))
     }
 
+    /// Create metadata with the given timestamp and user parameters, stamping
+    /// the current wire-format version ([`CURRENT_VERSION`](Self::CURRENT_VERSION)).
     pub fn from_parameters(timestamp: uhlc::Timestamp, parameters: MetadataParameters) -> Self {
         Self {
             metadata_version: Self::CURRENT_VERSION,
@@ -94,12 +100,15 @@ impl Metadata {
         self.metadata_version
     }
 
+    /// The hybrid-logical-clock timestamp assigned when this message was sent.
     pub fn timestamp(&self) -> uhlc::Timestamp {
         self.timestamp
     }
 
+    /// The serialized OpenTelemetry propagation context carried in the
+    /// `open_telemetry_context` parameter, or an empty string if absent.
     pub fn open_telemetry_context(&self) -> String {
-        get_string_param(&self.parameters, "open_telemetry_context")
+        get_string_param(&self.parameters, OPEN_TELEMETRY_CONTEXT)
             .unwrap_or("")
             .to_string()
     }
@@ -157,16 +166,47 @@ pub const STARTUP_ACK_INPUT_PARAM: &str = "__dora_startup_ack_input";
 /// Additional metadata that can be sent as part of output messages.
 pub type MetadataParameters = BTreeMap<String, Parameter>;
 
-/// A metadata parameter that can be sent as part of output messages.
+/// A typed metadata parameter sent as part of output messages.
+///
+/// Parameters are stored by key in [`MetadataParameters`]. The `get_*_param`
+/// helpers ([`get_string_param`], [`get_integer_param`], [`get_bool_param`])
+/// are type-checked: they return the value only when the stored variant matches
+/// the requested type, and `None` both for a missing key **and** for a key whose
+/// stored value has a different type. Callers therefore never need to match on
+/// the variant themselves for the common scalar cases.
+///
+/// ```
+/// use dora_message::metadata::{
+///     get_integer_param, get_string_param, MetadataParameters, Parameter,
+/// };
+///
+/// let mut params = MetadataParameters::new();
+/// params.insert("frame".to_string(), Parameter::Integer(7));
+///
+/// // Matching type -> the value.
+/// assert_eq!(get_integer_param(&params, "frame"), Some(7));
+/// // Wrong requested type -> None (not a panic, not a coercion).
+/// assert_eq!(get_string_param(&params, "frame"), None);
+/// // Missing key -> None.
+/// assert_eq!(get_integer_param(&params, "absent"), None);
+/// ```
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub enum Parameter {
+    /// A boolean value.
     Bool(bool),
+    /// A signed 64-bit integer value.
     Integer(i64),
+    /// A UTF-8 string value.
     String(String),
+    /// A list of signed 64-bit integers.
     ListInt(Vec<i64>),
+    /// A 64-bit floating-point value.
     Float(f64),
+    /// A list of 64-bit floating-point values.
     ListFloat(Vec<f64>),
+    /// A list of UTF-8 strings.
     ListString(Vec<String>),
+    /// A UTC timestamp.
     Timestamp(DateTime<Utc>),
 }
 
@@ -218,6 +258,17 @@ pub const GOAL_STATUS_ABORTED: &str = "aborted";
 
 /// Goal was canceled by the client.
 pub const GOAL_STATUS_CANCELED: &str = "canceled";
+
+// ---------------------------------------------------------------------------
+// Well-known metadata parameter key for distributed tracing
+// ---------------------------------------------------------------------------
+
+/// Metadata key carrying the serialized OpenTelemetry propagation context, so a
+/// trace can be continued across a dora message hop. Read via
+/// [`Metadata::open_telemetry_context`]; stamped by the node and runtime send
+/// paths when tracing is enabled. Keep this the single source of truth so the
+/// write and read sides can never drift.
+pub const OPEN_TELEMETRY_CONTEXT: &str = "open_telemetry_context";
 
 // ---------------------------------------------------------------------------
 // Well-known metadata parameter keys for the streaming pattern
@@ -347,14 +398,14 @@ mod tests {
     #[test]
     fn startup_marker_is_detected_and_survives_the_wire() {
         // A marker is recognized only via the reserved parameter, and the flag
-        // must survive bincode round-tripping — it travels as the zenoh
+        // must survive postcard round-tripping — it travels as the zenoh
         // attachment, and a receiver that failed to recognize it would decode
         // the marker as node data and surface it to user code.
         let marker = Metadata::startup_marker(test_timestamp());
         assert!(marker.is_startup_marker());
 
-        let bytes = bincode::serialize(&marker).expect("serialize");
-        let decoded: Metadata = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = crate::encode(&marker).expect("serialize");
+        let decoded: Metadata = crate::decode(&bytes).expect("deserialize");
         assert!(decoded.is_startup_marker());
     }
 
@@ -404,7 +455,7 @@ mod tests {
 
     #[test]
     fn startup_ack_round_trips_and_extracts_identity() {
-        // The ack travels as a bincode attachment on the `@ack` topic; the
+        // The ack travels as a postcard attachment on the `@ack` topic; the
         // producer must recover exactly the (consumer, input) identity it needs
         // to tick off a required acker.
         let ack = Metadata::startup_ack(test_timestamp(), "camera-consumer", "image/depth");
@@ -416,8 +467,8 @@ mod tests {
         // travel on different topics but share the filtering code path.
         assert!(!ack.is_startup_marker());
 
-        let bytes = bincode::serialize(&ack).expect("serialize");
-        let decoded: Metadata = bincode::deserialize(&bytes).expect("deserialize");
+        let bytes = crate::encode(&ack).expect("serialize");
+        let decoded: Metadata = crate::decode(&bytes).expect("deserialize");
         assert_eq!(
             decoded.startup_ack_identity(),
             Some(("camera-consumer", "image/depth"))
@@ -540,10 +591,10 @@ mod tests {
 
     #[test]
     fn outgoing_metadata_is_stamped_with_current_version() {
-        // The wire format is positional (bincode) and carries no separate type
+        // The wire format is positional (postcard) and carries no separate type
         // descriptor, so `metadata_version` is the only in-band signal of an
         // incompatible layout. Every constructor must stamp `CURRENT_VERSION`.
-        assert_eq!(Metadata::CURRENT_VERSION, 1);
+        assert_eq!(Metadata::CURRENT_VERSION, 2);
         let ts = uhlc::HLC::default().new_timestamp();
         assert_eq!(
             Metadata::new(ts).metadata_version(),

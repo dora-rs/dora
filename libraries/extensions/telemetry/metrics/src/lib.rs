@@ -1,3 +1,13 @@
+//! **Internal to dora — not a public API.**
+//!
+//! This crate is published to crates.io only because cargo requires every
+//! dependency of a published crate to be published; `dora-node-api` and
+//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! guarantee and may change in any release, including a patch.
+//!
+//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
+//! section of `docs/api-rust.md`.
+//!
 //! Enable system metric through opentelemetry exporter.
 //!
 //! This module fetch system information using [`sysinfo`] and
@@ -10,7 +20,7 @@
 //! [`sysinfo`]: https://github.com/GuillaumeGomez/sysinfo
 //! [`opentelemetry-rust`]: https://github.com/open-telemetry/opentelemetry-rust
 
-use eyre::Result;
+use eyre::{Result, WrapErr};
 use opentelemetry::{InstrumentationScope, global};
 use opentelemetry_otlp::MetricExporter;
 use opentelemetry_sdk::metrics::SdkMeterProvider;
@@ -20,19 +30,19 @@ use opentelemetry_system_metrics::init_process_observer;
 /// Use the default Opentelemetry exporter with default config
 /// TODO: Make Opentelemetry configurable
 ///
-pub fn init_metrics() -> SdkMeterProvider {
+pub fn init_metrics() -> Result<SdkMeterProvider> {
     let exporter = MetricExporter::builder()
         .with_tonic()
         .build()
-        .expect("Failed to create metric exporter");
+        .wrap_err("failed to create metric exporter")?;
 
-    SdkMeterProvider::builder()
+    Ok(SdkMeterProvider::builder()
         .with_periodic_exporter(exporter)
-        .build()
+        .build())
 }
 
 pub async fn run_metrics_monitor(meter_id: String) -> Result<()> {
-    let meter_provider = init_metrics();
+    let meter_provider = init_metrics()?;
     global::set_meter_provider(meter_provider.clone());
     let scope = InstrumentationScope::builder(meter_id)
         .with_version("1.0")

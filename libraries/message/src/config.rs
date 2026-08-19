@@ -436,6 +436,31 @@ fn format_log_level(level: &crate::common::LogLevelOrStdout) -> &'static str {
     }
 }
 
+/// A [`Duration`] wrapper whose [`Display`](fmt::Display) renders a timer
+/// interval as `<unit>/<count>`, choosing the coarsest unit that represents the
+/// interval *exactly*.
+///
+/// This is the inverse of how a `dora/timer/<unit>/<count>` input is parsed, so
+/// the rendered string round-trips back to the same `Duration`. Picking the
+/// coarsest exact unit matters: rendering a sub-millisecond interval as
+/// `millis/0` would parse back to a zero-length (busy-loop) timer
+/// (dora-rs#2031).
+///
+/// Usually constructed via [`format_duration`].
+///
+/// ```
+/// use std::time::Duration;
+/// use dora_message::config::format_duration;
+///
+/// // Coarsest exact unit is chosen: whole seconds render as `secs`.
+/// assert_eq!(format_duration(Duration::from_secs(2)).to_string(), "secs/2");
+/// assert_eq!(format_duration(Duration::from_millis(100)).to_string(), "millis/100");
+/// // 1500 ms is not a whole number of seconds, so it stays in `millis`.
+/// assert_eq!(format_duration(Duration::from_millis(1500)).to_string(), "millis/1500");
+/// // Sub-millisecond intervals keep their precision instead of truncating to 0.
+/// assert_eq!(format_duration(Duration::from_micros(500)).to_string(), "micros/500");
+/// assert_eq!(format_duration(Duration::from_nanos(333_333)).to_string(), "nanos/333333");
+/// ```
 pub struct FormattedDuration(pub Duration);
 
 impl fmt::Display for FormattedDuration {
@@ -457,6 +482,9 @@ impl fmt::Display for FormattedDuration {
     }
 }
 
+/// Wrap a [`Duration`] so it renders as a `dora/timer`-style `<unit>/<count>`
+/// string. See [`FormattedDuration`] for the exact formatting rules and a
+/// round-trip example.
 pub fn format_duration(interval: Duration) -> FormattedDuration {
     FormattedDuration(interval)
 }
@@ -487,49 +515,6 @@ pub struct UserInputMapping {
     pub source: NodeId,
     /// The id of that node's output to subscribe to.
     pub output: DataId,
-}
-
-#[derive(Debug, Default, Serialize, Deserialize, JsonSchema, Clone)]
-#[serde(deny_unknown_fields, rename_all = "lowercase")]
-pub struct CommunicationConfig {
-    // see https://github.com/dtolnay/serde-yaml/issues/298
-    #[serde(
-        default,
-        with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_local"
-    )]
-    #[schemars(with = "String")]
-    pub local: LocalCommunicationConfig,
-    #[serde(
-        default,
-        with = "serde_yaml::with::singleton_map",
-        rename = "_unstable_remote"
-    )]
-    #[schemars(with = "String")]
-    pub remote: RemoteCommunicationConfig,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, Default)]
-#[serde(rename_all = "lowercase")]
-pub enum LocalCommunicationConfig {
-    #[default]
-    Tcp,
-}
-
-impl fmt::Display for LocalCommunicationConfig {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Tcp => write!(f, "tcp"),
-        }
-    }
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone)]
-#[serde(deny_unknown_fields, rename_all = "lowercase")]
-#[derive(Default)]
-pub enum RemoteCommunicationConfig {
-    #[default]
-    Tcp,
 }
 
 /// A byte size that can be deserialized from either an integer (raw bytes) or a
@@ -1049,42 +1034,6 @@ mod tests {
                 node_filter: None,
             })
         ));
-    }
-
-    #[test]
-    fn communication_config_local_tcp_lowercase() {
-        let yaml = "_unstable_local: tcp\n";
-        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
-        assert_eq!(config.local, LocalCommunicationConfig::Tcp);
-    }
-
-    #[test]
-    fn communication_config_remote_tcp_lowercase() {
-        let yaml = "_unstable_remote: tcp\n";
-        let config: CommunicationConfig = serde_yaml::from_str(yaml).unwrap();
-        assert!(matches!(config.remote, RemoteCommunicationConfig::Tcp));
-    }
-
-    #[test]
-    fn communication_config_unknown_local_variant_errors() {
-        let yaml = "_unstable_local: unixdomain\n";
-        assert!(serde_yaml::from_str::<CommunicationConfig>(yaml).is_err());
-    }
-
-    #[test]
-    fn local_communication_config_display() {
-        assert_eq!(LocalCommunicationConfig::Tcp.to_string(), "tcp");
-    }
-
-    #[test]
-    fn communication_config_roundtrip_local() {
-        let config = CommunicationConfig {
-            local: LocalCommunicationConfig::Tcp,
-            remote: RemoteCommunicationConfig::Tcp,
-        };
-        let yaml = serde_yaml::to_string(&config).unwrap();
-        let parsed: CommunicationConfig = serde_yaml::from_str(&yaml).unwrap();
-        assert_eq!(parsed.local, LocalCommunicationConfig::Tcp);
     }
 
     #[test]

@@ -273,6 +273,7 @@ case "$MODE" in
       --exclude dora-node-api-python \
       --exclude dora-operator-api-python \
       --exclude dora-ros2-bridge-python \
+      --exclude dora-runtime-python \
       --exclude dora-cli-api-python \
       --exclude dora-examples
     run "coverage" scripts/qa/coverage.sh
@@ -303,6 +304,7 @@ case "$MODE" in
       --exclude dora-node-api-python \
       --exclude dora-operator-api-python \
       --exclude dora-ros2-bridge-python \
+      --exclude dora-runtime-python \
       --exclude dora-cli-api-python \
       --exclude dora-examples \
       -- proptest

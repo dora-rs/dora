@@ -273,7 +273,19 @@ impl PendingNodes {
                 if let Some(exited_before_subscribe) = self.external_ready.clone() {
                     // The barrier is already down; a late subscriber must
                     // not wait for an event that has been and gone.
-                    let barrier_succeeded = exited_before_subscribe.is_empty();
+                    //
+                    // The start verdict must agree with the reply each
+                    // subscriber actually receives. `answer_subscribe_requests`
+                    // prioritizes this daemon's LOCAL `exited_before_subscribe`,
+                    // so folding it in here keeps the two halves consistent
+                    // (dora-rs/dora#3052): a local cohort loss the coordinator
+                    // never learned about (e.g. a node that died before
+                    // subscribing while the daemon was disconnected, so the
+                    // released barrier carried an empty external list — #3013)
+                    // must keep the dataflow from starting, not start it while
+                    // simultaneously failing a surviving cohort node's init.
+                    let barrier_succeeded = exited_before_subscribe.is_empty()
+                        && self.exited_before_subscribe.is_empty();
                     self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)
                         .await;
                     // Only report ready if the barrier actually succeeded.
@@ -976,6 +988,46 @@ mod tests {
         assert!(
             !matches!(status, DataflowStatus::AllNodesReady),
             "adding a node must not start a dataflow whose barrier failed; got {status:?}"
+        );
+    }
+
+    /// dora-rs/dora#3052: on the latched barrier the START verdict must agree
+    /// with the reply each subscriber actually receives.
+    /// `answer_subscribe_requests` prioritizes this daemon's LOCAL
+    /// `exited_before_subscribe`, so when the coordinator released the barrier
+    /// as success (empty external list — the #3013 reconnect path, where this
+    /// daemon's own loss was never reported) but a local cohort member died
+    /// before subscribing, the dataflow must report `Pending`, not
+    /// `AllNodesReady`. Otherwise it would start while simultaneously failing a
+    /// surviving cohort node's `Node()` init — the exact "survivor left on an
+    /// inconsistently started dataflow" class #2970/#2967 set out to remove.
+    #[tokio::test]
+    async fn latch_verdict_respects_a_local_exit_the_coordinator_never_saw() {
+        let (dead, survivor) = (node("locally-dead"), node("survivor"));
+        let mut p = external_barrier();
+        // Both are cohort members that have already left `local_nodes` (one
+        // died, one subscribed), so the latch branch is the one exercised.
+        p.cohort.insert(dead.clone());
+        p.cohort.insert(survivor.clone());
+        // The coordinator released the barrier as SUCCESS: its external list is
+        // empty because this daemon's local loss was never reported upward.
+        release(&mut p, Vec::new()).await;
+        // ...but locally a cohort member died before subscribing.
+        p.exited_before_subscribe.push(dead.clone());
+
+        let mut rx = park(&mut p, &survivor);
+        let status = settle(&mut p).await;
+
+        assert!(
+            matches!(status, DataflowStatus::Pending),
+            "a local cohort loss must keep the dataflow from starting even when \
+             the coordinator's external verdict was success; got {status:?}"
+        );
+        let err = reply_of(&mut rx)
+            .expect_err("the surviving cohort member must inherit the local startup failure");
+        assert!(
+            err.contains("locally-dead"),
+            "the failure must name the locally dead node: {err}"
         );
     }
 }

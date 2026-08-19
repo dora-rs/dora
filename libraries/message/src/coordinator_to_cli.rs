@@ -75,6 +75,14 @@ pub enum ControlRequestReply {
     NodeInfoList(Vec<NodeInfo>),
     TopicSubscribed {
         subscription_id: Uuid,
+        /// Binary-frame encoding the coordinator will send, see
+        /// [`TOPIC_DATA_PROTOCOL_VERSION`](crate::TOPIC_DATA_PROTOCOL_VERSION).
+        ///
+        /// `None` means the coordinator predates the handshake and therefore
+        /// sends bincode frames; the client rejects the subscription rather
+        /// than misparse them as postcard.
+        #[serde(default)]
+        protocol_version: Option<u16>,
     },
     TraceList(Vec<TraceSummary>),
     TraceSpans(Vec<TraceSpan>),

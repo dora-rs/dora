@@ -28,17 +28,16 @@ nodes:
 
   ## Speech to text
   - id: keyboard
-    custom:
-      source: keyboard_op.py
-      outputs:
-        - buffer
-        - submitted
-        - record
-        - ask
-        - send
-        - change
-      inputs:
-        recording: whisper/text
+    path: keyboard_op.py
+    outputs:
+      - buffer
+      - submitted
+      - record
+      - ask
+      - send
+      - change
+    inputs:
+      recording: whisper/text
 
   - id: microphone
     operator:

@@ -16,11 +16,16 @@ pub struct DataflowStatusEntry {
 
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum CoordinatorRequest {
     Register(DaemonRegisterRequest),
     Event {
         daemon_id: DaemonId,
         event: DaemonEvent,
+    },
+    /// Resolve a machine id to a registered daemon (cross-machine pools).
+    ResolveMachine {
+        machine_id: String,
     },
 }
 
@@ -157,6 +162,7 @@ mod register_version_tests {
 }
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum DaemonEvent {
     BuildResult {
         build_id: BuildId,

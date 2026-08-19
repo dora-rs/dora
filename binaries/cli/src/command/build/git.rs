@@ -47,15 +47,14 @@ pub fn fetch_commit_hash(repo_url: String, rev: Option<GitRepoRev>) -> eyre::Res
 }
 
 /// Returns whether `rev` could be a git object id (a short or full commit
-/// hash).
-///
-/// Git object ids are hexadecimal, between 4 (the minimum abbreviation git
-/// accepts) and 40 (a full SHA-1) characters long. Restricting to this range
-/// rejects mistyped refs like `mybranchtypo` early with the clear "no matching
-/// commit" error instead of letting them fail later with a lower-level git
-/// error.
+/// hash): hexadecimal, from 4 (git's minimum abbreviation) to 64 (a full
+/// SHA-256 id — a full SHA-1 is 40) characters. The hub resolution paths accept
+/// the same full-hash lengths, so capping at 40 here would reject a full
+/// SHA-256 `rev:` the rest of the CLI happily consumes. The range still rejects
+/// mistyped refs like `mybranchtypo` early with a clear "no matching commit"
+/// error instead of a lower-level git failure later.
 fn looks_like_commit_hash(rev: &str) -> bool {
-    (4..=40).contains(&rev.len()) && rev.bytes().all(|b| b.is_ascii_hexdigit())
+    (4..=64).contains(&rev.len()) && rev.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
 #[cfg(test)]
@@ -66,10 +65,23 @@ mod tests {
     fn accepts_short_and_full_hashes() {
         assert!(looks_like_commit_hash("abcd"));
         assert!(looks_like_commit_hash("a7b8969"));
+        // full SHA-1 (40 hex chars)
         assert!(looks_like_commit_hash(
             "a7b89691e0000000000000000000000000000000"
         ));
         assert!(looks_like_commit_hash("0123456789ABCDEF"));
+    }
+
+    #[test]
+    fn accepts_full_sha256_hash() {
+        // A full SHA-256 commit id is 64 hex chars; a SHA-256 abbreviation can
+        // also be longer than a full SHA-1 (40).
+        assert!(looks_like_commit_hash(
+            "a7b89691e0000000000000000000000000000000000000000000000000000000"
+        ));
+        assert!(looks_like_commit_hash(
+            "a7b89691e00000000000000000000000000000000"
+        ));
     }
 
     #[test]
@@ -83,9 +95,9 @@ mod tests {
     fn rejects_out_of_range_lengths() {
         assert!(!looks_like_commit_hash(""));
         assert!(!looks_like_commit_hash("abc"));
-        // longer than a full SHA-1
+        // longer than a full SHA-256 (64 hex chars)
         assert!(!looks_like_commit_hash(
-            "a7b89691e00000000000000000000000000000000"
+            "a7b89691e00000000000000000000000000000000000000000000000000000000"
         ));
     }
 }

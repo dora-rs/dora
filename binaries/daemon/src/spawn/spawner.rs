@@ -7,12 +7,9 @@ use crate::{
 use clonable_command::{Command, Stdio};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
-    build::{managed_python_bin_dir, managed_python_interpreter},
+    build::managed_python_bin_dir,
     config::{Input, InputMapping, NodeId},
-    descriptor::{
-        CoreNodeKind, Descriptor, OperatorDefinition, OperatorSource, PythonSource, ResolvedNode,
-    },
-    get_python_path,
+    descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
     topics::{
         DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONNECT_ENV, DORA_ZENOH_LISTEN_ENV,
         DORA_ZENOH_MULTICAST_ENV, ZENOH_CONFIG_PATH_ENV,
@@ -27,7 +24,7 @@ use dora_message::{
     descriptor::EnvValue,
     id::DataId,
 };
-use eyre::{ContextCompat, WrapErr, bail};
+use eyre::WrapErr;
 use std::{
     collections::{BTreeMap, BTreeSet},
     ffi::OsString,
@@ -385,6 +382,11 @@ pub struct Spawner {
     /// should too (see [`DORA_ZENOH_MULTICAST_ENV`]). Mixing modes leaves a
     /// node scouting for a daemon that no longer answers.
     pub disable_multicast: bool,
+    /// This machine's id (as registered with the coordinator), if any.
+    /// Forwarded to spawned nodes via `DORA_MACHINE_ID` so the node API can
+    /// derive the machine-qualified OS id of a mirrored cross-machine pool
+    /// (see `create_cross_pool_shmem` in the daemon).
+    pub machine_id: Option<String>,
     /// Whether this daemon runs *inside* the process that invoked it — the
     /// `Daemon::run_dataflow` case, where caller, coordinator and daemon are
     /// one process and the nodes are its children.
@@ -396,6 +398,20 @@ pub struct Spawner {
 }
 
 impl Spawner {
+    fn maybe_inject_machine_id(&self, command: Command) -> Command {
+        let command = match &self.machine_id {
+            Some(machine_id) => command.env("DORA_MACHINE_ID", machine_id),
+            None => command,
+        };
+        // Note: the direct-TCP auth token (`DORA_MEMORY_POOL_AUTH_TOKEN`)
+        // is deliberately NOT injected into spawned nodes. The handshake
+        // runs entirely inside the daemon (it reads its own env on
+        // send/verify), and no node-side code ever reads the token —
+        // injecting it would only leak the shared deployment secret into
+        // every user node process (bot review 5301862843, 2026-08-15).
+        command
+    }
+
     fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {
         let command = match self.zenoh_peering.get(node_id) {
             Some(peering) => {
@@ -450,7 +466,10 @@ impl Spawner {
         if self.bind_nodes_to_parent {
             command = command.env(DORA_RUN_PARENT_PID_ENV, std::process::id().to_string());
         }
-        self.maybe_inject_zenoh_connect(command, node_id)
+        let command = self.maybe_inject_zenoh_connect(command, node_id);
+        // The fork's machine-qualified pool naming needs the machine id on
+        // the node (DORA_MACHINE_ID); compose_node_env covers the rest.
+        self.maybe_inject_machine_id(command)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -491,7 +510,6 @@ impl Spawner {
             &node_id,
             generation_counter.clone(),
             &self.daemon_tx,
-            self.dataflow_descriptor.communication.local,
             self.clock.clone(),
             last_activity.clone(),
             self.shutdown.clone(),
@@ -609,189 +627,48 @@ impl Spawner {
                 (command, error_msg)
             }
             dora_core::descriptor::CoreNodeKind::Runtime(n) => {
-                let python_operators: Vec<&OperatorDefinition> = n
-                    .operators
-                    .iter()
-                    .filter(|x| matches!(x.config.source, OperatorSource::Python { .. }))
-                    .collect();
-
-                let other_operators = n
-                    .operators
-                    .iter()
-                    .any(|x| !matches!(x.config.source, OperatorSource::Python { .. }));
-
-                let command = if !python_operators.is_empty() && !other_operators {
-                    // Use python to spawn runtime if there is a python operator
-
-                    // TODO: Handle multi-operator runtime once sub-interpreter is supported
-                    if python_operators.len() > 1 {
-                        eyre::bail!(
-                            "Runtime currently only supports one Python Operator.
-                     This is because PyO3 sub-interpreter is not yet available.
-                     See: https://github.com/PyO3/pyo3/issues/576"
-                        );
-                    }
-
-                    let python_operator = python_operators
-                        .first()
-                        .context("Runtime had no operators definition.")?;
-
-                    if let OperatorSource::Python(PythonSource {
-                        source: _,
-                        conda_env: Some(conda_env),
-                    }) = &python_operator.config.source
-                    {
-                        let conda = which::which("conda").context(
-                        "failed to find `conda`, yet a `conda_env` was defined. Make sure that `conda` is available.",
-                        )?;
-                        let mut command = Command::new(conda);
-                        command = command.args([
-                            "run",
-                            "-n",
-                            conda_env,
-                            "python",
-                            "-uc",
-                            format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
-                        ]);
-                        Some(command)
-                    } else {
-                        let mut cmd = if self.uv {
-                            if let Some(python_env_dir) = python_env_dir.as_deref() {
-                                // Reuse the managed interpreter so Python operators run
-                                // against the same environment Dora prepared during build.
-                                let python = managed_python_interpreter(python_env_dir);
-                                if !python.is_file() {
-                                    eyre::bail!(
-                                        "managed Python interpreter `{}` is missing",
-                                        python.display()
-                                    );
-                                }
-                                tracing::info!(
-                                    "spawning managed Python {} -uc import dora; dora.start_runtime() # {}",
-                                    python.display(),
-                                    node.id
-                                );
-                                Command::new(python)
-                            } else {
-                                let mut cmd = Command::new("uv");
-                                cmd = cmd.arg("run");
-                                cmd = cmd.arg("python");
-                                tracing::info!(
-                                    "spawning: uv run python -uc import dora; dora.start_runtime() # {}",
-                                    node.id
-                                );
-                                cmd
-                            }
-                        } else {
-                            let python = get_python_path()
-                                .wrap_err("Could not find python path when spawning custom node")?;
-                            tracing::info!(
-                                "spawning: python -uc import dora; dora.start_runtime() # {}",
-                                node.id
-                            );
-
-                            Command::new(python)
-                        };
-                        // Force python to always flush stdout/stderr buffer
-                        cmd = cmd.args([
-                            "-uc",
-                            format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
-                        ]);
-                        Some(cmd)
-                    }
-                } else if python_operators.is_empty() && other_operators {
-                    let current_exe = std::env::current_exe()
-                        .wrap_err("failed to get current executable path")?;
-                    let mut file_name = current_exe.clone();
-                    file_name.set_extension("");
-                    let file_name = file_name
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .context("failed to get file name from current executable")?;
-
-                    // Check if the current executable is a python binary meaning that dora is installed within the python environment
-                    if file_name.ends_with("python") || file_name.ends_with("python3") {
-                        // Use the current executable to spawn runtime
-                        let python = get_python_path()
-                            .wrap_err("Could not find python path when spawning custom node")?;
-                        let mut cmd = Command::new(python);
-
-                        tracing::info!(
-                            "spawning: python -uc import dora; dora.start_runtime() # {}",
-                            node.id
-                        );
-
-                        cmd = cmd.args([
-                            "-uc",
-                            format!("import dora; dora.start_runtime() # {}", node.id).as_str(),
-                        ]);
-                        Some(cmd)
-                    } else if file_name == "dora" {
-                        // current_exe is the dora binary — use it so the
-                        // spawned runtime always matches the daemon version.
-                        // See #1797.
-                        let mut cmd = Command::new(&current_exe);
-                        cmd = cmd.arg("runtime");
-                        Some(cmd)
-                    } else {
-                        // current_exe is something else, e.g. an embedded
-                        // example runner that calls `dora_cli::run()` —
-                        // see examples/c-dataflow/run.rs:21. Spawning
-                        // current_exe with `runtime` would recurse into
-                        // the example runner. Fall back to PATH lookup
-                        // for the dora binary. See #1805.
-                        let mut cmd = Command::new(
-                            which::which("dora").wrap_err("failed to find dora binary on PATH")?,
-                        );
-                        cmd = cmd.arg("runtime");
-                        Some(cmd)
-                    }
-                } else {
-                    bail!(
-                        "Cannot spawn runtime with both Python and non-Python operators. \
-                        Please use a single operator or ensure that all operators are Python-based."
-                    );
-                };
+                let mut command = super::runtime_registry::runtime_command(
+                    &node.id,
+                    &n.operators,
+                    self.uv,
+                    python_env_dir.as_deref(),
+                )?;
 
                 let runtime_config = RuntimeConfig {
                     node: node_config.clone(),
                     operators: n.operators.clone(),
                 };
 
-                let command = if let Some(mut command) = command {
-                    command = command.current_dir(&node_working_dir);
-                    command = self.compose_node_env(
-                        command,
-                        &node.id,
-                        &[node.env.as_ref()],
-                        "DORA_RUNTIME_CONFIG",
-                        serde_yaml::to_string(&runtime_config)
-                            .wrap_err("failed to serialize runtime config")?,
-                    );
+                command = command.current_dir(&node_working_dir);
+                command = self.compose_node_env(
+                    command,
+                    &node.id,
+                    &[node.env.as_ref()],
+                    "DORA_RUNTIME_CONFIG",
+                    serde_yaml::to_string(&runtime_config)
+                        .wrap_err("failed to serialize runtime config")?,
+                );
 
-                    // For managed Python runtime nodes (Python operator + uv on),
-                    // set VIRTUAL_ENV and prepend the env's bin dir to PATH so
-                    // anything the operator spawns sees the managed env.
-                    if self.uv
-                        && let Some(env_dir) = python_env_dir.as_deref()
-                    {
-                        command =
-                            apply_managed_python_runtime_env(command, env_dir, node.env.as_ref())?;
-                    }
+                // For managed Python runtime nodes (Python operator + uv on),
+                // set VIRTUAL_ENV and prepend the env's bin dir to PATH so
+                // anything the operator spawns sees the managed env.
+                if self.uv
+                    && let Some(env_dir) = python_env_dir.as_deref()
+                {
+                    command =
+                        apply_managed_python_runtime_env(command, env_dir, node.env.as_ref())?;
+                }
 
-                    command = command
-                        .stdin(Stdio::Null)
-                        .stdout(Stdio::Piped)
-                        .stderr(Stdio::Piped);
-                    Some(command)
-                } else {
-                    command
-                };
+                command = command
+                    .stdin(Stdio::Null)
+                    .stdout(Stdio::Piped)
+                    .stderr(Stdio::Piped);
+
                 let error_msg = format!(
                     "failed to run runtime {}/{}",
                     runtime_config.node.dataflow_id, runtime_config.node.node_id
                 );
-                (command, error_msg)
+                (Some(command), error_msg)
             }
         };
         Ok(PreparedNode {
@@ -835,6 +712,7 @@ mod tests {
             // one a node without its own peering plan takes.
             zenoh_peering: Arc::new(BTreeMap::new()),
             disable_multicast,
+            machine_id: None,
             // The `dora up` shape: a long-lived daemon whose nodes outlive it.
             // The `dora run` shape is covered by its own test below.
             bind_nodes_to_parent: false,

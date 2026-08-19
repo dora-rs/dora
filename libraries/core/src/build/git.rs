@@ -6,7 +6,10 @@ use itertools::Itertools;
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicU64, Ordering},
+    },
 };
 use url::Url;
 
@@ -267,12 +270,22 @@ impl GitFolder {
                         ),
                     )
                     .await;
-                let clone_target = target_dir.clone();
+
+                // Clone into a temporary sibling dir and only atomically
+                // `rename` it into `target_dir` once the checkout has fully
+                // succeeded (see `promote_clone`). A crash mid-clone then leaves
+                // a half-written repo under the temp name, never at `target_dir`.
+                let tmp_dir = partial_clone_path(&target_dir);
+
+                let clone_target = tmp_dir.clone();
                 let checkout_result = match tokio::task::spawn_blocking(move || {
                     let repository = clone_into(repo_url.clone(), &clone_target)
                         .with_context(|| format!("failed to clone git repo from `{repo_url}`"))?;
                     checkout_tree(&repository, &commit_hash)
                         .with_context(|| format!("failed to checkout commit `{commit_hash}`"))
+                    // `repository` is dropped here, before the rename in
+                    // `promote_clone`, so no git2 handles remain open on the temp
+                    // dir (Windows refuses to rename a dir with open handles).
                 })
                 .await
                 {
@@ -287,12 +300,12 @@ impl GitFolder {
                 };
 
                 match checkout_result {
-                    Ok(()) => target_dir,
+                    Ok(()) => promote_clone(logger, &tmp_dir, &target_dir).await?,
                     Err(err) => {
                         logger
                             .log_message(LogLevel::Error, format!("{err:?}"))
                             .await;
-                        cleanup_failed_clone(logger, &target_dir).await;
+                        cleanup_failed_clone(logger, &tmp_dir).await;
                         bail!(err)
                     }
                 }
@@ -302,13 +315,17 @@ impl GitFolder {
                 target_dir,
                 commit_hash,
             } => {
+                // Copy + fetch + checkout into a temp sibling and promote it
+                // into `target_dir` only once every step succeeds. That keeps
+                // the whole operation all-or-nothing: a crash mid-copy (or a
+                // failed fetch) leaves a half-copied dir under the temp name,
+                // never a broken `.git` at `target_dir` that a later build would
+                // reuse and build the wrong commit from (#2480) or wedge on
+                // (#2808).
+                let tmp_dir = partial_clone_path(&target_dir);
                 let from_clone = from.clone();
-                let to = target_dir.clone();
+                let to = tmp_dir.clone();
 
-                // I want the whole copy + fetch + checkout to be all-or-nothing.
-                // If any step dies partway we're left with a half-copied dir on
-                // disk, and I don't want the next build mistaking it for a good
-                // clone and building the wrong commit (#2480).
                 let result: eyre::Result<()> = async {
                     tokio::task::spawn_blocking(move || {
                         std::fs::create_dir_all(&to)
@@ -335,16 +352,18 @@ impl GitFolder {
                         )
                         .await;
 
-                    let repository = fetch_changes(&target_dir, None).await?;
+                    let repository = fetch_changes(&tmp_dir, None).await?;
                     checkout_tree(&repository, &commit_hash)?;
                     Ok(())
+                    // `repository` is dropped at the end of this block, before
+                    // the rename in `promote_clone` (Windows-safe).
                 }
                 .await;
 
                 match result {
-                    Ok(()) => target_dir,
+                    Ok(()) => promote_clone(logger, &tmp_dir, &target_dir).await?,
                     Err(err) => {
-                        cleanup_failed_clone(logger, &target_dir).await;
+                        cleanup_failed_clone(logger, &tmp_dir).await;
                         bail!(err)
                     }
                 }
@@ -354,7 +373,14 @@ impl GitFolder {
                 target_dir,
                 commit_hash,
             } => {
-                tokio::fs::rename(&from, &target_dir)
+                // Rename the old clone into a temp sibling (not straight onto
+                // `target_dir`), fetch + checkout there, and promote it into
+                // place only once both succeed. If the fetch or checkout fails
+                // -- or the process is killed -- the half-updated repo sits at
+                // the temp name, never at `target_dir`, so a later build never
+                // reuses an old-commit or broken checkout (#2480, #2808).
+                let tmp_dir = partial_clone_path(&target_dir);
+                tokio::fs::rename(&from, &tmp_dir)
                     .await
                     .context("failed to rename repo clone")?;
 
@@ -365,20 +391,19 @@ impl GitFolder {
                     )
                     .await;
 
-                // The old clone now lives at target_dir. If the fetch or checkout
-                // fails from here, that dir is left sitting at the old commit, so
-                // I clean it up instead of letting a later build reuse it (#2480).
                 let result: eyre::Result<()> = async {
-                    let repository = fetch_changes(&target_dir, None).await?;
+                    let repository = fetch_changes(&tmp_dir, None).await?;
                     checkout_tree(&repository, &commit_hash)?;
                     Ok(())
+                    // `repository` is dropped at the end of this block, before
+                    // the rename in `promote_clone` (Windows-safe).
                 }
                 .await;
 
                 match result {
-                    Ok(()) => target_dir,
+                    Ok(()) => promote_clone(logger, &tmp_dir, &target_dir).await?,
                     Err(err) => {
-                        cleanup_failed_clone(logger, &target_dir).await;
+                        cleanup_failed_clone(logger, &tmp_dir).await;
                         bail!(err)
                     }
                 }
@@ -504,6 +529,73 @@ async fn cleanup_failed_clone(logger: &mut impl BuildLogger, dir: &Path) {
                     ),
                 )
                 .await;
+        }
+    }
+}
+
+/// A unique temp path (a sibling of `target`) that a write arm clones, copies,
+/// or renames into before atomically promoting it (see `promote_clone`). The
+/// name is `.<target-basename>.partial-<pid>-<counter>`: it sits alongside
+/// `target` so the promoting rename stays on one filesystem, begins with a dot
+/// so it's visually distinct from real clone dirs, and can never collide with a
+/// sibling commit-hash dir. The `pid` keeps it distinct across processes sharing
+/// a working dir and the process-wide counter keeps concurrent operations on the
+/// same commit apart. That uniqueness (rather than a fixed `.partial` name) is
+/// what keeps this cross-process safe -- no build ever writes into, or reclaims,
+/// another live build's temp dir.
+fn partial_clone_path(target: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let pid = std::process::id();
+    let name = target
+        .file_name()
+        .map(|n| n.to_string_lossy())
+        .unwrap_or_default();
+    target.with_file_name(format!(".{name}.partial-{pid}-{n}"))
+}
+
+/// Atomically move a fully-prepared clone from `tmp` into `target`, so `target`
+/// is only ever created by this single rename -- never written into in place.
+///
+/// This is the shared tail of every write arm (`NewClone`, `CopyAndFetch`,
+/// `RenameAndFetch`). Because each arm does all of its fallible work (clone /
+/// copy, fetch, checkout) in `tmp` first and only calls this once that work has
+/// fully succeeded, a crash (SIGKILL / power loss) at any earlier point leaves a
+/// half-written repo under the temp name, *never* at `target`. So any directory
+/// that exists at `target` is, by construction, a complete checkout -- which is
+/// what lets a later build's `clone_dir_ready` check (which trusts
+/// `dir.exists()`) and the Reuse arm trust it, instead of wedging forever on an
+/// un-resolvable HEAD (#2808) or silently reusing a broken checkout.
+///
+/// `tmp` must be a sibling of `target` (see `partial_clone_path`) so the rename
+/// stays on one filesystem and is atomic. Callers must drop any open
+/// `git2::Repository` on `tmp` before calling this (Windows refuses to rename a
+/// directory with open handles).
+///
+/// On the concurrent-winner race -- another build already promoted a complete
+/// clone to `target`, so the rename onto a populated dir fails -- the redundant
+/// `tmp` is dropped and the existing `target` reused.
+async fn promote_clone(
+    logger: &mut impl BuildLogger,
+    tmp: &Path,
+    target: &Path,
+) -> eyre::Result<PathBuf> {
+    match tokio::fs::rename(tmp, target).await {
+        Ok(()) => Ok(target.to_owned()),
+        Err(_) if target.exists() => {
+            cleanup_failed_clone(logger, tmp).await;
+            Ok(target.to_owned())
+        }
+        Err(err) => {
+            logger
+                .log_message(LogLevel::Error, format!("{err:?}"))
+                .await;
+            cleanup_failed_clone(logger, tmp).await;
+            bail!(
+                "failed to move finished clone from {} into {}: {err}",
+                tmp.display(),
+                target.display()
+            )
         }
     }
 }
@@ -663,6 +755,15 @@ mod tests {
         repo.commit(Some("HEAD"), &sig, &sig, "A", &tree, &[])
             .unwrap()
             .to_string()
+    }
+
+    // A `file://` URL for a local absolute path. `format!("file://{}", p.display())`
+    // is not portable: on Windows it yields `file://C:\...`, which puts the drive
+    // letter in the authority and leaves the backslashes as non-separators, so
+    // libgit2 refuses to resolve it (#3137). `Url::from_file_path` emits the
+    // well-formed `file:///C:/...` on every platform.
+    fn file_url(path: &Path) -> Url {
+        Url::from_file_path(path).expect("test repo path must be absolute")
     }
 
     #[test]
@@ -830,7 +931,8 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let commit = init_repo_with_commit(&repo_path);
-        let repo_url_str = format!("file://{}", repo_path.display());
+        let repo_url = file_url(&repo_path);
+        let repo_url_str = repo_url.to_string();
         let target_dir = tempfile::tempdir().unwrap();
 
         let mut manager = GitManager::default();
@@ -853,8 +955,7 @@ mod tests {
         // before it's a valid, HEAD-resolvable repo). Session B must see
         // this as owned by an in-flight build, not as a finished clone to
         // verify.
-        let parsed = Url::parse(&repo_url_str).unwrap();
-        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &parsed, &commit).unwrap();
+        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &repo_url, &commit).unwrap();
         std::fs::create_dir_all(&clone_dir).unwrap();
 
         let session_b = SessionId::generate();
@@ -889,7 +990,8 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let commit = init_repo_with_commit(&repo_path);
-        let repo_url_str = format!("file://{}", repo_path.display());
+        let repo_url = file_url(&repo_path);
+        let repo_url_str = repo_url.to_string();
         let target_dir = tempfile::tempdir().unwrap();
 
         let mut manager = GitManager::default();
@@ -920,8 +1022,7 @@ mod tests {
         // The dir shows up on disk, then A finishes and drops its claim.
         // B is still writing, so a third session must not get a commit to
         // verify.
-        let parsed = Url::parse(&repo_url_str).unwrap();
-        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &parsed, &commit).unwrap();
+        let clone_dir = GitManager::clone_dir_path(target_dir.path(), &repo_url, &commit).unwrap();
         std::fs::create_dir_all(&clone_dir).unwrap();
         drop(folder_a);
 
@@ -985,7 +1086,7 @@ mod tests {
         let repo_dir = tempfile::tempdir().unwrap();
         let repo_path = repo_dir.path().join("repo");
         let old_commit = init_repo_with_commit(&repo_path);
-        let repo_url = format!("file://{}", repo_path.display());
+        let repo_url = file_url(&repo_path).to_string();
 
         let target_dir = tempfile::tempdir().unwrap();
         let mut manager = GitManager::default();
@@ -1140,5 +1241,257 @@ mod tests {
         let head_commit = head.peel_to_commit().unwrap().id();
         checkout_tree(&repository, &branch_name).unwrap();
         checkout_tree(&repository, &head_commit.to_string()).unwrap();
+    }
+
+    // The prefix `partial_clone_path` gives a target's temp siblings, recomputed
+    // independently so a drift in the naming scheme trips the assertions below.
+    fn partial_prefix(target: &Path) -> String {
+        format!(
+            ".{}.partial-",
+            target.file_name().unwrap().to_string_lossy()
+        )
+    }
+
+    // True if any temp sibling for `target` survives in its parent dir.
+    fn has_partial_leftover(target: &Path) -> bool {
+        let prefix = partial_prefix(target);
+        std::fs::read_dir(target.parent().unwrap())
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .any(|e| e.file_name().to_string_lossy().starts_with(&prefix))
+    }
+
+    // Clone `origin` into `dest` so `dest` carries an `origin` remote that
+    // `fetch_changes` can pull from — the shape the Copy/Rename arms expect.
+    fn clone_from_origin(origin: &Path, dest: &Path) {
+        git2::Repository::clone(file_url(origin).as_str(), dest).unwrap();
+    }
+
+    fn head_commit(dir: &Path) -> String {
+        git2::Repository::open(dir)
+            .unwrap()
+            .head()
+            .unwrap()
+            .peel_to_commit()
+            .unwrap()
+            .id()
+            .to_string()
+    }
+
+    // A partial-clone temp path is a sibling of the target (not the target
+    // itself), carries the target's basename, and every call is unique -- so it
+    // is never picked up by `clone_dir_ready`/Reuse and never collides with a
+    // concurrent clone of the same commit.
+    #[test]
+    fn partial_clone_path_is_a_unique_sibling() {
+        let target = Path::new("/base/localhost/org/repo").join("a".repeat(40));
+        let p1 = partial_clone_path(&target);
+        let p2 = partial_clone_path(&target);
+
+        assert_ne!(p1, target);
+        assert_ne!(p1, p2, "each call must produce a distinct temp path");
+        assert_eq!(p1.parent(), target.parent(), "temp must be a sibling");
+        let name = p1.file_name().unwrap().to_string_lossy();
+        assert!(name.starts_with(&partial_prefix(&target)));
+    }
+
+    // `promote_clone` moves the temp dir onto an absent target with a single
+    // rename. This is the atomic step that guarantees `target` is never written
+    // in place, so a crash before it leaves only a temp dir.
+    #[tokio::test]
+    async fn promote_clone_moves_temp_into_absent_target() {
+        let base = tempfile::tempdir().unwrap();
+        let target = base.path().join("clone");
+        let tmp = partial_clone_path(&target);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("f"), b"data").unwrap();
+
+        let out = promote_clone(&mut TestLogger, &tmp, &target).await.unwrap();
+        assert_eq!(out, target);
+        assert!(!tmp.exists(), "temp must be consumed by the rename");
+        assert_eq!(std::fs::read(target.join("f")).unwrap(), b"data");
+    }
+
+    // On the concurrent-winner race — another build already promoted a complete
+    // clone to `target` — `promote_clone` must drop our redundant temp and reuse
+    // the winner's clone untouched, rather than clobbering it or erroring.
+    #[tokio::test]
+    async fn promote_clone_reuses_winner_and_drops_temp_on_race() {
+        let base = tempfile::tempdir().unwrap();
+        let target = base.path().join("clone");
+        let tmp = partial_clone_path(&target);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("mine"), b"mine").unwrap();
+        // The winner's finished (non-empty) clone already sits at target.
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(target.join("winner"), b"winner").unwrap();
+
+        let out = promote_clone(&mut TestLogger, &tmp, &target).await.unwrap();
+        assert_eq!(out, target);
+        assert!(!tmp.exists(), "our redundant temp must be dropped");
+        assert!(
+            target.join("winner").exists() && !target.join("mine").exists(),
+            "the winner's clone must be reused untouched"
+        );
+    }
+
+    // A `NewClone` must land at `target_dir` atomically and leave no temp dir
+    // behind on success -- the property that stops a crashed build's half-clone
+    // from ever sitting at `target_dir` and wedging future reuse (#2808).
+    #[tokio::test]
+    async fn new_clone_promotes_temp_into_target_and_cleans_up() {
+        let repo_dir = tempfile::tempdir().unwrap();
+        let repo_path = repo_dir.path().join("repo");
+        let commit = init_repo_with_commit(&repo_path);
+        let repo_url = file_url(&repo_path);
+
+        let base = tempfile::tempdir().unwrap();
+        let target = base.path().join("localhost").join(&commit);
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::NewClone {
+                target_dir: target.clone(),
+                repo_url,
+                commit_hash: commit.clone(),
+            },
+            _claim: None,
+        };
+        let out = folder.prepare(&mut TestLogger).await.unwrap();
+        assert_eq!(out, target);
+        assert_eq!(head_commit(&target), commit);
+        assert!(
+            !has_partial_leftover(&target),
+            "temp dir must be gone after promotion"
+        );
+    }
+
+    // A `NewClone` whose clone fails must leave *nothing* at `target_dir` (and
+    // no temp sibling), so a later build never mistakes a failed attempt for a
+    // reusable clone (#2808).
+    #[tokio::test]
+    async fn new_clone_failure_leaves_no_target_dir() {
+        let base = tempfile::tempdir().unwrap();
+        let target = base.path().join("localhost").join("a".repeat(40));
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        // A file:// URL to a path that isn't a git repo -> clone fails.
+        let missing = base.path().join("does-not-exist");
+        let repo_url = file_url(&missing);
+
+        let folder = GitFolder {
+            reuse: ReuseOptions::NewClone {
+                target_dir: target.clone(),
+                repo_url,
+                commit_hash: "a".repeat(40),
+            },
+            _claim: None,
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            !target.exists(),
+            "a failed clone must never leave a dir at the target path"
+        );
+        assert!(!has_partial_leftover(&target), "temp must be cleaned up");
+    }
+
+    // A `CopyAndFetch` must copy + fetch + checkout in a temp sibling and
+    // promote it into `target_dir` only on full success — never write `.git`
+    // into `target_dir` in place (#2808).
+    #[tokio::test]
+    async fn copy_and_fetch_promotes_into_target() {
+        let base = tempfile::tempdir().unwrap();
+        let origin = base.path().join("origin");
+        let commit = init_repo_with_commit(&origin);
+        // `from` is a prior clone (with an `origin` remote) to be copied.
+        let from = base.path().join("localhost").join("prev");
+        clone_from_origin(&origin, &from);
+
+        let target = base.path().join("localhost").join(&commit);
+        let folder = GitFolder {
+            reuse: ReuseOptions::CopyAndFetch {
+                from: from.clone(),
+                target_dir: target.clone(),
+                commit_hash: commit.clone(),
+            },
+            _claim: None,
+        };
+        let out = folder.prepare(&mut TestLogger).await.unwrap();
+        assert_eq!(out, target);
+        assert_eq!(head_commit(&target), commit);
+        assert!(from.exists(), "the source clone must be left in place");
+        assert!(!has_partial_leftover(&target), "temp must be gone");
+    }
+
+    // A `CopyAndFetch` whose fetch fails (no reachable `origin`) must leave
+    // nothing at `target_dir` and no temp sibling behind.
+    #[tokio::test]
+    async fn copy_and_fetch_failure_leaves_no_target_dir() {
+        let base = tempfile::tempdir().unwrap();
+        // `from` has a commit but no `origin` remote, so the fetch fails.
+        let from = base.path().join("localhost").join("prev");
+        init_repo_with_commit(&from);
+
+        let target = base.path().join("localhost").join("a".repeat(40));
+        let folder = GitFolder {
+            reuse: ReuseOptions::CopyAndFetch {
+                from,
+                target_dir: target.clone(),
+                commit_hash: "deadbeef".repeat(5),
+            },
+            _claim: None,
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(!target.exists(), "a failed copy+fetch must leave no target");
+        assert!(!has_partial_leftover(&target), "temp must be cleaned up");
+    }
+
+    // A `RenameAndFetch` must rename the old clone into a temp sibling, fetch +
+    // checkout there, and promote into `target_dir` only on success.
+    #[tokio::test]
+    async fn rename_and_fetch_promotes_into_target() {
+        let base = tempfile::tempdir().unwrap();
+        let origin = base.path().join("origin");
+        let commit = init_repo_with_commit(&origin);
+        let from = base.path().join("localhost").join("prev");
+        clone_from_origin(&origin, &from);
+
+        let target = base.path().join("localhost").join(&commit);
+        let folder = GitFolder {
+            reuse: ReuseOptions::RenameAndFetch {
+                from: from.clone(),
+                target_dir: target.clone(),
+                commit_hash: commit.clone(),
+            },
+            _claim: None,
+        };
+        let out = folder.prepare(&mut TestLogger).await.unwrap();
+        assert_eq!(out, target);
+        assert_eq!(head_commit(&target), commit);
+        assert!(!from.exists(), "the source clone is consumed by the rename");
+        assert!(!has_partial_leftover(&target), "temp must be gone");
+    }
+
+    // A `RenameAndFetch` whose fetch fails must leave nothing at `target_dir`
+    // and no temp sibling behind (regression for the pre-fix in-place rename).
+    #[tokio::test]
+    async fn rename_and_fetch_failure_leaves_no_target_dir() {
+        let base = tempfile::tempdir().unwrap();
+        let from = base.path().join("localhost").join("prev");
+        init_repo_with_commit(&from); // no `origin` remote -> fetch fails
+
+        let target = base.path().join("localhost").join("a".repeat(40));
+        let folder = GitFolder {
+            reuse: ReuseOptions::RenameAndFetch {
+                from,
+                target_dir: target.clone(),
+                commit_hash: "deadbeef".repeat(5),
+            },
+            _claim: None,
+        };
+        assert!(folder.prepare(&mut TestLogger).await.is_err());
+        assert!(
+            !target.exists(),
+            "a failed rename+fetch must leave no target"
+        );
+        assert!(!has_partial_leftover(&target), "temp must be cleaned up");
     }
 }

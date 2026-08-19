@@ -11,11 +11,11 @@ repository.workspace = true
 dora-ros2-bridge-msg-gen = { workspace = true }
 arrow = { workspace = true }
 eyre = { workspace = true }
-ros2-client = "0.8"
+ros2-client = { workspace = true }
 serde = { workspace = true }
-cdr-encoding = "=0.10.2"
+cdr-encoding = { workspace = true }
 byteorder = "1"
 
 [dev-dependencies]
-# CDR codec used by ros2-client 0.8 on the wire; used in tests to verify the
+# CDR codec used by ros2-client 0.10 on the wire; used in tests to verify the
 # real CDR byte layout (length prefixes, alignment) rather than just serde shape.

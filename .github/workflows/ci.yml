@@ -145,6 +145,14 @@ jobs:
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
           -- -D warnings
+      # `--all` does not enable opt-in features, so neither the extension's
+      # daemon half nor the daemon's wiring for it would otherwise be linted.
+      # `--all-targets` on the extension covers its tests, which live with the
+      # code it tests.
+      - name: Clippy (tensor-pool extension)
+        run: >
+          cargo clippy -p dora-tensor-pool --features daemon --all-targets -- -D warnings
+          && cargo clippy -p dora-daemon --features tensor-pool -- -D warnings
 
   # Cheap compile gate on every PR. `cargo check` skips codegen/link,
   # so it's much faster than the full `test` job below. Exposed as the
@@ -176,6 +184,33 @@ jobs:
       # surface and deserve their own compile gate.
       - name: Check examples compile
         run: cargo check --examples
+      # ...nor does it build test targets, so the `#[cfg(test)]` modules of
+      # the PyO3 crates were type-checked nowhere: they're excluded
+      # from `cargo test` (see the `test` job) and from clippy above, and
+      # `cargo check --all` only covers their lib targets. A syntax error in
+      # one of those test modules could ship. This is rmeta-only and `Check`
+      # above already checked the whole dependency graph with the same
+      # features, so it costs seconds. contract-tests actually *runs* them.
+      - name: Check PyO3 crate test targets compile
+        run: >
+          cargo check --all-targets
+          -p dora-node-api-python
+          -p dora-operator-api-python
+          -p dora-ros2-bridge-python
+          -p dora-runtime-python
+      # The C/C++ bindings name Arrow types directly, so they depend on
+      # `dora-node-api`'s `arrow-v59` feature. `cargo check --all` above does
+      # NOT catch a missing opt-in: another workspace member (the C++ binding)
+      # enables the feature, and cargo unifies features across a whole-workspace
+      # build, so the C binding compiles by accident. Built per-crate the
+      # unification is gone and the break appears. Without this, the first place
+      # it surfaces is `find_package smoke`, which is skipped on `pull_request`
+      # and only runs on a merge-queue batch — one wasted batch cycle per
+      # attempt (#3213).
+      - name: Check C/C++ bindings compile standalone
+        run: |
+          cargo check -p dora-node-api-c
+          cargo check -p dora-node-api-cxx
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.
@@ -223,14 +258,36 @@ jobs:
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+      # The PyO3 crates stay excluded here — their test binaries link
+      # libpython, and this job sets up no interpreter. Their unit tests run
+      # in `contract-tests`, which does; keep that step in sync if this list
+      # changes. `dora-runtime-python` is one of them: it links pyo3 like the
+      # rest, and only its own targets are skipped — the lib still builds
+      # above, as a dependency of dora-cli-api-python.
       - name: Test
         run: >
           cargo test --all
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
+          --exclude dora-runtime-python
           --exclude dora-cli-api-python
           --exclude dora-examples
+
+      # The tensor-pool transport is opt-in (see docs/extensions.md), so the
+      # workspace run above builds the extension's node half only — its daemon
+      # half and that half's tests compile out. ~5s on top of an already-warm
+      # target dir, cheap enough to keep the CPU paths honest on every PR. The
+      # GPU paths remain uncovered: dora's CI has no GPU runners.
+      #
+      # The daemon run covers its own feature-gated tests, which include the
+      # `ws_reader_routes_replies_to_pending_daemon_requests` pin: the routing
+      # block it guards is generic, but `resolve_machine` — the only way to
+      # reach it — is gated, so the test is too.
+      - name: Test (tensor-pool extension)
+        run: >
+          cargo test -p dora-tensor-pool --features daemon
+          && cargo test -p dora-daemon --features tensor-pool
 
       # ===== Tier 0 CLI smoke gates =====
       # Fast per-platform checks against the 80% CLI coverage gap in #215.
@@ -428,6 +485,15 @@ jobs:
         run: >
           cargo test -p dora-examples --test finish-straggler-e2e -- --test-threads=1
         timeout-minutes: 10
+      # Coordinator Stop-vs-Restart race regression: a `Stop` landing while
+      # a `Restart` is pending must cancel the restart and actually stop the
+      # dataflow, not report success while a new incarnation keeps running.
+      # Lives in `dora-examples` (excluded from the bulk `cargo test --all`
+      # step), so it needs an explicit invocation.
+      - name: Run coordinator stop/restart race E2E
+        run: >
+          cargo test -p dora-examples --test stop-restart-race-e2e -- --test-threads=1
+        timeout-minutes: 10
 
   # Semantic contract tests — promoted from nightly per #1632.
   #
@@ -502,6 +568,28 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
+      # The three PyO3 crates are excluded from the workspace `cargo test`
+      # in the `test` job, so until this step their `#[cfg(test)]` modules
+      # ran nowhere at all — pure-Rust logic tests (seqlock generation
+      # counters, transport classification, pinning thresholds, the
+      # `FREED_POOL_IDS` cap) that carried no enforcement. They run here
+      # because this is the one job with a Python interpreter set up.
+      #
+      # Deliberately BEFORE the maturin install below. A test binary is an
+      # executable and has to link libpython, so this build must NOT enable
+      # `pyo3/extension-module` (which suppresses that link — right for a
+      # wheel, a link error for anything else). `[tool.maturin] features`
+      # in apis/python/node/pyproject.toml enables it for the wheel, so the
+      # two builds can't share pyo3 artifacts either way; running the tests
+      # first keeps a unit-test failure from waiting behind the wheel build.
+      - name: Test PyO3 crates (unit tests)
+        run: make qa-test-python
+        # These binaries link libpython dynamically, so the loader needs the
+        # tool-cache CPython's lib dir. setup-python exports exactly this
+        # already; restating it keeps the step from depending on that
+        # implementation detail (LD_LIBRARY_PATH only adds a search path).
+        env:
+          LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
@@ -644,7 +732,15 @@ jobs:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-deny
+          tool: cargo-deny
+      # Pin cargo-audit via cargo install: install-action's "latest"
+      # raced between runner caches, and older cached releases crash
+      # parsing this Cargo.lock's multi-target windows-sys (webbrowser's
+      # windows-only 0.48.0 target dependency — "invalid Cargo.lock
+      # dependency tree: failed to find dependency: windows-sys 0.48.0").
+      # 0.22.2 parses it cleanly (verified locally against this lock).
+      - name: Install cargo-audit (pinned)
+        run: cargo install cargo-audit --locked --version 0.22.2
       - run: make qa-audit
 
   unwrap-budget:
