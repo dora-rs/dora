@@ -669,7 +669,17 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git: Option<String>,
 
-    /// Hub package reference (unstable).
+    /// Hub package reference.
+    ///
+    /// **Outside the 1.0 stability guarantee.** This field, the way it is
+    /// resolved, and the `HubProvenance` recorded in the lockfile may change
+    /// or be removed in a minor release. `dora build` and `dora validate`
+    /// print a warning whenever a dataflow uses it.
+    ///
+    /// The reason is readiness rather than scope: stabilizing `hub:` would
+    /// promise a typed-contract guarantee that no package in the catalog
+    /// currently delivers. The path to stabilization is the node-typing
+    /// workstream, not more code here — see `docs/plan-node-hub.md` §14 (P3.5).
     ///
     /// References a node published in the Dora Hub index:
     /// `[<namespace>/]<name>@<semver-requirement>`. A bare name is shorthand
