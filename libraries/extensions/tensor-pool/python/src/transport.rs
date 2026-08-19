@@ -1323,7 +1323,7 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
     unsafe {
         let cur = std::ptr::read_volatile(gen_ptr);
         if cur.is_multiple_of(2) {
-            std::ptr::write_volatile(gen_ptr, cur + 1);
+            std::ptr::write_volatile(gen_ptr, cur.wrapping_add(1));
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
         cur & !1 // always return the even baseline
@@ -1725,7 +1725,7 @@ impl Pool<'_> {
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
-            std::ptr::write_volatile(gen_ptr, old_gen + 1);
+            std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
 
@@ -2175,7 +2175,7 @@ impl Pool<'_> {
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
-            std::ptr::write_volatile(gen_ptr, old_gen + 1);
+            std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
 
