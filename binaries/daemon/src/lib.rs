@@ -446,7 +446,7 @@ pub struct Daemon {
     /// `None` for a single-machine daemon, whose zenoh listener is on loopback:
     /// handing that address to a consumer on another machine would point it at
     /// its own loopback. Used to give a node with cross-machine consumers a
-    /// second, network-reachable listener (see `plan_zenoh_peering`).
+    /// second, network-reachable listener (see `spawn::reserve_node_listeners`).
     pub(crate) zenoh_routable_addr: Option<IpAddr>,
     /// Whether this daemon opened its zenoh session without multicast
     /// scouting. Forwarded to spawned nodes so they discover the same way the
@@ -4348,12 +4348,32 @@ impl Daemon {
         // relay, so a producer/consumer pair that never forms a direct link can
         // never exchange data. Assign the links explicitly instead of leaving
         // them to gossip's best-effort autoconnect.
-        dataflow.zenoh_peering = Arc::new(crate::spawn::plan_zenoh_peering(
+        //
+        // Three steps, in this order because each needs the previous one's
+        // result: reserve this daemon's own listeners, trade endpoints with the
+        // daemons running the rest of the dataflow, then build the dial lists.
+        // The trade has to finish before any node spawns — a node's zenoh
+        // session reads its dial list once at startup and never again.
+        let listeners =
+            crate::spawn::reserve_node_listeners(&nodes, &spawn_nodes, self.zenoh_routable_addr);
+        let (remote_endpoints, endpoint_queryable) = crate::spawn::endpoint_exchange::exchange(
+            &self.zenoh_session,
+            dataflow_id,
+            &self.daemon_id,
+            listeners
+                .iter()
+                .filter_map(|(id, l)| Some((id.clone(), l.routable()?.to_string())))
+                .collect(),
+            crate::spawn::remote_sources_of_local_nodes(&nodes, &spawn_nodes),
+        )
+        .await;
+        dataflow.zenoh_peering = Arc::new(crate::spawn::build_peering_plan(
             &nodes,
-            &spawn_nodes,
+            &listeners,
             self.zenoh_listen_endpoint.as_deref(),
-            self.zenoh_routable_addr,
+            &remote_endpoints,
         ));
+        dataflow.endpoint_queryable = endpoint_queryable;
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir
