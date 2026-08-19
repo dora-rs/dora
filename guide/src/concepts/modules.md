@@ -151,7 +151,7 @@ Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MOD
 2. Prefix all internal node IDs with `{module_id}.` (e.g., `nav_stack.planner`)
 3. Replace `_mod/port_name` references with the actual sources from the parent's input map
 4. Rewrite internal cross-references (e.g., `planner/path` becomes `nav_stack.planner/path`)
-5. Map module-declared outputs to internal node outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`
+5. Map module-declared outputs to internal node outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. An inner node may produce a declared output from its node-level `outputs:`, from an `operator:`/`operators:` block, or from a legacy `custom:` block. For an output produced by one operator of a multi-operator `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
 6. Replace the module node with the expanded flat nodes
 7. Substitute `params:` values in `args:` fields and inject as env vars
 
@@ -231,8 +231,32 @@ This checks:
 - Valid YAML structure
 - Module header is present with `name`, `inputs`, `outputs`
 - All `_mod/` references correspond to declared inputs or optional inputs
+- Every declared output is produced by some inner node (counting `operator:`/`operators:` and legacy `custom:` outputs)
 - No duplicate node IDs
 - Internal wiring is consistent
+
+## Source-path resolution inside modules
+
+A module's inner-node `path:`, and its operators' `shared-library:`,
+`python:`, and `wasm:` values, are resolved relative to the **module file's**
+directory, not to the top-level dataflow. A module in `modules/nested/`
+declaring `python: op.py` refers to `modules/nested/op.py`.
+
+Exempt from the rewrite: URLs, absolute paths, and the `dynamic` and `shell`
+sentinels (which the daemon matches verbatim).
+
+Two consequences worth knowing:
+
+- A resolved path that escapes the dataflow directory is rejected. A module
+  cannot reach a sibling project via `python: ../shared/op.py`, and the
+  `../../target/debug/<bin>` idiom used by the example dataflows cannot be
+  used from inside a module.
+- `build:` commands still run with the **dataflow** directory as their working
+  directory. An artifact a build produces must therefore be referenced from
+  where the build put it, which is not the module directory --- so
+  `build: cargo build -p my-op` paired with `shared-library: target/debug/my-op`
+  inside a module resolves to `modules/target/debug/my-op` and will not be
+  found. Use an absolute path or keep such nodes in the top-level dataflow.
 
 ## Security
 

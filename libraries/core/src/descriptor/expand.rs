@@ -807,7 +807,11 @@ fn resolve_module_relative_path(
     if path == DYNAMIC_SOURCE
         || path == SHELL_SOURCE
         || super::source_is_url(path)
-        || Path::new(path).is_absolute()
+        // `Path::is_absolute()` is false for a Unix-style `/foo` on Windows,
+        // where `module_dir.join("/foo")` then rewrites it into the module
+        // directory and the confinement check below rejects it with a
+        // misleading "resolves outside the project directory".
+        || is_absolute_any_platform(path)
     {
         return Ok(());
     }
@@ -3363,8 +3367,11 @@ nodes:
             .unwrap()
             .config
             .source;
+        // `normalize_path` builds the rewritten path with `MAIN_SEPARATOR`,
+        // so on Windows these come back as `modules\\nested\\...`. Compare on a
+        // normalized form -- CI runs this suite on windows-latest nightly.
         assert!(
-            matches!(proc_source, dora_message::descriptor::OperatorSource::SharedLibrary(path) if path == "modules/nested/libproc.so"),
+            matches!(proc_source, dora_message::descriptor::OperatorSource::SharedLibrary(path) if path.replace('\\', "/") == "modules/nested/libproc.so"),
             "unexpected runtime operator source: {proc_source:?}"
         );
 
@@ -3375,7 +3382,7 @@ nodes:
             .unwrap();
         let single_source = &single.operator.as_ref().unwrap().config.source;
         assert!(
-            matches!(single_source, dora_message::descriptor::OperatorSource::Python(source) if source.source == "modules/nested/single.py"),
+            matches!(single_source, dora_message::descriptor::OperatorSource::Python(source) if source.source.replace('\\', "/") == "modules/nested/single.py"),
             "unexpected single operator source: {single_source:?}"
         );
 
@@ -3384,7 +3391,14 @@ nodes:
             .iter()
             .find(|n| n.id.to_string() == "m.runner")
             .unwrap();
-        assert_eq!(runner.path.as_deref(), Some("modules/nested/runner.py"));
+        assert_eq!(
+            runner
+                .path
+                .as_deref()
+                .map(|p| p.replace('\\', "/"))
+                .as_deref(),
+            Some("modules/nested/runner.py")
+        );
     }
 
     /// `path: dynamic` is a sentinel, not a file: the daemon matches it
