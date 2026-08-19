@@ -216,6 +216,10 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
                     node.id,
                 );
             }
+            // The same mutual-exclusion rule applies at every nesting level.
+            // Without this, `dora expand --module m.yml` reports a file as
+            // valid while `dora run` on a dataflow using it hard-fails.
+            validate_module_node_fields(node)?;
             let nested = module_dir.join(mod_path);
             let nested_canonical = nested.canonicalize().with_context(|| {
                 format!(
@@ -509,6 +513,12 @@ fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
     if node.path.is_some() {
         conflicts.push("path");
     }
+    // `args` belongs to `path`: a module node has no executable to pass them
+    // to, and `expand_module_node` never reads them, so they are dropped just
+    // as silently. Arguments reach inner nodes through `params:` instead.
+    if node.args.is_some() {
+        conflicts.push("args");
+    }
     if node.path_sha256.is_some() {
         conflicts.push("path_sha256");
     }
@@ -533,16 +543,18 @@ fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
     if node.operator.is_some() {
         conflicts.push("operator");
     }
-    if node.custom.is_some() {
-        conflicts.push("custom");
-    }
     if node.ros2.is_some() {
         conflicts.push("ros2");
     }
 
     if !conflicts.is_empty() {
         bail!(
-            "module node `{}` has fields that are mutually exclusive with `module`: {}",
+            "module node `{}` sets fields that are mutually exclusive with \
+             `module`: {}\n\
+             hint: a module node only references a sub-dataflow -- remove these \
+             fields, or drop `module:` if this was meant to be a regular node. \
+             To configure the module's inner nodes use `params:`, `env:`, \
+             `build:`, or `deploy:`.",
             node.id,
             conflicts.join(", ")
         );
@@ -2918,6 +2930,7 @@ nodes:
 
         for (field, snippet) in [
             ("path", "    path: unexpected.py\n"),
+            ("args", "    args: --verbose\n"),
             ("path_sha256", "    path_sha256: abc123\n"),
             ("git", "    git: https://github.com/example/repo.git\n"),
             ("hub", "    hub: dora-yolo@^0.5\n"),
@@ -2928,10 +2941,6 @@ nodes:
             (
                 "operators",
                 "    operators:\n      - id: op\n        python: op.py\n",
-            ),
-            (
-                "custom",
-                "    custom:\n      path: node.py\n      source: Local\n",
             ),
             (
                 "ros2",
@@ -2957,6 +2966,72 @@ nodes:
             );
             assert!(err.contains(field), "got: {err}");
         }
+    }
+
+    /// The linter must apply the same rule at every nesting level: a module
+    /// file whose *nested* module node carries `path:` has to be rejected by
+    /// `dora expand --module`, not just by `dora run`.
+    #[test]
+    fn check_module_file_rejects_nested_module_node_with_source_fields() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - out
+"#,
+        );
+        let path = write_file(
+            base,
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+    path: unexpected.py
+"#,
+        );
+
+        let msg = format!("{:#}", check_module_file(&path).unwrap_err());
+        assert!(
+            msg.contains("mutually exclusive with `module`"),
+            "got: {msg}"
+        );
+        assert!(msg.contains("path"), "got: {msg}");
+    }
+
+    /// The rejection is a breaking descriptor change, so pin that the one
+    /// module-using dataflow in the repo still expands. A module node that
+    /// legitimately carries only `module`/`inputs`/`params`/`env` must not be
+    /// caught by the deny list.
+    #[test]
+    fn in_repo_module_example_still_expands() {
+        let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .and_then(Path::parent)
+            .expect("libraries/core has a repo root two levels up");
+        let dataflow = repo_root.join("examples/module-dataflow/dataflow.yml");
+        let yaml = std::fs::read_to_string(&dataflow)
+            .unwrap_or_else(|e| panic!("read {}: {e}", dataflow.display()));
+        let desc: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+        expand_modules(&desc, dataflow.parent().unwrap())
+            .expect("the in-repo module example must keep expanding");
     }
 
     #[test]
@@ -3001,7 +3076,24 @@ nodes:
 "#,
         );
 
-        expand_modules(&desc, base).unwrap();
+        let expanded = expand_modules(&desc, base).unwrap();
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .expect("inner node should be expanded");
+        // `env` on a module node propagates into every inner node (#2905).
+        assert_eq!(
+            worker.env.as_ref().and_then(|e| e.get("LOCAL_ONLY")),
+            Some(&EnvValue::String("ignored".to_string())),
+        );
+        // The *module file's* `build:` is prepended to inner-node builds
+        // (#2908). Note the module *node's* `build: echo outer-build` is not
+        // in the result: propagating a module node's own build only happens
+        // for nested module nodes (`expand_module_node`), not at the top
+        // level. That asymmetry predates this PR -- asserted here so it is
+        // recorded rather than mistaken for the field being honoured.
+        assert_eq!(worker.build.as_deref(), Some("echo module-build"));
     }
 
     #[test]

@@ -235,6 +235,22 @@ This checks:
 - No duplicate node IDs
 - Internal wiring is consistent
 
+## Fields on a module node
+
+A module node references a sub-dataflow, so it has no source of its own. These
+fields are rejected rather than silently dropped: `path`, `args`,
+`path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`, `operator`,
+and `ros2`.
+
+`env`, `build`, `deploy`, and `params` are accepted -- they propagate into the
+module's inner nodes.
+
+> **Breaking change.** These combinations parsed and ran before; the extra
+> fields were parsed, accepted, and then discarded when the module node was
+> replaced by its expansion. They now fail at expansion time, which means
+> `dora run`, `dora start`, `dora build`, `dora validate`, and
+> `dora expand --module` all reject them.
+
 ## Security
 
 - **Path confinement**: Module file paths must resolve within the dataflow's base directory. Absolute paths and directory traversal (`../`) outside the base are rejected.

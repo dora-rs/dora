@@ -844,8 +844,14 @@ pub struct Node {
     /// internal node IDs are prefixed with `{module_id}.` and all wiring is
     /// rewritten so the runtime sees only flat nodes.
     ///
-    /// Mutually exclusive with `path`, `operators`, `operator`, `custom`,
-    /// and `ros2`.
+    /// Mutually exclusive with every source and kind field: `path`, `args`,
+    /// `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,
+    /// `operator`, and `ros2`. Setting any of them alongside `module` is an
+    /// error -- a module node has no source of its own, so they would be
+    /// silently discarded during expansion.
+    ///
+    /// `env`, `build`, `deploy`, and `params` *are* accepted: they propagate
+    /// into the module's inner nodes.
     ///
     /// ## Example
     ///
