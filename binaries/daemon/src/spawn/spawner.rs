@@ -229,6 +229,12 @@ pub struct NodeZenohPeering {
     pub listen: Vec<String>,
     /// Endpoints this node dials: the daemon, plus each node it consumes from.
     pub connect: Vec<String>,
+    /// Whether one of `listen` is an address other machines can dial.
+    ///
+    /// Decides whether a consumer under another daemon has a direct route to
+    /// prove at all, and so whether it can be a required acker rather than a
+    /// reason to pin the output (see `crate::output_routing`).
+    pub routable: bool,
 }
 
 /// Reserve the listen endpoints for this daemon's local nodes, so the links the
@@ -402,6 +408,7 @@ pub fn build_peering_plan(
             NodeZenohPeering {
                 listen: listen.endpoints(),
                 connect,
+                routable: listen.routable.is_some(),
             },
         );
     }

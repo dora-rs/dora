@@ -120,6 +120,16 @@ pub async fn exchange(
         return (BTreeMap::new(), queryable);
     }
     let found = collect(session, dataflow_id, &wanted, deadline).await;
+    if !found.is_empty() {
+        // The observable that says the mesh formed: every endpoint here is a
+        // cross-machine edge that can now skip both daemons.
+        tracing::debug!(
+            "resolved {}/{} remote node zenoh endpoints: {:?}",
+            found.len(),
+            wanted.len(),
+            found,
+        );
+    }
     if found.len() < wanted.len() {
         let missing: Vec<&NodeId> = wanted
             .iter()

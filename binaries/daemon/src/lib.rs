@@ -4660,10 +4660,19 @@ impl Daemon {
         };
 
         // Startup-handshake routing, from actual placement (`spawn_nodes`):
-        // which outputs are pinned to the daemon path (remote consumers) and
-        // which local static consumers must ack before an output may switch to
-        // the direct zenoh path.
-        let mut output_routing = output_routing::compute_output_routing(&nodes, &spawn_nodes);
+        // which outputs are pinned to the daemon path and which static
+        // consumers must ack before an output may switch to the direct zenoh
+        // path. A remote consumer can only ack a producer it can dial, so the
+        // set of producers that got a routable endpoint decides which
+        // cross-machine edges are even candidates.
+        let routable_producers: BTreeSet<NodeId> = dataflow
+            .zenoh_peering
+            .iter()
+            .filter(|(_, peering)| peering.routable)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut output_routing =
+            output_routing::compute_output_routing(&nodes, &spawn_nodes, &routable_producers);
 
         let mut tasks = Vec::new();
 
