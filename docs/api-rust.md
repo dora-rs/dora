@@ -16,6 +16,10 @@ Add to your `Cargo.toml`:
 dora-node-api = { workspace = true }
 ```
 
+See [Arrow version policy](#arrow-version-policy) if your node needs to name
+Arrow types directly (e.g. to build a `StructArray` or share arrays with
+polars/datafusion/parquet).
+
 ### DoraNode
 
 The primary struct for sending outputs and retrieving node information. Obtained through one of the initialization functions below.
@@ -63,7 +67,7 @@ pub fn send_output(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<()>
 
 // Send raw bytes. Copies into shared memory when beneficial.
@@ -309,7 +313,7 @@ pub enum Event {
     Input {
         id: DataId,           // input ID from the YAML (not the sender's output ID)
         metadata: Metadata,   // timestamp and type information
-        data: ArrowData,      // Apache Arrow data
+        data: DoraArray,      // Apache Arrow data, owned by dora
     },
 
     // The sender mapped to this input exited; no more data will arrive.
@@ -444,14 +448,119 @@ pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 Messages smaller than this threshold are sent via TCP. Messages at or above this size use shared memory for zero-copy transfer.
 
-#### ArrowData
+#### DoraArray
 
 ```rust
-// Wrapper around arrow::array::ArrayRef. Implements Deref to the inner ArrayRef.
-pub struct ArrowData(pub arrow::array::ArrayRef);
+// A dora-owned Apache Arrow array. The inner array is private.
+pub struct DoraArray { /* private */ }
+
+impl DoraArray {
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn null_count(&self) -> usize;
+    pub fn type_name(&self) -> String;   // e.g. "UInt64"
+}
 ```
 
-Data from `Event::Input` arrives as `ArrowData`. Use `TryFrom` conversions or Arrow APIs to extract typed values.
+Data from `Event::Input` arrives as `DoraArray`. Use the `TryFrom<&DoraArray>`
+conversions (`bool`, the primitive integer/float types, `String`, `&str`, the
+`chrono` date/time types, `&[T]`, `Vec<T>`) or `into_vec::<T>()` to extract
+typed values without naming an Arrow type.
+
+To reach the Arrow array itself, enable the feature naming your Arrow major —
+see [Arrow version policy](#arrow-version-policy).
+
+`IntoArrow` is the other direction, and what `send_output` takes:
+
+```rust
+pub trait IntoArrow {
+    fn into_arrow(self) -> DoraArray;
+}
+```
+
+It is implemented for booleans, strings, the primitive integer/float types,
+`Vec`s of those, a few `chrono` types, `()` (an empty null array, for
+metadata-only outputs), and `DoraArray` itself.
+
+---
+
+### Arrow version policy
+
+`dora-node-api`'s public API is frozen for the life of 1.x, and Arrow ships a
+major roughly every 6–8 weeks. If an Arrow type appeared in that frozen API,
+dora 1.x would be pinned to one Arrow major for its whole life and users would
+have to choose between current dora and current polars/datafusion/parquet.
+
+So it does not. Every ungated signature uses the dora-owned `DoraArray` /
+`IntoArrow`, and Arrow is reachable only through **explicitly versioned,
+opt-in features**:
+
+```toml
+[dependencies]
+# Nothing extra needed if your node never names an Arrow type.
+dora-node-api = "1"
+
+# Naming Arrow 59 — dora's current internal major. Free: no conversion, and
+# no extra copy of Arrow in your build.
+dora-node-api = { version = "1", features = ["arrow-v59"] }
+```
+
+| Feature | Re-export | `DoraArray` accessors | Cost |
+|---|---|---|---|
+| *(none)* | — | `len`, `is_empty`, `null_count`, `type_name`, `TryFrom`, `into_vec` | — |
+| `arrow-v59` | `dora_node_api::arrow_v59` | `as_array`, `into_inner`, `from_array`, `From<ArrayRef>` | free (borrow) |
+| `arrow-v58` | `dora_node_api::arrow_v58` | `TryFrom`/`TryInto` in both directions | one Arrow C Data Interface hop; no buffer copy |
+
+Conversions to and from a non-internal major are **fallible** — the Arrow C
+Data Interface cannot represent every array layout, and arrow-rs surfaces that
+as a `Result` — so they are `TryFrom`/`TryInto`, never `From`/`Into`:
+
+```rust
+use dora_node_api::{DoraArray, arrow_v58};
+use arrow_v58::array::{Array, ArrayRef};
+
+// Arrow 58 -> dora. `&dyn Array` (or `&ArrayRef`) is the source type; a
+// generic `&A: Array` impl is not possible, see below.
+let payload = DoraArray::try_from(&my_arrow58_array as &dyn Array)?;
+
+// dora -> Arrow 58.
+let back: ArrayRef = (&payload).try_into()?;
+```
+
+The source types are concrete rather than generic because coherence forbids
+`impl<A: Array> TryFrom<&A> for DoraArray`: it overlaps core's
+`impl<T, U: Into<T>> TryFrom<U> for T`, since a downstream crate may add
+`impl From<&TheirType> for DoraArray` and `A` could be instantiated at
+`TheirType`.
+
+There is deliberately no `pub use arrow;`. A bare `arrow` re-export changes
+meaning silently when dora bumps its internal major. `arrow_v59` cannot: it
+either exists and means Arrow 59, or it is visibly gone.
+
+Cargo unifies semver-compatible versions, so if you declare `arrow = "59"`
+yourself you get *the same crate instance* as `dora_node_api::arrow_v59` — the
+types are interchangeable, not merely similar. Two different Arrow majors also
+coexist fine (distinct crates, distinct symbols, pure Rust).
+
+#### Support window
+
+- **Adding an `arrow-vN` feature is additive** and can land in any minor.
+- **Removing one is breaking** and waits for a major, after at least one
+  release carrying `#[deprecated]`.
+- At ~8 Arrow majors a year dora carries **two or three** at a time: the
+  current internal major plus one or two older ones.
+- When dora moves its internal major (say 59 → 60), `arrow-v60` is added and
+  becomes the free/borrowing one; `arrow-v59` keeps working but demotes to a
+  *converting* `TryFrom` pair over the C Data Interface, exactly like
+  `arrow-v58` today. Nothing silently changes meaning.
+
+#### Not covered by the guarantee
+
+`dora_arrow_convert::internal` is an Arrow-typed seam for dora's own crates
+(the C/C++/Python bindings, the record/replay nodes). It is not re-exported
+from `dora-node-api`, it names dora's internal Arrow major, and it is
+**exempt from the semver guarantee** — it changes whenever the internal major
+does. Use the version-gated accessors instead.
 
 ---
 
@@ -475,7 +584,7 @@ impl InputTracker {
     pub fn is_closed(&self, id: &DataId) -> bool
 
     // Last received value for an input. Available even when closed.
-    pub fn last_value(&self, id: &DataId) -> Option<&ArrowData>
+    pub fn last_value(&self, id: &DataId) -> Option<&DoraArray>
 
     // All inputs currently in Closed state.
     pub fn closed_inputs(&self) -> Vec<&DataId>
@@ -596,7 +705,7 @@ The operator `Event` enum is simpler than the node `Event` and uses `&str` for I
 #[non_exhaustive]
 pub enum Event<'a> {
     // An input was received.
-    Input { id: &'a str, data: ArrowData },
+    Input { id: &'a str, data: DoraArray },
 
     // Failed to parse the input data as an Arrow array.
     InputParseError { id: &'a str, error: String },
@@ -645,6 +754,73 @@ register_operator!(MyOperator);
 This must be called exactly once per crate, at the top level, with the type that implements `DoraOperator`.
 
 ---
+
+## Stability scope at 1.0
+
+dora 1.0 freezes a public API for the life of the 1.x series. This section
+states exactly what that covers, because several parts of the tree are
+shipped deliberately *outside* it and a docstring saying "unstable" is not by
+itself a mechanism.
+
+**The membership of these three lists is the reviewable decision.** The
+mechanism (below) is straightforward; which crate belongs in which tier is a
+judgement call.
+
+### Covered by the 1.0 guarantee
+
+| Crate | Why |
+|---|---|
+| `dora-node-api` | The API nodes are written against |
+| `dora-arrow-convert` | `DoraArray` / `IntoArrow` appear in `dora-node-api` signatures |
+| `dora-message` | The wire protocol; a break here desynchronizes deployed components |
+| `dora-cli` | The `dora` command, its subcommands, and the dataflow YAML schema |
+
+Breaking any of these requires a 2.0.
+
+### Shipped, but outside the guarantee
+
+These are usable and supported, but may change or be removed in a **minor**
+release. Each is opt-in: you do not encounter one without writing it into a
+dataflow or a `Cargo.toml`.
+
+| Surface | Signal |
+|---|---|
+| `hub:` descriptor field, `dora hub`, `dora-hub-client` | `dora build` / `dora validate` print a warning on every use |
+| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-*` | Documented experimental; `StopAll` is not implemented |
+| `ros2:` descriptor field, `dora-ros2-bridge`(+`-msg-gen`, `-arrow`) | Crate docs state it may change at any point |
+| `dora-mavlink2-bridge`, `dora-mavlink2-bridge-node` | Domain-specific protocol bridge |
+| tensor-pool | Behind a generic extension seam, opt-in (#3152) |
+| `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
+| The Arrow major version | See the Arrow version policy above |
+
+### Internal
+
+Crates that exist only to build the above. They are published to crates.io
+because cargo requires every dependency of a published crate to be published
+— not because they are an API. Depending on one directly is unsupported.
+
+`dora-core`, `dora-daemon`, `dora-coordinator`, `dora-coordinator-store`,
+`dora-recording`, `dora-download`, `dora-log-utils`, `dora-tracing`,
+`dora-metrics`, `dora-runtime-api`.
+
+### How this is enforced
+
+Documentation alone would not survive contact with cargo, so two mechanisms
+back it:
+
+1. **Exact version pins.** Workspace crates depend on each other with `=`
+   requirements. Without them, a breaking change in an internal crate would
+   break *already published* versions of the public ones: `dora-node-api`
+   1.0.0 asking for `^1.0.0` would resolve to a later, incompatible
+   `dora-core`. Exact pins keep every published version building forever.
+2. **Feature gates.** Where a surface can be gated it is, with
+   `default = []`, so using it is an affirmative act recorded in the
+   consumer's `Cargo.toml` rather than a warning they can tune out.
+   `arrow-v58` / `arrow-v59` are the pattern.
+
+A consequence of (1): a patch fix in an internal crate requires re-releasing
+its dependents. With `shared-version = true` in `release.toml` that already
+happens on every release, so the extra cost is close to zero.
 
 ## Quick Start Example: Node
 

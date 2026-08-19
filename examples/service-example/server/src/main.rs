@@ -1,6 +1,6 @@
 use dora_node_api::{
     DoraNode, Event,
-    arrow::array::{Array, Int64Array, StructArray},
+    arrow_v59::array::{Array, Int64Array, StructArray},
 };
 use eyre::Context;
 
@@ -14,7 +14,7 @@ fn main() -> eyre::Result<()> {
                 metadata,
                 data,
             } => {
-                let struct_array = StructArray::from(data.to_data());
+                let struct_array = StructArray::from(data.as_array().to_data());
 
                 let a = struct_array
                     .column_by_name("a")

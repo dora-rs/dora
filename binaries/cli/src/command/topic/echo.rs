@@ -20,7 +20,7 @@ use crate::{
 /// Topic inspection requires debug mode on the dataflow:
 ///
 /// ```yaml
-/// _unstable_debug:
+/// debug:
 ///   enable_debug_inspection: true
 /// ```
 ///
@@ -126,7 +126,7 @@ fn inspect(
                 }
                 if !hint_shown {
                     eprintln!(
-                        "{}: no topic data received during the wait window. Ensure `_unstable_debug.enable_debug_inspection: true` is enabled on the dataflow.",
+                        "{}: no topic data received during the wait window. Ensure `debug.enable_debug_inspection: true` is enabled on the dataflow.",
                         "hint".yellow().bold(),
                     );
                     hint_shown = true;
