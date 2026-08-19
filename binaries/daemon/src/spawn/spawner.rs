@@ -260,21 +260,32 @@ pub struct NodeZenohPeering {
 ///
 /// # Caveat: per-node endpoints are advertised before they bind (#2762)
 ///
-/// This reserves each local node's loopback port with
-/// `dora_core::topics::reserve_loopback_zenoh_endpoint`
-/// — which binds `127.0.0.1:0`, reads the port, and drops the socket — and commits
-/// that port into every *consumer's* dial list here at plan time, i.e. **before the
-/// producing node process has bound it**. Unlike the daemon's own listener, these
-/// per-node endpoints are therefore *not* covered by the bind-verification in
-/// `open_zenoh_session_with_listen` (#1858): the node opens with
-/// `listen/exit_on_failure: false` and discards its own `effective_listen_endpoint`,
-/// so a lost reserve→bind race (another process grabs the port in the window) leaves
-/// the producer listener-less while its consumers hold a dead endpoint. Because those
-/// consumers also have explicit `connect/endpoints`, multicast scouting is disabled
-/// for them, so there is no fallback and that edge is silently partitioned. The
-/// probability is low (the OS keeps handing out fresh ephemeral ports) but the impact
-/// is silent data loss; closing the window fully requires holding each reservation
-/// until the child binds, or verifying the per-node bind and re-planning on failure.
+/// Each local node's port is reserved here — `reserve_zenoh_endpoint` binds it,
+/// reads the port, and drops the socket — and committed into every *consumer's*
+/// dial list at plan time, i.e. **before the producing node process has bound
+/// it**. Unlike the daemon's own listener, these per-node endpoints are not
+/// covered by the bind-verification in `open_zenoh_session_with_listen`
+/// (#1858): the node opens with `listen/exit_on_failure: false` and discards
+/// its own `effective_listen_endpoint`, so if another process grabs the port
+/// inside the reserve→bind window, the producer runs listener-less while its
+/// consumers hold a dead endpoint — and since those consumers have explicit
+/// `connect/endpoints`, multicast scouting is off for them, so nothing
+/// rediscovers it.
+///
+/// Two things bound the damage, and neither is the fix #2762 proposes:
+///
+/// * **Holding the reservation until the child binds cannot work.** The daemon
+///   and the node are separate processes, so a held `TcpListener` is exactly
+///   what makes the node's own bind fail with `EADDRINUSE` — the port can be
+///   claimed by one of them, not handed over. Passing the bound socket to the
+///   child instead would need zenoh to accept a pre-bound listener, which it
+///   has no API for.
+/// * **The route is proven before it is used.** A consumer that cannot dial its
+///   producer never acks the producer's startup marker, so that output freezes
+///   on the daemon path for the run (#2891, `wait_for_grace`). The outcome of a
+///   lost race is therefore the slower path, not lost data — the cost is one
+///   startup grace window, and the warning naming the unbound endpoint comes
+///   from the node's own session (#2762's diagnostic half).
 ///
 /// Only *local* nodes are planned: `nodes` spans the whole dataflow, and this
 /// daemon can only reserve ports on its own host. A local consumer of a remote
