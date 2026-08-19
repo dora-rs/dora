@@ -755,6 +755,73 @@ This must be called exactly once per crate, at the top level, with the type that
 
 ---
 
+## Stability scope at 1.0
+
+dora 1.0 freezes a public API for the life of the 1.x series. This section
+states exactly what that covers, because several parts of the tree are
+shipped deliberately *outside* it and a docstring saying "unstable" is not by
+itself a mechanism.
+
+**The membership of these three lists is the reviewable decision.** The
+mechanism (below) is straightforward; which crate belongs in which tier is a
+judgement call.
+
+### Covered by the 1.0 guarantee
+
+| Crate | Why |
+|---|---|
+| `dora-node-api` | The API nodes are written against |
+| `dora-arrow-convert` | `DoraArray` / `IntoArrow` appear in `dora-node-api` signatures |
+| `dora-message` | The wire protocol; a break here desynchronizes deployed components |
+| `dora-cli` | The `dora` command, its subcommands, and the dataflow YAML schema |
+
+Breaking any of these requires a 2.0.
+
+### Shipped, but outside the guarantee
+
+These are usable and supported, but may change or be removed in a **minor**
+release. Each is opt-in: you do not encounter one without writing it into a
+dataflow or a `Cargo.toml`.
+
+| Surface | Signal |
+|---|---|
+| `hub:` descriptor field, `dora hub`, `dora-hub-client` | `dora build` / `dora validate` print a warning on every use |
+| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-*` | Documented experimental; `StopAll` is not implemented |
+| `ros2:` descriptor field, `dora-ros2-bridge`(+`-msg-gen`, `-arrow`) | Crate docs state it may change at any point |
+| `dora-mavlink2-bridge`, `dora-mavlink2-bridge-node` | Domain-specific protocol bridge |
+| tensor-pool | Behind a generic extension seam, opt-in (#3152) |
+| `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
+| The Arrow major version | See the Arrow version policy above |
+
+### Internal
+
+Crates that exist only to build the above. They are published to crates.io
+because cargo requires every dependency of a published crate to be published
+— not because they are an API. Depending on one directly is unsupported.
+
+`dora-core`, `dora-daemon`, `dora-coordinator`, `dora-coordinator-store`,
+`dora-recording`, `dora-download`, `dora-log-utils`, `dora-tracing`,
+`dora-metrics`, `dora-runtime-api`.
+
+### How this is enforced
+
+Documentation alone would not survive contact with cargo, so two mechanisms
+back it:
+
+1. **Exact version pins.** Workspace crates depend on each other with `=`
+   requirements. Without them, a breaking change in an internal crate would
+   break *already published* versions of the public ones: `dora-node-api`
+   1.0.0 asking for `^1.0.0` would resolve to a later, incompatible
+   `dora-core`. Exact pins keep every published version building forever.
+2. **Feature gates.** Where a surface can be gated it is, with
+   `default = []`, so using it is an affirmative act recorded in the
+   consumer's `Cargo.toml` rather than a warning they can tune out.
+   `arrow-v58` / `arrow-v59` are the pattern.
+
+A consequence of (1): a patch fix in an internal crate requires re-releasing
+its dependents. With `shared-version = true` in `release.toml` that already
+happens on every release, so the extra cost is close to zero.
+
 ## Quick Start Example: Node
 
 A minimal node that receives `tick` inputs and sends a random number as output.
