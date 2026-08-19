@@ -81,6 +81,9 @@ pub fn compute_output_routing(
         let consumer_local = local_nodes.contains(&consumer.id);
         let consumer_dynamic = consumer.kind.dynamic();
         for (input_id, input) in node_inputs(consumer) {
+            // A liveness deadline on a *remote* input is only fed by the
+            // daemon path (see the `daemon_only` reasoning below).
+            let watches_liveness = input.input_timeout.is_some();
             let InputMapping::User(mapping) = input.mapping else {
                 continue;
             };
@@ -100,15 +103,31 @@ pub fn compute_output_routing(
                 if !consumer_local {
                     entry.daemon_only = true;
                 }
-            } else if consumer_local || routable_producers.contains(&mapping.source) {
+            } else if consumer_local
+                || (routable_producers.contains(&mapping.source) && !watches_liveness)
+            {
                 entry.required_ackers.insert(RequiredAcker {
                     node_id: consumer.id.clone(),
                     input_id,
                 });
             } else {
-                // Remote static consumer with no dialable producer endpoint:
-                // there is no direct route to prove, so pin rather than spend a
-                // startup window waiting for an ack that cannot arrive.
+                // Two reasons to pin a remote static consumer's output.
+                //
+                // No dialable producer endpoint: there is no direct route to
+                // prove, so pinning beats spending a startup window waiting for
+                // an ack that cannot arrive.
+                //
+                // Or the consumer declares an `input_timeout`: its deadline is
+                // armed unfired and refreshed only when its *own* daemon sees
+                // the message — either delivering it (`send_output_to_local_
+                // receivers`) or being told about it by a local producer
+                // (`note_output_sent_to_local_receivers`, which walks local
+                // mappings only). A direct cross-machine send reaches neither,
+                // so `last_received` would stay `None`, the deadline would
+                // never fire, and `input_timeout` — plus the circuit breaker
+                // built on it — would silently stop working on exactly the
+                // edges most likely to need it. The fast path is not worth a
+                // liveness guarantee the descriptor asked for.
                 entry.daemon_only = true;
             }
         }
@@ -303,6 +322,42 @@ nodes:
         let image = output(&routing, "source", "image");
         assert!(image.daemon_only);
         assert!(image.required_ackers.is_empty());
+    }
+
+    /// An `input_timeout` on a remote input is refreshed only when the
+    /// consumer's *own* daemon sees the message, and a direct cross-machine
+    /// send bypasses it. Taking the fast path would leave the deadline armed
+    /// but unfired forever — the descriptor asked for liveness detection, so
+    /// the daemon path wins.
+    #[test]
+    fn a_remote_consumer_watching_liveness_keeps_the_daemon_path() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs:
+      - image
+  - id: watchful-sink
+    path: ./sink
+    inputs:
+      camera:
+        source: source/image
+        input_timeout: 5
+"#;
+        let routing = routing_with_routable(yaml, &["source"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(image.daemon_only);
+        assert!(image.required_ackers.is_empty());
+
+        // The same consumer on this machine is unaffected: its daemon is the
+        // one delivering (or being notified of) every message either way.
+        let routing = routing_with_routable(yaml, &["source", "watchful-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(!image.daemon_only);
+        assert_eq!(
+            image.required_ackers,
+            BTreeSet::from([acker("watchful-sink", "camera")])
+        );
     }
 
     #[test]

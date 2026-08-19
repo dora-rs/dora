@@ -16,7 +16,7 @@ use crate::{
     common::{connect_to_coordinator, connect_with_retry},
 };
 
-use super::config::ClusterConfig;
+use super::config::{ClusterConfig, ZenohMesh};
 use super::{
     format_daemon_port_arg, format_labels_arg, format_zenoh_peer_arg, query_connected_daemons,
     run_ssh, ssh_target,
@@ -65,16 +65,19 @@ impl Executable for Up {
         // it. Falling back is deliberate: a partial mesh is worse than none,
         // since explicit connect endpoints turn multicast scouting off for the
         // daemons that have them while the rest still depend on it.
-        let zenoh_mesh_args = config.zenoh_mesh_args();
-        if zenoh_mesh_args.is_none() && config.zenoh_peer.is_none() && config.machines.len() > 1 {
-            eprintln!(
-                "WARNING: not all machines have a dialable zenoh address (an IP in `host`, \
-                 or `zenoh_addr`), so the daemons are left to discover each other by \
-                 multicast. On a network without multicast — a mesh VPN carries none — \
-                 they will not find each other. Set `zenoh_addr` per machine, or a shared \
-                 `zenoh_peer` rendezvous."
-            );
-        }
+        let zenoh_mesh_args = match config.zenoh_mesh_args() {
+            ZenohMesh::Derived(args) => Some(args),
+            ZenohMesh::NotNeeded => None,
+            ZenohMesh::Unavailable(reason) => {
+                eprintln!(
+                    "WARNING: {reason}, so the daemons are left to discover each other \
+                     by multicast. On a network without multicast — a mesh VPN carries \
+                     none — they will not find each other. Fix the field named above, \
+                     or configure a shared `zenoh_peer` rendezvous."
+                );
+                None
+            }
+        };
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);

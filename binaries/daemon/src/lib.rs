@@ -4356,24 +4356,27 @@ impl Daemon {
         // session reads its dial list once at startup and never again.
         let listeners =
             crate::spawn::reserve_node_listeners(&nodes, &spawn_nodes, self.zenoh_routable_addr);
-        let (remote_endpoints, endpoint_queryable) = crate::spawn::endpoint_exchange::exchange(
-            &self.zenoh_session,
-            dataflow_id,
-            &self.daemon_id,
-            listeners
-                .iter()
-                .filter_map(|(id, l)| Some((id.clone(), l.routable()?.to_string())))
-                .collect(),
-            crate::spawn::remote_sources_of_local_nodes(&nodes, &spawn_nodes),
-        )
-        .await;
-        dataflow.zenoh_peering = Arc::new(crate::spawn::build_peering_plan(
-            &nodes,
-            &listeners,
-            self.zenoh_listen_endpoint.as_deref(),
-            &remote_endpoints,
-        ));
-        dataflow.endpoint_queryable = endpoint_queryable;
+        // Started here but awaited below, so its bounded wait overlaps the
+        // build metadata and working-directory work in between rather than
+        // stalling the event loop on its own. Same reason the memory-pool
+        // subscriber above runs off the loop: a degraded inter-daemon link must
+        // not wedge this spawn handler and every event queued behind it.
+        let wanted = crate::spawn::remote_sources_of_local_nodes(&nodes, &spawn_nodes);
+        let local_endpoints: BTreeMap<NodeId, String> = listeners
+            .iter()
+            .filter_map(|(id, l)| Some((id.clone(), l.routable()?.to_string())))
+            .collect();
+        let endpoint_exchange = (!wanted.is_empty() || !local_endpoints.is_empty()).then(|| {
+            let session = self.zenoh_session.clone();
+            let daemon_id = self.daemon_id.clone();
+            tokio::spawn(crate::spawn::endpoint_exchange::exchange(
+                session,
+                dataflow_id,
+                daemon_id,
+                local_endpoints,
+                wanted,
+            ))
+        });
         let dataflow = match self.running.entry(dataflow_id) {
             std::collections::hash_map::Entry::Vacant(entry) => {
                 self.working_dir
@@ -4643,6 +4646,26 @@ impl Daemon {
                 }
             }
         }
+
+        // Collect the endpoint exchange started before the build metadata work
+        // above, and only now build the dial lists — this is the last moment
+        // before nodes spawn, and a node reads its dial list once at startup.
+        // A task that panicked or was cancelled resolves to "no remote
+        // endpoints", which is the same degradation as an expired deadline.
+        let (remote_endpoints, endpoint_queryable) = match endpoint_exchange {
+            Some(task) => task.await.unwrap_or_else(|err| {
+                tracing::warn!("zenoh node-endpoint exchange failed: {err}");
+                Default::default()
+            }),
+            None => Default::default(),
+        };
+        dataflow.zenoh_peering = Arc::new(crate::spawn::build_peering_plan(
+            &nodes,
+            &listeners,
+            self.zenoh_listen_endpoint.as_deref(),
+            &remote_endpoints,
+        ));
+        dataflow.endpoint_queryable = endpoint_queryable;
 
         let spawner = Spawner {
             dataflow_id,

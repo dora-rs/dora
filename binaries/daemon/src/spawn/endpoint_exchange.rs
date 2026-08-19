@@ -103,23 +103,56 @@ pub struct EndpointQueryable {
 /// deadline all resolve to "fewer endpoints than asked for", which leaves those
 /// edges on the daemon-forwarded path.
 pub async fn exchange(
-    session: &zenoh::Session,
+    session: zenoh::Session,
     dataflow_id: Uuid,
-    daemon_id: &DaemonId,
+    daemon_id: DaemonId,
     local: Endpoints,
     wanted: BTreeSet<NodeId>,
 ) -> (Endpoints, Option<EndpointQueryable>) {
-    let queryable = declare(session, dataflow_id, daemon_id, local).await;
-    if wanted.is_empty() {
+    let budget = timeout();
+    if budget.is_zero() {
+        // The documented off switch: every cross-machine edge keeps the daemon
+        // path, and nothing is declared or asked.
+        return (BTreeMap::new(), None);
+    }
+    let started = tokio::time::Instant::now();
+
+    // `declare_queryable` is itself a zenoh operation that can block on a
+    // degraded inter-daemon link, so it gets a deadline too — bounding only the
+    // query would leave the caller waiting with no limit at all, on the path
+    // that must finish before any node spawns.
+    let queryable =
+        match tokio::time::timeout(budget, declare(&session, dataflow_id, &daemon_id, local)).await
+        {
+            Ok(queryable) => queryable,
+            Err(_) => {
+                tracing::warn!(
+                    "declaring the zenoh node-endpoint queryable did not finish within \
+                 {budget:?}; consumers on other daemons will receive this daemon's \
+                 outputs over the daemon path"
+                );
+                None
+            }
+        };
+
+    let remaining = budget.saturating_sub(started.elapsed());
+    if wanted.is_empty() || remaining.is_zero() {
         // Nothing to collect — but stay answerable, since peers that consume
-        // from this daemon's nodes still need what we just declared.
+        // from this daemon's nodes still need what was just declared.
         return (BTreeMap::new(), queryable);
     }
-    let deadline = timeout();
-    if deadline.is_zero() {
-        return (BTreeMap::new(), queryable);
-    }
-    let found = collect(session, dataflow_id, &wanted, deadline).await;
+
+    // Collecting is bounded twice over: `collect` stops asking at its deadline,
+    // and the timeout covers a single `get` that never resolves. The queryable
+    // survives either way, so peers keep getting answers even when this daemon
+    // gave up asking.
+    let found = tokio::time::timeout(
+        remaining,
+        collect(&session, dataflow_id, &wanted, remaining),
+    )
+    .await
+    .unwrap_or_default();
+
     if !found.is_empty() {
         // The observable that says the mesh formed: every endpoint here is a
         // cross-machine edge that can now skip both daemons.
@@ -136,7 +169,7 @@ pub async fn exchange(
             .filter(|id| !found.contains_key(*id))
             .collect();
         tracing::warn!(
-            "no zenoh endpoint for remote node(s) {missing:?} after {deadline:?}; \
+            "no zenoh endpoint for remote node(s) {missing:?} after {budget:?}; \
              their outputs will reach this daemon's nodes over the daemon path \
              instead of directly (set {TIMEOUT_ENV} to allow longer)"
         );

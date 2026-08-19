@@ -207,8 +207,7 @@ impl ClusterConfig {
     }
 
     /// Per-machine `--zenoh-listen`/`--zenoh-connect` arguments wiring every
-    /// daemon to dial every other one, or `None` when the mesh cannot be
-    /// derived.
+    /// daemon to dial every other one.
     ///
     /// Since zenoh 1.9, peers do not relay for each other: two daemons that
     /// never form a direct link exchange nothing, with no fallback to wait
@@ -216,29 +215,44 @@ impl ClusterConfig {
     /// also what makes a cluster work on a network without multicast (a mesh
     /// VPN carries none).
     ///
-    /// `None` — rather than a partial mesh — when a machine has no dialable
-    /// address or when a rendezvous is configured instead. A half-meshed
-    /// cluster is the worst of both: the unmeshed daemons still need discovery,
-    /// but the meshed ones have disabled multicast by having explicit connect
-    /// endpoints.
-    pub fn zenoh_mesh_args(&self) -> Option<BTreeMap<&str, String>> {
+    /// Nothing is derived unless *every* machine gets an endpoint. A half-mesh
+    /// is the worst of both: the unmeshed daemons still need discovery, but the
+    /// meshed ones disabled multicast by having explicit connect endpoints.
+    pub fn zenoh_mesh_args(&self) -> ZenohMesh<'_> {
         if self.zenoh_peer.is_some() || self.machines.len() < 2 {
-            return None;
+            // A rendezvous was chosen instead, or there is nobody to dial.
+            return ZenohMesh::NotNeeded;
         }
-        let endpoints: Vec<(&str, IpAddr, u16)> = self
-            .machines
-            .iter()
-            .map(|m| {
-                let addr = m.zenoh_addr()?;
-                Some((
-                    m.id.as_str(),
-                    addr,
-                    m.zenoh_port.unwrap_or(DORA_ZENOH_LISTEN_PORT_DEFAULT),
-                ))
-            })
-            .collect::<Option<_>>()?;
+        let mut endpoints: Vec<(&str, IpAddr, u16)> = Vec::new();
+        for machine in &self.machines {
+            let Some(addr) = machine.zenoh_addr() else {
+                return ZenohMesh::Unavailable(format!(
+                    "machine `{}` has no dialable zenoh address (`host` is not an \
+                     IP address and `zenoh_addr` is unset)",
+                    machine.id
+                ));
+            };
+            let port = machine.zenoh_port.unwrap_or(DORA_ZENOH_LISTEN_PORT_DEFAULT);
+            // Two daemons on one host is a supported shape (`daemon_port`
+            // exists for it), and there they share a default zenoh port too.
+            // Both would bind the same endpoint: the second daemon's bind is
+            // fatal — it was named explicitly — and it dies in the background
+            // where `dora cluster up` cannot see it. Say so instead.
+            if let Some((other, _, _)) = endpoints
+                .iter()
+                .find(|(_, other_addr, other_port)| (*other_addr, *other_port) == (addr, port))
+            {
+                return ZenohMesh::Unavailable(format!(
+                    "machines `{other}` and `{}` would both bind zenoh endpoint {}; \
+                     give one of them a distinct `zenoh_port`",
+                    machine.id,
+                    SocketAddr::new(addr, port)
+                ));
+            }
+            endpoints.push((machine.id.as_str(), addr, port));
+        }
 
-        Some(
+        ZenohMesh::Derived(
             endpoints
                 .iter()
                 .map(|(id, addr, port)| {
@@ -265,6 +279,20 @@ impl ClusterConfig {
                 .collect(),
         )
     }
+}
+
+/// Whether `dora cluster up` can wire the daemons into an explicit zenoh mesh.
+#[derive(Debug)]
+pub enum ZenohMesh<'a> {
+    /// Per-machine daemon arguments: each listens on its own endpoint and dials
+    /// every other machine.
+    Derived(BTreeMap<&'a str, String>),
+    /// Deliberately not derived — a `zenoh_peer` rendezvous is configured, or
+    /// there is only one machine.
+    NotNeeded,
+    /// Could not be derived. The message says why and which field fixes it;
+    /// the cluster falls back to its previous discovery behaviour.
+    Unavailable(String),
 }
 
 /// Reject a value that will be interpolated into the remote SSH command unless
@@ -639,7 +667,9 @@ mod tests {
     fn mesh_wires_every_machine_to_every_other() {
         let f = write_yaml(TWO_IP_MACHINES);
         let config = ClusterConfig::load(f.path()).unwrap();
-        let args = config.zenoh_mesh_args().expect("both hosts are IPs");
+        let ZenohMesh::Derived(args) = config.zenoh_mesh_args() else {
+            panic!("both hosts are IPs, so the mesh must derive");
+        };
         assert_eq!(
             args.get("a").map(String::as_str),
             Some(" --zenoh-listen 100.64.0.2:5456 --zenoh-connect tcp/100.64.0.3:5456")
@@ -661,7 +691,9 @@ mod tests {
              - id: b\n    host: 100.64.0.2\n    zenoh_port: 5457\n",
         );
         let config = ClusterConfig::load(f.path()).unwrap();
-        let args = config.zenoh_mesh_args().expect("both have addresses");
+        let ZenohMesh::Derived(args) = config.zenoh_mesh_args() else {
+            panic!("both machines have addresses, so the mesh must derive");
+        };
         assert!(args["a"].contains("--zenoh-listen 100.64.0.2:5456"));
         assert!(args["a"].contains("--zenoh-connect tcp/100.64.0.2:5457"));
         assert!(args["b"].contains("--zenoh-listen 100.64.0.2:5457"));
@@ -678,14 +710,65 @@ mod tests {
              - id: b\n    host: jetson.local\n",
         );
         let config = ClusterConfig::load(f.path()).unwrap();
-        assert!(config.zenoh_mesh_args().is_none());
+        let ZenohMesh::Unavailable(reason) = config.zenoh_mesh_args() else {
+            panic!("a machine with no dialable address must block the mesh");
+        };
+        assert!(
+            reason.contains("`b`"),
+            "reason must name the machine: {reason}"
+        );
+        assert!(
+            reason.contains("zenoh_addr"),
+            "reason must name the fix: {reason}"
+        );
 
         // A single-machine cluster has nobody to dial.
         let f = write_yaml(
             "coordinator:\n  addr: 100.64.0.1\nmachines:\n  - id: a\n    host: 100.64.0.2\n",
         );
         let config = ClusterConfig::load(f.path()).unwrap();
-        assert!(config.zenoh_mesh_args().is_none());
+        assert!(matches!(config.zenoh_mesh_args(), ZenohMesh::NotNeeded));
+    }
+
+    /// Two daemons on one host is a supported shape (`daemon_port` exists for
+    /// it), and there both would default to the same zenoh port. The second
+    /// daemon's bind is fatal — it was named explicitly — and it dies in the
+    /// background where `dora cluster up` never sees it, so the collision has
+    /// to be caught here.
+    #[test]
+    fn colliding_endpoints_block_the_mesh() {
+        let f = write_yaml(
+            "coordinator:\n  addr: 100.64.0.1\nmachines:\n  \
+             - id: a\n    host: 100.64.0.2\n    daemon_port: 53291\n  \
+             - id: b\n    host: 100.64.0.2\n    daemon_port: 53292\n",
+        );
+        let config = ClusterConfig::load(f.path()).unwrap();
+        let ZenohMesh::Unavailable(reason) = config.zenoh_mesh_args() else {
+            panic!("two daemons sharing an endpoint must block the mesh");
+        };
+        assert!(
+            reason.contains("100.64.0.2:5456"),
+            "unexpected reason: {reason}"
+        );
+        assert!(
+            reason.contains("zenoh_port"),
+            "reason must name the fix: {reason}"
+        );
+
+        // Distinct ports make the same pair meshable.
+        let f = write_yaml(
+            "coordinator:\n  addr: 100.64.0.1\nmachines:\n  \
+             - id: a\n    host: 100.64.0.2\n    daemon_port: 53291\n  \
+             - id: b\n    host: 100.64.0.2\n    daemon_port: 53292\n    zenoh_port: 5457\n",
+        );
+        let config = ClusterConfig::load(f.path()).unwrap();
+        let ZenohMesh::Derived(args) = config.zenoh_mesh_args() else {
+            panic!("distinct ports must derive");
+        };
+        assert!(args["a"].contains("--zenoh-listen 100.64.0.2:5456"));
+        assert!(args["a"].contains("--zenoh-connect tcp/100.64.0.2:5457"));
+        assert!(args["b"].contains("--zenoh-listen 100.64.0.2:5457"));
+        assert!(args["b"].contains("--zenoh-connect tcp/100.64.0.2:5456"));
     }
 
     // The rendezvous and the mesh answer the same question two ways; setting
@@ -707,7 +790,7 @@ mod tests {
              - id: a\n    host: 100.64.0.2\n  - id: b\n    host: 100.64.0.3\n",
         );
         let config = ClusterConfig::load(f.path()).unwrap();
-        assert!(config.zenoh_mesh_args().is_none());
+        assert!(matches!(config.zenoh_mesh_args(), ZenohMesh::NotNeeded));
     }
 
     #[test]
