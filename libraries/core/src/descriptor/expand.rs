@@ -1,7 +1,9 @@
 use super::classify;
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{Descriptor, EnvValue, Node},
+    descriptor::{
+        DYNAMIC_SOURCE, Descriptor, EnvValue, Node, OperatorConfig, OperatorSource, SHELL_SOURCE,
+    },
     id::{DataId, NodeId},
 };
 use eyre::{Context, bail};
@@ -674,26 +676,7 @@ fn expand_module_node(
             )?;
         }
 
-        // Resolve relative paths: make inner node paths relative to base_dir.
-        // Normalize lexically (collapse `..`) before the containment check so
-        // that paths like `../../evil` are detected even though the binary may
-        // not exist yet (ruling out filesystem canonicalize).
-        if let Some(ref path) = inner_node.path
-            && !super::source_is_url(path)
-            && !Path::new(path).is_absolute()
-        {
-            let resolved = normalize_path(&module_dir.join(path));
-            let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
-                eyre::eyre!(
-                    "module node `{}` path `{}` resolves outside the project \
-                         directory (resolved to `{}`)",
-                    inner_node.id,
-                    path,
-                    resolved.display()
-                )
-            })?;
-            inner_node.path = Some(relative.to_string_lossy().into_owned());
-        }
+        resolve_inner_node_paths(&mut inner_node, module_dir, canonical_base)?;
 
         // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
@@ -778,6 +761,78 @@ fn expand_module_node(
     seen.remove(&canonical);
 
     Ok((final_nodes, output_map))
+}
+
+fn resolve_inner_node_paths(
+    node: &mut Node,
+    module_dir: &Path,
+    canonical_base: &Path,
+) -> eyre::Result<()> {
+    let owner = node.id.to_string();
+    if let Some(ref mut path) = node.path {
+        resolve_module_relative_path(path, module_dir, canonical_base, &owner)?;
+    }
+    if let Some(ref mut operators) = node.operators {
+        for op in &mut operators.operators {
+            resolve_operator_source_paths(&mut op.config, module_dir, canonical_base, &owner)?;
+        }
+    }
+    if let Some(ref mut operator) = node.operator {
+        resolve_operator_source_paths(&mut operator.config, module_dir, canonical_base, &owner)?;
+    }
+    Ok(())
+}
+
+fn resolve_operator_source_paths(
+    config: &mut OperatorConfig,
+    module_dir: &Path,
+    canonical_base: &Path,
+    owner: &str,
+) -> eyre::Result<()> {
+    match &mut config.source {
+        OperatorSource::SharedLibrary(path) | OperatorSource::Wasm(path) => {
+            resolve_module_relative_path(path, module_dir, canonical_base, owner)
+        }
+        OperatorSource::Python(source) => {
+            resolve_module_relative_path(&mut source.source, module_dir, canonical_base, owner)
+        }
+    }
+}
+
+fn resolve_module_relative_path(
+    path: &mut String,
+    module_dir: &Path,
+    canonical_base: &Path,
+    owner: &str,
+) -> eyre::Result<()> {
+    // Resolve relative paths: make inner node/operator sources relative to
+    // base_dir. Normalize lexically (collapse `..`) before the containment
+    // check so paths like `../../evil` are detected even if the binary does
+    // not exist yet (ruling out filesystem canonicalize).
+    if path == DYNAMIC_SOURCE
+        || path == SHELL_SOURCE
+        || super::source_is_url(path)
+        // `Path::is_absolute()` is false for a Unix-style `/foo` on Windows,
+        // where `module_dir.join("/foo")` then rewrites it into the module
+        // directory and the confinement check below rejects it with a
+        // misleading "resolves outside the project directory".
+        || is_absolute_any_platform(path)
+    {
+        return Ok(());
+    }
+
+    let resolved = normalize_path(&module_dir.join(path.as_str()));
+    let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
+        eyre::eyre!(
+            "module node `{}` path `{}` resolves outside the project \
+                 directory (resolved to `{}`)",
+            owner,
+            path,
+            resolved.display()
+        )
+    })?;
+    *path = relative.to_string_lossy().into_owned();
+    Ok(())
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
@@ -3115,6 +3170,45 @@ nodes:
     }
 
     #[test]
+    fn reject_inner_operator_source_path_traversal_via_dotdot() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "escape_operator_module.yml",
+            r#"
+module:
+  name: escape_operator
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: runtime
+    operators:
+      - id: evil
+        shared-library: ../../etc/evil-operator
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: escape_operator_module.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err(), "expected error but got success");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resolves outside the project directory"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
     fn reject_invalid_param_key() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -3476,6 +3570,210 @@ nodes:
 
         let err = check_module_file(&path).unwrap_err();
         assert!(err.to_string().contains("_mod/nonexistent"));
+    }
+
+    #[test]
+    fn expand_resolves_inner_operator_and_node_sources_relative_to_module_file() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/source_paths.yml",
+            r#"
+module:
+  name: source_paths
+  inputs: [data]
+  outputs: [from_runtime, from_operator, from_path]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: libproc.so
+        inputs:
+          x: _mod/data
+        outputs:
+          - from_runtime
+
+  - id: single
+    operator:
+      python: single.py
+      inputs:
+        x: _mod/data
+      outputs:
+        - from_operator
+
+  - id: runner
+    path: runner.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - from_path
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/source_paths.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        let proc_source = &runtime
+            .operators
+            .as_ref()
+            .unwrap()
+            .operators
+            .first()
+            .unwrap()
+            .config
+            .source;
+        // `normalize_path` builds the rewritten path with `MAIN_SEPARATOR`,
+        // so on Windows these come back as `modules\\nested\\...`. Compare on a
+        // normalized form -- CI runs this suite on windows-latest nightly.
+        assert!(
+            matches!(proc_source, dora_message::descriptor::OperatorSource::SharedLibrary(path) if path.replace('\\', "/") == "modules/nested/libproc.so"),
+            "unexpected runtime operator source: {proc_source:?}"
+        );
+
+        let single = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.single")
+            .unwrap();
+        let single_source = &single.operator.as_ref().unwrap().config.source;
+        assert!(
+            matches!(single_source, dora_message::descriptor::OperatorSource::Python(source) if source.source.replace('\\', "/") == "modules/nested/single.py"),
+            "unexpected single operator source: {single_source:?}"
+        );
+
+        let runner = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runner")
+            .unwrap();
+        assert_eq!(
+            runner
+                .path
+                .as_deref()
+                .map(|p| p.replace('\\', "/"))
+                .as_deref(),
+            Some("modules/nested/runner.py")
+        );
+    }
+
+    /// `path: dynamic` is a sentinel, not a file: the daemon matches it
+    /// verbatim to decide a node is externally spawned. Module expansion must
+    /// leave it alone, or a module in a subdirectory turns it into
+    /// `modules/nested/dynamic` and the node is spawned as a binary instead.
+    #[test]
+    fn expand_preserves_dynamic_source_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/dynamic_source.yml",
+            r#"
+module:
+  name: dynamic_source
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: dyn
+    path: dynamic
+    inputs:
+      x: _mod/data
+    outputs:
+      - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/dynamic_source.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let dyn_node = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.dyn")
+            .unwrap();
+
+        assert_eq!(dyn_node.path.as_deref(), Some("dynamic"));
+    }
+
+    /// Same as the `dynamic` case: `path: shell` tells the daemon to run
+    /// `args` through a shell, so expansion must not rewrite it into a path.
+    #[test]
+    fn expand_preserves_shell_source_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/shell_source.yml",
+            r#"
+module:
+  name: shell_source
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: shell
+    path: shell
+    args: echo hi
+    inputs:
+      x: _mod/data
+    outputs:
+      - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/shell_source.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let shell_node = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.shell")
+            .unwrap();
+
+        assert_eq!(shell_node.path.as_deref(), Some("shell"));
     }
 
     /// Expand a dataflow whose single module node `m` re-exports `result`, and
