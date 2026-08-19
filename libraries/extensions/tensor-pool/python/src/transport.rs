@@ -1674,28 +1674,25 @@ impl Pool<'_> {
         }
         if let Some(target_machine) = machine {
             let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
-            // register_cross_machine_pool returns `Result<Result<(), String>,
-            // eyre::Error>`: the outer Err is a transport failure (daemon
+            // `register_cross_machine` returns `Result<(Result<(), String>,
+            // bool), String>`: the outer Err is a call failure (daemon
             // channel closed, interactive / integration-testing mock mode),
-            // the inner Err the daemon-reported mirror failure.  Map the
-            // transport Err to the same String type so the two failure
-            // channels merge below.
-            let result = self
-                .node
-                .register_cross_machine_pool(
-                    buffer_id.clone(),
-                    shmem_name.clone(),
-                    size,
-                    dtype.clone(),
-                    shape_list.clone(),
-                    // The mirror's consumer is the receiver — relay the
-                    // RECEIVER device, not the source device, so the
-                    // mirror's pinned_type matches how the receiver reads
-                    // it (cpu = data region, cuda = HtoD staging).
-                    device.clone(),
-                    target_machine,
-                )
-                .map_err(|e| format!("{e:?}"));
+            // the inner Err the daemon-reported mirror failure.  Both are
+            // Strings already, so the two failure channels merge below.
+            let result = crate::seam::register_cross_machine(
+                self.node,
+                buffer_id.clone(),
+                shmem_name.clone(),
+                size,
+                dtype.clone(),
+                shape_list.clone(),
+                // The mirror's consumer is the receiver — relay the
+                // RECEIVER device, not the source device, so the mirror's
+                // pinned_type matches how the receiver reads it
+                // (cpu = data region, cuda = HtoD staging).
+                device.clone(),
+                target_machine,
+            );
             match result {
                 Ok((Ok(()), direct)) => {
                     if direct {
@@ -1805,10 +1802,10 @@ impl Pool<'_> {
                     // cap, leftover-segment EEXIST) otherwise leaves a
                     // phantom descriptor poisoning receiver lookups until
                     // dataflow finish. Tell the daemon to tear the
-                    // registration down — FreePinnedMemory now drops the
+                    // registration down — the free request drops the
                     // descriptor, both write locks, and any table entry
                     // (self-review, 2026-08-16).
-                    let _ = self.node.free_pinned_memory(buffer_id.clone());
+                    let _ = crate::seam::free(self.node, buffer_id.clone());
                     rollback_local_pool(
                         &mut shmem,
                         shmem_ptr as u64,
@@ -2974,7 +2971,7 @@ impl Pool<'_> {
         // the target machine (no-op for local pools — the daemon logs the
         // missing entry and returns an error we absorb below).  The local
         // metadata is removed by the `drop_key` seam right after.
-        if let Err(e) = self.node.free_pinned_memory(buffer_id.clone()) {
+        if let Err(e) = crate::seam::free(self.node, buffer_id.clone()) {
             tracing::debug!(
                 "[{}] free_tensor_pool: daemon release failed for {}: {e}",
                 self.node_id,
@@ -3105,10 +3102,7 @@ impl Pool<'_> {
     /// and forwards the frame to the mirror pool on the target machine.
     /// Used by the cross-machine register (initial frame) and write paths.
     fn push_mirror_update(&mut self, buffer_id: &str, size: usize, caller: &str) {
-        if let Err(e) = self
-            .node
-            .write_pinned_memory(buffer_id.to_string(), Vec::new(), size)
-        {
+        if let Err(e) = crate::seam::write(self.node, buffer_id.to_string(), size) {
             tracing::error!(
                 "[{}] {caller}: daemon push failed for {}: {e}",
                 self.node_id,

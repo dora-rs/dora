@@ -3,7 +3,7 @@
 #![allow(clippy::missing_safety_doc)]
 
 pub use arrow;
-use dora_arrow_convert::{ArrowData, IntoArrow};
+use dora_arrow_convert::{IntoArrow, internal::array_ref};
 pub use safer_ffi;
 
 use arrow::{
@@ -163,7 +163,7 @@ pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     let data_array = input.data_array.take()?;
     let data = unsafe { arrow::ffi::from_ffi(data_array, &input.schema).ok()? };
-    let array = ArrowData(arrow::array::make_array(data));
+    let array = dora_arrow_convert::internal::from_array_data(data);
     let bytes: &[u8] = TryFrom::try_from(&array).ok()?;
     Some(bytes.to_owned().into())
 }
@@ -212,7 +212,7 @@ pub unsafe fn dora_send_operator_output(
         };
         let arrow_data = data.to_owned().into_arrow();
         let (data_array, schema) =
-            arrow::ffi::to_ffi(&arrow_data.into_data()).map_err(|err| err.to_string())?;
+            arrow::ffi::to_ffi(&array_ref(&arrow_data).to_data()).map_err(|err| err.to_string())?;
         let output = Output {
             id: id.to_str().to_owned().into(),
             data_array,

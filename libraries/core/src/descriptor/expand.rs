@@ -833,20 +833,85 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
     }
 }
 
+/// Replace every `${_param.<key>}` token with its parameter value in a single
+/// left-to-right pass.
+///
+/// A previous implementation looped over the params calling `String::replace`
+/// on the accumulating result, which had two problems: the outcome depended on
+/// `BTreeMap` key ordering, and a parameter *value* that itself contained a
+/// `${_param.…}` token (or a literal one a user wanted to keep) was expanded
+/// transitively. Scanning once and never re-examining substituted text makes
+/// substitution simultaneous and order-independent. Unknown keys are left
+/// verbatim, matching the old behavior of only replacing keys present in
+/// `params`.
 fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> String {
-    let mut result = s.to_string();
-    for (key, value) in params {
-        let pattern = format!("${{_param.{key}}}");
-        result = result.replace(&pattern, value);
-    }
-    let mut env_patterns: Vec<_> = params
+    const BRACED: &str = "${_param.";
+    const ENV_STYLE: &str = "$PARAM_";
+
+    // `$PARAM_<KEY>` matches against the uppercased param name, the same
+    // mapping `substitute_params_in_node` uses for the injected env vars.
+    // Keys that differ only in case are rejected before we get here, so this
+    // map cannot silently drop a param.
+    let env_style: BTreeMap<String, &String> = params
         .iter()
-        .map(|(key, value)| (format!("$PARAM_{}", key.to_uppercase()), value))
+        .map(|(key, value)| (key.to_uppercase(), value))
         .collect();
-    env_patterns.sort_by_key(|(pattern, _)| std::cmp::Reverse(pattern.len()));
-    for (pattern, value) in env_patterns {
-        result = result.replace(&pattern, value);
+
+    let mut result = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(start) = rest.find('$') {
+        result.push_str(&rest[..start]);
+        let at_token = &rest[start..];
+
+        if let Some(after_prefix) = at_token.strip_prefix(BRACED) {
+            match after_prefix.find('}') {
+                Some(end) => {
+                    let key = &after_prefix[..end];
+                    match params.get(key) {
+                        Some(value) => result.push_str(value),
+                        // Unknown key: emit the token unchanged rather than dropping it.
+                        None => {
+                            result.push_str(BRACED);
+                            result.push_str(key);
+                            result.push('}');
+                        }
+                    }
+                    // Continue *after* the closing brace so a substituted value is
+                    // never re-scanned for further tokens.
+                    rest = &after_prefix[end + 1..];
+                }
+                // No closing brace: emit the prefix literally and continue past it
+                // (guarantees progress, so the loop always terminates).
+                None => {
+                    result.push_str(BRACED);
+                    rest = after_prefix;
+                }
+            }
+        } else if let Some(after_prefix) = at_token.strip_prefix(ENV_STYLE) {
+            // The undelimited form ends at the first character that cannot be
+            // part of a shell identifier, so `$PARAM_SPEED_LIMIT` is one token
+            // and never matches a declared `speed` as a prefix (#2901).
+            let end = after_prefix
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(after_prefix.len());
+            let key = &after_prefix[..end];
+            match env_style.get(key) {
+                Some(value) => result.push_str(value),
+                // Unknown key: emit the token unchanged rather than dropping it.
+                None => {
+                    result.push_str(ENV_STYLE);
+                    result.push_str(key);
+                }
+            }
+            rest = &after_prefix[end..];
+        } else {
+            // A bare `$` that starts neither form: emit it and step past, so
+            // the loop always makes progress.
+            result.push('$');
+            rest = &at_token[1..];
+        }
     }
+    result.push_str(rest);
     result
 }
 
@@ -2057,6 +2122,88 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.args.as_deref(), Some("--short 2.0 --long 4.5"));
+    }
+
+    #[test]
+    fn substitute_params_basic_and_unknown() {
+        let params = BTreeMap::from([
+            ("speed".to_string(), "2.0".to_string()),
+            ("name".to_string(), "robot".to_string()),
+        ]);
+        assert_eq!(
+            substitute_params_in_str("--speed ${_param.speed} --name ${_param.name}", &params),
+            "--speed 2.0 --name robot"
+        );
+        // Multiple occurrences of the same key are all replaced.
+        assert_eq!(
+            substitute_params_in_str("${_param.speed}/${_param.speed}", &params),
+            "2.0/2.0"
+        );
+        // An unknown key is left verbatim, not dropped.
+        assert_eq!(
+            substitute_params_in_str("${_param.missing}", &params),
+            "${_param.missing}"
+        );
+        // A dangling prefix without a closing brace is emitted literally.
+        assert_eq!(
+            substitute_params_in_str("prefix ${_param.speed", &params),
+            "prefix ${_param.speed"
+        );
+    }
+
+    #[test]
+    fn substitute_params_env_style_requires_an_identifier_boundary() {
+        // `$PARAM_<KEY>` has no terminator, so the key must run to the end of
+        // the shell-identifier characters. A declared param that is only a
+        // *prefix* of the token must not match (#2901).
+        let params = BTreeMap::from([("speed".to_string(), "2.0".to_string())]);
+        assert_eq!(
+            substitute_params_in_str("--flag $PARAM_SPEED_LIMIT", &params),
+            "--flag $PARAM_SPEED_LIMIT"
+        );
+        // The exact token still substitutes, and a non-identifier character
+        // terminates it.
+        assert_eq!(
+            substitute_params_in_str("--flag $PARAM_SPEED --x", &params),
+            "--flag 2.0 --x"
+        );
+        assert_eq!(
+            substitute_params_in_str("$PARAM_SPEED,$PARAM_SPEED", &params),
+            "2.0,2.0"
+        );
+        // A bare `$` and an unknown token are both emitted verbatim.
+        assert_eq!(
+            substitute_params_in_str("cost $5 $PARAM_MISSING", &params),
+            "cost $5 $PARAM_MISSING"
+        );
+    }
+
+    #[test]
+    fn substitute_params_env_style_is_not_re_expanded() {
+        // A value that itself looks like a token is inserted verbatim, never
+        // re-scanned — the property the single-pass scanner exists for.
+        let params = BTreeMap::from([
+            ("a".to_string(), "$PARAM_B".to_string()),
+            ("b".to_string(), "x".to_string()),
+        ]);
+        assert_eq!(substitute_params_in_str("$PARAM_A", &params), "$PARAM_B");
+    }
+
+    #[test]
+    fn substitute_params_is_order_independent_and_non_transitive() {
+        // A parameter value that itself looks like a `${_param.…}` token must be
+        // inserted verbatim, never re-expanded — and the result must not depend
+        // on `BTreeMap` key ordering. With the old chained-`replace` approach,
+        // `a`'s value `${_param.b}` was expanded to `x` because `a` sorts first.
+        let params = BTreeMap::from([
+            ("a".to_string(), "${_param.b}".to_string()),
+            ("b".to_string(), "x".to_string()),
+        ]);
+        assert_eq!(
+            substitute_params_in_str("${_param.a}", &params),
+            "${_param.b}"
+        );
+        assert_eq!(substitute_params_in_str("${_param.b}", &params), "x");
     }
 
     #[test]

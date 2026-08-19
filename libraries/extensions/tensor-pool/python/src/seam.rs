@@ -80,6 +80,81 @@ pub fn drain_dropped(namespace: &str) -> Vec<String> {
     dora_node_api::event_stream::extensions::drain_dropped_keys(namespace)
 }
 
+// ---------------------------------------------------------------------------
+// The request half of the seam: calls this extension's daemon side through
+// dora's opaque `extension_request`. dora sees a namespace and bytes.
+// ---------------------------------------------------------------------------
+
+use dora_tensor_pool::protocol::{NodeRequest, NodeResponse};
+
+/// Round-trip one [`NodeRequest`] through the daemon.
+fn request(node: &mut DoraNode, req: &NodeRequest) -> Result<NodeResponse, String> {
+    let payload = postcard::to_allocvec(req).map_err(|e| format!("encode failed: {e}"))?;
+    let reply = node
+        .extension_request(NAMESPACE, payload)
+        .map_err(|e| format!("{e:?}"))?;
+    postcard::from_bytes(&reply).map_err(|e| format!("undecodable reply: {e}"))
+}
+
+/// Ask the daemon to mirror this pool on `machine_id`.
+///
+/// `Ok((Ok(()), direct))` on success; `Ok((Err(msg), _))` when the daemon
+/// reached its decision and reports a mirror failure; `Err` when the call
+/// itself failed (channel closed, or a mode with no extension behind it).
+#[allow(clippy::too_many_arguments)]
+pub fn register_cross_machine(
+    node: &mut DoraNode,
+    shared_memory_id: String,
+    shmem_name: String,
+    size: usize,
+    dtype: String,
+    shape: Vec<i64>,
+    device: String,
+    machine_id: String,
+) -> Result<(Result<(), String>, bool), String> {
+    match request(
+        node,
+        &NodeRequest::RegisterCrossMachine {
+            shared_memory_id,
+            shmem_name,
+            size,
+            dtype,
+            shape,
+            device,
+            machine_id,
+        },
+    )? {
+        NodeResponse::CrossMachineRegistered { result, direct } => Ok((result, direct)),
+        NodeResponse::Error(e) => Err(e),
+        NodeResponse::Ok => Err("unexpected Ok reply to a cross-machine register".to_string()),
+    }
+}
+
+/// Push the pool's current contents to its mirror. The daemon reads the
+/// bytes out of the sender's segment, so this stays KB-scale.
+pub fn write(node: &mut DoraNode, shared_memory_id: String, size: usize) -> Result<(), String> {
+    match request(
+        node,
+        &NodeRequest::Write {
+            shared_memory_id,
+            size,
+        },
+    )? {
+        NodeResponse::Ok => Ok(()),
+        NodeResponse::Error(e) => Err(e),
+        other => Err(format!("unexpected reply to a pool write: {other:?}")),
+    }
+}
+
+/// Release the pool, including any mirror on another machine.
+pub fn free(node: &mut DoraNode, shared_memory_id: String) -> Result<(), String> {
+    match request(node, &NodeRequest::Free { shared_memory_id })? {
+        NodeResponse::Ok => Ok(()),
+        NodeResponse::Error(e) => Err(e),
+        other => Err(format!("unexpected reply to a pool free: {other:?}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

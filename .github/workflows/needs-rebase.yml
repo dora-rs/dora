@@ -26,6 +26,14 @@ on:
 # `pull_request_target` runs in the context of the base repo, so the token has
 # write access even for PRs from forks. No code from the PR is checked out.
 permissions:
+  # `issues: write` is required in addition to `pull-requests: write`:
+  # `ensureLabelExists` calls `issues.getLabel` / `issues.createLabel`, which are
+  # the repository-label endpoints (`GET`/`POST /repos/{owner}/{repo}/labels`).
+  # Those sit under the Issues permission — `pull-requests: write` only covers
+  # the PR-scoped `issues/{number}/labels` endpoints used by `addLabels` /
+  # `removeLabel`. Without this the first run 403s on `getLabel`, and the
+  # `status !== 404` guard rethrows instead of creating the label.
+  issues: write
   pull-requests: write
 
 concurrency:

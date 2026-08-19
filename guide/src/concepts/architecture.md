@@ -670,7 +670,7 @@ Three strategies via `DistributeStrategy`:
 Nodes can target specific machines via labels:
 
 ```yaml
-_unstable_deploy:
+deploy:
   labels:
     gpu: "true"
     arch: "arm64"
