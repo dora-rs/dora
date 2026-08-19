@@ -19,7 +19,7 @@ use dora_core::{
         read_as_descriptor, validate,
     },
     topics::{
-        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT, LOCALHOST, MulticastScouting, ZenohListen,
         open_zenoh_session_with_listen, reserve_zenoh_endpoint, validate_zenoh_listen,
         zenoh_bind_address_for, zenoh_daemon_control_topic, zenoh_output_publish_topic,
     },
@@ -1047,6 +1047,33 @@ async fn collect_and_send_metrics_bg(
     Ok(())
 }
 
+/// How a daemon wires its zenoh session: who it listens as, and who it dials.
+///
+/// Grouped rather than passed as four more positionals, because every field is
+/// optional and they are only meaningful together — a `listen` port with no
+/// peer `connect`ing to it, or the reverse, is a half-built mesh.
+#[derive(Debug, Default, Clone)]
+pub struct ZenohOptions {
+    /// Shared rendezvous endpoint every daemon both binds and dials
+    /// (`--zenoh-peer`). The first to bind it becomes the gossip hub; the rest
+    /// fall through to connect-only. Discovery still goes through gossip, so
+    /// the daemon-to-daemon links themselves are best-effort.
+    pub inter_daemon_peer: Option<String>,
+    /// Address, and optionally port, this daemon's listener binds
+    /// (`--zenoh-listen`). `None` derives it from the coordinator address,
+    /// which is right whenever daemons reach each other over the network they
+    /// reach the coordinator over — a LAN, or a mesh VPN. An address named here
+    /// must bind: unlike the derived one, failing to bind it is fatal.
+    pub listen: Option<ZenohListen>,
+    /// Peers this daemon dials directly (`--zenoh-connect`) — the explicit
+    /// mesh. Dial-only, unlike `inter_daemon_peer`, and it establishes the
+    /// clique zenoh 1.9 requires by construction rather than by gossip.
+    pub connect: Vec<String>,
+    /// Open sessions without multicast scouting, for this daemon and the nodes
+    /// it spawns (`--zenoh-no-multicast`).
+    pub disable_multicast: bool,
+}
+
 /// Where the daemon's zenoh listen address came from, which decides what a bind
 /// failure means.
 ///
@@ -1059,20 +1086,34 @@ async fn collect_and_send_metrics_bg(
 #[derive(Debug, Clone, Copy)]
 enum ZenohBind {
     /// Derived from the coordinator address; a bind failure can fall back.
+    /// Always an ephemeral port — nobody named one, so nobody is waiting to
+    /// dial a specific one either.
     Derived(IpAddr),
-    /// Named via `--zenoh-listen`; a bind failure is fatal.
-    Explicit(IpAddr),
+    /// Named via `--zenoh-listen`; a bind failure is fatal. Carries a port when
+    /// the operator named one, which is what lets peers dial this daemon
+    /// without discovering it first.
+    Explicit(ZenohListen),
 }
 
 impl ZenohBind {
     fn addr(self) -> IpAddr {
         match self {
-            Self::Derived(addr) | Self::Explicit(addr) => addr,
+            Self::Derived(addr) => addr,
+            Self::Explicit(listen) => listen.addr,
         }
     }
 
     fn is_explicit(self) -> bool {
         matches!(self, Self::Explicit(_))
+    }
+
+    /// The endpoint to request from zenoh: a named port verbatim, an ephemeral
+    /// one reserved from the OS otherwise.
+    fn endpoint(self) -> std::io::Result<String> {
+        match self {
+            Self::Derived(addr) => reserve_zenoh_endpoint(addr),
+            Self::Explicit(listen) => listen.endpoint(),
+        }
     }
 }
 
@@ -1096,9 +1137,10 @@ impl ZenohBind {
 fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -> eyre::Result<()> {
     if zenoh_bind.addr().is_loopback() && !coordinator_ws_addr.ip().is_loopback() {
         match zenoh_bind {
-            ZenohBind::Explicit(addr) => {
+            ZenohBind::Explicit(listen) => {
+                let addr = listen.addr;
                 eyre::bail!(
-                    "--zenoh-listen {addr} is a loopback address, but the coordinator \
+                    "--zenoh-listen {listen} is a loopback address, but the coordinator \
                      at {coordinator_ws_addr} is remote, so other daemons must be able \
                      to reach this one. A loopback listener advertises {addr} to peers, \
                      who would dial their own loopback and reach nothing. Pass the \
@@ -1166,56 +1208,46 @@ impl Daemon {
         );
     }
 
-    /// Runs the daemon. `zenoh_listen_addr` overrides the address this
-    /// daemon's zenoh listener binds, and therefore the locator its peers are
-    /// told to dial.
-    ///
-    /// Leave it `None` to derive it from `coordinator_ws_addr`, which is correct
-    /// whenever the daemons reach each other over the same network they reach
-    /// the coordinator over — a LAN, or a mesh VPN. Set it explicitly on a
-    /// multi-homed host that would otherwise advertise the wrong interface. An
-    /// address given here must bind: unlike the derived one, failing to bind it
-    /// is fatal rather than a fallback.
+    /// Runs the daemon with the given zenoh wiring; see [`ZenohOptions`].
     pub async fn run_with_zenoh_listen(
         coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-        zenoh_listen_addr: Option<IpAddr>,
-        disable_multicast: bool,
+        zenoh: ZenohOptions,
     ) -> eyre::Result<()> {
         Self::run_inner_with_builds(
             coordinator_ws_addr,
             machine_id,
             labels,
             local_listen_port,
-            inter_daemon_peer,
-            zenoh_listen_addr,
-            disable_multicast,
+            zenoh,
             Default::default(),
         )
         .await
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn run_inner_with_builds(
         coordinator_ws_addr: SocketAddr,
         machine_id: Option<String>,
         labels: BTreeMap<String, String>,
         local_listen_port: u16,
-        inter_daemon_peer: Option<String>,
-        zenoh_listen_addr: Option<IpAddr>,
-        disable_multicast: bool,
+        zenoh: ZenohOptions,
         initial_builds: BTreeMap<BuildId, BuildInfo>,
     ) -> eyre::Result<()> {
-        let zenoh_bind = match zenoh_listen_addr {
-            Some(addr) => {
-                validate_zenoh_listen(addr).wrap_err(
+        let ZenohOptions {
+            inter_daemon_peer,
+            listen: zenoh_listen,
+            connect: zenoh_connect,
+            disable_multicast,
+        } = zenoh;
+        let zenoh_bind = match zenoh_listen {
+            Some(listen) => {
+                validate_zenoh_listen(listen.addr).wrap_err(
                     "invalid --zenoh-listen address (omit the flag to derive it \
                      from --coordinator-addr)",
                 )?;
-                ZenohBind::Explicit(addr)
+                ZenohBind::Explicit(listen)
             }
             None => ZenohBind::Derived(zenoh_bind_address_for(coordinator_ws_addr)),
         };
@@ -1226,14 +1258,26 @@ impl Daemon {
         // looks like a connectivity problem for minutes before it looks like a
         // typo. Whether the address exists is not racy, so checking it early
         // costs nothing but a bind and a drop.
-        if let ZenohBind::Explicit(addr) = zenoh_bind {
-            std::net::TcpListener::bind((addr, 0))
+        //
+        // A *named* port is probed too, and there the bind is not only an
+        // existence check: it also reports the port already being in use, which
+        // is the likely mistake when two daemons share a host. That much is
+        // racy — the probe drops the socket before zenoh binds — but losing the
+        // race just defers the same error to the `info().locators()` check,
+        // which is fatal for an explicit bind either way.
+        if let ZenohBind::Explicit(listen) = zenoh_bind {
+            std::net::TcpListener::bind((listen.addr, listen.port.unwrap_or(0)))
                 .map(drop)
-                .wrap_err_with(|| {
-                    format!(
-                        "cannot bind the zenoh listen address {addr} given via \
+                .wrap_err_with(|| match listen.port {
+                    Some(port) => format!(
+                        "cannot bind the zenoh listen address {listen} given via \
+                         --zenoh-listen; either the address does not exist on this \
+                         host or port {port} is already in use"
+                    ),
+                    None => format!(
+                        "cannot bind the zenoh listen address {listen} given via \
                          --zenoh-listen; it does not appear to exist on this host"
-                    )
+                    ),
                 })?;
         }
         announce_zenoh_bind(zenoh_bind, coordinator_ws_addr)?;
@@ -1349,6 +1393,7 @@ impl Daemon {
                                 initial_builds.clone(),
                                 log_destination,
                                 inter_daemon_peer.clone(),
+                                zenoh_connect.clone(),
                                 zenoh_bind,
                                 disable_multicast,
                                 // A standalone daemon outlives nothing its
@@ -1739,6 +1784,8 @@ impl Daemon {
             builds,
             log_destination,
             inter_daemon_peer,
+            // `dora run` is single-machine: no remote daemon to dial.
+            Vec::new(),
             ZenohBind::Derived(LOCALHOST),
             disable_multicast,
             bind_nodes_to_parent,
@@ -1773,6 +1820,7 @@ impl Daemon {
         builds: BTreeMap<BuildId, BuildInfo>,
         log_destination: LogDestination,
         inter_daemon_peer: Option<String>,
+        zenoh_connect: Vec<String>,
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
         bind_nodes_to_parent: bool,
@@ -1785,9 +1833,10 @@ impl Daemon {
         // scouting by multicast (#2991 review).
         let disable_multicast = dora_core::topics::multicast_disabled(disable_multicast);
 
-        // Reserve a port and have zenoh listen on it. The endpoint is injected
-        // into spawned nodes via `DORA_ZENOH_CONNECT` so peer discovery works
-        // without multicast (#1778).
+        // Decide the endpoint zenoh listens on. A named port is used verbatim;
+        // otherwise a free one is reserved from the OS. The endpoint is
+        // injected into spawned nodes via `DORA_ZENOH_CONNECT` so peer
+        // discovery works without multicast (#1778).
         //
         // `zenoh_bind` is loopback for single-machine deployments and an
         // address on the coordinator's network otherwise. It is not merely a
@@ -1806,7 +1855,7 @@ impl Daemon {
         // the exact failure this code exists to prevent. Someone who named an
         // address explicitly is also, almost by definition, on a network where
         // multicast will not save them. So: fatal when explicit.
-        let requested_listen_endpoint = match reserve_zenoh_endpoint(zenoh_bind.addr()) {
+        let requested_listen_endpoint = match zenoh_bind.endpoint() {
             Ok(ep) => Some(ep),
             Err(err) if zenoh_bind.is_explicit() => {
                 return Err(err).wrap_err_with(|| {
@@ -1836,6 +1885,7 @@ impl Daemon {
             open_zenoh_session_with_listen(dora_core::topics::ZenohSessionParams {
                 listen_endpoint: requested_listen_endpoint.as_deref(),
                 inter_daemon_peer: inter_daemon_peer.as_deref(),
+                connect_endpoints: &zenoh_connect,
                 multicast: if disable_multicast {
                     MulticastScouting::Disabled
                 } else {
@@ -9941,13 +9991,18 @@ mod announce_zenoh_bind_tests {
         SocketAddr::new(ip, 6012)
     }
 
+    /// An `--zenoh-listen <IP>` with no port named, which is what these cases
+    /// are about: the port never changes whether the *address* is advertisable.
+    fn explicit(addr: IpAddr) -> ZenohBind {
+        ZenohBind::Explicit(ZenohListen { addr, port: None })
+    }
+
     #[test]
     fn explicit_loopback_under_remote_coordinator_is_rejected() {
         // #2770: an operator who names a loopback address while the coordinator
         // is remote gets a silently-undialable daemon. The `Explicit` contract
         // is "bind a routable address or exit", so this must be a hard error.
-        let err = announce_zenoh_bind(ZenohBind::Explicit(LOOPBACK), sock(REMOTE_COORDINATOR))
-            .unwrap_err();
+        let err = announce_zenoh_bind(explicit(LOOPBACK), sock(REMOTE_COORDINATOR)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("loopback"), "unexpected error: {msg}");
         assert!(msg.contains("--zenoh-listen"), "unexpected error: {msg}");
@@ -9964,16 +10019,12 @@ mod announce_zenoh_bind_tests {
     fn explicit_loopback_under_local_coordinator_is_allowed() {
         // Single-machine `dora run`: coordinator and nodes share loopback, so a
         // loopback listener is both sufficient and correct.
-        announce_zenoh_bind(ZenohBind::Explicit(LOOPBACK), sock(LOOPBACK)).unwrap();
+        announce_zenoh_bind(explicit(LOOPBACK), sock(LOOPBACK)).unwrap();
     }
 
     #[test]
     fn explicit_routable_address_is_allowed() {
-        announce_zenoh_bind(
-            ZenohBind::Explicit(ROUTABLE_LOCAL),
-            sock(REMOTE_COORDINATOR),
-        )
-        .unwrap();
+        announce_zenoh_bind(explicit(ROUTABLE_LOCAL), sock(REMOTE_COORDINATOR)).unwrap();
     }
 }
 

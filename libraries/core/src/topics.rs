@@ -691,6 +691,89 @@ pub fn zenoh_bind_address_for(coordinator_addr: SocketAddr) -> IpAddr {
     local_address_toward(coordinator_addr).unwrap_or(LOCALHOST)
 }
 
+/// Where a daemon's zenoh listener binds: an address, and optionally the port.
+///
+/// Both forms are accepted from `--zenoh-listen`:
+///
+/// * `10.0.2.100` — the port is left to the OS. Peers learn the resulting
+///   endpoint by gossip, so this suits a deployment with a rendezvous
+///   (`--zenoh-peer`) or working multicast.
+/// * `10.0.2.100:5456`, `[fd7a:1::2]:5456` — a named port, which peers can dial
+///   without having discovered it first. This is what an explicit mesh needs:
+///   every daemon's endpoint has to be known before any of them has announced
+///   anything.
+///
+/// IPv6 must be bracketed when naming a port, because `fd7a:1::2:5456` is
+/// itself a valid IPv6 address and is read as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenohListen {
+    /// Address to bind, which is also the address advertised to peers.
+    pub addr: IpAddr,
+    /// Port to bind, or `None` to let the OS pick one.
+    pub port: Option<u16>,
+}
+
+impl ZenohListen {
+    /// The endpoint to request, reserving an ephemeral port if none was named.
+    ///
+    /// A named port skips the reservation entirely: it has no reserve→bind
+    /// window for another process to slip into, and zenoh's own bind is the
+    /// only claim on it.
+    pub fn endpoint(&self) -> std::io::Result<String> {
+        match self.port {
+            Some(port) => Ok(zenoh_endpoint(self.addr, port)),
+            None => reserve_zenoh_endpoint(self.addr),
+        }
+    }
+}
+
+impl std::fmt::Display for ZenohListen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.port {
+            Some(port) => write!(f, "{}", SocketAddr::new(self.addr, port)),
+            None => write!(f, "{}", self.addr),
+        }
+    }
+}
+
+impl std::str::FromStr for ZenohListen {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // `SocketAddr` first: `10.0.2.100:5456` is not an `IpAddr`, while a
+        // bare `::1` is not a `SocketAddr`, so neither form is stolen by the
+        // other. The one genuine ambiguity — unbracketed IPv6 with a port —
+        // resolves to "address", which is why the docs above insist on
+        // brackets.
+        let listen = if let Ok(socket) = s.parse::<SocketAddr>() {
+            Self {
+                addr: socket.ip(),
+                port: Some(socket.port()),
+            }
+        } else if let Ok(addr) = s.parse::<IpAddr>() {
+            Self { addr, port: None }
+        } else {
+            return Err(format!(
+                "`{s}` is neither an IP address (`10.0.2.100`) nor an address \
+                 with a port (`10.0.2.100:5456`, `[fd7a:1::2]:5456`)"
+            ));
+        };
+        if listen.port == Some(0) {
+            // Port 0 binds an ephemeral port, which is fine, but the endpoint
+            // we advertise would still say `:0` — no peer could dial it, and
+            // the `info().locators()` check would read the mismatch as "the
+            // listener did not bind". Omitting the port asks for the same thing
+            // and reserves a concrete one to advertise.
+            return Err(format!(
+                "`{s}` names port 0; omit the port to let the OS pick one \
+                 (dora then advertises the concrete port it reserved)"
+            ));
+        }
+        validate_zenoh_listen(listen.addr).map_err(|err| format!("{err}"))?;
+        Ok(listen)
+    }
+}
+
 /// Reject a zenoh listen address that cannot be advertised to peers.
 ///
 /// Only the wildcard is rejected here, and only because it is *structurally*
@@ -1041,6 +1124,53 @@ mod tests {
             .parse()
             .expect("reserved port is numeric");
         assert_eq!(zenoh_endpoint(LOCALHOST, port), reserved);
+    }
+
+    // `--zenoh-listen` takes both forms, and which one was given decides
+    // whether peers can dial this daemon before it has announced anything.
+    #[test]
+    fn zenoh_listen_parses_address_with_and_without_port() {
+        let addr_only: ZenohListen = "10.0.2.100".parse().unwrap();
+        assert_eq!(addr_only.addr, "10.0.2.100".parse::<IpAddr>().unwrap());
+        assert_eq!(addr_only.port, None);
+
+        let with_port: ZenohListen = "10.0.2.100:5456".parse().unwrap();
+        assert_eq!(with_port.port, Some(5456));
+        assert_eq!(with_port.endpoint().unwrap(), "tcp/10.0.2.100:5456");
+
+        // IPv6 needs brackets to carry a port; unbracketed, the trailing group
+        // is part of the address. Both parse — they just mean different things,
+        // which is why the flag docs insist on brackets.
+        let v6_port: ZenohListen = "[fd7a:1::2]:5456".parse().unwrap();
+        assert_eq!(v6_port.port, Some(5456));
+        assert_eq!(v6_port.endpoint().unwrap(), "tcp/[fd7a:1::2]:5456");
+        let v6_bare: ZenohListen = "fd7a:1::2:5456".parse().unwrap();
+        assert_eq!(v6_bare.port, None);
+    }
+
+    // A wildcard has nothing to advertise, and port 0 would advertise `:0`.
+    // Both are rejected at parse time so the operator hears about it at the
+    // command line rather than as a silent partition later.
+    #[test]
+    fn zenoh_listen_rejects_unadvertisable_forms() {
+        for bad in ["0.0.0.0", "0.0.0.0:5456", "::"] {
+            let err = bad
+                .parse::<ZenohListen>()
+                .expect_err("wildcard must be rejected");
+            assert!(
+                err.contains("concrete"),
+                "unexpected error for {bad}: {err}"
+            );
+        }
+        let err = "10.0.2.100:0"
+            .parse::<ZenohListen>()
+            .expect_err("port 0 must be rejected");
+        assert!(err.contains("port 0"), "unexpected error: {err}");
+
+        let err = "not-an-address"
+            .parse::<ZenohListen>()
+            .expect_err("garbage must be rejected");
+        assert!(err.contains("neither"), "unexpected error: {err}");
     }
 
     // Concrete addresses pass validation whether or not they exist on this host:
