@@ -181,7 +181,7 @@ impl TracingBuilder {
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
         let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
             .wrap_err("failed to initialize OTLP tracing exporter")?;
-        let meter_provider = metrics::init_meter_provider(&endpoint)
+        let meter_provider = metrics::init_meter_provider(&self.name, &endpoint)
             .wrap_err("failed to initialize OTLP metrics exporter")?;
 
         // TODO: Maybe this needs to be removed in favor of application level global.
