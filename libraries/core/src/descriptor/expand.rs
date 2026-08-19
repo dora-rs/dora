@@ -111,7 +111,7 @@ pub fn expand_modules_with_boundaries(
     for node in &descriptor.nodes {
         if node.module.is_some() {
             // Validate module node fields against the module whitelist
-            classify::check_module_fields(node)
+            classify::check_module(node)
                 .with_context(|| format!("invalid module node `{}`", node.id))?;
 
             let (expanded, omap) =
@@ -781,7 +781,15 @@ fn expand_module_node(
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
-    prepend_build(&mut node.build, module_build);
+    // The node-level `build` is consumed only by `path:` nodes and by nested
+    // `module:` nodes (which forward it to their own leaves in Phase 2).
+    // Setting it on a runtime/operator/ROS2 node used to be a harmless dead
+    // value; the field classifier now rejects `build` on those kinds, so the
+    // module build has to land in the operator configs only -- which is where
+    // `build/mod.rs` reads it from for runtime nodes anyway.
+    if node.path.is_some() || node.module.is_some() {
+        prepend_build(&mut node.build, module_build);
+    }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
             prepend_build(&mut op.config.build, module_build);
@@ -2312,6 +2320,82 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.build.as_deref(), Some("make all"));
+    }
+
+    /// A module-level `build:` must not make an operator inner node
+    /// unresolvable. The expansion-only tests above stop at `expand_modules`;
+    /// the field classifier runs at *resolution*, so the regression this pins
+    /// lives in the seam between the two (#3070).
+    #[test]
+    fn module_build_keeps_operator_inner_nodes_resolvable() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "kinds_module.yml",
+            r#"
+build: pip install shared
+
+module:
+  name: kinds
+  inputs: [data]
+  outputs: [from_runtime, from_operator]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc
+        inputs:
+          data: _mod/data
+        outputs:
+          - from_runtime
+
+  - id: single
+    operator:
+      python: single.py
+      inputs:
+        data: _mod/data
+      outputs:
+        - from_operator
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: kinds_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        // The module build must land in the operator configs, which is where
+        // `build/mod.rs` reads it from for runtime nodes...
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        assert_eq!(
+            runtime.operators.as_ref().unwrap().operators[0]
+                .config
+                .build
+                .as_deref(),
+            Some("pip install shared"),
+        );
+        // ...and must NOT land on the node itself, where no kind but
+        // `path:`/`module:` consumes it.
+        assert_eq!(runtime.build, None);
+
+        crate::descriptor::DescriptorExt::resolve_aliases_and_set_defaults(&expanded)
+            .expect("a module-level build must not make operator nodes unresolvable");
     }
 
     #[test]

@@ -1,6 +1,6 @@
 //! Node field classifier: type detection + whitelist-based field validation.
 //!
-//! Every node passes through `classify()` (or `check_module_fields` for
+//! Every node passes through `classify()` (or `check_module` for
 //! modules) before resolution. The function determines the node kind,
 //! checks every field against a whitelist for that kind, and either
 //! returns a `NodeClass` or collects all unrecognized fields into a
@@ -39,13 +39,6 @@ pub(super) fn classify(node: &Node) -> Result<NodeClass> {
             )
         }
     }
-}
-
-/// Validate module node fields against the module whitelist.
-/// Called from `expand.rs` before module expansion.
-pub(super) fn check_module_fields(node: &Node) -> Result<()> {
-    // Module nodes are checked with their own whitelist
-    check_module(node)
 }
 
 // ── Internal ───────────────────────────────────────────────────────
@@ -260,17 +253,33 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
         return Ok(());
     }
 
-    let mut msg = format!(
-        "node `{}` has fields that are not allowed on {} nodes: {}\n\
-         hint: ",
+    // Per-kind guidance. For the operator kinds the fix is almost always to
+    // *move* the field into the operator block -- top-level `inputs:`/
+    // `outputs:` on an `operator:` node is the flagship mistake this check
+    // exists to catch, and "remove them" would silently delete the node's
+    // wiring.
+    let hint = match kind_name {
+        "Operator" => {
+            "these fields belong inside the node's `operator:` block, not at \
+             the node level -- move them there"
+        }
+        "Runtime" => {
+            "these fields belong inside the matching entry under `operators:`, \
+             not at the node level -- move them there"
+        }
+        "Module" => {
+            "a module node only configures the sub-dataflow it references; set \
+             per-node options on the module's inner nodes instead"
+        }
+        _ => "these fields are not consumed by this node kind; remove them from the node",
+    };
+
+    bail!(
+        "node `{}` has fields that are not allowed on {} nodes: {}\nhint: {hint}",
         node.id,
         kind_name,
         unknown.join(", ")
-    );
-
-    msg.push_str("these fields are not consumed by this node kind; remove them from the node");
-
-    bail!(msg)
+    )
 }
 
 // ── Per-kind whitelists and checks ────────────────────────────────
@@ -386,7 +395,7 @@ fn check_ros2(node: &Node) -> Result<()> {
 /// Note: module is the kind discriminator; params is compile-time substitution.
 const MODULE_ALLOWED: &[&str] = &["module", "inputs", "params"];
 
-fn check_module(node: &Node) -> Result<()> {
+pub(super) fn check_module(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(MODULE_ALLOWED);
     validate_against_whitelist(node, &allowed, "Module")
@@ -585,7 +594,7 @@ params:
   speed: "2.0"
 "#,
         );
-        check_module_fields(&module).expect("valid module node should classify");
+        check_module(&module).expect("valid module node should classify");
     }
 
     #[test]
@@ -649,7 +658,7 @@ build: cargo build
         );
         let error = format!(
             "{:#}",
-            check_module_fields(&module).expect_err("module build should be rejected")
+            check_module(&module).expect_err("module build should be rejected")
         );
         assert!(error.contains("Module"), "{error}");
         assert!(error.contains("build"), "{error}");
