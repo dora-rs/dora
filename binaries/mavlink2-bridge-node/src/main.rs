@@ -62,7 +62,6 @@ use dora_node_api::{
     DoraNode, Event, MetadataParameters, TryRecvError,
     arrow_v59::array::{Array, ArrayRef, AsArray, RecordBatch, StructArray},
     dora_core::config::DataId,
-    flume,
 };
 use eyre::{Context, Result, bail, eyre};
 use mavlink::{

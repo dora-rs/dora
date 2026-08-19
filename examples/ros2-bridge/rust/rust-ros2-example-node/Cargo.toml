@@ -53,6 +53,7 @@ required-features = ["ros2"]
 
 [dependencies]
 dora-node-api = { workspace = true, features = ["tracing"] }
+flume = { workspace = true }
 eyre = { workspace = true }
 futures = { workspace = true, features = ["thread-pool"] }
 futures-timer = "3.0.4"
