@@ -190,6 +190,19 @@ jobs:
           -p dora-operator-api-python
           -p dora-ros2-bridge-python
           -p dora-runtime-python
+      # The C/C++ bindings name Arrow types directly, so they depend on
+      # `dora-node-api`'s `arrow-v59` feature. `cargo check --all` above does
+      # NOT catch a missing opt-in: another workspace member (the C++ binding)
+      # enables the feature, and cargo unifies features across a whole-workspace
+      # build, so the C binding compiles by accident. Built per-crate the
+      # unification is gone and the break appears. Without this, the first place
+      # it surfaces is `find_package smoke`, which is skipped on `pull_request`
+      # and only runs on a merge-queue batch — one wasted batch cycle per
+      # attempt (#3213).
+      - name: Check C/C++ bindings compile standalone
+        run: |
+          cargo check -p dora-node-api-c
+          cargo check -p dora-node-api-cxx
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.

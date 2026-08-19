@@ -11,32 +11,28 @@
 //!
 //! Run with: `cargo bench -p dora-node-api --bench arrow_framing`
 
-use std::ptr::NonNull;
-use std::sync::Arc;
-
 use aligned_vec::{AVec, ConstAlign};
+use arrow::array::Float32Array;
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
-use dora_node_api::arrow::array::{Array, ArrayData, Float32Array};
-use dora_node_api::arrow::buffer::Buffer;
+use dora_node_api::DoraArray;
 use dora_node_api::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
-use dora_node_api::arrow_utils::{decode_arrow_ipc, decode_arrow_ipc_zero_copy, encode_arrow_ipc};
+use dora_node_api::arrow_utils::{
+    IpcPayload, decode_arrow_ipc, decode_arrow_ipc_zero_copy, encode_arrow_ipc,
+};
 
 /// Copy `bytes` into a 128-byte-aligned Arrow buffer, mirroring how Dora's
 /// receive path backs payloads (`AVec<u8, ConstAlign<128>>` / page-aligned
 /// Zenoh SHM). This is the precondition under which the IPC `StreamDecoder`
 /// path aliases the input instead of realigning it.
-fn aligned_buffer_from(bytes: &[u8]) -> Buffer {
+fn aligned_buffer_from(bytes: &[u8]) -> IpcPayload {
     let mut aligned: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, bytes.len());
     aligned.copy_from_slice(bytes);
-    let ptr = NonNull::new(aligned.as_ptr() as *mut u8).unwrap();
-    let len = aligned.len();
-    // SAFETY: ptr/len describe `aligned`'s allocation; the Arc keeps it alive.
-    unsafe { Buffer::from_custom_allocation(ptr, len, Arc::new(aligned)) }
+    IpcPayload::from_aligned_vec(aligned)
 }
 
-fn make_array(num_elements: usize) -> ArrayData {
+fn make_array(num_elements: usize) -> DoraArray {
     let v: Vec<f32> = (0..num_elements).map(|i| i as f32).collect();
-    Float32Array::from(v).into_data()
+    DoraArray::from_array(Float32Array::from(v))
 }
 
 /// Allocate a zeroed buffer and touch every page so reuse in `b.iter` is warm.

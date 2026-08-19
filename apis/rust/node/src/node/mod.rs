@@ -11,6 +11,7 @@ use self::{arrow_utils::ipc_encode, control_channel::ControlChannel};
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::{Array, ArrayData};
 use colored::Colorize;
+use dora_arrow_convert::{DoraArray, IntoArrow};
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
@@ -1552,16 +1553,17 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
 
-        let arrow_array = data.to_data();
+        let data = data.into_arrow();
+        let arrow_array = dora_arrow_convert::internal::array_ref(&data).to_data();
         self.check_output_type(&output_id, arrow_array.data_type(), &parameters)?;
 
-        let encoded = self.sample_allocator.encode_arrow(&arrow_array)?;
+        let encoded = self.sample_allocator.encode_arrow_data(&arrow_array)?;
         self.send_encoded_unchecked(output_id, parameters, encoded.sample)
     }
 
@@ -2304,7 +2306,7 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<String> {
         if parameters.contains_key(dora_message::metadata::REQUEST_ID) {
             tracing::warn!("send_service_request: caller-provided request_id will be overwritten");
@@ -2326,7 +2328,7 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         self.send_output(output_id, parameters, data)
     }
@@ -2343,7 +2345,7 @@ impl DoraNode {
         output_id: DataId,
         segment: &mut StreamSegment,
         fin: bool,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         self.send_output(output_id, segment.chunk(fin), data)
     }
@@ -2741,7 +2743,28 @@ pub struct EncodedSample {
 }
 
 impl EncodedSample {
+    /// A human-readable name for the Arrow type the payload was encoded from,
+    /// e.g. `"UInt8"`.
+    ///
+    /// Returned as a `String` rather than an `arrow_schema::DataType` because
+    /// `arrow-schema` is the one non-umbrella Arrow crate dora's public API
+    /// used to name, and naming it would pin 1.x to a single Arrow major.
+    /// For the real type, enable `arrow-v59` and use
+    /// [`data_type`](Self::data_type).
+    pub fn type_name(&self) -> String {
+        format!("{:?}", self.data_type)
+    }
+
     /// The Arrow type the payload was encoded from.
+    ///
+    /// Gated on `arrow-v59` — dora's current internal Arrow major — because
+    /// `arrow_schema::DataType` is an Arrow type. It is not returned as a
+    /// dora-owned type-URN (`dora_core::types::TypeRegistry`) because the URN
+    /// catalog only covers the standard scalar/struct types: nested lists,
+    /// dictionaries, timestamps-with-timezone and unions have no URN, so a
+    /// URN-returning accessor would be lossy for exactly the outputs whose
+    /// type a caller most needs to inspect.
+    #[cfg(feature = "arrow-v59")]
     pub fn data_type(&self) -> &arrow_schema::DataType {
         &self.data_type
     }
@@ -2836,8 +2859,13 @@ impl SampleAllocator {
     /// The returned sample shares no memory with `array`, so the caller may —
     /// and, when the payload is owned by a foreign runtime, **must** — drop
     /// `array` on its own thread rather than let it travel to the node.
-    pub fn encode_arrow(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
-        let sample = match ipc_encode::PreparedIpc::new(array) {
+    pub fn encode_arrow(&self, array: &DoraArray) -> NodeResult<EncodedSample> {
+        self.encode_arrow_data(&dora_arrow_convert::internal::array_ref(array).to_data())
+    }
+
+    /// Same, for dora-internal callers that already hold an [`ArrayData`].
+    pub(crate) fn encode_arrow_data(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
+        let sample = match ipc_encode::PreparedIpc::from_data(array) {
             Some(prepared) => {
                 // Prepare once: size the sample from the prepared layout, then
                 // encode into it — avoids rebuilding the layout + IPC headers.
@@ -2848,7 +2876,7 @@ impl SampleAllocator {
                 sample
             }
             None => {
-                let bytes = ipc_encode::encode_ipc_to_vec(array)
+                let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 let mut sample = self.allocate(bytes.len())?;
                 sample.copy_from_slice(&bytes);
@@ -3401,7 +3429,6 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
-    use arrow::array::NullArray;
 
     fn required_acker(node: &str, input: &str) -> dora_message::daemon_to_node::RequiredAcker {
         dora_message::daemon_to_node::RequiredAcker {
@@ -3729,7 +3756,7 @@ mod tests {
         let (mut node, events, mut rx) = test_node();
 
         let request_id = node
-            .send_service_request("request".into(), Default::default(), NullArray::new(0))
+            .send_service_request("request".into(), Default::default(), ())
             .unwrap();
 
         // Returned ID should be a valid UUID
@@ -3748,10 +3775,10 @@ mod tests {
         let (mut node, events, _rx) = test_node();
 
         let id1 = node
-            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .send_service_request("out".into(), Default::default(), ())
             .unwrap();
         let id2 = node
-            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .send_service_request("out".into(), Default::default(), ())
             .unwrap();
 
         assert_ne!(id1, id2, "successive request IDs should differ");
@@ -3770,7 +3797,7 @@ mod tests {
             dora_message::metadata::REQUEST_ID.to_string(),
             dora_message::metadata::Parameter::String("test-req-id".into()),
         );
-        node.send_service_response("response".into(), params, NullArray::new(0))
+        node.send_service_response("response".into(), params, ())
             .unwrap();
 
         drop(node);
@@ -3823,16 +3850,16 @@ mod tests {
     /// plane relies on (zenoh can't be smoke-tested here, so this stands in).
     #[test]
     fn send_output_ipc_roundtrip() {
-        use crate::arrow_utils::decode_arrow_ipc_zero_copy;
-        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
+        use crate::arrow_utils::ipc_encode::{encode_ipc_into_data, ipc_fast_path_len_data};
         use arrow::array::{ArrayRef, Float32Array, StringArray, StructArray, UInt64Array};
         use arrow_schema::{DataType, Field};
         use std::ptr::NonNull;
 
         fn roundtrip(data: ArrayData) {
-            let len = ipc_fast_path_len(&data).expect("array should be fast-path eligible");
+            let len = ipc_fast_path_len_data(&data).expect("array should be fast-path eligible");
             let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
-            encode_ipc_into(&data, &mut buf).expect("fast-path IPC encode");
+            encode_ipc_into_data(&data, &mut buf).expect("fast-path IPC encode");
 
             // Wrap the aligned sample as an Arrow Buffer (no copy), mirroring the
             // receive path, then decode.
@@ -3841,7 +3868,7 @@ mod tests {
             // SAFETY: ptr/len describe `buf`; the Arc keeps it alive.
             let buffer =
                 unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, blen, Arc::new(buf)) };
-            let decoded = decode_arrow_ipc_zero_copy(buffer).expect("zero-copy IPC decode");
+            let decoded = decode_arrow_ipc_zero_copy_raw(buffer).expect("zero-copy IPC decode");
             assert_eq!(
                 data, decoded,
                 "IPC send->receive round-trip must preserve the array"
@@ -4106,7 +4133,7 @@ mod tests {
         let (mut node, events, mut rx) = test_node();
         let mut seg = StreamSegment::with_session_id("s1".into());
 
-        node.send_stream_chunk("audio".into(), &mut seg, false, NullArray::new(0))
+        node.send_stream_chunk("audio".into(), &mut seg, false, ())
             .unwrap();
 
         drop(node);
@@ -4237,7 +4264,7 @@ mod operator_boundary_tests {
         let (array, released) = foreign_owned_array(8192);
 
         let sample = allocator
-            .encode_arrow(&array)
+            .encode_arrow_data(&array)
             .expect("encoding a UInt8 array must succeed");
 
         assert!(
@@ -4260,9 +4287,9 @@ mod operator_boundary_tests {
         let allocator = SampleAllocator::heap();
         let (array, _released) = foreign_owned_array(1024);
 
-        let encoded = allocator.encode_arrow(&array).expect("encode");
-        assert_eq!(encoded.data_type(), array.data_type());
-        let decoded = crate::node::arrow_utils::decode_arrow_ipc(encoded.as_bytes())
+        let encoded = allocator.encode_arrow_data(&array).expect("encode");
+        assert_eq!(encoded.type_name(), format!("{:?}", array.data_type()));
+        let decoded = crate::node::arrow_utils::decode_arrow_ipc_data(encoded.as_bytes())
             .expect("the sample must be a well-formed Arrow IPC stream");
 
         assert_eq!(decoded, array);

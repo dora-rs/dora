@@ -147,7 +147,7 @@ impl SharedLibraryOperator<'_> {
             );
 
             let arrow_array = match unsafe { arrow::ffi::from_ffi(data_array, &schema) } {
-                Ok(a) => a,
+                Ok(a) => dora_node_api::DoraArray::from_array(arrow::array::make_array(a)),
                 Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
@@ -223,7 +223,7 @@ impl SharedLibraryOperator<'_> {
                     metadata,
                     data,
                 } => {
-                    let (data_array, schema) = arrow::ffi::to_ffi(&data.to_data())?;
+                    let (data_array, schema) = arrow::ffi::to_ffi(&data.as_array().to_data())?;
                     let otel = metadata.open_telemetry_context();
                     let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),

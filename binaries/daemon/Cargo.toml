@@ -34,7 +34,7 @@ flume = { workspace = true }
 dora-download = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 dora-arrow-convert = { workspace = true }
-dora-node-api = { workspace = true }
+dora-node-api = { workspace = true  }
 dora-message = { workspace = true }
 serde_yaml = { workspace = true }
 uuid = { workspace = true }

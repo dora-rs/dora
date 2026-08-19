@@ -940,7 +940,8 @@ impl EventStream {
             && !crate::node::carries_pattern_correlation(&metadata.parameters)
             && let Some(expected) = self.input_type_checks.remove(id)
         {
-            let actual = data.data_type();
+            let raw = dora_arrow_convert::internal::array_ref(data);
+            let actual = raw.data_type();
             // Skip check for Null type (timer ticks, empty payloads)
             // to avoid spurious warnings on annotated timer inputs.
             if *actual != arrow_schema::DataType::Null && *actual != expected {
@@ -1411,7 +1412,7 @@ impl EventStream {
                             Event::Input {
                                 id,
                                 metadata,
-                                data: data.into(),
+                                data: dora_arrow_convert::internal::from_array_ref(data),
                             }
                         }
                         Err(err) => Event::Error(format!("{err:?}")),
@@ -1449,7 +1450,7 @@ impl EventStream {
                     id,
                     metadata,
                     // Already decoded in the subscriber callback (receipt order).
-                    data: arrow::array::make_array(data).into(),
+                    data: dora_arrow_convert::internal::from_array_data(data),
                 }
             }
 
@@ -1571,7 +1572,7 @@ fn declare_schema_subscriber(
                     guard.reset();
                     guard
                 });
-                if let Err(e) = decoder.set_schema(hash, buffer) {
+                if let Err(e) = decoder.set_schema_raw(hash, buffer) {
                     tracing::warn!(input = %input_id_cb, "failed to prime decoder from @schema sample: {e}");
                 }
             }));
@@ -1621,17 +1622,19 @@ fn decode_zenoh_sample(
     metadata: &dora_message::metadata::Metadata,
     payload: zenoh::bytes::ZBytes,
 ) -> eyre::Result<Option<arrow::array::ArrayData>> {
-    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+    use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
     use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
 
     if payload.is_empty() {
-        return Ok(Some(().into_arrow().into()));
+        return Ok(Some(
+            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+        ));
     }
     let buffer = zenoh_payload_to_buffer(payload);
     match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
         Some(hash) => {
             tracing::debug!("received schema-less batch with SCHEMA_HASH={}", hash);
-            decoder.decode_batch(buffer, hash as u64)
+            decoder.decode_batch_raw(buffer, hash as u64)
         }
         None => {
             tracing::debug!("received full IPC stream (no SCHEMA_HASH)");
@@ -1641,7 +1644,7 @@ fn decode_zenoh_sample(
             if !crate::node::carries_pattern_correlation(&metadata.parameters) {
                 prime_in_band(decoder, &buffer);
             }
-            decode_arrow_ipc_zero_copy(buffer).map(Some)
+            decode_arrow_ipc_zero_copy_raw(buffer).map(Some)
         }
     }
 }
@@ -1675,7 +1678,7 @@ fn prime_in_band(
     // Copy the schema block out of the payload: retaining a slice of an
     // SHM-backed buffer would pin the whole segment for the decoder's lifetime.
     let schema = arrow::buffer::Buffer::from(schema);
-    if let Err(e) = decoder.set_schema(hash, schema) {
+    if let Err(e) = decoder.set_schema_raw(hash, schema) {
         tracing::debug!("in-band schema priming failed: {e}");
     }
 }
@@ -2150,7 +2153,7 @@ mod tests {
 
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType as ArrowDataType;
-    use dora_arrow_convert::ArrowData;
+    use dora_arrow_convert::internal::from_array_ref;
     use dora_message::metadata::{
         GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
         MetadataParameters, Parameter, REQUEST_ID,
@@ -2164,7 +2167,7 @@ mod tests {
         Event::Input {
             id: id.into(),
             metadata: make_metadata(params),
-            data: ArrowData(new_empty_array(&ArrowDataType::Null)),
+            data: from_array_ref(new_empty_array(&ArrowDataType::Null)),
         }
     }
 
@@ -2393,7 +2396,9 @@ mod tests {
             node.send_output(
                 "out".parse().unwrap(),
                 Default::default(),
-                Int32Array::from(vec![i]),
+                dora_arrow_convert::internal::from_array_ref(std::sync::Arc::new(
+                    Int32Array::from(vec![i]),
+                )),
             )
             .unwrap();
         }
@@ -2708,7 +2713,9 @@ mod tests {
     /// no type sidecar involved).
     #[test]
     fn zenoh_payload_ipc_roundtrip_and_empty_is_unit() {
-        use crate::arrow_utils::ipc_encode::{InputDecoder, encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::ipc_encode::{
+            InputDecoder, encode_ipc_into_data, ipc_fast_path_len_data,
+        };
         use arrow::array::{Array, Int32Array};
 
         // A standalone full stream (no SCHEMA_HASH parameter) decodes directly.
@@ -2728,9 +2735,9 @@ mod tests {
 
         // Non-empty IPC payload round-trips to the original array.
         let data = Int32Array::from(vec![10, 20, 30]).into_data();
-        let len = ipc_fast_path_len(&data).expect("primitive is fast-path eligible");
+        let len = ipc_fast_path_len_data(&data).expect("primitive is fast-path eligible");
         let mut buf = vec![0u8; len];
-        encode_ipc_into(&data, &mut buf).unwrap();
+        encode_ipc_into_data(&data, &mut buf).unwrap();
 
         let decoded = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(buf))
             .unwrap()
@@ -2749,8 +2756,8 @@ mod tests {
     #[test]
     fn full_stream_primes_decoder_in_band_for_schema_less_batches() {
         use crate::arrow_utils::ipc_encode::{
-            InputDecoder, batch_fast_path_len, encode_batch_into, encode_ipc_into,
-            ipc_fast_path_len, schema_block_len,
+            InputDecoder, batch_fast_path_len_data, encode_batch_into_data, encode_ipc_into_data,
+            ipc_fast_path_len_data, schema_block_len,
         };
         use arrow::array::{Array, Int32Array};
         use dora_message::metadata::{Metadata, Parameter, SCHEMA_HASH};
@@ -2761,8 +2768,8 @@ mod tests {
         // Message 1: full stream (no SCHEMA_HASH), as the producer sends while
         // the schema is not yet confirmed published on the `@schema` plane.
         let first = Int32Array::from(vec![1, 2]).into_data();
-        let mut full = vec![0u8; ipc_fast_path_len(&first).unwrap()];
-        encode_ipc_into(&first, &mut full).unwrap();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&first).unwrap()];
+        encode_ipc_into_data(&first, &mut full).unwrap();
         let block = schema_block_len(&full).unwrap();
         let hash = dora_message::metadata::fnv1a(&full[..block]);
 
@@ -2776,8 +2783,8 @@ mod tests {
         // `set_schema` call happened — decoding must succeed purely from the
         // in-band priming above.
         let second = Int32Array::from(vec![3]).into_data();
-        let mut batch = vec![0u8; batch_fast_path_len(&second).unwrap()];
-        encode_batch_into(&second, &mut batch).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&second).unwrap()];
+        encode_batch_into_data(&second, &mut batch).unwrap();
         let mut tagged = Metadata::new(hlc.new_timestamp());
         tagged
             .parameters
@@ -2796,8 +2803,8 @@ mod tests {
     #[test]
     fn pattern_correlated_full_stream_does_not_prime_in_band() {
         use crate::arrow_utils::ipc_encode::{
-            InputDecoder, batch_fast_path_len, encode_batch_into, encode_ipc_into,
-            ipc_fast_path_len, schema_block_len,
+            InputDecoder, batch_fast_path_len_data, encode_batch_into_data, encode_ipc_into_data,
+            ipc_fast_path_len_data, schema_block_len,
         };
         use arrow::array::{Array, Int32Array};
         use dora_message::metadata::{Metadata, Parameter, REQUEST_ID, SCHEMA_HASH};
@@ -2806,8 +2813,8 @@ mod tests {
         let mut decoder = InputDecoder::new();
 
         let reply = Int32Array::from(vec![7]).into_data();
-        let mut full = vec![0u8; ipc_fast_path_len(&reply).unwrap()];
-        encode_ipc_into(&reply, &mut full).unwrap();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&reply).unwrap()];
+        encode_ipc_into_data(&reply, &mut full).unwrap();
         let block = schema_block_len(&full).unwrap();
         let hash = dora_message::metadata::fnv1a(&full[..block]);
 
@@ -2823,8 +2830,8 @@ mod tests {
 
         // …but must not have primed the decoder for its schema hash.
         let batch_array = Int32Array::from(vec![8]).into_data();
-        let mut batch = vec![0u8; batch_fast_path_len(&batch_array).unwrap()];
-        encode_batch_into(&batch_array, &mut batch).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&batch_array).unwrap()];
+        encode_batch_into_data(&batch_array, &mut batch).unwrap();
         let mut tagged = Metadata::new(hlc.new_timestamp());
         tagged
             .parameters

@@ -60,7 +60,7 @@ use dora_mavlink2_bridge::{
 };
 use dora_node_api::{
     DoraNode, Event, MetadataParameters, TryRecvError,
-    arrow::array::{Array, ArrayRef, AsArray, RecordBatch, StructArray},
+    arrow_v59::array::{Array, ArrayRef, AsArray, RecordBatch, StructArray},
     dora_core::config::DataId,
     flume,
 };
