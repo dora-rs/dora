@@ -14,7 +14,7 @@ use dora_node_api::{
     self, Event, EventStream, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, PatternError,
     TryRecvError,
-    arrow::array::{AsArray, UInt8Array},
+    arrow_v59::array::{AsArray, UInt8Array},
     dora_core::config::NodeId,
     merged::MergedEvent,
 };
@@ -622,13 +622,13 @@ fn event_as_input_with_metadata(event: Box<DoraEvent>) -> eyre::Result<ffi::Dora
 /// Decode a byte-payload input. The payload arrives as a self-describing
 /// Arrow IPC stream, so the type is read from the array itself rather
 /// than assumed.
-fn input_bytes(data: &dora_node_api::ArrowData) -> eyre::Result<Vec<u8>> {
-    match data.data_type() {
-        dora_node_api::arrow::datatypes::DataType::UInt8 => {
-            let array: &UInt8Array = data.as_primitive();
+fn input_bytes(data: &dora_node_api::DoraArray) -> eyre::Result<Vec<u8>> {
+    match data.as_array().data_type() {
+        dora_node_api::arrow_v59::datatypes::DataType::UInt8 => {
+            let array: &UInt8Array = data.as_array().as_primitive();
             Ok(array.values().to_vec())
         }
-        dora_node_api::arrow::datatypes::DataType::Null => Ok(vec![]),
+        dora_node_api::arrow_v59::datatypes::DataType::Null => Ok(vec![]),
         other => {
             bail!(
                 "unsupported input arrow type {other:?}; \
@@ -732,7 +732,7 @@ unsafe fn event_as_arrow_input(
         };
     }
 
-    let array_data = data.to_data();
+    let array_data = data.as_array().to_data();
 
     match arrow::ffi::to_ffi(&array_data) {
         Ok((ffi_array, ffi_schema)) => {
@@ -1068,7 +1068,7 @@ unsafe fn event_as_arrow_input_with_info(
         }
     };
 
-    let array_data = data.to_data();
+    let array_data = data.as_array().to_data();
 
     match arrow::ffi::to_ffi(&array_data) {
         Ok((ffi_array, ffi_schema)) => {
@@ -1487,8 +1487,8 @@ fn downcast_dora(event: ffi::CombinedEvent) -> eyre::Result<Box<DoraEvent>> {
 mod tests {
     use super::*;
     use dora_node_api::{
-        ArrowData,
-        arrow::array::{ArrayRef, Int32Array},
+        DoraArray,
+        arrow_v59::array::{ArrayRef, Int32Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
@@ -1502,7 +1502,7 @@ mod tests {
         let event = Box::new(DoraEvent(EventOrReason::Event(Event::Input {
             id: "my_input".into(),
             metadata: DoraMetadata::new(HLC::default().new_timestamp()),
-            data: ArrowData(array),
+            data: DoraArray::from(array),
         })));
 
         let result = event_as_input(event);
@@ -1572,7 +1572,7 @@ mod tests {
             event_as_input_with_metadata(Box::new(DoraEvent(EventOrReason::Event(Event::Input {
                 id: "request".into(),
                 metadata,
-                data: ArrowData(array),
+                data: DoraArray::from(array),
             }))))
             .expect("input event should decode");
 
@@ -1593,7 +1593,7 @@ mod tests {
             event_as_input_with_metadata(Box::new(DoraEvent(EventOrReason::Event(Event::Input {
                 id: "input".into(),
                 metadata: DoraMetadata::new(HLC::default().new_timestamp()),
-                data: ArrowData(array),
+                data: DoraArray::from(array),
             }))));
         assert!(wrong_type.is_err(), "a non-UInt8 payload must return Err");
     }
@@ -1795,7 +1795,7 @@ mod tests {
         let result = pattern_result(Ok(Event::Input {
             id: "response".into(),
             metadata,
-            data: ArrowData(array),
+            data: DoraArray::from(array),
         }));
 
         assert!(matches!(result.status, ffi::DoraPatternStatus::Matched));

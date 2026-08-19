@@ -1,3 +1,13 @@
+//! **Internal to dora — not a public API.**
+//!
+//! This crate is published to crates.io only because cargo requires every
+//! dependency of a published crate to be published; `dora-node-api` and
+//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! guarantee and may change in any release, including a patch.
+//!
+//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
+//! section of `docs/api-rust.md`.
+//!
 //! Enable tracing using OpenTelemetry with OTLP.
 //!
 //! This module initializes a tracing propagator for Rust code that requires tracing, and is
@@ -181,7 +191,7 @@ impl TracingBuilder {
         // Initialize OTLP tracing - this returns a tracer and sets the global provider
         let sdk_tracer_provider = crate::telemetry::init_tracing(&self.name, &endpoint)
             .wrap_err("failed to initialize OTLP tracing exporter")?;
-        let meter_provider = metrics::init_meter_provider(&endpoint)
+        let meter_provider = metrics::init_meter_provider(&self.name, &endpoint)
             .wrap_err("failed to initialize OTLP metrics exporter")?;
 
         // TODO: Maybe this needs to be removed in favor of application level global.

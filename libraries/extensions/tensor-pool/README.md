@@ -31,13 +31,18 @@ Off by default, so a standard build neither compiles nor exposes it.
 # Python wheel with the transport
 maturin develop -m apis/python/node/Cargo.toml --features tensor-pool
 
-# Daemon with orphaned-segment reclamation
+# Daemon with this extension's daemon half
 cargo build -p dora-daemon --features tensor-pool
+
+# The `dora` binary, which hosts the in-process daemon for `dora run` / `dora up`
+cargo build -p dora-cli --features tensor-pool
 ```
 
-Both flags are independent. Without the daemon feature the transport still
-works; shared-memory segments left by a node that crashed are reclaimed when
-the dataflow finishes rather than at the next start.
+The wheel flag and the daemon flag are independent. Without the daemon half the
+node-side transport still works within a single daemon; what you lose is
+orphaned-segment reclamation at startup and the whole cross-machine path
+(mirror segments, the direct-TCP data plane, cross-machine registration), since
+those are what the daemon half implements.
 
 ```python
 from dora import Node
@@ -79,11 +84,15 @@ the lifetime of an opaque descriptor:
 | withdraw one | `extension_drop("dora-tensor-pool", id)` |
 | learn what went away | `drain_dropped_extension_keys("dora-tensor-pool")` |
 
-The descriptor is JSON in `python/src/seam.rs`; dora never parses it. That
-boundary is deliberate — it is what lets this extension change its own metadata
-without touching dora's wire protocol, and what keeps `unsafe` pointer
-arithmetic, the seqlock and the embedded `libcudart` bindings on this side of
-the line.
+| call the daemon half | `extension_request("dora-tensor-pool", bytes)` |
+| reach the same extension on a peer daemon | `InterDaemonEvent::ExtensionMessage`, published by the daemon half |
+
+The descriptor is JSON in `python/src/seam.rs` and the request/peer messages are
+postcard in `src/protocol.rs`; dora parses neither. That boundary is deliberate
+— it is what lets this extension change its own metadata and its own protocol
+without touching dora's wire format, and what keeps `unsafe` pointer arithmetic,
+the seqlock, the segment layout and the embedded `libcudart` bindings on this
+side of the line.
 
 **Keep it that way.** If a future change wants dora to grow a request named
 after this transport, that is the signal something is being done wrong: widen
@@ -93,7 +102,9 @@ the generic channel instead.
 
 | Path | What |
 |---|---|
-| `src/` | `dora-tensor-pool` — daemon-side reclamation of orphaned `/dev/shm` segments |
+| `src/protocol.rs` | this transport's own messages, carried as opaque bytes by dora |
+| `src/daemon/` | the daemon half (feature `daemon`): mirror segments, seqlock, direct-TCP data plane, cross-machine control flow, and `DaemonServices` — what it asks of the daemon |
+| `src/lib.rs` | `TensorPoolManager` — the pool table and `/dev/shm` reclamation |
 | `python/src/transport.rs` | the transport: segment layout, seqlock, CUDA helpers, the four operations |
 | `python/src/seam.rs` | descriptor encode/decode over the extension channel |
 | `python/tensor_info_helpers.py` | `get_tensor_info` / `tensor_from_info` for torch tensors |
@@ -104,9 +115,17 @@ the generic channel instead.
 
 Built in-tree (#2168, #2386, #2619), extracted before 1.0 because it had grown
 to ~3,000 lines inside the Python binding with 64 `unsafe` sites and 950 lines
-of daemon lifecycle logic, then brought back here — behind a feature flag,
-reaching dora only through the extension channel, and explicitly outside the
-1.0 guarantees.
+of daemon lifecycle logic, then brought back here (#3152) — behind a feature
+flag, reaching dora only through the extension channel, and explicitly outside
+the 1.0 guarantees.
+
+#3079 then re-integrated the cross-machine work directly into dora: 2.6k lines
+and 47 `unsafe` sites in `daemon/src/lib.rs`, twelve pool-named wire variants,
+an unconditional dependency from `dora-daemon`, and the daemon feature deleted
+outright — while this file still claimed the transport reached dora "through the
+public extension channel and nothing else". That was undone by putting the
+daemon half here, behind `--features daemon`, and reducing dora's side to the
+opaque carriers plus `DaemonServices`.
 
 The design questions its origin issue
 ([#1872](https://github.com/dora-rs/dora/issues/1872)) posed and that were

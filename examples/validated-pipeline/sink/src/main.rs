@@ -1,4 +1,4 @@
-use dora_node_api::{DoraNode, Event, EventStream, arrow};
+use dora_node_api::{DoraNode, Event, EventStream, arrow_v59 as arrow};
 use eyre::{ContextCompat, bail};
 
 #[cfg(test)]
@@ -16,6 +16,7 @@ fn run(_node: DoraNode, mut events: EventStream) -> eyre::Result<()> {
         match event {
             Event::Input { id, data, .. } if id.as_str() == "doubled" => {
                 let arr = data
+                    .as_array()
                     .as_any()
                     .downcast_ref::<arrow::array::Int64Array>()
                     .context("expected Int64Array")?;

@@ -5,7 +5,7 @@ use std::{
 
 use dora_node_api::{
     DoraNode, Event, IntoArrow,
-    arrow::array::{Array, NullArray},
+    arrow_v59::array::{Array, NullArray},
     dora_core::config::DataId,
     integration_testing::{
         self, IntegrationTestInput, TestingOptions,
@@ -112,7 +112,7 @@ fn test_sample_output() -> eyre::Result<()> {
         match event {
             Event::Input { id, metadata, data } => match id.as_str() {
                 "tick" => {
-                    assert_eq!(data.to_data(), NullArray::new(0).to_data());
+                    assert_eq!(data.as_array().to_data(), NullArray::new(0).to_data());
                     node.send_output(output.clone(), metadata.parameters, i.into_arrow())?;
                 }
                 other => panic!("unexpected input `{other}`"),
