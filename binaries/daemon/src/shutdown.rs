@@ -463,29 +463,7 @@ mod tests {
         // without the reap it stays a zombie, which is the state under test.
         drop(wrapper.stdin.take());
 
-        // Block until the kernel says it has exited, *without* reaping it.
-        // `WNOWAIT` leaves the status pending, so the process stays a zombie
-        // for the assertions below and for `kill_group_and_reap` to clean up.
-        //
-        // This replaces a poll for `ProcessStatus::Zombie` (dora-rs/dora#3150):
-        // that made the precondition depend on `sysinfo` *observing* the
-        // zombie, which is a platform question, not the one under test. The
-        // poll timed out on macOS nightly while passing on Linux. `waitid` is
-        // POSIX and answers the actual question — has it exited yet — with no
-        // deadline to lose.
-        //
-        // SAFETY: `waitid` only reads the exit state of a child this test
-        // spawned; `WNOWAIT` means it does not consume it.
-        let rc = unsafe {
-            let mut info: libc::siginfo_t = std::mem::zeroed();
-            libc::waitid(
-                libc::P_PID,
-                pid as libc::id_t,
-                &mut info,
-                libc::WEXITED | libc::WNOWAIT,
-            )
-        };
-        assert_eq!(rc, 0, "waitid on the wrapper failed");
+        wait_for_exit_without_reaping(pid);
 
         // The wrapper is now definitively an unreaped zombie. If `sysinfo`
         // disagrees, that is a platform gap worth knowing about rather than a
@@ -493,6 +471,17 @@ mod tests {
         // (`pid_recycled_into_stranger` returns false for `None`), so a pid
         // recycled into a stranger's zombie would be attributed to us and its
         // group killed — the #3067 case. Fail loudly and name it.
+        //
+        // A failure here is narrower than it first reads, though. This is a
+        // *fresh* `System`, so sysinfo has to build the entry from nothing,
+        // and on macOS that path gives up on a process whose argv and exe path
+        // the kernel no longer serves — which is exactly a zombie. A
+        // long-lived `DestroyWait` keeps its `System` across polls and has
+        // already seen the pid alive, so it takes sysinfo's *update* path
+        // instead, which can still report `Zombie` where the create path
+        // returns nothing at all. So this bounds how much of the #3067 guard
+        // survives on a platform; it does not by itself condemn the whole of
+        // it.
         let mut system = System::new();
         system.refresh_processes_specifics(
             ProcessesToUpdate::Some(&[Pid::from_u32(pid)]),
@@ -503,11 +492,86 @@ mod tests {
         assert_eq!(
             seen,
             Some(ProcessStatus::Zombie),
-            "`waitid` confirms the wrapper exited unreaped, but sysinfo \
-             reports {seen:?}. The zombie checks in `is_live_child` and \
-             `pid_recycled_into_stranger` cannot work on this platform."
+            "`waitid` confirms the wrapper exited unreaped, but a fresh \
+             `sysinfo::System` reports {seen:?}. The zombie half of \
+             `is_live_child` / `pid_recycled_into_stranger` cannot work on \
+             this platform for a pid sysinfo has not already seen alive."
         );
         (wrapper, pid)
+    }
+
+    /// Block until the child at `pid` has exited, *without* reaping it.
+    ///
+    /// `WNOWAIT` leaves the exit status pending, so the process stays an
+    /// unreaped zombie for the caller's assertions and for the later
+    /// `Child::wait` in `kill_group_and_reap` to consume.
+    ///
+    /// This replaces a poll for `ProcessStatus::Zombie` (dora-rs/dora#3150):
+    /// that made the precondition depend on `sysinfo` *observing* the zombie,
+    /// which is a platform question, not the one under test. The poll timed
+    /// out on the macOS nightly while passing on Linux. `waitid` is POSIX and
+    /// answers the question the helper is actually asking — has it exited yet
+    /// — with no sleep to lose. Measured on Linux: it returns in about a
+    /// millisecond.
+    ///
+    /// The wait runs on its own thread only so that a wrapper which never
+    /// exits fails *here*, with this message, instead of blocking until the CI
+    /// job's own timeout kills the run and reports nothing. That deadline
+    /// bounds the pathological case; it is not part of the normal path, and
+    /// unlike the poll it replaces it cannot expire while the answer is
+    /// already available. The thread stays parked in `waitid` if it does fire,
+    /// which is harmless — the panic is taking the process down anyway.
+    #[cfg(unix)]
+    fn wait_for_exit_without_reaping(pid: u32) {
+        use std::sync::mpsc::RecvTimeoutError;
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let result = loop {
+                // SAFETY: `waitid` only reads the exit state of a child this
+                // test spawned. Its one out-parameter is `info`, a valid,
+                // aligned, uniquely borrowed `siginfo_t` that outlives the
+                // call; zeroing it first is sound because every field is an
+                // integer, a `pid_t`/`uid_t`, a raw pointer, or padding, for
+                // all of which all-zeros is a valid bit pattern. `WNOWAIT`
+                // leaves the status unconsumed, so the child stays reapable.
+                let rc = unsafe {
+                    let mut info: libc::siginfo_t = std::mem::zeroed();
+                    libc::waitid(
+                        libc::P_PID,
+                        pid as libc::id_t,
+                        &mut info,
+                        libc::WEXITED | libc::WNOWAIT,
+                    )
+                };
+                if rc == 0 {
+                    break Ok(());
+                }
+                // A signal delivered to this thread must not be reported as
+                // the child failing to exit — that is the flake class this
+                // helper exists to remove.
+                let err = std::io::Error::last_os_error();
+                if err.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                break Err(err);
+            };
+            let _ = tx.send(result);
+        });
+
+        match rx.recv_timeout(Duration::from_secs(30)) {
+            Ok(Ok(())) => {}
+            // `ECHILD` here would mean something reaped the wrapper out from
+            // under the test; `EINVAL` would mean the options are wrong for
+            // this platform. Both are worth telling apart from a timeout.
+            Ok(Err(err)) => panic!("waitid on the wrapper failed: {err}"),
+            Err(RecvTimeoutError::Timeout) => {
+                panic!("the wrapper never exited: waitid blocked for 30s")
+            }
+            Err(RecvTimeoutError::Disconnected) => {
+                panic!("the thread waiting on the wrapper died")
+            }
+        }
     }
 
     #[cfg(unix)]
