@@ -176,6 +176,14 @@ fn validate_no_leading_dash(what: &str, value: &str) -> eyre::Result<()> {
 /// `[`/`]` around an IPv6 literal like `tcp/[::1]:7447`. It still rejects
 /// whitespace and shell metacharacters (`;`, `|`, `$`, backtick, ...), so the
 /// value cannot break out of the remote command.
+///
+/// It also rejects a leading `-`, the same guard `validate_shell_safe` applies
+/// at a token start: `zenoh_peer` is interpolated as the whole argument of
+/// `dora daemon --zenoh-peer {ep}`, so a value like `-tcp/1.2.3.4:5456` is
+/// parsed by the remote daemon's clap as an option flag instead of the
+/// endpoint, and the daemon never starts — surfacing only later as a confusing
+/// "daemon(s) did not register" timeout. No legitimate Zenoh endpoint begins
+/// with `-`.
 fn validate_endpoint_shell_safe(what: &str, value: &str) -> eyre::Result<()> {
     if let Some(ch) = value.chars().find(|c| {
         !c.is_ascii_alphanumeric() && !matches!(c, '_' | '-' | '.' | '/' | ':' | '[' | ']')
@@ -183,6 +191,9 @@ fn validate_endpoint_shell_safe(what: &str, value: &str) -> eyre::Result<()> {
         bail!(
             "{what} contains invalid character `{ch}` -- only [a-zA-Z0-9_.:/] and `[`/`]` are allowed"
         );
+    }
+    if value.starts_with('-') {
+        bail!("{what} must not start with `-`");
     }
     Ok(())
 }
@@ -416,6 +427,24 @@ mod tests {
             err.contains("invalid character") && err.contains("zenoh_peer"),
             "malicious zenoh_peer should be rejected, got: {err}"
         );
+    }
+
+    #[test]
+    fn reject_zenoh_peer_with_leading_dash() {
+        // A leading `-` passes the endpoint charset check but makes the remote
+        // `dora daemon --zenoh-peer {ep}` parse the endpoint as an option flag,
+        // so the daemon silently fails to start. Reject it up front, matching
+        // the guard on the machine id / label key.
+        for bad in ["-tcp/1.2.3.4:5456", "--zenoh-peer", "-"] {
+            let f = write_yaml(&format!(
+                "coordinator:\n  addr: 10.0.0.1\nzenoh_peer: \"{bad}\"\nmachines:\n  - id: a\n    host: h\n"
+            ));
+            let err = ClusterConfig::load(f.path()).unwrap_err().to_string();
+            assert!(
+                err.contains("must not start with `-`") && err.contains("zenoh_peer"),
+                "zenoh_peer `{bad}` should be rejected, got: {err}"
+            );
+        }
     }
 
     #[test]
