@@ -2930,13 +2930,13 @@ nodes:
 module:
   name: d
   inputs: []
-  outputs: [dout]
+  outputs: [d_out]
 
 nodes:
   - id: leaf
     path: leaf.py
     outputs:
-      - dout
+      - d_out
 "#,
         );
         for name in ["b.yml", "c.yml"] {
@@ -2947,10 +2947,10 @@ nodes:
 module:
   name: mid
   inputs: []
-  outputs: [dout]
+  outputs: [d_out]
 
 nodes:
-  - id: nd
+  - id: node_d
     module: d.yml
 "#,
             );
@@ -2965,9 +2965,9 @@ module:
   outputs: []
 
 nodes:
-  - id: nb
+  - id: node_b
     module: b.yml
-  - id: nc
+  - id: node_c
     module: c.yml
 "#,
         );
