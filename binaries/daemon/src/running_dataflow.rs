@@ -1067,9 +1067,10 @@ impl RunningDataflow {
     /// producing, so nothing escalates; likewise an active non-source node
     /// (recent traffic) means work is still in progress. Explicitly stopped
     /// dataflows are excluded (`stop_all` runs its own kill escalation). Nodes
-    /// with open cross-daemon output mappings are skipped individually — they may
-    /// still be flushing outputs to consumers on other daemons, which this daemon
-    /// cannot see — but unrelated local nodes stay watchdog-covered.
+    /// with open cross-daemon output mappings are skipped only when they would
+    /// otherwise be selected for escalation — they may still be flushing
+    /// outputs to consumers on other daemons, which this daemon cannot see —
+    /// but unrelated local nodes stay watchdog-covered.
     ///
     /// `now_millis` is the current `node_communication::current_millis()`, the
     /// clock `RunningNode::last_activity` is stamped against.
@@ -1209,9 +1210,6 @@ fn select_finish_stragglers<'a>(
         if node.dynamic {
             continue;
         }
-        if node.remote_output_open {
-            continue;
-        }
         if node.never_finishes {
             // a live source (or timer/log-fed node) keeps the dataflow running;
             // it is stopped only via the explicit-stop path, never escalated here
@@ -1225,7 +1223,7 @@ fn select_finish_stragglers<'a>(
             // draining: ready past grace; still within grace it is progressing
             // toward exit and does not veto, but is not escalated yet
             Some(drained_for) => {
-                if drained_for >= effective_grace {
+                if drained_for >= effective_grace && !node.remote_output_open {
                     eligible.push(node.id.clone());
                 }
             }
@@ -1235,7 +1233,9 @@ fn select_finish_stragglers<'a>(
             // node still has work in progress — both veto.
             None => {
                 if node.connected && node.silent_for >= effective_grace {
-                    eligible.push(node.id.clone());
+                    if !node.remote_output_open {
+                        eligible.push(node.id.clone());
+                    }
                 } else {
                     return Vec::new();
                 }
@@ -1919,6 +1919,46 @@ mod tests {
         );
 
         assert_eq!(selected, vec![local]);
+    }
+
+    #[test]
+    fn remote_output_open_does_not_bypass_active_node_veto() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let mut remote_node = never_drained(&remote, WITHIN_GRACE);
+        remote_node.remote_output_open = true;
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn remote_output_open_does_not_bypass_starting_node_veto() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let remote_node = StragglerNode {
+            id: &remote,
+            dynamic: false,
+            never_finishes: false,
+            connected: false,
+            drained_for: None,
+            silent_for: PAST_GRACE,
+            node_grace: None,
+            remote_output_open: true,
+        };
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert!(selected.is_empty());
     }
 
     // ---- dora-rs/dora#2270: wedge-before-drain escalation ----
