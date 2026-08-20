@@ -232,6 +232,13 @@ async fn collect(
     let started = tokio::time::Instant::now();
     let mut found: Endpoints = BTreeMap::new();
     while started.elapsed() < deadline {
+        // `timeout(QUERY_ROUND)` bounds how long a round *may* take, not how
+        // long it does: a peer whose queryable is already declared answers at
+        // once, so without pacing the loop would re-issue the query as fast as
+        // replies arrive and turn the retry into a query storm on the
+        // inter-daemon session. Round start is captured here and slept out at
+        // the bottom, so each round costs one `QUERY_ROUND` regardless.
+        let round_started = tokio::time::Instant::now();
         // A peer that has not processed its own spawn yet has no queryable to
         // answer with, so an empty round means "ask again", not "there is
         // nobody". `ConsolidationMode::None` because every daemon answers on
@@ -267,6 +274,15 @@ async fn collect(
         if wanted.iter().all(|id| found.contains_key(id)) {
             break;
         }
+        // Pace the next round. Capped at the remaining budget so pacing can
+        // never push the exchange past `deadline` — the caller awaits this on
+        // the daemon event loop, so overrunning would stall it further.
+        let elapsed = started.elapsed();
+        let Some(remaining) = deadline.checked_sub(elapsed) else {
+            break;
+        };
+        let till_next_round = QUERY_ROUND.saturating_sub(round_started.elapsed());
+        tokio::time::sleep(till_next_round.min(remaining)).await;
     }
     found
 }

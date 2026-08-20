@@ -56,9 +56,14 @@ others.
     - If daemons/coordinator are in **different networks** (e.g. behind a [NAT](https://en.wikipedia.org/wiki/Network_address_translation)), put the machines on a **mesh VPN** such as [Tailscale](https://tailscale.com/), [WireGuard](https://www.wireguard.com/), or [Nebula](https://github.com/slackhq/nebula). This is the recommended setup: once every machine has a tunnel address, the machines are mutually dialable and dora needs no extra zenoh configuration. Each daemon binds the local address that routes toward the coordinator — the tunnel address, when the coordinator is reached through the tunnel — and advertises exactly that to the other daemons.
       ```bash
       RUST_LOG=debug dora daemon --coordinator-addr <COORDINATOR_TUNNEL_IP> --machine-id <MACHINE_ID> \
-        --zenoh-peer tcp/<COORDINATOR_TUNNEL_IP>:5456
+        --zenoh-listen <THIS_MACHINE_TUNNEL_IP>:5456 \
+        --zenoh-connect tcp/<OTHER_MACHINE_TUNNEL_IP>:5456
       ```
-      A mesh VPN carries no multicast, so daemons cannot find each other by scouting. `--zenoh-peer` gives them an explicit rendezvous instead: pass the *same* endpoint to every daemon, and the first one to bind it serves as the rendezvous for the others. On a multi-homed machine that would otherwise advertise an interface the other daemons cannot reach, name the address explicitly with `--zenoh-listen <TUNNEL_IP>`.
+      A mesh VPN carries no multicast, so daemons cannot find each other by scouting. Giving each daemon its own `--zenoh-listen` and dialing the others with `--zenoh-connect` wires them into an explicit mesh, which needs neither multicast nor gossip — the same shape `dora cluster up` derives automatically, and the recommended one. Pass every *other* machine's endpoint to `--zenoh-connect` (comma-separated); the dial is one-directional but the link it opens is not, so either daemon starting first is fine.
+
+      For a larger fleet, where enumerating peers on every command line gets unwieldy, `--zenoh-peer` is the simpler alternative: pass the *same* endpoint to every daemon and the first one to bind it becomes a rendezvous the rest gossip through. It costs a hop of indirection and depends on that one daemon being up, which is why the explicit mesh is preferred where you can spell it out. The two are mutually exclusive — `dora cluster up` refuses a `cluster.yml` that sets both.
+
+      An explicitly named `--zenoh-listen` address **must** bind or the daemon exits: a daemon that silently fails to bind is undialable, and failing loudly beats a cluster that looks up and exchanges nothing. Make sure the address is one this machine actually holds (a NAT or VIP address is not) and that the port is free.
 
       A [zenoh router](https://zenoh.io/docs/getting-started/deployment/#zenoh-router) is **not** a substitute for this. Since zenoh 1.9, peers no longer relay for each other, and peers that sit under one router in a single region are no exception: two NAT'd daemons will discover each other through a `zenohd` and still exchange nothing. A router helps only where the daemons are mutually dialable anyway (it then supplies discovery, which `--zenoh-peer` also does), or where the peers are split into separate router subregions.
 

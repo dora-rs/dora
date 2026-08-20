@@ -8,6 +8,8 @@ Dora supports deploying dataflows across multiple machines for multi-robot fleet
 - [Quick Start](#quick-start)
 - [Features at a Glance](#features-at-a-glance)
 - [Cluster Configuration Reference](#cluster-configuration-reference)
+- [Cross-Machine Node Communication](#cross-machine-node-communication)
+- [Custom Zenoh Configuration](#custom-zenoh-configuration)
 - [Cluster Commands Reference](#cluster-commands-reference)
   - [dora cluster up](#dora-cluster-up)
   - [dora cluster status](#dora-cluster-status)
@@ -211,6 +213,35 @@ machines:
 - `zenoh_peer` and per-machine zenoh addresses are mutually exclusive.
 - Unknown fields are rejected (`deny_unknown_fields`).
 
+### Example: 3-Machine GPU Cluster
+
+```yaml
+coordinator:
+  addr: 192.168.1.1
+
+machines:
+  - id: coordinator-host
+    host: 192.168.1.1
+    labels:
+      role: control
+
+  - id: gpu-a100
+    host: 192.168.1.10
+    user: ml
+    labels:
+      gpu: a100
+      arch: x86_64
+
+  - id: jetson-01
+    host: 192.168.1.20
+    user: nvidia
+    labels:
+      gpu: jetson
+      arch: arm64
+```
+
+---
+
 ## Cross-Machine Node Communication
 
 Once the daemons can reach each other, the nodes do too. A node whose output is
@@ -231,7 +262,14 @@ than losing messages. Edges that stay on the daemon path:
   nothing a remote consumer could dial;
 - an endpoint exchange that **timed out** (default 1.5s; set
   `DORA_ZENOH_ENDPOINT_EXCHANGE_TIMEOUT_MS` to allow longer, or `0` to keep
-  every cross-machine edge on the daemon path).
+  every cross-machine edge on the daemon path);
+- a remote consumer that declares **`input_timeout`**. Its deadline is refreshed
+  only when the consumer's own daemon sees the message, and a direct
+  cross-machine send bypasses that daemon entirely — so the deadline would never
+  fire and `input_timeout` (plus the circuit breaker built on it) would silently
+  stop working on exactly the edges most likely to need it. The direct path is
+  not worth losing a liveness guarantee the descriptor asked for. Remove
+  `input_timeout` from that input if you would rather have the fast path.
 
 Node processes therefore accept connections on the cluster network wherever a
 dataflow spans machines. That is intended to sit inside a tailnet or behind
@@ -265,35 +303,6 @@ lost. Setting both is an error.
 ```bash
 dora daemon --machine-id edge-01 --coordinator-addr 10.0.0.1   --zenoh-config-overlay routers.json5
 ```
-
-### Example: 3-Machine GPU Cluster
-
-```yaml
-coordinator:
-  addr: 192.168.1.1
-
-machines:
-  - id: coordinator-host
-    host: 192.168.1.1
-    labels:
-      role: control
-
-  - id: gpu-a100
-    host: 192.168.1.10
-    user: ml
-    labels:
-      gpu: a100
-      arch: x86_64
-
-  - id: jetson-01
-    host: 192.168.1.20
-    user: nvidia
-    labels:
-      gpu: jetson
-      arch: arm64
-```
-
----
 
 ## Cluster Commands Reference
 

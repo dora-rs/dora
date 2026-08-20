@@ -29,7 +29,25 @@ pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
 /// that never form a direct link simply cannot exchange data — no amount of
 /// waiting fixes it. Assigning each node a known listener makes those links
 /// deterministic instead of racy.
+///
+/// **Stays single-valued.** A node that also needs a routable listener gets it
+/// via [`DORA_ZENOH_LISTEN_EXTRA_ENV`] rather than as a second entry here,
+/// because a node binary built before that variable existed pushes this value
+/// into `listen/endpoints` verbatim as *one* locator. A comma-separated value
+/// would therefore be rejected wholesale by such a node, costing it the
+/// loopback listener too and partitioning it from its same-machine consumers.
+/// Keeping the old variable's shape means an older node degrades to
+/// loopback-only — same-machine links keep working, cross-machine ones fall
+/// back to the daemon path — instead of losing every link (dora-rs/dora#2742).
 pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
+
+/// Additional zenoh endpoints a spawned node should listen on, beyond the
+/// loopback one in [`DORA_ZENOH_LISTEN_ENV`]. Comma-separated; injected by the
+/// daemon only for a node that has a consumer under another daemon.
+///
+/// Split out from [`DORA_ZENOH_LISTEN_ENV`] for forward compatibility — see the
+/// note there. A node that does not know this variable simply ignores it.
+pub const DORA_ZENOH_LISTEN_EXTRA_ENV: &str = "DORA_ZENOH_LISTEN_EXTRA";
 
 /// Opt out of zenoh multicast scouting for this process, regardless of whether
 /// explicit connect endpoints replaced it.
@@ -142,6 +160,23 @@ fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(String::from)
+}
+
+/// Assemble a node's listen endpoints from the two env vars the daemon sets.
+///
+/// Split across two variables rather than one comma-separated value for
+/// forward compatibility — see [`DORA_ZENOH_LISTEN_EXTRA_ENV`]. Both are run
+/// through [`split_endpoints`] so a hand-set list in either keeps working, and
+/// so the loopback entry stays first: `listen/endpoints` order is what decides
+/// which locator a same-machine consumer picks, and loopback is the one whose
+/// transport can carry shared memory.
+#[cfg(feature = "zenoh")]
+fn listen_endpoints_from_env(listen: Option<&str>, extra: Option<&str>) -> Vec<String> {
+    listen
+        .into_iter()
+        .chain(extra)
+        .flat_map(split_endpoints)
+        .collect()
 }
 
 /// Path to a JSON5 file whose contents are layered on top of the zenoh config
@@ -591,15 +626,18 @@ pub async fn open_zenoh_session_with_listen(
             // since zenoh 1.9 peers do not relay, a consumer that cannot dial its
             // producer never receives its data at all.
             //
-            // The variable carries a *list*, because a node with a consumer on
-            // another machine listens both on loopback (for its same-machine
-            // consumers, whose transport can then carry shared memory) and on a
-            // routable address (for the remote one).
-            let env_listen = std::env::var(DORA_ZENOH_LISTEN_ENV).ok();
-            let env_listen_endpoints: Vec<String> = env_listen
-                .as_deref()
-                .map(|value| split_endpoints(value).collect())
-                .unwrap_or_default();
+            // A node with a consumer on another machine listens both on
+            // loopback (for its same-machine consumers, whose transport can
+            // then carry shared memory) and on a routable address (for the
+            // remote one). The two arrive in *separate* variables so an older
+            // node binary, which treats `DORA_ZENOH_LISTEN` as a single
+            // locator, still gets a valid one — see the doc on
+            // `DORA_ZENOH_LISTEN_EXTRA_ENV`. `split_endpoints` is applied to
+            // both so a hand-set list in either keeps working.
+            let env_listen_endpoints = listen_endpoints_from_env(
+                std::env::var(DORA_ZENOH_LISTEN_ENV).ok().as_deref(),
+                std::env::var(DORA_ZENOH_LISTEN_EXTRA_ENV).ok().as_deref(),
+            );
 
             let mut listen_eps: Vec<String> = Vec::new();
             if let Some(ep) = listen_endpoint {
@@ -1155,6 +1193,55 @@ pub fn dataflow_extension_topic(dataflow_id: &uuid::Uuid, namespace: &str) -> St
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The forward-compat contract: the loopback endpoint stays alone in
+    /// `DORA_ZENOH_LISTEN` so a node built before `DORA_ZENOH_LISTEN_EXTRA`
+    /// existed — which pushes that value in as a *single* locator — still gets
+    /// a usable one. A list there would be rejected wholesale by such a node,
+    /// costing it loopback too and partitioning it from same-machine consumers
+    /// (dora-rs/dora#2742).
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn listen_endpoints_keep_loopback_first_and_merge_the_extra_var() {
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000"), Some("tcp/10.0.0.2:41001")),
+            vec![
+                "tcp/127.0.0.1:41000".to_string(),
+                "tcp/10.0.0.2:41001".to_string()
+            ],
+            "loopback must stay first — order decides which locator a \
+             same-machine consumer picks, and only loopback carries shared memory"
+        );
+    }
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn listen_endpoints_tolerate_an_absent_or_empty_extra_var() {
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000"), None),
+            vec!["tcp/127.0.0.1:41000".to_string()]
+        );
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000"), Some("")),
+            vec!["tcp/127.0.0.1:41000".to_string()]
+        );
+        assert!(listen_endpoints_from_env(None, None).is_empty());
+    }
+
+    /// A hand-set list in either variable keeps working, so an operator who
+    /// already scripted a comma-separated `DORA_ZENOH_LISTEN` is not broken by
+    /// the split.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn listen_endpoints_still_accept_a_list_in_either_var() {
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000, tcp/10.0.0.2:41001"), None),
+            vec![
+                "tcp/127.0.0.1:41000".to_string(),
+                "tcp/10.0.0.2:41001".to_string()
+            ]
+        );
+    }
 
     #[cfg(feature = "zenoh")]
     #[test]

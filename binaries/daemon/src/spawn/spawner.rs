@@ -12,7 +12,8 @@ use dora_core::{
     descriptor::{CoreNodeKind, Descriptor, ResolvedNode},
     topics::{
         DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, DORA_ZENOH_CONNECT_ENV,
-        DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_MULTICAST_ENV, ZENOH_CONFIG_PATH_ENV,
+        DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_LISTEN_EXTRA_ENV, DORA_ZENOH_MULTICAST_ENV,
+        ZENOH_CONFIG_PATH_ENV,
     },
     uhlc::HLC,
 };
@@ -72,6 +73,7 @@ const CONTROL_PLANE_ENV: &[&str] = &[
     "DORA_NODE_CONFIG",
     "DORA_RUNTIME_CONFIG",
     DORA_ZENOH_LISTEN_ENV,
+    DORA_ZENOH_LISTEN_EXTRA_ENV,
     DORA_ZENOH_CONNECT_ENV,
     DORA_ZENOH_MULTICAST_ENV,
     // Names a pid the node will SIGKILL its own process group over once that
@@ -556,7 +558,28 @@ impl Spawner {
     fn maybe_inject_zenoh_connect(&self, command: Command, node_id: &NodeId) -> Command {
         let command = match self.zenoh_peering.get(node_id) {
             Some(peering) => {
-                let command = command.env(DORA_ZENOH_LISTEN_ENV, peering.listen.join(","));
+                // `listen[0]` is always the loopback endpoint
+                // (`NodeListeners::endpoints`); any routable one follows. They
+                // go into separate variables so a node built before
+                // `DORA_ZENOH_LISTEN_EXTRA` existed still parses the loopback
+                // one — it reads `DORA_ZENOH_LISTEN` as a single locator, so a
+                // comma-separated value would cost it every listener, not just
+                // the routable one (see `DORA_ZENOH_LISTEN_EXTRA_ENV`).
+                let (loopback, extra) = peering
+                    .listen
+                    .split_first()
+                    .map_or((None, &[] as &[String]), |(first, rest)| {
+                        (Some(first), rest)
+                    });
+                let command = match loopback {
+                    Some(ep) => command.env(DORA_ZENOH_LISTEN_ENV, ep),
+                    None => command,
+                };
+                let command = if extra.is_empty() {
+                    command
+                } else {
+                    command.env(DORA_ZENOH_LISTEN_EXTRA_ENV, extra.join(","))
+                };
                 if peering.connect.is_empty() {
                     command
                 } else {
@@ -858,6 +881,60 @@ mod tests {
             // The `dora run` shape is covered by its own test below.
             bind_nodes_to_parent: false,
         }
+    }
+
+    /// The listen endpoints must reach a node in two variables, not one
+    /// comma-separated value: a node binary built before
+    /// `DORA_ZENOH_LISTEN_EXTRA` existed pushes `DORA_ZENOH_LISTEN` into
+    /// `listen/endpoints` verbatim as a single locator, so a list there would
+    /// be rejected wholesale and cost it the loopback listener too — cutting it
+    /// off from its same-machine consumers, not just its remote one
+    /// (dora-rs/dora#2742).
+    #[test]
+    fn a_routable_listener_goes_in_the_extra_var_not_appended_to_the_first() {
+        let mut spawner = spawner_for(None, false);
+        spawner.zenoh_peering = Arc::new(BTreeMap::from([(
+            node("sink"),
+            NodeZenohPeering {
+                listen: vec!["tcp/127.0.0.1:41000".into(), "tcp/10.0.0.2:41001".into()],
+                connect: Vec::new(),
+                routable: true,
+            },
+        )]));
+        let command = spawner.maybe_inject_zenoh_connect(Command::new("true"), &node("sink"));
+
+        assert_eq!(
+            env_of(&command, DORA_ZENOH_LISTEN_ENV),
+            Some(Some(OsString::from("tcp/127.0.0.1:41000"))),
+            "the loopback endpoint must stand alone, parseable by an older node"
+        );
+        assert_eq!(
+            env_of(&command, DORA_ZENOH_LISTEN_EXTRA_ENV),
+            Some(Some(OsString::from("tcp/10.0.0.2:41001"))),
+            "the routable endpoint belongs in the extra var"
+        );
+    }
+
+    /// The common case — no remote consumer — must not set the extra variable
+    /// at all, so nothing changes for a single-machine deployment.
+    #[test]
+    fn a_loopback_only_node_gets_no_extra_listen_var() {
+        let mut spawner = spawner_for(None, false);
+        spawner.zenoh_peering = Arc::new(BTreeMap::from([(
+            node("sink"),
+            NodeZenohPeering {
+                listen: vec!["tcp/127.0.0.1:41000".into()],
+                connect: Vec::new(),
+                routable: false,
+            },
+        )]));
+        let command = spawner.maybe_inject_zenoh_connect(Command::new("true"), &node("sink"));
+
+        assert_eq!(
+            env_of(&command, DORA_ZENOH_LISTEN_ENV),
+            Some(Some(OsString::from("tcp/127.0.0.1:41000")))
+        );
+        assert_eq!(env_of(&command, DORA_ZENOH_LISTEN_EXTRA_ENV), None);
     }
 
     fn injected_multicast(spawner: &Spawner) -> Option<OsString> {

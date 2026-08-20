@@ -155,6 +155,7 @@ impl Executable for Up {
                         "WARNING: timed out waiting for daemon(s): {}",
                         missing_daemons.join(", ")
                     );
+                    report_missing_daemon_logs(&config, &missing_daemons);
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(500));
@@ -204,4 +205,32 @@ fn start_coordinator(port: u16) -> eyre::Result<()> {
     cmd.spawn().wrap_err("failed to start dora coordinator")?;
     println!("Started coordinator on 0.0.0.0:{port}");
     Ok(())
+}
+
+/// Print the tail of each unreachable daemon's log.
+///
+/// A daemon that dies during startup writes the reason to
+/// `/tmp/dora-daemon-<id>.log` on its own host and never registers, so without
+/// this the operator sees only "timed out waiting for daemon(s)" and has to go
+/// find the file themselves. The common causes are diagnosable from the log and
+/// nowhere else: a `--zenoh-listen` address that is not on the machine (a NAT
+/// or VIP `host:` in cluster.yml), or its port already held by a stale daemon —
+/// both fatal by design for an explicitly named listener, since a daemon that
+/// silently fails to bind is undialable.
+///
+/// Best-effort: a machine we cannot ssh back into is skipped quietly, because
+/// this runs on a path that has already failed and must not fail differently.
+fn report_missing_daemon_logs(config: &ClusterConfig, missing: &[String]) {
+    for machine_id in missing {
+        let Some(machine) = config.machines.iter().find(|m| &m.id == machine_id) else {
+            continue;
+        };
+        // `machine.id` is charset-validated by `ClusterConfig::validate`, so it
+        // cannot break out of the remote command.
+        let cmd = format!("tail -n 20 /tmp/dora-daemon-{machine_id}.log 2>/dev/null");
+        eprintln!("  --- last log lines from `{machine_id}` ---");
+        if run_ssh(&ssh_target(machine), machine.port, &cmd).is_err() {
+            eprintln!("  (could not read the log — ssh to `{machine_id}` failed)");
+        }
+    }
 }
