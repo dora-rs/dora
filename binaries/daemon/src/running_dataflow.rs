@@ -368,6 +368,7 @@ pub struct RunningDataflow {
     pub(crate) net_messages_sent: Arc<AtomicU64>,
     pub(crate) net_messages_received: Arc<AtomicU64>,
     pub(crate) net_publish_failures: Arc<AtomicU64>,
+    pub(crate) net_publish_enqueue_failures: Arc<AtomicU64>,
 }
 
 /// Indicates whether a dataflow should be finished immediately after stop_all()
@@ -428,6 +429,7 @@ impl RunningDataflow {
             net_messages_sent: Default::default(),
             net_messages_received: Default::default(),
             net_publish_failures: Default::default(),
+            net_publish_enqueue_failures: Default::default(),
         }
     }
 

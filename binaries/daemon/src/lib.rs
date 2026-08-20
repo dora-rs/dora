@@ -446,6 +446,7 @@ struct DataflowMetricsSnapshot {
     net_messages_sent: Arc<AtomicU64>,
     net_messages_received: Arc<AtomicU64>,
     net_publish_failures: Arc<AtomicU64>,
+    net_publish_enqueue_failures: Arc<AtomicU64>,
 }
 
 /// Collect and send metrics in the background. Errors are returned to the
@@ -598,13 +599,17 @@ async fn collect_and_send_metrics_bg(
                 let ms = df.net_messages_sent.load(atomic::Ordering::Relaxed);
                 let mr = df.net_messages_received.load(atomic::Ordering::Relaxed);
                 let pf = df.net_publish_failures.load(atomic::Ordering::Relaxed);
-                if bs > 0 || br > 0 || ms > 0 || mr > 0 || pf > 0 {
+                let pef = df
+                    .net_publish_enqueue_failures
+                    .load(atomic::Ordering::Relaxed);
+                if bs > 0 || br > 0 || ms > 0 || mr > 0 || pf > 0 || pef > 0 {
                     Some(dora_message::daemon_to_coordinator::NetworkMetrics {
                         bytes_sent: bs,
                         bytes_received: br,
                         messages_sent: ms,
                         messages_received: mr,
                         publish_failures: pf,
+                        publish_enqueue_failures: pef,
                     })
                 } else {
                     None
@@ -3633,6 +3638,7 @@ impl Daemon {
                 net_messages_sent: df.net_messages_sent.clone(),
                 net_messages_received: df.net_messages_received.clone(),
                 net_publish_failures: df.net_publish_failures.clone(),
+                net_publish_enqueue_failures: df.net_publish_enqueue_failures.clone(),
             })
             .collect();
 
@@ -5069,45 +5075,13 @@ impl Daemon {
         output_id: &OutputId,
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
-        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
-            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
-        })?;
-
-        // Get or create publisher (lazy, cached per output)
-        let publisher = match dataflow.publishers.entry(output_id.clone()) {
-            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
-            std::collections::btree_map::Entry::Vacant(e) => {
-                let publish_topic =
-                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
-                tracing::debug!("declaring control publisher on {publish_topic}");
-                let publisher = self
-                    .zenoh_session
-                    .declare_publisher(publish_topic)
-                    .congestion_control(CongestionControl::Drop)
-                    .express(true)
-                    .priority(Priority::RealTime)
-                    .await
-                    .map_err(|err| eyre!(err))
-                    .context("failed to create zenoh publisher")?;
-                let arc = Arc::new(publisher);
-                e.insert(arc.clone());
-                arc
-            }
-        };
-        let payload_len = serialized_event.len() as u64;
-
-        let outbound = ZenohOutbound {
-            publisher,
-            serialized: serialized_event,
-            payload_len,
-            net_bytes_sent: dataflow.net_bytes_sent.clone(),
-            net_messages_sent: dataflow.net_messages_sent.clone(),
-            net_publish_failures: dataflow.net_publish_failures.clone(),
-        };
+        let (outbound, enqueue_failures) = self
+            .prepare_zenoh_outbound(dataflow_id, output_id, serialized_event)
+            .await?;
         enqueue_required_zenoh_outbound(
             &self.zenoh_publish_tx,
             outbound,
-            dataflow.net_publish_failures.clone(),
+            enqueue_failures,
             "inter-daemon output-closed event",
         );
         Ok(())
@@ -5119,6 +5093,23 @@ impl Daemon {
         output_id: &OutputId,
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
+        let (outbound, enqueue_failures) = self
+            .prepare_zenoh_outbound(dataflow_id, output_id, serialized_event)
+            .await?;
+        handle_publish_enqueue_result(
+            enqueue_failures.as_ref(),
+            try_enqueue_zenoh_outbound(&self.zenoh_publish_tx, outbound),
+            "regular inter-daemon output",
+        );
+        Ok(())
+    }
+
+    async fn prepare_zenoh_outbound(
+        &mut self,
+        dataflow_id: Uuid,
+        output_id: &OutputId,
+        serialized_event: Vec<u8>,
+    ) -> Result<(ZenohOutbound, Arc<AtomicU64>), eyre::Error> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
@@ -5146,20 +5137,17 @@ impl Daemon {
         };
         let payload_len = serialized_event.len() as u64;
 
-        let outbound = ZenohOutbound {
-            publisher,
-            serialized: serialized_event,
-            payload_len,
-            net_bytes_sent: dataflow.net_bytes_sent.clone(),
-            net_messages_sent: dataflow.net_messages_sent.clone(),
-            net_publish_failures: dataflow.net_publish_failures.clone(),
-        };
-        handle_publish_enqueue_result(
-            dataflow,
-            try_enqueue_zenoh_outbound(&self.zenoh_publish_tx, outbound),
-            "regular inter-daemon output",
-        );
-        Ok(())
+        Ok((
+            ZenohOutbound {
+                publisher,
+                serialized: serialized_event,
+                payload_len,
+                net_bytes_sent: dataflow.net_bytes_sent.clone(),
+                net_messages_sent: dataflow.net_messages_sent.clone(),
+                net_publish_failures: dataflow.net_publish_failures.clone(),
+            },
+            dataflow.net_publish_enqueue_failures.clone(),
+        ))
     }
 
     async fn send_topic_debug_frames(
@@ -7284,24 +7272,20 @@ async fn publish_zenoh_outbound(msg: ZenohOutbound) {
 }
 
 fn handle_publish_enqueue_result(
-    dataflow: &RunningDataflow,
+    enqueue_failures: &AtomicU64,
     result: ZenohEnqueueResult,
     event_kind: &'static str,
 ) {
     match result {
         ZenohEnqueueResult::Queued => {}
         ZenohEnqueueResult::Full => {
-            dataflow
-                .net_publish_failures
-                .fetch_add(1, atomic::Ordering::Relaxed);
+            enqueue_failures.fetch_add(1, atomic::Ordering::Relaxed);
             tracing::warn!(
                 "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}); dropping {event_kind}"
             );
         }
         ZenohEnqueueResult::Closed => {
-            dataflow
-                .net_publish_failures
-                .fetch_add(1, atomic::Ordering::Relaxed);
+            enqueue_failures.fetch_add(1, atomic::Ordering::Relaxed);
             tracing::error!("zenoh drain task is gone; dropping {event_kind}");
         }
     }
@@ -7310,7 +7294,7 @@ fn handle_publish_enqueue_result(
 fn enqueue_required_zenoh_outbound<T: Send + 'static>(
     tx: &mpsc::Sender<T>,
     outbound: T,
-    net_publish_failures: Arc<AtomicU64>,
+    enqueue_failures: Arc<AtomicU64>,
     event_kind: &'static str,
 ) {
     match tx.try_send(outbound) {
@@ -7319,13 +7303,13 @@ fn enqueue_required_zenoh_outbound<T: Send + 'static>(
             let tx = tx.clone();
             tokio::spawn(async move {
                 if tx.send(outbound).await.is_err() {
-                    net_publish_failures.fetch_add(1, atomic::Ordering::Relaxed);
+                    enqueue_failures.fetch_add(1, atomic::Ordering::Relaxed);
                     tracing::error!("zenoh drain task is gone; dropping {event_kind}");
                 }
             });
         }
         Err(mpsc::error::TrySendError::Closed(_)) => {
-            net_publish_failures.fetch_add(1, atomic::Ordering::Relaxed);
+            enqueue_failures.fetch_add(1, atomic::Ordering::Relaxed);
             tracing::error!("zenoh drain task is gone; dropping {event_kind}");
         }
     }
@@ -8109,12 +8093,11 @@ mod fault_tolerance_tests {
             "data",
             "queued data must stay ahead of the close event"
         );
-        tokio::task::yield_now().await;
-        assert_eq!(
-            publish_rx.try_recv().unwrap(),
-            "close",
-            "OutputClosed must be retained until publish capacity is available"
-        );
+        let close = tokio::time::timeout(Duration::from_secs(1), publish_rx.recv())
+            .await
+            .expect("close event should arrive")
+            .expect("publish channel should stay open");
+        assert_eq!(close, "close");
         assert_eq!(failures.load(atomic::Ordering::Relaxed), 0);
     }
 
@@ -8123,17 +8106,24 @@ mod fault_tolerance_tests {
         let dataflow = test_dataflow();
 
         handle_publish_enqueue_result(
-            &dataflow,
+            dataflow.net_publish_enqueue_failures.as_ref(),
             ZenohEnqueueResult::Full,
             "regular inter-daemon output",
         );
 
         assert_eq!(
             dataflow
-                .net_publish_failures
+                .net_publish_enqueue_failures
                 .load(atomic::Ordering::Relaxed),
             1,
-            "dropping a regular output must be visible in network metrics"
+            "dropping a regular output must be visible in enqueue metrics"
+        );
+        assert_eq!(
+            dataflow
+                .net_publish_failures
+                .load(atomic::Ordering::Relaxed),
+            0,
+            "queue pressure should not be counted as a zenoh publish failure"
         );
     }
 
