@@ -3236,12 +3236,12 @@ pub fn init_tracing(
     // attempt to connect to `localhost:4317` on every node startup. Mirrors
     // the gating applied to tracing above.
     #[cfg(feature = "metrics")]
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
+    if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone())
+            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {
