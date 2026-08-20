@@ -2064,11 +2064,24 @@ fn default_service_qos_config() -> Ros2QosConfig {
 }
 
 fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
-    if config.is_default_topic_qos() {
-        default_service_qos_config().to_rustdds_qos()
-    } else {
-        config.to_rustdds_qos()
+    let mut qos = default_service_qos_config();
+    if let Some(durability) = &config.durability {
+        qos.durability = Some(durability.clone());
     }
+    if let Some(liveliness) = &config.liveliness {
+        qos.liveliness = Some(liveliness.clone());
+    }
+    if let Some(lease_duration) = config.lease_duration {
+        qos.lease_duration = Some(lease_duration);
+    }
+    if let Some(max_blocking_time) = config.max_blocking_time {
+        qos.max_blocking_time = Some(max_blocking_time);
+    }
+    if let Some(keep_last) = config.keep_last {
+        qos.keep_last = Some(keep_last);
+    }
+    qos.keep_all = config.keep_all;
+    qos.to_rustdds_qos()
 }
 
 fn action_status_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
@@ -2118,19 +2131,6 @@ fn wait_for_service(
                     return Ok(());
                 }
                 futures::future::Either::Right(_) => {
-                    let discovered_topics = discovered_topic_names(ros_context);
-                    if service_topics_discovered(service_name, &discovered_topics) {
-                        println!(
-                            "{}",
-                            service_connected_message(service_name, service_type, domain_id)
-                        );
-                        tracing::warn!(
-                            service = service_name,
-                            service_type,
-                            "ROS2 service request/response topics were discovered but wait_for_service did not complete"
-                        );
-                        return Ok(());
-                    }
                     tracing::debug!(
                         service = service_name,
                         service_type,
@@ -2174,37 +2174,17 @@ fn wait_for_action_client_services(
     macro_rules! wait_endpoint {
         ($client:expr, $endpoint:expr, $label:literal) => {{
             let service_ready = async {
-                println!(
-                    "{}",
-                    action_service_waiting_message($endpoint, domain_id)
-                );
+                println!("{}", action_service_waiting_message($endpoint, domain_id));
                 for _ in 0..MAX_RETRIES {
                     let ready = $client.wait_for_service(ros_node);
                     futures::pin_mut!(ready);
                     let timeout = futures_timer::Delay::new(Duration::from_secs(2));
                     match futures::future::select(ready, timeout).await {
                         futures::future::Either::Left(((), _)) => {
-                            println!(
-                                "{}",
-                                action_service_connected_message($endpoint, domain_id)
-                            );
+                            println!("{}", action_service_connected_message($endpoint, domain_id));
                             return Ok(());
                         }
                         futures::future::Either::Right(_) => {
-                            let discovered_topics = discovered_topic_names(ros_context);
-                            if service_topics_discovered($endpoint, &discovered_topics) {
-                                println!(
-                                    "{}",
-                                    action_service_connected_message($endpoint, domain_id)
-                                );
-                                tracing::warn!(
-                                    action = action_name,
-                                    endpoint = $endpoint,
-                                    service = $label,
-                                    "ROS2 action service request/response topics were discovered but wait_for_service did not complete"
-                                );
-                                return Ok(());
-                            }
                             tracing::debug!(
                                 action = action_name,
                                 endpoint = $endpoint,
@@ -2284,6 +2264,7 @@ fn service_topic_names(service_name: &str) -> ServiceTopicNames {
     }
 }
 
+#[cfg(test)]
 fn service_topics_discovered(service_name: &str, discovered_topics: &[String]) -> bool {
     let topic_names = service_topic_names(service_name);
     discovered_topics
@@ -2506,8 +2487,8 @@ mod peer_failure_tests {
         action_goal_service_name, action_result_service_name, action_service_connected_message,
         action_service_unavailable_message, action_status_qos_config, default_service_qos_config,
         parse_ros_domain_id, peer_value_or_warn, ros_context_creation, service_connected_message,
-        service_topic_names, service_topics_discovered, service_unavailable_message,
-        service_unavailable_message_with_discovery,
+        service_or_action_qos, service_topic_names, service_topics_discovered,
+        service_unavailable_message, service_unavailable_message_with_discovery,
     };
     use dora_message::descriptor::Ros2QosConfig;
 
@@ -2566,6 +2547,24 @@ mod peer_failure_tests {
             ..Ros2QosConfig::default()
         };
         assert!(!explicit_best_effort.is_default_topic_qos());
+    }
+
+    #[test]
+    fn service_qos_keeps_reliable_when_overriding_other_fields() {
+        let qos = Ros2QosConfig {
+            keep_last: Some(20),
+            ..Ros2QosConfig::default()
+        };
+        let rustdds = service_or_action_qos(&qos);
+
+        assert!(matches!(
+            rustdds.reliability(),
+            Some(dora_ros2_bridge::rustdds::policy::Reliability::Reliable { .. })
+        ));
+        assert!(matches!(
+            rustdds.history(),
+            Some(dora_ros2_bridge::rustdds::policy::History::KeepLast { depth }) if depth == 20
+        ));
     }
 
     #[test]
