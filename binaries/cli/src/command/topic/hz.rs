@@ -1,10 +1,11 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers};
+use dora_core::descriptor::Descriptor;
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
     borrow::Cow,
-    collections::{BTreeMap, BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     fmt,
     io::{self, IsTerminal},
     iter,
@@ -15,7 +16,7 @@ use std::{
 use crate::{
     command::{
         Executable,
-        topic::selector::{TopicIdentifier, TopicSelector},
+        topic::selector::{TopicIdentifier, TopicSelector, wire_topic_output_id},
     },
     common::CoordinatorOptions,
 };
@@ -78,7 +79,7 @@ pub struct Hz {
 impl Executable for Hz {
     fn execute(self) -> eyre::Result<()> {
         let session = self.coordinator.connect()?;
-        let (dataflow_id, topics) = self.selector.resolve(&session)?;
+        let (dataflow_id, topics, descriptor) = self.selector.resolve_with_descriptor(&session)?;
 
         let ws_topics: Vec<_> = topics
             .iter()
@@ -89,7 +90,7 @@ impl Executable for Hz {
 
         // Non-interactive path: collect for `--duration`, print final stats.
         if let Some(secs) = self.duration {
-            return run_hz_oneshot(self.window, topics, data_rx, secs);
+            return run_hz_oneshot(self.window, topics, &descriptor, data_rx, secs);
         }
 
         if !io::stdout().is_terminal() {
@@ -100,10 +101,36 @@ impl Executable for Hz {
         }
 
         let terminal = ratatui::init();
-        let result = run_hz(terminal, self.window, topics, data_rx);
+        let result = run_hz(terminal, self.window, topics, &descriptor, data_rx);
         ratatui::restore();
         result
     }
+}
+
+/// Map `(node_id, wire_output_id) -> index into `stats`` for the per-topic rows.
+///
+/// Keyed by the id the **daemon** reports, not the public one the selector
+/// produced: for a single-`operator:` node those differ (`op/image` vs
+/// `image`), so indexing by the public id silently matched nothing and every
+/// such topic reported 0 samples while the aggregate row showed real traffic
+/// (dora-rs/dora#2893). Doing the translation here keeps the per-frame path a
+/// plain map lookup.
+fn build_topic_index(
+    stats: &[(HzLabel<'_>, Arc<HzStats>)],
+    descriptor: &Descriptor,
+) -> BTreeMap<(String, String), usize> {
+    let nodes: HashMap<_, _> = descriptor.nodes.iter().map(|n| (&n.id, n)).collect();
+    let mut topic_index = BTreeMap::new();
+    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
+        if let HzLabel::Topic(topic) = label {
+            let wire = nodes
+                .get(&topic.node_id)
+                .map(|node| wire_topic_output_id(node, &topic.data_id))
+                .unwrap_or_else(|| topic.data_id.clone());
+            topic_index.insert((topic.node_id.to_string(), wire.to_string()), i);
+        }
+    }
+    topic_index
 }
 
 /// Non-interactive sampler: subscribes for `seconds`, then prints
@@ -111,6 +138,7 @@ impl Executable for Hz {
 fn run_hz_oneshot(
     window: usize,
     outputs: BTreeSet<TopicIdentifier>,
+    descriptor: &Descriptor,
     data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
     seconds: u64,
 ) -> eyre::Result<()> {
@@ -120,12 +148,7 @@ fn run_hz_oneshot(
         stats.push((HzLabel::Topic(topic), Arc::new(HzStats::new(window))));
     }
 
-    let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
-        if let HzLabel::Topic(topic) = label {
-            topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
-        }
-    }
+    let topic_index = build_topic_index(&stats, descriptor);
 
     let deadline = Instant::now() + Duration::from_secs(seconds);
     while Instant::now() < deadline {
@@ -278,6 +301,7 @@ fn run_hz(
     mut terminal: DefaultTerminal,
     window: usize,
     outputs: BTreeSet<TopicIdentifier>,
+    descriptor: &Descriptor,
     data_rx: std::sync::mpsc::Receiver<eyre::Result<Vec<u8>>>,
 ) -> eyre::Result<()> {
     // Build stats vec: index 0 is the aggregate, rest are per-topic
@@ -287,13 +311,7 @@ fn run_hz(
         stats.push((HzLabel::Topic(topic), Arc::new(HzStats::new(window))));
     }
 
-    // Build lookup map: (node_id, data_id) -> index in stats (skip index 0 = aggregate)
-    let mut topic_index: BTreeMap<(String, String), usize> = BTreeMap::new();
-    for (i, (label, _)) in stats.iter().enumerate().skip(1) {
-        if let HzLabel::Topic(topic) = label {
-            topic_index.insert((topic.node_id.to_string(), topic.data_id.to_string()), i);
-        }
-    }
+    let topic_index = build_topic_index(&stats, descriptor);
 
     let mut selected: usize = 0;
     let sub_window = Duration::from_millis(1000);

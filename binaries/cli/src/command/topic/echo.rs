@@ -1,4 +1,4 @@
-use std::{ptr::NonNull, sync::Arc, time::SystemTime};
+use std::{collections::HashMap, ptr::NonNull, sync::Arc, time::SystemTime};
 
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
@@ -7,7 +7,10 @@ use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, meta
 use eyre::{Context, eyre};
 
 use crate::{
-    command::{Executable, default_tracing, topic::selector::TopicSelector},
+    command::{
+        Executable, default_tracing,
+        topic::selector::{TopicSelector, public_topic_output_id},
+    },
     common::CoordinatorOptions,
     formatting::OutputFormat,
 };
@@ -84,7 +87,10 @@ fn inspect(
     duration: Option<u64>,
 ) -> eyre::Result<()> {
     let session = coordinator.connect()?;
-    let (dataflow_id, topics) = selector.resolve(&session)?;
+    let (dataflow_id, topics, descriptor) = selector.resolve_with_descriptor(&session)?;
+    // Frames report the daemon's wire output id; label them with the public id
+    // the user typed and `topic list`/`info` display (dora-rs/dora#2893).
+    let nodes: HashMap<_, _> = descriptor.nodes.iter().map(|n| (&n.id, n)).collect();
 
     let ws_topics: Vec<_> = topics
         .iter()
@@ -162,7 +168,11 @@ fn inspect(
             } => {
                 use std::fmt::Write;
 
-                let output_name = format!("{node_id}/{output_id}");
+                let display_output = nodes
+                    .get(&node_id)
+                    .map(|node| public_topic_output_id(node, &output_id))
+                    .unwrap_or_else(|| output_id.clone());
+                let output_name = format!("{node_id}/{display_output}");
 
                 let timestamp = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)

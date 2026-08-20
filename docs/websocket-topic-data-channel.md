@@ -123,6 +123,15 @@ side refuses the subscription on mismatch:
 | 1 | bincode |
 | 2 | postcard (current, `dora_message::TOPIC_DATA_PROTOCOL_VERSION`) |
 
+> **Output ids: request vs. frame.** `TopicSubscribe` accepts the *public* output
+> id -- the one a descriptor's `inputs:` mapping would use, which for a node with
+> a single `operator:` block is the bare name (`image`, not `op/image`). The
+> coordinator translates it to the resolved id the daemon keys its watchers by,
+> and `InterDaemonEvent::Output` frames report **that** resolved id. A subscriber
+> matching frames against the ids it asked for must undo the translation: strip
+> the leading `<operator_id>/` for single-`operator:` nodes. Nodes with an
+> `operators:` list, and plain nodes, use the same id in both directions.
+
 `TopicSubscribe` carries the client's version and `TopicSubscribed` carries the
 coordinator's:
 
