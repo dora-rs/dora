@@ -161,14 +161,23 @@ pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 
 #[ffi_export]
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
+    // `eprintln!`, not `tracing::error!`: this function is compiled into the
+    // user's operator `.so`, which statically links its own copy of the
+    // `tracing` crate — a separate `GLOBAL_DISPATCH` from the one the dora
+    // binary initializes in its own process image. Without dynamic symbol
+    // export (which dora's build does not set up), events raised here would
+    // hit an uninitialized dispatcher and be silently dropped by tracing's
+    // no-subscriber default, defeating the point of this diagnostic.
+    // `eprintln!` writes straight to the process's stderr fd, unaffected by
+    // which copy of `tracing` compiled it in.
     let Some(data_array) = input.data_array.take() else {
-        tracing::error!("dora_read_data: input data already taken (double read?)");
+        eprintln!("dora_read_data: input data already taken (double read?)");
         return None;
     };
     let data = match unsafe { arrow::ffi::from_ffi(data_array, &input.schema) } {
         Ok(data) => data,
         Err(err) => {
-            tracing::error!("dora_read_data: arrow FFI import failed: {err}");
+            eprintln!("dora_read_data: arrow FFI import failed: {err}");
             return None;
         }
     };
@@ -176,7 +185,7 @@ pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     let bytes: &[u8] = match TryFrom::try_from(&array) {
         Ok(bytes) => bytes,
         Err(err) => {
-            tracing::error!("dora_read_data: unsupported input arrow type: {err}");
+            eprintln!("dora_read_data: unsupported input arrow type: {err}");
             return None;
         }
     };
