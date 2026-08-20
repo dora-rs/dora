@@ -129,12 +129,17 @@ mod runtime_type_check_tests {
 ///
 /// Using shared memory for messages smaller than the page size still requires
 /// sharing a full page, so we have some memory overhead. We also have some
-/// performance overhead because we need to issue multiple syscalls. For small
-/// messages it is faster to send them over a traditional TCP stream (or similar).
+/// performance overhead because setting up a shared segment is not free. For
+/// small messages it is cheaper to copy them into a heap-buffered publish.
 ///
-/// This hardcoded threshold value specifies which messages are sent through
-/// shared memory. Messages that are smaller than this threshold are sent through
-/// TCP.
+/// On the zenoh data plane this threshold selects *how* an output is
+/// published: payloads at or above it go through zenoh shared memory
+/// (zero-copy for local subscribers), while smaller payloads are published via
+/// zenoh with a heap-buffered `put`. A large payload that did not get a
+/// shared-memory buffer takes the reliable daemon path instead of the zenoh
+/// one, because a fragmented express publish would be silently dropped
+/// (dora-rs/dora#2366). See [`DoraNode::zero_copy_threshold`] for the runtime
+/// value (overridable via `DORA_ZERO_COPY_THRESHOLD`).
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 /// How many large outbound sends are traced hop-by-hop

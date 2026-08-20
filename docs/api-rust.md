@@ -446,7 +446,7 @@ pub enum TryRecvError {
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 ```
 
-Messages smaller than this threshold are sent via TCP. Messages at or above this size use shared memory for zero-copy transfer.
+Messages at or above this threshold are published through zenoh shared memory for zero-copy transfer; smaller messages are published through zenoh with a heap-buffered `put`. Outputs that cannot take the direct zenoh path — an output whose consumer lives on another daemon, for example — fall back to the daemon path (TCP) regardless of size.
 
 #### DoraArray
 
