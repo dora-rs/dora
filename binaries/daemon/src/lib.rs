@@ -2616,14 +2616,23 @@ impl Daemon {
                 )).await;
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
-                        let ready = exited_before_subscribe.is_empty();
-                        dataflow
+                        // The verdict must fold in this daemon's local
+                        // `exited_before_subscribe`, not just the coordinator's
+                        // external list: a cohort member that died before
+                        // subscribing while this daemon was disconnected is
+                        // invisible to the replayed external list, but
+                        // `answer_subscribe_requests` still fails the parked
+                        // survivors on it. Deciding `start()` from the external
+                        // list alone would start the dataflow while failing a
+                        // healthy cohort node's init (dora-rs/dora#3243).
+                        let status = dataflow
                             .pending_nodes
                             .handle_external_all_nodes_ready(
                                 exited_before_subscribe,
                                 &mut dataflow.cascading_error_causes,
                             )
                             .await?;
+                        let ready = matches!(status, crate::pending::DataflowStatus::AllNodesReady);
                         // Not gated on `dataflow_started` — `start()` is
                         // idempotent — but it must not resurrect a dataflow that
                         // is already tearing down (dora-rs/dora#3053). The
