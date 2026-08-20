@@ -9,7 +9,7 @@ use serde::ser::SerializeSeq;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, error};
+use super::{TypedValue, error, reject_null_string_element};
 
 /// Serialize a variable-sized sequence.
 pub struct SequenceSerializeWrapper<'a> {
@@ -215,8 +215,8 @@ where
     O: OffsetSizeTrait,
 {
     let mut seq = serializer.serialize_seq(Some(array.len()))?;
-    for s in array.iter() {
-        seq.serialize_element(s.unwrap_or_default())?;
+    for (i, s) in array.iter().enumerate() {
+        seq.serialize_element(reject_null_string_element(s, i)?)?;
     }
     seq.end()
 }
@@ -230,8 +230,8 @@ where
     O: OffsetSizeTrait,
 {
     let mut seq = serializer.serialize_seq(Some(array.len()))?;
-    for s in array.iter() {
-        let utf16: Vec<u16> = s.unwrap_or_default().encode_utf16().collect();
+    for (i, s) in array.iter().enumerate() {
+        let utf16: Vec<u16> = reject_null_string_element(s, i)?.encode_utf16().collect();
         seq.serialize_element(&utf16)?;
     }
     seq.end()
@@ -354,7 +354,8 @@ mod tests {
 
     use arrow::{
         array::{
-            ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StructArray, UInt8Array,
+            ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StringArray, StructArray,
+            UInt8Array,
         },
         buffer::OffsetBuffer,
         datatypes::{DataType, Field},
@@ -362,7 +363,7 @@ mod tests {
     use byteorder::LittleEndian;
     use dora_ros2_bridge_msg_gen::types::{
         Member, MemberType, Message,
-        primitives::{BasicType, NestableType},
+        primitives::{BasicType, GenericString, NestableType},
         sequences::{BoundedSequence, Sequence},
     };
 
@@ -679,5 +680,70 @@ mod tests {
             type_info: &type_info,
         })
         .expect("Binary within max_size must serialize");
+    }
+
+    /// A message with a single `sequence<string>` (`string[]`) field.
+    fn string_seq_message() -> Arc<HashMap<String, HashMap<String, Message>>> {
+        let message = Message {
+            package: "test_msgs".to_string(),
+            name: "StrSeqMsg".to_string(),
+            members: vec![Member {
+                name: "names".to_string(),
+                r#type: MemberType::Sequence(Sequence {
+                    value_type: NestableType::GenericString(GenericString::String),
+                }),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("StrSeqMsg".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_msgs".to_string(), package);
+        Arc::new(messages)
+    }
+
+    fn string_seq_serializes_ok(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        names: Vec<Option<&str>>,
+    ) -> bool {
+        let item = Arc::new(Field::new("item", DataType::Utf8, true));
+        let list = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([names.len()]),
+            Arc::new(StringArray::from(names)),
+            None,
+        );
+        let value = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new("names", DataType::List(item), false)),
+            Arc::new(list) as ArrayRef,
+        )])) as ArrayRef;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("StrSeqMsg"),
+            messages: messages.clone(),
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &value,
+            type_info: &type_info,
+        })
+        .is_ok()
+    }
+
+    /// A null element in a `sequence<string>` (`string[]`) field must error
+    /// rather than be silently encoded as `""` — the scalar-string path already
+    /// rejects nulls (ROS2/CDR cannot represent null) and the sequence path must
+    /// honor the same invariant.
+    #[test]
+    fn string_sequence_null_element_is_rejected() {
+        let messages = string_seq_message();
+        assert!(
+            !string_seq_serializes_ok(&messages, vec![Some("a"), None, Some("c")]),
+            "a null element in a string[] field must error, not encode as \"\""
+        );
+        assert!(
+            string_seq_serializes_ok(&messages, vec![Some("a"), Some("b"), Some("c")]),
+            "an all-present string[] field must still serialize"
+        );
     }
 }
