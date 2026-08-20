@@ -151,8 +151,6 @@ pub use event_stream::{
     input_tracker::{InputState, InputTracker},
     merged,
 };
-pub use flume;
-pub use flume::Receiver;
 pub use futures;
 #[cfg(feature = "tracing")]
 pub use node::init_tracing;

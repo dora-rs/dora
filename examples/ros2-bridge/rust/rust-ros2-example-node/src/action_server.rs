@@ -1,5 +1,5 @@
 use dora_node_api::{
-    self, DoraNode, Event, flume,
+    self, DoraNode, Event,
     merged::{MergeExternal, MergedEvent},
 };
 use dora_ros2_bridge::{
