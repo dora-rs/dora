@@ -134,8 +134,11 @@ mod runtime_type_check_tests {
 /// On the zenoh data plane this threshold selects *how* an output is
 /// published: payloads at or above it go through zenoh shared memory
 /// (zero-copy for local subscribers), while smaller payloads are published via
-/// zenoh with a heap-buffered `put`. See [`DoraNode::zero_copy_threshold`] for
-/// the runtime value (overridable via `DORA_ZERO_COPY_THRESHOLD`).
+/// zenoh with a heap-buffered `put`. A large payload that did not get a
+/// shared-memory buffer takes the reliable daemon path instead of the zenoh
+/// one, because a fragmented express publish would be silently dropped
+/// (dora-rs/dora#2366). See [`DoraNode::zero_copy_threshold`] for the runtime
+/// value (overridable via `DORA_ZERO_COPY_THRESHOLD`).
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 /// How many large outbound sends are traced hop-by-hop

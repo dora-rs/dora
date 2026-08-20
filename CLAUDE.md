@@ -79,7 +79,8 @@ CLI  -->  Coordinator  -->  Daemon(s)  -->  Nodes / Operators
 - **CLI <-> Coordinator**: WebSocket (port 6013) for build/run/stop commands
 - **Coordinator <-> Daemon**: WebSocket for node spawning and dataflow lifecycle
 - **Daemon <-> Daemon**: Zenoh for distributed cross-machine communication
-- **Daemon <-> Node**: Shared memory for messages >4KB (zero-copy), TCP for small messages
+- **Daemon <-> Node**: TCP — the reliable path; payloads are copied into a `DataMessage::Vec`
+- **Node <-> Node**: direct zenoh data plane — zenoh shared memory at/above `ZERO_COPY_THRESHOLD` (4KB, zero-copy), heap-buffered `put` below it
 - **Data format**: Apache Arrow columnar format throughout (zero serialization overhead)
 
 ### Dataflow specification
