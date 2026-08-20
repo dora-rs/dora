@@ -9,25 +9,32 @@
 //! (`dora_message::daemon_to_node::NodeConfig`).
 //!
 //! Policy (see the `OutputRouting` docs for the consumer-side contract):
-//! - a consumer under **another daemon** pins the output to the daemon path
-//!   (`daemon_only`): the node-to-node zenoh mesh is same-machine only, and
-//!   only daemon-path sends feed the inter-daemon forwarder (dora #2738).
-//!   This holds for dynamic remote consumers too — they can only ever be
-//!   reached through forwarding.
-//! - a **local static** consumer becomes a required acker: the producer keeps
-//!   the output on the lossless daemon path until this consumer's startup ack
-//!   proves the direct zenoh route end-to-end. The producer gives that proof a
-//!   bounded startup window and pins the output to the daemon path for the run
-//!   if it does not arrive in time, so adding a required acker that is slow to
-//!   answer costs the fast path rather than reordering a live topic
-//!   (dora-rs/dora#2891).
+//! - a **static** consumer becomes a required acker, wherever it runs: the
+//!   producer keeps the output on the lossless daemon path until this
+//!   consumer's startup ack proves the direct zenoh route end-to-end. The
+//!   producer gives that proof a bounded startup window and pins the output to
+//!   the daemon path for the run if it does not arrive in time, so adding a
+//!   required acker that is slow to answer costs the fast path rather than
+//!   reordering a live topic (dora-rs/dora#2891).
+//! - a **remote static** consumer only qualifies when its producer has an
+//!   endpoint that consumer's machine can dial — `routable_producers`, decided
+//!   by `spawn::reserve_node_listeners`. Without one there is no route to
+//!   prove, so waiting for an ack that cannot come would spend a whole startup
+//!   window before falling back to where the output belonged all along:
+//!   `daemon_only`.
+//! - a consumer under another daemon that is **dynamic** pins the output to the
+//!   daemon path unconditionally: it joins at an arbitrary time, so no endpoint
+//!   can be planned for it and only forwarding can ever reach it.
 //! - **local dynamic** consumers are neither: they join at arbitrary times (or
 //!   never), so nothing may wait on them, and their pre-join messages are
 //!   inherently out of scope.
 //!
-//! When cross-machine node-to-node zenoh lands, only this policy changes:
-//! remote static consumers become required ackers instead of forcing
-//! `daemon_only`, and a fully-acked output goes pure-zenoh across machines.
+//! A remote static consumer that acks takes its edge off the daemon path
+//! entirely — producer node to consumer node, one zenoh hop, no daemon on
+//! either side of the wire. Note that `daemon_only` remains sticky per
+//! *output*, not per consumer: an output with a remote dynamic consumer stays
+//! pinned for all of them, because only daemon-path sends feed the inter-daemon
+//! forwarder (dora #2738).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 
@@ -45,11 +52,15 @@ use crate::{CoreNodeKindExt, OutputId, node_inputs};
 /// Every declared output of a local producer gets an entry (a zero-consumer
 /// output resolves to the default routing: no pin, no required ackers — the
 /// producer may use the direct zenoh path immediately). Consumers of remote
-/// producers are ignored here; the remote producer's own daemon sees those
-/// consumers as non-local and pins the output on its side.
+/// producers are ignored here; the remote producer's own daemon decides those.
+///
+/// `routable_producers` are the local nodes that were given an endpoint
+/// reachable from other machines, which is what makes a *remote* consumer's
+/// direct route possible at all.
 pub fn compute_output_routing(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
     local_nodes: &BTreeSet<NodeId>,
+    routable_producers: &BTreeSet<NodeId>,
 ) -> BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> {
     let mut routing: BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> = local_nodes
         .iter()
@@ -70,6 +81,9 @@ pub fn compute_output_routing(
         let consumer_local = local_nodes.contains(&consumer.id);
         let consumer_dynamic = consumer.kind.dynamic();
         for (input_id, input) in node_inputs(consumer) {
+            // A liveness deadline on a *remote* input is only fed by the
+            // daemon path (see the `daemon_only` reasoning below).
+            let watches_liveness = input.input_timeout.is_some();
             let InputMapping::User(mapping) = input.mapping else {
                 continue;
             };
@@ -82,13 +96,39 @@ pub fn compute_output_routing(
             let Some(entry) = outputs.get_mut(&mapping.output) else {
                 continue;
             };
-            if !consumer_local {
-                entry.daemon_only = true;
-            } else if !consumer_dynamic {
+            // A dynamic consumer is never an acker — nothing may wait on a node
+            // that may never join — and a *remote* one additionally pins the
+            // output, since forwarding is the only way to reach it.
+            if consumer_dynamic {
+                if !consumer_local {
+                    entry.daemon_only = true;
+                }
+            } else if consumer_local
+                || (routable_producers.contains(&mapping.source) && !watches_liveness)
+            {
                 entry.required_ackers.insert(RequiredAcker {
                     node_id: consumer.id.clone(),
                     input_id,
                 });
+            } else {
+                // Two reasons to pin a remote static consumer's output.
+                //
+                // No dialable producer endpoint: there is no direct route to
+                // prove, so pinning beats spending a startup window waiting for
+                // an ack that cannot arrive.
+                //
+                // Or the consumer declares an `input_timeout`: its deadline is
+                // armed unfired and refreshed only when its *own* daemon sees
+                // the message — either delivering it (`send_output_to_local_
+                // receivers`) or being told about it by a local producer
+                // (`note_output_sent_to_local_receivers`, which walks local
+                // mappings only). A direct cross-machine send reaches neither,
+                // so `last_received` would stay `None`, the deadline would
+                // never fire, and `input_timeout` — plus the circuit breaker
+                // built on it — would silently stop working on exactly the
+                // edges most likely to need it. The fast path is not worth a
+                // liveness guarantee the descriptor asked for.
+                entry.daemon_only = true;
             }
         }
     }
@@ -149,9 +189,19 @@ mod tests {
     use super::*;
     use dora_core::descriptor::{Descriptor, DescriptorExt};
 
+    /// Routing where every local producer is dialable from other machines —
+    /// the state after a successful endpoint exchange.
     fn routing_for(
         yaml: &str,
         local: &[&str],
+    ) -> BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> {
+        routing_with_routable(yaml, local, local)
+    }
+
+    fn routing_with_routable(
+        yaml: &str,
+        local: &[&str],
+        routable: &[&str],
     ) -> BTreeMap<NodeId, BTreeMap<DataId, OutputRouting>> {
         let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");
         let nodes = descriptor
@@ -161,7 +211,11 @@ mod tests {
             .iter()
             .map(|id| NodeId::from(id.to_string()))
             .collect();
-        compute_output_routing(&nodes, &local_nodes)
+        let routable_producers: BTreeSet<NodeId> = routable
+            .iter()
+            .map(|id| NodeId::from(id.to_string()))
+            .collect();
+        compute_output_routing(&nodes, &local_nodes, &routable_producers)
     }
 
     fn acker(node: &str, input: &str) -> RequiredAcker {
@@ -244,20 +298,77 @@ nodes:
     }
 
     #[test]
-    fn remote_consumers_pin_daemon_only_static_or_dynamic() {
-        // Remote *static* consumer pins.
-        let routing = routing_for(CHAIN, &["source", "dynamic-sink"]);
-        assert!(output(&routing, "source", "image").daemon_only);
+    fn a_remote_static_consumer_acks_instead_of_pinning() {
+        // `static-sink` runs under another daemon and `source` is dialable from
+        // there, so the edge has a direct route to prove — the whole point of
+        // the cross-machine node mesh. Until it is proven the producer stays on
+        // the daemon path, so this is a fast path won, never a message lost.
+        let routing = routing_with_routable(CHAIN, &["source", "dynamic-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(!image.daemon_only);
+        assert_eq!(
+            image.required_ackers,
+            BTreeSet::from([acker("static-sink", "camera")])
+        );
+    }
 
-        // Remote *dynamic* consumer pins too: a dynamic node on another daemon
-        // can only ever be reached through inter-daemon forwarding, which only
-        // daemon-path sends feed (#2738).
-        let routing = routing_for(CHAIN, &["source", "static-sink"]);
+    #[test]
+    fn a_remote_static_consumer_pins_when_its_producer_is_undialable() {
+        // No routable endpoint for `source` — a single-machine bind, or an
+        // endpoint exchange that timed out. There is no route to prove, and
+        // waiting for an ack that cannot arrive would burn a whole startup
+        // window before landing on the daemon path anyway.
+        let routing = routing_with_routable(CHAIN, &["source", "dynamic-sink"], &[]);
         let image = output(&routing, "source", "image");
         assert!(image.daemon_only);
-        // The local acker is still recorded accurately alongside the pin (the
-        // producer ignores ackers on pinned outputs today; the cross-machine
-        // follow-up flips this policy).
+        assert!(image.required_ackers.is_empty());
+    }
+
+    /// An `input_timeout` on a remote input is refreshed only when the
+    /// consumer's *own* daemon sees the message, and a direct cross-machine
+    /// send bypasses it. Taking the fast path would leave the deadline armed
+    /// but unfired forever — the descriptor asked for liveness detection, so
+    /// the daemon path wins.
+    #[test]
+    fn a_remote_consumer_watching_liveness_keeps_the_daemon_path() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs:
+      - image
+  - id: watchful-sink
+    path: ./sink
+    inputs:
+      camera:
+        source: source/image
+        input_timeout: 5
+"#;
+        let routing = routing_with_routable(yaml, &["source"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(image.daemon_only);
+        assert!(image.required_ackers.is_empty());
+
+        // The same consumer on this machine is unaffected: its daemon is the
+        // one delivering (or being notified of) every message either way.
+        let routing = routing_with_routable(yaml, &["source", "watchful-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(!image.daemon_only);
+        assert_eq!(
+            image.required_ackers,
+            BTreeSet::from([acker("watchful-sink", "camera")])
+        );
+    }
+
+    #[test]
+    fn a_remote_dynamic_consumer_still_pins() {
+        // A dynamic node on another daemon joins at an arbitrary time, so no
+        // endpoint can be planned for it and only inter-daemon forwarding can
+        // reach it — which only daemon-path sends feed (#2738).
+        let routing = routing_with_routable(CHAIN, &["source", "static-sink"], &["source"]);
+        let image = output(&routing, "source", "image");
+        assert!(image.daemon_only);
+        // The local acker is still recorded accurately alongside the pin.
         assert_eq!(
             image.required_ackers,
             BTreeSet::from([acker("static-sink", "camera")])

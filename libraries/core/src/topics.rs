@@ -29,7 +29,25 @@ pub const DORA_ZENOH_CONNECT_ENV: &str = "DORA_ZENOH_CONNECT";
 /// that never form a direct link simply cannot exchange data — no amount of
 /// waiting fixes it. Assigning each node a known listener makes those links
 /// deterministic instead of racy.
+///
+/// **Stays single-valued.** A node that also needs a routable listener gets it
+/// via [`DORA_ZENOH_LISTEN_EXTRA_ENV`] rather than as a second entry here,
+/// because a node binary built before that variable existed pushes this value
+/// into `listen/endpoints` verbatim as *one* locator. A comma-separated value
+/// would therefore be rejected wholesale by such a node, costing it the
+/// loopback listener too and partitioning it from its same-machine consumers.
+/// Keeping the old variable's shape means an older node degrades to
+/// loopback-only — same-machine links keep working, cross-machine ones fall
+/// back to the daemon path — instead of losing every link (dora-rs/dora#2742).
 pub const DORA_ZENOH_LISTEN_ENV: &str = "DORA_ZENOH_LISTEN";
+
+/// Additional zenoh endpoints a spawned node should listen on, beyond the
+/// loopback one in [`DORA_ZENOH_LISTEN_ENV`]. Comma-separated; injected by the
+/// daemon only for a node that has a consumer under another daemon.
+///
+/// Split out from [`DORA_ZENOH_LISTEN_ENV`] for forward compatibility — see the
+/// note there. A node that does not know this variable simply ignores it.
+pub const DORA_ZENOH_LISTEN_EXTRA_ENV: &str = "DORA_ZENOH_LISTEN_EXTRA";
 
 /// Opt out of zenoh multicast scouting for this process, regardless of whether
 /// explicit connect endpoints replaced it.
@@ -144,14 +162,223 @@ fn split_endpoints(value: &str) -> impl Iterator<Item = String> + '_ {
         .map(String::from)
 }
 
+/// Assemble a node's listen endpoints from the two env vars the daemon sets.
+///
+/// Split across two variables rather than one comma-separated value for
+/// forward compatibility — see [`DORA_ZENOH_LISTEN_EXTRA_ENV`]. Both are run
+/// through [`split_endpoints`] so a hand-set list in either keeps working, and
+/// so the loopback entry stays first: `listen/endpoints` order is what decides
+/// which locator a same-machine consumer picks, and loopback is the one whose
+/// transport can carry shared memory.
+#[cfg(feature = "zenoh")]
+fn listen_endpoints_from_env(listen: Option<&str>, extra: Option<&str>) -> Vec<String> {
+    listen
+        .into_iter()
+        .chain(extra)
+        .flat_map(split_endpoints)
+        .collect()
+}
+
+/// Path to a JSON5 file whose contents are layered on top of the zenoh config
+/// dora computes.
+///
+/// The additive counterpart to [`ZENOH_CONFIG_PATH_ENV`], which replaces the
+/// whole config — including the per-node connect/listen plan the daemon builds,
+/// so a router named there ends up relaying even same-machine traffic. An
+/// overlay keeps that plan and adds to it, which is what "point this deployment
+/// at my routers" actually means. Setting both is refused rather than merged.
+///
+/// Inherited by spawned nodes (like [`ZENOH_CONFIG_PATH_ENV`]) so one variable
+/// covers a whole process tree, and refused from a descriptor's `env:` for the
+/// same reason: it is deployment wiring, not per-node configuration.
+#[cfg(feature = "zenoh")]
+pub const DORA_ZENOH_CONFIG_OVERLAY_ENV: &str = "DORA_ZENOH_CONFIG_OVERLAY";
+
+/// Operator-supplied zenoh settings to layer onto dora's computed config.
+///
+/// Split into the two endpoint lists, which **merge** with what dora computed,
+/// and everything else, which **replaces** it. Merging is what makes the
+/// overlay additive where it matters: naming a router under
+/// `connect.endpoints` adds a path to it without deleting the direct node links
+/// dora planned, which is exactly the difference from a wholesale
+/// [`ZENOH_CONFIG_PATH_ENV`].
+#[cfg(feature = "zenoh")]
+#[derive(Debug, Default, Clone)]
+pub struct ZenohOverlay {
+    /// Extra peers to dial, appended to dora's `connect/endpoints`.
+    pub connect_endpoints: Vec<String>,
+    /// Extra addresses to bind, appended to dora's `listen/endpoints`.
+    pub listen_endpoints: Vec<String>,
+    /// Every other setting, applied after dora's own inserts.
+    rest: serde_json::Map<String, serde_json::Value>,
+}
+
+#[cfg(feature = "zenoh")]
+impl ZenohOverlay {
+    /// Read the overlay named by [`DORA_ZENOH_CONFIG_OVERLAY_ENV`], if any.
+    ///
+    /// A named file that cannot be read or parsed is a hard error: the operator
+    /// asked for these settings, and a session silently opened without them is
+    /// the kind of "runs but talks to nobody" outcome that takes hours to
+    /// diagnose.
+    pub fn from_env() -> eyre::Result<Option<Self>> {
+        use eyre::Context;
+
+        let Some(path) = std::env::var_os(DORA_ZENOH_CONFIG_OVERLAY_ENV) else {
+            return Ok(None);
+        };
+        let path = std::path::PathBuf::from(path);
+        let contents = std::fs::read_to_string(&path).wrap_err_with(|| {
+            format!(
+                "failed to read the zenoh config overlay at `{}` named by {}",
+                path.display(),
+                DORA_ZENOH_CONFIG_OVERLAY_ENV
+            )
+        })?;
+        Self::parse(&contents)
+            .wrap_err_with(|| format!("invalid zenoh config overlay at `{}`", path.display()))
+            .map(Some)
+    }
+
+    /// Parse an overlay from JSON5 — zenoh's own config dialect, so an operator
+    /// can paste a fragment of a zenoh config file, comments and all.
+    pub fn parse(json5_str: &str) -> eyre::Result<Self> {
+        use eyre::{Context, eyre};
+
+        let value: serde_json::Value = json5::from_str(json5_str)
+            .map_err(|err| eyre!("{err}"))
+            .wrap_err(
+                "overlay must be a JSON5 object of zenoh config keys, e.g. \
+                 `{ connect: { endpoints: [\"tcp/10.0.0.1:7447\"] } }`",
+            )?;
+        let serde_json::Value::Object(mut object) = value else {
+            eyre::bail!("overlay must be a JSON5 object, not a bare value");
+        };
+
+        let mut overlay = Self::default();
+        for (key, endpoints) in [
+            ("connect", &mut overlay.connect_endpoints),
+            ("listen", &mut overlay.listen_endpoints),
+        ] {
+            let Some(serde_json::Value::Object(section)) = object.get_mut(key) else {
+                continue;
+            };
+            // Taken out of `rest` so the merged list survives: re-inserting the
+            // section wholesale afterwards would overwrite it.
+            let Some(value) = section.remove("endpoints") else {
+                continue;
+            };
+            let serde_json::Value::Array(list) = value else {
+                eyre::bail!("`{key}.endpoints` must be an array of endpoint strings");
+            };
+            for entry in list {
+                match entry {
+                    serde_json::Value::String(endpoint) => endpoints.push(endpoint),
+                    other => eyre::bail!(
+                        "`{key}.endpoints` must contain endpoint strings, found `{other}`"
+                    ),
+                }
+            }
+            // An emptied section would otherwise be re-inserted as `{}`.
+            if section.is_empty() {
+                object.remove(key);
+            }
+        }
+        overlay.rest = object;
+        Ok(overlay)
+    }
+
+    /// Apply everything except the endpoint lists, which the caller has already
+    /// merged into its own.
+    ///
+    /// Each setting is inserted at its deepest path, so an overlay touching one
+    /// subkey leaves its siblings alone. A path zenoh rejects is retried one
+    /// level up, because some sections only accept a whole-object write —
+    /// `insert_json5("gateway/south", ..)` is refused where
+    /// `insert_json5("gateway", ..)` is accepted (dora-rs/dora#2721).
+    fn apply(&self, config: &mut zenoh::Config) -> eyre::Result<()> {
+        for (key, value) in &self.rest {
+            insert_overlay_value(config, key, value)?;
+        }
+        Ok(())
+    }
+}
+
+/// Insert one overlay value, descending into objects and falling back to a
+/// whole-object write when a subpath is rejected. See [`ZenohOverlay::apply`].
+#[cfg(feature = "zenoh")]
+fn insert_overlay_value(
+    config: &mut zenoh::Config,
+    path: &str,
+    value: &serde_json::Value,
+) -> eyre::Result<()> {
+    if let serde_json::Value::Object(fields) = value
+        && !fields.is_empty()
+    {
+        let mut written = true;
+        for (field, child) in fields {
+            if insert_overlay_value(config, &format!("{path}/{field}"), child).is_err() {
+                written = false;
+                break;
+            }
+        }
+        if written {
+            return Ok(());
+        }
+        // Falling through re-writes the fields that did land, with the same
+        // values — `value` still contains them — so a partial descent is not
+        // left half-applied.
+    }
+    config
+        .insert_json5(path, &value.to_string())
+        .map_err(|err| eyre::eyre!("failed to apply zenoh config overlay key `{path}`: {err}"))
+}
+
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
     // Nodes and the coordinator have no in-process way to know, so
     // [`DORA_ZENOH_MULTICAST_ENV`] (honored inside) is their only channel.
-    let (session, _) =
-        open_zenoh_session_with_listen(coordinator_addr, None, None, MulticastScouting::Allowed)
-            .await?;
+    let (session, _) = open_zenoh_session_with_listen(ZenohSessionParams {
+        coordinator_addr,
+        ..Default::default()
+    })
+    .await?;
     Ok(session)
+}
+
+/// How a dora process wants its zenoh session wired.
+///
+/// A struct rather than a parameter list because every field is optional and
+/// most callers set one of them: the positional form made
+/// `open_zenoh_session_with_listen(None, None, None, Allowed)` a common sight,
+/// where a misplaced `None` is a silent partition rather than a type error.
+/// [`Default`] gives "a plain peer with whatever the environment says", which
+/// is what nodes and the coordinator want.
+#[cfg(feature = "zenoh")]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct ZenohSessionParams<'a> {
+    /// Coordinator to reach through a zenoh router/peer pair. Unused by every
+    /// in-tree caller today; see the `coordinator_addr` branch below.
+    pub coordinator_addr: Option<IpAddr>,
+    /// Endpoint this session listens on and advertises to its peers, e.g.
+    /// `tcp/127.0.0.1:43217` for a single-machine daemon or `tcp/10.0.2.100:5456`
+    /// for one in a cluster. Verified against `info().locators()` after open;
+    /// see the return value.
+    pub listen_endpoint: Option<&'a str>,
+    /// Shared rendezvous endpoint for daemon-to-daemon discovery when multicast
+    /// isn't available: added to *both* listen and connect endpoints, so the
+    /// first daemon to bind it becomes the gossip hub and the rest fall through
+    /// to connect-only.
+    pub inter_daemon_peer: Option<&'a str>,
+    /// Peers this session dials, in addition to whatever
+    /// [`DORA_ZENOH_CONNECT_ENV`] carries. This is how a deployment wires its
+    /// daemons into an explicit mesh instead of relying on gossip through a
+    /// single rendezvous: every daemon dials every other one, which is the
+    /// clique zenoh 1.9 requires of a peer region.
+    pub connect_endpoints: &'a [String],
+    /// Whether this session may scout by multicast. A request, not a command —
+    /// see the `#1856` guard below.
+    pub multicast: MulticastScouting,
 }
 
 /// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
@@ -168,11 +395,18 @@ fn coordinator_connect_endpoints(addr: IpAddr) -> String {
     format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
 }
 
-/// Like [`open_zenoh_session`], but also configures the session to listen on
-/// the given endpoint (e.g. `tcp/127.0.0.1:43217`, or a routable address such as
-/// `tcp/10.0.2.100:43217` for a daemon in a cluster). The daemon uses this so
+/// Like [`open_zenoh_session`], but takes the full [`ZenohSessionParams`]: a
+/// listen endpoint to bind and advertise (e.g. `tcp/127.0.0.1:43217`, or a
+/// routable address such as `tcp/10.0.2.100:5456` for a daemon in a cluster),
+/// extra peers to dial, and the multicast request. The daemon uses this so
 /// spawned nodes can connect via `DORA_ZENOH_CONNECT` without multicast
 /// scouting, and so that other daemons can dial it.
+///
+/// `connect_endpoints` are dialed in addition to whatever
+/// [`DORA_ZENOH_CONNECT_ENV`] carries, deduplicated against it. They are
+/// dial-only, which is what distinguishes an explicit mesh (each daemon
+/// listens on its own endpoint and dials its peers') from the rendezvous
+/// below (every daemon both listens on and dials the *same* endpoint).
 ///
 /// `inter_daemon_peer` is an optional shared endpoint used as the
 /// rendezvous for daemon-to-daemon discovery when multicast isn't
@@ -204,21 +438,45 @@ fn coordinator_connect_endpoints(addr: IpAddr) -> String {
 /// ends up reachable some other way (see the `#1856` guard below).
 #[cfg(feature = "zenoh")]
 pub async fn open_zenoh_session_with_listen(
-    coordinator_addr: Option<IpAddr>,
-    listen_endpoint: Option<&str>,
-    inter_daemon_peer: Option<&str>,
-    multicast: MulticastScouting,
+    params: ZenohSessionParams<'_>,
 ) -> eyre::Result<(zenoh::Session, Option<String>)> {
     use eyre::{Context, eyre};
     use tracing::warn;
+
+    let ZenohSessionParams {
+        coordinator_addr,
+        listen_endpoint,
+        inter_daemon_peer,
+        connect_endpoints,
+        multicast,
+    } = params;
 
     // Source-of-truth for the listener: stays `None` unless we actually
     // accepted `listen/endpoints` into the config below. Callers use this
     // (not their requested endpoint) to advertise the listener to peers.
     let mut effective_listen_endpoint: Option<String> = None;
 
+    let overlay = ZenohOverlay::from_env()?;
+
     let zenoh_session = match std::env::var(zenoh::Config::DEFAULT_CONFIG_PATH_ENV) {
         Ok(path) => {
+            if overlay.is_some() {
+                // Merging the two would be guesswork: the file replaces the
+                // config dora computed, so there is no dora-side endpoint list
+                // left for the overlay's to append to, and "append to whatever
+                // the file happened to set" is not a rule anyone could predict.
+                eyre::bail!(
+                    "both {} and {} are set. {} replaces the whole zenoh \
+                     configuration, while {} layers onto the one dora computes — \
+                     keep one. Prefer the overlay: it adds your endpoints \
+                     without discarding the direct node-to-node links the daemon \
+                     plans for this dataflow.",
+                    zenoh::Config::DEFAULT_CONFIG_PATH_ENV,
+                    DORA_ZENOH_CONFIG_OVERLAY_ENV,
+                    zenoh::Config::DEFAULT_CONFIG_PATH_ENV,
+                    DORA_ZENOH_CONFIG_OVERLAY_ENV,
+                );
+            }
             let zenoh_config = zenoh::Config::from_file(&path)
                 .map_err(|e| eyre!(e))
                 .wrap_err_with(|| format!("failed to read zenoh config from {path}"))?;
@@ -283,23 +541,41 @@ pub async fn open_zenoh_session_with_listen(
             // bytes onto the wire (i.e. copied) instead of sent as a ~16-byte
             // descriptor.
 
-            // Build the connect-endpoint list from two sources:
+            // Build the connect-endpoint list from three sources:
             //   1. DORA_ZENOH_CONNECT env var — daemon-bootstrapped local
             //      discovery for spawned nodes (#1778).
-            //   2. `inter_daemon_peer` — shared rendezvous for daemon-to-
+            //   2. `connect_endpoints` — peers this process was told to dial,
+            //      i.e. the explicit daemon↔daemon mesh (`--zenoh-connect`).
+            //      Unlike (3) this is dial-only: a mesh member listens on its
+            //      own advertised endpoint, not on its peers'.
+            //   3. `inter_daemon_peer` — shared rendezvous for daemon-to-
             //      daemon discovery (extends #1778 to the daemon↔daemon
             //      hop). One daemon binds it as a listener, others connect
             //      and gossip-discover their peers via it.
-            // Both are explicit endpoints; if we set any of them we
+            // All are explicit endpoints; if we set any of them we
             // disable multicast scouting so we don't end up with mixed
             // discovery modes.
             let mut connect_eps: Vec<String> = Vec::new();
             if let Ok(eps) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
                 connect_eps.extend(split_endpoints(&eps));
             }
+            connect_eps.extend(connect_endpoints.iter().cloned());
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
             }
+            if let Some(overlay) = &overlay {
+                connect_eps.extend(overlay.connect_endpoints.iter().cloned());
+            }
+            // A duplicate dial is not fatal, but it is a wasted connection
+            // attempt per duplicate and, when the peer is unreachable, a
+            // second retry loop against it — which is exactly what keeps the
+            // net runtime busy (#2776). Callers can legitimately overlap:
+            // `--zenoh-connect` may name the same endpoint the environment
+            // already carries. `retain` over a seen-set rather than `dedup`,
+            // which only collapses *adjacent* equals and would leave the
+            // env/param/rendezvous interleaving untouched.
+            let mut seen_connect = std::collections::HashSet::new();
+            connect_eps.retain(|ep| seen_connect.insert(ep.clone()));
             let mut connect_inserted = false;
             if !connect_eps.is_empty() {
                 let json = format!(
@@ -323,12 +599,14 @@ pub async fn open_zenoh_session_with_listen(
             // We don't promote it to `effective_listen_endpoint` until the
             // configured open succeeds — the fallback default-config path
             // below has no listener and must not advertise one (#1856).
-            // We only track `listen_endpoint` (the per-daemon listener that
-            // gets advertised to spawned nodes), NOT `inter_daemon_peer`
-            // which is cluster-wide config — daemons that bind it act as
-            // the rendezvous, but advertising it back to nodes would be
-            // wrong (nodes would try to reach it through what may be a
-            // remote address, defeating the loopback shortcut).
+            // We only track the caller's own `listen_endpoint` (the per-daemon
+            // listener that gets advertised to spawned nodes), NOT
+            // `inter_daemon_peer` which is cluster-wide config — daemons that
+            // bind it act as the rendezvous, but advertising it back to nodes
+            // would be wrong (nodes would try to reach it through what may be a
+            // remote address, defeating the loopback shortcut) — and not the
+            // env-supplied node listeners either, which the daemon planned and
+            // already knows.
             let mut listen_inserted_into_configured: Option<String> = None;
             // Any accepted listener, including the cluster-wide rendezvous that
             // is deliberately absent from `listen_inserted_into_configured`.
@@ -342,20 +620,35 @@ pub async fn open_zenoh_session_with_listen(
             // daemon proceed even if some don't bind — e.g. the second
             // daemon to start on the same host with the same rendezvous
             // port falls through to connect-only.
-            // A spawned node gets its listener from the daemon via
+            // A spawned node gets its listeners from the daemon via
             // `DORA_ZENOH_LISTEN` (the daemon itself passes `listen_endpoint`
             // directly). Without a known listener a node cannot be dialled, and
             // since zenoh 1.9 peers do not relay, a consumer that cannot dial its
             // producer never receives its data at all.
-            let env_listen_endpoint = std::env::var(DORA_ZENOH_LISTEN_ENV).ok();
-            let listen_endpoint = listen_endpoint.or(env_listen_endpoint.as_deref());
+            //
+            // A node with a consumer on another machine listens both on
+            // loopback (for its same-machine consumers, whose transport can
+            // then carry shared memory) and on a routable address (for the
+            // remote one). The two arrive in *separate* variables so an older
+            // node binary, which treats `DORA_ZENOH_LISTEN` as a single
+            // locator, still gets a valid one — see the doc on
+            // `DORA_ZENOH_LISTEN_EXTRA_ENV`. `split_endpoints` is applied to
+            // both so a hand-set list in either keeps working.
+            let env_listen_endpoints = listen_endpoints_from_env(
+                std::env::var(DORA_ZENOH_LISTEN_ENV).ok().as_deref(),
+                std::env::var(DORA_ZENOH_LISTEN_EXTRA_ENV).ok().as_deref(),
+            );
 
             let mut listen_eps: Vec<String> = Vec::new();
             if let Some(ep) = listen_endpoint {
                 listen_eps.push(ep.to_string());
             }
+            listen_eps.extend(env_listen_endpoints.iter().cloned());
             if let Some(peer) = inter_daemon_peer {
                 listen_eps.push(peer.to_string());
+            }
+            if let Some(overlay) = &overlay {
+                listen_eps.extend(overlay.listen_endpoints.iter().cloned());
             }
             if !listen_eps.is_empty() {
                 let json = format!(
@@ -418,6 +711,12 @@ pub async fn open_zenoh_session_with_listen(
             {
                 warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
             }
+            // Last, so an operator's setting wins over dora's default for the
+            // same key. The endpoint lists are already merged above rather than
+            // overwritten here — that is what makes the overlay additive.
+            if let Some(overlay) = &overlay {
+                overlay.apply(&mut zenoh_config)?;
+            }
             match zenoh::open(zenoh_config).await {
                 Ok(zenoh_session) => {
                     // Verify the listener actually bound. `zenoh::open` returning
@@ -435,7 +734,19 @@ pub async fn open_zenoh_session_with_listen(
                     // bound" query (unstable API gated behind the workspace
                     // `unstable` feature, already enabled in the root Cargo.toml
                     // zenoh dependency).
-                    if let Some(requested) = listen_inserted_into_configured {
+                    // Verify every endpoint we asked for, but only ever
+                    // *return* the caller's own: the env-supplied ones belong
+                    // to a node whose daemon planned them and already knows
+                    // them, so there they are a diagnostic, not a value to
+                    // propagate.
+                    let mut verify: Vec<&str> = listen_inserted_into_configured
+                        .iter()
+                        .map(String::as_str)
+                        .collect();
+                    if listen_configured {
+                        verify.extend(env_listen_endpoints.iter().map(String::as_str));
+                    }
+                    if !verify.is_empty() {
                         let bound_locators: Vec<String> = zenoh_session
                             .info()
                             .locators()
@@ -466,37 +777,41 @@ pub async fn open_zenoh_session_with_listen(
                         // than reach this check, which would read the mismatch
                         // as "the listener did not bind" and silently fall back
                         // to multicast scouting.
-                        let bound = bound_locators
-                            .iter()
-                            .any(|l| l.split(['?', '#']).next() == Some(requested.as_str()));
-                        if bound {
-                            effective_listen_endpoint = Some(requested);
-                        } else if connect_inserted {
-                            // We set explicit `connect/endpoints` above, so
-                            // multicast scouting was disabled for this session
-                            // (#1856). There is therefore NO discovery fallback:
-                            // peers already told to dial `{requested}` (e.g. via
-                            // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
-                            // cannot reach this now-listener-less session, and it
-                            // cannot be scouted either — that edge is silently
-                            // partitioned. Do not claim "multicast scouting only"
-                            // here; that fallback does not exist in this mode and
-                            // the old message pointed debuggers the wrong way
-                            // (#2762).
-                            warn!(
-                                "zenoh session opened but listener for `{requested}` \
-                                 did not bind (actually bound: {bound_locators:?}); \
-                                 multicast scouting is disabled for this session \
-                                 (explicit connect endpoints are set), so peers told \
-                                 to dial `{requested}` have no fallback path to reach \
-                                 it (#2762)"
-                            );
-                        } else {
-                            warn!(
-                                "zenoh session opened but listener for `{requested}` \
-                                 did not bind (actually bound: {bound_locators:?}); \
-                                 falling back to multicast scouting for discovery"
-                            );
+                        for requested in verify {
+                            let bound = bound_locators
+                                .iter()
+                                .any(|l| l.split(['?', '#']).next() == Some(requested));
+                            if bound {
+                                if listen_inserted_into_configured.as_deref() == Some(requested) {
+                                    effective_listen_endpoint = Some(requested.to_string());
+                                }
+                            } else if connect_inserted {
+                                // We set explicit `connect/endpoints` above, so
+                                // multicast scouting was disabled for this session
+                                // (#1856). There is therefore NO discovery fallback:
+                                // peers already told to dial `{requested}` (e.g. via
+                                // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
+                                // cannot reach this now-listener-less session, and it
+                                // cannot be scouted either — that edge is silently
+                                // partitioned. Do not claim "multicast scouting only"
+                                // here; that fallback does not exist in this mode and
+                                // the old message pointed debuggers the wrong way
+                                // (#2762).
+                                warn!(
+                                    "zenoh session opened but listener for `{requested}` \
+                                     did not bind (actually bound: {bound_locators:?}); \
+                                     multicast scouting is disabled for this session \
+                                     (explicit connect endpoints are set), so peers told \
+                                     to dial `{requested}` have no fallback path to reach \
+                                     it (#2762)"
+                                );
+                            } else {
+                                warn!(
+                                    "zenoh session opened but listener for `{requested}` \
+                                     did not bind (actually bound: {bound_locators:?}); \
+                                     falling back to multicast scouting for discovery"
+                                );
+                            }
                         }
                     }
                     zenoh_session
@@ -522,6 +837,32 @@ pub async fn open_zenoh_session_with_listen(
         ),
     };
     Ok((zenoh_session, effective_listen_endpoint))
+}
+
+/// Default TCP port for a daemon's inter-daemon zenoh listener.
+///
+/// Only used when a deployment *names* the port — `--zenoh-listen <IP>` alone
+/// still reserves an ephemeral one. An explicit mesh needs a port its peers can
+/// predict, since they must dial the endpoint before the daemon has told anyone
+/// what it bound. 5456 is the port dora already uses for a zenoh peer in
+/// [`coordinator_connect_endpoints`] and in every deployment doc example.
+pub const DORA_ZENOH_LISTEN_PORT_DEFAULT: u16 = 5456;
+
+/// Format `addr:port` as a zenoh TCP endpoint string.
+///
+/// The address goes through [`SocketAddr`], whose `Display` brackets IPv6 —
+/// which is also zenoh's locator grammar (`tcp/[::1]:7447`). Interpolating a
+/// bare [`IpAddr`] instead would emit `tcp/::1:7447`, where the port colon is
+/// indistinguishable from the address colons and `insert_json5` rejects the
+/// result (#3041).
+///
+/// Unlike [`reserve_zenoh_endpoint`] this binds nothing, so there is no
+/// reserve→bind window for another process to slip into: a named port is
+/// either free when zenoh binds it or it is not, and the
+/// `info().locators()` check in [`open_zenoh_session_with_listen`] tells the
+/// caller which.
+pub fn zenoh_endpoint(addr: IpAddr, port: u16) -> String {
+    format!("tcp/{}", SocketAddr::new(addr, port))
 }
 
 /// Reserve an unused TCP port on `bind` for use as a zenoh listen endpoint.
@@ -563,9 +904,7 @@ pub fn reserve_zenoh_endpoint(bind: IpAddr) -> std::io::Result<String> {
     let listener = std::net::TcpListener::bind((bind, 0))?;
     let port = listener.local_addr()?.port();
     drop(listener);
-    // `SocketAddr`'s Display brackets IPv6 for us, which is also zenoh's
-    // endpoint syntax (`tcp/[::1]:7447`).
-    Ok(format!("tcp/{}", SocketAddr::new(bind, port)))
+    Ok(zenoh_endpoint(bind, port))
 }
 
 /// Loopback case of [`reserve_zenoh_endpoint`] — the right choice when every
@@ -601,6 +940,89 @@ pub fn zenoh_bind_address_for(coordinator_addr: SocketAddr) -> IpAddr {
         return LOCALHOST;
     }
     local_address_toward(coordinator_addr).unwrap_or(LOCALHOST)
+}
+
+/// Where a daemon's zenoh listener binds: an address, and optionally the port.
+///
+/// Both forms are accepted from `--zenoh-listen`:
+///
+/// * `10.0.2.100` — the port is left to the OS. Peers learn the resulting
+///   endpoint by gossip, so this suits a deployment with a rendezvous
+///   (`--zenoh-peer`) or working multicast.
+/// * `10.0.2.100:5456`, `[fd7a:1::2]:5456` — a named port, which peers can dial
+///   without having discovered it first. This is what an explicit mesh needs:
+///   every daemon's endpoint has to be known before any of them has announced
+///   anything.
+///
+/// IPv6 must be bracketed when naming a port, because `fd7a:1::2:5456` is
+/// itself a valid IPv6 address and is read as one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ZenohListen {
+    /// Address to bind, which is also the address advertised to peers.
+    pub addr: IpAddr,
+    /// Port to bind, or `None` to let the OS pick one.
+    pub port: Option<u16>,
+}
+
+impl ZenohListen {
+    /// The endpoint to request, reserving an ephemeral port if none was named.
+    ///
+    /// A named port skips the reservation entirely: it has no reserve→bind
+    /// window for another process to slip into, and zenoh's own bind is the
+    /// only claim on it.
+    pub fn endpoint(&self) -> std::io::Result<String> {
+        match self.port {
+            Some(port) => Ok(zenoh_endpoint(self.addr, port)),
+            None => reserve_zenoh_endpoint(self.addr),
+        }
+    }
+}
+
+impl std::fmt::Display for ZenohListen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self.port {
+            Some(port) => write!(f, "{}", SocketAddr::new(self.addr, port)),
+            None => write!(f, "{}", self.addr),
+        }
+    }
+}
+
+impl std::str::FromStr for ZenohListen {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        // `SocketAddr` first: `10.0.2.100:5456` is not an `IpAddr`, while a
+        // bare `::1` is not a `SocketAddr`, so neither form is stolen by the
+        // other. The one genuine ambiguity — unbracketed IPv6 with a port —
+        // resolves to "address", which is why the docs above insist on
+        // brackets.
+        let listen = if let Ok(socket) = s.parse::<SocketAddr>() {
+            Self {
+                addr: socket.ip(),
+                port: Some(socket.port()),
+            }
+        } else if let Ok(addr) = s.parse::<IpAddr>() {
+            Self { addr, port: None }
+        } else {
+            return Err(format!(
+                "`{s}` is neither an IP address (`10.0.2.100`) nor an address \
+                 with a port (`10.0.2.100:5456`, `[fd7a:1::2]:5456`)"
+            ));
+        };
+        if listen.port == Some(0) {
+            // Port 0 binds an ephemeral port, which is fine, but the endpoint
+            // we advertise would still say `:0` — no peer could dial it, and
+            // the `info().locators()` check would read the mismatch as "the
+            // listener did not bind". Omitting the port asks for the same thing
+            // and reserves a concrete one to advertise.
+            return Err(format!(
+                "`{s}` names port 0; omit the port to let the OS pick one \
+                 (dora then advertises the concrete port it reserved)"
+            ));
+        }
+        validate_zenoh_listen(listen.addr).map_err(|err| format!("{err}"))?;
+        Ok(listen)
+    }
 }
 
 /// Reject a zenoh listen address that cannot be advertised to peers.
@@ -772,6 +1194,55 @@ pub fn dataflow_extension_topic(dataflow_id: &uuid::Uuid, namespace: &str) -> St
 mod tests {
     use super::*;
 
+    /// The forward-compat contract: the loopback endpoint stays alone in
+    /// `DORA_ZENOH_LISTEN` so a node built before `DORA_ZENOH_LISTEN_EXTRA`
+    /// existed — which pushes that value in as a *single* locator — still gets
+    /// a usable one. A list there would be rejected wholesale by such a node,
+    /// costing it loopback too and partitioning it from same-machine consumers
+    /// (dora-rs/dora#2742).
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn listen_endpoints_keep_loopback_first_and_merge_the_extra_var() {
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000"), Some("tcp/10.0.0.2:41001")),
+            vec![
+                "tcp/127.0.0.1:41000".to_string(),
+                "tcp/10.0.0.2:41001".to_string()
+            ],
+            "loopback must stay first — order decides which locator a \
+             same-machine consumer picks, and only loopback carries shared memory"
+        );
+    }
+
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn listen_endpoints_tolerate_an_absent_or_empty_extra_var() {
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000"), None),
+            vec!["tcp/127.0.0.1:41000".to_string()]
+        );
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000"), Some("")),
+            vec!["tcp/127.0.0.1:41000".to_string()]
+        );
+        assert!(listen_endpoints_from_env(None, None).is_empty());
+    }
+
+    /// A hand-set list in either variable keeps working, so an operator who
+    /// already scripted a comma-separated `DORA_ZENOH_LISTEN` is not broken by
+    /// the split.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn listen_endpoints_still_accept_a_list_in_either_var() {
+        assert_eq!(
+            listen_endpoints_from_env(Some("tcp/127.0.0.1:41000, tcp/10.0.0.2:41001"), None),
+            vec![
+                "tcp/127.0.0.1:41000".to_string(),
+                "tcp/10.0.0.2:41001".to_string()
+            ]
+        );
+    }
+
     #[cfg(feature = "zenoh")]
     #[test]
     fn multicast_disable_spellings_are_recognized() {
@@ -924,6 +1395,155 @@ mod tests {
             assert!(
                 err.to_string().contains("concrete"),
                 "error should tell the operator to pass a concrete address, got: {err}"
+            );
+        }
+    }
+
+    // An IPv6 endpoint must bracket its address, or the port colon is
+    // indistinguishable from the address colons and `insert_json5` rejects the
+    // locator outright (#3041). A named-port endpoint has to match the shape
+    // `reserve_zenoh_endpoint` produces, because both end up in the same
+    // `listen/endpoints` list and are compared verbatim against
+    // `info().locators()` after open.
+    #[test]
+    fn zenoh_endpoint_brackets_ipv6_and_matches_the_reserved_shape() {
+        assert_eq!(
+            zenoh_endpoint("10.0.2.100".parse().unwrap(), 5456),
+            "tcp/10.0.2.100:5456"
+        );
+        assert_eq!(
+            zenoh_endpoint("::1".parse().unwrap(), 5456),
+            "tcp/[::1]:5456"
+        );
+
+        let reserved = reserve_zenoh_endpoint(LOCALHOST).expect("loopback reservation");
+        let port = reserved
+            .rsplit_once(':')
+            .expect("reserved endpoint carries a port")
+            .1
+            .parse()
+            .expect("reserved port is numeric");
+        assert_eq!(zenoh_endpoint(LOCALHOST, port), reserved);
+    }
+
+    // `--zenoh-listen` takes both forms, and which one was given decides
+    // whether peers can dial this daemon before it has announced anything.
+    #[test]
+    fn zenoh_listen_parses_address_with_and_without_port() {
+        let addr_only: ZenohListen = "10.0.2.100".parse().unwrap();
+        assert_eq!(addr_only.addr, "10.0.2.100".parse::<IpAddr>().unwrap());
+        assert_eq!(addr_only.port, None);
+
+        let with_port: ZenohListen = "10.0.2.100:5456".parse().unwrap();
+        assert_eq!(with_port.port, Some(5456));
+        assert_eq!(with_port.endpoint().unwrap(), "tcp/10.0.2.100:5456");
+
+        // IPv6 needs brackets to carry a port; unbracketed, the trailing group
+        // is part of the address. Both parse — they just mean different things,
+        // which is why the flag docs insist on brackets.
+        let v6_port: ZenohListen = "[fd7a:1::2]:5456".parse().unwrap();
+        assert_eq!(v6_port.port, Some(5456));
+        assert_eq!(v6_port.endpoint().unwrap(), "tcp/[fd7a:1::2]:5456");
+        let v6_bare: ZenohListen = "fd7a:1::2:5456".parse().unwrap();
+        assert_eq!(v6_bare.port, None);
+    }
+
+    // A wildcard has nothing to advertise, and port 0 would advertise `:0`.
+    // Both are rejected at parse time so the operator hears about it at the
+    // command line rather than as a silent partition later.
+    #[test]
+    fn zenoh_listen_rejects_unadvertisable_forms() {
+        for bad in ["0.0.0.0", "0.0.0.0:5456", "::"] {
+            let err = bad
+                .parse::<ZenohListen>()
+                .expect_err("wildcard must be rejected");
+            assert!(
+                err.contains("concrete"),
+                "unexpected error for {bad}: {err}"
+            );
+        }
+        let err = "10.0.2.100:0"
+            .parse::<ZenohListen>()
+            .expect_err("port 0 must be rejected");
+        assert!(err.contains("port 0"), "unexpected error: {err}");
+
+        let err = "not-an-address"
+            .parse::<ZenohListen>()
+            .expect_err("garbage must be rejected");
+        assert!(err.contains("neither"), "unexpected error: {err}");
+    }
+
+    // The endpoint lists merge with dora's rather than replacing them — the
+    // whole difference between an overlay and `ZENOH_CONFIG`. Naming a router
+    // must add a path to it, not delete the direct node links dora planned.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_overlay_splits_off_the_endpoint_lists() {
+        let overlay = ZenohOverlay::parse(
+            r#"{
+                // a router of our own, plus a second listen address
+                connect: { endpoints: ["tcp/10.0.0.1:7447"], timeout_ms: 5000 },
+                listen: { endpoints: ["tcp/10.0.0.2:7448"] },
+                scouting: { multicast: { enabled: true } },
+            }"#,
+        )
+        .expect("valid overlay");
+
+        assert_eq!(overlay.connect_endpoints, ["tcp/10.0.0.1:7447"]);
+        assert_eq!(overlay.listen_endpoints, ["tcp/10.0.0.2:7448"]);
+        // `endpoints` is taken out of the sections so re-applying them cannot
+        // overwrite the merged list; a section left empty is dropped entirely.
+        assert!(overlay.rest.contains_key("connect"));
+        assert!(!overlay.rest.contains_key("listen"));
+        assert!(overlay.rest.contains_key("scouting"));
+    }
+
+    // An overlay is applied to a real config: the values must land where zenoh
+    // expects them, and a subkey must not wipe its siblings.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn an_overlay_applies_onto_a_zenoh_config() {
+        let mut config = zenoh::Config::default();
+        config
+            .insert_json5("connect/endpoints", r#"["tcp/127.0.0.1:1"]"#)
+            .expect("dora's own endpoints");
+
+        ZenohOverlay::parse(r#"{ connect: { timeout_ms: 5000 }, mode: "peer" }"#)
+            .expect("valid overlay")
+            .apply(&mut config)
+            .expect("overlay applies");
+
+        let rendered = config.to_string();
+        assert!(
+            rendered.contains("5000"),
+            "overlay value missing: {rendered}"
+        );
+        assert!(
+            rendered.contains("tcp/127.0.0.1:1"),
+            "writing a sibling subkey must not wipe dora's endpoints: {rendered}"
+        );
+    }
+
+    // A malformed overlay must fail loudly: the operator asked for these
+    // settings, and a session quietly opened without them is the "runs but
+    // talks to nobody" outcome that takes hours to diagnose.
+    #[cfg(feature = "zenoh")]
+    #[test]
+    fn a_malformed_overlay_is_rejected() {
+        for (bad, expected) in [
+            ("not an object", "object"),
+            (
+                r#"{ connect: { endpoints: "tcp/10.0.0.1:7447" } }"#,
+                "array",
+            ),
+            (r#"{ listen: { endpoints: [7447] } }"#, "endpoint strings"),
+        ] {
+            let err = ZenohOverlay::parse(bad)
+                .expect_err("must be rejected")
+                .to_string();
+            assert!(
+                err.contains(expected),
+                "unexpected error for `{bad}`: {err}"
             );
         }
     }

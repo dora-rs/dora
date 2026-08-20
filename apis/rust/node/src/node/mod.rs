@@ -200,10 +200,11 @@ type ZenohPublishers = HashMap<DataId, DirectOutput>;
 /// Declare a direct-zenoh data publisher for every output that may ever take
 /// the direct path, plus the per-output ack state the startup handshake needs.
 ///
-/// Outputs the daemon pinned `daemon_only` (some consumer runs under another
-/// daemon, so delivery must go through this daemon's inter-daemon forwarding —
-/// #2738) get no publisher and no markers: they stay on the daemon path for
-/// the node's lifetime. Every other output gets a publisher declared eagerly
+/// Outputs the daemon pinned `daemon_only` — a consumer only inter-daemon
+/// forwarding can reach (a dynamic node on another daemon, or a remote static
+/// one with no dialable endpoint for this node), and forwarding is fed solely
+/// by daemon-path sends (#2738) — get no publisher and no markers: they stay on
+/// the daemon path for the node's lifetime. Every other output gets a publisher declared eagerly
 /// at init (rather than on first send) for two reasons: zenoh starts wiring
 /// routes immediately, and [`StartupHandshake`] needs the publishers to probe
 /// those routes before the node's first real send. An output with no required
@@ -240,7 +241,8 @@ fn declare_output_publishers(
         if output_routing.daemon_only {
             debug!(
                 output = %output_id,
-                "output pinned to the daemon path (a consumer runs under another daemon)"
+                "output pinned to the daemon path (a consumer is reachable only by \
+                 inter-daemon forwarding)"
             );
             continue;
         }
@@ -635,7 +637,7 @@ fn wait_for_grace(ack_states: &[Arc<AckState>], grace: Duration) {
             .iter()
             .all(|state| state.ready.load(Ordering::Relaxed))
         {
-            return;
+            break;
         }
         if Instant::now() >= grace_deadline {
             break;
@@ -654,6 +656,15 @@ fn wait_for_grace(ack_states: &[Arc<AckState>], grace: Duration) {
                 "startup handshake incomplete after {}ms; output stays on the \
                  reliable daemon path for the rest of the run",
                 grace.as_millis()
+            );
+        } else {
+            // The positive half of the same decision, and the only signal that
+            // an output is *off* the daemon path — which for a consumer on
+            // another machine means its data no longer crosses two daemons.
+            // Logged per output, once, at the moment it is settled for the run.
+            debug!(
+                output = %state.output_id,
+                "startup handshake complete; output takes the direct zenoh path"
             );
         }
     }
@@ -1824,8 +1835,9 @@ impl DoraNode {
                     return Err(NodeError::Output(format!(
                         "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
                          the {}-byte daemon transport limit (the output is on the daemon \
-                         path: pinned for a consumer on another daemon, its startup \
-                         handshake did not complete, or no zenoh route is available)",
+                         path: pinned for a consumer only forwarding can reach, its \
+                         startup handshake did not complete, or no zenoh route is \
+                         available)",
                         v.len(),
                         dora_message::MAX_MESSAGE_BYTES,
                     )));

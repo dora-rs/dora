@@ -16,7 +16,7 @@ workspace = true
 
 [features]
 build = ["dep:git2", "dep:url"]
-zenoh = ["dep:zenoh"]
+zenoh = ["dep:zenoh", "dep:json5"]
 
 [dependencies]
 dora-message = { workspace = true }
@@ -41,6 +41,10 @@ git2 = { workspace = true, optional = true }
 fs_extra = "1.3.0"
 splitty = "1.0.2"
 zenoh = { workspace = true, optional = true }
+# Zenoh's own config format, so an operator's overlay file can carry comments
+# and unquoted keys like the config files zenoh documents. Already in the tree
+# via zenoh itself, so this adds no crate to the dependency graph.
+json5 = { version = "0.4", optional = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

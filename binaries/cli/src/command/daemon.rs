@@ -4,7 +4,7 @@ use dora_core::{
     descriptor::DescriptorExt,
     topics::{
         DORA_COORDINATOR_PORT_WS_DEFAULT, DORA_DAEMON_LOCAL_LISTEN_PORT_DEFAULT,
-        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, LOCALHOST,
+        DORA_DAEMON_LOCAL_LISTEN_PORT_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, LOCALHOST, ZenohListen,
     },
 };
 
@@ -82,8 +82,8 @@ pub struct Daemon {
     /// daemon's listen endpoint) for them yourself when using this flag.
     #[clap(long)]
     zenoh_no_multicast: bool,
-    /// IP address this daemon's Zenoh listener binds (e.g. `--zenoh-listen
-    /// 100.64.0.3`).
+    /// Address, and optionally port, this daemon's Zenoh listener binds (e.g.
+    /// `--zenoh-listen 100.64.0.3` or `--zenoh-listen 100.64.0.3:5456`).
     ///
     /// Zenoh advertises the address it binds, and remote daemons dial exactly
     /// that, so this is the address other daemons will use to reach this one.
@@ -93,8 +93,43 @@ pub struct Daemon {
     /// tunnel address on a mesh VPN such as Tailscale. Set this explicitly on a
     /// multi-homed host that would otherwise advertise an interface the other
     /// daemons cannot reach.
-    #[clap(long, value_name = "IP")]
-    zenoh_listen: Option<IpAddr>,
+    ///
+    /// Naming a port makes this daemon dialable *before* it has announced
+    /// anything, which is what `--zenoh-connect` on the other daemons needs.
+    /// Without one, the OS picks the port and peers can only learn it by
+    /// discovery. Bracket IPv6 when naming a port (`[fd7a:1::2]:5456`);
+    /// unbracketed, the trailing `:5456` reads as part of the address.
+    #[clap(long, value_name = "IP[:PORT]")]
+    zenoh_listen: Option<ZenohListen>,
+    /// Zenoh endpoints of the other daemons this one should dial (e.g.
+    /// `--zenoh-connect tcp/100.64.0.4:5456,tcp/100.64.0.5:5456`). Repeatable.
+    ///
+    /// Since zenoh 1.9, peers do not relay for each other: two daemons that
+    /// never form a direct link exchange nothing, with no fallback. Naming
+    /// every other daemon here establishes that clique by construction, with no
+    /// dependence on multicast or on gossip converging in time. Pair it with
+    /// `--zenoh-listen <IP>:<PORT>` so the peers dialing *this* daemon have an
+    /// endpoint they can predict.
+    ///
+    /// This is the mesh alternative to `--zenoh-peer`, which is a single shared
+    /// rendezvous every daemon both binds and dials, leaving the actual
+    /// daemon-to-daemon links to gossip.
+    #[clap(long, value_name = "ENDPOINT", value_delimiter = ',')]
+    zenoh_connect: Vec<String>,
+    /// JSON5 file of zenoh settings to layer on top of the configuration dora
+    /// computes, for this daemon and the nodes it spawns.
+    ///
+    /// Use it to point a deployment at zenoh routers you run yourself:
+    /// `{ connect: { endpoints: ["tcp/10.0.0.1:7447"] } }`. The two endpoint
+    /// lists (`connect.endpoints`, `listen.endpoints`) are *added* to dora's;
+    /// every other key replaces dora's value for that key.
+    ///
+    /// This is the additive counterpart to the `ZENOH_CONFIG` environment
+    /// variable, which builds the session entirely from its file — discarding
+    /// the direct node-to-node links the daemon plans, so same-machine traffic
+    /// ends up relayed through your router too. Setting both is an error.
+    #[clap(long, value_name = "PATH")]
+    zenoh_config_overlay: Option<PathBuf>,
     /// Suppresses all log output to stdout.
     #[clap(long)]
     quiet: bool,
@@ -130,6 +165,13 @@ impl Executable for Daemon {
                 DORA_DAEMON_LOCAL_LISTEN_PORT_ENV,
                 self.local_listen_port.to_string(),
             );
+        }
+        // Exported rather than passed down: the nodes this daemon spawns
+        // inherit it, so one flag configures the whole process tree the same
+        // way `ZENOH_CONFIG` does.
+        if let Some(overlay) = &self.zenoh_config_overlay {
+            // SAFETY: as above — no threads yet.
+            unsafe { std::env::set_var(DORA_ZENOH_CONFIG_OVERLAY_ENV, overlay) };
         }
 
         let mut builder = Builder::new_multi_thread();
@@ -285,7 +327,18 @@ impl Executable for Daemon {
                         handle_dataflow_result(result, None)
                     }
                     None => {
-                        dora_daemon::Daemon::run_with_zenoh_listen(SocketAddr::new(self.coordinator_addr, self.coordinator_port), self.machine_id, self.labels.unwrap_or_default(), self.local_listen_port, self.zenoh_peer, self.zenoh_listen, self.zenoh_no_multicast).await
+                        dora_daemon::Daemon::run_with_zenoh_listen(
+                            SocketAddr::new(self.coordinator_addr, self.coordinator_port),
+                            self.machine_id,
+                            self.labels.unwrap_or_default(),
+                            self.local_listen_port,
+                            dora_daemon::ZenohOptions {
+                                inter_daemon_peer: self.zenoh_peer,
+                                listen: self.zenoh_listen,
+                                connect: self.zenoh_connect,
+                                disable_multicast: self.zenoh_no_multicast,
+                            },
+                        ).await
                     }
                 }
             })
