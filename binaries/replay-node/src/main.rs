@@ -1,8 +1,12 @@
-use std::{fs::File, thread, time::Duration};
+use std::{
+    fs::File,
+    time::{Duration, Instant},
+};
 
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use dora_node_api::{
-    DoraArray, DoraNode, IntoArrow, arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
+    DoraArray, DoraNode, Event, EventStream, IntoArrow, TryRecvError,
+    arrow_utils::decode_arrow_ipc, arrow_v59::array::NullArray,
 };
 use dora_recording::RecordingReader;
 use eyre::Context;
@@ -47,6 +51,76 @@ fn pacing_sleep_nanos(prev_offset: u64, entry_offset: u64, speed: f64) -> u64 {
     (delta_nanos as f64 / speed) as u64
 }
 
+/// Whether the replay loop should keep going or wind down.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Replay {
+    /// Nothing from the daemon that concerns us; keep replaying.
+    Continue,
+    /// The daemon asked us to stop, or the event stream closed.
+    Stop,
+}
+
+/// Classify one poll of the daemon event stream.
+///
+/// `None` means the stream closed, which only happens once the daemon is gone —
+/// there is nobody left to replay into, so it ends the replay just like an
+/// explicit `Stop` does. A timeout surfaces as [`Event::Error`] rather than
+/// `None` (see [`EventStream::recv_timeout`]), so it correctly reads as
+/// `Continue` here and must not be mistaken for a closed stream.
+fn classify_event(event: Option<&Event>) -> Replay {
+    match event {
+        Some(Event::Stop(_)) => Replay::Stop,
+        None => Replay::Stop,
+        Some(_) => Replay::Continue,
+    }
+}
+
+/// Poll the daemon for a `Stop` without blocking.
+///
+/// Used on the paths that have no pacing gap to wait out: `--speed 0` replays
+/// as fast as possible, and the gap between two `--loop` passes is zero.
+fn poll_stop(events: &mut EventStream) -> Replay {
+    match events.try_recv() {
+        Ok(event) => classify_event(Some(&event)),
+        Err(TryRecvError::Empty) => Replay::Continue,
+        Err(TryRecvError::Closed) => Replay::Stop,
+    }
+}
+
+/// Wait out the pacing `gap` before the next entry, returning early if the
+/// daemon sends `Stop`.
+///
+/// This replaces a plain `thread::sleep`: the node used to never read its event
+/// stream at all, so it could not see `Stop` and kept replaying into live nodes
+/// until the daemon's force-kill grace deadline. Waiting *on* the event stream
+/// paces and stays responsive in one call, with no added latency — a timeout
+/// costs the same as the sleep it replaces.
+///
+/// Events other than `Stop` (an `InputClosed`, a timeout `Error`) don't end the
+/// replay, so we keep waiting out whatever is left of the gap rather than
+/// returning early and pacing too fast.
+fn wait_out_gap(events: &mut EventStream, gap: Duration) -> Replay {
+    if gap.is_zero() {
+        return poll_stop(events);
+    }
+    // Track elapsed rather than an absolute `Instant::now() + gap` deadline: a
+    // pathologically small `--speed` can make `gap` large enough to overflow
+    // that addition and panic, where the `thread::sleep` this replaced would
+    // merely have slept for it.
+    let start = Instant::now();
+    loop {
+        let Some(remaining) = gap.checked_sub(start.elapsed()) else {
+            return Replay::Continue;
+        };
+        if remaining.is_zero() {
+            return Replay::Continue;
+        }
+        if classify_event(events.recv_timeout(remaining).as_ref()) == Replay::Stop {
+            return Replay::Stop;
+        }
+    }
+}
+
 fn main() -> eyre::Result<()> {
     let replay_file =
         std::env::var("DORA_REPLAY_FILE").wrap_err("DORA_REPLAY_FILE env var not set")?;
@@ -60,7 +134,7 @@ fn main() -> eyre::Result<()> {
         .map(|v| v == "true" || v == "1")
         .unwrap_or(false);
 
-    let (mut node, _events) = DoraNode::init_from_env()?;
+    let (mut node, mut events) = DoraNode::init_from_env()?;
 
     loop {
         let file =
@@ -74,16 +148,18 @@ fn main() -> eyre::Result<()> {
         let mut prev_offset: u64 = 0;
         let mut replayed = 0u64;
         let mut skipped = 0u64;
+        let mut stopped = false;
 
         while let Some(entry) = reader.next_entry()? {
             if entry.node_id != replay_node {
                 continue;
             }
 
-            // Sleep to maintain timing
+            // Wait out the pacing gap, watching for `Stop` while we do.
             let sleep_nanos = pacing_sleep_nanos(prev_offset, entry.timestamp_offset_nanos, speed);
-            if sleep_nanos > 0 {
-                thread::sleep(Duration::from_nanos(sleep_nanos));
+            if wait_out_gap(&mut events, Duration::from_nanos(sleep_nanos)) == Replay::Stop {
+                stopped = true;
+                break;
             }
             prev_offset = entry.timestamp_offset_nanos;
 
@@ -147,6 +223,15 @@ fn main() -> eyre::Result<()> {
             "dora-replay-node[{replay_node}]: replayed {replayed} messages ({skipped} skipped)"
         );
 
+        // A stop cuts the pass short, so its counters describe a partial pass.
+        // Exit `Ok` and skip the completeness check below: the pass was
+        // interrupted, not defective, and failing here would turn every
+        // ordinary `dora stop` into a replay error.
+        if stopped {
+            eprintln!("dora-replay-node[{replay_node}]: stop requested, exiting");
+            break;
+        }
+
         // A pass that matched records but could decode none of them emitted
         // nothing. Skipping individual corrupt records keeps replay resilient,
         // but a *systematically* undecodable recording (format drift like
@@ -164,6 +249,14 @@ fn main() -> eyre::Result<()> {
         if !do_loop {
             break;
         }
+
+        // A pass that matched no entries never reaches the poll inside the loop
+        // above, so check here too — otherwise `--loop` on a recording holding
+        // nothing for this node spins reopening the file with no way to stop.
+        if poll_stop(&mut events) == Replay::Stop {
+            eprintln!("dora-replay-node[{replay_node}]: stop requested, exiting");
+            break;
+        }
         eprintln!("dora-replay-node[{replay_node}]: looping...");
     }
 
@@ -172,10 +265,54 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{decode_recorded_payload, pacing_sleep_nanos, replay_emitted_nothing_usable};
+    use super::{
+        Replay, classify_event, decode_recorded_payload, pacing_sleep_nanos,
+        replay_emitted_nothing_usable,
+    };
     use dora_node_api::DoraArray;
     use dora_node_api::arrow_utils::encode_arrow_ipc;
     use dora_node_api::arrow_v59::array::Int32Array;
+    use dora_node_api::{Event, StopCause};
+
+    #[test]
+    fn stop_event_ends_the_replay() {
+        // Both stop causes end the replay. `Manual` is the one that matters in
+        // practice: its docs say a node must exit as soon as possible or dora
+        // kills it, which is exactly what this node used to fail to do.
+        assert_eq!(
+            classify_event(Some(&Event::Stop(StopCause::Manual))),
+            Replay::Stop
+        );
+        assert_eq!(
+            classify_event(Some(&Event::Stop(StopCause::AllInputsClosed))),
+            Replay::Stop
+        );
+    }
+
+    #[test]
+    fn closed_stream_ends_the_replay() {
+        // `None` only comes from a closed stream — the daemon is gone, so there
+        // is nobody left to replay into.
+        assert_eq!(classify_event(None), Replay::Stop);
+    }
+
+    #[test]
+    fn unrelated_events_do_not_end_the_replay() {
+        // A pacing wait that times out surfaces as `Event::Error`, not as a
+        // closed stream. Treating it as a stop would end every replay at its
+        // first pacing gap, so this is the case that keeps replay working at
+        // all.
+        assert_eq!(
+            classify_event(Some(&Event::Error("receiver timed out".to_string()))),
+            Replay::Continue
+        );
+        assert_eq!(
+            classify_event(Some(&Event::InputClosed {
+                id: "some_input".into()
+            })),
+            Replay::Continue
+        );
+    }
 
     #[test]
     fn first_entry_honors_its_initial_offset() {
