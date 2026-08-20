@@ -5,7 +5,7 @@ removed `register_tensor_pool` / `write_tensor_pool` / `read_tensor_pool`
 methods, and the two dtype maps existed only to serve them. They have no
 other caller in dora, so they travelled with the transport.
 
-`_CudaArrayInterface` stays in `dora/cuda.py` — `open_ipc_handle` still uses
+`_CudaArrayInterface` lives in `cuda.py` alongside these — `open_ipc_handle` still uses
 it. Reinstating these belongs on the dora-pool side of the seam, not in the
 `dora` package. See ../README.md.
 """
@@ -119,6 +119,17 @@ def tensor_from_info(tensor_info: dict) -> torch.Tensor:
         # claims a large shape over a small buffer would produce an
         # out-of-bounds GPU tensor (the CPU path is saved by numpy
         # reshape, but the GPU path has no equivalent backstop).
+        #
+        # Reject negative dimensions first: the size check below uses a
+        # plain running product, and a negative dim makes that product
+        # negative, so `expected_bytes > size` would be False and the
+        # guard would be silently bypassed — exactly the malformed
+        # (peer-controlled) header it exists to reject. A zero dim is a
+        # legitimate empty tensor and passes the size check as 0 <= size.
+        if any(dim < 0 for dim in shape):
+            raise ValueError(
+                f"tensor shape {shape} has a negative dimension — header may be corrupted"
+            )
         expected_bytes = np.dtype(np_dtype).itemsize
         for dim in shape:
             expected_bytes *= dim

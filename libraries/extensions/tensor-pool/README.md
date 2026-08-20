@@ -46,7 +46,7 @@ those are what the daemon half implements.
 
 ```python
 from dora import Node
-from dora.cuda import get_tensor_info, tensor_from_info   # helpers, torch-only
+from dora_tensor_pool import get_tensor_info, tensor_from_info   # helpers, torch-only
 
 node = Node()
 pool_id = node.register_tensor_pool(get_tensor_info(tensor), device="cuda:0")
@@ -114,7 +114,7 @@ the generic channel instead.
 | `src/lib.rs` | `TensorPoolManager` — the pool table and `/dev/shm` reclamation |
 | `python/src/transport.rs` | the transport: segment layout, seqlock, CUDA helpers, the four operations |
 | `python/src/seam.rs` | descriptor encode/decode over the extension channel |
-| `python/tensor_info_helpers.py` | `get_tensor_info` / `tensor_from_info` for torch tensors |
+| `python/dora_tensor_pool/` | `get_tensor_info` / `tensor_from_info` and the CUDA IPC helpers, importable as `dora_tensor_pool` |
 | `examples/` | dataflows, CPU and CUDA |
 | `tests/` | smoke tests (need `torch`; not wired to the default suite) |
 

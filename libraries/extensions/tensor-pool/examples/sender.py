@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import get_tensor_info
+from dora_tensor_pool import get_tensor_info
 
 SIZE = 15000 * 512
 MESSAGE_COUNT = int(os.getenv("message_num", "100"))
