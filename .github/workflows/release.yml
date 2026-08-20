@@ -83,6 +83,8 @@ jobs:
             dora-node-api-c
             dora-operator-api-c
             dora-coordinator
+            # Optional dep of dora-daemon; must exist on crates.io first.
+            dora-tensor-pool
             dora-daemon
             dora-operator-api-python
             dora-runtime-api

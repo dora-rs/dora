@@ -107,6 +107,8 @@ jobs:
           # Publish binaries crates (before the ROS2 bridge, whose
           # dev-deps on dora-daemon/dora-cli must resolve during verify)
           publish_if_not_exists dora-coordinator
+          # Optional dep of dora-daemon; must exist on crates.io first.
+          publish_if_not_exists dora-tensor-pool
           publish_if_not_exists dora-daemon
           publish_if_not_exists dora-operator-api-python
           # The former `dora-runtime`, split per language. `dora-cli` depends on
