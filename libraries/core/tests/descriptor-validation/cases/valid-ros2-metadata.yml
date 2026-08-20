@@ -1,0 +1,12 @@
+nodes:
+  - id: bridge
+    ros2:
+      topic: /odom
+      message_type: nav_msgs/msg/Odometry
+      direction: subscribe
+    outputs:
+      - odom
+    output_metadata:
+      odom:
+        - request_id
+    pattern: service-server

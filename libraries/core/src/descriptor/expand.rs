@@ -1,6 +1,9 @@
+use super::classify;
 use dora_message::{
     config::{Input, InputMapping, UserInputMapping},
-    descriptor::{Descriptor, EnvValue, Node},
+    descriptor::{
+        DYNAMIC_SOURCE, Descriptor, EnvValue, Node, OperatorConfig, OperatorSource, SHELL_SOURCE,
+    },
     id::{DataId, NodeId},
 };
 use eyre::{Context, bail};
@@ -110,6 +113,10 @@ pub fn expand_modules_with_boundaries(
 
     for node in &descriptor.nodes {
         if node.module.is_some() {
+            // Validate module node fields against the module whitelist
+            classify::check_module(node)
+                .with_context(|| format!("invalid module node `{}`", node.id))?;
+
             let (expanded, omap) =
                 expand_module_node(node, base_dir, &canonical_base, 0, &mut seen)?;
             let module_id = node.id.to_string();
@@ -718,26 +725,7 @@ fn expand_module_node(
             )?;
         }
 
-        // Resolve relative paths: make inner node paths relative to base_dir.
-        // Normalize lexically (collapse `..`) before the containment check so
-        // that paths like `../../evil` are detected even though the binary may
-        // not exist yet (ruling out filesystem canonicalize).
-        if let Some(ref path) = inner_node.path
-            && !super::source_is_url(path)
-            && !Path::new(path).is_absolute()
-        {
-            let resolved = normalize_path(&module_dir.join(path));
-            let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
-                eyre::eyre!(
-                    "module node `{}` path `{}` resolves outside the project \
-                         directory (resolved to `{}`)",
-                    inner_node.id,
-                    path,
-                    resolved.display()
-                )
-            })?;
-            inner_node.path = Some(relative.to_string_lossy().into_owned());
-        }
+        resolve_inner_node_paths(&mut inner_node, module_dir, canonical_base)?;
 
         // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
@@ -846,8 +834,88 @@ fn expand_module_node(
     Ok((final_nodes, output_map))
 }
 
+fn resolve_inner_node_paths(
+    node: &mut Node,
+    module_dir: &Path,
+    canonical_base: &Path,
+) -> eyre::Result<()> {
+    let owner = node.id.to_string();
+    if let Some(ref mut path) = node.path {
+        resolve_module_relative_path(path, module_dir, canonical_base, &owner)?;
+    }
+    if let Some(ref mut operators) = node.operators {
+        for op in &mut operators.operators {
+            resolve_operator_source_paths(&mut op.config, module_dir, canonical_base, &owner)?;
+        }
+    }
+    if let Some(ref mut operator) = node.operator {
+        resolve_operator_source_paths(&mut operator.config, module_dir, canonical_base, &owner)?;
+    }
+    Ok(())
+}
+
+fn resolve_operator_source_paths(
+    config: &mut OperatorConfig,
+    module_dir: &Path,
+    canonical_base: &Path,
+    owner: &str,
+) -> eyre::Result<()> {
+    match &mut config.source {
+        OperatorSource::SharedLibrary(path) | OperatorSource::Wasm(path) => {
+            resolve_module_relative_path(path, module_dir, canonical_base, owner)
+        }
+        OperatorSource::Python(source) => {
+            resolve_module_relative_path(&mut source.source, module_dir, canonical_base, owner)
+        }
+    }
+}
+
+fn resolve_module_relative_path(
+    path: &mut String,
+    module_dir: &Path,
+    canonical_base: &Path,
+    owner: &str,
+) -> eyre::Result<()> {
+    // Resolve relative paths: make inner node/operator sources relative to
+    // base_dir. Normalize lexically (collapse `..`) before the containment
+    // check so paths like `../../evil` are detected even if the binary does
+    // not exist yet (ruling out filesystem canonicalize).
+    if path == DYNAMIC_SOURCE
+        || path == SHELL_SOURCE
+        || super::source_is_url(path)
+        // `Path::is_absolute()` is false for a Unix-style `/foo` on Windows,
+        // where `module_dir.join("/foo")` then rewrites it into the module
+        // directory and the confinement check below rejects it with a
+        // misleading "resolves outside the project directory".
+        || is_absolute_any_platform(path)
+    {
+        return Ok(());
+    }
+
+    let resolved = normalize_path(&module_dir.join(path.as_str()));
+    let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
+        eyre::eyre!(
+            "module node `{}` path `{}` resolves outside the project \
+                 directory (resolved to `{}`)",
+            owner,
+            path,
+            resolved.display()
+        )
+    })?;
+    *path = relative.to_string_lossy().into_owned();
+    Ok(())
+}
+
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
-    prepend_build(&mut node.build, module_build);
+    // The node-level `build` is consumed only by `path:` nodes and by nested
+    // `module:` nodes (which forward it to their own leaves in Phase 2).
+    // Setting it on a runtime/operator/ROS2 node used to be a harmless dead
+    // value; the field classifier now rejects `build` on those kinds, so the
+    // module build has to land in the operator configs only -- which is where
+    // `build/mod.rs` reads it from for runtime nodes anyway.
+    if node.path.is_some() || node.module.is_some() {
+        prepend_build(&mut node.build, module_build);
+    }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
             prepend_build(&mut op.config.build, module_build);
@@ -886,8 +954,8 @@ fn propagate_module_node_env(
     }
 }
 
-/// Substitute `${_param.name}` references in a node's args and inject params
-/// into the node's env map as `EnvValue::String` entries.
+/// Substitute `${_param.name}` and `$PARAM_<NAME>` references in a node's args
+/// and inject params into the node's env map as `EnvValue::String` entries.
 fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>) {
     // Substitute in args
     if let Some(ref mut args) = node.args {
@@ -904,8 +972,15 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
     }
 }
 
-/// Replace every `${_param.<key>}` token with its parameter value in a single
-/// left-to-right pass.
+/// Replace every parameter reference with its value in a single left-to-right
+/// pass. Two forms are accepted:
+///
+/// - `${_param.<key>}` -- delimited; the key is matched case-sensitively and
+///   the closing brace terminates it.
+/// - `$PARAM_<KEY>` -- the documented shell-style form (see `docs/modules.md`),
+///   matched against the upper-cased key. Having no delimiter it extends over
+///   the maximal run of `[A-Za-z0-9_]`, so `$PARAM_SPEED_LIMIT` is a single
+///   token and never partially matches a declared `speed` (#2901).
 ///
 /// A previous implementation looped over the params calling `String::replace`
 /// on the accumulating result, which had two problems: the outcome depended on
@@ -916,34 +991,70 @@ fn substitute_params_in_node(node: &mut Node, params: &BTreeMap<String, String>)
 /// verbatim, matching the old behavior of only replacing keys present in
 /// `params`.
 fn substitute_params_in_str(s: &str, params: &BTreeMap<String, String>) -> String {
-    const PREFIX: &str = "${_param.";
+    const BRACED: &str = "${_param.";
+    const ENV_STYLE: &str = "$PARAM_";
+
+    // `$PARAM_<KEY>` matches against the uppercased param name, the same
+    // mapping `substitute_params_in_node` uses for the injected env vars.
+    // Keys that differ only in case are rejected before we get here, so this
+    // map cannot silently drop a param.
+    let env_style: BTreeMap<String, &String> = params
+        .iter()
+        .map(|(key, value)| (key.to_uppercase(), value))
+        .collect();
+
     let mut result = String::with_capacity(s.len());
     let mut rest = s;
-    while let Some(start) = rest.find(PREFIX) {
+    while let Some(start) = rest.find('$') {
         result.push_str(&rest[..start]);
-        let after_prefix = &rest[start + PREFIX.len()..];
-        match after_prefix.find('}') {
-            Some(end) => {
-                let key = &after_prefix[..end];
-                match params.get(key) {
-                    Some(value) => result.push_str(value),
-                    // Unknown key: emit the token unchanged rather than dropping it.
-                    None => {
-                        result.push_str(PREFIX);
-                        result.push_str(key);
-                        result.push('}');
+        let at_token = &rest[start..];
+
+        if let Some(after_prefix) = at_token.strip_prefix(BRACED) {
+            match after_prefix.find('}') {
+                Some(end) => {
+                    let key = &after_prefix[..end];
+                    match params.get(key) {
+                        Some(value) => result.push_str(value),
+                        // Unknown key: emit the token unchanged rather than dropping it.
+                        None => {
+                            result.push_str(BRACED);
+                            result.push_str(key);
+                            result.push('}');
+                        }
                     }
+                    // Continue *after* the closing brace so a substituted value is
+                    // never re-scanned for further tokens.
+                    rest = &after_prefix[end + 1..];
                 }
-                // Continue *after* the closing brace so a substituted value is
-                // never re-scanned for further tokens.
-                rest = &after_prefix[end + 1..];
+                // No closing brace: emit the prefix literally and continue past it
+                // (guarantees progress, so the loop always terminates).
+                None => {
+                    result.push_str(BRACED);
+                    rest = after_prefix;
+                }
             }
-            // No closing brace: emit the prefix literally and continue past it
-            // (guarantees progress, so the loop always terminates).
-            None => {
-                result.push_str(PREFIX);
-                rest = after_prefix;
+        } else if let Some(after_prefix) = at_token.strip_prefix(ENV_STYLE) {
+            // The undelimited form ends at the first character that cannot be
+            // part of a shell identifier, so `$PARAM_SPEED_LIMIT` is one token
+            // and never matches a declared `speed` as a prefix (#2901).
+            let end = after_prefix
+                .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                .unwrap_or(after_prefix.len());
+            let key = &after_prefix[..end];
+            match env_style.get(key) {
+                Some(value) => result.push_str(value),
+                // Unknown key: emit the token unchanged rather than dropping it.
+                None => {
+                    result.push_str(ENV_STYLE);
+                    result.push_str(key);
+                }
             }
+            rest = &after_prefix[end..];
+        } else {
+            // A bare `$` that starts neither form: emit it and step past, so
+            // the loop always makes progress.
+            result.push('$');
+            rest = &at_token[1..];
         }
     }
     result.push_str(rest);
@@ -2060,6 +2171,110 @@ nodes:
     }
 
     #[test]
+    fn expand_params_in_documented_env_style_args() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "args_module.yml",
+            r#"
+module:
+  name: with_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    args: --speed $PARAM_SPEED --mode $PARAM_MODE
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+      mode: turbo
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        assert_eq!(proc.args.as_deref(), Some("--speed 2.0 --mode turbo"));
+    }
+
+    #[test]
+    fn expand_params_in_env_style_args_distinguishes_overlapping_keys() {
+        // `speed` and `speed_limit` overlap as prefixes. The scanner takes the
+        // maximal `[A-Za-z0-9_]` run as the key, so each token resolves to the
+        // key it names exactly -- no ordering between the params is involved.
+        // (The old implementation needed a longest-first sort here.)
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "args_module.yml",
+            r#"
+module:
+  name: with_args
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    args: --short $PARAM_SPEED --long $PARAM_SPEED_LIMIT
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: args_module.yml
+    inputs:
+      data: src/val
+    params:
+      speed: "2.0"
+      speed_limit: "4.5"
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        assert_eq!(proc.args.as_deref(), Some("--short 2.0 --long 4.5"));
+    }
+
+    #[test]
     fn substitute_params_basic_and_unknown() {
         let params = BTreeMap::from([
             ("speed".to_string(), "2.0".to_string()),
@@ -2084,6 +2299,44 @@ nodes:
             substitute_params_in_str("prefix ${_param.speed", &params),
             "prefix ${_param.speed"
         );
+    }
+
+    #[test]
+    fn substitute_params_env_style_requires_an_identifier_boundary() {
+        // `$PARAM_<KEY>` has no terminator, so the key must run to the end of
+        // the shell-identifier characters. A declared param that is only a
+        // *prefix* of the token must not match (#2901).
+        let params = BTreeMap::from([("speed".to_string(), "2.0".to_string())]);
+        assert_eq!(
+            substitute_params_in_str("--flag $PARAM_SPEED_LIMIT", &params),
+            "--flag $PARAM_SPEED_LIMIT"
+        );
+        // The exact token still substitutes, and a non-identifier character
+        // terminates it.
+        assert_eq!(
+            substitute_params_in_str("--flag $PARAM_SPEED --x", &params),
+            "--flag 2.0 --x"
+        );
+        assert_eq!(
+            substitute_params_in_str("$PARAM_SPEED,$PARAM_SPEED", &params),
+            "2.0,2.0"
+        );
+        // A bare `$` and an unknown token are both emitted verbatim.
+        assert_eq!(
+            substitute_params_in_str("cost $5 $PARAM_MISSING", &params),
+            "cost $5 $PARAM_MISSING"
+        );
+    }
+
+    #[test]
+    fn substitute_params_env_style_is_not_re_expanded() {
+        // A value that itself looks like a token is inserted verbatim, never
+        // re-scanned — the property the single-pass scanner exists for.
+        let params = BTreeMap::from([
+            ("a".to_string(), "$PARAM_B".to_string()),
+            ("b".to_string(), "x".to_string()),
+        ]);
+        assert_eq!(substitute_params_in_str("$PARAM_A", &params), "$PARAM_B");
     }
 
     #[test]
@@ -2378,6 +2631,82 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.build.as_deref(), Some("make all"));
+    }
+
+    /// A module-level `build:` must not make an operator inner node
+    /// unresolvable. The expansion-only tests above stop at `expand_modules`;
+    /// the field classifier runs at *resolution*, so the regression this pins
+    /// lives in the seam between the two (#3070).
+    #[test]
+    fn module_build_keeps_operator_inner_nodes_resolvable() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "kinds_module.yml",
+            r#"
+build: pip install shared
+
+module:
+  name: kinds
+  inputs: [data]
+  outputs: [from_runtime, from_operator]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: proc
+        inputs:
+          data: _mod/data
+        outputs:
+          - from_runtime
+
+  - id: single
+    operator:
+      python: single.py
+      inputs:
+        data: _mod/data
+      outputs:
+        - from_operator
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: kinds_module.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        // The module build must land in the operator configs, which is where
+        // `build/mod.rs` reads it from for runtime nodes...
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        assert_eq!(
+            runtime.operators.as_ref().unwrap().operators[0]
+                .config
+                .build
+                .as_deref(),
+            Some("pip install shared"),
+        );
+        // ...and must NOT land on the node itself, where no kind but
+        // `path:`/`module:` consumes it.
+        assert_eq!(runtime.build, None);
+
+        crate::descriptor::DescriptorExt::resolve_aliases_and_set_defaults(&expanded)
+            .expect("a module-level build must not make operator nodes unresolvable");
     }
 
     #[test]
@@ -3140,6 +3469,45 @@ nodes:
     }
 
     #[test]
+    fn reject_inner_operator_source_path_traversal_via_dotdot() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "escape_operator_module.yml",
+            r#"
+module:
+  name: escape_operator
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: runtime
+    operators:
+      - id: evil
+        shared-library: ../../etc/evil-operator
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: escape_operator_module.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err(), "expected error but got success");
+        let msg = result.unwrap_err().to_string();
+        assert!(
+            msg.contains("resolves outside the project directory"),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
     fn reject_invalid_param_key() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
@@ -3501,6 +3869,210 @@ nodes:
 
         let err = check_module_file(&path).unwrap_err();
         assert!(err.to_string().contains("_mod/nonexistent"));
+    }
+
+    #[test]
+    fn expand_resolves_inner_operator_and_node_sources_relative_to_module_file() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/source_paths.yml",
+            r#"
+module:
+  name: source_paths
+  inputs: [data]
+  outputs: [from_runtime, from_operator, from_path]
+
+nodes:
+  - id: runtime
+    operators:
+      - id: proc
+        shared-library: libproc.so
+        inputs:
+          x: _mod/data
+        outputs:
+          - from_runtime
+
+  - id: single
+    operator:
+      python: single.py
+      inputs:
+        x: _mod/data
+      outputs:
+        - from_operator
+
+  - id: runner
+    path: runner.py
+    inputs:
+      x: _mod/data
+    outputs:
+      - from_path
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/source_paths.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let runtime = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runtime")
+            .unwrap();
+        let proc_source = &runtime
+            .operators
+            .as_ref()
+            .unwrap()
+            .operators
+            .first()
+            .unwrap()
+            .config
+            .source;
+        // `normalize_path` builds the rewritten path with `MAIN_SEPARATOR`,
+        // so on Windows these come back as `modules\\nested\\...`. Compare on a
+        // normalized form -- CI runs this suite on windows-latest nightly.
+        assert!(
+            matches!(proc_source, dora_message::descriptor::OperatorSource::SharedLibrary(path) if path.replace('\\', "/") == "modules/nested/libproc.so"),
+            "unexpected runtime operator source: {proc_source:?}"
+        );
+
+        let single = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.single")
+            .unwrap();
+        let single_source = &single.operator.as_ref().unwrap().config.source;
+        assert!(
+            matches!(single_source, dora_message::descriptor::OperatorSource::Python(source) if source.source.replace('\\', "/") == "modules/nested/single.py"),
+            "unexpected single operator source: {single_source:?}"
+        );
+
+        let runner = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.runner")
+            .unwrap();
+        assert_eq!(
+            runner
+                .path
+                .as_deref()
+                .map(|p| p.replace('\\', "/"))
+                .as_deref(),
+            Some("modules/nested/runner.py")
+        );
+    }
+
+    /// `path: dynamic` is a sentinel, not a file: the daemon matches it
+    /// verbatim to decide a node is externally spawned. Module expansion must
+    /// leave it alone, or a module in a subdirectory turns it into
+    /// `modules/nested/dynamic` and the node is spawned as a binary instead.
+    #[test]
+    fn expand_preserves_dynamic_source_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/dynamic_source.yml",
+            r#"
+module:
+  name: dynamic_source
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: dyn
+    path: dynamic
+    inputs:
+      x: _mod/data
+    outputs:
+      - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/dynamic_source.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let dyn_node = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.dyn")
+            .unwrap();
+
+        assert_eq!(dyn_node.path.as_deref(), Some("dynamic"));
+    }
+
+    /// Same as the `dynamic` case: `path: shell` tells the daemon to run
+    /// `args` through a shell, so expansion must not rewrite it into a path.
+    #[test]
+    fn expand_preserves_shell_source_sentinel() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "modules/nested/shell_source.yml",
+            r#"
+module:
+  name: shell_source
+  inputs: [data]
+  outputs: [result]
+
+nodes:
+  - id: shell
+    path: shell
+    args: echo hi
+    inputs:
+      x: _mod/data
+    outputs:
+      - result
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: modules/nested/shell_source.yml
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let shell_node = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.shell")
+            .unwrap();
+
+        assert_eq!(shell_node.path.as_deref(), Some("shell"));
     }
 
     /// Expand a dataflow whose single module node `m` re-exports `result`, and

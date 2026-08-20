@@ -1,0 +1,6 @@
+nodes:
+  - id: operator
+    operator:
+      python: op.py
+      outputs:
+        - result

@@ -22,7 +22,7 @@ fn run_source(events: Vec<TimedIncomingEvent>) -> eyre::Result<Vec<serde_json::V
     let inputs = dora_node_api::integration_testing::TestingInput::Input(
         IntegrationTestInput::new("source".parse().unwrap(), events),
     );
-    let (tx, mut rx) = dora_node_api::integration_testing::unbounded_channel();
+    let (tx, mut rx) = dora_node_api::integration_testing::output_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 
