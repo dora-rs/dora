@@ -63,6 +63,9 @@ A module file has two sections:
 | `inputs_optional` | list | no | Optional input ports (silently skipped if not wired) |
 | `outputs` | list | no | Output port names exposed to the parent dataflow |
 
+Unknown fields in the module header are rejected whenever Dora loads the
+module, including `dora expand`, `dora build`, and `dora run`.
+
 ### `nodes:` list
 
 Standard node definitions, with one special syntax: **`_mod/port_name`** references a module input port. When expanded, `_mod/port_name` is replaced with whatever the parent wired to that port.
@@ -188,6 +191,11 @@ nodes:
 
 After expansion, node IDs are fully qualified: `outer.inner.some_node`.
 
+Only outputs declared by a nested module are visible to its parent. A parent
+module can wire or re-export `inner/processed` from the example above because
+`processed` is listed in `inner_module.yml`'s `module.outputs`; it cannot reach
+private outputs produced by nodes inside `inner_module.yml`.
+
 ## Optional Inputs
 
 Declare inputs as optional when a module should work with or without certain connections:
@@ -229,11 +237,22 @@ dora expand --module modules/transform_module.yml
 
 This checks:
 - Valid YAML structure
-- Module header is present with `name`, `inputs`, `outputs`
+- Module header is present with required `name`, optional `inputs`/`outputs`, and no unknown header fields
 - All `_mod/` references correspond to declared inputs or optional inputs
 - Every declared output is produced by some inner node (counting `operator:`/`operators:` and legacy `custom:` outputs)
 - No duplicate node IDs
 - Internal wiring is consistent
+- Nested module files exist, are relative paths, are acyclic, and stay within the nesting depth limit
+
+Every check above runs recursively: a nested module file is validated in full,
+not just read for its declared outputs.
+
+A declared output must have **exactly one** producer. If two inner nodes emit
+the same output name and that name is also listed in `module.outputs`,
+expansion fails rather than silently picking the first producer. `module.outputs`
+is a plain list with no `output: node/port` mapping syntax, so the fix is to
+rename the internal signal that is not being exported. This applies to
+`dora run` and `dora build`, not just `dora expand`.
 
 ## Source-path resolution inside modules
 

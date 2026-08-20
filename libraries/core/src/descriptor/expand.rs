@@ -43,6 +43,7 @@ type ModuleOutputMap = BTreeMap<String, UserInputMapping>;
 
 /// Header section of a module definition file.
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct ModuleHeader {
     name: String,
     #[serde(default)]
@@ -160,7 +161,7 @@ pub fn expand_modules_with_boundaries(
 /// Validate a module file in isolation without expanding it into a dataflow.
 ///
 /// Checks:
-/// - Module header is well-formed (name, inputs, outputs)
+/// - Module header is well-formed (required name, optional inputs/outputs)
 /// - All inner nodes are parseable
 /// - All `_mod/X` references point to declared inputs or optional inputs
 /// - All declared outputs are produced by some inner node (or nested module)
@@ -169,7 +170,31 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     let canonical = module_path
         .canonicalize()
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
-    let module_file = load_module_file(&canonical)?;
+    let mut seen = HashSet::new();
+    check_module_file_inner(&canonical, 0, &mut seen)
+}
+
+fn check_module_file_inner(
+    canonical: &Path,
+    depth: u8,
+    seen: &mut HashSet<PathBuf>,
+) -> eyre::Result<()> {
+    if depth >= MAX_MODULE_DEPTH {
+        bail!(
+            "module nesting exceeds depth limit of {MAX_MODULE_DEPTH} while checking module file: {}",
+            canonical.display()
+        );
+    }
+
+    if !seen.insert(canonical.to_path_buf()) {
+        bail!(
+            "circular module reference detected while checking module file: {}\n\
+             hint: check that module files do not reference each other in a cycle",
+            canonical.display()
+        );
+    }
+
+    let module_file = load_module_file(canonical)?;
     validate_module_header(&module_file.module)?;
     let module_dir = canonical
         .parent()
@@ -205,12 +230,15 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
     // Runtime (operator) and legacy custom nodes declare their outputs in
     // config.outputs / run_config.outputs rather than the node-level `outputs`
     // set, so `node_output_refs` collects those too (see #2817).
-    let mut inner_outputs: BTreeSet<String> = module_file
-        .nodes
-        .iter()
-        .filter(|n| n.module.is_none())
-        .flat_map(|n| node_output_refs(n).into_iter().map(|(name, _)| name))
-        .collect();
+    let mut inner_outputs: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for node in module_file.nodes.iter().filter(|n| n.module.is_none()) {
+        for (name, output_ref) in node_output_refs(node) {
+            inner_outputs
+                .entry(name)
+                .or_default()
+                .push(format!("{}/{}", node.id, output_ref));
+        }
+    }
 
     // Check nested module files exist and collect their declared outputs
     for node in &module_file.nodes {
@@ -252,23 +280,44 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
                 &nested_module.module,
                 &node.inputs,
             )?;
+            check_module_file_inner(&nested_canonical, depth + 1, seen).with_context(|| {
+                format!(
+                    "module `{}`: while checking nested module `{}` referenced by node `{}`",
+                    module_file.module.name, nested_module.module.name, node.id,
+                )
+            })?;
             for output in &nested_module.module.outputs {
-                inner_outputs.insert(output.to_string());
+                inner_outputs
+                    .entry(output.to_string())
+                    .or_default()
+                    .push(format!("{}/{}", node.id, output));
             }
         }
     }
 
     for declared_output in &module_file.module.outputs {
         let output_str = declared_output.to_string();
-        if !inner_outputs.contains(&output_str) {
-            bail!(
-                "module `{}` declares output `{}` but no inner node produces it",
-                module_file.module.name,
-                declared_output,
-            );
+        match inner_outputs.get(&output_str) {
+            None => {
+                bail!(
+                    "module `{}` declares output `{}` but no inner node produces it",
+                    module_file.module.name,
+                    declared_output,
+                );
+            }
+            Some(producers) if producers.len() > 1 => {
+                bail!(
+                    "module `{}` declares output `{}` but multiple inner nodes produce it: {}",
+                    module_file.module.name,
+                    declared_output,
+                    producers.join(", "),
+                );
+            }
+            Some(_) => {}
         }
     }
 
+    seen.remove(canonical);
     Ok(())
 }
 
@@ -702,6 +751,8 @@ fn expand_module_node(
     // Collect nested output maps so sibling nodes can reference nested module
     // outputs correctly via rewrite_external_refs.
     let mut nested_output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
+    let mut direct_output_targets: BTreeMap<String, Vec<(String, UserInputMapping)>> =
+        BTreeMap::new();
     let mut final_nodes = Vec::new();
     for inner_node in prefixed_nodes {
         if inner_node.module.is_some() {
@@ -716,9 +767,24 @@ fn expand_module_node(
                     prepend_module_build_to_node(nested_node, outer_build);
                 }
             }
+            for (output, target) in &nested_omap {
+                direct_output_targets
+                    .entry(output.clone())
+                    .or_default()
+                    .push((format!("{nested_id}/{output}"), target.clone()));
+            }
             nested_output_maps.insert(nested_id, nested_omap);
             final_nodes.extend(nested);
         } else {
+            for (name, output_ref) in node_output_refs(&inner_node) {
+                direct_output_targets.entry(name).or_default().push((
+                    format!("{}/{}", inner_node.id, output_ref),
+                    UserInputMapping {
+                        source: inner_node.id.clone(),
+                        output: output_ref.into(),
+                    },
+                ));
+            }
             final_nodes.push(inner_node);
         }
     }
@@ -728,31 +794,36 @@ fn expand_module_node(
         rewrite_external_refs(&mut final_nodes, &nested_output_maps)?;
     }
 
-    // Phase 3: build output map from fully-expanded flat nodes. A producer may
+    // Phase 3: build output map from direct children only. A producer may
     // be a plain node, a runtime node's operator, or a legacy custom node, so
     // the lookup goes through `node_output_refs` — which also yields the form
     // consumers must use to address the output (see #2817).
     let mut output_map = ModuleOutputMap::new();
     for declared_output in &module_file.module.outputs {
         let declared = declared_output.to_string();
-        let target = final_nodes
-            .iter()
-            .find_map(|n| {
-                node_output_refs(n)
-                    .into_iter()
-                    .find(|(name, _)| *name == declared)
-                    .map(|(_, output_ref)| UserInputMapping {
-                        source: n.id.clone(),
-                        output: output_ref.into(),
-                    })
-            })
-            .ok_or_else(|| {
-                eyre::eyre!(
+        let target = match direct_output_targets.get(&declared).map(Vec::as_slice) {
+            None | Some([]) => {
+                bail!(
                     "module `{}` declares output `{}` but no inner node produces it",
                     module_file.module.name,
                     declared_output,
-                )
-            })?;
+                );
+            }
+            Some([(_, target)]) => target.clone(),
+            Some(targets) => {
+                let producers = targets
+                    .iter()
+                    .map(|(producer, _)| producer.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                bail!(
+                    "module `{}` declares output `{}` but multiple inner nodes produce it: {}",
+                    module_file.module.name,
+                    declared_output,
+                    producers,
+                );
+            }
+        };
         output_map.insert(declared, target);
     }
 
@@ -2923,6 +2994,66 @@ nodes:
     }
 
     #[test]
+    fn check_module_file_rejects_ambiguous_declared_output() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "ambiguous_output.yml",
+            r#"
+module:
+  name: ambiguous
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: first
+    path: first.py
+    outputs:
+      - out
+  - id: second
+    path: second.py
+    outputs:
+      - out
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("out"), "got: {msg}");
+        assert!(msg.contains("multiple"), "got: {msg}");
+        assert!(msg.contains("first"), "got: {msg}");
+        assert!(msg.contains("second"), "got: {msg}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_unknown_module_header_field() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "unknown_header_field.yml",
+            r#"
+module:
+  name: bad
+  inputz: [data]
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - out
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(msg.contains("inputz"), "got: {msg}");
+        assert!(msg.contains("unknown field"), "got: {msg}");
+    }
+
+    #[test]
     fn check_module_file_rejects_duplicate_inner_node_ids() {
         let tmp = TempDir::new().unwrap();
         let path = write_file(
@@ -3039,6 +3170,174 @@ nodes:
         assert!(msg.contains("leaf"), "got: {msg}");
         assert!(msg.contains("data"), "got: {msg}");
         assert!(msg.contains("nested"), "got: {msg}");
+    }
+
+    #[test]
+    fn check_module_file_rejects_invalid_nested_module() {
+        let tmp = TempDir::new().unwrap();
+
+        write_file(
+            tmp.path(),
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - other
+"#,
+        );
+
+        let path = write_file(
+            tmp.path(),
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+"#,
+        );
+
+        let result = check_module_file(&path);
+        assert!(result.is_err());
+        let msg = format!("{:#}", result.unwrap_err());
+        assert!(msg.contains("leaf"), "got: {msg}");
+        assert!(msg.contains("out"), "got: {msg}");
+        assert!(msg.contains("no inner node produces it"), "got: {msg}");
+        // The breadcrumb must name the referencing node so a failure several
+        // levels down is findable.
+        assert!(msg.contains("nested"), "got: {msg}");
+    }
+
+    /// The `seen` set must reject a module that includes itself. Without the
+    /// `seen.insert` guard this recurses to the depth limit and reports a
+    /// misleading depth error instead of naming the cycle.
+    #[test]
+    fn check_module_file_rejects_self_referencing_module() {
+        let tmp = TempDir::new().unwrap();
+        let path = write_file(
+            tmp.path(),
+            "self.yml",
+            r#"
+module:
+  name: selfref
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: me
+    module: self.yml
+"#,
+        );
+
+        let msg = format!("{:#}", check_module_file(&path).unwrap_err());
+        assert!(msg.contains("circular module reference"), "got: {msg}");
+    }
+
+    /// `seen.remove` on the success path must keep a diamond (`a -> b -> d`
+    /// and `a -> c -> d`) accepted. Drop that line and every shared nested
+    /// module starts failing as a false "circular reference".
+    #[test]
+    fn check_module_file_accepts_diamond_module_graph() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "d.yml",
+            r#"
+module:
+  name: d
+  inputs: []
+  outputs: [d_out]
+
+nodes:
+  - id: leaf
+    path: leaf.py
+    outputs:
+      - d_out
+"#,
+        );
+        for name in ["b.yml", "c.yml"] {
+            write_file(
+                base,
+                name,
+                r#"
+module:
+  name: mid
+  inputs: []
+  outputs: [d_out]
+
+nodes:
+  - id: node_d
+    module: d.yml
+"#,
+            );
+        }
+        let path = write_file(
+            base,
+            "a.yml",
+            r#"
+module:
+  name: a
+  inputs: []
+  outputs: []
+
+nodes:
+  - id: node_b
+    module: b.yml
+  - id: node_c
+    module: c.yml
+"#,
+        );
+
+        check_module_file(&path).unwrap();
+    }
+
+    #[test]
+    fn check_module_file_rejects_depth_limit() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        for i in 0..=MAX_MODULE_DEPTH {
+            let next = if i < MAX_MODULE_DEPTH {
+                format!("  - id: inner\n    module: level{}_module.yml", i + 1)
+            } else {
+                "  - id: worker\n    path: worker.py\n    outputs:\n      - out".to_string()
+            };
+
+            write_file(
+                base,
+                &format!("level{i}_module.yml"),
+                &format!(
+                    r#"
+module:
+  name: level{i}
+  inputs: []
+  outputs: [out]
+
+nodes:
+{next}
+"#
+                ),
+            );
+        }
+
+        let result = check_module_file(&base.join("level0_module.yml"));
+        assert!(result.is_err());
+        // `{:#}` renders the whole context chain: the nested-module breadcrumb
+        // wraps the underlying depth-limit error.
+        assert!(format!("{:#}", result.unwrap_err()).contains("nesting exceeds depth limit"));
     }
 
     /// Regression test for #2851: `check_module_file` must accept a nested
@@ -3879,6 +4178,110 @@ nodes:
         let mapping = expand_and_resolve_sink_input(base);
         assert_eq!(mapping.source.to_string(), "m.runtime");
         assert_eq!(mapping.output.to_string(), "result");
+    }
+
+    #[test]
+    fn expand_rejects_ambiguous_module_output() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "mod.yml",
+            r#"
+module:
+  name: ambiguous
+  inputs: []
+  outputs: [out]
+
+nodes:
+  - id: first
+    path: first.py
+    outputs:
+      - out
+  - id: second
+    path: second.py
+    outputs:
+      - out
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: mod.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      value: m/out
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("out"), "got: {msg}");
+        assert!(msg.contains("multiple"), "got: {msg}");
+        assert!(msg.contains("m.first"), "got: {msg}");
+        assert!(msg.contains("m.second"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_rejects_nested_module_private_output_export() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf.yml",
+            r#"
+module:
+  name: leaf
+  inputs: []
+  outputs: [public]
+
+nodes:
+  - id: worker
+    path: worker.py
+    outputs:
+      - public
+      - private
+"#,
+        );
+
+        write_file(
+            base,
+            "outer.yml",
+            r#"
+module:
+  name: outer
+  inputs: []
+  outputs: [private]
+
+nodes:
+  - id: nested
+    module: leaf.yml
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: outer.yml
+  - id: sink
+    path: sink.py
+    inputs:
+      value: m/private
+"#,
+        );
+
+        let result = expand_modules(&desc, base);
+        assert!(result.is_err());
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("private"), "got: {msg}");
+        assert!(msg.contains("no inner node produces it"), "got: {msg}");
     }
 
     /// Regression test for #2817: `check_module_file` must accept a declared
