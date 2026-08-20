@@ -118,7 +118,7 @@ fn test_tick_counter_and_random_round_trip() -> eyre::Result<()> {
         IntegrationTestInput::new("rust-status-node".parse().unwrap(), events),
     );
 
-    let (tx, mut rx) = dora_node_api::integration_testing::unbounded_channel();
+    let (tx, mut rx) = dora_node_api::integration_testing::output_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 
@@ -165,7 +165,7 @@ fn test_non_uint64_random_input_errors() -> eyre::Result<()> {
         IntegrationTestInput::new("rust-status-node".parse().unwrap(), events),
     );
 
-    let (tx, _rx) = dora_node_api::integration_testing::unbounded_channel();
+    let (tx, _rx) = dora_node_api::integration_testing::output_channel();
     let testing_output = dora_node_api::integration_testing::TestingOutput::ToChannel(tx);
     let (node, events) = DoraNode::init_testing(inputs, testing_output, Default::default())?;
 

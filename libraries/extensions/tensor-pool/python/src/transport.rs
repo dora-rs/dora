@@ -32,8 +32,85 @@ use shared_memory_extended::ShmemConf;
 static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
 
+/// A random `u64` seed derived from the standard library's `RandomState`,
+/// which is seeded from the OS once per process. Used to make process-local
+/// counters unique across process restarts without pulling in a new
+/// dependency (dora-rs/dora#3015).
+fn random_u64_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    // `RandomState::new()` picks fresh random keys from the OS; hashing no
+    // input and finishing yields a value derived from those keys, so the
+    // result differs from process to process.
+    std::hash::RandomState::new().build_hasher().finish()
+}
+
+/// Build a memory pool's shared-memory name from the
+/// `(machine_id, dataflow_id, node_id, counter)` tuple.
+///
+/// This is the single source of truth for the on-wire pool-id format *within
+/// this crate*; the daemon half derives the same names independently in
+/// `TensorPoolManager::cross_pool_shmem_name` and `cleanup_orphans`.
+///
+/// [`parse_pool_counter`] recovers the counter from it. Keeping the two
+/// together means a change to the format can only be made in one place
+/// (dora-rs/dora#3015).
+///
+/// A known machine id is prefixed (`dora_pool_{machine_id}_{dataflow_id}_
+/// {node_id}_{counter}`) so multi-machine deployments cannot collide and
+/// leftover segments are attributable to their owner; an empty machine id
+/// yields the unqualified `dora_pool_{dataflow_id}_{node_id}_{counter}`.
+/// The counter stays the final `_`-separated component either way, so
+/// `parse_pool_counter` handles both.
+fn pool_shmem_name(
+    machine_id: &str,
+    dataflow_id: impl std::fmt::Display,
+    node_id: impl std::fmt::Display,
+    counter: u64,
+) -> String {
+    if machine_id.is_empty() {
+        format!("dora_pool_{dataflow_id}_{node_id}_{counter}")
+    } else {
+        format!("dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}")
+    }
+}
+
+/// Recover the pool counter from a pool id of the form
+/// `dora_pool_{dataflow_id}_{node_id}_{counter}` or `pool_{node_id}_{counter}`.
+///
+/// The counter is always the final `_`-separated component — node ids may
+/// themselves contain `_` (legal in dora node ids) — so the last segment is
+/// taken and parsed as a `u64`. Returns `None` when the last segment is not a
+/// `u64`. Inverse of [`pool_shmem_name`]'s counter component.
+fn parse_pool_counter(pool_id: &str) -> Option<u64> {
+    pool_id
+        .rsplit_once('_')
+        .and_then(|(_, counter)| counter.parse::<u64>().ok())
+}
+
 /// Counter to make pinned memory buffer IDs unique across registrations.
-static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
+///
+/// Seeded with a random value per process rather than `0` (dora-rs/dora#3015).
+/// The counter is combined with the `(dataflow_id, node_id)` pair — both of
+/// which are stable across a crash-restart — into the pool's shared-memory
+/// name, so a deterministic `0` seed makes a restarted node re-derive the
+/// exact name its previous incarnation used. The old segment is still there:
+/// the daemon's pool sweeps run only at daemon start, dataflow spawn and
+/// dataflow finish, so a crash-restart inside a live dataflow unlinks nothing.
+/// `ShmemConf::create()` is `O_EXCL`, so it collides and the restarted node can
+/// never register its pool -- a crash-restart loop that never recovers. A random per-incarnation
+/// seed keeps the id unique across restarts while the component stays a plain
+/// `u64`, so both existing name parsers keep working unchanged.
+///
+/// Trade-off (dora-rs/dora#3015 review): with the collision gone, a repeatedly
+/// crashing node whose receiver never calls `free_memory_pool` now leaks the
+/// previous incarnation's registry entry and `/dev/shm` segment on each
+/// restart, instead of failing fast on the first. `cleanup_orphans` only runs
+/// at dataflow spawn, and the daemon registry is capped, so a pathological
+/// crash loop can eventually exhaust it. The complete fix is an owner-death
+/// pool reclaim (tracked as follow-up); this change trades fail-fast for
+/// recover-on-transient-crash, which is the common case.
+static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> =
+    LazyLock::new(|| std::sync::Mutex::new(random_u64_seed()));
 
 /// Maximum number of freed pool buffer IDs to remember at once. This is a
 /// single budget shared across every peer the process reads from, not a
@@ -397,6 +474,71 @@ mod pin_tests {
     fn pin_zero_size_cpu() {
         // Zero-size CPU tensor → below threshold, don't pin
         assert!(!should_pin(false, 0));
+    }
+}
+
+#[cfg(test)]
+mod pool_id_tests {
+    use super::*;
+
+    /// dora-rs/dora#3015: the per-process pool counter is now seeded from
+    /// `random_u64_seed()` so a restarted node does not re-derive its previous
+    /// incarnation's shared-memory name and collide on a still-live segment.
+    /// The seed must vary from call to call. This is a *weak* proxy for the
+    /// property #3015 actually needs (variation from process to process):
+    /// `RandomState::new()` bumps its cached `k0` on every call within a
+    /// thread, so successive draws would differ even if the OS seeding were
+    /// removed. Only a literal-constant implementation turns this RED; a real
+    /// cross-process check would need a spawned subprocess.
+    #[test]
+    fn random_seed_is_not_constant() {
+        let seeds: std::collections::HashSet<u64> = (0..8).map(|_| random_u64_seed()).collect();
+        assert!(
+            seeds.len() > 1,
+            "random_u64_seed() must not return a constant value"
+        );
+    }
+
+    /// The on-wire pool-id format is a contract shared with the daemon
+    /// (`tensor-pool` derives the same name). Pin the exact literal so a change
+    /// to `pool_shmem_name` that both in-process halves would still agree on,
+    /// yet breaks that cross-process contract, is caught here.
+    #[test]
+    fn pool_shmem_name_has_the_expected_wire_format() {
+        assert_eq!(
+            pool_shmem_name("", "dataflow-uuid", "cam", 7),
+            "dora_pool_dataflow-uuid_cam_7"
+        );
+        // A known machine id is prefixed, and the counter stays last.
+        assert_eq!(
+            pool_shmem_name("m1", "dataflow-uuid", "cam", 7),
+            "dora_pool_m1_dataflow-uuid_cam_7"
+        );
+    }
+
+    /// A pool name built from a large, random-seeded counter must round-trip
+    /// back through the *production* parser — including for a `node_id` that
+    /// itself contains underscores, where only taking the last segment as the
+    /// counter is correct. Exercising the real `pool_shmem_name` /
+    /// `parse_pool_counter` pair means a regression in either can turn this
+    /// RED (dora-rs/dora#3015).
+    #[test]
+    fn large_counter_round_trips_through_the_production_parser() {
+        for (node_id, counter) in [("my_node", u64::MAX - 3), ("cam_left", 1), ("plain", 0)] {
+            let shmem_name = pool_shmem_name("", "dataflow-uuid", node_id, counter);
+            assert_eq!(
+                parse_pool_counter(&shmem_name),
+                Some(counter),
+                "counter must round-trip for node id {node_id:?}"
+            );
+        }
+    }
+
+    /// A pool id whose final segment is not a `u64` yields `None` rather than a
+    /// wrong counter — the fall-back-to-daemon path relies on this.
+    #[test]
+    fn parse_pool_counter_rejects_a_non_numeric_tail() {
+        assert_eq!(parse_pool_counter("dora_pool_df_node_notanumber"), None);
     }
 }
 
@@ -1114,8 +1256,11 @@ fn warn_missing_tensor_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
 /// `pool_{node_id}_{counter}` buffer id, but only when `node_id` owns the pool.
 ///
 /// The sender-side `PINNED_POOL`/`TRANSIT_META` maps are keyed by the bare
-/// per-process counter, *not* namespaced by node id, and every process's
-/// counters restart at 1. So a node that frees a *peer's* pool (a receiver
+/// per-process counter, *not* namespaced by node id. Before #3015 every
+/// process's counters started at 1, so two processes' low counters aliased
+/// outright; the random seed makes that collision improbable rather than
+/// certain, and this guard stays the actual defense rather than becoming
+/// redundant. So a node that frees a *peer's* pool (a receiver
 /// releasing a pool it read) would otherwise reclaim its *own* same-counter
 /// slot — freeing a live GPU buffer whose IPC handle is still exported to a
 /// downstream node (dora-rs/dora#3168). Guarding on the owner segment keeps the
@@ -1465,10 +1610,12 @@ impl Pool<'_> {
             );
         }
 
-        // Generate unique pool counter for this registration
+        // Generate unique pool counter for this registration. `wrapping_add`
+        // guards the (astronomically unlikely) overflow now that the counter
+        // starts from a random seed rather than 0 (dora-rs/dora#3015).
         let pool_counter = {
             let mut c = PINNED_COUNTER.lock().unwrap_or_else(|e| e.into_inner());
-            *c += 1;
+            *c = c.wrapping_add(1);
             *c
         };
         // Segment name: an explicit `name` is used verbatim (after the
@@ -1494,17 +1641,7 @@ impl Pool<'_> {
             }
             None => {
                 let machine_id = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
-                if machine_id.is_empty() {
-                    format!(
-                        "dora_pool_{}_{}_{}",
-                        self.dataflow_id, self.node_id, pool_counter
-                    )
-                } else {
-                    format!(
-                        "dora_pool_{}_{}_{}_{}",
-                        machine_id, self.dataflow_id, self.node_id, pool_counter
-                    )
-                }
+                pool_shmem_name(&machine_id, self.dataflow_id, &self.node_id, pool_counter)
             }
         };
 
@@ -2179,9 +2316,7 @@ impl Pool<'_> {
         if buffer_id.starts_with("pool_") {
             // Extract counter from the last underscore segment — node_id
             // may legitimately contain underscores.
-            if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
-                && let Ok(counter) = counter_str.parse::<u64>()
-            {
+            if let Some(counter) = parse_pool_counter(&buffer_id) {
                 // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
                 // register_tensor_pool already stored the Shmem here; taking it
                 // prevents munmap, and storing it back keeps the mapping alive.
@@ -2209,17 +2344,7 @@ impl Pool<'_> {
                         // so the mapping stays alive until post-write re-insert.
                         let shmem_name = {
                             let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
-                            if machine.is_empty() {
-                                format!(
-                                    "dora_pool_{}_{}_{}",
-                                    self.dataflow_id, self.node_id, counter
-                                )
-                            } else {
-                                format!(
-                                    "dora_pool_{}_{}_{}_{}",
-                                    machine, self.dataflow_id, self.node_id, counter
-                                )
-                            }
+                            pool_shmem_name(&machine, self.dataflow_id, &self.node_id, counter)
                         };
                         match ShmemConf::new().os_id(&shmem_name).open() {
                             Ok(shmem) => {
@@ -2554,9 +2679,7 @@ impl Pool<'_> {
 
                         if ipc_present == 1 && !is_cuda {
                             // Extract counter for the DMA slot from buffer_id.
-                            let slow_counter = buffer_id
-                                .rsplit_once('_')
-                                .and_then(|(_, c)| c.parse::<u64>().ok());
+                            let slow_counter = parse_pool_counter(&buffer_id);
                             let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
                             let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
                             let mut copy_ok = true;
@@ -2601,19 +2724,17 @@ impl Pool<'_> {
                                 let bound = helpers.bind(py);
                                 // Slow path transit look-up: PINNED_POOL
                                 // (contrast fast path which uses store_back).
-                                let (transit_ptr, pool_device) = if let Some((_, counter_str)) =
-                                    buffer_id.rsplit_once('_')
-                                    && let Ok(c) = counter_str.parse::<u64>()
-                                {
-                                    PINNED_POOL
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .get(&c)
-                                        .map(|s| (s.transit_ptr, s.pool_device))
-                                        .unwrap_or((0, 0))
-                                } else {
-                                    (0, 0)
-                                };
+                                let (transit_ptr, pool_device) =
+                                    if let Some(c) = parse_pool_counter(&buffer_id) {
+                                        PINNED_POOL
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .get(&c)
+                                            .map(|s| (s.transit_ptr, s.pool_device))
+                                            .unwrap_or((0, 0))
+                                    } else {
+                                        (0, 0)
+                                    };
                                 let write_path = classify_write_path(
                                     ipc_present,
                                     /*is_cuda=*/ true,
@@ -2630,10 +2751,7 @@ impl Pool<'_> {
                                             .call_method1(
                                                 "_transit_copy_gpu_buf",
                                                 (
-                                                    buffer_id
-                                                        .rsplit_once('_')
-                                                        .and_then(|(_, cs)| cs.parse::<u64>().ok())
-                                                        .unwrap_or(0),
+                                                    parse_pool_counter(&buffer_id).unwrap_or(0),
                                                     ptr_val,
                                                     sender_dev,
                                                     transit_ptr,
@@ -2647,10 +2765,7 @@ impl Pool<'_> {
                                         .call_method1(
                                             "_cuda_memcpy_gpu_buf",
                                             (
-                                                buffer_id
-                                                    .rsplit_once('_')
-                                                    .and_then(|(_, cs)| cs.parse::<u64>().ok())
-                                                    .unwrap_or(0),
+                                                parse_pool_counter(&buffer_id).unwrap_or(0),
                                                 ptr_val,
                                                 size,
                                             ),
@@ -3143,12 +3258,8 @@ impl Pool<'_> {
         // Format: "pool_{node_id}_{counter}".
         // Use rsplit to extract the counter from the end — the node_id
         // portion may itself contain underscores (legal in dora node ids).
-        let counter: u64 = match buffer_id.rsplit_once('_') {
-            Some((_, c)) => match c.parse() {
-                Ok(c) => c,
-                Err(_) => return Ok(None),
-            },
-            None => return Ok(None),
+        let Some(counter) = parse_pool_counter(buffer_id) else {
+            return Ok(None);
         };
         let pool_node_id = buffer_id
             .strip_prefix("pool_")
@@ -3170,22 +3281,21 @@ impl Pool<'_> {
 
         // Candidate segment names, tried in order: the machine-qualified
         // mirror name first (cross-machine pools resolve to a mirror
-        // segment on this host, named `dora_pool_{machine}_{df}_{node}_
-        // {counter}`), then the unqualified local name (single-daemon and
-        // same-machine pools, and nodes spawned without DORA_MACHINE_ID).
+        // segment on this host), then the unqualified local name
+        // (single-daemon and same-machine pools, and nodes spawned without
+        // DORA_MACHINE_ID).
         let mut candidates: Vec<String> = Vec::new();
         if let Ok(machine) = std::env::var("DORA_MACHINE_ID")
             && !machine.is_empty()
         {
-            candidates.push(format!(
-                "dora_pool_{machine}_{}_{}_{}",
-                self.dataflow_id, pool_node_id, counter
+            candidates.push(pool_shmem_name(
+                &machine,
+                self.dataflow_id,
+                pool_node_id,
+                counter,
             ));
         }
-        candidates.push(format!(
-            "dora_pool_{}_{}_{}",
-            self.dataflow_id, pool_node_id, counter
-        ));
+        candidates.push(pool_shmem_name("", self.dataflow_id, pool_node_id, counter));
 
         // Open the first readable candidate.
         let mut shmem = None;
