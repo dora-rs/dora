@@ -2584,6 +2584,7 @@ dependencies = [
  "arrow 59.0.0",
  "dora-arrow-convert",
  "safer-ffi",
+ "tracing",
 ]
 
 [[package]]

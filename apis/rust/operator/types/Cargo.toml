@@ -13,6 +13,7 @@ repository.workspace = true
 [dependencies]
 arrow = { workspace = true, features = ["ffi"] }
 dora-arrow-convert = { workspace = true }
+tracing = { workspace = true }
 
 [dependencies.safer-ffi]
 version = "0.1.13"
