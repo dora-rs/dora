@@ -125,13 +125,16 @@ fn format_pretty_line(log_message: &LogMessage, config: &LogOutputConfig) -> Str
         }
         _ => String::new().cyan(),
     };
-    let daemon = match daemon_id {
-        Some(id) if config.print_daemon_name => match id.machine_id() {
+    let daemon = if config.print_daemon_name {
+        // A daemon with no machine id (or no daemon at all) is the default
+        // daemon; both render the same, with no trailing space so the colon
+        // that follows a node-scoped label abuts it directly.
+        match daemon_id.as_ref().and_then(|id| id.machine_id()) {
             Some(machine_id) => format!("on daemon `{machine_id}`"),
-            None => "on default daemon ".to_string(),
-        },
-        None if config.print_daemon_name => "on default daemon".to_string(),
-        _ => String::new(),
+            None => "on default daemon".to_string(),
+        }
+    } else {
+        String::new()
     }
     .bright_black();
     let time = format!("{}", timestamp.with_timezone(&Local).format("%H:%M:%S"));
@@ -445,6 +448,26 @@ mod tests {
         let config = LogOutputConfig::default();
         let rest = rendered_rest(pretty_message(None, None, "coordinator ready"), &config);
         assert_eq!(rest, "INFO   [dora]: coordinator ready");
+    }
+
+    #[test]
+    fn pretty_line_default_daemon_no_space_before_colon() {
+        // A node-scoped message on the unnamed/default daemon (a `DaemonId`
+        // with no machine id) with `print_daemon_name` on must render the same
+        // way the named-daemon path does — no stray space before the colon
+        // (regression: `sensor on default daemon : hello`).
+        let config = LogOutputConfig {
+            print_daemon_name: true,
+            ..LogOutputConfig::default()
+        };
+        let mut msg = pretty_message(Some("sensor"), None, "hello");
+        msg.daemon_id = Some(dora_message::common::DaemonId::new(None));
+        let rest = rendered_rest(msg, &config);
+        assert_eq!(rest, "INFO   sensor on default daemon: hello");
+        assert!(
+            !rest.contains("on default daemon :"),
+            "stray space before the colon: {rest:?}"
+        );
     }
 
     // --- parse_log_level_str ---
