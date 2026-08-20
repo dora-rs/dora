@@ -221,7 +221,7 @@ impl PendingNodes {
         &mut self,
         exited_before_subscribe: Vec<NodeId>,
         cascading_errors: &mut CascadingErrorCauses,
-    ) -> eyre::Result<()> {
+    ) -> eyre::Result<DataflowStatus> {
         if !self.local_nodes.is_empty() {
             tracing::warn!(
                 remaining = ?self.local_nodes,
@@ -229,6 +229,20 @@ impl PendingNodes {
                  proceeding anyway (coordinator may be ahead of this daemon)"
             );
         }
+
+        // The start verdict must agree with the reply each parked subscriber
+        // actually receives. `answer_subscribe_requests` (below) prioritizes
+        // this daemon's LOCAL `exited_before_subscribe`, so fold it into the
+        // verdict here — otherwise a local cohort loss the coordinator never
+        // learned about (a node that died before subscribing while this daemon
+        // was disconnected, so the replayed barrier carries an empty external
+        // list — #3013/#3052) would start the dataflow while simultaneously
+        // failing a surviving cohort node's `Node()` init. This mirrors the
+        // late-subscriber fold-in in `update_dataflow_status`, keeping the
+        // "start verdict == subscriber reply" invariant on the release path too
+        // (dora-rs/dora#3243).
+        let barrier_succeeded =
+            exited_before_subscribe.is_empty() && self.exited_before_subscribe.is_empty();
 
         // Latch before answering: the coordinator fires this once, so
         // everything that subscribes from here on has to be answered
@@ -239,7 +253,11 @@ impl PendingNodes {
         self.answer_subscribe_requests(exited_before_subscribe, cascading_errors)
             .await;
 
-        Ok(())
+        Ok(if barrier_succeeded {
+            DataflowStatus::AllNodesReady
+        } else {
+            DataflowStatus::Pending
+        })
     }
 
     /// Re-evaluate the barrier after something changed the pending set.
@@ -1025,6 +1043,46 @@ mod tests {
         );
         let err = reply_of(&mut rx)
             .expect_err("the surviving cohort member must inherit the local startup failure");
+        assert!(
+            err.contains("locally-dead"),
+            "the failure must name the locally dead node: {err}"
+        );
+    }
+
+    /// dora-rs/dora#3243: the release path must enforce the same combined
+    /// verdict the late-subscriber path does. When a cohort member is already
+    /// parked at release/replay time and a local cohort member died before
+    /// subscribing (a loss the coordinator never saw, so its replayed external
+    /// list is empty), `handle_external_all_nodes_ready` must report `Pending`
+    /// — otherwise the daemon starts the dataflow while `answer_subscribe_requests`
+    /// simultaneously fails the parked survivor's `Node()` init, the exact
+    /// inconsistency #3052 set out to remove, one step earlier than #3055 fixed.
+    #[tokio::test]
+    async fn release_verdict_respects_a_local_exit_with_a_pre_parked_survivor() {
+        let (dead, survivor) = (node("locally-dead"), node("survivor"));
+        let mut p = external_barrier();
+        p.cohort.insert(dead.clone());
+        p.cohort.insert(survivor.clone());
+        // A cohort member is already parked, waiting on the barrier...
+        let mut rx = park(&mut p, &survivor);
+        // ...and a local cohort member died before subscribing while this
+        // daemon was disconnected, so the coordinator's replayed list is empty.
+        p.exited_before_subscribe.push(dead.clone());
+
+        // The coordinator replays `AllNodesReady([])` on reconnect.
+        let status = p
+            .handle_external_all_nodes_ready(Vec::new(), &mut CascadingErrorCauses::default())
+            .await
+            .expect("handle the replayed barrier");
+
+        assert!(
+            matches!(status, DataflowStatus::Pending),
+            "a local cohort loss must keep the release path from starting the \
+             dataflow even when the coordinator's external verdict was success; \
+             got {status:?}"
+        );
+        let err = reply_of(&mut rx)
+            .expect_err("the pre-parked survivor must inherit the local startup failure");
         assert!(
             err.contains("locally-dead"),
             "the failure must name the locally dead node: {err}"
