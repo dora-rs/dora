@@ -157,7 +157,6 @@ pub fn expand_modules_with_boundaries(
     Ok(ExpandedDescriptor {
         descriptor: Descriptor {
             nodes: flat_nodes,
-            communication: descriptor.communication.clone(),
             deploy: descriptor.deploy.clone(),
             debug: descriptor.debug.clone(),
             health_check_interval: descriptor.health_check_interval,
@@ -197,9 +196,8 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
         .collect();
 
     // Check _mod/ references point to declared inputs. Runtime (operator)
-    // and legacy custom nodes wire their inputs through config.inputs /
-    // run_config.inputs rather than the node-level `inputs` map, so those
-    // need the same check (see #2441).
+    // nodes wire their inputs through config.inputs rather than the node-level
+    // `inputs` map, so those need the same check (see #2441).
     for node in &module_file.nodes {
         for inputs in node_input_maps(node) {
             check_mod_refs(&module_file.module.name, &node.id, inputs, &all_input_names)?;
@@ -208,9 +206,9 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
 
     // Check outputs: each declared output should be produced by some inner node.
     // For nested module children, recursively load their declared outputs.
-    // Runtime (operator) and legacy custom nodes declare their outputs in
-    // config.outputs / run_config.outputs rather than the node-level `outputs`
-    // set, so `node_output_refs` collects those too (see #2817).
+    // Runtime (operator) nodes declare their outputs in config.outputs rather
+    // than the node-level `outputs` set, so `node_output_refs` collects those
+    // too (see #2817).
     let mut inner_outputs: BTreeSet<String> = module_file
         .nodes
         .iter()
@@ -274,8 +272,7 @@ pub fn check_module_file(module_path: &Path) -> eyre::Result<()> {
 
 /// Check that every `_mod/X` reference in `inputs` points to a declared
 /// module input (or optional input). Shared by the node-level `inputs`
-/// check and the operator/custom `config.inputs` / `run_config.inputs`
-/// checks in [`check_module_file`].
+/// check and the operator `config.inputs` checks in [`check_module_file`].
 fn check_mod_refs(
     module_name: &str,
     node_id: &NodeId,
@@ -305,10 +302,9 @@ fn check_mod_refs(
 }
 
 /// All the places a node's inputs can live: the node-level `inputs` map,
-/// plus the operator/custom `config.inputs` / `run_config.inputs` maps for
-/// runtime (operator) and legacy custom inner nodes. Centralizes the
-/// node-kind enumeration so `_mod/`-reference validation and rewriting stay
-/// in sync as node kinds are added or change (see #2441).
+/// plus the operator `config.inputs` maps for runtime (operator) nodes.
+/// Centralizes the node-kind enumeration so `_mod/`-reference validation and
+/// rewriting stay in sync as node kinds are added or change (see #2441).
 fn node_input_maps(node: &Node) -> Vec<&BTreeMap<DataId, Input>> {
     let mut maps = vec![&node.inputs];
     if let Some(ref operators) = node.operators {
@@ -316,9 +312,6 @@ fn node_input_maps(node: &Node) -> Vec<&BTreeMap<DataId, Input>> {
     }
     if let Some(ref operator) = node.operator {
         maps.push(&operator.config.inputs);
-    }
-    if let Some(ref custom) = node.custom {
-        maps.push(&custom.run_config.inputs);
     }
     maps
 }
@@ -338,9 +331,6 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
     if let Some(ref mut operator) = node.operator {
         maps.push(&mut operator.config.inputs);
     }
-    if let Some(ref mut custom) = node.custom {
-        maps.push(&mut custom.run_config.inputs);
-    }
     maps
 }
 
@@ -349,10 +339,10 @@ fn node_input_maps_mut(node: &mut Node) -> Vec<&mut BTreeMap<DataId, Input>> {
 ///
 /// The two differ only for multi-operator runtime nodes: their outputs live in
 /// `operators[].config.outputs` and must be referenced as
-/// `<operator_id>/<output>`. Node-level `outputs`, legacy `custom:`
-/// `run_config.outputs`, and single `operator:` outputs are all referenced by
-/// their bare name — for `operator:` the `op/` prefix is injected later by
-/// `resolve_aliases_and_set_defaults`, so adding it here would double it up.
+/// `<operator_id>/<output>`. Node-level `outputs` and single `operator:`
+/// outputs are all referenced by their bare name — for `operator:` the `op/`
+/// prefix is injected later by `resolve_aliases_and_set_defaults`, so adding
+/// it here would double it up.
 ///
 /// Output-side counterpart of [`node_input_maps`]: centralizes the node-kind
 /// enumeration so module output resolution stays in sync as node kinds are
@@ -375,9 +365,6 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     }
     if let Some(ref operator) = node.operator {
         refs.extend(bare(&operator.config.outputs));
-    }
-    if let Some(ref custom) = node.custom {
-        refs.extend(bare(&custom.run_config.outputs));
     }
     refs
 }
@@ -509,11 +496,10 @@ fn expand_module_node(
         inner_node.id = prefixed_id;
 
         // Rewrite inputs (None = optional input not provided, skip it).
-        // Runtime (operator) nodes and legacy custom nodes wire their inputs
-        // through config.inputs / run_config.inputs rather than the
-        // node-level `inputs` map, so `node_input_maps_mut` rewrites all of
-        // them the same way — otherwise `_mod/` references and sibling
-        // cross-references wouldn't resolve for operator/custom inner nodes
+        // Runtime (operator) nodes wire their inputs through config.inputs
+        // rather than the node-level `inputs` map, so `node_input_maps_mut`
+        // rewrites all of them the same way — otherwise `_mod/` references and
+        // sibling cross-references wouldn't resolve for operator inner nodes
         // (see #2441).
         for inputs in node_input_maps_mut(&mut inner_node) {
             *inputs = rewrite_module_inputs_map(
@@ -603,9 +589,9 @@ fn expand_module_node(
     }
 
     // Phase 3: build output map from fully-expanded flat nodes. A producer may
-    // be a plain node, a runtime node's operator, or a legacy custom node, so
-    // the lookup goes through `node_output_refs` — which also yields the form
-    // consumers must use to address the output (see #2817).
+    // be a plain node or a runtime node's operator, so the lookup goes through
+    // `node_output_refs` — which also yields the form consumers must use to
+    // address the output (see #2817).
     let mut output_map = ModuleOutputMap::new();
     for declared_output in &module_file.module.outputs {
         let declared = declared_output.to_string();
@@ -724,8 +710,8 @@ fn rewrite_module_input(
 
 /// Rewrite every input in `inputs` via [`rewrite_module_input`], dropping
 /// entries whose optional module input wasn't provided. Used for both the
-/// node-level `inputs` map and the operator/custom `config.inputs` /
-/// `run_config.inputs` maps in Phase 1 of [`expand_module_node`].
+/// node-level `inputs` map and the operator `config.inputs` maps in Phase 1 of
+/// [`expand_module_node`].
 fn rewrite_module_inputs_map(
     inputs: &BTreeMap<DataId, Input>,
     module_id: &str,
@@ -773,9 +759,6 @@ fn rewrite_external_refs(
         }
         if let Some(ref mut operator) = node.operator {
             rewrite_inputs_map(&mut operator.config.inputs, output_maps, &node.id)?;
-        }
-        if let Some(ref mut custom) = node.custom {
-            rewrite_inputs_map(&mut custom.run_config.inputs, output_maps, &node.id)?;
         }
     }
     Ok(())
@@ -2366,80 +2349,6 @@ nodes:
         assert!(err.to_string().contains("_mod/nonexistent"));
     }
 
-    /// Regression test for #2441: legacy `custom:` inner nodes have the same
-    /// blind spot as operator nodes — their inputs live in
-    /// `run_config.inputs`, not the node-level `inputs` map.
-    #[test]
-    fn expand_rewrites_custom_node_inputs() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-
-        write_file(
-            base,
-            "custom_module.yml",
-            r#"
-module:
-  name: legacy
-  inputs: [data]
-
-nodes:
-  - id: stage_a
-    path: a.py
-    outputs: [aux]
-
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        x: _mod/data
-        y: stage_a/aux
-      outputs:
-        - result
-"#,
-        );
-
-        let desc = parse_descriptor(
-            r#"
-nodes:
-  - id: src
-    path: src.py
-    outputs: [val]
-  - id: m
-    module: custom_module.yml
-    inputs:
-      data: src/val
-"#,
-        );
-
-        let expanded = expand_modules(&desc, base).unwrap();
-
-        let runner = expanded
-            .nodes
-            .iter()
-            .find(|n| n.id.to_string() == "m.runner")
-            .unwrap();
-        let custom = runner.custom.as_ref().unwrap();
-
-        let x = &custom.run_config.inputs[&DataId::from("x".to_string())];
-        match &x.mapping {
-            InputMapping::User(m) => {
-                assert_eq!(m.source.to_string(), "src");
-                assert_eq!(m.output.to_string(), "val");
-            }
-            _ => panic!("expected user mapping"),
-        }
-
-        let y = &custom.run_config.inputs[&DataId::from("y".to_string())];
-        match &y.mapping {
-            InputMapping::User(m) => {
-                assert_eq!(m.source.to_string(), "m.stage_a");
-                assert_eq!(m.output.to_string(), "aux");
-            }
-            _ => panic!("expected user mapping"),
-        }
-    }
-
     /// Expand a dataflow whose single module node `m` re-exports `result`, and
     /// return the mapping the downstream `sink` node ends up with. Also asserts
     /// that the expanded dataflow passes wiring validation, which is what
@@ -2545,44 +2454,11 @@ nodes:
         assert_eq!(mapping.output.to_string(), "result");
     }
 
-    /// Regression test for #2817: same for a legacy `custom:` inner node, whose
-    /// outputs live in `run_config.outputs`.
-    #[test]
-    fn expand_resolves_custom_produced_module_output() {
-        let tmp = TempDir::new().unwrap();
-        let base = tmp.path();
-
-        write_file(
-            base,
-            "mod.yml",
-            r#"
-module:
-  name: legacy
-  inputs: [data]
-  outputs: [result]
-
-nodes:
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        x: _mod/data
-      outputs:
-        - result
-"#,
-        );
-
-        let mapping = expand_and_resolve_sink_input(base);
-        assert_eq!(mapping.source.to_string(), "m.runner");
-        assert_eq!(mapping.output.to_string(), "result");
-    }
-
     /// Regression test for #2817: `check_module_file` must accept a declared
-    /// output produced by an operator or legacy custom inner node, and still
-    /// reject one nothing produces.
+    /// output produced by an operator inner node, and still reject one nothing
+    /// produces.
     #[test]
-    fn check_module_file_accepts_operator_and_custom_produced_outputs() {
+    fn check_module_file_accepts_operator_produced_outputs() {
         let tmp = TempDir::new().unwrap();
         let base = tmp.path();
 
@@ -2593,7 +2469,7 @@ nodes:
 module:
   name: mixed
   inputs: [data]
-  outputs: [from_operator, from_custom]
+  outputs: [from_operator]
 
 nodes:
   - id: runtime
@@ -2605,14 +2481,6 @@ nodes:
         outputs:
           - from_operator
 
-  - id: runner
-    custom:
-      path: node.py
-      source: Local
-      inputs:
-        y: _mod/data
-      outputs:
-        - from_custom
 "#,
         );
         check_module_file(&path).unwrap();

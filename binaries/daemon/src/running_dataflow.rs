@@ -1382,6 +1382,7 @@ mod tests {
              and must not be treated as a source, regardless of what its \
              top-level descriptor `inputs` map looks like"
         );
+    }
 
     fn test_running_node(node_id: &NodeId) -> RunningNode {
         RunningNode {
@@ -1389,6 +1390,7 @@ mod tests {
             restart_loop_start: None,
             _listener_shutdown: None,
             generation: 7,
+            generation_counter: Arc::new(AtomicU64::new(7)),
             node_config: NodeConfig {
                 dataflow_id: uuid::Uuid::nil(),
                 node_id: node_id.clone(),

@@ -12,6 +12,7 @@
 //! node kinds should accept it and add it to the appropriate whitelist(s)
 //! in this file. Fields not in any whitelist are rejected for all kinds.
 
+use super::{NodeExt, NodeKind};
 use dora_message::descriptor::{GitRepoRev, Node, NodeSource, RestartPolicy};
 use eyre::{Result, bail};
 
@@ -20,7 +21,6 @@ use eyre::{Result, bail};
 #[derive(Debug)]
 pub(super) enum NodeClass {
     Standard { source: NodeSource },
-    Custom,
     Runtime,
     Operator,
     Ros2Bridge,
@@ -94,50 +94,29 @@ fn standard_source(node: &Node) -> Result<NodeSource> {
 /// discriminator (like Standard with path), hub is a valid field and
 /// proceeds through the whitelist normally.
 fn classify_inner(node: &Node) -> Result<NodeClassOrModule> {
-    match (
-        &node.path,
-        &node.operators,
-        &node.custom,
-        &node.operator,
-        &node.ros2,
-        &node.module,
-    ) {
-        (None, None, None, None, None, None) => {
-            bail!(
-                "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
-                node.id
-            )
-        }
-        (None, None, None, Some(_), None, None) => {
+    match node.kind()? {
+        NodeKind::Operator(_) => {
             check_operator(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Operator))
         }
-        (None, None, Some(_), None, None, None) => {
-            check_custom(node)?;
-            Ok(NodeClassOrModule::Class(NodeClass::Custom))
-        }
-        (None, Some(_), None, None, None, None) => {
+        NodeKind::Runtime(_) => {
             check_runtime(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Runtime))
         }
-        (Some(_), None, None, None, None, None) => {
+        NodeKind::Standard(_) => {
             check_standard(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Standard {
                 source: standard_source(node)?,
             }))
         }
-        (None, None, None, None, Some(_), None) => {
+        NodeKind::Ros2Bridge(_) => {
             check_ros2(node)?;
             Ok(NodeClassOrModule::Class(NodeClass::Ros2Bridge))
         }
-        (None, None, None, None, None, Some(_)) => {
+        NodeKind::Module(_) => {
             check_module(node)?;
             Ok(NodeClassOrModule::Module)
         }
-        _ => bail!(
-            "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
-            node.id
-        ),
     }
 }
 
@@ -181,7 +160,7 @@ fn is_set(field: &str, node: &Node) -> bool {
         "params" => !node.params.is_empty(),
         // kind discriminator fields — always checked by kind(), never set
         // alongside a different kind, so they are never "set" here
-        "custom" | "operators" | "operator" | "ros2" | "module" => false,
+        "operators" | "operator" | "ros2" | "module" => false,
         _ => false,
     }
 }
@@ -241,15 +220,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
         unknown.join(", ")
     );
 
-    // Custom-specific hint for misplaced fields
-    if kind_name == "Custom" {
-        msg.push_str(
-            "these fields should be placed inside the `custom:` block \
-             (e.g. `custom.outputs`, `custom.restart_policy`)",
-        );
-    } else {
-        msg.push_str("these fields are not consumed by this node kind; remove them from the node");
-    }
+    msg.push_str("these fields are not consumed by this node kind; remove them from the node");
 
     bail!(msg)
 }
@@ -301,19 +272,6 @@ fn check_standard(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(STANDARD_ALLOWED);
     validate_against_whitelist(node, &allowed, "Standard")
-}
-
-/// Custom node whitelist:
-/// custom, cpu_affinity (+ shared: id/name/description/env/deploy)
-///
-/// Fields that belong inside `custom:` are rejected with a hint
-/// pointing to the correct location.
-const CUSTOM_ALLOWED: &[&str] = &["custom", "cpu_affinity"];
-
-fn check_custom(node: &Node) -> Result<()> {
-    let mut allowed = SHARED_FIELDS.to_vec();
-    allowed.extend(CUSTOM_ALLOWED);
-    validate_against_whitelist(node, &allowed, "Custom")
 }
 
 /// Runtime node whitelist:

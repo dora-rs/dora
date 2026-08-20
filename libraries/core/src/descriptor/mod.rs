@@ -7,21 +7,41 @@ use eyre::{Context, OptionExt, Result, bail};
 use std::{
     collections::{BTreeMap, HashMap},
     env::consts::EXE_EXTENSION,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
     process::Command,
 };
 
 // reexport for compatibility
 pub use dora_message::descriptor::{
     CoreNodeKind, CustomNode, DYNAMIC_SOURCE, Descriptor, Node, OperatorConfig, OperatorDefinition,
-    OperatorSource, PythonSource, ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig,
-    Ros2Direction, Ros2QosConfig, Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE,
-    SingleOperatorDefinition,
+    OperatorSource, PythonSource, RUNTIME_PYTHON, RUNTIME_SHARED_LIBRARY, RUNTIME_WASM,
+    ResolvedNode, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2QosConfig,
+    Ros2TopicConfig, Ros2TransportConfig, RuntimeNode, SHELL_SOURCE, SingleOperatorDefinition,
 };
 pub use validate::ResolvedNodeExt;
 pub use visualize::collect_dora_timers;
 
 mod classify;
+/// Lexically normalize a path (collapse `.` and resolve `..`) without touching
+/// the filesystem — the executable may not be built yet when this is called.
+///
+/// Used to sanitize untrusted node paths before a containment check, so the
+/// two callers (module expansion and manifest injection) must collapse `..`
+/// identically; keeping a single implementation prevents them from drifting.
+pub(crate) fn normalize_path(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                out.pop();
+            }
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 mod expand;
 pub mod validate;
 mod visualize;
@@ -153,14 +173,6 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 .iter_mut()
                 .flat_map(|op| op.config.inputs.values_mut())
                 .collect(),
-            classify::NodeClass::Custom => node
-                .custom
-                .as_mut()
-                .ok_or_eyre("no custom")?
-                .run_config
-                .inputs
-                .values_mut()
-                .collect(),
             classify::NodeClass::Operator => node
                 .operator
                 .as_mut()
@@ -215,10 +227,6 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     health_check_timeout: node.health_check_timeout,
                     finish_grace_secs: node.finish_grace_secs,
                 })
-            }
-            classify::NodeClass::Custom => {
-                let custom = node.custom.as_ref().ok_or_eyre("no custom")?;
-                CoreNodeKind::Custom(custom.clone())
             }
             classify::NodeClass::Runtime => {
                 let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
@@ -562,26 +570,24 @@ impl NodeExt for Node {
         match (
             &self.path,
             &self.operators,
-            &self.custom,
             &self.operator,
             &self.ros2,
             &self.module,
         ) {
-            (None, None, None, None, None, None) => {
+            (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `custom`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
                     self.id
                 )
             }
-            (None, None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
-            (None, None, Some(custom), None, None, None) => Ok(NodeKind::Custom(custom)),
-            (None, Some(runtime), None, None, None, None) => Ok(NodeKind::Runtime(runtime)),
-            (Some(path), None, None, None, None, None) => Ok(NodeKind::Standard(path)),
-            (None, None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
-            (None, None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
+            (None, None, Some(operator), None, None) => Ok(NodeKind::Operator(operator)),
+            (None, Some(runtime), None, None, None) => Ok(NodeKind::Runtime(runtime)),
+            (Some(path), None, None, None, None) => Ok(NodeKind::Standard(path)),
+            (None, None, None, Some(ros2), None) => Ok(NodeKind::Ros2Bridge(ros2)),
+            (None, None, None, None, Some(module)) => Ok(NodeKind::Module(module)),
             _ => {
                 eyre::bail!(
-                    "node `{}` has multiple exclusive fields set, only one of `path`, `custom`, `operators`, `operator`, `ros2`, and `module` is allowed",
+                    "node `{}` has multiple exclusive fields set, only one of `path`, `operators`, `operator`, `ros2`, and `module` is allowed",
                     self.id
                 )
             }
@@ -594,7 +600,6 @@ pub enum NodeKind<'a> {
     Standard(&'a String),
     /// Dora runtime node
     Runtime(&'a RuntimeNode),
-    Custom(&'a CustomNode),
     Operator(&'a SingleOperatorDefinition),
     /// ROS2 bridge node
     Ros2Bridge(&'a Ros2BridgeConfig),
