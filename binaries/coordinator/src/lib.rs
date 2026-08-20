@@ -1882,6 +1882,12 @@ async fn start_inner(
                                     inner: DaemonCoordinatorEvent::ReplaceNode {
                                         dataflow_id,
                                         node: resolved_node.clone(),
+                                        // Ship the original YAML-shape node so
+                                        // the daemon can assign the descriptor
+                                        // entry wholesale, mirroring the
+                                        // `*existing = original_node` commit
+                                        // this arm does below.
+                                        unresolved_node: original_node.clone(),
                                         uv,
                                         grace_duration,
                                     },

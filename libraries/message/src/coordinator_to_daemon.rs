@@ -139,9 +139,20 @@ pub enum DaemonCoordinatorEvent {
     /// definition under the same id (dora-rs/dora#2927): spawn the
     /// replacement first (a failure leaves the current incarnation
     /// untouched), then swap the entry and stop the outgoing incarnation.
+    ///
+    /// `unresolved_node` is the original YAML-shape [`crate::descriptor::Node`]
+    /// (as `dora node replace` received it); the daemon assigns it wholesale
+    /// onto the stored descriptor entry so the child's `DORA_NODE_CONFIG` /
+    /// `DoraNode::dataflow_descriptor()` reflect the replacement's definition
+    /// end-to-end. The field is separate from `node` because the two shapes
+    /// differ (`Node` is the flat YAML surface; `ResolvedNode` is the nested
+    /// resolved form used for spawning), and a hand-written back-conversion
+    /// would silently drift as fields are added to either type
+    /// (dora-rs/dora#2988 review, finding 2).
     ReplaceNode {
         dataflow_id: DataflowId,
         node: crate::descriptor::ResolvedNode,
+        unresolved_node: crate::descriptor::Node,
         uv: bool,
         grace_duration: Option<Duration>,
     },
