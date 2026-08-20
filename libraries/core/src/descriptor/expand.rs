@@ -251,6 +251,10 @@ fn check_module_file_inner(
                     node.id,
                 );
             }
+            // The same mutual-exclusion rule applies at every nesting level.
+            // Without this, `dora expand --module m.yml` reports a file as
+            // valid while `dora run` on a dataflow using it hard-fails.
+            validate_module_node_fields(node)?;
             let nested = module_dir.join(mod_path);
             let nested_canonical = nested.canonicalize().with_context(|| {
                 format!(
@@ -557,6 +561,64 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     refs
 }
 
+/// Reject source/kind fields on a module node that are mutually exclusive with
+/// the module reference itself.
+fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
+    let mut conflicts = Vec::new();
+
+    if node.path.is_some() {
+        conflicts.push("path");
+    }
+    // `args` belongs to `path`: a module node has no executable to pass them
+    // to, and `expand_module_node` never reads them, so they are dropped just
+    // as silently. Arguments reach inner nodes through `params:` instead.
+    if node.args.is_some() {
+        conflicts.push("args");
+    }
+    if node.path_sha256.is_some() {
+        conflicts.push("path_sha256");
+    }
+    if node.git.is_some() {
+        conflicts.push("git");
+    }
+    if node.hub.is_some() {
+        conflicts.push("hub");
+    }
+    if node.branch.is_some() {
+        conflicts.push("branch");
+    }
+    if node.tag.is_some() {
+        conflicts.push("tag");
+    }
+    if node.rev.is_some() {
+        conflicts.push("rev");
+    }
+    if node.operators.is_some() {
+        conflicts.push("operators");
+    }
+    if node.operator.is_some() {
+        conflicts.push("operator");
+    }
+    if node.ros2.is_some() {
+        conflicts.push("ros2");
+    }
+
+    if !conflicts.is_empty() {
+        bail!(
+            "module node `{}` sets fields that are mutually exclusive with \
+             `module`: {}\n\
+             hint: a module node only references a sub-dataflow -- remove these \
+             fields, or drop `module:` if this was meant to be a regular node. \
+             To configure the module's inner nodes use `params:`, `env:`, \
+             `build:`, or `deploy:`.",
+            node.id,
+            conflicts.join(", ")
+        );
+    }
+
+    Ok(())
+}
+
 /// Expand a single module node into its constituent flat nodes.
 ///
 /// Returns `(expanded_nodes, output_map)`; see [`ModuleOutputMap`].
@@ -574,6 +636,8 @@ fn expand_module_node(
             node.id
         );
     }
+
+    validate_module_node_fields(node)?;
 
     let module_path_str = node
         .module

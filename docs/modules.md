@@ -254,28 +254,21 @@ is a plain list with no `output: node/port` mapping syntax, so the fix is to
 rename the internal signal that is not being exported. This applies to
 `dora run` and `dora build`, not just `dora expand`.
 
-## Source-path resolution inside modules
+## Fields on a module node
 
-A module's inner-node `path:`, and its operators' `shared-library:`,
-`python:`, and `wasm:` values, are resolved relative to the **module file's**
-directory, not to the top-level dataflow. A module in `modules/nested/`
-declaring `python: op.py` refers to `modules/nested/op.py`.
+A module node references a sub-dataflow, so it has no source of its own. These
+fields are rejected rather than silently dropped: `path`, `args`,
+`path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`, `operator`,
+and `ros2`.
 
-Exempt from the rewrite: URLs, absolute paths, and the `dynamic` and `shell`
-sentinels (which the daemon matches verbatim).
+`env`, `build`, `deploy`, and `params` are accepted -- they propagate into the
+module's inner nodes.
 
-Two consequences worth knowing:
-
-- A resolved path that escapes the dataflow directory is rejected. A module
-  cannot reach a sibling project via `python: ../shared/op.py`, and the
-  `../../target/debug/<bin>` idiom used by the example dataflows cannot be
-  used from inside a module.
-- `build:` commands still run with the **dataflow** directory as their working
-  directory. An artifact a build produces must therefore be referenced from
-  where the build put it, which is not the module directory --- so
-  `build: cargo build -p my-op` paired with `shared-library: target/debug/my-op`
-  inside a module resolves to `modules/target/debug/my-op` and will not be
-  found. Use an absolute path or keep such nodes in the top-level dataflow.
+> **Breaking change.** These combinations parsed and ran before; the extra
+> fields were parsed, accepted, and then discarded when the module node was
+> replaced by its expansion. They now fail at expansion time, which means
+> `dora run`, `dora start`, `dora build`, `dora validate`, and
+> `dora expand --module` all reject them.
 
 ## Security
 
