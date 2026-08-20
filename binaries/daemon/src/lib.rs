@@ -4219,9 +4219,12 @@ impl Daemon {
                         .collect();
                     for output_id in outputs_to_remove {
                         if let Some(receivers) = dataflow.mappings.remove(&output_id) {
-                            for (receiver_id, input_id) in receivers {
-                                close_input(dataflow, &receiver_id, &input_id, &self.clock)?;
-                            }
+                            close_inputs_best_effort(
+                                dataflow,
+                                receivers,
+                                &self.clock,
+                                "failed to close input while removing node",
+                            );
                         }
                     }
 
@@ -5098,9 +5101,12 @@ impl Daemon {
                     })?;
 
                     if let Some(inputs) = dataflow.mappings.get(&output_id).cloned() {
-                        for (receiver_id, input_id) in &inputs {
-                            close_input(dataflow, receiver_id, input_id, &self.clock)?;
-                        }
+                        close_inputs_best_effort(
+                            dataflow,
+                            inputs,
+                            &self.clock,
+                            "failed to handle OutputClosed for input",
+                        );
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };
@@ -7638,9 +7644,12 @@ impl Daemon {
             .flat_map(|(_, v)| v)
             .cloned()
             .collect();
-        for (receiver_id, input_id) in &local_node_inputs {
-            close_input(dataflow, receiver_id, input_id, &self.clock)?;
-        }
+        close_inputs_best_effort(
+            dataflow,
+            local_node_inputs,
+            &self.clock,
+            "failed to deliver InputClosed while closing outputs",
+        );
 
         let mut closed = Vec::new();
         for output_id in &dataflow.open_external_mappings {
@@ -9297,11 +9306,40 @@ fn close_input(
         return Ok(());
     }
 
-    if was_open {
-        send_input_closed_strict(dataflow, receiver_id, input_id, clock)?;
+    let mut result = Ok(());
+
+    if was_open && let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        result = Err(err);
     }
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock)
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+        if result.is_ok() {
+            result = Err(err);
+        } else {
+            tracing::warn!(
+                %receiver_id,
+                %input_id,
+                "failed to signal drained input after InputClosed delivery failed: {err:?}"
+            );
+        }
+    }
+
+    result
+}
+
+fn close_inputs_best_effort<I>(
+    dataflow: &mut RunningDataflow,
+    inputs: I,
+    clock: &HLC,
+    context: &'static str,
+) where
+    I: IntoIterator<Item = (NodeId, DataId)>,
+{
+    for (receiver_id, input_id) in inputs {
+        if let Err(err) = close_input(dataflow, &receiver_id, &input_id, clock) {
+            tracing::warn!(%receiver_id, %input_id, "{context}: {err:?}");
+        }
+    }
 }
 
 fn send_input_closed_strict(
@@ -10860,6 +10898,174 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "InputClosed"));
+    }
+
+    #[test]
+    fn close_input_returns_error_when_receiver_channel_is_full() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Timestamped {
+            inner: NodeEvent::AllInputsClosed,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(
+            result.is_err(),
+            "full channels must be reported as an error"
+        );
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_x),
+            "the input is still removed even when its notification cannot be delivered"
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "AllInputsClosed"));
+    }
+
+    #[test]
+    fn close_input_still_disables_restart_when_input_closed_notification_is_full() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Timestamped {
+            inner: NodeEvent::AllInputsClosed,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(result.is_err(), "full channels must still report an error");
+        assert!(
+            disable_restart.load(atomic::Ordering::Acquire),
+            "drain bookkeeping must still disable restart even when InputClosed cannot be delivered"
+        );
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_x),
+            "the input is still removed even when its notification cannot be delivered"
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "AllInputsClosed"));
+    }
+
+    #[test]
+    fn close_input_removes_closed_receiver_channel() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+        drop(rx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(
+            result.is_err(),
+            "closed channels must be reported as an error"
+        );
+        assert!(
+            !df.subscribe_channels.contains_key(&node_a),
+            "closed channels must be cleaned up so later sends do not keep failing"
+        );
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_x),
+            "the input is still removed from the open-input set"
+        );
+    }
+
+    #[test]
+    fn close_inputs_best_effort_continues_after_error() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let node_b: NodeId = "node_b".to_string().into();
+        let input_a: DataId = "input_a".to_string().into();
+        let input_b: DataId = "input_b".to_string().into();
+        let input_b_guard: DataId = "input_b_guard".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_a.clone());
+        df.open_inputs
+            .entry(node_b.clone())
+            .or_default()
+            .extend([input_b.clone(), input_b_guard.clone()]);
+
+        let (tx_a, mut rx_a) = mpsc::channel(1);
+        tx_a.try_send(Timestamped {
+            inner: NodeEvent::AllInputsClosed,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        df.subscribe_channels.insert(node_a.clone(), tx_a);
+
+        let (tx_b, mut rx_b) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_b.clone(), tx_b);
+
+        close_inputs_best_effort(
+            &mut df,
+            [
+                (node_a.clone(), input_a.clone()),
+                (node_b.clone(), input_b.clone()),
+            ],
+            &clock,
+            "test",
+        );
+
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_a),
+            "the failing close still removes the first input"
+        );
+        assert!(
+            !df.open_inputs(&node_b).contains(&input_b),
+            "the helper must continue after the first error and close later inputs"
+        );
+        assert!(
+            df.open_inputs(&node_b).contains(&input_b_guard),
+            "the helper must not over-close unrelated inputs"
+        );
+
+        let events_a = drain_events(&mut rx_a);
+        assert_eq!(events_a.len(), 1);
+        assert!(matches_event(&events_a[0], "AllInputsClosed"));
+
+        let events_b = drain_events(&mut rx_b);
+        assert_eq!(events_b.len(), 1);
+        assert!(matches_event(&events_b[0], "InputClosed"));
     }
 
     // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
