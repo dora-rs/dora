@@ -70,7 +70,7 @@ pub(crate) unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
     unsafe {
         let cur = std::ptr::read_volatile(gen_ptr);
         if cur.is_multiple_of(2) {
-            std::ptr::write_volatile(gen_ptr, cur + 1);
+            std::ptr::write_volatile(gen_ptr, cur.wrapping_add(1));
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
         cur & !1 // always return the even baseline
