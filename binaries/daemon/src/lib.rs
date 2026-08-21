@@ -191,6 +191,7 @@ const METRICS_INTERVAL_SECS: f64 = METRICS_INTERVAL.as_secs_f64();
 /// patterns; a full channel is recorded as publish backpressure and dropped so
 /// the daemon event loop does not stall.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
+const ZENOH_REQUIRED_PUBLISH_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -447,21 +448,6 @@ struct DataflowMetricsSnapshot {
     net_messages_received: Arc<AtomicU64>,
     net_publish_failures: Arc<AtomicU64>,
     net_publish_enqueue_failures: Arc<AtomicU64>,
-}
-
-#[derive(Clone, Copy)]
-enum RemotePublishKind {
-    Data,
-    RequiredControl,
-}
-
-impl RemotePublishKind {
-    fn congestion_control(self) -> CongestionControl {
-        match self {
-            Self::Data => CongestionControl::Drop,
-            Self::RequiredControl => CongestionControl::Block,
-        }
-    }
 }
 
 /// Collect and send metrics in the background. Errors are returned to the
@@ -5091,12 +5077,7 @@ impl Daemon {
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         let (outbound, enqueue_failures) = self
-            .prepare_zenoh_outbound(
-                dataflow_id,
-                output_id,
-                serialized_event,
-                RemotePublishKind::RequiredControl,
-            )
+            .prepare_zenoh_outbound(dataflow_id, output_id, serialized_event)
             .await?;
         enqueue_required_zenoh_outbound(
             &self.zenoh_publish_tx,
@@ -5114,12 +5095,7 @@ impl Daemon {
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         let (outbound, enqueue_failures) = self
-            .prepare_zenoh_outbound(
-                dataflow_id,
-                output_id,
-                serialized_event,
-                RemotePublishKind::Data,
-            )
+            .prepare_zenoh_outbound(dataflow_id, output_id, serialized_event)
             .await?;
         handle_publish_enqueue_result(
             enqueue_failures.as_ref(),
@@ -5134,18 +5110,13 @@ impl Daemon {
         dataflow_id: Uuid,
         output_id: &OutputId,
         serialized_event: Vec<u8>,
-        kind: RemotePublishKind,
     ) -> Result<(ZenohOutbound, Arc<AtomicU64>), eyre::Error> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
         // Get or create publisher (lazy, cached per output)
-        let publishers = match kind {
-            RemotePublishKind::Data => &mut dataflow.publishers,
-            RemotePublishKind::RequiredControl => &mut dataflow.control_publishers,
-        };
-        let publisher = match publishers.entry(output_id.clone()) {
+        let publisher = match dataflow.publishers.entry(output_id.clone()) {
             std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
             std::collections::btree_map::Entry::Vacant(e) => {
                 let publish_topic =
@@ -5154,7 +5125,7 @@ impl Daemon {
                 let publisher = self
                     .zenoh_session
                     .declare_publisher(publish_topic)
-                    .congestion_control(kind.congestion_control())
+                    .congestion_control(CongestionControl::Block)
                     .express(true)
                     .priority(Priority::RealTime)
                     .await
@@ -7287,11 +7258,27 @@ fn try_enqueue_zenoh_outbound<T>(tx: &mpsc::Sender<T>, outbound: T) -> ZenohEnqu
 }
 
 async fn publish_zenoh_outbound(msg: ZenohOutbound) {
-    if let Err(e) = msg.publisher.put(msg.serialized).await {
-        tracing::error!("zenoh publish failed: {e}");
-        msg.net_publish_failures
-            .fetch_add(1, atomic::Ordering::Relaxed);
-        return;
+    match tokio::time::timeout(
+        ZENOH_REQUIRED_PUBLISH_TIMEOUT,
+        msg.publisher.put(msg.serialized),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!("zenoh publish failed: {e}");
+            msg.net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            return;
+        }
+        Err(_) => {
+            tracing::error!(
+                "zenoh publish timed out after {ZENOH_REQUIRED_PUBLISH_TIMEOUT:?}; dropping inter-daemon message"
+            );
+            msg.net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            return;
+        }
     }
     // Relaxed ordering is correct: counters are read-only for metrics
     // reporting and never used as synchronization guards.
@@ -8057,7 +8044,7 @@ mod fault_tolerance_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn output_closed_uses_block_publisher_without_passing_queued_data() {
+    async fn output_closed_shares_blocking_stream_with_queued_data() {
         let clock = Arc::new(HLC::default());
         let (mut daemon, _events_rx) = Daemon::build_daemon(
             None,
@@ -8095,12 +8082,19 @@ mod fault_tolerance_tests {
             .unwrap();
 
         let data = publish_rx.try_recv().unwrap();
-        assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
+        assert_eq!(
+            data.publisher.congestion_control(),
+            CongestionControl::Block
+        );
 
         let close = tokio::time::timeout(Duration::from_secs(1), publish_rx.recv())
             .await
             .expect("close event should wait for publish capacity")
             .expect("publish channel should stay open");
+        assert!(
+            Arc::ptr_eq(&data.publisher, &close.publisher),
+            "data and close for the same output must use one publisher so Zenoh preserves their order"
+        );
         assert_eq!(
             close.publisher.congestion_control(),
             CongestionControl::Block,
