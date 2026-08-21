@@ -115,6 +115,11 @@ pub(crate) struct DaemonConnection {
     /// connection's `DaemonExit` from a freshly re-registered connection
     /// that reused the same `DaemonId` (daemon reconnect race, #2392).
     pub(crate) connection_id: Uuid,
+    /// Consecutive coordinator→daemon heartbeat-send timeouts (bounded command
+    /// channel full). Reset to 0 on a successful send. A transient streak is
+    /// tolerated as backpressure; a persistent one escalates to a disconnect
+    /// (see `MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS`).
+    pub(crate) consecutive_heartbeat_send_timeouts: u32,
 }
 
 /// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
@@ -143,6 +148,7 @@ impl DaemonConnection {
             // conservative default keeps non-registration constructors safe
             supports_hub_sources: false,
             connection_id: Uuid::new_v4(),
+            consecutive_heartbeat_send_timeouts: 0,
         }
     }
 
