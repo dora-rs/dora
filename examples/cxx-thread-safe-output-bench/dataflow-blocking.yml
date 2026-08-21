@@ -1,0 +1,18 @@
+nodes:
+  - id: source
+    path: build/source
+    inputs:
+      fast: dora/timer/millis/10
+      slow: dora/timer/millis/1000
+    outputs:
+      - tick
+      - image
+
+  # Contestant 1: does the 200ms image work INLINE, blocking the loop.
+  - id: contestant
+    path: build/bench_node
+    inputs:
+      tick: source/tick
+      image: source/image
+    env:
+      BENCH_MODE: blocking
