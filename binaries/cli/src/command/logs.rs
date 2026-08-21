@@ -823,16 +823,24 @@ fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
 /// [`read_appended_log_lines`], so a line the daemon is part-way through
 /// writing is printed once — by a later poll — rather than twice or never.
 fn read_log_file_tracked(path: &Path) -> Result<(Vec<LogMessage>, FollowedFile)> {
-    let content = std::fs::read_to_string(path)
-        .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    let bytes = content.as_bytes();
+    // Read raw bytes and decode lossily, mirroring `read_appended_log_lines`:
+    // if this initial read races the daemon and the tail ends inside a
+    // multi-byte UTF-8 sequence, strict decoding (`read_to_string`) would abort
+    // the whole follow session — the very race the poll loop is written to
+    // survive. `head`, `consumed`, and the stored `offset` are derived from the
+    // raw buffer so the byte offset later polls seek to stays correct (a lossy
+    // `String`'s U+FFFD replacements would shift those offsets).
+    let bytes =
+        std::fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let head = bytes[..bytes.len().min(LOG_HEAD_FINGERPRINT_LEN)].to_vec();
     let consumed = match bytes.iter().rposition(|&b| b == b'\n') {
         Some(idx) => idx + 1,
         None => 0,
     };
-    // `consumed` sits just past a newline, so it is always a char boundary.
-    let messages = parse_log_content(path, &content[..consumed])?;
+    // Only the newline-terminated prefix is parsed; a partial trailing line is
+    // left for a later poll. Decoding lossily cannot abort here.
+    let content = String::from_utf8_lossy(&bytes[..consumed]);
+    let messages = parse_log_content(path, &content)?;
     Ok((
         messages,
         FollowedFile {
@@ -1789,6 +1797,34 @@ mod tests {
             .find(|p| p.path.ends_with("log_n.1.jsonl"))
             .unwrap();
         assert_eq!(rotated.resume, complete.len() as u64);
+    }
+
+    #[test]
+    fn read_log_file_tracked_tolerates_a_partial_multibyte_tail() {
+        // Regression (dora-rs/dora#3257): the initial follow read must not abort
+        // when it races the daemon and the file's tail ends inside a multi-byte
+        // UTF-8 sequence — the same partial-write race `read_appended_log_lines`
+        // is written to survive on every later poll.
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log_n.jsonl");
+        let complete = jsonl("日本語");
+        // A partial next line whose bytes end inside a 3-byte UTF-8 character
+        // (`你` = E4 BD A0), truncated to `E4 BD` — invalid UTF-8 at EOF.
+        let mut raw = complete.clone().into_bytes();
+        raw.extend_from_slice(b"{\"ts\":\"\xe4\xbd");
+        std::fs::write(&path, &raw).unwrap();
+
+        // Strict whole-buffer decoding would fail; the fix reads raw bytes and
+        // decodes only the consumed (newline-terminated) prefix lossily.
+        assert!(std::fs::read_to_string(&path).is_err());
+
+        let (msgs, state) = read_log_file_tracked(&path).unwrap();
+        assert_eq!(msgs.len(), 1);
+        // Only the newline-terminated prefix is consumed; the partial tail waits
+        // for a later poll, and the stored offset is the raw byte offset.
+        assert_eq!(state.offset, complete.len() as u64);
     }
 
     fn snap_from(path: &Path, size: u64, content: &str) -> LogFileSnapshot {
