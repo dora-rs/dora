@@ -1,3 +1,11 @@
+# The `rmw_version` pins below name an exact apt version *including* its build
+# date, which is the only way to make a container's `apt-get install` land on a
+# known rmw_zenoh build. Note that packages.ros.org serves only the newest build
+# of each package: when upstream publishes a new one, the pinned version stops
+# resolving and the router container dies during boot. Symptom is the health
+# wait in `scripts/ros2-zenoh-interop.sh` timing out (exit 124) — that script
+# dumps the container log on the way out, and the apt error names the versions
+# that do exist. Bump the pin to one of those.
 services:
   humble-router:
     profiles: [humble]
@@ -7,8 +15,8 @@ services:
     command: >-
       bash -lc 'architecture=$$(dpkg --print-architecture) &&
       case "$$architecture" in
-      amd64) rmw_version=0.1.8-1jammy.20260605.110455 ;;
-      arm64) rmw_version=0.1.8-1jammy.20260605.110613 ;;
+      amd64) rmw_version=0.1.9-1jammy.20260723.022609 ;;
+      arm64) rmw_version=0.1.9-1jammy.20260725.135946 ;;
       *) echo "unsupported architecture: $$architecture" >&2; exit 1 ;;
       esac && apt-get update -qq && apt-get install -y --no-install-recommends
       "ros-humble-rmw-zenoh-cpp=$$rmw_version" ros-humble-rclpy

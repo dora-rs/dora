@@ -325,6 +325,30 @@ pub fn reserve_node_listeners(
     local_nodes: &BTreeSet<NodeId>,
     routable_addr: Option<IpAddr>,
 ) -> BTreeMap<NodeId, NodeListeners> {
+    reserve_node_listeners_with(
+        nodes,
+        local_nodes,
+        routable_addr,
+        dora_core::topics::reserve_zenoh_endpoint,
+    )
+}
+
+/// [`reserve_node_listeners`] with the port reservation injected.
+///
+/// Which node listens on which address is a property of the dataflow, not of
+/// the host, so the tests drive this with a reserver that hands out endpoints
+/// instead of binding sockets. Binding real ones made the plan depend on which
+/// addresses the platform happens to allow: Linux routes all of
+/// `127.0.0.0/8` to `lo`, while macOS assigns only `127.0.0.1` to `lo0`, so a
+/// test using `127.0.0.2` as a stand-in routable address exercised the
+/// reservation-*failed* branch there instead of the one it meant to — which is
+/// how it passed every PR run and failed the 2026-08-21 nightly.
+fn reserve_node_listeners_with(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    local_nodes: &BTreeSet<NodeId>,
+    routable_addr: Option<IpAddr>,
+    reserve: impl Fn(IpAddr) -> std::io::Result<String>,
+) -> BTreeMap<NodeId, NodeListeners> {
     let remotely_consumed = remotely_consumed_nodes(nodes, local_nodes);
     // Reserve listeners per node first, so the dial-lists below can reference
     // every node regardless of spawn order.
@@ -337,7 +361,7 @@ pub fn reserve_node_listeners(
         if node.kind.dynamic() || !local_nodes.contains(node_id) {
             continue;
         }
-        let loopback = match dora_core::topics::reserve_loopback_zenoh_endpoint() {
+        let loopback = match reserve(dora_core::topics::LOCALHOST) {
             Ok(ep) => ep,
             Err(err) => {
                 // Fall back to gossip for this node rather than failing the
@@ -353,7 +377,7 @@ pub fn reserve_node_listeners(
         // Only pay for a network-reachable listener where a remote consumer
         // actually needs one.
         let routable = match routable_addr.filter(|_| remotely_consumed.contains(node_id)) {
-            Some(addr) => match dora_core::topics::reserve_zenoh_endpoint(addr) {
+            Some(addr) => match reserve(addr) {
                 Ok(ep) => Some(ep),
                 Err(err) => {
                     tracing::warn!(
@@ -858,7 +882,10 @@ impl Spawner {
 mod tests {
     use super::*;
     use dora_core::descriptor::DescriptorExt;
-    use std::ffi::{OsStr, OsString};
+    use std::{
+        ffi::{OsStr, OsString},
+        sync::atomic::{AtomicU16, Ordering},
+    };
 
     fn spawner_for(daemon_endpoint: Option<&str>, disable_multicast: bool) -> Spawner {
         let (daemon_tx, _rx) = mpsc::channel(1);
@@ -973,7 +1000,7 @@ mod tests {
         // Default: every node is local to this daemon, so nothing needs a
         // routable listener.
         let local: BTreeSet<NodeId> = nodes.keys().cloned().collect();
-        let listeners = reserve_node_listeners(&nodes, &local, None);
+        let listeners = reserve_node_listeners_with(&nodes, &local, None, fake_reserve);
         build_peering_plan(&nodes, &listeners, daemon, &BTreeMap::new())
     }
 
@@ -1003,13 +1030,45 @@ mod tests {
         routable: Option<IpAddr>,
         remote_endpoints: &BTreeMap<NodeId, String>,
     ) -> BTreeMap<NodeId, NodeZenohPeering> {
+        plan_with_reserver(
+            yaml,
+            local,
+            daemon,
+            routable,
+            remote_endpoints,
+            fake_reserve,
+        )
+    }
+
+    /// [`plan_with_remote_endpoints`] for a test that needs to say what the
+    /// reservation *does* — a reservation failure in particular, which no fixed
+    /// address provokes on every platform.
+    fn plan_with_reserver(
+        yaml: &str,
+        local: &[&str],
+        daemon: Option<&str>,
+        routable: Option<IpAddr>,
+        remote_endpoints: &BTreeMap<NodeId, String>,
+        reserve: impl Fn(IpAddr) -> std::io::Result<String>,
+    ) -> BTreeMap<NodeId, NodeZenohPeering> {
         let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse descriptor");
         let nodes = descriptor
             .resolve_aliases_and_set_defaults()
             .expect("resolve nodes");
         let local: BTreeSet<NodeId> = local.iter().map(|id| node(id)).collect();
-        let listeners = reserve_node_listeners(&nodes, &local, routable);
+        let listeners = reserve_node_listeners_with(&nodes, &local, routable, reserve);
         build_peering_plan(&nodes, &listeners, daemon, remote_endpoints)
+    }
+
+    /// Hands out a distinct endpoint per call without binding anything, so a
+    /// plan test asserts what the planner decided rather than what the host
+    /// allowed. The ports are opaque to every assertion here: what is checked
+    /// is the address a listener is on, and that dial lists name the endpoint
+    /// their producer listens on.
+    fn fake_reserve(addr: IpAddr) -> std::io::Result<String> {
+        static NEXT_PORT: AtomicU16 = AtomicU16::new(40_000);
+        let port = NEXT_PORT.fetch_add(1, Ordering::Relaxed);
+        Ok(dora_core::topics::zenoh_endpoint(addr, port))
     }
 
     /// The loopback listener, which every planned node has.
@@ -1398,7 +1457,7 @@ nodes:
     /// use, and the only one whose transport can carry shared memory.
     #[test]
     fn a_node_with_a_remote_consumer_also_listens_routably() {
-        let routable: IpAddr = "127.0.0.2".parse().unwrap();
+        let routable: IpAddr = "10.0.2.7".parse().unwrap();
         let plan = plan_for_local_with_routable(
             CROSS_MACHINE_YAML,
             &["local_source", "local_sink"],
@@ -1410,10 +1469,11 @@ nodes:
         assert_eq!(source.listen.len(), 2, "loopback plus routable: {source:?}");
         assert!(source.listen[0].starts_with("tcp/127.0.0.1:"));
         assert!(
-            source.listen[1].starts_with("tcp/127.0.0.2:"),
+            source.listen[1].starts_with("tcp/10.0.2.7:"),
             "the remote consumer needs a dialable endpoint, got {:?}",
             source.listen
         );
+        assert!(source.routable, "that endpoint is what makes it routable");
 
         // `local_sink` is consumed by nobody off-machine, so it stays loopback
         // only — exposure follows the dataflow, not the deployment.
@@ -1502,6 +1562,38 @@ nodes:
                 "no dialable address means the edge stays on the daemon path"
             );
         }
+    }
+
+    /// A routable address the host will not bind — an interface that went away,
+    /// an address never assignable here — costs the node its *second* listener,
+    /// not its first: same-machine consumers keep their loopback endpoint, and
+    /// the cross-machine edge falls back to the daemon path rather than
+    /// advertising an endpoint nobody is listening on.
+    #[test]
+    fn a_routable_address_that_cannot_be_bound_leaves_loopback_intact() {
+        let routable: IpAddr = "10.0.2.7".parse().unwrap();
+        let plan = plan_with_reserver(
+            CROSS_MACHINE_YAML,
+            &["local_source", "local_sink"],
+            Some("tcp/127.0.0.1:1"),
+            Some(routable),
+            &BTreeMap::new(),
+            |addr| {
+                if addr == routable {
+                    Err(std::io::Error::from(std::io::ErrorKind::AddrNotAvailable))
+                } else {
+                    fake_reserve(addr)
+                }
+            },
+        );
+
+        let source = &plan[&node("local_source")];
+        assert_eq!(source.listen.len(), 1, "loopback survives: {source:?}");
+        assert!(source.listen[0].starts_with("tcp/127.0.0.1:"));
+        assert!(
+            !source.routable,
+            "an endpoint that never bound is not one a remote consumer can dial"
+        );
     }
 
     /// Dynamic nodes join at arbitrary times and aren't part of the spawn set,
