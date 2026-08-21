@@ -1557,14 +1557,31 @@ impl DoraNode {
         self.send_output_sample(output_id, parameters, Some(sample))
     }
 
-    /// Sends the give Arrow array as an output message.
+    /// Sends the given Arrow array as an output message.
     ///
-    /// Uses shared memory for efficient data transfer if suitable.
+    /// This is the recommended way to emit data from a node: pass any value that
+    /// implements [`IntoArrow`] (primitives, `Vec<T>`, `&str`, an Arrow array,
+    /// …) and dora moves it into shared memory for an efficient, near-zero-copy
+    /// transfer to downstream nodes.
     ///
-    /// This method might copy the message once to move it to shared memory.
+    /// Uses shared memory for efficient data transfer if suitable. This method
+    /// might copy the message once to move it to shared memory.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, _events) = DoraNode::init_from_env()?;
+    ///
+    /// let output = DataId::from("output_id".to_owned());
+    /// let parameters = MetadataParameters::default();
+    ///
+    /// node.send_output(output, parameters, vec![1.0f32, 2.0, 3.0])?;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn send_output(
         &mut self,
         output_id: DataId,
