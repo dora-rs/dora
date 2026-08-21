@@ -1004,17 +1004,12 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "Stop",
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
+                    NodeEvent::Stop => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "Stop",
+                        None,
+                    )),
                     NodeEvent::Reload { .. } => None,
                     NodeEvent::Input { id, metadata, data } => {
                         let mut event_json = convert_output_to_json(
@@ -1027,53 +1022,30 @@ impl EventStream {
                         event_json.insert("type".into(), "Input".into());
                         Some(event_json.into())
                     }
-                    NodeEvent::InputClosed { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "InputClosed",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::InputRecovered { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "InputRecovered",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::NodeRestarted { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "NodeRestarted",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::AllInputsClosed => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "AllInputsClosed",
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
+                    NodeEvent::InputClosed { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "InputClosed",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::InputRecovered { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "InputRecovered",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::NodeRestarted { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "NodeRestarted",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::AllInputsClosed => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "AllInputsClosed",
+                        None,
+                    )),
                     _ => None,
                 },
                 // Zenoh-delivered inputs surface to the user as `Event::Input`
@@ -1353,6 +1325,37 @@ impl EventStream {
             }
         }
     }
+}
+
+/// Build the JSON for a "control" event that carries only a type tag, an
+/// optional input/node id, and the elapsed time offset since the node started.
+///
+/// Shared by the `Stop` / `InputClosed` / `InputRecovered` / `NodeRestarted` /
+/// `AllInputsClosed` arms of [`EventStream::record_event`], which differ only in
+/// the `"type"` string and whether an `"id"` field is present. A free function
+/// (rather than a `&self` method) so it can take the `clock` and
+/// `start_timestamp` fields by reference while `record_event` holds a mutable
+/// borrow of the sibling `write_events_to` field.
+fn control_event_json(
+    clock: &uhlc::HLC,
+    start_timestamp: &uhlc::Timestamp,
+    ty: &str,
+    id: Option<String>,
+) -> serde_json::Value {
+    let time_offset = clock.new_timestamp().get_diff_duration(start_timestamp);
+    // Build the map explicitly (rather than via `json!`) so the key order
+    // matches the previous per-arm literals byte-for-byte under serde_json's
+    // `preserve_order`: `type`, then the optional `id`, then `time_offset_secs`.
+    let mut event_json = serde_json::Map::new();
+    event_json.insert("type".to_owned(), ty.into());
+    if let Some(id) = id {
+        event_json.insert("id".to_owned(), serde_json::Value::String(id));
+    }
+    event_json.insert(
+        "time_offset_secs".to_owned(),
+        time_offset.as_secs_f64().into(),
+    );
+    serde_json::Value::Object(event_json)
 }
 
 /// Outcome of classifying a single event during a pattern-aware wait.
@@ -1944,6 +1947,33 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_event_json_shape_and_key_order() {
+        let clock = uhlc::HLC::default();
+        let start = clock.new_timestamp();
+
+        // An id-bearing control event: keys in `type`, `id`, `time_offset_secs`
+        // order (serde_json's `preserve_order` makes the order observable).
+        let with_id = control_event_json(&clock, &start, "InputClosed", Some("cam".to_owned()));
+        let obj = with_id.as_object().expect("object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["type", "id", "time_offset_secs"]
+        );
+        assert_eq!(obj["type"], serde_json::json!("InputClosed"));
+        assert_eq!(obj["id"], serde_json::json!("cam"));
+        assert!(obj["time_offset_secs"].is_f64());
+
+        // A control event without an id omits the `id` field entirely.
+        let without_id = control_event_json(&clock, &start, "AllInputsClosed", None);
+        let obj = without_id.as_object().expect("object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["type", "time_offset_secs"]
+        );
+        assert_eq!(obj["type"], serde_json::json!("AllInputsClosed"));
+    }
 
     #[test]
     fn convert_param_update() {
