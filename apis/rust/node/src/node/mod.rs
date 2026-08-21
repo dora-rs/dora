@@ -776,8 +776,6 @@ pub struct DoraNode {
     /// the schema is only re-published when it changes or a publish failed) and
     /// the time of the last full-stream send (for the periodic in-band refresh).
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
-    /// Threshold for using zenoh SHM vs inline bytes (default 4096).
-
     /// Diagnostic (dora-rs/dora#2742): how many large sends have already been
     /// traced hop-by-hop. The Windows nightly wedges the *runtime's* main loop
     /// inside `send_output` on the very first large output, so tracing only the
