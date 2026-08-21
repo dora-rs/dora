@@ -449,6 +449,21 @@ struct DataflowMetricsSnapshot {
     net_publish_enqueue_failures: Arc<AtomicU64>,
 }
 
+#[derive(Clone, Copy)]
+enum RemotePublishKind {
+    Data,
+    RequiredControl,
+}
+
+impl RemotePublishKind {
+    fn congestion_control(self) -> CongestionControl {
+        match self {
+            Self::Data => CongestionControl::Drop,
+            Self::RequiredControl => CongestionControl::Block,
+        }
+    }
+}
+
 /// Collect and send metrics in the background. Errors are returned to the
 /// caller (the spawned task logs them).
 async fn collect_and_send_metrics_bg(
@@ -5076,7 +5091,12 @@ impl Daemon {
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         let (outbound, enqueue_failures) = self
-            .prepare_zenoh_outbound(dataflow_id, output_id, serialized_event)
+            .prepare_zenoh_outbound(
+                dataflow_id,
+                output_id,
+                serialized_event,
+                RemotePublishKind::RequiredControl,
+            )
             .await?;
         enqueue_required_zenoh_outbound(
             &self.zenoh_publish_tx,
@@ -5094,7 +5114,12 @@ impl Daemon {
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         let (outbound, enqueue_failures) = self
-            .prepare_zenoh_outbound(dataflow_id, output_id, serialized_event)
+            .prepare_zenoh_outbound(
+                dataflow_id,
+                output_id,
+                serialized_event,
+                RemotePublishKind::Data,
+            )
             .await?;
         handle_publish_enqueue_result(
             enqueue_failures.as_ref(),
@@ -5109,13 +5134,18 @@ impl Daemon {
         dataflow_id: Uuid,
         output_id: &OutputId,
         serialized_event: Vec<u8>,
+        kind: RemotePublishKind,
     ) -> Result<(ZenohOutbound, Arc<AtomicU64>), eyre::Error> {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
         // Get or create publisher (lazy, cached per output)
-        let publisher = match dataflow.publishers.entry(output_id.clone()) {
+        let publishers = match kind {
+            RemotePublishKind::Data => &mut dataflow.publishers,
+            RemotePublishKind::RequiredControl => &mut dataflow.control_publishers,
+        };
+        let publisher = match publishers.entry(output_id.clone()) {
             std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
             std::collections::btree_map::Entry::Vacant(e) => {
                 let publish_topic =
@@ -5124,7 +5154,7 @@ impl Daemon {
                 let publisher = self
                     .zenoh_session
                     .declare_publisher(publish_topic)
-                    .congestion_control(CongestionControl::Drop)
+                    .congestion_control(kind.congestion_control())
                     .express(true)
                     .priority(Priority::RealTime)
                     .await
@@ -8026,52 +8056,55 @@ mod fault_tolerance_tests {
         assert_eq!(result, ZenohEnqueueResult::Closed);
     }
 
-    #[test]
-    fn regular_output_enqueue_full_is_nonfatal() {
-        let (tx, _rx) = mpsc::channel(1);
-        tx.try_send("occupied").unwrap();
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn output_closed_uses_block_publisher_without_passing_queued_data() {
+        let clock = Arc::new(HLC::default());
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            None,
+            DaemonId::new(None),
+            None,
+            clock,
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            ZenohBind::Derived(LOCALHOST),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+        let (publish_tx, mut publish_rx) = mpsc::channel(1);
+        daemon.zenoh_publish_tx = publish_tx;
 
-        let result = try_enqueue_zenoh_outbound(&tx, "output");
+        let dataflow_id = Uuid::nil();
+        let node_id = NodeId::from("source".to_string());
+        let output_id = DataId::from("value".to_string());
+        let output = OutputId(node_id.clone(), output_id.clone());
+        let mut dataflow = test_dataflow();
+        dataflow.open_external_mappings.insert(output.clone());
+        daemon.running.insert(dataflow_id, dataflow);
 
-        assert!(
-            matches!(result, ZenohEnqueueResult::Full),
-            "regular output enqueue should report backpressure without surfacing a fatal error"
-        );
-    }
+        daemon
+            .try_send_to_remote_receivers(dataflow_id, &output, b"data".to_vec())
+            .await
+            .unwrap();
+        daemon
+            .send_output_closed_events(dataflow_id, node_id, vec![output_id])
+            .await
+            .unwrap();
 
-    #[test]
-    fn output_closed_uses_the_same_fifo_as_regular_output() {
-        let (publish_tx, mut publish_rx) = mpsc::channel(3);
+        let data = publish_rx.try_recv().unwrap();
+        assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
 
-        let data_1 = try_enqueue_zenoh_outbound(&publish_tx, "data-1");
-        let data_2 = try_enqueue_zenoh_outbound(&publish_tx, "data-2");
-        let close = try_enqueue_zenoh_outbound(&publish_tx, "close");
-
-        assert_eq!(data_1, ZenohEnqueueResult::Queued);
-        assert_eq!(data_2, ZenohEnqueueResult::Queued);
-        assert_eq!(close, ZenohEnqueueResult::Queued);
-        assert_eq!(publish_rx.try_recv().unwrap(), "data-1");
-        assert_eq!(publish_rx.try_recv().unwrap(), "data-2");
-        assert_eq!(publish_rx.try_recv().unwrap(), "close");
-    }
-
-    #[test]
-    fn zenoh_publish_drain_preserves_output_closed_ordering() {
-        let (publish_tx, mut publish_rx) = mpsc::channel(4);
-
-        publish_tx.try_send("data-1").unwrap();
-        publish_tx.try_send("data-2").unwrap();
-        publish_tx.try_send("close").unwrap();
-
-        let mut published = Vec::new();
-        while let Ok(msg) = publish_rx.try_recv() {
-            published.push(msg);
-        }
-
+        let close = tokio::time::timeout(Duration::from_secs(1), publish_rx.recv())
+            .await
+            .expect("close event should wait for publish capacity")
+            .expect("publish channel should stay open");
         assert_eq!(
-            published,
-            ["data-1", "data-2", "close"],
-            "OutputClosed must not pass earlier Output messages for the same output"
+            close.publisher.congestion_control(),
+            CongestionControl::Block,
+            "OutputClosed must use a non-dropping zenoh publisher"
         );
     }
 
