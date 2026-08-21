@@ -3647,7 +3647,7 @@ mod tests {
         drop(events);
     }
 
-    use crate::integration_testing::{OutputJson, OutputReceiver, drain_outputs};
+    use crate::integration_testing::{OutputReceiver, drain_outputs};
 
     /// Helper: create a minimal test node with a channel output.
     fn test_node() -> (DoraNode, crate::EventStream, OutputReceiver) {
