@@ -1071,15 +1071,16 @@ impl RunningDataflow {
     /// A running source (no inputs, never drains) means the dataflow is still
     /// producing, so nothing escalates; likewise an active non-source node
     /// (recent traffic) means work is still in progress. Explicitly stopped
-    /// dataflows are excluded (`stop_all` runs its own kill escalation), as are
-    /// dataflows with open cross-daemon output mappings — a local node that
-    /// looks like a straggler may still be flushing outputs to consumers on
-    /// other daemons, which this daemon cannot see.
+    /// dataflows are excluded (`stop_all` runs its own kill escalation). Nodes
+    /// with open cross-daemon output mappings are skipped only when they would
+    /// otherwise be selected for escalation — they may still be flushing
+    /// outputs to consumers on other daemons, which this daemon cannot see —
+    /// but unrelated local nodes stay watchdog-covered.
     ///
     /// `now_millis` is the current `node_communication::current_millis()`, the
     /// clock `RunningNode::last_activity` is stamped against.
     pub(crate) fn finish_stragglers(&self, grace: Duration, now_millis: u64) -> Vec<NodeId> {
-        if self.stop_sent || !self.open_external_mappings.is_empty() {
+        if self.stop_sent {
             return Vec::new();
         }
         select_finish_stragglers(
@@ -1101,6 +1102,10 @@ impl RunningDataflow {
                     drained_for: self.all_inputs_closed_at.get(id).map(Instant::elapsed),
                     silent_for: Duration::from_millis(now_millis.saturating_sub(last)),
                     node_grace: node.finish_grace_secs,
+                    remote_output_open: self
+                        .open_external_mappings
+                        .iter()
+                        .any(|output| &output.0 == id),
                 }
             }),
             &self.finish_escalated,
@@ -1173,6 +1178,10 @@ struct StragglerNode<'a> {
     /// When `Some`, takes precedence over the global grace passed to
     /// [`select_finish_stragglers`] for this node only.
     node_grace: Option<Duration>,
+    /// This node still has an output consumed by another daemon. It is exempt
+    /// from local finish escalation, but must not disable the watchdog for
+    /// unrelated local nodes.
+    remote_output_open: bool,
 }
 
 /// Pure core of [`RunningDataflow::node_output_ids`].
@@ -1219,7 +1228,7 @@ fn select_finish_stragglers<'a>(
             // draining: ready past grace; still within grace it is progressing
             // toward exit and does not veto, but is not escalated yet
             Some(drained_for) => {
-                if drained_for >= effective_grace {
+                if drained_for >= effective_grace && !node.remote_output_open {
                     eligible.push(node.id.clone());
                 }
             }
@@ -1229,7 +1238,9 @@ fn select_finish_stragglers<'a>(
             // node still has work in progress — both veto.
             None => {
                 if node.connected && node.silent_for >= effective_grace {
-                    eligible.push(node.id.clone());
+                    if !node.remote_output_open {
+                        eligible.push(node.id.clone());
+                    }
                 } else {
                     return Vec::new();
                 }
@@ -1376,6 +1387,42 @@ mod tests {
              and must not be treated as a source, regardless of what its \
              top-level descriptor `inputs` map looks like"
         );
+    }
+
+    fn test_running_node(node_id: &NodeId) -> RunningNode {
+        RunningNode {
+            process: None,
+            restart_loop_start: None,
+            _listener_shutdown: None,
+            generation: 7,
+            generation_counter: Arc::new(AtomicU64::new(7)),
+            node_config: NodeConfig {
+                dataflow_id: uuid::Uuid::nil(),
+                node_id: node_id.clone(),
+                run_config: dora_core::config::NodeRunConfig {
+                    inputs: BTreeMap::new(),
+                    outputs: BTreeSet::new(),
+                    output_types: BTreeMap::new(),
+                    input_types: BTreeMap::new(),
+                    output_framing: BTreeMap::new(),
+                    shared_memory_pool_size: None,
+                },
+                daemon_communication: None,
+                dataflow_descriptor: serde_yaml::Value::Null,
+                dynamic: false,
+                write_events_to: None,
+                restart_count: 0,
+                output_routing: None,
+            },
+            pid: None,
+            restart_count: Arc::new(AtomicU32::new(0)),
+            restart_policy: RestartPolicy::Never,
+            disable_restart: Arc::new(AtomicBool::new(false)),
+            force_restart_next: Arc::new(AtomicBool::new(false)),
+            last_activity: Arc::new(AtomicU64::new(0)),
+            health_check_timeout: None,
+            finish_grace_secs: None,
+        }
     }
 
     /// Default behavior is unchanged: every input gates the drain, so a
@@ -1755,6 +1802,7 @@ mod tests {
             drained_for: Some(age),
             silent_for: Duration::ZERO,
             node_grace: None,
+            remote_output_open: false,
         }
     }
 
@@ -1768,6 +1816,7 @@ mod tests {
             drained_for: None,
             silent_for,
             node_grace: None,
+            remote_output_open: false,
         }
     }
 
@@ -1807,6 +1856,7 @@ mod tests {
             drained_for: None,
             silent_for: PAST_GRACE,
             node_grace: None,
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers(
             [source_node, drained(&sink, PAST_GRACE)].into_iter(),
@@ -1828,6 +1878,7 @@ mod tests {
             drained_for: None,
             silent_for: WITHIN_GRACE,
             node_grace: None,
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers(
             [dynamic_node, drained(&sink, PAST_GRACE)].into_iter(),
@@ -1861,6 +1912,62 @@ mod tests {
         assert_eq!(selected, vec![node_id("a"), node_id("b")]);
     }
 
+    #[test]
+    fn remote_output_open_skips_only_that_node() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let mut remote_node = drained(&remote, PAST_GRACE);
+        remote_node.remote_output_open = true;
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert_eq!(selected, vec![local]);
+    }
+
+    #[test]
+    fn remote_output_open_does_not_bypass_active_node_veto() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let mut remote_node = never_drained(&remote, WITHIN_GRACE);
+        remote_node.remote_output_open = true;
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert!(selected.is_empty());
+    }
+
+    #[test]
+    fn remote_output_open_does_not_bypass_starting_node_veto() {
+        let remote = node_id("remote_producer");
+        let local = node_id("local_stuck");
+        let remote_node = StragglerNode {
+            id: &remote,
+            dynamic: false,
+            never_finishes: false,
+            connected: false,
+            drained_for: None,
+            silent_for: PAST_GRACE,
+            node_grace: None,
+            remote_output_open: true,
+        };
+
+        let selected = select_finish_stragglers(
+            [remote_node, drained(&local, PAST_GRACE)].into_iter(),
+            &BTreeSet::new(),
+            TEST_GRACE,
+        );
+
+        assert!(selected.is_empty());
+    }
+
     // ---- dora-rs/dora#2270: wedge-before-drain escalation ----
 
     #[test]
@@ -1877,6 +1984,43 @@ mod tests {
     }
 
     #[test]
+    fn unrelated_remote_output_does_not_disable_local_straggler_watchdog() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let local_stuck = node_id("local_stuck");
+        let remote_producer = node_id("remote_producer");
+        let now = 10_000;
+        let running = test_running_node(&local_stuck);
+        running.last_activity.store(1, atomic::Ordering::Release);
+
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("value"),
+            local_stuck.clone(),
+            data_id("input"),
+        );
+        df.open_inputs
+            .get_mut(&local_stuck)
+            .expect("test input should be registered")
+            .remove(&data_id("input"));
+        df.all_inputs_closed_at.insert(
+            local_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
+        df.running_nodes.insert(local_stuck.clone(), running);
+        df.connected_nodes.insert(local_stuck.clone());
+        df.open_external_mappings
+            .insert(OutputId(remote_producer, data_id("remote_out")));
+
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![local_stuck],
+            "a remote-only output from another producer must not globally disable \
+             the local finish-straggler watchdog"
+        );
+    }
+
+    #[test]
     fn unconnected_node_silent_past_grace_is_not_escalated() {
         // `last_activity` is seeded at spawn, so a slow-starting node that has
         // not subscribed yet reads as long-silent — but it is still coming up,
@@ -1890,6 +2034,7 @@ mod tests {
             drained_for: None,
             silent_for: PAST_GRACE,
             node_grace: None,
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
@@ -1928,6 +2073,7 @@ mod tests {
             drained_for: None,
             silent_for: PAST_GRACE,
             node_grace: None,
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(selected.is_empty());
@@ -1964,6 +2110,7 @@ mod tests {
             drained_for: Some(PAST_GRACE),
             silent_for: PAST_GRACE,
             node_grace: Some(Duration::from_secs(600)),
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert!(
@@ -1985,6 +2132,7 @@ mod tests {
             drained_for: Some(Duration::from_millis(200)), // well past long_grace
             silent_for: Duration::ZERO,
             node_grace: Some(long_grace),
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers([node].into_iter(), &BTreeSet::new(), TEST_GRACE);
         assert_eq!(selected, vec![node_id("trainer")]);
@@ -2009,6 +2157,7 @@ mod tests {
             drained_for: Some(PAST_GRACE), // past global grace, within per-node grace
             silent_for: PAST_GRACE,
             node_grace: Some(long_grace),
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers(
             [drained(&sink, PAST_GRACE), trainer_node].into_iter(),
@@ -2042,6 +2191,7 @@ mod tests {
             drained_for: None,      // has not received AllInputsClosed yet
             silent_for: PAST_GRACE, // silent past global grace, within per-node grace
             node_grace: Some(long_grace),
+            remote_output_open: false,
         };
         let selected = select_finish_stragglers(
             [drained(&sink, PAST_GRACE), trainer_node].into_iter(),
