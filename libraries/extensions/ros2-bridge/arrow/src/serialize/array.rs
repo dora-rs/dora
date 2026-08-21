@@ -12,7 +12,7 @@ use serde::ser::SerializeTuple;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, check_array_len, error};
+use super::{TypedValue, check_array_len, error, reject_null_string_element};
 
 /// Serialize an array with known size as tuple.
 pub struct ArraySerializeWrapper<'a> {
@@ -323,8 +323,8 @@ where
 {
     check_array_len(array.len(), array_len)?;
     let mut seq = serializer.serialize_tuple(array_len)?;
-    for s in array.iter() {
-        seq.serialize_element(s.unwrap_or_default())?;
+    for (i, s) in array.iter().enumerate() {
+        seq.serialize_element(reject_null_string_element(s, i)?)?;
     }
     seq.end()
 }
@@ -340,8 +340,8 @@ where
 {
     check_array_len(array.len(), array_len)?;
     let mut seq = serializer.serialize_tuple(array_len)?;
-    for s in array.iter() {
-        let utf16: Vec<u16> = s.unwrap_or_default().encode_utf16().collect();
+    for (i, s) in array.iter().enumerate() {
+        let utf16: Vec<u16> = reject_null_string_element(s, i)?.encode_utf16().collect();
         seq.serialize_element(&utf16)?;
     }
     seq.end()
@@ -396,30 +396,9 @@ mod tests {
         messages: &Arc<HashMap<String, HashMap<String, Message>>>,
         names: &[&str],
     ) -> bool {
-        // An array field's column is a single-element `List` whose inner value
-        // holds the array elements (mirrors how dora wraps message fields).
-        let item = Arc::new(Field::new("item", DataType::Utf8, true));
-        let list = ListArray::new(
-            item.clone(),
-            OffsetBuffer::from_lengths([names.len()]),
-            Arc::new(StringArray::from(names.to_vec())),
-            None,
-        );
-        let struct_array = StructArray::from(vec![(
-            Arc::new(Field::new("names", DataType::List(item), false)),
-            Arc::new(list) as ArrayRef,
-        )]);
-        let value = Arc::new(struct_array) as ArrayRef;
-        let type_info = TypeInfo {
-            package_name: Cow::Borrowed("test_msgs"),
-            message_name: Cow::Borrowed("ArrMsg"),
-            messages: messages.clone(),
-        };
-        let typed = TypedValue {
-            value: &value,
-            type_info: &type_info,
-        };
-        cdr_encoding::to_vec::<_, LittleEndian>(&typed).is_ok()
+        // All-present case: delegate to the nullable helper below, which handles
+        // the (superset) `Vec<Option<&str>>` shape.
+        serializes_ok_with_nulls(messages, names.iter().map(|s| Some(*s)).collect())
     }
 
     /// #2027: a fixed-size `string[3]` field given the wrong number of elements
@@ -449,6 +428,67 @@ mod tests {
         assert!(
             serializes_ok(&messages, &["a", "b", "c"]),
             "size-3 field with 3 elements must serialize"
+        );
+    }
+
+    /// Like `serializes_ok`, but the inner `StringArray` may contain nulls so we
+    /// can exercise the null-element path of a fixed `string[N]` field.
+    fn serializes_ok_with_nulls(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        names: Vec<Option<&str>>,
+    ) -> bool {
+        let item = Arc::new(Field::new("item", DataType::Utf8, true));
+        let list = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([names.len()]),
+            Arc::new(StringArray::from(names)),
+            None,
+        );
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("names", DataType::List(item), false)),
+            Arc::new(list) as ArrayRef,
+        )]);
+        let value = Arc::new(struct_array) as ArrayRef;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ArrMsg"),
+            messages: messages.clone(),
+        };
+        let typed = TypedValue {
+            value: &value,
+            type_info: &type_info,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&typed).is_ok()
+    }
+
+    /// A null element in a fixed `string[N]` field must error rather than be
+    /// silently encoded as `""`. The scalar-string path already rejects nulls
+    /// (ROS2/CDR has no null concept); the array path must honor the same
+    /// invariant instead of inventing an empty string the producer never sent.
+    #[test]
+    fn fixed_string_array_null_element_is_rejected() {
+        let messages = fixed_array_message(NestableType::GenericString(GenericString::String));
+        assert!(
+            !serializes_ok_with_nulls(&messages, vec![Some("a"), None, Some("c")]),
+            "a null element in a string[3] field must error, not encode as \"\""
+        );
+        assert!(
+            serializes_ok_with_nulls(&messages, vec![Some("a"), Some("b"), Some("c")]),
+            "an all-present string[3] field must still serialize"
+        );
+    }
+
+    /// Same null guard on the `wstring[N]` path.
+    #[test]
+    fn fixed_wstring_array_null_element_is_rejected() {
+        let messages = fixed_array_message(NestableType::GenericString(GenericString::WString));
+        assert!(
+            !serializes_ok_with_nulls(&messages, vec![Some("a"), None, Some("c")]),
+            "a null element in a wstring[3] field must error, not encode as \"\""
+        );
+        assert!(
+            serializes_ok_with_nulls(&messages, vec![Some("a"), Some("b"), Some("c")]),
+            "an all-present wstring[3] field must still serialize"
         );
     }
 

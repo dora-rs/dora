@@ -261,6 +261,26 @@ fn check_not_null<E: serde::ser::Error>(
     Ok(())
 }
 
+/// Reject a null element in a ROS2 `string[]`/`string[N]` (or wstring) column.
+///
+/// The scalar-string path already refuses nulls via [`check_not_null`]; the
+/// array and sequence string paths must honor the same invariant. A ROS2 string
+/// array element is non-nullable on the CDR wire, so a null in the Arrow column
+/// would otherwise be silently encoded as `""` — inventing an empty string the
+/// producer never sent. Reject it instead, matching the scalar path and the
+/// sibling `arrow-convert`/`mavlink2-bridge` layers that also refuse nulls
+/// rather than substitute a default.
+fn reject_null_string_element<E: serde::ser::Error>(
+    element: Option<&str>,
+    index: usize,
+) -> Result<&str, E> {
+    element.ok_or_else(|| {
+        serde::ser::Error::custom(format!(
+            "string array element at index {index} is null, but ROS2 messages cannot represent null"
+        ))
+    })
+}
+
 /// Guard for fixed-size array fields: a ROS2 `T[N]` array has no length prefix
 /// on the CDR wire, so the Arrow column must have exactly `expected` elements.
 /// A mismatch would otherwise emit the wrong element count into a fixed tuple
