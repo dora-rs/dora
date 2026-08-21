@@ -4704,8 +4704,16 @@ impl Daemon {
                         .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
                         .unwrap_or(false);
                     if removed {
-                        close_input(dataflow, &target_node, &target_input, &self.clock)
-                            .map_err(|err| format!("{err:?}"))
+                        if let Err(err) =
+                            close_input(dataflow, &target_node, &target_input, &self.clock)
+                        {
+                            tracing::warn!(
+                                %target_node,
+                                %target_input,
+                                "failed to deliver InputClosed after removing mapping: {err:?}"
+                            );
+                        }
+                        Ok(())
                     } else {
                         Err(format!(
                             "mapping `{source_node}/{source_output}` -> \
@@ -7296,7 +7304,7 @@ impl Daemon {
             format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
         })?;
         let Some(channel) = dataflow.subscribe_channels.get(&node_id) else {
-            return Err(eyre!("node `{node_id}` not connected"));
+            return Ok(());
         };
         match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
             Ok(true) => {
@@ -7480,38 +7488,8 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        // Get or create publisher (lazy, cached per output)
-        let publisher = match dataflow.publishers.entry(output_id.clone()) {
-            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
-            std::collections::btree_map::Entry::Vacant(e) => {
-                let publish_topic =
-                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
-                tracing::debug!("declaring control publisher on {publish_topic}");
-                let publisher = self
-                    .zenoh_session
-                    .declare_publisher(publish_topic)
-                    .congestion_control(CongestionControl::Drop)
-                    .express(true)
-                    .priority(Priority::RealTime)
-                    .await
-                    .map_err(|err| eyre!(err))
-                    .context("failed to create zenoh publisher")?;
-                let arc = Arc::new(publisher);
-                e.insert(arc.clone());
-                arc
-            }
-        };
-        let payload_len = serialized_event.len() as u64;
-
-        // Offload Zenoh I/O to the drain task — never blocks the event loop.
-        let outbound = ZenohOutbound {
-            publisher,
-            serialized: serialized_event,
-            payload_len,
-            net_bytes_sent: dataflow.net_bytes_sent.clone(),
-            net_messages_sent: dataflow.net_messages_sent.clone(),
-            net_publish_failures: dataflow.net_publish_failures.clone(),
-        };
+        let publisher = remote_receiver_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let outbound = zenoh_outbound(dataflow, publisher, serialized_event);
         enqueue_required_zenoh_outbound(
             &self.zenoh_publish_tx,
             outbound,
@@ -7531,37 +7509,8 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        // Get or create publisher (lazy, cached per output)
-        let publisher = match dataflow.publishers.entry(output_id.clone()) {
-            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
-            std::collections::btree_map::Entry::Vacant(e) => {
-                let publish_topic =
-                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
-                tracing::debug!("declaring control publisher on {publish_topic}");
-                let publisher = self
-                    .zenoh_session
-                    .declare_publisher(publish_topic)
-                    .congestion_control(CongestionControl::Drop)
-                    .express(true)
-                    .priority(Priority::RealTime)
-                    .await
-                    .map_err(|err| eyre!(err))
-                    .context("failed to create zenoh publisher")?;
-                let arc = Arc::new(publisher);
-                e.insert(arc.clone());
-                arc
-            }
-        };
-        let payload_len = serialized_event.len() as u64;
-
-        let outbound = ZenohOutbound {
-            publisher,
-            serialized: serialized_event,
-            payload_len,
-            net_bytes_sent: dataflow.net_bytes_sent.clone(),
-            net_messages_sent: dataflow.net_messages_sent.clone(),
-            net_publish_failures: dataflow.net_publish_failures.clone(),
-        };
+        let publisher = remote_receiver_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let outbound = zenoh_outbound(dataflow, publisher, serialized_event);
         handle_publish_enqueue_result(
             dataflow,
             try_enqueue_zenoh_outbound(&self.zenoh_publish_tx, outbound),
@@ -9378,24 +9327,27 @@ fn send_input_closed_strict(
 /// while a timer keeps ticking.
 ///
 /// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
-/// no-op if the node still has open/broken inputs or has no subscribe channel.
+/// no-op if the node still has open/broken inputs. Restart bookkeeping is
+/// independent from the node event channel; only the `AllInputsClosed` send
+/// requires a live channel.
 fn signal_all_inputs_closed_if_drained(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
     clock: &HLC,
 ) -> eyre::Result<()> {
-    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-        return Ok(());
-    };
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
     // to tell to finish) disables restart.
-    if (dataflow.open_inputs(receiver_id).is_empty() || dataflow.is_drained(receiver_id))
-        && !dataflow.has_broken_input(receiver_id)
-        && let Some(node) = dataflow.running_nodes.get_mut(receiver_id)
-    {
+    let should_disable_restart = (dataflow.open_inputs(receiver_id).is_empty()
+        || dataflow.is_drained(receiver_id))
+        && !dataflow.has_broken_input(receiver_id);
+    if should_disable_restart && let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
         node.disable_restart();
     }
+
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
     if dataflow.is_finished(receiver_id)
         && match send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock) {
             Ok(true) => true,
@@ -9810,6 +9762,50 @@ impl CoreNodeKindExt for CoreNodeKind {
                 matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
             }
         }
+    }
+}
+
+async fn remote_receiver_publisher(
+    zenoh_session: &zenoh::Session,
+    dataflow: &mut RunningDataflow,
+    output_id: &OutputId,
+) -> eyre::Result<Arc<zenoh::pubsub::Publisher<'static>>> {
+    match dataflow.publishers.entry(output_id.clone()) {
+        std::collections::btree_map::Entry::Occupied(e) => Ok(e.get().clone()),
+        std::collections::btree_map::Entry::Vacant(e) => {
+            let publish_topic = zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
+            tracing::debug!("declaring control publisher on {publish_topic}");
+            let publisher = zenoh_session
+                .declare_publisher(publish_topic)
+                // Local enqueue policy decides which events are best-effort
+                // (`Output`) and which must wait for capacity (`OutputClosed`).
+                // Once an event reaches Zenoh, it must not be dropped by the
+                // transport congestion policy.
+                .congestion_control(CongestionControl::Block)
+                .express(true)
+                .priority(Priority::RealTime)
+                .await
+                .map_err(|err| eyre!(err))
+                .context("failed to create zenoh publisher")?;
+            let publisher = Arc::new(publisher);
+            e.insert(publisher.clone());
+            Ok(publisher)
+        }
+    }
+}
+
+fn zenoh_outbound(
+    dataflow: &RunningDataflow,
+    publisher: Arc<zenoh::pubsub::Publisher<'static>>,
+    serialized: Vec<u8>,
+) -> ZenohOutbound {
+    ZenohOutbound {
+        publisher,
+        payload_len: serialized.len() as u64,
+        serialized,
+        net_bytes_sent: dataflow.net_bytes_sent.clone(),
+        net_messages_sent: dataflow.net_messages_sent.clone(),
+        net_publish_failures: dataflow.net_publish_failures.clone(),
     }
 }
 
@@ -11004,6 +11000,70 @@ mod fault_tolerance_tests {
             !df.open_inputs(&node_a).contains(&input_x),
             "the input is still removed from the open-input set"
         );
+    }
+
+    #[test]
+    fn close_input_still_disables_restart_when_receiver_channel_is_closed() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+        drop(rx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(
+            result.is_err(),
+            "closed channels must still report an error"
+        );
+        assert!(
+            disable_restart.load(atomic::Ordering::Acquire),
+            "drain bookkeeping must disable restart even when the receiver channel is closed"
+        );
+        assert!(
+            !df.subscribe_channels.contains_key(&node_a),
+            "closed channels must still be cleaned up"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn reload_missing_node_channel_is_noop_for_non_host_daemons() {
+        let clock = Arc::new(HLC::default());
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            Some("non-host".to_string()),
+            None,
+            DaemonId::new(Some("non-host".to_string())),
+            None,
+            clock,
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            ZenohBind::Derived(LOCALHOST),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let dataflow_id = Uuid::new_v4();
+        daemon.running.insert(dataflow_id, test_dataflow());
+
+        daemon
+            .send_reload(dataflow_id, "node_on_other_daemon".to_string().into(), None)
+            .await
+            .expect("a daemon that does not host the reloaded node must not fail reload");
     }
 
     #[test]
