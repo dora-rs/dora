@@ -127,10 +127,20 @@ fn filename_from_url(url: &reqwest::Url) -> Option<String> {
 }
 
 /// Sanitize a candidate filename: strip path components to prevent traversal,
-/// reject null bytes and overly long names. Returns `None` when nothing usable
+/// reject null bytes and overly long names, trim trailing dots/spaces, and
+/// reject Windows reserved device names. Returns `None` when nothing usable
 /// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
-/// or a name over 255 bytes / containing a NUL. (A trailing slash such as
+/// a name over 255 bytes / containing a NUL, a name that is only dots and
+/// spaces, or a reserved device name such as `NUL`. (A trailing slash such as
 /// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+///
+/// The `Content-Disposition` header is attacker-influenced, so the returned
+/// name is a name a hostile server could pick. The two hardening steps below
+/// are applied on **every** platform — not gated to Windows — both so the
+/// returned name always matches the file that is actually created and so the
+/// checks are exercised by the Linux PR gate. Rejecting a download literally
+/// named `NUL`/`CON`/… is acceptable: such names are exceedingly rare as real
+/// artifact filenames.
 fn sanitize_filename(name: &str) -> Option<String> {
     let sanitized = Path::new(name)
         .file_name()
@@ -139,7 +149,40 @@ fn sanitize_filename(name: &str) -> Option<String> {
     if sanitized.contains('\0') || sanitized.len() > 255 {
         return None;
     }
-    Some(sanitized)
+    // Windows silently strips trailing dots and spaces when creating a file, so
+    // a name like `evil.` would land at a different path than the one returned.
+    // Trim them and reject a name that trims away to nothing.
+    let sanitized = sanitized.trim_end_matches(['.', ' ']);
+    if sanitized.is_empty() {
+        return None;
+    }
+    // `tokio::fs::File::create(dir/NUL)` opens the *null device* on Windows
+    // rather than a file: the write and `sync_all` both "succeed" and the
+    // caller goes on to spawn/`dlopen` something with no content. Reject the
+    // reserved device names so a hostile header cannot redirect the download.
+    if is_windows_reserved_name(sanitized) {
+        return None;
+    }
+    Some(sanitized.to_string())
+}
+
+/// Whether `name` is a Windows reserved device name (`CON`, `PRN`, `AUX`,
+/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), compared case-insensitively and
+/// ignoring any extension — `NUL`, `NUL.bin`, and `NUL.tar.gz` are all
+/// reserved. Windows also ignores trailing spaces in the device stem, so
+/// `NUL .txt` is matched too.
+fn is_windows_reserved_name(name: &str) -> bool {
+    // The reserved status is decided by the stem before the first `.`.
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // `COM0`–`COM9` and `LPT0`–`LPT9`.
+    matches!(
+        upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")),
+        Some(rest) if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit()
+    )
 }
 
 /// Pick a sanitized filename from the `Content-Disposition` header (if any),
@@ -242,7 +285,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{filename_from_url, parse_content_disposition_filename};
+    use super::{filename_from_url, parse_content_disposition_filename, sanitize_filename};
 
     fn name_from(url: &str) -> Option<String> {
         filename_from_url(&reqwest::Url::parse(url).unwrap())
@@ -487,5 +530,78 @@ mod tests {
             resolve(Some("attachment; filename=\"..\""), "https://example.com/"),
             None
         );
+    }
+
+    // --- sanitize_filename (traversal, NUL, length, reserved names, dots) ---
+
+    #[test]
+    fn sanitize_strips_path_components_and_rejects_degenerate() {
+        // Traversal is defeated by `Path::file_name`, which keeps only the last
+        // component and maps `.`/`..` to `None`.
+        assert_eq!(
+            sanitize_filename("../../etc/passwd"),
+            Some("passwd".to_string())
+        );
+        assert_eq!(sanitize_filename("/etc/passwd"), Some("passwd".to_string()));
+        assert_eq!(sanitize_filename(".."), None);
+        assert_eq!(sanitize_filename("."), None);
+        // An embedded NUL and an over-long (256-byte) name are rejected; a
+        // 255-byte name is the largest that is kept.
+        assert_eq!(sanitize_filename("a\0b"), None);
+        assert_eq!(sanitize_filename(&"a".repeat(256)), None);
+        assert_eq!(sanitize_filename(&"a".repeat(255)), Some("a".repeat(255)));
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_reserved_names() {
+        // Case-insensitive, with or without an extension, and ignoring a
+        // trailing space in the stem — all forms open a device on Windows.
+        for name in [
+            "NUL",
+            "nul",
+            "CON",
+            "aux",
+            "PRN",
+            "COM0",
+            "COM1",
+            "com9",
+            "LPT1",
+            "lpt9",
+            "NUL.bin",
+            "con.txt",
+            "COM1.tar.gz",
+            "NUL.",
+            "nul ",
+            "NUL .txt",
+        ] {
+            assert_eq!(
+                sanitize_filename(name),
+                None,
+                "reserved name {name:?} must be rejected"
+            );
+        }
+        // Names that merely start like a device but are not one stay valid.
+        for name in ["NULls", "console.log", "COM10", "LPT", "com.bin"] {
+            assert_eq!(
+                sanitize_filename(name),
+                Some(name.to_string()),
+                "non-reserved name {name:?} must be kept"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_trims_trailing_dots_and_spaces() {
+        // Windows strips these on create, so the returned name must match the
+        // file that actually lands on disk.
+        assert_eq!(sanitize_filename("evil."), Some("evil".to_string()));
+        assert_eq!(
+            sanitize_filename("model.bin "),
+            Some("model.bin".to_string())
+        );
+        assert_eq!(sanitize_filename("data.. "), Some("data".to_string()));
+        // A name that is nothing but dots/spaces trims to empty and is rejected.
+        assert_eq!(sanitize_filename("..."), None);
+        assert_eq!(sanitize_filename("   "), None);
     }
 }
