@@ -1988,6 +1988,20 @@ mod tests {
         let running = test_running_node(&local_stuck);
         running.last_activity.store(1, atomic::Ordering::Release);
 
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("value"),
+            local_stuck.clone(),
+            data_id("input"),
+        );
+        df.open_inputs
+            .get_mut(&local_stuck)
+            .expect("test input should be registered")
+            .remove(&data_id("input"));
+        df.all_inputs_closed_at.insert(
+            local_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
         df.running_nodes.insert(local_stuck.clone(), running);
         df.connected_nodes.insert(local_stuck.clone());
         df.open_external_mappings
