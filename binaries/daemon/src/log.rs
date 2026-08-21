@@ -61,11 +61,17 @@ pub fn rotate_log_files(
         }
     }
 
-    // Rename current -> .1
+    // Rename current -> .1 (unless the config asked for zero rotated files)
     let current = log_path(working_dir, dataflow_id, node_id);
-    let first = log_path_rotated(working_dir, dataflow_id, node_id, 1);
-    if current.exists() {
-        std::fs::rename(&current, &first)?;
+    if max_files >= 1 {
+        let first = log_path_rotated(working_dir, dataflow_id, node_id, 1);
+        if current.exists() {
+            std::fs::rename(&current, &first)?;
+        }
+    } else if current.exists() {
+        // max_files == 0: keep no rotated files — drop the current one
+        // instead of renaming it to a .1 that would never get cleaned up.
+        std::fs::remove_file(&current)?;
     }
 
     Ok(())
@@ -687,6 +693,26 @@ mod tests {
             std::fs::read_to_string(log_path_rotated(tmp.path(), &uuid, &node, 2)).unwrap(),
             "old1\n"
         );
+    }
+
+    #[test]
+    fn rotate_keeps_no_files_when_max_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+        let current = log_path(tmp.path(), &uuid, &node);
+        std::fs::write(&current, "line1\n").unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, 0).unwrap();
+
+        // max_rotated_files: 0 means "keep no rotated files" — the current
+        // log must be gone, and no .1 should have been created in its place.
+        assert!(!current.exists());
+        let rotated = log_path_rotated(tmp.path(), &uuid, &node, 1);
+        assert!(!rotated.exists());
     }
 
     #[test]
