@@ -41,12 +41,23 @@ service="${DISTRO}-router"
 cleanup() { "${compose[@]}" down --volumes --remove-orphans >/dev/null 2>&1 || true; }
 trap cleanup EXIT INT TERM
 
+container="${PROJECT}-${service}-1"
+
 "${compose[@]}" up -d "$service"
-timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "${PROJECT}-${service}-1"
+# The router installs its rmw_zenoh packages on boot, so "still booting" and
+# "the apt install failed" look identical from out here — both are just an
+# unhealthy container. Dump the log when the wait runs out, or the whole
+# failure is a bare `exit 124` three minutes in: that is how a pinned
+# `ros-humble-rmw-zenoh-cpp` version aging out of packages.ros.org read as a
+# docker hiccup for a month of nightlies.
+if ! timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "$container"; then
+  echo "$service never became healthy within 180s; container log follows:" >&2
+  "${compose[@]}" logs --tail 100 "$service" >&2 || true
+  exit 1
+fi
 "${compose[@]}" exec -T "$service" bash -lc \
   "source /opt/ros/$DISTRO/setup.bash; dpkg-query -W 'ros-${DISTRO}-rmw-zenoh-cpp'; ros2 pkg executables rmw_zenoh_cpp"
 
-container="${PROJECT}-${service}-1"
 export DORA_ROS2_ZENOH_ARTIFACTS="$TARGET_DIR/ros2-zenoh-logs/$PROJECT"
 export DORA_ROS2_ZENOH_PYTHON="$DORA_ROS2_ZENOH_ARTIFACTS/python"
 export DORA_ROS2_ZENOH_AMENT="$DORA_ROS2_ZENOH_ARTIFACTS/ament"
