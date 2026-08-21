@@ -394,6 +394,10 @@ pub struct NetworkMetrics {
     pub messages_received: u64,
     #[serde(default)]
     pub publish_failures: u64,
+    /// Number of inter-daemon publish events dropped before reaching zenoh
+    /// because the outbound queue was full or closed.
+    #[serde(default)]
+    pub publish_enqueue_failures: u64,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
