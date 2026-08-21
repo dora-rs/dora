@@ -46,6 +46,30 @@ pub fn rotate_log_files(
     node_id: &NodeId,
     max_files: u32,
 ) -> std::io::Result<()> {
+    // With no rotated copies requested, discard the current log instead of
+    // renaming it to `.1`. Otherwise the shift-then-rename logic below would
+    // move `current` to `log_<node>.1.jsonl` while the delete-oldest step
+    // targets the never-created `log_<node>.0.jsonl`, leaving one rotated file
+    // behind forever — contradicting `max_files == 0`. Also prune any rotated
+    // files a previous (non-zero) configuration may have left behind, so the
+    // "retain no rotated copies" contract holds regardless of history.
+    if max_files == 0 {
+        let current = log_path(working_dir, dataflow_id, node_id);
+        if current.exists() {
+            std::fs::remove_file(&current)?;
+        }
+        let mut index = 1u32;
+        loop {
+            let rotated = log_path_rotated(working_dir, dataflow_id, node_id, index);
+            if !rotated.exists() {
+                break;
+            }
+            std::fs::remove_file(&rotated)?;
+            index += 1;
+        }
+        return Ok(());
+    }
+
     // Delete the oldest if it exists
     let oldest = log_path_rotated(working_dir, dataflow_id, node_id, max_files);
     if oldest.exists() {
@@ -687,6 +711,54 @@ mod tests {
             std::fs::read_to_string(log_path_rotated(tmp.path(), &uuid, &node, 2)).unwrap(),
             "old1\n"
         );
+    }
+
+    #[test]
+    fn rotate_with_zero_max_files_discards_current() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+        let current = log_path(tmp.path(), &uuid, &node);
+        std::fs::write(&current, "current\n").unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, 0).unwrap();
+
+        // With max_files == 0 no rotated copy is retained: the current file is
+        // discarded and no `.1` file is left behind.
+        assert!(!current.exists());
+        assert!(!log_path_rotated(tmp.path(), &uuid, &node, 1).exists());
+
+        // A second rotation is still a no-op and does not accumulate files.
+        std::fs::write(&current, "again\n").unwrap();
+        rotate_log_files(tmp.path(), &uuid, &node, 0).unwrap();
+        assert!(!current.exists());
+        assert!(!log_path_rotated(tmp.path(), &uuid, &node, 1).exists());
+    }
+
+    #[test]
+    fn rotate_with_zero_max_files_prunes_preexisting_rotated_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        // Simulate rotated files left behind by an earlier non-zero config.
+        let current = log_path(tmp.path(), &uuid, &node);
+        std::fs::write(&current, "current\n").unwrap();
+        std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, 1), "old1\n").unwrap();
+        std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, 2), "old2\n").unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, 0).unwrap();
+
+        // "retain no rotated copies" must hold even against pre-existing files.
+        assert!(!current.exists());
+        assert!(!log_path_rotated(tmp.path(), &uuid, &node, 1).exists());
+        assert!(!log_path_rotated(tmp.path(), &uuid, &node, 2).exists());
     }
 
     #[test]
