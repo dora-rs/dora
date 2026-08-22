@@ -5602,13 +5602,21 @@ impl Daemon {
             .running
             .get_mut(&dataflow_id)
             .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-        let local_node_inputs: BTreeSet<_> = dataflow
-            .mappings
-            .iter()
-            .filter(|(k, _)| k.0 == node_id && outputs.contains(&k.1))
-            .flat_map(|(_, v)| v)
-            .cloned()
-            .collect();
+        // Look each closed output up by key rather than scanning the whole
+        // `mappings` map: `outputs` is small (the outputs of one node), while
+        // `mappings` holds an entry per edge in the entire dataflow. This
+        // matches the keyed access every other delivery site uses (e.g.
+        // `send_output_to_local_receivers`) and is behavior-equivalent — the
+        // results are merged into the same deduplicating `BTreeSet`.
+        let mut local_node_inputs: BTreeSet<(NodeId, DataId)> = BTreeSet::new();
+        for output in &outputs {
+            if let Some(receivers) = dataflow
+                .mappings
+                .get(&OutputId(node_id.clone(), output.clone()))
+            {
+                local_node_inputs.extend(receivers.iter().cloned());
+            }
+        }
         for (receiver_id, input_id) in &local_node_inputs {
             close_input(dataflow, receiver_id, input_id, &self.clock);
         }
