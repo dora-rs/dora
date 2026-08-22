@@ -2396,6 +2396,25 @@ async fn start_inner(
                         &clock,
                     )
                     .await?;
+                    // Prune the exited daemon from every running build's
+                    // `pending_build_results`. Without this, an in-progress
+                    // multi-daemon `dora build` would sit with a dead
+                    // daemon in `pending_build_results` until the 20-minute
+                    // `check_build_timeouts` watchdog fires, even after
+                    // every surviving daemon has reported. The heartbeat-
+                    // timeout path (`Event::HeartbeatInterval`) already
+                    // does this at lib.rs:2212; `DaemonExit` fires on the
+                    // common WebSocket-close path well before the 30 s
+                    // heartbeat staleness threshold and removes the daemon
+                    // from `daemon_connections`, so the heartbeat path
+                    // will never subsequently catch it. Mirror the
+                    // heartbeat path here. Finalization is left to
+                    // `check_build_timeouts` / a surviving daemon's later
+                    // `DataflowBuildResult` — see the fn docstring (#3272).
+                    cleanup_disconnected_daemons_from_running_builds(
+                        &mut running_builds,
+                        &disconnected,
+                    );
                     notify_daemons_about_disconnected_peers(
                         &disconnected,
                         &mut daemon_connections,
@@ -10032,6 +10051,57 @@ mod tests {
             pending_restarts.len(),
             1,
             "original PendingRestart must not be overwritten by duplicate"
+        );
+    }
+
+    /// #3272: `cleanup_disconnected_daemons_from_running_builds` must prune
+    /// the given daemon(s) from every running build's `pending_build_results`
+    /// so a mixed disconnect (one daemon dies mid-build, others still to
+    /// report) can be finalized by the survivor's later `DataflowBuildResult`
+    /// rather than waiting for the 20-minute `check_build_timeouts` watchdog.
+    ///
+    /// This locks in the invariant the `DaemonExit` handler now relies on:
+    /// after the call, the pruned daemon's entry is gone but the build is
+    /// still present with its remaining `pending_build_results` (finalization
+    /// stays owned by the `DataflowBuildResult` handler / watchdog).
+    #[test]
+    fn cleanup_disconnected_daemons_from_running_builds_prunes_only_listed_daemons() {
+        let build_id = BuildId::generate();
+        let dead = DaemonId::new(Some("dead".to_string()));
+        let alive = DaemonId::new(Some("alive".to_string()));
+        let mut pending = BTreeSet::new();
+        pending.insert(dead.clone());
+        pending.insert(alive.clone());
+
+        let build = RunningBuild {
+            errors: Vec::new(),
+            build_result: CachedResult::default(),
+            buffered_log_messages: Vec::new(),
+            log_subscribers: Vec::new(),
+            pending_build_results: pending,
+            build_started_at: Instant::now(),
+        };
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+
+        let disconnected = BTreeSet::from([dead.clone()]);
+        cleanup_disconnected_daemons_from_running_builds(&mut running_builds, &disconnected);
+
+        let build = running_builds
+            .get(&build_id)
+            .expect("build must still be in running_builds — finalization is owned elsewhere");
+        assert!(
+            !build.pending_build_results.contains(&dead),
+            "dead daemon must be pruned from pending_build_results"
+        );
+        assert!(
+            build.pending_build_results.contains(&alive),
+            "surviving daemons must NOT be pruned"
+        );
+        assert!(
+            build.build_result.is_pending(),
+            "cleanup must NOT itself resolve build_result — the watchdog / \
+             surviving daemon's DataflowBuildResult owns finalization"
         );
     }
 }
