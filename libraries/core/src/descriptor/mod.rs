@@ -51,8 +51,49 @@ pub use expand::{
     expand_modules_with_boundaries,
 };
 
+/// Operations on a parsed [`Descriptor`].
+///
+/// These live on an extension trait rather than inherent methods because
+/// [`Descriptor`] is defined in `dora-message` (the wire-format crate), while
+/// the parsing, validation, resolution, and visualization logic belongs to
+/// `dora-core`. Import the trait to turn a descriptor into the resolved node
+/// map dora runs, validate it, or render it as a mermaid graph.
+///
+/// # Example
+///
+/// ```
+/// use dora_core::descriptor::{Descriptor, DescriptorExt};
+///
+/// let yaml = b"
+/// nodes:
+///   - id: source
+///     path: ./source
+///     outputs: [data]
+///   - id: sink
+///     path: ./sink
+///     inputs:
+///       value: source/data
+/// ";
+///
+/// // Parse the YAML into a descriptor...
+/// let descriptor = Descriptor::parse(yaml.to_vec())?;
+/// assert_eq!(descriptor.nodes.len(), 2);
+///
+/// // ...then resolve aliases and fill in defaults to get the node map dora runs.
+/// let resolved = descriptor.resolve_aliases_and_set_defaults()?;
+/// assert_eq!(resolved.len(), 2);
+/// # Ok::<(), eyre::Report>(())
+/// ```
 pub trait DescriptorExt {
+    /// Resolve the descriptor into the map of nodes dora runs.
+    ///
+    /// Fills in defaults, rewrites single-operator input references to the
+    /// operator-qualified output name, and returns the nodes keyed by id. The
+    /// descriptor must already be module-expanded (see [`expand`](Self::expand))
+    /// if it contains `module:` references.
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
+    /// Render the resolved dataflow as a mermaid `flowchart`, annotated with the
+    /// given module `boundaries` (from [`expand_with_boundaries`](Self::expand_with_boundaries)).
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
@@ -71,8 +112,15 @@ pub trait DescriptorExt {
     /// updated.
     fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>);
 
+    /// Read a descriptor from a YAML file at `path` and [`parse`](Self::parse) it.
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
+    /// Parse a descriptor from raw YAML bytes.
+    ///
+    /// This only deserializes; it does not expand modules or validate the
+    /// dataflow — use [`check`](Self::check) for that.
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
+    /// Expand modules and validate the whole dataflow (node ids, input wiring,
+    /// field combinations, …), resolving relative paths against `working_dir`.
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
     /// Expand all module references into flat nodes.
     ///
@@ -414,6 +462,21 @@ pub fn source_is_url(source: &str) -> bool {
     source.starts_with("https://") || source.starts_with("http://")
 }
 
+/// Resolve a node's executable `source` to an absolute path.
+///
+/// An extensionless `source` gets the platform executable extension. The path
+/// is then searched, in order:
+///
+/// 1. under `working_dir` (the dataflow's directory),
+/// 2. the `uv`-managed environment, when `uv` is on the host,
+/// 3. the ambient system `$PATH`.
+///
+/// The resolved path is absolutized but symlinks are **not** resolved (the
+/// binary is spawned at the path it was found). Unlike
+/// [`resolve_path_confined`], this has an ambient-`$PATH` fallback and does not
+/// confine the result to any root — it is the resolution used for local,
+/// trusted dataflow files, whereas confined resolution is for untrusted `hub:`
+/// nodes.
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = Path::new(&source);
     let path = if path.extension().is_none() {
@@ -555,7 +618,16 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("uv-resolved path {resolved} is not usable"))
 }
 
+/// Classification of a [`Node`] by which of its mutually exclusive
+/// implementation fields is set.
 pub trait NodeExt {
+    /// Determine the node's [`NodeKind`].
+    ///
+    /// A node must set **exactly one** of `path`, `operators`, `operator`,
+    /// `ros2`, or `module`; this returns an error if none or more than one is
+    /// set. A node carrying an unresolved `hub:` reference is also rejected —
+    /// `hub:` is desugared into a concrete node earlier in the build, so
+    /// reaching `kind` with one still present means resolution was skipped.
     fn kind(&self) -> eyre::Result<NodeKind<'_>>;
 }
 
@@ -600,15 +672,20 @@ impl NodeExt for Node {
     }
 }
 
+/// The implementation kind of a [`Node`], returned by [`NodeExt::kind`].
+///
+/// Each variant borrows the one exclusive field that was set on the node.
 #[derive(Debug)]
 pub enum NodeKind<'a> {
+    /// A custom node run from an executable `path`.
     Standard(&'a String),
-    /// Dora runtime node
+    /// A dora runtime node hosting one or more in-process `operators`.
     Runtime(&'a RuntimeNode),
+    /// A node defined by a single inline `operator`.
     Operator(&'a SingleOperatorDefinition),
-    /// ROS2 bridge node
+    /// A ROS2 bridge node.
     Ros2Bridge(&'a Ros2BridgeConfig),
-    /// Module (sub-dataflow) reference — must be expanded before resolution
+    /// A `module` (sub-dataflow) reference — must be expanded before resolution.
     Module(&'a String),
 }
 
