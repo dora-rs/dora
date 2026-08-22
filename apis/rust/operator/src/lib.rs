@@ -55,9 +55,10 @@ pub mod raw;
 /// An event delivered to an operator's [`DoraOperator::on_event`] callback.
 ///
 /// The dataflow runtime dispatches one `Event` per occurrence: a received
-/// input, a failed input decode, an input that will produce no more data, or a
-/// request to shut down. The enum is `#[non_exhaustive]`, so implementations
-/// must include a catch-all arm to stay forward-compatible with future variants.
+/// input, a failed input decode, an input that will produce no more data, a
+/// runtime error on the event stream, or a request to shut down. The enum is
+/// `#[non_exhaustive]`, so implementations must include a catch-all arm to stay
+/// forward-compatible with future variants.
 #[derive(Debug)]
 #[non_exhaustive]
 pub enum Event<'a> {
@@ -89,6 +90,19 @@ pub enum Event<'a> {
     /// The runtime requested a graceful shutdown. The operator should finish
     /// any pending work and return [`DoraStatus::Stop`].
     Stop,
+    /// The runtime reported an error on the event stream itself — for example a
+    /// payload that could not be deserialized, an unrecognized daemon event, or
+    /// a fatal stream failure.
+    ///
+    /// This is distinct from [`InputParseError`](Event::InputParseError), which
+    /// is tied to a specific input id; an `Error` concerns the stream as a
+    /// whole. The operator can log or surface it and decide how to proceed;
+    /// returning `Err` from `on_event` reports it as fatal and stops the
+    /// operator.
+    Error {
+        /// A human-readable description of the error.
+        error: &'a str,
+    },
 }
 
 /// Trait implemented by every dora operator.
@@ -211,6 +225,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingOperator {
         parse_errors: Vec<(String, String)>,
+        stream_errors: Vec<String>,
     }
 
     impl DoraOperator for RecordingOperator {
@@ -219,8 +234,14 @@ mod tests {
             event: &Event,
             _output_sender: &mut DoraOutputSender,
         ) -> Result<DoraStatus, String> {
-            if let Event::InputParseError { id, error } = event {
-                self.parse_errors.push((id.to_string(), error.clone()));
+            match event {
+                Event::InputParseError { id, error } => {
+                    self.parse_errors.push((id.to_string(), error.clone()));
+                }
+                Event::Error { error } => {
+                    self.stream_errors.push(error.to_string());
+                }
+                _ => {}
             }
             Ok(DoraStatus::Continue)
         }
@@ -331,6 +352,61 @@ mod tests {
         assert_eq!(op.parse_errors.len(), 2);
         assert_eq!(op.parse_errors[0].0, "x");
         assert_eq!(op.parse_errors[1].0, "z");
+    }
+
+    /// A stream-level `Event::Error` is populated by the runtime into
+    /// `RawEvent::error`; the FFI dispatch must deliver it to `on_event` rather
+    /// than silently dropping it (the runtime builds it for decode/stream
+    /// failures, and it previously fell through to the "unknown event" arm).
+    #[test]
+    fn stream_error_dispatched_to_on_event() {
+        let sender = noop_send_output();
+        let mut op = RecordingOperator::default();
+        let ctx: *mut std::ffi::c_void = (&mut op as *mut RecordingOperator).cast();
+
+        let mut event = types::RawEvent {
+            input: None,
+            input_closed: None,
+            stop: false,
+            error: Some("fatal event stream error".to_string().into()),
+        };
+
+        let result =
+            unsafe { crate::raw::dora_on_event::<RecordingOperator>(&mut event, &sender, ctx) };
+
+        assert!(
+            result.result.error.is_none(),
+            "a handled stream error must not itself surface as a dispatch error"
+        );
+        assert!(matches!(result.status, DoraStatus::Continue));
+        assert_eq!(
+            op.stream_errors,
+            vec!["fatal event stream error".to_string()]
+        );
+    }
+
+    /// A truly empty `RawEvent` (no input/close/stop/error) is still ignored as
+    /// an unknown event, without reaching `on_event`.
+    #[test]
+    fn empty_raw_event_is_ignored() {
+        let sender = noop_send_output();
+        let mut op = RecordingOperator::default();
+        let ctx: *mut std::ffi::c_void = (&mut op as *mut RecordingOperator).cast();
+
+        let mut event = types::RawEvent {
+            input: None,
+            input_closed: None,
+            stop: false,
+            error: None,
+        };
+
+        let result =
+            unsafe { crate::raw::dora_on_event::<RecordingOperator>(&mut event, &sender, ctx) };
+
+        assert!(result.result.error.is_none());
+        assert!(matches!(result.status, DoraStatus::Continue));
+        assert!(op.stream_errors.is_empty());
+        assert!(op.parse_errors.is_empty());
     }
 
     #[test]
