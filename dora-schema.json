@@ -357,12 +357,13 @@
           "minimum": 0
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {
@@ -594,12 +595,13 @@
           ]
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {
@@ -1130,12 +1132,13 @@
           ]
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {

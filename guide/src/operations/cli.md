@@ -182,7 +182,7 @@ nodes:
     send_stdout_as: raw_output    # route raw stdout as data output
     send_logs_as: log_entries     # route structured logs as data output
     max_log_size: "50MB"          # rotate log files at this size
-    max_rotated_files: 5          # number of rotated files to keep (1-100)
+    max_rotated_files: 5          # number of rotated files to keep (0-100)
 
     # --- Deployment ---
     deploy:

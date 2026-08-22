@@ -606,8 +606,11 @@ pub struct Node {
     /// ```
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<String>,
-    /// Maximum number of rotated log files to keep (default: 5)
+    /// Maximum number of rotated log files to keep (default: 5, range: 0-100)
+    ///
+    /// `0` keeps the active log only, rotating the previous one away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 100))]
     pub max_rotated_files: Option<u32>,
 
     /// Build commands executed during `dora build`. Each line runs separately.
@@ -1038,8 +1041,11 @@ pub struct OperatorConfig {
     /// Maximum log file size before rotation (e.g. "50MB", "1GB")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<String>,
-    /// Maximum number of rotated log files to keep (default: 5)
+    /// Maximum number of rotated log files to keep (default: 5, range: 0-100)
+    ///
+    /// `0` keeps the active log only, rotating the previous one away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 100))]
     pub max_rotated_files: Option<u32>,
 }
 
@@ -1160,8 +1166,11 @@ pub struct CustomNode {
     /// Maximum log file size before rotation (e.g. "50MB", "1GB")
     #[serde(skip_serializing_if = "Option::is_none")]
     pub max_log_size: Option<String>,
-    /// Maximum number of rotated log files to keep (default: 5)
+    /// Maximum number of rotated log files to keep (default: 5, range: 0-100)
+    ///
+    /// `0` keeps the active log only, rotating the previous one away.
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schemars(range(max = 100))]
     pub max_rotated_files: Option<u32>,
 
     #[serde(default)]
