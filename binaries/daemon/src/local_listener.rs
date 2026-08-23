@@ -142,9 +142,29 @@ async fn handle_connection_loop(
                 tracing::warn!("{err:?}");
                 break;
             }
-            _ => tracing::warn!(
-                "Unexpected Daemon Request that is not yet by Additional local listener controls"
-            ),
+            // `DaemonRequest` is `#[non_exhaustive]` and this listener only
+            // implements `NodeConfig`. A version-skewed or misbehaving client
+            // may send some other request and then block on the request/reply
+            // it expects. Mirror the node TCP listener
+            // (`node_communication::mod`): answer with an explicit error so the
+            // client fails loudly instead of hanging forever, and — like the
+            // `NodeConfig` arm above and `node_communication` — keep serving the
+            // connection afterwards rather than tearing it down.
+            Ok(Some(Timestamped { inner: other, .. })) => {
+                tracing::warn!("unsupported request on local listener: {other:?}");
+                let reply = DaemonReply::Result(Err(format!(
+                    "unsupported request on local listener (client is likely \
+                     newer than this daemon): {other:?}"
+                )));
+                match serde_json::to_vec(&reply).wrap_err("failed to serialize DaemonReply") {
+                    Ok(serialized) => {
+                        if let Err(err) = socket_stream_send(&mut connection, &serialized).await {
+                            tracing::warn!("failed to send unsupported-request reply: {err}");
+                        }
+                    }
+                    Err(err) => tracing::error!("{err:?}"),
+                }
+            }
         }
     }
 }
@@ -167,4 +187,66 @@ async fn receive_message(
     dora_message::decode(&raw)
         .wrap_err("failed to deserialize DaemonRequest")
         .map(Some)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_core::uhlc::HLC;
+
+    /// A well-formed request this listener does not implement must be answered
+    /// with an explicit error, so a request/reply client fails loudly instead
+    /// of blocking forever on a reply that never comes (the listener only
+    /// implements `NodeConfig`). The connection then keeps serving, so a second
+    /// unsupported request is answered too.
+    #[tokio::test]
+    async fn unsupported_request_gets_error_reply_and_keeps_serving() {
+        let (events_tx, _events_rx) = flume::unbounded();
+        let port = spawn_listener_loop("127.0.0.1:0".parse().unwrap(), events_tx)
+            .await
+            .expect("failed to spawn listener")
+            .expect("listener should bind to an ephemeral port");
+
+        let mut client = TcpStream::connect(("127.0.0.1", port))
+            .await
+            .expect("failed to connect to listener");
+
+        let clock = HLC::default();
+        // `Subscribe` is a valid, well-formed request the listener does not
+        // handle, so it exercises the unsupported-request arm. Send it twice on
+        // the same connection: the first proves the error reply, the second
+        // proves the connection is still being served afterwards.
+        for attempt in 0..2 {
+            let request = Timestamped {
+                inner: DaemonRequest::Subscribe,
+                timestamp: clock.new_timestamp(),
+            };
+            let encoded = dora_message::encode(&request).expect("failed to encode request");
+            socket_stream_send(&mut client, &encoded)
+                .await
+                .expect("failed to send request");
+
+            // Expect an explicit error reply rather than a hang.
+            let raw = socket_stream_receive_with_header_timeout(
+                &mut client,
+                Some(Duration::from_secs(5)),
+            )
+            .await
+            .unwrap_or_else(|e| {
+                panic!("attempt {attempt}: expected an error reply, not a hang: {e}")
+            });
+            let reply: DaemonReply = serde_json::from_slice(&raw).expect("failed to decode reply");
+            match reply {
+                DaemonReply::Result(Err(msg)) => {
+                    assert!(
+                        msg.contains("unsupported request"),
+                        "attempt {attempt}: unexpected error message: {msg}"
+                    );
+                }
+                other => {
+                    panic!("attempt {attempt}: expected DaemonReply::Result(Err(_)), got {other:?}")
+                }
+            }
+        }
+    }
 }
