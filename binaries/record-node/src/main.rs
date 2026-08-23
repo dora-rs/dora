@@ -1,4 +1,8 @@
-use std::{collections::HashMap, fs::File, time::SystemTime};
+use std::{
+    collections::{BTreeMap, HashMap},
+    fs::File,
+    time::SystemTime,
+};
 
 use aligned_vec::{AVec, ConstAlign};
 use dora_message::{
@@ -55,6 +59,50 @@ fn unix_nanos(now: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
+/// Fold one batch of per-input drop counts into the running total.
+///
+/// The node API caps every input queue and evicts the oldest events once a
+/// producer outruns this node's disk writes. It reports those evictions only
+/// through `tracing`, and this binary installs no subscriber, so without this
+/// accounting the drops are invisible: the recording is short and the final
+/// `Messages:` line still reports a confident total.
+fn accumulate_drops(total: &mut BTreeMap<String, u64>, batch: HashMap<DataId, u64>) {
+    for (input_id, count) in batch {
+        *total.entry(input_id.to_string()).or_insert(0) += count;
+    }
+}
+
+/// Render the incomplete-recording warning, or `None` when nothing was dropped.
+///
+/// Input ids are translated back to their `source_node/source_output` topic via
+/// `reverse_map` -- the record node's own input ids are the sanitized
+/// `node___output` form, which is not what the user asked to record.
+fn format_drop_report(
+    dropped: &BTreeMap<String, u64>,
+    reverse_map: &HashMap<String, (NodeId, DataId)>,
+) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
+    let total: u64 = dropped.values().sum();
+    let mut report = format!(
+        "  WARNING:  {total} message(s) were dropped before reaching the recorder.\n            \
+         THIS RECORDING IS INCOMPLETE."
+    );
+    for (input_id, count) in dropped {
+        let topic = match reverse_map.get(input_id) {
+            Some((node, output)) => format!("{node}/{output}"),
+            None => input_id.clone(),
+        };
+        report.push_str(&format!("\n              {topic}: {count}"));
+    }
+    report.push_str(
+        "\n            The recorder could not keep up with its producers. Re-record with a \
+         larger `dora record --queue-size`, or record fewer topics with `--topics`.",
+    );
+    Some(report)
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -80,10 +128,14 @@ fn main() -> eyre::Result<()> {
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
     let mut writer = RecordingWriter::new(file, &header)?;
     let mut msg_count: u64 = 0;
+    let mut dropped: BTreeMap<String, u64> = BTreeMap::new();
 
     eprintln!("dora-record-node: recording to {output_file}");
 
     while let Some(event) = events.recv() {
+        // Drain per-event: the counters reset on read, so folding them here
+        // keeps a complete total even for a recording that ends abruptly.
+        accumulate_drops(&mut dropped, events.drain_drop_counts());
         match event {
             Event::Input { id, metadata, data } => {
                 let (source_node, source_output) = match reverse_map.get(&*id) {
@@ -167,19 +219,78 @@ fn main() -> eyre::Result<()> {
         }
     }
 
+    // Anything the scheduler evicted between the last event and the stop.
+    accumulate_drops(&mut dropped, events.drain_drop_counts());
+
     let footer = writer.finish()?;
     eprintln!("dora-record-node: recording complete");
     eprintln!("  Messages: {msg_count}");
     eprintln!("  Bytes:    {}", footer.total_bytes);
     eprintln!("  File:     {output_file}");
+    if let Some(report) = format_drop_report(&dropped, &reverse_map) {
+        eprintln!("{report}");
+    }
 
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{build_reverse_map, unix_nanos};
+    use super::{accumulate_drops, build_reverse_map, format_drop_report, unix_nanos};
+    use dora_message::id::DataId;
+    use std::collections::{BTreeMap, HashMap};
     use std::time::{Duration, SystemTime};
+
+    #[test]
+    fn drop_counts_accumulate_across_drains() {
+        // `drain_drop_counts` resets on read, so the totals must be summed
+        // across calls -- not overwritten by the latest batch.
+        let mut total = BTreeMap::new();
+        accumulate_drops(
+            &mut total,
+            HashMap::from([(DataId::from("a".to_string()), 2)]),
+        );
+        accumulate_drops(
+            &mut total,
+            HashMap::from([
+                (DataId::from("a".to_string()), 3),
+                (DataId::from("b".to_string()), 1),
+            ]),
+        );
+        assert_eq!(total.get("a"), Some(&5));
+        assert_eq!(total.get("b"), Some(&1));
+    }
+
+    #[test]
+    fn a_clean_recording_reports_no_drops() {
+        let reverse_map = build_reverse_map(r#"{"camera___image":"camera/image"}"#).unwrap();
+        assert!(format_drop_report(&BTreeMap::new(), &reverse_map).is_none());
+    }
+
+    #[test]
+    fn drop_report_names_the_topic_not_the_sanitized_input_id() {
+        // The record node's input ids are the sanitized `node___output` form;
+        // a user who asked to record `camera/image` needs to read that back.
+        let reverse_map = build_reverse_map(r#"{"camera___image":"camera/image"}"#).unwrap();
+        let dropped = BTreeMap::from([("camera___image".to_string(), 7)]);
+
+        let report = format_drop_report(&dropped, &reverse_map).expect("drops must be reported");
+        assert!(report.contains("camera/image: 7"), "{report}");
+        assert!(report.contains("INCOMPLETE"), "{report}");
+        assert!(report.contains("--queue-size"), "{report}");
+    }
+
+    #[test]
+    fn drop_report_falls_back_to_the_raw_id_for_an_unmapped_input() {
+        // Non-topic pseudo-inputs (the node API's internal event queue) have
+        // no entry in the reverse map; report them rather than dropping them
+        // from the total.
+        let reverse_map = build_reverse_map(r#"{"camera___image":"camera/image"}"#).unwrap();
+        let dropped = BTreeMap::from([("dora/some_internal".to_string(), 3)]);
+
+        let report = format_drop_report(&dropped, &reverse_map).expect("drops must be reported");
+        assert!(report.contains("dora/some_internal: 3"), "{report}");
+    }
 
     #[test]
     fn unix_nanos_saturates_on_pre_epoch_clock() {

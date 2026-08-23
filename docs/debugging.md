@@ -157,6 +157,32 @@ This injects a hidden `__dora_record__` node into the dataflow that subscribes t
 
 The recording runs until you press Ctrl-C or the dataflow stops.
 
+### Recording Completeness
+
+The record node writes to disk, so a fast producer or a stalled write can outrun it. Each recorded topic is therefore subscribed with `queue_size: 100` and `queue_policy: backpressure`, which buffers up to 10x that depth before anything is discarded.
+
+If the recorder still falls behind, the run ends with a report naming the affected topics:
+
+```text
+dora-record-node: recording complete
+  Messages: 8412
+  WARNING:  193 message(s) were dropped before reaching the recorder.
+            THIS RECORDING IS INCOMPLETE.
+              sensor/image: 193
+```
+
+Treat that as a failed capture — replaying it reproduces the gaps. Re-record with a deeper queue, or capture fewer topics:
+
+```bash
+# Absorb longer stalls (costs memory: buffered messages hold their payloads)
+dora record dataflow.yml --queue-size 1000
+
+# Or record only what you need
+dora record dataflow.yml --topics sensor/image
+```
+
+No warning means every message the recorder was subscribed to reached the file.
+
 ### Recording Specific Topics
 
 ```bash

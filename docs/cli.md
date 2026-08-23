@@ -509,8 +509,11 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to record |
 | `--proxy` | false | Stream via WebSocket instead of recording on target |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
+| `--queue-size <N>` | `100` | Per-topic queue depth for the injected record node (default mode only) |
 
 Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `enable_debug_inspection: true`.
+
+**Recorder queue depth:** the injected node subscribes with `queue_size: 100` and `queue_policy: backpressure`, so a producer burst or a stalled write is buffered rather than discarded. If the recorder still cannot keep up, it reports how many messages were dropped and marks the recording incomplete — re-record with a larger `--queue-size`, or narrow the capture with `--topics`. Deeper queues cost memory: buffered messages hold their payloads until they are written.
 
 **Ctrl-C in `--proxy` mode:** the first press stops the recording and finalizes the file. A second press exits immediately with status `130`, for the case where finalizing is itself stuck (a full disk or a stalled network mount). The recording is flushed before finalizing, so an escalated exit costs only the file's footer — `dora replay` still reads it, as a recording that ends early.
 

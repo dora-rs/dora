@@ -762,6 +762,18 @@ mod tests {
     }
 
     #[test]
+    fn parse_record_queue_size() {
+        parse_ok(&["dora", "record", "dataflow.yml", "--queue-size", "1000"]);
+    }
+
+    #[test]
+    fn reject_record_zero_queue_size() {
+        // A zero depth would silently fall back to the backpressure hard cap
+        // rather than doing what it says; reject it at parse time instead.
+        parse_err(&["dora", "record", "dataflow.yml", "--queue-size", "0"]);
+    }
+
+    #[test]
     fn reject_record_no_file() {
         parse_err(&["dora", "record"]);
     }
