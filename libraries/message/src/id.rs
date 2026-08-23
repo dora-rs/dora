@@ -285,7 +285,11 @@ impl From<DataId> for String {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters (not in `[a-zA-Z0-9_./-]`).
+/// Panics if `id` is not a valid data id: if it is empty, contains
+/// characters outside `[a-zA-Z0-9_./-]`, or has an empty path segment (a
+/// leading, trailing, or consecutive `/`). Pre-validating against the
+/// character set alone is *not* sufficient to make this conversion
+/// infallible.
 ///
 /// **For untrusted input, use `id.parse::<DataId>()`** which calls
 /// `FromStr::from_str` and returns `Result<Self, InvalidId>`.
@@ -294,6 +298,13 @@ impl From<DataId> for String {
 /// auto-derived blanket impl that delegates to this `From` impl, so it
 /// panics exactly like `.into()`. Only `parse::<DataId>()` / `from_str`
 /// is fallible.
+///
+/// ```should_panic
+/// use dora_message::id::DataId;
+/// // A trailing '/' contains only valid characters but is still rejected
+/// // (empty path segment), so this conversion panics.
+/// let _ = DataId::from("op/".to_string());
+/// ```
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_data_id(&id) {
@@ -305,7 +316,9 @@ impl From<String> for DataId {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters. Prefer `id.parse::<DataId>()`
+/// Panics if `id` is not a valid data id: if it is empty, contains
+/// characters outside `[a-zA-Z0-9_./-]`, or has an empty path segment (a
+/// leading, trailing, or consecutive `/`). Prefer `id.parse::<DataId>()`
 /// when handling untrusted input.
 impl From<&str> for DataId {
     fn from(id: &str) -> Self {
