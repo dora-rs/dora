@@ -391,9 +391,13 @@ fn check_ros2(node: &Node) -> Result<()> {
 }
 
 /// Module node whitelist:
-/// module, inputs, params (+ shared)
+/// module, inputs, params, build (+ shared)
 /// Note: module is the kind discriminator; params is compile-time substitution.
-const MODULE_ALLOWED: &[&str] = &["module", "inputs", "params"];
+/// `build` (like the shared `env`/`deploy`) propagates into the module's inner
+/// nodes -- see `expand::expand_modules` -- so it is accepted rather than
+/// rejected, matching the documented contract in `docs/modules.md` and the
+/// `Node::module` rustdoc.
+const MODULE_ALLOWED: &[&str] = &["module", "inputs", "params", "build"];
 
 pub(super) fn check_module(node: &Node) -> Result<()> {
     let mut allowed = SHARED_FIELDS.to_vec();
@@ -649,19 +653,34 @@ git: https://github.com/example/node.git
             assert!(error.contains(expected_field), "{error}");
         }
 
-        let module = parse_node(
+        // `build` is accepted on a module node: like `env`/`deploy` it
+        // propagates into the module's inner nodes (see `expand::expand_modules`
+        // and `docs/modules.md`), so it must pass the whitelist.
+        let module_build = parse_node(
             r#"
 id: nav
 module: modules/nav.yml
 build: cargo build
 "#,
         );
+        check_module(&module_build).expect("module build should be accepted");
+
+        // A per-node runtime field like `outputs` has no meaning on a module
+        // node (a module declares its outputs in its own header) and is rejected
+        // rather than silently dropped during expansion.
+        let module_outputs = parse_node(
+            r#"
+id: nav
+module: modules/nav.yml
+outputs: [out]
+"#,
+        );
         let error = format!(
             "{:#}",
-            check_module(&module).expect_err("module build should be rejected")
+            check_module(&module_outputs).expect_err("module outputs should be rejected")
         );
         assert!(error.contains("Module"), "{error}");
-        assert!(error.contains("build"), "{error}");
+        assert!(error.contains("outputs"), "{error}");
     }
 
     #[test]
