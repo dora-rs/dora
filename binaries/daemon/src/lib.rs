@@ -8223,11 +8223,15 @@ mod fault_tolerance_tests {
         daemon.running.insert(dataflow_id, dataflow);
 
         #[cfg(feature = "tensor-pool")]
-        let subscriber = tokio::spawn(std::future::pending::<()>());
-        #[cfg(feature = "tensor-pool")]
-        daemon
-            .memory_pool_subscribers
-            .insert(dataflow_id, subscriber);
+        {
+            unsafe { std::env::set_var("DORA_MEMORY_POOL_CROSS_MACHINE", "1") };
+            daemon.pool_subscribe_dataflow(dataflow_id);
+            unsafe { std::env::remove_var("DORA_MEMORY_POOL_CROSS_MACHINE") };
+            assert!(
+                daemon.pool.has_subscriber(&dataflow_id),
+                "test setup must create a memory-pool subscriber"
+            );
+        }
 
         let result = daemon.finish_dataflow(dataflow_id).await;
 
@@ -8250,7 +8254,7 @@ mod fault_tolerance_tests {
         assert!(*listener_shutdown.borrow());
         #[cfg(feature = "tensor-pool")]
         assert!(
-            !daemon.memory_pool_subscribers.contains_key(&dataflow_id),
+            !daemon.pool.has_subscriber(&dataflow_id),
             "memory-pool subscriber must be removed even when coordinator reporting fails"
         );
 
