@@ -8222,6 +8222,13 @@ mod fault_tolerance_tests {
         let mut listener_shutdown = dataflow.listener_shutdown_tx.subscribe();
         daemon.running.insert(dataflow_id, dataflow);
 
+        #[cfg(feature = "tensor-pool")]
+        let subscriber = tokio::spawn(std::future::pending::<()>());
+        #[cfg(feature = "tensor-pool")]
+        daemon
+            .memory_pool_subscribers
+            .insert(dataflow_id, subscriber);
+
         let result = daemon.finish_dataflow(dataflow_id).await;
 
         assert!(
@@ -8241,6 +8248,11 @@ mod fault_tolerance_tests {
             .await
             .expect("finish_dataflow should signal listener shutdown");
         assert!(*listener_shutdown.borrow());
+        #[cfg(feature = "tensor-pool")]
+        assert!(
+            !daemon.memory_pool_subscribers.contains_key(&dataflow_id),
+            "memory-pool subscriber must be removed even when coordinator reporting fails"
+        );
 
         let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
         daemon.coordinator_sender = Some(coordinator_sender);
