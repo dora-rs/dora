@@ -463,7 +463,6 @@ pub struct Daemon {
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
-    pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
     pub(crate) logger: DaemonLogger,
@@ -1894,18 +1893,6 @@ impl Daemon {
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
-        // Zenoh publish drain task: offload `.put().await` from the main event
-        // loop. All events for a given output, including `OutputClosed`, share
-        // this FIFO so close cannot pass data that was produced earlier.
-        let (zenoh_publish_tx, mut zenoh_publish_rx) =
-            mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
-        let _zenoh_drain_handle = tokio::spawn(async move {
-            while let Some(msg) = zenoh_publish_rx.recv().await {
-                publish_zenoh_outbound(msg).await;
-            }
-            tracing::debug!("zenoh publish drain task exiting");
-        });
-
         let daemon = Self {
             machine_id,
             logger: Logger {
@@ -1934,7 +1921,6 @@ impl Daemon {
             disable_multicast,
             bind_nodes_to_parent,
             pending_destroy: None,
-            zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
             extensions: ExtensionTable::new(),
@@ -5497,8 +5483,9 @@ impl Daemon {
 
         let publisher =
             remote_receiver_control_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let queue = remote_output_publish_queue(dataflow, output_id);
         let outbound = zenoh_outbound(dataflow, publisher, serialized_event);
-        spawn_required_zenoh_outbound(outbound, "inter-daemon output-closed event");
+        enqueue_required_zenoh_outbound(queue, outbound, "inter-daemon output-closed event");
         Ok(())
     }
 
@@ -5514,10 +5501,11 @@ impl Daemon {
 
         let publisher =
             remote_receiver_data_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let queue = remote_output_publish_queue(dataflow, output_id);
         let outbound = zenoh_outbound(dataflow, publisher, serialized_event);
         handle_publish_enqueue_result(
             dataflow,
-            try_enqueue_zenoh_outbound(&self.zenoh_publish_tx, outbound),
+            try_enqueue_zenoh_outbound(&queue, outbound),
             "regular inter-daemon output",
         );
         Ok(())
@@ -7800,6 +7788,27 @@ async fn remote_receiver_publisher(
     }
 }
 
+fn remote_output_publish_queue(
+    dataflow: &mut RunningDataflow,
+    output_id: &OutputId,
+) -> mpsc::Sender<ZenohOutbound> {
+    match dataflow.remote_output_queues.entry(output_id.clone()) {
+        std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
+        std::collections::btree_map::Entry::Vacant(e) => {
+            let (tx, mut rx) = mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
+            let output_id = output_id.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    publish_zenoh_outbound(msg).await;
+                }
+                tracing::debug!(?output_id, "per-output zenoh publish drain task exiting");
+            });
+            e.insert(tx.clone());
+            tx
+        }
+    }
+}
+
 fn zenoh_outbound(
     dataflow: &RunningDataflow,
     publisher: Arc<zenoh::pubsub::Publisher<'static>>,
@@ -7869,11 +7878,34 @@ fn handle_publish_enqueue_result(
     }
 }
 
-fn spawn_required_zenoh_outbound(outbound: ZenohOutbound, event_kind: &'static str) {
-    tokio::spawn(async move {
-        tracing::debug!("publishing {event_kind} outside the shared zenoh data drain");
-        publish_zenoh_outbound(outbound).await;
-    });
+fn enqueue_required_zenoh_outbound(
+    tx: mpsc::Sender<ZenohOutbound>,
+    outbound: ZenohOutbound,
+    event_kind: &'static str,
+) {
+    match tx.try_send(outbound) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(outbound)) => {
+            tokio::spawn(async move {
+                tracing::debug!(
+                    "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}); \
+                     waiting to enqueue {event_kind}"
+                );
+                if let Err(mpsc::error::SendError(outbound)) = tx.send(outbound).await {
+                    outbound
+                        .net_publish_failures
+                        .fetch_add(1, atomic::Ordering::Relaxed);
+                    tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+                }
+            });
+        }
+        Err(mpsc::error::TrySendError::Closed(outbound)) => {
+            outbound
+                .net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+        }
+    }
 }
 
 /// Cached `@schema` bytes (keyed by their FNV-1a hash, most-recent last) for
@@ -8885,6 +8917,7 @@ mod fault_tolerance_tests {
             BTreeMap::new(),
             LogDestination::Tracing,
             None,
+            Vec::new(),
             ZenohBind::Derived(LOCALHOST),
             true,
             false,
@@ -8902,7 +8935,7 @@ mod fault_tolerance_tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn output_closed_uses_separate_block_publisher_from_regular_output() {
+    async fn output_closed_uses_block_publisher_but_shares_output_fifo_with_regular_output() {
         let clock = Arc::new(HLC::default());
         let (mut daemon, _events_rx) = Daemon::build_daemon(
             Some("daemon".to_string()),
@@ -8914,21 +8947,24 @@ mod fault_tolerance_tests {
             BTreeMap::new(),
             LogDestination::Tracing,
             None,
+            Vec::new(),
             ZenohBind::Derived(LOCALHOST),
             true,
             false,
         )
         .await
         .unwrap();
-        let (publish_tx, mut publish_rx) = mpsc::channel(1);
-        daemon.zenoh_publish_tx = publish_tx;
 
         let dataflow_id = Uuid::new_v4();
         let node_id = NodeId::from("source".to_string());
         let output_id = DataId::from("value".to_string());
         let output = OutputId(node_id.clone(), output_id.clone());
+        let (publish_tx, mut publish_rx) = mpsc::channel(2);
         let mut dataflow = test_dataflow();
         dataflow.open_external_mappings.insert(output.clone());
+        dataflow
+            .remote_output_queues
+            .insert(output.clone(), publish_tx);
         daemon.running.insert(dataflow_id, dataflow);
 
         daemon
@@ -8941,12 +8977,13 @@ mod fault_tolerance_tests {
             .unwrap();
 
         let data = publish_rx.try_recv().unwrap();
+        let close = publish_rx.try_recv().unwrap();
         assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
-
-        assert!(
-            publish_rx.try_recv().is_err(),
-            "OutputClosed must not use the shared daemon-wide data drain"
+        assert_eq!(
+            close.publisher.congestion_control(),
+            CongestionControl::Block
         );
+
         let dataflow = daemon.running.get(&dataflow_id).unwrap();
         let close = dataflow.control_publishers.get(&output).unwrap();
         assert_eq!(close.congestion_control(), CongestionControl::Block);
@@ -8954,6 +8991,61 @@ mod fault_tolerance_tests {
             !Arc::ptr_eq(&data.publisher, close),
             "regular output and OutputClosed must not share one blocking publisher"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn output_closed_stays_behind_queued_regular_output() {
+        let clock = Arc::new(HLC::default());
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            Some("daemon".to_string()),
+            None,
+            DaemonId::new(Some("daemon".to_string())),
+            None,
+            clock,
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            Vec::new(),
+            ZenohBind::Derived(LOCALHOST),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let dataflow_id = Uuid::new_v4();
+        let node_id = NodeId::from("source".to_string());
+        let output_id = DataId::from("value".to_string());
+        let output = OutputId(node_id.clone(), output_id.clone());
+        let (publish_tx, mut publish_rx) = mpsc::channel(2);
+        let mut dataflow = test_dataflow();
+        dataflow.open_external_mappings.insert(output.clone());
+        dataflow
+            .remote_output_queues
+            .insert(output.clone(), publish_tx);
+        daemon.running.insert(dataflow_id, dataflow);
+
+        daemon
+            .try_send_to_remote_receivers(dataflow_id, &output, b"data".to_vec())
+            .await
+            .unwrap();
+        daemon
+            .send_output_closed_events(dataflow_id, node_id, vec![output_id])
+            .await
+            .unwrap();
+
+        let data = publish_rx.try_recv().unwrap();
+        let close = publish_rx
+            .try_recv()
+            .expect("OutputClosed must share the output FIFO with earlier data");
+        assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
+        assert_eq!(
+            close.publisher.congestion_control(),
+            CongestionControl::Block
+        );
+        assert_eq!(data.serialized, b"data");
+        assert_ne!(close.serialized, b"data");
     }
 
     #[test]
