@@ -83,12 +83,16 @@ pub(crate) unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 /// node API's `seqlock_end`.
 pub(crate) unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
     unsafe {
+        // Release fence BEFORE the completion store, so the writer's payload
+        // writes are ordered before the even ("complete") generation becomes
+        // visible. A fence placed *after* the store orders nothing on a
+        // weakly-ordered CPU (dora-rs/dora#3288).
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         if copy_ok {
             std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
         } else {
             std::ptr::write_volatile(gen_ptr, pre_write_gen);
         }
-        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
 }
 
