@@ -207,6 +207,10 @@ const MIN_METRICS_WINDOW_SECS: f64 = 0.1;
 /// patterns; regular outputs are dropped with a warning when full, while
 /// required lifecycle events wait for capacity in a background task.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
+/// Upper bound for a single Zenoh publish attempt. Required lifecycle events use
+/// blocking publishers, so this keeps a gone or congested peer from pinning a
+/// per-output drain task forever.
+const ZENOH_PUBLISH_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -7799,6 +7803,10 @@ fn remote_output_publish_queue(
             let output_id = output_id.clone();
             tokio::spawn(async move {
                 while let Some(msg) = rx.recv().await {
+                    // Regular Output and its OutputClosed use distinct Drop/Block
+                    // publishers on the same Zenoh key, but this per-output FIFO
+                    // is the ordering boundary: each publish is awaited before the
+                    // next one is submitted, so a close cannot pass earlier data.
                     publish_zenoh_outbound(msg).await;
                 }
                 tracing::debug!(?output_id, "per-output zenoh publish drain task exiting");
@@ -7839,12 +7847,41 @@ fn try_enqueue_zenoh_outbound<T>(tx: &mpsc::Sender<T>, outbound: T) -> ZenohEnqu
     }
 }
 
+#[derive(Debug)]
+enum ZenohPublishOutcome<E> {
+    Published,
+    Failed(E),
+    TimedOut,
+}
+
+async fn await_zenoh_put_with_timeout<F, E>(publish: F, timeout: Duration) -> ZenohPublishOutcome<E>
+where
+    F: std::future::IntoFuture<Output = Result<(), E>>,
+{
+    match tokio::time::timeout(timeout, publish.into_future()).await {
+        Ok(Ok(())) => ZenohPublishOutcome::Published,
+        Ok(Err(err)) => ZenohPublishOutcome::Failed(err),
+        Err(_) => ZenohPublishOutcome::TimedOut,
+    }
+}
+
 async fn publish_zenoh_outbound(msg: ZenohOutbound) {
-    if let Err(e) = msg.publisher.put(msg.serialized).await {
-        tracing::error!("zenoh publish failed: {e}");
-        msg.net_publish_failures
-            .fetch_add(1, atomic::Ordering::Relaxed);
-        return;
+    match await_zenoh_put_with_timeout(msg.publisher.put(msg.serialized), ZENOH_PUBLISH_TIMEOUT)
+        .await
+    {
+        ZenohPublishOutcome::Published => {}
+        ZenohPublishOutcome::Failed(e) => {
+            tracing::error!("zenoh publish failed: {e}");
+            msg.net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            return;
+        }
+        ZenohPublishOutcome::TimedOut => {
+            tracing::error!("zenoh publish timed out after {ZENOH_PUBLISH_TIMEOUT:?}");
+            msg.net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            return;
+        }
     }
     // Relaxed ordering is correct: counters are read-only for metrics
     // reporting and never used as synchronization guards.
@@ -9046,6 +9083,24 @@ mod fault_tolerance_tests {
         );
         assert_eq!(data.serialized, b"data");
         assert_ne!(close.serialized, b"data");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zenoh_publish_wait_is_bounded() {
+        let publish = std::future::pending::<Result<(), eyre::Report>>();
+        let handle = tokio::spawn(await_zenoh_put_with_timeout(publish, ZENOH_PUBLISH_TIMEOUT));
+
+        tokio::task::yield_now().await;
+        assert!(
+            !handle.is_finished(),
+            "the helper must not finish before the timeout elapses"
+        );
+
+        tokio::time::advance(ZENOH_PUBLISH_TIMEOUT).await;
+        assert!(matches!(
+            handle.await.unwrap(),
+            ZenohPublishOutcome::TimedOut
+        ));
     }
 
     #[test]
