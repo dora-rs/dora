@@ -43,6 +43,8 @@ use futures::{StreamExt, task::SpawnExt};
 
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
+static INVALID_ROS_DOMAIN_ID_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn peer_value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: &str) -> Option<T> {
     match result {
@@ -64,8 +66,11 @@ fn main() -> eyre::Result<()> {
 
     let config_json = std::env::var("DORA_ROS2_BRIDGE_CONFIG")
         .context("missing DORA_ROS2_BRIDGE_CONFIG env var")?;
-    let config: Ros2BridgeConfig =
+    let config_value: serde_json::Value =
         serde_json::from_str(&config_json).context("failed to parse ROS2 bridge config")?;
+    warn_explicit_service_action_best_effort(&config_value);
+    let config: Ros2BridgeConfig =
+        serde_json::from_value(config_value).context("failed to parse ROS2 bridge config")?;
 
     let messages = load_messages()?;
 
@@ -103,10 +108,9 @@ fn run_zenoh_mode(
         unreachable!()
     };
     tracing::info!(profile = ?compatibility, config_source = if config_uri.is_some() { "explicit" } else { "environment-or-default" }, "starting native ROS2 Zenoh transport");
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let context = futures::executor::block_on(ZenohContext::open(ZenohContextOptions {
         domain_id,
         config_uri: config_uri
@@ -147,10 +151,9 @@ fn run_zenoh_topic_mode(
         unreachable!()
     };
     let resolver = TypeDescriptionResolver::from_ament_prefix_path();
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let mut publishers = Vec::new();
     let mut subscribers = Vec::new();
     for topic in resolve_topics(config)? {
@@ -270,10 +273,9 @@ fn run_zenoh_service_mode(
         &service_name,
         &TypeDescriptionResolver::from_ament_prefix_path(),
     )?;
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let key = DataKey::new(domain_id, name, &identity)?;
     let qos = config.qos.to_neutral_qos();
     let token = TopicToken {
@@ -470,10 +472,9 @@ fn run_zenoh_action_mode(
     };
     let cancel = resolve_service(compatibility, "action_msgs", "CancelGoal", &resolver)?;
     let status = resolve_message(compatibility, "action_msgs", "GoalStatusArray", &resolver)?;
-    let domain = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let endpoints = dora_ros2_bridge::transport::action::ActionEndpoints::new(
         action_name,
         &package,
@@ -2046,9 +2047,40 @@ fn ros_context_creation(domain_id: u16) -> RosContextCreation {
 }
 
 fn parse_ros_domain_id(value: Option<&str>) -> u16 {
-    value
-        .and_then(|value| value.parse::<u16>().ok())
-        .unwrap_or(0)
+    match value {
+        Some(value) => match value.parse::<u16>() {
+            Ok(domain_id) => domain_id,
+            Err(_) => {
+                if !INVALID_ROS_DOMAIN_ID_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!("{}", warning_for_invalid_ros_domain_id(value));
+                }
+                0
+            }
+        },
+        None => 0,
+    }
+}
+
+fn warning_for_invalid_ros_domain_id(value: &str) -> String {
+    format!("invalid ROS_DOMAIN_ID `{value}`; defaulting to DDS domain 0")
+}
+
+fn warn_explicit_service_action_best_effort(config: &serde_json::Value) -> bool {
+    let is_service_or_action = config.get("service").is_some() || config.get("action").is_some();
+    let explicit_best_effort = config
+        .get("qos")
+        .and_then(|qos| qos.get("reliable"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+
+    if is_service_or_action && explicit_best_effort {
+        tracing::warn!(
+            "service/action QoS ignores explicit `reliable: false`; ROS2 services require RELIABLE QoS"
+        );
+        true
+    } else {
+        false
+    }
 }
 
 fn default_service_qos_config() -> Ros2QosConfig {
@@ -2064,6 +2096,12 @@ fn default_service_qos_config() -> Ros2QosConfig {
 }
 
 fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    if !config.reliable && !config.is_default_topic_qos() {
+        tracing::warn!(
+            "service/action QoS keeps RELIABLE delivery even though the descriptor QoS uses topic-style best effort; ROS2 services require RELIABLE QoS"
+        );
+    }
+
     let mut qos = default_service_qos_config();
     if let Some(durability) = &config.durability {
         qos.durability = Some(durability.clone());
@@ -2489,6 +2527,7 @@ mod peer_failure_tests {
         parse_ros_domain_id, peer_value_or_warn, ros_context_creation, service_connected_message,
         service_or_action_qos, service_topic_names, service_topics_discovered,
         service_unavailable_message, service_unavailable_message_with_discovery,
+        warn_explicit_service_action_best_effort, warning_for_invalid_ros_domain_id,
     };
     use dora_message::descriptor::Ros2QosConfig;
 
@@ -2506,6 +2545,16 @@ mod peer_failure_tests {
         assert_eq!(parse_ros_domain_id(Some("0")), 0);
         assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
         assert_eq!(parse_ros_domain_id(None), 0);
+    }
+
+    #[test]
+    fn invalid_ros_domain_id_warns_before_defaulting_to_zero() {
+        assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
+
+        assert_eq!(
+            warning_for_invalid_ros_domain_id("not-a-number"),
+            "invalid ROS_DOMAIN_ID `not-a-number`; defaulting to DDS domain 0"
+        );
     }
 
     #[test]
@@ -2551,6 +2600,31 @@ mod peer_failure_tests {
             rustdds.history(),
             Some(dora_ros2_bridge::rustdds::policy::History::KeepLast { depth }) if depth == 20
         ));
+    }
+
+    #[test]
+    fn service_qos_warns_when_explicit_best_effort_is_ignored() {
+        let qos = Ros2QosConfig {
+            reliable: false,
+            keep_last: Some(20),
+            ..Ros2QosConfig::default()
+        };
+        let rustdds = service_or_action_qos(&qos);
+
+        assert!(matches!(
+            rustdds.reliability(),
+            Some(dora_ros2_bridge::rustdds::policy::Reliability::Reliable { .. })
+        ));
+
+        let config = serde_json::json!({
+            "service": "/add_two_ints",
+            "service_type": "example_interfaces/AddTwoInts",
+            "role": "client",
+            "qos": {
+                "reliable": false
+            }
+        });
+        assert!(warn_explicit_service_action_best_effort(&config));
     }
 
     #[test]
