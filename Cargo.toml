@@ -151,21 +151,28 @@ ros2-client = { version = "0.10.1", default-features = false, features = ["humbl
 # Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
 # workspace resolves a single copy.
 cdr-encoding = "0.11"
-arrow = { version = "59", default-features = false }
+# The `>= 59.1` floor is load-bearing, not cosmetic: `arrow`'s `pyarrow` feature
+# pulls in `arrow-pyarrow`, which requires pyo3 ^0.28 up to 59.0 and ^0.29 from
+# 59.1 on. Since `pyo3-ffi` declares `links = "python"`, cargo permits exactly
+# one copy in the graph, so without this floor a resolution that picks
+# `arrow-pyarrow` 59.0 fails with an opaque duplicate-`links` error rather than
+# a legible version conflict.
+arrow = { version = "59.1", default-features = false }
 arrow-schema = { version = "59" }
 arrow-data = { version = "59" }
 arrow-array = { version = "59" }
 arrow-json = { version = "59" }
 parquet = { version = "59" }
-# pyo3 0.29 is blocked by `arrow-pyarrow` 59, which requires pyo3 ^0.28
-# (only one `pyo3-ffi` may link against `python`).
-pyo3 = { version = "0.28", features = [
+# Kept in lockstep with `arrow-pyarrow` — see the `arrow` floor above.
+pyo3 = { version = "0.29", features = [
     "eyre",
     "abi3-py311",
     "multiple-pymethods",
 ] }
-pythonize = "0.28"
-pyo3-build-config = { version = "0.28", features = ["resolve-config", "abi3-py311"] }
+pythonize = "0.29"
+# 0.29 dropped `resolve-config`/`abi3-*` from this crate: the build config is now
+# loaded from `pyo3-ffi`'s build script, so dependents need a direct `pyo3` dep.
+pyo3-build-config = "0.29"
 # git2 0.21 dropped `https`/`ssh` from its default features (0.20 had
 # `default = ["ssh", "https"]`), so request them explicitly — otherwise
 # libgit2 ships without a TLS transport ("no TLS stream available").
