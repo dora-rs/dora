@@ -1754,9 +1754,9 @@ jobs:
     # (PR-CI gate removed; runs independently in nightly)
     env:
       # The workspace pins `abi3-py311` in pyo3 features (workspace
-      # Cargo.toml:123 + apis/python/operator + ros2-bridge/python +
-      # binaries/runtime). pyo3-build-config 0.28+ asserts the build-
-      # time Python interpreter version is >= the abi3 minimum, but
+      # Cargo.toml + apis/python/operator + ros2-bridge/python +
+      # binaries/runtime-python). pyo3-ffi's build script asserts the
+      # build-time Python interpreter is >= the abi3 minimum, but
       # `cross` runs the build inside Docker images that ship Python
       # 3.10. abi3 builds don't actually need a runtime Python at
       # compile time — they bake the minimum into the binary — so
@@ -1861,7 +1861,7 @@ jobs:
           swap-storage: false
       # Provision Python 3.12 BEFORE the first cargo invocation. The
       # workspace pins `abi3-py311` in pyo3 features (workspace
-      # Cargo.toml:123) and pyo3-build-config 0.28+ rejects build-time
+      # Cargo.toml) and pyo3-ffi's build script rejects build-time
       # interpreters older than the abi3 minimum. ubuntu-22.04 ships
       # Python 3.10 by default, which would make `cargo test -p
       # dora-ros2-bridge-python` below fail with "cannot set a minimum

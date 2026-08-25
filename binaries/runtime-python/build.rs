@@ -8,6 +8,6 @@ fn main() {
     // links pyo3. In the old monolithic `dora-runtime` this was gated behind the
     // `python` feature, because that crate was also linked into `dora-cli` on
     // systems below the workspace `abi3-py311` floor (e.g. Python 3.10 on
-    // ubuntu-22.04), where pyo3-build-config's interpreter probe fails.
+    // ubuntu-22.04), where pyo3-ffi's interpreter probe fails.
     pyo3_build_config::use_pyo3_cfgs();
 }

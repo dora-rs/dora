@@ -6,7 +6,7 @@ version = 4
 name = "action-example-client"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -15,7 +15,7 @@ dependencies = [
 name = "action-example-server"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -233,9 +233,9 @@ dependencies = [
 
 [[package]]
 name = "arrow"
-version = "59.0.0"
+version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffaaa3e009861fd829d0a24dd6f115aa8e4634324bb092147d43baafe69ca4a7"
+checksum = "61d285d16bce7d0be61912f7928342b673067b6b7d7ef6cc179258ba7de1fecf"
 dependencies = [
  "arrow-arith 59.2.0",
  "arrow-array 59.2.0",
@@ -475,9 +475,9 @@ dependencies = [
 
 [[package]]
 name = "arrow-pyarrow"
-version = "59.0.0"
+version = "59.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b9e66bd74e4a47c6df9a2af16d9cca97e37cdfe5b3207d5e3558646e07957a27"
+checksum = "c196ecc25b3a8dcbc1d842f2619cee653dcfa2fb8b56a291bc0481c3cf5c3821"
 dependencies = [
  "arrow-array 59.2.0",
  "arrow-data 59.2.0",
@@ -2083,7 +2083,7 @@ name = "dora-arrow-convert"
 version = "1.0.0-rc.4"
 dependencies = [
  "arrow 58.4.0",
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "chrono",
  "eyre",
  "half",
@@ -2095,7 +2095,7 @@ dependencies = [
 name = "dora-cli"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "arrow-json",
  "arrow-schema 59.2.0",
  "chrono",
@@ -2169,7 +2169,7 @@ dependencies = [
 name = "dora-coordinator"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "axum",
  "ctrlc",
  "dora-coordinator-store",
@@ -2350,7 +2350,7 @@ dependencies = [
 name = "dora-log-utils"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "chrono",
  "dora-arrow-convert",
  "dora-message",
@@ -2362,7 +2362,7 @@ dependencies = [
 name = "dora-mavlink2-bridge"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "eyre",
  "mavlink",
  "num-traits",
@@ -2377,7 +2377,7 @@ dependencies = [
 name = "dora-mavlink2-bridge-node"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-mavlink2-bridge",
  "dora-node-api",
  "eyre",
@@ -2436,7 +2436,7 @@ version = "1.0.0-rc.4"
 dependencies = [
  "aligned-vec",
  "arrow 58.4.0",
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "arrow-json",
  "arrow-schema 59.2.0",
  "chrono",
@@ -2481,7 +2481,7 @@ dependencies = [
 name = "dora-node-api-cxx"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "chrono",
  "cxx",
  "cxx-build",
@@ -2501,7 +2501,7 @@ dependencies = [
 name = "dora-node-api-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "chrono",
  "dora-cli",
  "dora-download",
@@ -2563,7 +2563,7 @@ name = "dora-operator-api-python"
 version = "1.0.0-rc.4"
 dependencies = [
  "aligned-vec",
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "arrow-schema 59.2.0",
  "chrono",
  "dora-node-api",
@@ -2583,7 +2583,7 @@ dependencies = [
 name = "dora-operator-api-types"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-arrow-convert",
  "safer-ffi",
 ]
@@ -2656,7 +2656,7 @@ dependencies = [
 name = "dora-ros2-bridge-arrow"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "byteorder",
  "cdr-encoding",
  "dora-ros2-bridge-msg-gen",
@@ -2689,7 +2689,7 @@ dependencies = [
 name = "dora-ros2-bridge-node"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-message",
  "dora-node-api",
  "dora-ros2-bridge",
@@ -2710,7 +2710,7 @@ dependencies = [
 name = "dora-ros2-bridge-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-message",
  "dora-ros2-bridge",
  "dora-ros2-bridge-arrow",
@@ -2729,7 +2729,7 @@ dependencies = [
 name = "dora-runtime-api"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-core",
  "dora-message",
  "dora-metrics",
@@ -2749,7 +2749,7 @@ dependencies = [
 name = "dora-runtime-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-core",
  "dora-download",
  "dora-node-api",
@@ -2773,7 +2773,7 @@ dependencies = [
 name = "dora-runtime-shared-lib"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-core",
  "dora-download",
  "dora-node-api",
@@ -2810,7 +2810,7 @@ dependencies = [
 name = "dora-tensor-pool-python"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-message",
  "dora-node-api",
  "dora-tensor-pool",
@@ -4737,7 +4737,7 @@ dependencies = [
 name = "mavlink2-bridge-example-heartbeat-emitter"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-mavlink2-bridge",
  "dora-node-api",
  "eyre",
@@ -4760,7 +4760,7 @@ dependencies = [
 name = "mavlink2-bridge-example-telemetry-printer-rust"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-mavlink2-bridge",
  "dora-node-api",
  "eyre",
@@ -6058,9 +6058,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3"
-version = "0.28.3"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91fd8e38a3b50ed1167fb981cd6fd60147e091784c427b8f7183a7ee32c31c12"
+checksum = "4688ddedf473e32662b9b067670129a8afb8c18e351482c70d62ba4a88171e8b"
 dependencies = [
  "eyre",
  "inventory",
@@ -6075,18 +6075,18 @@ dependencies = [
 
 [[package]]
 name = "pyo3-build-config"
-version = "0.28.3"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e368e7ddfdeb98c9bca7f8383be1648fd84ab466bf2bc015e94008db6d35611e"
+checksum = "f41027e41b4bd03f6e60f9f417fe24a6341a6bb744edd62b6f709f2a52ea30e9"
 dependencies = [
  "target-lexicon",
 ]
 
 [[package]]
 name = "pyo3-ffi"
-version = "0.28.3"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f29e10af80b1f7ccaf7f69eace800a03ecd13e883acfacc1e5d0988605f651e"
+checksum = "e591a95526fead067432c3b3a33fc74770b87b1e04e73671090d9c2055a2b327"
 dependencies = [
  "libc",
  "pyo3-build-config",
@@ -6094,9 +6094,9 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros"
-version = "0.28.3"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "df6e520eff47c45997d2fc7dd8214b25dd1310918bbb2642156ef66a67f29813"
+checksum = "73225868fc1cd84eef2c3c230ddb91273bf1de46aeb8a4248da76d32a0924a1c"
 dependencies = [
  "proc-macro2",
  "pyo3-macros-backend",
@@ -6106,22 +6106,21 @@ dependencies = [
 
 [[package]]
 name = "pyo3-macros-backend"
-version = "0.28.3"
+version = "0.29.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c4cdc218d835738f81c2338f822078af45b4afdf8b2e33cbb5916f108b813acb"
+checksum = "571575aa3749fa6216757dd47d2a3e7ef360f329a40f0666a9fbd14889024952"
 dependencies = [
  "heck",
  "proc-macro2",
- "pyo3-build-config",
  "quote",
  "syn 2.0.119",
 ]
 
 [[package]]
 name = "pythonize"
-version = "0.28.0"
+version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b79f670c9626c8b651c0581011b57b6ba6970bb69faf01a7c4c0cfc81c43f95"
+checksum = "6ec376e1216e0c929a74964ce2020012a1a39f32d80e78aa688721219ea7fb89"
 dependencies = [
  "pyo3",
  "serde",
@@ -7350,7 +7349,7 @@ dependencies = [
 name = "service-example-client"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -7359,7 +7358,7 @@ dependencies = [
 name = "service-example-server"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9658,7 +9657,7 @@ dependencies = [
 name = "yaml-bridge-action-goal"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9667,7 +9666,7 @@ dependencies = [
 name = "yaml-bridge-action-server-handler"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9676,7 +9675,7 @@ dependencies = [
 name = "yaml-bridge-service-handler"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
@@ -9685,7 +9684,7 @@ dependencies = [
 name = "yaml-bridge-service-requester"
 version = "1.0.0-rc.4"
 dependencies = [
- "arrow 59.0.0",
+ "arrow 59.2.0",
  "dora-node-api",
  "eyre",
 ]
