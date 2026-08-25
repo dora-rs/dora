@@ -194,6 +194,7 @@ jobs:
       - name: Check PyO3 crate test targets compile
         run: >
           cargo check --all-targets
+          -p dora-cli-api-python
           -p dora-node-api-python
           -p dora-operator-api-python
           -p dora-ros2-bridge-python

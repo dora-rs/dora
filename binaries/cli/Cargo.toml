@@ -19,16 +19,15 @@ path = "src/main.rs"
 default = ["tracing", "metrics", "redb-backend"]
 tracing = ["dep:dora-tracing"]
 metrics = ["dora-runtime-shared-lib/metrics", "dora-coordinator/metrics"]
-python = ["pyo3"]
+# Marks a build that is hosted by the `dora-rs-cli` wheel rather than the
+# standalone binary, which changes how `dora self uninstall` and executable
+# path resolution behave. Internal wheel plumbing, not a supported knob.
+python = []
 # Pass-through for the daemon's opt-in tensor-pool transport. The CLI hosts the
 # in-process daemon (`dora run`, `dora up`), so without this the feature is
 # unreachable through the `dora` binary. NOT covered by dora's 1.0
 # compatibility guarantees — see libraries/extensions/tensor-pool/README.md.
 tensor-pool = ["dora-daemon/tensor-pool"]
-# Enable extension-module only when building the Python wheel via maturin.
-# This suppresses Python library linking, which is correct for cdylib targets
-# loaded into Python but breaks standalone binary and test builds.
-python-extension-module = ["python", "pyo3/extension-module"]
 redb-backend = ["dora-coordinator/redb-backend", "dep:fs2", "dep:libc"]
 
 [dependencies]
@@ -85,9 +84,6 @@ self_update = { version = "0.44.0", features = [
     "archive-tar",
     "compression-flate2",
 ], default-features = false }
-pyo3 = { workspace = true, features = [
-    "abi3",
-], optional = true }
 self-replace = "1.5.0"
 dunce = "1.0.5"
 git2 = { workspace = true }
@@ -98,21 +94,14 @@ dora-recording = { workspace = true }
 which = "8"
 tempfile = { workspace = true }
 
-[build-dependencies]
-
 [lib]
 name = "dora_cli"
 path = "src/lib.rs"
-# cdylib is required by maturin for the Python wheel build.
-# Cargo builds all listed crate-types for the lib target, so this adds
-# a small overhead to every build.  The alternative (removing cdylib and
-# using a wrapper crate) is more complex and breaks the pyproject.toml
-# scripts entry that provides the `dora` console command.
-crate-type = ["lib", "cdylib"]
+# rlib only -- the `dora_cli` extension module is built from apis/python/cli.
+# Re-adding `cdylib` here would build a second, empty `dora_cli` .so per build.
 
 [package.metadata.dist]
 # Enable dora-cli binary to be distributed
 dist = true
 
 [dev-dependencies]
-tempfile = { workspace = true }

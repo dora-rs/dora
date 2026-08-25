@@ -2127,7 +2127,6 @@ dependencies = [
  "libc",
  "log",
  "notify",
- "pyo3",
  "ratatui",
  "self-replace",
  "self_update",
@@ -2156,13 +2155,11 @@ name = "dora-cli-api-python"
 version = "1.0.0-rc.4"
 dependencies = [
  "dora-cli",
- "dora-download",
- "dora-node-api",
  "dora-runtime-python",
  "eyre",
  "pyo3",
  "pyo3-build-config",
- "tokio",
+ "toml 1.1.4+spec-1.1.0",
 ]
 
 [[package]]
