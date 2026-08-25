@@ -1,0 +1,24 @@
+# Nightly jobs deliberately allowed to carry job-level `continue-on-error: true`
+# while they are listed in `file-issue-on-failure`'s `needs`.
+#
+# Checked by scripts/qa/ci-nightly-reporting.sh (`make qa-ci-reporting`).
+#
+# An entry here means: this job CANNOT report a failure. `needs.<job>.result`
+# reads `success` for a continue-on-error job, so the nightly issue will never
+# name it. That is a real monitoring hole — the point of this file is that the
+# hole is explicit, attributable, and shows up in a grep, instead of being an
+# invisible property of a flag buried in the job definition.
+#
+# Every entry needs a reason and the issue tracking its removal. Entries are
+# meant to be deleted, not accumulated.
+
+# Added 2026-07-21 (#2790), made advisory after they were found failing every
+# night on `maturin: command not found` (#2742). Both blockers on a green run
+# are now fixed: the missing maturin setup, and the exact rmw_zenoh apt pins
+# that broke roughly fortnightly as upstream published new builds (#3321).
+# #3321 also established that these jobs do not flake — across twenty scheduled
+# runs every failure was pin rot, none was docker/apt/ROS-mirror noise — so the
+# only thing still missing is a run of green nightlies on top of that fix.
+# Remove both once they have that stretch of green — tracked in #2987.
+ros2-zenoh-humble
+ros2-zenoh-kilted

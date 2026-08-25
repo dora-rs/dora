@@ -1971,7 +1971,10 @@ jobs:
   # `file-issue-on-failure` — `needs.<job>.result` reads `success` for a
   # continue-on-error job — which is why they failed silently from the
   # day they were added (#2790, 2026-07-21) until #2742 went looking.
-  # Drop `continue-on-error` once they are trustworthy.
+  # Drop `continue-on-error` once they are trustworthy (#2987). Until then
+  # the exemption is recorded in `.nightly-advisory-jobs`, which
+  # `scripts/qa/ci-nightly-reporting.sh` checks against this list — adding
+  # the flag to any other reported job now fails PR CI.
   ros2-zenoh-humble:
     name: ROS2 Zenoh Interop (Humble)
     runs-on: ubuntu-latest
