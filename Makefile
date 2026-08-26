@@ -13,7 +13,7 @@
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). After the #1716 rebalance,
-#                                        nightly.yml has 26 test jobs (re-counted
+#                                        nightly.yml has 27 test jobs (re-counted
 #                                        in #2999): example-smoke
 #                                        covers 4 (smoke-suite/log-sinks/service-action/
 #                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
@@ -160,6 +160,7 @@ qa-test:
 # operators working under an embedded-Python daemon.
 qa-test-python:
 	@cargo test --lib \
+		-p dora-cli-api-python \
 		-p dora-node-api-python \
 		-p dora-operator-api-python \
 		-p dora-ros2-bridge-python \

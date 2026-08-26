@@ -63,7 +63,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -137,7 +137,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -175,7 +175,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     container:
       image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
@@ -212,7 +212,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -248,7 +248,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -279,7 +279,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -324,7 +324,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/download-artifact@v8
