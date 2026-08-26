@@ -2296,6 +2296,7 @@ name = "dora-download"
 version = "1.0.0-rc.4"
 dependencies = [
  "eyre",
+ "percent-encoding",
  "reqwest",
  "sha2 0.11.0",
  "tokio",

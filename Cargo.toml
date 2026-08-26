@@ -204,6 +204,7 @@ proptest = "1.11"
 mavlink = { version = "0.18", default-features = false, features = ["std", "serde", "dialect-common", "transport-tcp", "transport-udp", "transport-direct-serial"] }
 serialport = "4.9"
 url = "2.5"
+percent-encoding = "2.3"
 
 # Opt in per crate via `[lints] workspace = true`. `cfg(kani)` gates the
 # formal-verification proof harnesses (`make qa-kani`,

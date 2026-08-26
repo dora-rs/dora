@@ -13,6 +13,7 @@ repository.workspace = true
 
 [dependencies]
 eyre = { workspace = true }
+percent-encoding = { workspace = true }
 reqwest = { version = "0.13.4", default-features = false, features = [
     "rustls",
 ] }
