@@ -1,11 +1,13 @@
-# The `rmw_version` pins below name an exact apt version *including* its build
-# date, which is the only way to make a container's `apt-get install` land on a
-# known rmw_zenoh build. Note that packages.ros.org serves only the newest build
-# of each package: when upstream publishes a new one, the pinned version stops
-# resolving and the router container dies during boot. Symptom is the health
-# wait in `scripts/ros2-zenoh-interop.sh` timing out (exit 124) — that script
-# dumps the container log on the way out, and the apt error names the versions
-# that do exist. Bump the pin to one of those.
+# The routers install their rmw_zenoh packages on boot, deliberately *unpinned*.
+# packages.ros.org serves only the newest build of each package, so an exact
+# `=<version>` pin stops resolving the day upstream publishes a new one: the
+# `apt-get install` below fails, the container never reports healthy, and the
+# job dies in the health wait in `scripts/ros2-zenoh-interop.sh`. That rot is
+# every failure these jobs have ever had — humble 2026-08-08..08-21 (#3263),
+# kilted from 2026-08-22 (#2987) — and it silenced them for weeks at a time.
+# Taking whatever the index currently serves is also what a user gets. The
+# version that lands is recorded, and floored, by the interop script; the base
+# images stay digest-pinned, so the ROS core underneath does not move.
 services:
   humble-router:
     profiles: [humble]
@@ -13,14 +15,8 @@ services:
     environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp }
     network_mode: host
     command: >-
-      bash -lc 'architecture=$$(dpkg --print-architecture) &&
-      case "$$architecture" in
-      amd64) rmw_version=0.1.9-1jammy.20260723.022609 ;;
-      arm64) rmw_version=0.1.9-1jammy.20260725.135946 ;;
-      *) echo "unsupported architecture: $$architecture" >&2; exit 1 ;;
-      esac && apt-get update -qq && apt-get install -y --no-install-recommends
-      "ros-humble-rmw-zenoh-cpp=$$rmw_version" ros-humble-rclpy
-      ros-humble-example-interfaces &&
+      bash -lc 'apt-get update -qq && apt-get install -y --no-install-recommends
+      ros-humble-rmw-zenoh-cpp ros-humble-rclpy ros-humble-example-interfaces &&
       source /opt/ros/humble/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd'
     healthcheck:
       test: [CMD-SHELL, "test -x /opt/ros/humble/lib/rmw_zenoh_cpp/rmw_zenohd && pgrep -x rmw_zenohd >/dev/null"]
@@ -35,14 +31,8 @@ services:
     environment: { RMW_IMPLEMENTATION: rmw_zenoh_cpp }
     network_mode: host
     command: >-
-      bash -lc 'architecture=$$(dpkg --print-architecture) &&
-      case "$$architecture" in
-      amd64) rmw_version=0.6.6-1noble.20260603.151244 ;;
-      arm64) rmw_version=0.6.6-1noble.20260603.150157 ;;
-      *) echo "unsupported architecture: $$architecture" >&2; exit 1 ;;
-      esac && apt-get update -qq && apt-get install -y --no-install-recommends
-      "ros-kilted-rmw-zenoh-cpp=$$rmw_version" ros-kilted-rclpy
-      ros-kilted-example-interfaces &&
+      bash -lc 'apt-get update -qq && apt-get install -y --no-install-recommends
+      ros-kilted-rmw-zenoh-cpp ros-kilted-rclpy ros-kilted-example-interfaces &&
       source /opt/ros/kilted/setup.bash && ros2 run rmw_zenoh_cpp rmw_zenohd'
     healthcheck:
       test: [CMD-SHELL, "test -x /opt/ros/kilted/lib/rmw_zenoh_cpp/rmw_zenohd && pgrep -x rmw_zenohd >/dev/null"]
