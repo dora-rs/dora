@@ -174,9 +174,12 @@ fn inspect(
                     .unwrap_or_else(|| output_id.clone());
                 let output_name = format!("{node_id}/{display_output}");
 
+                // `duration_since` errors only when the wall clock is set before
+                // the Unix epoch (e.g. an embedded target booting before an RTC
+                // or NTP sync). Fall back to 0 rather than panicking mid-stream.
                 let timestamp = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_millis();
 
                 let data_str = if let Some(data) = data {

@@ -445,10 +445,13 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         .collect::<eyre::Result<Vec<_>>>()?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
-    // Set up recording writer
+    // Set up recording writer.
+    // `duration_since` errors only when the wall clock is set before the Unix
+    // epoch (e.g. an embedded target booting before an RTC/NTP sync); fall back
+    // to 0 rather than panicking before recording starts.
     let start_nanos = SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_nanos() as u64;
 
     let header = RecordingHeader {
@@ -559,9 +562,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     }
                 };
 
+                // See `start_nanos` above: never panic on a pre-epoch clock.
                 let now_nanos = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_nanos() as u64;
 
                 let entry = RecordEntry {
