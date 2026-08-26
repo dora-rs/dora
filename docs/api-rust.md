@@ -792,6 +792,8 @@ dataflow or a `Cargo.toml`.
 | tensor-pool | Behind a generic extension seam, opt-in (#3152) |
 | `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
 | The Arrow major version | See the Arrow version policy above |
+| The pyo3 version | `pyo3-ffi` declares `links = "python"`, so a build graph can hold exactly one; dora's is an implementation detail behind the wheels. See the Python version policy below |
+| `dora-cli`'s `python` feature | Internal wheel plumbing — it marks a build hosted by the `dora-rs-cli` wheel, not a supported knob |
 
 Two of those crates are not on crates.io at all: `dora-operator-api-python`
 and `dora-runtime-python` are `publish = false`, and reach users compiled into
@@ -831,6 +833,33 @@ back it:
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already
 happens on every release, so the extra cost is close to zero.
+
+### Python version policy
+
+Both wheels are built `abi3-py311`, so **dora 1.x supports CPython 3.11 and
+later**. That floor is part of the 1.0 guarantee: raising it inside 1.x would
+uninstall dora for users on a Python it used to support, and no crates.io
+semver check would ever see it.
+
+abi3 makes the two directions asymmetric, in dora's favour:
+
+- **Newer CPython** — one `cp311-abi3` wheel loads on 3.12, 3.13 and later with
+  no rebuild, so a new interpreter release does not require a new dora release.
+  This is also the direction a pyo3 bump would otherwise threaten, which is why
+  the pyo3 version can stay exempt.
+- **Older CPython** — `requires-python = ">=3.11"` in both `pyproject.toml`s
+  makes pip refuse to install. This is the direction that breaks users, and it
+  moves only if dora deliberately moves it.
+
+Two limits stated rather than left implied:
+
+- **Free-threaded builds are not supported.** abi3 does not cover
+  `Py_GIL_DISABLED`; those interpreters need their own wheels and the release
+  matrix builds none, so there is no dora wheel for `python3.13t` or `3.14t`.
+- **CPython 3.11 reaches end of life in October 2027**, inside 1.x's expected
+  life. pyo3 drops old interpreters over time, so dora will eventually have to
+  either raise the floor — breaking users — or hold pyo3 back. Better decided
+  deliberately than under a deadline.
 
 ## Quick Start Example: Node
 

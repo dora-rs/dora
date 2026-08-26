@@ -6,6 +6,14 @@ This document covers the Python APIs for building dora nodes, operators, and dat
 pip install dora-rs
 ```
 
+**Supported interpreters: CPython 3.11 and later.** The wheels are built
+`abi3-py311`, so a single wheel works on every later CPython without waiting for
+a dora release — 3.11 is a floor dora 1.x will not raise, not a version it is
+pinned to. Free-threaded builds (`python3.13t`, `python3.14t`) are not
+supported: abi3 does not cover them and no wheels are published for them. See
+[Python version policy](api-rust.md#python-version-policy) for the full
+guarantee.
+
 ---
 
 ## Table of Contents
