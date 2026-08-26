@@ -61,7 +61,8 @@
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
-        qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-test-python qa-coverage qa-mutants qa-semver \
+        qa-fmt qa-audit qa-unwrap qa-publish-graph qa-clippy qa-test qa-test-python qa-coverage \
+        qa-mutants qa-semver \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install
 
 qa: qa-fast
@@ -128,6 +129,12 @@ qa-audit:
 
 qa-unwrap:
 	@scripts/qa/unwrap-budget.sh
+
+# Manifest-only crates.io publish-graph gate (#3304): no published crate
+# may depend on a `publish = false` one, and release.yml /
+# cargo-release.yml must list every dependency before its dependents.
+qa-publish-graph:
+	@scripts/qa/publish-graph.sh
 
 qa-clippy:
 	@cargo clippy --all \

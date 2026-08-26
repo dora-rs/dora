@@ -789,7 +789,7 @@ dataflow or a `Cargo.toml`.
 | `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-*` | Documented experimental; `StopAll` is not implemented |
 | `ros2:` descriptor field, `dora-ros2-bridge`(+`-msg-gen`, `-arrow`) | Crate docs state it may change at any point |
 | `dora-mavlink2-bridge`, `dora-mavlink2-bridge-node` | Domain-specific protocol bridge |
-| tensor-pool | Behind a generic extension seam, opt-in (#3152) |
+| tensor-pool (`dora-tensor-pool`) | Behind a generic extension seam, opt-in (#3152) |
 | `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
 | The Arrow major version | See the Arrow version policy above |
 | The pyo3 version | `pyo3-ffi` declares `links = "python"`, so a build graph can hold exactly one; dora's is an implementation detail behind the wheels. See the Python version policy below |
@@ -805,6 +805,8 @@ delivery channel nobody uses, since writing a Python operator needs no Rust
 dependency. Unpublished, dora's pyo3 version stays an implementation detail
 that can move in a minor.
 
+One goes the other way: `dora-tensor-pool` is exempt and *is* on crates.io, for the reason the internal crates below are. `dora-daemon` names it in an optional dependency, cargo resolves every dependency of a published crate against the registry, and so leaving it `publish = false` would have blocked `dora-daemon`'s own release ([#3304](https://github.com/dora-rs/dora/issues/3304)). Reaching crates.io is not a promotion: the crate's description and its README both carry the exemption, and they are what its crates.io page shows.
+
 ### Internal
 
 Crates that exist only to build the above. They are published to crates.io
@@ -817,7 +819,7 @@ because cargo requires every dependency of a published crate to be published
 
 ### How this is enforced
 
-Documentation alone would not survive contact with cargo, so two mechanisms
+Documentation alone would not survive contact with cargo, so three mechanisms
 back it:
 
 1. **Exact version pins.** Workspace crates depend on each other with `=`
@@ -829,6 +831,7 @@ back it:
    `default = []`, so using it is an affirmative act recorded in the
    consumer's `Cargo.toml` rather than a warning they can tune out.
    `arrow-v58` / `arrow-v59` are the pattern.
+3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish lists in `.github/workflows/release.yml` and `.github/workflows/cargo-release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
 
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already
