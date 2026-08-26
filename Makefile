@@ -61,8 +61,8 @@
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
-        qa-fmt qa-audit qa-unwrap qa-publish-graph qa-clippy qa-test qa-test-python qa-coverage \
-        qa-mutants qa-semver \
+        qa-fmt qa-audit qa-unwrap qa-publish-graph qa-clippy qa-test qa-test-python \
+        qa-test-python-node qa-coverage qa-mutants qa-semver \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
         qa-verify-release
 
@@ -173,6 +173,14 @@ qa-test-python:
 		-p dora-operator-api-python \
 		-p dora-ros2-bridge-python \
 		-p dora-runtime-python
+
+# Python-level unit tests of the `dora` package under apis/python/node/tests/
+# (the `dora` compat shim, the `dora.builder` API, and `dora.testing.MockNode`).
+# These exercise the *installed* package, so they need `dora-rs` importable —
+# run inside a venv that has `uv pip install -e apis/python/node` (plus pytest).
+# CI runs this in ci.yml's `contract-tests` job, which sets that venv up (#3305).
+qa-test-python-node:
+	@python -m pytest apis/python/node/tests/
 
 qa-coverage:
 	@scripts/qa/coverage.sh
