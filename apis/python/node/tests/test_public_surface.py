@@ -24,16 +24,23 @@ FROZEN_MODULE_NAMES = frozenset(
 )
 
 # Present, but explicitly outside the guarantee (`docs/api-rust.md`, "Shipped,
-# but outside the guarantee"), so they may change in a minor. Optional rather
-# than required: `start_runtime` is imported conditionally, and the `Ros2*`
-# names come from the ros2-bridge feature.
+# but outside the guarantee"), so they may change in a minor. Listing a name
+# here does not assert that it is present: `start_runtime` is imported
+# conditionally, and the submodules below only become attributes once
+# something imports them.
 EXEMPT_MODULE_NAMES = frozenset(
     {
         # Operator runtime + CLI entry points re-exported for convenience.
         "build",
         "run",
         "start_runtime",
-        # ros2-bridge; the `ros2:` surface may change at any point.
+        # ros2-bridge; the `ros2:` surface may change at any point. Every class
+        # `create_dora_ros2_bridge_module` registers has to appear here:
+        # `dora-ros2-bridge-python` is a non-optional dependency and the
+        # registration is unconditional, so all of them are always compiled
+        # into the native module — no cargo feature gates them.
+        "Ros2ActionClient",
+        "Ros2ActionServer",
         "Ros2Context",
         "Ros2Durability",
         "Ros2Liveliness",
@@ -41,8 +48,21 @@ EXEMPT_MODULE_NAMES = frozenset(
         "Ros2NodeOptions",
         "Ros2Publisher",
         "Ros2QosPolicies",
+        "Ros2ServiceClient",
+        "Ros2ServiceServer",
         "Ros2Subscription",
         "Ros2Topic",
+        "Ros2Transport",
+        # Pure-Python submodules. `docs/api-rust.md` places neither in a tier,
+        # so neither is frozen — nothing joins the guarantee by omission.
+        #
+        # They are listed because a submodule becomes an attribute of its
+        # parent package the moment anything imports it, so `dir(dora)` grows
+        # `builder` as soon as `tests/test_builder.py` has run in the same
+        # session. Without these two entries this file would pass on its own
+        # and fail under `pytest tests/`.
+        "builder",
+        "testing",
         # The native extension module. Every Python package exposes its
         # submodules as attributes; this is the language, not an API decision.
         "dora",
@@ -79,6 +99,31 @@ FROZEN_CLASS_MEMBERS = {
         },
     ),
     "DoraStatus": frozenset({"CONTINUE", "STOP", "STOP_ALL"}),
+}
+
+# Members of the frozen classes that are deliberately *not* frozen. Same rule
+# as `EXEMPT_MODULE_NAMES`, and the same reason for spelling them out: a method
+# on a covered class is the easiest thing to freeze by accident.
+EXEMPT_CLASS_MEMBERS = {
+    "Node": frozenset(
+        {
+            # The generic extension seam. `docs/api-rust.md` exempts what rides
+            # on it ("tensor-pool | Behind a generic extension seam, opt-in")
+            # but never places the seam itself in a tier, so it is not covered.
+            "drain_dropped_extension_keys",
+            "extension_drop",
+            "extension_load",
+            "extension_store",
+            # tensor-pool proper: `#[cfg(feature = "tensor-pool")]`, off by
+            # default, so absent from a standard wheel. Listed so that a build
+            # with the feature enabled still passes.
+            "free_tensor_pool",
+            "read_tensor_pool",
+            "register_tensor_pool",
+            "write_tensor_pool",
+        },
+    ),
+    "DoraStatus": frozenset(),
 }
 
 
@@ -119,6 +164,28 @@ def test_frozen_class_members_are_all_present():
         assert not missing, (
             f"`dora.{cls_name}` lost {sorted(missing)}. These are frozen for "
             f"the life of 1.x — removing or renaming one requires a 2.0."
+        )
+
+
+def test_no_unclassified_class_members_appear():
+    """A new method on a frozen class needs the same deliberate choice.
+
+    Without this, the module half of the surface forces a decision and the
+    class half — the half users actually call — does not, so a method could
+    reach 1.0 with its status never having been considered.
+    """
+    assert FROZEN_CLASS_MEMBERS.keys() == EXEMPT_CLASS_MEMBERS.keys(), (
+        "Every class with a frozen member list needs an exempt one too (it "
+        "may be empty), so that new members are always classified."
+    )
+    for cls_name, frozen in FROZEN_CLASS_MEMBERS.items():
+        cls = getattr(dora, cls_name)
+        unclassified = public_names(cls) - frozen - EXEMPT_CLASS_MEMBERS[cls_name]
+        assert not unclassified, (
+            f"`dora.{cls_name}` exposes {sorted(unclassified)}, which this "
+            f"test does not classify. Add each to FROZEN_CLASS_MEMBERS "
+            f"(covered by the 1.0 guarantee) or EXEMPT_CLASS_MEMBERS (may "
+            f"change in a minor)."
         )
 
 
