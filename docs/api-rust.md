@@ -771,11 +771,36 @@ judgement call.
 | Crate | Why |
 |---|---|
 | `dora-node-api` | The API nodes are written against |
+| `dora-node-api-c` | The C node API and its checked-in header, `apis/c/node/node_api.h` |
+| `dora-node-api-cxx` | The C++ node API, via the `cxx` bridge |
+| `dora-node-api-python` | The Python node API, shipped as the `dora-rs` wheel |
 | `dora-arrow-convert` | `DoraArray` / `IntoArrow` appear in `dora-node-api` signatures |
 | `dora-message` | The wire protocol; a break here desynchronizes deployed components |
 | `dora-cli` | The `dora` command, its subcommands, and the dataflow YAML schema |
 
-Breaking any of these requires a 2.0.
+Breaking any of these requires a 2.0. The four node APIs are covered on equal
+terms: dora advertises Rust, C, C++ and Python as first-class node languages,
+so freezing only the Rust one would leave the majority of the user-facing
+surface unstated.
+
+Two consequences worth naming, because the covered tier is what a 2.0 is
+measured against:
+
+- **`dora-node-api-python` is `publish = false`.** It reaches users as the
+  `dora-rs` wheel on PyPI rather than as a crate, so the guarantee attaches to
+  the Python module surface — the names importable from `dora` — not to a
+  crates.io API. The CUDA helpers moved out to `dora_tensor_pool` in #3249,
+  which keeps the exempt tensor-pool surface out of the frozen module.
+- **The C and C++ APIs name Arrow types across the FFI boundary** and both
+  depend on `dora-node-api` with the `arrow-v59` feature, while the Arrow major
+  version is itself outside the guarantee (below). These do not conflict: what
+  crosses the boundary is the Arrow **C Data Interface** (`ArrowArray` /
+  `ArrowSchema`), a stable ABI specified by Arrow independently of any arrow-rs
+  release. The frozen contract is the C header and that ABI; the arrow-rs major
+  version behind it stays exempt.
+
+`dora-node-api-cxx`'s optional `ros2-bridge` feature is not covered — it is
+off by default and pulls in the exempt `dora-ros2-bridge`.
 
 ### Shipped, but outside the guarantee
 
@@ -786,7 +811,7 @@ dataflow or a `Cargo.toml`.
 | Surface | Signal |
 |---|---|
 | `hub:` descriptor field, `dora hub`, `dora-hub-client` | `dora build` / `dora validate` print a warning on every use |
-| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-*` | Documented experimental; `StopAll` is not implemented |
+| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-shared-lib`, `dora-runtime-python` | Documented experimental; `StopAll` is not implemented |
 | `ros2:` descriptor field, `dora-ros2-bridge`(+`-msg-gen`, `-arrow`) | Crate docs state it may change at any point |
 | `dora-mavlink2-bridge`, `dora-mavlink2-bridge-node` | Domain-specific protocol bridge |
 | tensor-pool | Behind a generic extension seam, opt-in (#3152) |
@@ -812,8 +837,11 @@ because cargo requires every dependency of a published crate to be published
 — not because they are an API. Depending on one directly is unsupported.
 
 `dora-core`, `dora-daemon`, `dora-coordinator`, `dora-coordinator-store`,
-`dora-recording`, `dora-download`, `dora-log-utils`, `dora-tracing`,
-`dora-metrics`, `dora-runtime-api`.
+`dora-recording`, `dora-download`, `dora-tracing`, `dora-metrics`,
+`dora-runtime-api`.
+
+`dora-log-utils` is not in this list: it is `publish = false` and no published
+crate depends on it, so it never reaches crates.io at all.
 
 ### How this is enforced
 
