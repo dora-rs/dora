@@ -103,9 +103,14 @@ pub fn expand_modules_with_boundaries(
         });
     }
 
-    let canonical_base = base_dir
-        .canonicalize()
+    let canonical_base = dunce::canonicalize(base_dir)
         .with_context(|| format!("failed to resolve base directory: {}", base_dir.display()))?;
+    // Lexical project root: used by the module containment check so that a
+    // symlinked `modules/` directory inside the project root is accepted,
+    // consistent with how node path confinement works (#3247).
+    let absolute_base = dunce::simplified(&std::path::absolute(base_dir)
+        .with_context(|| format!("failed to make base_dir absolute: {}", base_dir.display()))?)
+        .to_path_buf();
     let mut seen = HashSet::new();
     let mut flat_nodes = Vec::new();
     let mut output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
@@ -116,7 +121,7 @@ pub fn expand_modules_with_boundaries(
             // Field validation happens inside `expand_module_node`, so top-level
             // and nested module nodes go through the same whitelist.
             let (mut expanded, omap) =
-                expand_module_node(node, base_dir, &canonical_base, 0, &mut seen)?;
+                expand_module_node(node, base_dir, &canonical_base, &absolute_base, 0, &mut seen)?;
             // Propagate the module node's own `build` to each expanded leaf node,
             // mirroring how a nested module node's build is propagated in Phase 2
             // of `expand_module_node`. `check_module` accepts `build` for exactly
@@ -576,6 +581,7 @@ fn expand_module_node(
     node: &Node,
     base_dir: &Path,
     canonical_base: &Path,
+    absolute_project_root: &Path,
     depth: u8,
     seen: &mut HashSet<PathBuf>,
 ) -> eyre::Result<(Vec<Node>, ModuleOutputMap)> {
@@ -609,11 +615,16 @@ fn expand_module_node(
     }
 
     let module_path = base_dir.join(module_path_str);
-    let canonical = module_path
-        .canonicalize()
+    let canonical = dunce::canonicalize(&module_path)
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
 
-    if !canonical.starts_with(canonical_base) {
+    // Use a lexical absolute path for the containment check so that a
+    // symlinked `modules/` directory inside the project root is accepted,
+    // consistent with how node path confinement works (#3247).
+    let absolute_module_buf = std::path::absolute(&module_path)
+        .with_context(|| format!("failed to make module path absolute: {}", module_path.display()))?;
+    let absolute_module = dunce::simplified(&absolute_module_buf);
+    if !absolute_module.starts_with(absolute_project_root) {
         bail!(
             "module path `{}` escapes the project directory (node `{}`)",
             module_path_str,
@@ -778,7 +789,7 @@ fn expand_module_node(
             let nested_id = inner_node.id.to_string();
             let accumulated_build = inner_node.build.clone();
             let (mut nested, nested_omap) =
-                expand_module_node(&inner_node, module_dir, canonical_base, depth + 1, seen)?;
+                expand_module_node(&inner_node, module_dir, canonical_base, absolute_project_root, depth + 1, seen)?;
             // Propagate the outer module's accumulated build to each nested leaf node,
             // mirroring how `deploy` is propagated through recursion.
             if let Some(ref outer_build) = accumulated_build {
@@ -3644,6 +3655,51 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn expand_modules_accepts_symlinked_module_dir() {
+        let tmp = TempDir::new().unwrap();
+        let shared_dir = tmp.path().join("shared_modules");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        write_file(
+            &shared_dir,
+            "shared.yml",
+            r#"
+module:
+  name: shared
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let symlink_path = project_dir.join("modules");
+        std::os::unix::fs::symlink(&shared_dir, &symlink_path).unwrap();
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/shared.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.as_str(), "m/worker");
     }
 
     #[test]
