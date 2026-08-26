@@ -8,6 +8,13 @@ readme.workspace = true
 description.workspace = true
 license.workspace = true
 repository.workspace = true
+publish = false  # PyO3 glue, not a crates.io API -- see below
+# Links `pyo3`, and `pyo3-ffi` declares `links = "python"`, so cargo refuses
+# two pyo3 versions in one build graph. Publishing this crate would therefore
+# force any downstream that builds its own PyO3 extension onto dora's exact
+# pyo3 minor, and freeze that minor for the life of 1.x. It reaches users
+# compiled into the `dora-rs` wheel instead, where the pyo3 version is an
+# implementation detail. Nothing published depends on it.
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

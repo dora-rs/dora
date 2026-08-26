@@ -793,6 +793,16 @@ dataflow or a `Cargo.toml`.
 | `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
 | The Arrow major version | See the Arrow version policy above |
 
+Two of those crates are not on crates.io at all: `dora-operator-api-python`
+and `dora-runtime-python` are `publish = false`, and reach users compiled into
+the `dora-rs` wheel. Both link `pyo3`, and `pyo3-ffi` declares
+`links = "python"`, so cargo refuses two pyo3 versions in a single build graph.
+Published, they would force anyone building their own PyO3 extension onto
+dora's exact pyo3 minor and freeze that minor for the life of 1.x — for a
+delivery channel nobody uses, since writing a Python operator needs no Rust
+dependency. Unpublished, dora's pyo3 version stays an implementation detail
+that can move in a minor.
+
 ### Internal
 
 Crates that exist only to build the above. They are published to crates.io
