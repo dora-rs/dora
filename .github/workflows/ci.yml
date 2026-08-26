@@ -212,6 +212,27 @@ jobs:
         run: |
           cargo check -p dora-node-api-c
           cargo check -p dora-node-api-cxx
+      # Ensure published crates do not depend on unpublished crates (#3304).
+      - name: Check no published crate depends on an unpublished crate
+        run: |
+          cargo metadata --format-version 1 --no-deps | python3 -c "
+          import json, sys
+          m = json.load(sys.stdin)
+          hits = []
+          for p in m['packages']:
+              if p.get('publish') == []:
+                  continue
+              for d in p['dependencies']:
+                  dep = next((q for q in m['packages'] if q['name'] == d['name']), None)
+                  if dep and dep.get('publish') == [] and d['kind'] is None:
+                      hits.append(f\"{p['name']} -> {d['name']}\")
+          if hits:
+              print('ERROR: published crate(s) depend on unpublished crate(s):')
+              for h in hits:
+                  print(' ', h)
+              sys.exit(1)
+          print('OK: no published crate depends on an unpublished one')
+          "
 
   test:
     # Linux-only on PR CI (#1716). macOS + Windows coverage runs in nightly.

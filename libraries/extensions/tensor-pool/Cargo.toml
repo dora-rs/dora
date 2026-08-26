@@ -8,7 +8,6 @@ readme.workspace = true
 description = "Daemon-side helper for the tensor-pool extension: reclaims orphaned /dev/shm segments. Not covered by dora's 1.0 compatibility guarantees — see libraries/extensions/tensor-pool/README.md."
 license.workspace = true
 repository.workspace = true
-publish = false
 
 [features]
 # The daemon half: mirror segments, the direct-TCP data plane, and the

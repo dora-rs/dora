@@ -83,6 +83,7 @@ jobs:
             dora-node-api-c
             dora-operator-api-c
             dora-coordinator
+            dora-tensor-pool
             dora-daemon
             dora-runtime-api
             dora-runtime-shared-lib
