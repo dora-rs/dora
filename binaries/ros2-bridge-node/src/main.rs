@@ -180,7 +180,8 @@ fn run_zenoh_topic_mode(
                 publishers.push(ZenohTopicPublisher {
                     input: topic
                         .input
-                        .unwrap_or_else(|| topic.topic.trim_start_matches('/').replace('/', "_")),
+                        .clone()
+                        .unwrap_or_else(|| topic.derived_port_id()),
                     type_info,
                     publisher,
                 });
@@ -203,7 +204,8 @@ fn run_zenoh_topic_mode(
                 subscribers.push((
                     topic
                         .output
-                        .unwrap_or_else(|| topic.topic.trim_start_matches('/').replace('/', "_")),
+                        .clone()
+                        .unwrap_or_else(|| topic.derived_port_id()),
                     subscription,
                 ));
             }
@@ -1052,9 +1054,10 @@ fn run_topic_mode(
 
         match &topic_config.direction {
             Ros2Direction::Subscribe => {
-                let output_id = topic_config.output.clone().unwrap_or_else(|| {
-                    topic_config.topic.trim_start_matches('/').replace('/', "_")
-                });
+                let output_id = topic_config
+                    .output
+                    .clone()
+                    .unwrap_or_else(|| topic_config.derived_port_id());
                 let subscription: ros2_client::Subscription<ArrayData> = ros_node
                     .create_subscription(&ros_topic, None)
                     .context("failed to create ROS2 subscription")?;
@@ -1068,9 +1071,10 @@ fn run_topic_mode(
                 ));
             }
             Ros2Direction::Publish => {
-                let input_id = topic_config.input.clone().unwrap_or_else(|| {
-                    topic_config.topic.trim_start_matches('/').replace('/', "_")
-                });
+                let input_id = topic_config
+                    .input
+                    .clone()
+                    .unwrap_or_else(|| topic_config.derived_port_id());
                 let publisher = ros_node
                     .create_publisher::<TypedValue<'static>>(&ros_topic, None)
                     .context("failed to create ROS2 publisher")?;
