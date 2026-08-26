@@ -109,12 +109,13 @@ jobs:
           publish_if_not_exists dora-coordinator
           publish_if_not_exists dora-tensor-pool
           publish_if_not_exists dora-daemon
-          publish_if_not_exists dora-operator-api-python
           # The former `dora-runtime`, split per language. `dora-cli` depends on
           # `dora-runtime-shared-lib` (→ `-api`), so both must land first.
+          # The third split, `dora-runtime-python`, is absent on purpose, as is
+          # `dora-operator-api-python`: both went `publish = false` in #3303 and
+          # reach users compiled into the `dora-rs` wheel.
           publish_if_not_exists dora-runtime-api
           publish_if_not_exists dora-runtime-shared-lib
-          publish_if_not_exists dora-runtime-python
           publish_if_not_exists dora-cli
 
           # Publish ROS2 bridge (before the cxx APIs, which optionally
