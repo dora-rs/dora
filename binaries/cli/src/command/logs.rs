@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{Read, Seek, Write},
+    io::{Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -369,7 +369,7 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
             // on the next poll — it must never abort the follow session, which
             // the daemon's rotation (rename + delete) would otherwise do.
             let new_pos = match handle {
-                Some(file) => match read_appended_log_lines(file, plan.resume) {
+                Some(file) => match read_appended_log_lines(file, &plan.path, plan.resume) {
                     Ok((msgs, new_pos)) => {
                         new_messages.extend(msgs);
                         new_pos
@@ -666,7 +666,11 @@ fn retain_unlisted_state(
 /// the (racily larger) file size, so nothing is re-read and duplicated on the
 /// next poll. Bytes are decoded lossily so a read that ends inside a multibyte
 /// UTF-8 sequence cannot abort the follow session.
-fn read_appended_log_lines(file: &mut std::fs::File, pos: u64) -> Result<(Vec<LogMessage>, u64)> {
+fn read_appended_log_lines(
+    file: &mut std::fs::File,
+    path: &Path,
+    pos: u64,
+) -> Result<(Vec<LogMessage>, u64)> {
     file.seek(std::io::SeekFrom::Start(pos))?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
@@ -675,7 +679,10 @@ fn read_appended_log_lines(file: &mut std::fs::File, pos: u64) -> Result<(Vec<Lo
         None => return Ok((Vec::new(), pos)),
     };
     let text = String::from_utf8_lossy(&buf[..consumed]);
-    let messages = text.lines().filter_map(parse_jsonl_line).collect();
+    // Route through the same per-file parser as the initial read so raw lines
+    // appended to a legacy `.txt` file are surfaced rather than silently
+    // dropped (they parse as `None` under `parse_jsonl_line`).
+    let messages = parse_log_content(path, &text);
     Ok((messages, pos + consumed as u64))
 }
 
@@ -808,7 +815,7 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
 fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
     let content = std::fs::read_to_string(path)
         .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    parse_log_content(path, &content)
+    Ok(parse_log_content(path, &content))
 }
 
 /// Read a log file for follow mode: the messages to print plus the follow state
@@ -840,7 +847,7 @@ fn read_log_file_tracked(path: &Path) -> Result<(Vec<LogMessage>, FollowedFile)>
     // Only the newline-terminated prefix is parsed; a partial trailing line is
     // left for a later poll. Decoding lossily cannot abort here.
     let content = String::from_utf8_lossy(&bytes[..consumed]);
-    let messages = parse_log_content(path, &content)?;
+    let messages = parse_log_content(path, &content);
     Ok((
         messages,
         FollowedFile {
@@ -851,39 +858,65 @@ fn read_log_file_tracked(path: &Path) -> Result<(Vec<LogMessage>, FollowedFile)>
     ))
 }
 
-/// Parse log file `content` into messages. Legacy `.txt` files holding no
-/// parseable JSON are raw text and are written straight to stdout instead.
-fn parse_log_content(path: &Path, content: &str) -> Result<Vec<LogMessage>> {
-    let is_jsonl = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e == "jsonl")
-        .unwrap_or(false);
+/// Whether `path` is the structured `.jsonl` format the daemon writes today,
+/// as opposed to a legacy raw-text `.txt` file. A non-JSON line in a `.jsonl`
+/// file is a corrupt record and is skipped; a non-JSON line in a `.txt` file is
+/// real console output and is preserved as a raw [`LogMessage`].
+fn is_jsonl_log_file(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+}
 
-    if is_jsonl {
-        Ok(content
+/// Wrap a raw (non-JSON) log line as a synthetic [`LogMessage`] so it flows
+/// through the same filter → sort → print pipeline as structured logs, instead
+/// of being written to stdout verbatim (which bypassed `--grep`/`--tail`/
+/// `--since`/`--until` and printed out of timestamp order).
+///
+/// Raw lines carry no timestamp or level, so they follow a defined policy: the
+/// `Stdout` channel — untyped console output, which passes the default level
+/// filter — and the Unix epoch as timestamp, so they sort ahead of timestamped
+/// records and are treated as the oldest possible line by `--since`/`--until`.
+fn raw_text_log_message(line: &str) -> LogMessage {
+    LogMessage {
+        build_id: None,
+        dataflow_id: None,
+        node_id: None,
+        daemon_id: None,
+        level: dora_message::common::LogLevelOrStdout::Stdout,
+        target: None,
+        module_path: None,
+        file: None,
+        line: None,
+        message: line.to_string(),
+        // Unix epoch. `from_timestamp_nanos` is infallible, so this keeps the
+        // production unwrap/expect budget clean.
+        timestamp: DateTime::from_timestamp_nanos(0),
+        fields: None,
+    }
+}
+
+/// Parse one line of a legacy `.txt` log file: a structured record if it parses
+/// as JSON, otherwise the raw line wrapped via [`raw_text_log_message`]. Blank
+/// lines yield `None`, matching the `.jsonl` path.
+fn parse_txt_log_line(line: &str) -> Option<LogMessage> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    Some(parse_jsonl_line(line).unwrap_or_else(|| raw_text_log_message(line)))
+}
+
+/// Parse log file `content` into messages. `.jsonl` files keep only structured
+/// records; legacy `.txt` files preserve raw (non-JSON) lines as synthetic
+/// [`LogMessage`]s so they filter and sort alongside structured logs (including
+/// the raw lines of a mixed-content file, which used to be dropped).
+fn parse_log_content(path: &Path, content: &str) -> Vec<LogMessage> {
+    if is_jsonl_log_file(path) {
+        content
             .lines()
             .filter(|line| !line.trim().is_empty())
             .filter_map(parse_jsonl_line)
-            .collect())
+            .collect()
     } else {
-        // Legacy .txt files: try to parse each line as JSON (LogMessage)
-        // If that fails, treat as raw text
-        let messages: Vec<LogMessage> = content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(parse_jsonl_line)
-            .collect();
-
-        if messages.is_empty() {
-            // Raw text file, just print it directly
-            std::io::stdout()
-                .write_all(content.as_bytes())
-                .wrap_err("failed to write to stdout")?;
-            Ok(Vec::new())
-        } else {
-            Ok(messages)
-        }
+        content.lines().filter_map(parse_txt_log_line).collect()
     }
 }
 
@@ -1245,6 +1278,7 @@ pub fn logs(
 mod tests {
     use super::*;
     use dora_message::common::LogLevelOrStdout;
+    use std::io::Write;
     use std::path::PathBuf;
 
     fn make_msg(
@@ -1538,7 +1572,7 @@ mod tests {
 
     fn read_appended_at(path: &Path, pos: u64) -> Result<(Vec<LogMessage>, u64)> {
         let mut file = std::fs::File::open(path)?;
-        read_appended_log_lines(&mut file, pos)
+        read_appended_log_lines(&mut file, path, pos)
     }
 
     fn resume_for<'a>(plans: &'a [FollowPlan], path: &str) -> &'a FollowPlan {
@@ -1932,6 +1966,92 @@ mod tests {
         assert_eq!(msgs[0].message, "ok");
         // The dangling partial byte is left unconsumed.
         assert_eq!(new_pos, complete.len() as u64);
+    }
+
+    // --- legacy raw-text (.txt) handling (#3312) ---
+
+    #[test]
+    fn parse_txt_wraps_raw_lines_as_stdout_messages() {
+        // A pure raw-text `.txt` file: every line becomes a synthetic message
+        // (Stdout channel, epoch timestamp) instead of being dumped verbatim, so
+        // it can flow through the filter/sort/print pipeline.
+        let path = PathBuf::from("log_node.txt");
+        let msgs = parse_log_content(&path, "hello\nworld\n");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].message, "hello");
+        assert_eq!(msgs[1].message, "world");
+        assert!(msgs.iter().all(|m| m.level == LogLevelOrStdout::Stdout));
+        assert_eq!(msgs[0].timestamp, DateTime::from_timestamp_nanos(0));
+    }
+
+    #[test]
+    fn parse_txt_preserves_mixed_json_and_raw_lines() {
+        // Regression: a mixed-content `.txt` used to return only the JSON lines
+        // and silently drop the raw ones. Both must survive now.
+        let structured = serde_json::to_string(&msg_with_level("json", log::Level::Error, 5))
+            .expect("serialize LogMessage");
+        let content = format!("raw before\n{structured}\nraw after\n");
+        let msgs = parse_log_content(&PathBuf::from("log_node.txt"), &content);
+
+        let rendered: Vec<&str> = msgs.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(rendered, vec!["raw before", "json", "raw after"]);
+        // The structured line keeps its parsed level; the raw ones are Stdout.
+        assert_eq!(msgs[0].level, LogLevelOrStdout::Stdout);
+        assert_eq!(msgs[1].level, LogLevelOrStdout::LogLevel(log::Level::Error));
+        assert_eq!(msgs[2].level, LogLevelOrStdout::Stdout);
+    }
+
+    #[test]
+    fn parse_jsonl_skips_non_json_lines() {
+        // In a `.jsonl` file a non-JSON line is a corrupt record, not raw text,
+        // so it is skipped rather than wrapped.
+        let structured = serde_json::to_string(&msg_with_level("ok", log::Level::Info, 1))
+            .expect("serialize LogMessage");
+        let msgs = parse_log_content(
+            &PathBuf::from("log_node.jsonl"),
+            &format!("{structured}\nnot json\n"),
+        );
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message, "ok");
+    }
+
+    #[test]
+    fn raw_txt_lines_honor_grep_and_tail() {
+        // The core bug: raw `.txt` content bypassed every client-side filter.
+        // Routed through `filter_and_tail`, `--grep` and `--tail` now apply.
+        let msgs = parse_log_content(&PathBuf::from("log_node.txt"), "alpha\nbeta\nalpha again\n");
+        let config = LogOutputConfig::default();
+
+        let grepped = filter_and_tail(
+            msgs.clone(),
+            None,
+            None,
+            Some("alpha"),
+            &config,
+            None,
+            Utc::now(),
+        );
+        let grepped_msgs: Vec<&str> = grepped.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(grepped_msgs, vec!["alpha", "alpha again"]);
+
+        let tailed = filter_and_tail(msgs, None, None, None, &config, Some(1), Utc::now());
+        let tailed_msgs: Vec<&str> = tailed.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(tailed_msgs, vec!["alpha again"]);
+    }
+
+    #[test]
+    fn read_appended_txt_surfaces_raw_lines() {
+        use tempfile::tempdir;
+
+        // Follow mode: raw lines appended to a `.txt` file must be surfaced, not
+        // dropped (they parse as `None` under `parse_jsonl_line`).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log_node.txt");
+        std::fs::write(&path, "line one\nline two\n").unwrap();
+
+        let (msgs, _pos) = read_appended_at(&path, 0).unwrap();
+        let rendered: Vec<&str> = msgs.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(rendered, vec!["line one", "line two"]);
     }
 
     // --- level filter is applied before tail ---
