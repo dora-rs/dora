@@ -62,9 +62,12 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
-    let working_dir = parent
-        .canonicalize()
-        .with_context(|| format!("failed to resolve working directory for `{}`", dataflow.display()))?;
+    let working_dir = parent.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve working directory for `{}`",
+            dataflow.display()
+        )
+    })?;
 
     println!("Validating {}...", dataflow.display());
 
