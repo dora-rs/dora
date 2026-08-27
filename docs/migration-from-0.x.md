@@ -1,10 +1,8 @@
 # Migration Guide: dora 0.x → 1.0
 
-> **Status (2026-04-16):** minimum-viable scaffold. The full migration guide with per-API before/after examples is tracked as follow-up work.
+> **Status (2026-08-27):** complete for the 1.0 release. Every language API (Rust, Python, C, C++) and the descriptor surface now have a section with before/after examples. What is deliberately not covered is listed under [Still to do](#still-to-do-this-guide).
 >
 > Previous filename: `dora-compatibility.md` (which documented a fork→upstream compat layer that is obsolete under the tree-takeover consolidation strategy).
->
-> **Cross-reference caveat:** the audit evidence files named below (`phase--1-audit-2026-04-16.md`, `audit-2026-03-21-closure.md`, `ownership-verification-2026-04-16.md`, `downstream-user-assessment-2026-04-16.md`) currently live on the `docs/consolidation-plan-review` branch (PR #286) and are not yet on `main`. They land with that PR. Filenames are written as plain text below so no link 404s if the merge order flips.
 
 ## What changed
 
@@ -12,28 +10,35 @@ dora 1.0 is the consolidation of the fork tree into the upstream `dora-rs/dora` 
 
 **Headline:** 1.0 is a **hard break** from 0.x. You cannot mix-and-match 0.x and 1.0 components in a running cluster. Plan a full-cluster restart for the upgrade.
 
+The 0.x tree is preserved under the `v0.x-final` tag. It shares no history with 1.0 — `git merge-base main v0.x-final` has no answer — so "removed in 1.0" below means "present at `v0.x-final`, absent on `main`", not "deleted by a commit you can bisect to".
+
 ## Before you upgrade — know the breaking changes
 
 | Surface | 0.x behaviour | 1.0 behaviour | Evidence |
 |---|---|---|---|
-| Wire protocol (CLI ↔ coordinator) | tarpc over TCP with JSON framing | WebSocket with new message shapes | `phase--1-audit-2026-04-16.md` §4 (lands with PR #286) |
-| Message-enum variants (`NodeEvent`, `DaemonCommunication`) | 0.x variant order | New variants inserted (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`, `Shmem`) — bincode tags shifted | `phase--1-audit-2026-04-16.md` §3 (lands with PR #286) |
+| Wire protocol (CLI ↔ coordinator) | tarpc over TCP with JSON framing | WebSocket with new message shapes | [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) §4 |
+| Wire encoding | bincode | postcard | `libraries/message/Cargo.toml` |
+| Message-enum variants (`NodeEvent`, `DaemonCommunication`) | 0.x variant order | New variants inserted (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`, `Shmem`) — positional tags shifted | [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) §3 |
+| Wire-protocol enums in `dora-message` | exhaustively matchable | `#[non_exhaustive]` — a `_ =>` arm is required (#3151) | `libraries/message/src/` |
 | CLI handshake | Optional `get_version()` RPC | Mandatory `ControlRequest::Hello` with semver check | `libraries/message/src/cli_to_coordinator.rs` |
+| Topic data channel | subscription carried no encoding version | `protocol_version` in both directions; mismatch is refused (#3160) | `docs/websocket-topic-data-channel.md` |
 | Recording file extension | `.adorec` | `.drec` (magic bytes were already `DORAREC\x00` / `DORAEND\x00`) | `libraries/recording/src/lib.rs` |
 | Request-reply communication layer | `libraries/communication-layer/request-reply/` | Replaced by `send_service_request()` / `send_service_response()` helpers and service/action patterns | [`docs/patterns.md`](patterns.md) |
 | Auth | Query-parameter token | Bearer header token, constant-time comparison | `libraries/message/src/auth.rs` |
+| Python interpreter floor | `requires-python = ">=3.8"` | `requires-python = ">=3.11"` (abi3-py311) | `apis/python/node/pyproject.toml` |
 
-Additional fixes and hardening items from the 2026-03-21 audit are closed in 1.0; see `audit-2026-03-21-closure.md` (lands with PR #286) for the full per-finding record.
+Additional fixes and hardening items from the 2026-03-21 audit are closed in 1.0; see [`audit-2026-03-21-closure.md`](audit-2026-03-21-closure.md) for the full per-finding record.
 
 ## Upgrade path
 
 1. **Update `Cargo.toml` dependencies.** Bump `dora-node-api`, `dora-operator-api`, `dora-cli` to `1.0`. The crate names are unchanged; no rename.
 2. **Rebuild every component.** Daemons, coordinators, CLI, and every node/operator binary must be rebuilt against the 1.0 crates. Do not run 0.x binaries against 1.0 daemons.
-3. **Update YAML descriptors if needed.** Most 0.x descriptors work unchanged, but a few fields have new defaults or renames — see [`yaml-spec.md`](yaml-spec.md).
-4. **Rename existing recordings.** `mv capture.adorec capture.drec` — the file format itself is unchanged, only the extension differs.
-5. **Update CLI usage.** Any tooling that pipes files into `dora replay` should use `.drec` going forward. Shell completions and aliases referencing `*.adorec` need updating.
-6. **Coordinate the restart.** In a distributed deployment, bring down all 0.x daemons before starting 1.0 daemons. A fork CLI connecting to an upstream 0.x coordinator (or vice versa) will fail at the TCP handshake with a low-level framing error, not a graceful version-mismatch message.
-7. **If you installed the `adora-rs` PyPI package** (from the fork-era 0.x releases): uninstall it and install `dora-rs` directly. 1.0 is a clean break — `adora-rs` is not republished, so `pip install adora-rs` resolves to the last fork-era 0.x release and will not pull 1.0. Rust users on crates.io are unaffected — the fork never published `adora-*` crates.
+3. **Check your Python version.** 1.0 wheels need CPython 3.11 or later. If you are on 3.8–3.10, upgrade the interpreter before upgrading dora — see [Python API changes](#python-api-changes).
+4. **Update YAML descriptors.** See [Descriptor changes](#descriptor-changes-dataflow-yaml) — several 0.x keys are now rejected by name rather than ignored.
+5. **Rename existing recordings.** `mv capture.adorec capture.drec` — the file format itself is unchanged, only the extension differs.
+6. **Update CLI usage.** Any tooling that pipes files into `dora replay` should use `.drec` going forward. Shell completions and aliases referencing `*.adorec` need updating.
+7. **Coordinate the restart.** In a distributed deployment, bring down all 0.x daemons before starting 1.0 daemons. A fork CLI connecting to an upstream 0.x coordinator (or vice versa) will fail at the TCP handshake with a low-level framing error, not a graceful version-mismatch message.
+8. **If you installed the `adora-rs` PyPI package** (from the fork-era 0.x releases): uninstall it and install `dora-rs` directly. 1.0 is a clean break — `adora-rs` is not republished, so `pip install adora-rs` resolves to the last fork-era 0.x release and will not pull 1.0. Rust users on crates.io are unaffected — the fork never published `adora-*` crates.
 
 ## New features in 1.0
 
@@ -43,11 +48,14 @@ Non-exhaustive; see the full 1.0 release notes for the complete list.
 - Action pattern: goal / feedback / result metadata with cancellation
 - Streaming chunks: `send_stream_chunk()` + `StreamSegment`
 - Structured logging: `node.log()` / `node.log_info()` bridged from Python `logging`
-- Restart awareness: `is_restart()` / `restart_count()`
+- Restart awareness: `is_restart()` / `restart_count()`, plus the `NodeRestarted` and `InputRecovered` events
+- Runtime parameters: `dora param set` / `delete`, surfaced as `ParamUpdate` / `ParamDeleted` events
 - Input health: `InputTracker` / `InputState`
 - Fault-tolerance snapshots + coordinator state catch-up
 - `DoraNodeBuilder` with custom daemon port (upstream PR #1591 compatible)
-- CUDA IPC via ctypes (no more `numba` dependency)
+- Arrow IPC data plane: a self-describing official wire format with a ≤1-copy send path (#2366)
+- Generic extension seam (`ExtensionRequest` / `ExtensionMessage`) so optional transports stay out of the frozen protocol (#3219)
+- CUDA IPC via ctypes, no `numba` dependency — shipped in the `dora_tensor_pool` extension rather than the `dora` package (#3249)
 
 ## Removed in 1.0
 
@@ -65,11 +73,7 @@ Features and code that existed in dora 0.x but are absent from 1.0. If you depen
 
 ## Descriptor changes (dataflow YAML)
 
-These landed during the 1.0 RC window. All are rejected with an error naming
-the offending field rather than being silently ignored — `Descriptor` and
-`Debug` both use `deny_unknown_fields`, which matters: a silently-dropped
-`deploy` block would run every node on the local daemon while the YAML looks
-like it pinned them to machines.
+These landed during the 1.0 RC window. All are rejected with an error naming the offending field rather than being silently ignored — `Descriptor` and `Debug` both use `deny_unknown_fields`, which matters: a silently-dropped `deploy` block would run every node on the local daemon while the YAML looks like it pinned them to machines.
 
 ### `custom:` removed (#3158)
 
@@ -118,20 +122,39 @@ debug:                                   debug:
 
 ### `communication:` block removed (#3158)
 
-Delete it. `_unstable_local` and `_unstable_remote` were single-variant enums
-whose only value was the default, so the block never changed behaviour.
+Delete it. `_unstable_local` and `_unstable_remote` were single-variant enums whose only value was the default, so the block never changed behaviour.
 
 ## Rust API changes
 
+### Fallible methods return `NodeResult`, not `eyre::Result`
+
+Every public `DoraNode` and `EventStream` method changed its error type from `eyre::Report` to the concrete [`NodeError`](../apis/rust/node/src/error.rs) enum, aliased as `NodeResult<T>`.
+
+```rust
+// 0.x
+use dora_node_api::DoraNode;
+fn run() -> eyre::Result<()> {
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+    Ok(())
+}
+
+// 1.0
+use dora_node_api::{DoraNode, NodeResult};
+fn run() -> NodeResult<()> {
+    let (mut node, mut events) = DoraNode::init_from_env()?;
+    Ok(())
+}
+```
+
+Most code does not have to change: `NodeError` implements `std::error::Error + Send + Sync + 'static`, so `?` still converts into `eyre::Result`, `anyhow::Result`, and `Box<dyn Error>`. What breaks is code that *names* the type — an explicit `let r: eyre::Result<()> = node.send_output(...)`, a function whose signature promised `eyre::Report`, or a `match` on the error.
+
+`NodeError` has four variants: `Init`, `Output`, `Data`, and `Internal(eyre::Report)`. The pattern-aware receive helpers (`recv_service_response`, `recv_action_result`) return `PatternError` instead, with `Timeout` / `ServerRestarted` / `StreamEnded` / `StreamError`.
+
 ### Arrow types are no longer in dora's public API (#3213)
 
-The largest change for node authors. `dora-node-api` no longer names an Arrow
-type, so dora can move to a newer Arrow major in a minor release without
-breaking your build. See the Arrow version policy in
-[`api-rust.md`](api-rust.md).
+The largest change for node authors. `dora-node-api` no longer names an Arrow type, so dora can move to a newer Arrow major in a minor release without breaking your build. See the Arrow version policy in [`api-rust.md`](api-rust.md).
 
-**`ArrowData` is now `DoraArray`**, with a private field rather than
-`pub ArrayRef` and no `Deref` to `ArrayRef`:
+**`ArrowData` is now `DoraArray`**, with a private field rather than `pub ArrayRef` and no `Deref` to `ArrayRef`:
 
 ```rust
 // 0.x
@@ -163,8 +186,7 @@ impl IntoArrow for MyType {
 }
 ```
 
-**`pub use arrow;` is now feature-gated and version-suffixed.** A bare `arrow`
-re-export changes meaning silently when dora bumps; `arrow_v59` cannot.
+**`pub use arrow;` is now feature-gated and version-suffixed.** A bare `arrow` re-export changes meaning silently when dora bumps; `arrow_v59` cannot.
 
 ```toml
 # 1.0 — only if you name Arrow types directly
@@ -176,34 +198,235 @@ dora-node-api = { version = "1", features = ["arrow-v59"] }
 use dora_node_api::arrow;           use dora_node_api::arrow_v59 as arrow;
 ```
 
-Most nodes need neither: `value.into_arrow()` and `(&data).try_into()?` never
-name an Arrow type, which is why the `dora new` templates were unchanged.
+If your own crate is pinned to Arrow 58 and you are not ready to move, use `arrow-v58` instead — it costs one Arrow C Data Interface hop (no buffer copy) rather than the free borrow `arrow-v59` gets. The support window and which major is free are documented in [`api-rust.md`](api-rust.md).
+
+Most nodes need neither: `value.into_arrow()` and `(&data).try_into()?` never name an Arrow type, which is why the `dora new` templates were unchanged.
 
 ### `dora_core` re-export narrowed (#3221)
 
-`dora_node_api::dora_core` now exposes only `config::{DataId, NodeId,
-OperatorId}` and `uhlc`. The scaffolded path is unchanged:
+`dora_node_api::dora_core` now exposes only `config::{DataId, NodeId, OperatorId}` and `uhlc`. The scaffolded path is unchanged:
 
 ```rust
 use dora_node_api::dora_core::config::DataId;   // still works
 ```
 
-If you reached `dora_node_api::dora_core::{descriptor, topics, build,
-manifest, types}`, depend on `dora-core` directly instead — but note it is an
-internal crate outside the 1.0 guarantee (see "Stability scope at 1.0" in
-[`api-rust.md`](api-rust.md)).
+If you reached `dora_node_api::dora_core::{descriptor, topics, build, manifest, types}`, depend on `dora-core` directly instead — but note it is an internal crate outside the 1.0 guarantee (see "Stability scope at 1.0" in [`api-rust.md`](api-rust.md)).
+
+### `flume` is no longer re-exported (#3237)
+
+`pub use flume;` and `pub use flume::Receiver;` were pure convenience — no flume type appears in any public signature. Removing them takes flume out of the frozen 1.0 surface, so a future flume major is not a dora breaking change.
+
+```rust
+// 0.x
+use dora_node_api::flume::{self, Receiver};
+
+// 1.0 — add flume to your own Cargo.toml
+use flume::{self, Receiver};
+```
+
+The same reasoning does **not** apply to `uuid`: `pub type DataflowId = uuid::Uuid`, so uuid stays in the frozen surface and is still re-exported as `dora_node_api::uuid`.
+
+### `integration_testing` no longer exposes tokio (#3239)
+
+The module re-exported three tokio items, which would have frozen a tokio major into the 1.0 guarantee. They are now newtypes owned by dora, so tests need no channel dependency of their own and dora can swap channel libraries without a breaking change.
+
+```rust
+// 0.x                                    // 1.0
+unbounded_channel()                       output_channel()
+UnboundedSender<OutputJson>               OutputSender
+UnboundedReceiver<OutputJson>             OutputReceiver
+```
+
+The module itself is *not* feature-gated: `init_from_env` reads `DORA_TEST_WITH_INPUTS` / `DORA_TEST_WRITE_OUTPUTS_TO` / `DORA_TEST_NO_OUTPUT_TIME_OFFSET` on the normal release path, and env-var testing exists precisely to exercise the same executable the dataflow runs.
+
+### `ArrowTypeInfo` left the send path (#2366)
+
+Samples are now self-describing Arrow IPC streams, so the caller no longer supplies type information.
+
+**`send_output_sample` lost its `type_info` parameter:**
+
+```rust
+// 0.x
+node.send_output_sample(output_id, type_info, parameters, Some(sample))?;
+
+// 1.0
+node.send_output_sample(output_id, parameters, Some(sample))?;
+```
+
+**`send_typed_output` is gone entirely.** It existed only to pair `ArrowTypeInfo` with a fill closure. Use `send_output` (which encodes for you), or `send_output_raw` if you need the closure:
+
+```rust
+// 0.x
+node.send_typed_output(output_id, type_info, parameters, len, |buf| { ... })?;
+
+// 1.0
+node.send_output_raw(output_id, parameters, len, |buf| { ... })?;
+```
+
+`send_output`, `send_output_raw` and `send_output_bytes` are otherwise unchanged apart from the `NodeResult` return type.
+
+**`arrow_utils` is now the IPC codec.** The 0.x helpers `copy_array_into_sample`, `required_data_size`, `into_arrow_array` and `buffer_into_arrow_array` are gone; the module now offers `encode_arrow_ipc`, `decode_arrow_ipc` and `decode_arrow_ipc_zero_copy`. If you were hand-rolling the buffer layout, call `send_output` or `DoraNode::encode_arrow` instead.
+
+### Wire-protocol enums are `#[non_exhaustive]` (#3151)
+
+`DaemonRequest`, `DaemonReply`, `InterDaemonEvent`, `CoordinatorRequest` and `DaemonEvent` on the published `dora-message` crate now carry `#[non_exhaustive]`, so future variant additions are not semver-major. Exhaustive matches no longer compile.
+
+```rust
+// 0.x
+match request {
+    DaemonRequest::Subscribe => { ... }
+    DaemonRequest::SendMessage { .. } => { ... }
+    // ...every variant listed
+}
+
+// 1.0 — add a fallback arm
+match request {
+    DaemonRequest::Subscribe => { ... }
+    DaemonRequest::SendMessage { .. } => { ... }
+    _ => { /* unknown request from a newer peer */ }
+}
+```
+
+Pick the fallback to match the role: the coordinator warns and continues (a newer daemon must not be able to tear down its connection), the daemon replies with an explicit error (so a newer node fails loudly instead of hanging), and read-only observability paths skip.
+
+`dora_node_api::Event` was already `#[non_exhaustive]` in 0.x, so the four new variants (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`) do not break existing matches.
+
+### Pool and pinned-memory requests replaced by the extension seam (#3219)
+
+Naming a protocol after one transport would freeze that transport's architecture into the 1.0 surface. Three groups of variants collapsed onto opaque carriers:
+
+```rust
+InterDaemonEvent::ExtensionMessage { dataflow_id, namespace, target_machine, payload }
+DaemonRequest::ExtensionRequest    { namespace, payload }
+DaemonReply::ExtensionReply        { payload }
+```
+
+Also removed: `DaemonRequest::RegisterPinnedMemory`, `DaemonRequest::ReadPinnedMemory`, `DaemonReply::PinnedMemoryMetadata`, and the two `DoraNode` methods that fronted them. `RegisterPinnedMemory` was never sent by any node-API method and never dispatched; `read_pinned_memory` had no callers and no daemon arm, so it could only ever come back as "unsupported request from node".
+
+## Python API changes
+
+### CPython 3.11 is the floor (was 3.8)
+
+`requires-python` moved from `>=3.8` to `>=3.11`. Wheels are built `abi3-py311`, so one wheel covers every later CPython without waiting for a dora release — 3.11 is a floor dora 1.x will not raise, not a version it is pinned to.
+
+Free-threaded builds (`python3.13t`, `python3.14t`) are **not** supported: abi3 does not cover them and no wheels are published. See the [Python version policy](api-rust.md#python-version-policy) for the full guarantee.
+
+If you are on 3.8–3.10, upgrade the interpreter first. There is no 1.0 wheel for those versions and no compatibility shim.
+
+### `numpy` is now a hard dependency
+
+0.x declared `pyarrow>=14.0.1` and `pyyaml>=6.0`. 1.0 adds `numpy>=1.20`. Pip installs it for you; the item matters only if you vendor wheels or pin a lockfile by hand.
+
+### `dora.cuda` moved to `dora_tensor_pool` (#3249)
+
+The CUDA IPC helpers were about to be frozen into the 1.0 Python API even though nothing in dora imports them — their only consumers are CUDA examples that CI cannot run. They now live in the tensor-pool extension, behind the same seam as the rest of that transport.
+
+```python
+# 0.x
+from dora.cuda import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
+
+# 1.0 — pip install libraries/extensions/tensor-pool/python
+from dora_tensor_pool import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
+```
+
+The function names, signatures and `IpcHandle` type are unchanged — only the import path moves. `get_tensor_info` / `tensor_from_info` are exported from the same package.
+
+**These helpers are not part of the 1.0 API** and carry no compatibility guarantee. That is deliberate: removing a documented symbol after 1.0 would need a major bump, whereas adding one back in 1.1 is additive.
+
+### Everything else in the `dora` package is additive
+
+Comparing the type stubs at `v0.x-final` against 1.0, `Node` and the ROS2 classes gained about 35 methods between them. No method was removed and none lost a parameter:
+
+- Logging: `log`, `log_trace`, `log_debug`, `log_info`, `log_warn`, `log_error`
+- Restart awareness: `is_restart`, `restart_count`
+- Runtime parameters: `get_parameter`, `set_parameter`, `has_parameter`, `list_parameters`
+- Service pattern: `send_response`, `take_request`
+- Action pattern: `send_goal`, `take_goal`, `send_feedback`, `take_feedback`, `send_result`, `take_result`, `cancel`, `take_cancel`
+- Tensor pool: `register_tensor_pool`, `read_tensor_pool`, `write_tensor_pool`, `free_tensor_pool`
+- Extension seam: `extension_store`, `extension_load`, `extension_drop`, `drain_dropped_extension_keys`
+- ROS2 services and actions: `Ros2ServiceClient` / `Ros2ServiceServer` / `Ros2ActionClient` / `Ros2ActionServer` and their `create_*` factories
+- `Node.timestamp()`
+
+`Ros2Context.__init__` gained an optional `domain_id`; omit it and the DDS domain comes from `ROS_DOMAIN_ID`, defaulting to 0. A `ROS_DOMAIN_ID` that is set but not a valid domain id now raises rather than being ignored.
+
+`DataflowBuilder.Node.add_input` gained an optional `queue_policy` (`"drop_oldest"` or `"backpressure"`) and now validates both it and `queue_size` eagerly, raising `ValueError` instead of emitting YAML the daemon will reject later.
+
+`from dora import start_runtime` still works. It is additionally exported by the separate `dora-rs-cli` wheel, which is where the `dora` command itself now ships; `dora/__init__.py` imports it defensively so `from dora import Node` works without the CLI installed.
+
+## C API changes
+
+**No call signature changed.** Every function in `apis/c/node/node_api.h` and `apis/c/operator/operator_types.h` has the same name, parameters and return type it had in 0.x. A 0.x C node recompiles against 1.0 unchanged.
+
+What is new:
+
+- **Documented threading contract.** Each function is annotated with whether it is safe to call concurrently. The short version: a context pointer must be used by at most one thread at a time (`dora_next_event`, `dora_send_output`, `dora_log` all mutate it), event pointers are read-only after creation so multiple threads may read fields from one event, and `free_dora_context` / `free_dora_event` take ownership.
+- **CMake package config.** `apis/c/node/cmake/dora-api-config.cmake.in` and `dora-api-version.cmake.in` let you `find_package(dora-api)` instead of hand-writing include and link paths.
+- **A null-data guard on `dora_send_operator_output`.** Passing `(NULL, 0)` for a zero-length message is now handled explicitly, matching `dora_send_output` in the node API, which had the check since introduction.
+
+## C++ API changes
+
+Unlike C, the C++ node bindings did lose surface. The operator bindings (`dora-operator-api-cxx`) are purely additive — `on_stop`, `on_input_closed` and `on_input_parse_error` were added and nothing was removed.
+
+### Node initialization takes no id
+
+```cpp
+// 0.x
+DoraNode init_dora_node();
+DoraNode init_dora_node_from_id(rust::String node_id);
+DoraNode init_dora_node_flexible(rust::String node_id);
+
+// 1.0
+DoraNode init_dora_node();
+```
+
+Only the env-var form survives, so a C++ node is always launched by the daemon and reads its identity from `DORA_NODE_CONFIG`. Dynamic C++ nodes that connected by explicit id have no 1.0 equivalent; the Rust API still has `DoraNode::init_from_node_id` and `init_flexible`, so a thin Rust shim is the workaround if you need one.
+
+### The `DataSampleHandle` zero-copy send API is gone
+
+```cpp
+// 0.x — allocate, fill in place, hand the buffer over
+auto sample = allocate_data_sample(dora_node.send_output, len);
+uint8_t *ptr = data_sample_as_ptr(sample);
+std::memcpy(ptr, payload, data_sample_len(sample));
+send_data_sample(dora_node.send_output, "out", std::move(sample));
+
+// 1.0 — send the bytes directly
+send_output(dora_node.send_output, "out", rust::Slice<const uint8_t>(payload, len));
+```
+
+`allocate_data_sample`, `data_sample_as_ptr`, `data_sample_len`, `send_data_sample`, `send_data_sample_with_metadata` and the `DataSampleHandle` type are all absent from 1.0. `send_output` and `send_output_with_metadata` are unchanged and cover the same cases at the cost of one copy. The zero-copy path is still available from Rust via `allocate_data_sample` + `send_output_sample`.
+
+### `node_id()` and `dataflow_id()` are gone
+
+```cpp
+// 0.x
+auto id    = node_id(dora_node.send_output);
+auto df_id = dataflow_id(dora_node.send_output);
+```
+
+There is no direct 1.0 replacement. `node_config_json(dora_node.send_output)` returns the node's `NodeRunConfig` (its inputs and outputs) as JSON and `dataflow_descriptor_json(...)` returns the whole descriptor, but neither yields the plain id string. A C++ node knows its own id from the YAML that launched it; read the `DORA_NODE_CONFIG` environment variable if you need it at runtime.
+
+### Additions worth knowing
+
+`try_next_event` and `next_event_timeout` (non-blocking and timed receive), `drain_events`, `event_as_input_with_metadata`, `event_as_node_failed`, `close_outputs`, the service and action helpers (`send_service_request`, `recv_service_response`, `send_service_response`, `recv_action_result`), and correlation-id accessors on `Metadata` (`request_id`, `goal_id`, `goal_status` and their setters). See [`api-cxx.md`](api-cxx.md).
 
 ## Still to do (this guide)
 
-- ~~Per-API before/after code snippets~~ — done for the RC-window breaking changes above; older 0.x-era API deltas still uncovered
-- Dedicated section on the C/C++ API (headers stable, call signatures unchanged)
-- Dedicated section on the Python API
+- Rust and Python **operator** API deltas — the node APIs are covered above; the operator surfaces are additive as far as the stub and bridge comparisons show, but have not been walked line by line
+- CLI flag-level deltas beyond the two removed subcommands — [`cli-command-coverage.md`](cli-command-coverage.md) is the current inventory
+- ROS2 bridge surface, which is explicitly unstable and outside the 1.0 guarantee
+- ~~Per-API before/after code snippets~~ — done
+- ~~Dedicated section on the C/C++ API~~ — done
+- ~~Dedicated section on the Python API~~ — done
 - ~~`dora migrate` subcommand usage~~ — **dropped per #297 resolution**. No migration tool ships in 1.0; manual steps above + release-note hard-break callout only.
 
 ## Related documents
 
-- [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md) — the full consolidation plan (on main)
-- `phase--1-audit-2026-04-16.md` — wire-protocol audit evidence (lands with PR #286)
-- `audit-2026-03-21-closure.md` — security/correctness closure (lands with PR #286)
-- `ownership-verification-2026-04-16.md` — publish-path readiness (lands with PR #286)
-- `downstream-user-assessment-2026-04-16.md` — who this matters for (lands with PR #286)
+- [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md) — the full consolidation plan
+- [`api-rust.md`](api-rust.md) — Rust API reference, Arrow version policy, and the 1.0 stability scope
+- [`api-python.md`](api-python.md) — Python API reference
+- [`api-c.md`](api-c.md) / [`api-cxx.md`](api-cxx.md) — C and C++ API references
+- [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) — wire-protocol audit evidence
+- [`audit-2026-03-21-closure.md`](audit-2026-03-21-closure.md) — security/correctness closure
+- [`ownership-verification-2026-04-16.md`](ownership-verification-2026-04-16.md) — publish-path readiness
+- [`downstream-user-assessment-2026-04-16.md`](downstream-user-assessment-2026-04-16.md) — who this matters for
