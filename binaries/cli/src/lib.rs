@@ -79,6 +79,18 @@ where
 {
     use clap::Parser as _;
 
+    let argv: Vec<std::ffi::OsString> = argv.into_iter().map(Into::into).collect();
+
+    // Record argv[0] -- the console-script/executable path -- so that, in the
+    // `dora-rs-cli` wheel, `dora up` / `dora cluster up` re-spawn the real
+    // `dora` binary via `sys.argv[0]` rather than a fixed `args_os()` index that
+    // is wrong on Windows (#3327). `py_main` passes the normalized `sys.argv`
+    // here, whose first element is that path on both Unix and Windows. Harmless
+    // in the standalone binary, where `dora_executable_path` uses `current_exe`.
+    if let Some(exe) = argv.first() {
+        command::set_python_executable_path(exe.clone());
+    }
+
     lib_main(Args::try_parse_from(argv).unwrap_or_else(|err| err.exit()))
 }
 
