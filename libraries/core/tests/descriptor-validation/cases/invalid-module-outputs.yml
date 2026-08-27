@@ -1,4 +1,4 @@
 nodes:
   - id: nav
     module: module-valid.yml
-    build: cargo build
+    outputs: [command]
