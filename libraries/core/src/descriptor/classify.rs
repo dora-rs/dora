@@ -400,6 +400,35 @@ fn check_ros2(node: &Node) -> Result<()> {
 const MODULE_ALLOWED: &[&str] = &["module", "inputs", "params", "build"];
 
 pub(super) fn check_module(node: &Node) -> Result<()> {
+    // `validate_against_whitelist` only inspects `ALL_CHECKABLE_FIELDS`, which
+    // deliberately omits the kind discriminators (`operators`, `operator`,
+    // `ros2`, `module`). For ordinary nodes a second discriminator is rejected
+    // by `node.kind()`, but a module node never reaches `node.kind()` --
+    // `classify` bails on it ("must be expanded before resolution") -- so
+    // `check_module` is the sole validator. Reject a conflicting discriminator
+    // explicitly here; otherwise a `module:` node that also sets `operator:`
+    // would pass and have that block silently dropped during expansion.
+    let mut conflicts = Vec::new();
+    if node.operators.is_some() {
+        conflicts.push("operators");
+    }
+    if node.operator.is_some() {
+        conflicts.push("operator");
+    }
+    if node.ros2.is_some() {
+        conflicts.push("ros2");
+    }
+    if !conflicts.is_empty() {
+        bail!(
+            "node `{}` has fields that are not allowed on Module nodes: {}\n\
+             hint: a module node references a sub-dataflow and cannot also be an \
+             operator or ros2 node -- remove these fields, or drop `module:` if \
+             this was meant to be a regular node",
+            node.id,
+            conflicts.join(", ")
+        );
+    }
+
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(MODULE_ALLOWED);
     validate_against_whitelist(node, &allowed, "Module")
@@ -681,6 +710,40 @@ outputs: [out]
         );
         assert!(error.contains("Module"), "{error}");
         assert!(error.contains("outputs"), "{error}");
+    }
+
+    #[test]
+    fn check_module_rejects_conflicting_kind_discriminator() {
+        // A module node that also sets another kind discriminator (`operator`,
+        // `operators`, `ros2`) must be rejected: these fields are not covered by
+        // `ALL_CHECKABLE_FIELDS`, and a module node never reaches
+        // `node.kind()`, so `check_module` is the only place the conflict can be
+        // caught. Without an explicit check the extra block would be silently
+        // dropped during expansion.
+        for (yaml, field) in [
+            (
+                "id: nav\nmodule: modules/nav.yml\noperator:\n  python: op.py\n",
+                "operator",
+            ),
+            (
+                "id: nav\nmodule: modules/nav.yml\noperators:\n  - id: op\n    python: op.py\n",
+                "operators",
+            ),
+            (
+                "id: nav\nmodule: modules/nav.yml\nros2:\n  topic: /odom\n  message_type: nav_msgs/msg/Odometry\n  direction: subscribe\n",
+                "ros2",
+            ),
+        ] {
+            let node = parse_node(yaml);
+            let error = format!(
+                "{:#}",
+                check_module(&node).expect_err("conflicting discriminator should be rejected")
+            );
+            assert!(
+                error.contains("Module") && error.contains(field),
+                "`module` + `{field}` should be rejected; got: {error}"
+            );
+        }
     }
 
     #[test]
