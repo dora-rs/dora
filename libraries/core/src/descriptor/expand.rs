@@ -971,13 +971,21 @@ fn resolve_module_relative_path(
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
-    // The node-level `build` is consumed only by `path:` nodes and by nested
-    // `module:` nodes (which forward it to their own leaves in Phase 2).
-    // Setting it on a runtime/operator/ROS2 node used to be a harmless dead
-    // value; the field classifier now rejects `build` on those kinds, so the
-    // module build has to land in the operator configs only -- which is where
-    // `build/mod.rs` reads it from for runtime nodes anyway.
-    if node.path.is_some() || node.module.is_some() {
+    // The node-level `build` is consumed by every standard node -- `path:`,
+    // `git:`, and `hub:` sourced -- (`build/mod.rs` reads `n.build` for all
+    // `CoreNodeKind::Custom` nodes) and by nested `module:` nodes (which
+    // forward it to their own leaves in Phase 2). It is *not* valid on
+    // runtime/operator/ROS2 nodes, where the field classifier rejects it, so
+    // for those the module build lands in the operator configs only.
+    //
+    // Do NOT key this off `node.path`: module expansion runs *before* git/hub
+    // source resolution, so a `git:`/`hub:`-sourced inner node still has
+    // `path == None` here. Keying off `path` silently dropped the module build
+    // for those nodes (#3296). Gate on "not a runtime/operator/ROS2 node"
+    // instead, which correctly includes git/hub standard leaves.
+    let is_standard_or_module = node.module.is_some()
+        || (node.operators.is_none() && node.operator.is_none() && node.ros2.is_none());
+    if is_standard_or_module {
         prepend_build(&mut node.build, module_build);
     }
     if let Some(ref mut operators) = node.operators {
@@ -2695,6 +2703,72 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.build.as_deref(), Some("make all"));
+    }
+
+    /// A module-level `build:` must reach `git:`/`hub:`-sourced inner nodes,
+    /// not just `path:`-sourced ones. Module expansion runs before git/hub
+    /// source resolution, so these nodes still have `path == None` at this
+    /// point; the build must be keyed off the node kind, not `node.path`
+    /// (#3296).
+    #[test]
+    fn expand_module_build_prepended_to_git_and_hub_inner_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "git_hub_module.yml",
+            r#"
+module:
+  name: git_hub
+  outputs: [from_git, from_hub]
+
+build: pip install -r requirements.txt
+
+nodes:
+  - id: worker
+    git: https://github.com/example/worker.git
+    outputs:
+      - from_git
+    build: cargo build --release
+  - id: fetched
+    hub: example/fetched
+    outputs:
+      - from_hub
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: git_hub_module.yml
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        // git-sourced inner node: module build prepended before its own build.
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        assert_eq!(
+            worker.build.as_deref(),
+            Some("pip install -r requirements.txt\ncargo build --release"),
+        );
+
+        // hub-sourced inner node with no own build: module build is set.
+        let fetched = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.fetched")
+            .unwrap();
+        assert_eq!(
+            fetched.build.as_deref(),
+            Some("pip install -r requirements.txt"),
+        );
     }
 
     /// A module-level `build:` must not make an operator inner node
