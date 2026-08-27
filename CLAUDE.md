@@ -156,7 +156,7 @@ make qa-test-python
 # cargo test -p <crate-name>
 ```
 
-**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + typos in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
+**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + typos + publish-graph in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
 
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
 
@@ -180,7 +180,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-kani` — ~5-10 min cold, <1 min warm. Formal verification: runs the `#[kani::proof]` harnesses (Kani/CBMC model checker) in `dora-message` (auth `constant_time_eq`). A passing proof is exhaustive over the harness state space, not sampled. Run when touching files with `#[cfg(kani)]` proof modules and in pre-release gating; install via `make qa-kani-install`. See [`docs/formal-verification.md`](docs/formal-verification.md).
 - `make qa-pgo` — ~30-40 min. Profile-Guided Optimization measurement: builds `dora-cli` with `cargo-pgo` (instrument → train on `examples/benchmark/` → optimize), then runs the benchmark twice (baseline vs PGO) and prints a side-by-side comparison with a +5%-throughput-geomean verdict. Run on your target platform — PGO results don't transfer across OS/arch. macOS-arm64 first-measurement showed +25% throughput geomean, latency unchanged (see [#331](https://github.com/dora-rs/dora/issues/331)). **Do not add to CI** — the build pipeline cost is release-pipeline scope, not per-commit. Install via `make qa-pgo-install`.
 
-**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
+**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, publish-graph, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 
 ### Remote CI jobs
 
@@ -195,6 +195,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
 - Supply-chain audit (`cargo-audit` + `cargo-deny`)
 - Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
+- crates.io publish-graph check (`make qa-publish-graph`, a step in the `Check` job): no published crate may depend on a `publish = false` one, and the ordered publish lists in `release.yml` / `cargo-release.yml` must agree and list every dependency before its dependents (#3304)
 - License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)
 

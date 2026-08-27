@@ -176,6 +176,12 @@ jobs:
           # Restore the shared dev-profile cache; only `test` writes it.
           shared-key: workspace
           save-if: false
+      # Manifest-only, so it costs seconds and goes before the compile gates
+      # below: nothing else fails on a broken publish graph until release
+      # time, and by then the release has already uploaded crates that
+      # crates.io will not let anyone take back (#3304).
+      - name: Check the crates.io publish graph
+        run: make qa-publish-graph
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so

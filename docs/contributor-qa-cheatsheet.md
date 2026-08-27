@@ -67,6 +67,7 @@ Runs:
 - supply-chain audit
 - unwrap-budget check
 - typo check
+- crates.io publish-graph check
 
 ### Before push
 
