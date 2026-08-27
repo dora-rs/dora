@@ -90,23 +90,11 @@ pub fn send_output_raw<F>(
 where
     F: FnOnce(&mut [u8])
 
-// Send raw bytes with explicit Arrow type information.
-pub fn send_typed_output<F>(
-    &mut self,
-    output_id: DataId,
-    type_info: ArrowTypeInfo,
-    parameters: MetadataParameters,
-    data_len: usize,
-    data: F,
-) -> NodeResult<()>
-where
-    F: FnOnce(&mut [u8])
-
-// Send a pre-allocated DataSample with type information.
+// Send a pre-allocated DataSample. The sample must already hold a
+// self-describing Arrow IPC stream; prefer send_output, which encodes for you.
 pub fn send_output_sample(
     &mut self,
     output_id: DataId,
-    type_info: ArrowTypeInfo,
     parameters: MetadataParameters,
     sample: Option<DataSample>,
 ) -> NodeResult<()>
@@ -129,7 +117,7 @@ pub fn send_service_request(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<String>
 
 // Send a service response. Semantic alias for send_output.
@@ -138,7 +126,7 @@ pub fn send_service_response(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<()>
 ```
 
@@ -725,7 +713,7 @@ pub struct DoraOutputSender<'a>(/* ... */);
 
 impl DoraOutputSender<'_> {
     // Send an output. `id` is the output ID from your dataflow YAML.
-    pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String>
+    pub fn send(&mut self, id: &str, data: impl IntoArrow) -> Result<(), String>
 }
 ```
 

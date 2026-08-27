@@ -1480,14 +1480,15 @@ struct NodeId(String);      // [a-zA-Z0-9_.-], no leading `.`, not `dora`
 struct DataId(String);      // same validation
 type DataflowId = uuid::Uuid;
 
-// Data metadata
+// Data metadata. The payload is a self-describing Arrow IPC stream,
+// so no separate type descriptor is carried.
 struct Metadata {
-    timestamp: uhlc::Timestamp,    // hybrid logical clock
-    type_info: ArrowTypeInfo,      // Arrow schema
+    metadata_version: u16,          // Metadata::CURRENT_VERSION
+    timestamp: uhlc::Timestamp,     // hybrid logical clock
     parameters: MetadataParameters, // custom key-value pairs
 }
 
-// Node events (daemon -> node)
+// Node events (daemon -> node). `#[non_exhaustive]`, so match with a `_` arm.
 enum NodeEvent {
     Stop,
     Reload { operator_id },
@@ -1496,6 +1497,10 @@ enum NodeEvent {
     InputRecovered { id },
     NodeRestarted { id },
     AllInputsClosed,
+    ParamUpdate { key, value_json },
+    ParamDeleted { key },
+    NodeFailed { affected_input_ids, error, source_node_id },
+    ExtensionDropped { namespace, key },
 }
 ```
 
