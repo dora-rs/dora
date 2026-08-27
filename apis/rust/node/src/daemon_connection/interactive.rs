@@ -6,6 +6,7 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
+    id::DataId,
     metadata::Metadata,
     node_to_daemon::DaemonRequest,
 };
@@ -104,79 +105,85 @@ impl InteractiveEvents {
             );
             return Ok(None);
         }
-        let stdout_lock = stdout().lock();
-        let id = inquire::Text::new("Input ID")
-            .with_help_message("empty input ID to stop")
-            .prompt()?;
-        std::mem::drop(stdout_lock);
-        let event = if id.is_empty() {
-            println!("{}", "given input ID is empty -> stopping".blue());
-            self.stopped = true;
-            NodeEvent::Stop
-        } else {
-            let id = id.into();
-            let data = loop {
-                let stdout_lock = stdout().lock();
-                let data = inquire::Text::new("Data")
-                    .with_help_message(
-                        "String/JSON, FILE:<path.arrow>, HEX:<hexbytes>, or esc to skip",
-                    )
-                    .prompt_skippable()?;
-                std::mem::drop(stdout_lock);
-                let typed_data = if let Some(data) = data {
-                    let array_data = if let Some(path) = data.strip_prefix("FILE:") {
-                        match read_arrow_ipc_file(Path::new(path.trim())) {
-                            Ok(d) => d,
-                            Err(err) => {
-                                eprintln!("{}", format!("{err}").red());
-                                continue;
-                            }
+        let id: DataId = loop {
+            let stdout_lock = stdout().lock();
+            let id = inquire::Text::new("Input ID")
+                .with_help_message("empty input ID to stop")
+                .prompt()?;
+            std::mem::drop(stdout_lock);
+            if id.is_empty() {
+                println!("{}", "given input ID is empty -> stopping".blue());
+                self.stopped = true;
+                return Ok(Some(NodeEvent::Stop));
+            }
+            // `id` is typed at an interactive prompt, so parse it fallibly:
+            // `DataId`'s `From<String>` (`.into()`) panics on an invalid id — e.g.
+            // one containing a space or `;` — which would crash the whole node.
+            // Re-prompt instead, matching how the `Data` prompt below rejects bad
+            // input rather than aborting.
+            match id.parse() {
+                Ok(id) => break id,
+                Err(err) => {
+                    eprintln!("{}", format!("invalid input ID: {err}").red());
+                }
+            }
+        };
+        let data = loop {
+            let stdout_lock = stdout().lock();
+            let data = inquire::Text::new("Data")
+                .with_help_message("String/JSON, FILE:<path.arrow>, HEX:<hexbytes>, or esc to skip")
+                .prompt_skippable()?;
+            std::mem::drop(stdout_lock);
+            let typed_data = if let Some(data) = data {
+                let array_data = if let Some(path) = data.strip_prefix("FILE:") {
+                    match read_arrow_ipc_file(Path::new(path.trim())) {
+                        Ok(d) => d,
+                        Err(err) => {
+                            eprintln!("{}", format!("{err}").red());
+                            continue;
                         }
-                    } else if let Some(hex) = data.strip_prefix("HEX:") {
-                        match decode_hex_as_uint8_array(hex.trim()) {
-                            Ok(d) => d,
-                            Err(err) => {
-                                eprintln!("{}", format!("{err}").red());
-                                continue;
-                            }
-                        }
-                    } else {
-                        // JSON or plain text
-                        match read_json_bytes_as_arrow(data.as_bytes()) {
-                            Ok(d) => d,
-                            Err(err) => {
-                                eprintln!("{}", format!("{err}").red());
-                                continue;
-                            }
-                        }
-                    };
-
-                    // The receive side decodes a self-describing Arrow IPC
-                    // stream, so encode the array into one here.
-                    match encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(
-                        array_data,
-                    )) {
-                        Ok(buf) => Some(buf),
+                    }
+                } else if let Some(hex) = data.strip_prefix("HEX:") {
+                    match decode_hex_as_uint8_array(hex.trim()) {
+                        Ok(d) => d,
                         Err(err) => {
                             eprintln!("{}", format!("{err}").red());
                             continue;
                         }
                     }
                 } else {
-                    None
+                    // JSON or plain text
+                    match read_json_bytes_as_arrow(data.as_bytes()) {
+                        Ok(d) => d,
+                        Err(err) => {
+                            eprintln!("{}", format!("{err}").red());
+                            continue;
+                        }
+                    }
                 };
-                break typed_data;
-            };
 
-            NodeEvent::Input {
-                id,
-                metadata: std::sync::Arc::new(Metadata::new(HLC::default().new_timestamp())),
-                data: data.map(|d| {
-                    std::sync::Arc::new(DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d)))
-                }),
-            }
+                // The receive side decodes a self-describing Arrow IPC
+                // stream, so encode the array into one here.
+                match encode_arrow_ipc(&dora_arrow_convert::internal::from_array_data(array_data)) {
+                    Ok(buf) => Some(buf),
+                    Err(err) => {
+                        eprintln!("{}", format!("{err}").red());
+                        continue;
+                    }
+                }
+            } else {
+                None
+            };
+            break typed_data;
         };
-        Ok(Some(event))
+
+        Ok(Some(NodeEvent::Input {
+            id,
+            metadata: std::sync::Arc::new(Metadata::new(HLC::default().new_timestamp())),
+            data: data.map(|d| {
+                std::sync::Arc::new(DataMessage::Vec(aligned_vec::AVec::from_slice(1, &d)))
+            }),
+        }))
     }
 }
 
@@ -237,6 +244,23 @@ fn decode_hex_as_uint8_array(hex: &str) -> eyre::Result<arrow::array::ArrayData>
 mod tests {
     use super::*;
     use arrow::array::ArrayRef;
+
+    /// The interactive `Input ID` prompt parses the typed id fallibly
+    /// (`str::parse`) instead of `DataId::from(String)` / `.into()`, which
+    /// panics on an invalid id and would crash the whole node. Guard that
+    /// contract: ids a user could plausibly mistype are rejected as `Err`, not
+    /// a panic, so the prompt loop can re-ask.
+    #[test]
+    fn invalid_input_id_is_rejected_not_panicked() {
+        for bad in ["my input", "a;b", "a b/c", "café"] {
+            assert!(
+                bad.parse::<DataId>().is_err(),
+                "expected `{bad}` to be rejected via parse"
+            );
+        }
+        // a well-formed id still parses
+        assert!("valid_id.0-1/sub".parse::<DataId>().is_ok());
+    }
 
     #[test]
     fn test_decode_hex_valid() {
