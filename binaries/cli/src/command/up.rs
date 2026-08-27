@@ -545,16 +545,104 @@ fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrRe
     Ok(config)
 }
 
-pub(crate) fn dora_executable_path() -> eyre::Result<std::ffi::OsString> {
-    if cfg!(feature = "python") {
-        // When invoked via Python wrapper, argv[1] is the real dora binary path
-        std::env::args_os()
-            .nth(1)
-            .context("could not get dora path from Python wrapper arguments")
+/// Path to the `dora` console script recorded by the `dora-rs-cli` wheel's
+/// `py_main`. See [`set_python_executable_path`].
+static PYTHON_EXECUTABLE_PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+
+/// Record the console-script/executable path (`sys.argv[0]`) that the wheel's
+/// `py_main` was launched with, so [`dora_executable_path`] can re-spawn the
+/// real `dora` binary (`dora coordinator`, `dora daemon`, …).
+///
+/// `sys.argv[0]` is the robust source on **both** platforms: pip's launcher
+/// puts the console-script path there on Unix and the `dora.exe` path there on
+/// Windows. This is called from [`crate::lib_main_from_argv`], the single entry
+/// point both the wheel and the standalone binary go through.
+pub(crate) fn set_python_executable_path(path: std::ffi::OsString) {
+    // First writer wins; a second call (there is none in practice) is ignored.
+    let _ = PYTHON_EXECUTABLE_PATH.set(path);
+}
+
+/// Decide which executable to re-spawn as `dora`.
+///
+/// Split out from [`dora_executable_path`] so the platform-independent decision
+/// is unit-testable without the `python` feature compiled in.
+///
+/// - From the Python wrapper (`dora-rs-cli` wheel): use the recorded
+///   `sys.argv[0]`. `current_exe()` is wrong there — inside the embedded
+///   interpreter it returns the Python interpreter on Unix, so spawning it would
+///   run `python coordinator`. The previous `args_os().nth(1)` was also wrong on
+///   Windows, where the process argv has no interpreter entry and `nth(1)` is
+///   the subcommand (e.g. `"up"`) rather than the dora path (#3327).
+/// - Standalone binary: use `current_exe()`.
+fn choose_executable_path(
+    from_python_wrapper: bool,
+    recorded: Option<std::ffi::OsString>,
+    current_exe: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> eyre::Result<std::ffi::OsString> {
+    if from_python_wrapper {
+        recorded.context(
+            "could not determine the dora executable path from the Python wrapper \
+             (sys.argv[0] was not recorded)",
+        )
     } else {
-        std::env::current_exe()
+        current_exe()
             .map(Into::into)
             .wrap_err("could not determine dora executable path")
+    }
+}
+
+pub(crate) fn dora_executable_path() -> eyre::Result<std::ffi::OsString> {
+    choose_executable_path(
+        cfg!(feature = "python"),
+        PYTHON_EXECUTABLE_PATH.get().cloned(),
+        std::env::current_exe,
+    )
+}
+
+#[cfg(test)]
+mod executable_path_tests {
+    use super::choose_executable_path;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn python_wrapper_uses_recorded_argv0() {
+        // In the wheel, the recorded `sys.argv[0]` (the console-script path) must
+        // be used verbatim -- not `current_exe()`, which would be the embedded
+        // Python interpreter on Unix.
+        let path = choose_executable_path(true, Some(OsString::from("/opt/venv/bin/dora")), || {
+            panic!("current_exe must not be consulted for the Python wrapper")
+        })
+        .expect("recorded path should resolve");
+        assert_eq!(path, OsString::from("/opt/venv/bin/dora"));
+    }
+
+    #[test]
+    fn python_wrapper_without_recorded_path_errors() {
+        let err = choose_executable_path(true, None, || Ok(PathBuf::from("/should/not/be/used")))
+            .expect_err("missing recorded path must be an error, not a wrong fallback");
+        assert!(
+            format!("{err:#}").contains("Python wrapper"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn standalone_binary_uses_current_exe() {
+        let path = choose_executable_path(false, None, || Ok(PathBuf::from("/usr/bin/dora")))
+            .expect("current_exe should resolve");
+        assert_eq!(path, OsString::from("/usr/bin/dora"));
+    }
+
+    #[test]
+    fn standalone_binary_ignores_any_recorded_path() {
+        // Even if a path was recorded, the standalone binary trusts `current_exe`.
+        let path =
+            choose_executable_path(false, Some(OsString::from("/opt/venv/bin/dora")), || {
+                Ok(PathBuf::from("/usr/bin/dora"))
+            })
+            .expect("current_exe should resolve");
+        assert_eq!(path, OsString::from("/usr/bin/dora"));
     }
 }
 
