@@ -63,7 +63,8 @@
         qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
         qa-fmt qa-audit qa-unwrap qa-publish-graph qa-clippy qa-test qa-test-python qa-coverage \
         qa-mutants qa-semver \
-        qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install
+        qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
+        qa-verify-release
 
 qa: qa-fast
 
@@ -181,6 +182,19 @@ qa-mutants:
 
 qa-semver:
 	@scripts/qa/semver.sh
+
+# Check that a published release is complete: every crate on release.yml's
+# publish list is on crates.io, both wheels are on PyPI with the full
+# platform matrix and an sdist, and the GitHub Release carries the CLI
+# binaries plus the 8 C/C++ archives. release.yml runs this as its last job;
+# run it by hand to audit an older tag. Pass VERSION=<x.y.z>.
+#
+# This reads back a *published* release. For the static publish-graph rules
+# (list vs. manifests, ordering), see `make qa-publish-graph` — that one runs
+# in PR CI and needs no network.
+qa-verify-release:
+	@test -n "$(VERSION)" || { echo "usage: make qa-verify-release VERSION=1.0.0-rc.5"; exit 2; }
+	@python3 scripts/release/verify-release.py --version "$(VERSION)" $(ARGS)
 
 # Adversarial LLM review of current diff (requires codex or claude CLI)
 qa-adversarial:
