@@ -608,8 +608,17 @@ jobs:
           uv venv --seed -p 3.12
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
           source .venv/bin/activate
-          uv pip install pyarrow
+          uv pip install pyarrow pytest
           uv pip install -e apis/python/node
+      # Python-level unit tests of the installed `dora` package (the `dora`
+      # compat shim dora-hub nodes import, the `dora.builder` API, and
+      # `dora.testing.MockNode`). They live in apis/python/node/tests/ and ran
+      # in no CI job before (#3305); this job is their home because it is the
+      # one that installs `dora-rs` into a venv above.
+      - name: Run Python node API unit tests (dora package)
+        run: |
+          source .venv/bin/activate
+          make qa-test-python-node
       - name: Run semantic contract tests
         run: >
           cargo test -p dora-examples --test example-smoke contract_
