@@ -6,7 +6,10 @@ use serde::Serialize;
 use tabwriter::TabWriter;
 
 use crate::{
-    command::{Executable, default_tracing},
+    command::{
+        Executable, default_tracing,
+        topic::selector::{node_topic_inputs, node_topic_outputs},
+    },
     common::{
         CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
         send_control_request,
@@ -205,13 +208,17 @@ fn build_output_info(
     node_desc: &dora_message::descriptor::Node,
     descriptor: &Descriptor,
 ) -> Vec<OutputInfo> {
-    node_desc
-        .outputs
+    // `node_topic_outputs` / `node_topic_inputs` include operator-backed
+    // inputs/outputs. `Node::outputs` / `Node::inputs` are empty for `operator:`
+    // and `operators:` nodes (their topics live under `operator.config.*` /
+    // `operators[].config.*`), so iterating the raw fields would omit every
+    // operator node's outputs and every operator-node subscriber.
+    node_topic_outputs(node_desc)
         .iter()
         .map(|output_id| {
             let mut subscribers = Vec::new();
             for other_node in &descriptor.nodes {
-                for (input_id, input) in &other_node.inputs {
+                for (input_id, input) in node_topic_inputs(other_node) {
                     if let InputMapping::User(user) = &input.mapping
                         && user.source == node_desc.id
                         && user.output == *output_id
@@ -229,9 +236,10 @@ fn build_output_info(
 }
 
 fn build_input_info(node_desc: &dora_message::descriptor::Node) -> Vec<InputInfo> {
-    node_desc
-        .inputs
-        .iter()
+    // Use the operator-aware helper: `Node::inputs` is empty for operator-backed
+    // nodes (see `build_output_info`).
+    node_topic_inputs(node_desc)
+        .into_iter()
         .map(|(input_id, input)| InputInfo {
             id: input_id.to_string(),
             // Use `InputMapping`'s canonical `Display` rather than re-deriving the
@@ -321,5 +329,77 @@ fn print_table(output: &NodeInfoOutput) {
         let _ = tw.flush();
     } else {
         println!("  <not running or metrics unavailable>");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture() -> Descriptor {
+        // `detect` is an `operator:` node and `plot` an `operators:` node, so
+        // both have empty `Node::inputs`/`Node::outputs` -- their topics live
+        // under `operator.config.*` / `operators[].config.*`.
+        serde_yaml::from_str(
+            "\
+nodes:
+  - id: camera
+    path: camera
+    outputs:
+      - frame
+  - id: detect
+    operator:
+      python: detect.py
+      inputs:
+        image: camera/frame
+      outputs:
+        - bbox
+  - id: plot
+    operators:
+      - id: op
+        python: plot.py
+        inputs:
+          det: detect/bbox
+",
+        )
+        .expect("parse descriptor")
+    }
+
+    fn node<'a>(descriptor: &'a Descriptor, id: &str) -> &'a dora_message::descriptor::Node {
+        descriptor
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == id)
+            .expect("node in fixture")
+    }
+
+    #[test]
+    fn build_input_info_reports_operator_backed_inputs() {
+        let descriptor = fixture();
+        let inputs = build_input_info(node(&descriptor, "detect"));
+        assert_eq!(inputs.len(), 1, "operator node's input must be reported");
+        assert_eq!(inputs[0].id, "image");
+    }
+
+    #[test]
+    fn build_output_info_reports_operator_backed_outputs() {
+        let descriptor = fixture();
+        let outputs = build_output_info(node(&descriptor, "detect"), &descriptor);
+        assert_eq!(outputs.len(), 1, "operator node's output must be reported");
+        assert_eq!(outputs[0].id, "bbox");
+        // `plot`'s operator consumes `detect/bbox`, so it must appear as a
+        // subscriber even though `plot`'s own `Node::inputs` is empty.
+        assert_eq!(outputs[0].subscribers, vec!["plot/det".to_string()]);
+    }
+
+    #[test]
+    fn build_output_info_lists_operator_node_as_subscriber() {
+        let descriptor = fixture();
+        // `detect` (an operator node) consumes `camera/frame`; a subscriber
+        // listing built from the raw `Node::inputs` would omit it entirely.
+        let outputs = build_output_info(node(&descriptor, "camera"), &descriptor);
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0].id, "frame");
+        assert_eq!(outputs[0].subscribers, vec!["detect/image".to_string()]);
     }
 }
