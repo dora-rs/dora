@@ -103,7 +103,7 @@ pub fn expand_modules_with_boundaries(
         });
     }
 
-    let canonical_base = dunce::canonicalize(base_dir)
+    let _ = dunce::canonicalize(base_dir)
         .with_context(|| format!("failed to resolve base directory: {}", base_dir.display()))?;
     // Lexical project root: used by the module containment check so that a
     // symlinked `modules/` directory inside the project root is accepted,
@@ -123,7 +123,7 @@ pub fn expand_modules_with_boundaries(
             // Field validation happens inside `expand_module_node`, so top-level
             // and nested module nodes go through the same whitelist.
             let (mut expanded, omap) =
-                expand_module_node(node, base_dir, &canonical_base, &absolute_base, 0, &mut seen)?;
+                expand_module_node(node, base_dir, &absolute_base, 0, &mut seen)?;
             // Propagate the module node's own `build` to each expanded leaf node,
             // mirroring how a nested module node's build is propagated in Phase 2
             // of `expand_module_node`. `check_module` accepts `build` for exactly
@@ -280,7 +280,7 @@ fn check_module_file_inner(
             // Note: unlike `expand_module_node`, we intentionally do NOT reject
             // a nested reference that leaves `module_dir`. The real expansion
             // path confines nested modules to the *project root*
-            // (`canonical_base`, threaded through recursion), which routinely
+            // (`absolute_project_root`, threaded through recursion), which routinely
             // sits above an individual module's directory -- a module in
             // `modules/a/` may reference a sibling module in `modules/shared/`
             // via `../shared/base.yml`. This linter runs on a module file in
@@ -582,7 +582,6 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
 fn expand_module_node(
     node: &Node,
     base_dir: &Path,
-    canonical_base: &Path,
     absolute_project_root: &Path,
     depth: u8,
     seen: &mut HashSet<PathBuf>,
@@ -761,7 +760,7 @@ fn expand_module_node(
             )?;
         }
 
-        resolve_inner_node_paths(&mut inner_node, module_dir, canonical_base)?;
+        resolve_inner_node_paths(&mut inner_node, module_dir, absolute_project_root)?;
 
         // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
@@ -797,7 +796,6 @@ fn expand_module_node(
             let (mut nested, nested_omap) = expand_module_node(
                 &inner_node,
                 module_dir,
-                canonical_base,
                 absolute_project_root,
                 depth + 1,
                 seen,
@@ -879,19 +877,19 @@ fn expand_module_node(
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
     if let Some(ref mut path) = node.path {
-        resolve_module_relative_path(path, module_dir, canonical_base, &owner)?;
+        resolve_module_relative_path(path, module_dir, project_root, &owner)?;
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
-            resolve_operator_source_paths(&mut op.config, module_dir, canonical_base, &owner)?;
+            resolve_operator_source_paths(&mut op.config, module_dir, project_root, &owner)?;
         }
     }
     if let Some(ref mut operator) = node.operator {
-        resolve_operator_source_paths(&mut operator.config, module_dir, canonical_base, &owner)?;
+        resolve_operator_source_paths(&mut operator.config, module_dir, project_root, &owner)?;
     }
     Ok(())
 }
@@ -899,15 +897,15 @@ fn resolve_inner_node_paths(
 fn resolve_operator_source_paths(
     config: &mut OperatorConfig,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
     owner: &str,
 ) -> eyre::Result<()> {
     match &mut config.source {
         OperatorSource::SharedLibrary(path) | OperatorSource::Wasm(path) => {
-            resolve_module_relative_path(path, module_dir, canonical_base, owner)
+            resolve_module_relative_path(path, module_dir, project_root, owner)
         }
         OperatorSource::Python(source) => {
-            resolve_module_relative_path(&mut source.source, module_dir, canonical_base, owner)
+            resolve_module_relative_path(&mut source.source, module_dir, project_root, owner)
         }
     }
 }
@@ -915,7 +913,7 @@ fn resolve_operator_source_paths(
 fn resolve_module_relative_path(
     path: &mut String,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
     owner: &str,
 ) -> eyre::Result<()> {
     // Resolve relative paths: make inner node/operator sources relative to
@@ -935,7 +933,7 @@ fn resolve_module_relative_path(
     }
 
     let resolved = normalize_path(&module_dir.join(path.as_str()));
-    let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
+    let relative = resolved.strip_prefix(project_root).map_err(|_| {
         eyre::eyre!(
             "module node `{}` path `{}` resolves outside the project \
                  directory (resolved to `{}`)",
@@ -3728,7 +3726,8 @@ nodes:
     #[cfg(any(unix, windows))]
     fn reject_symlinked_module_dir_dotdot_escape() {
         let tmp = TempDir::new().unwrap();
-        let shared_dir = tmp.path().join("shared_modules");
+        let shared_base = tmp.path().join("shared_base");
+        let shared_dir = shared_base.join("shared_modules");
         std::fs::create_dir_all(&shared_dir).unwrap();
         write_file(
             &shared_dir,
@@ -3741,6 +3740,12 @@ nodes:
         std::fs::create_dir_all(&project_dir).unwrap();
         write_file(
             &parent,
+            "escape.yml",
+            "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+        // Ensure physical target exists so canonicalize succeeds and the lexical check is exercised
+        write_file(
+            tmp.path(),
             "escape.yml",
             "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
         );
@@ -3766,6 +3771,59 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    #[cfg(any(unix, windows))]
+    fn expand_modules_accepts_symlinked_project_root() {
+        let tmp = TempDir::new().unwrap();
+        let real_project = tmp.path().join("real_project");
+        std::fs::create_dir_all(&real_project).unwrap();
+        write_file(
+            &real_project,
+            "mod.yml",
+            r#"
+module:
+  name: inner
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let symlinked_project = tmp.path().join("symlinked_project");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_project, &symlinked_project).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&real_project, &symlinked_project) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: mod.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &symlinked_project).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("worker.py")
+        );
     }
 
     #[test]
