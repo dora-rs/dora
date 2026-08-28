@@ -2396,6 +2396,17 @@ async fn start_inner(
                         &clock,
                     )
                     .await?;
+                    // Mirror the watchdog disconnect path: prune the exited
+                    // daemon from every running build's `pending_build_results`.
+                    // Without this, a multi-daemon `dora build` where one daemon
+                    // exits cleanly mid-build never sees its set empty (the exited
+                    // daemon's entry lingers), so the build is not finalized by the
+                    // `DataflowBuildResult` handler and instead hangs until
+                    // `check_build_timeouts` fires the 20-minute deadline. #1465.
+                    cleanup_disconnected_daemons_from_running_builds(
+                        &mut running_builds,
+                        &disconnected,
+                    );
                     notify_daemons_about_disconnected_peers(
                         &disconnected,
                         &mut daemon_connections,
@@ -9922,6 +9933,44 @@ mod tests {
             .expect("sender should not drop");
         let err = reply.expect_err("late wait_for_build must surface the watchdog's Err");
         assert!(format!("{err:?}").contains("build timed out"));
+    }
+
+    #[test]
+    fn cleanup_disconnected_builds_prunes_only_disconnected_daemons() {
+        // Regression guard for the `DaemonExit` build-cleanup path: pruning a
+        // disconnected daemon from `pending_build_results` must let the
+        // remaining daemons finalize the build via `DataflowBuildResult`
+        // (which finalizes only once the set is empty) instead of hanging
+        // until `check_build_timeouts`. See the `DaemonExit` handler.
+        let m1 = DaemonId::new(Some("m1".to_string()));
+        let m2 = DaemonId::new(Some("m2".to_string()));
+
+        let build_id = BuildId::generate();
+        let mut build = test_running_build(m1.clone(), /*backdate=*/ false);
+        // Two daemons are still building.
+        build.pending_build_results.insert(m2.clone());
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+
+        // m1 exits; only m1 is pruned, m2 remains pending.
+        let disconnected = BTreeSet::from([m1.clone()]);
+        cleanup_disconnected_daemons_from_running_builds(&mut running_builds, &disconnected);
+
+        let pending = &running_builds[&build_id].pending_build_results;
+        assert!(
+            !pending.contains(&m1),
+            "disconnected daemon must be pruned from pending_build_results"
+        );
+        assert!(
+            pending.contains(&m2),
+            "still-connected daemon must remain pending so its build_result is awaited"
+        );
+        assert_eq!(
+            pending.len(),
+            1,
+            "exactly one daemon should have been pruned"
+        );
     }
 
     #[test]
