@@ -468,11 +468,30 @@ impl RunningDataflow {
     /// failure of the *new* incarnation misattributed to the stale cause and
     /// classified as `NodeErrorCause::Cascading`, suppressing its real stderr
     /// capture.
+    ///
+    /// The two `OutputId`-keyed (`(node id, output)`) maps that the
+    /// `RemoveNode` / `ReplaceNode` routing cleanup never touched are dropped
+    /// too — otherwise each accumulates unboundedly across repeated dynamic
+    /// add/remove cycles that use fresh node ids or output names:
+    /// - the lazily-declared remote `publishers`, created on demand in
+    ///   `send_to_remote_receivers`: a removed node's zenoh `Publisher` (and
+    ///   its retained session clone) would otherwise stay declared for the life
+    ///   of the dataflow. A re-added node re-declares its publisher on the next
+    ///   send;
+    /// - the `debug_topic_watchers` registered when the coordinator forwards a
+    ///   `StartTopicDebugStream`: without this they are only reaped on an
+    ///   explicit unsubscribe, so a debug-watched output of a since-removed node
+    ///   lingers. A dead source produces no frames, so dropping its watchers is
+    ///   safe (a later unsubscribe simply finds nothing for that output).
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
+        self.publishers
+            .retain(|output_id, _| &output_id.0 != node_id);
+        self.debug_topic_watchers
+            .retain(|output_id, _| &output_id.0 != node_id);
     }
 
     /// Whether a startup-barrier completion (reported as

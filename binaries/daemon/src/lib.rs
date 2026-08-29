@@ -3598,7 +3598,10 @@ impl Daemon {
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
                     // `forget_node_bookkeeping` also drops the recorded
-                    // cascading-error cause for this id (see its doc comment).
+                    // cascading-error cause and the id's `OutputId`-keyed
+                    // remote publishers / debug-topic watchers for this id
+                    // (see its doc comment). The replacement re-declares any
+                    // publisher on its next remote send.
                     dataflow.forget_node_bookkeeping(&node_id);
                     dataflow
                         .node_stderr_most_recent
@@ -8930,6 +8933,7 @@ mod fault_tolerance_tests {
         let node_a: NodeId = "node_a".to_string().into();
         let node_b: NodeId = "node_b".to_string().into();
         let input_x: DataId = "input_x".to_string().into();
+        let output_m: DataId = "message".to_string().into();
         let timeout = Duration::from_secs(1);
 
         let upstream: NodeId = "upstream".to_string().into();
@@ -8948,6 +8952,11 @@ mod fault_tolerance_tests {
             // Both nodes were recorded as cascading victims of `upstream`.
             df.cascading_error_causes
                 .report_cascading_error(upstream.clone(), node.clone());
+            // Both nodes have a debug-topic watcher on their `message` output.
+            df.debug_topic_watchers.insert(
+                OutputId(node.clone(), output_m.clone()),
+                std::collections::BTreeSet::from([uuid::Uuid::new_v4()]),
+            );
         }
 
         df.forget_node_bookkeeping(&node_a);
@@ -8966,6 +8975,12 @@ mod fault_tolerance_tests {
         // `node_a` incarnation is classified by its own failure, not a stale
         // upstream cause (dora-rs/dora#2927).
         assert_eq!(df.cascading_error_causes.error_caused_by(&node_a), None);
+        // … and its `OutputId`-keyed debug-topic watcher, which would otherwise
+        // leak across repeated dynamic add/remove cycles.
+        assert!(
+            !df.debug_topic_watchers
+                .contains_key(&OutputId(node_a.clone(), output_m.clone()))
+        );
 
         // … while node_b's are untouched.
         assert!(
@@ -8980,6 +8995,10 @@ mod fault_tolerance_tests {
         assert_eq!(
             df.cascading_error_causes.error_caused_by(&node_b),
             Some(&upstream)
+        );
+        assert!(
+            df.debug_topic_watchers
+                .contains_key(&OutputId(node_b.clone(), output_m.clone()))
         );
     }
 
