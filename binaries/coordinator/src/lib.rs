@@ -4208,14 +4208,19 @@ async fn start_topic_debug_stream(
         eyre::bail!("topic inspection requires `debug.enable_debug_inspection: true`");
     }
     let subscription_id = Uuid::new_v4();
-    running_dataflows
-        .get_mut(&dataflow_id)
-        .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?
-        .topic_subscribers
-        .insert(
-            subscription_id,
-            topic_subscriber::TopicSubscriber::new(outputs_by_daemon.clone(), sender),
-        );
+    // Build the subscriber and every per-daemon start request *before*
+    // registering the subscriber in `topic_subscribers`. Both the connection
+    // lookup and the message serialization below can bail with `?`; if they did
+    // so after the insert, the just-registered `subscription_id` would be
+    // orphaned — the CLI only sees the returned error and never learns the id,
+    // so it can never `TopicUnsubscribe` it, and the entry would linger for the
+    // life of the dataflow (only opportunistically reaped by `send_topic_frames`
+    // if a frame ever happens to route to it). Registering only once everything
+    // fallible has succeeded keeps the pre-dispatch failure path leak-free; the
+    // post-dispatch path already rolls back via `rollback_topic_debug_stream`.
+    // No frame can reach the subscriber before it is inserted, because the
+    // requests are merely built here and not dispatched until `join_all` below.
+    let subscriber = topic_subscriber::TopicSubscriber::new(outputs_by_daemon.clone(), sender);
 
     let mut start_requests = Vec::new();
     for (daemon_id, outputs) in outputs_by_daemon {
@@ -4253,6 +4258,15 @@ async fn start_topic_debug_stream(
             (daemon_id, result)
         });
     }
+
+    // Everything fallible above has succeeded — register the subscriber now, so
+    // the post-dispatch failure path (rolled back below) is the only one that
+    // has to clean it up.
+    running_dataflows
+        .get_mut(&dataflow_id)
+        .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?
+        .topic_subscribers
+        .insert(subscription_id, subscriber);
 
     let mut started_daemons = Vec::new();
     let mut first_error = None;
@@ -5822,6 +5836,50 @@ mod tests {
             .expect("nested outputs should resolve to their daemon");
 
         assert_eq!(outputs[&daemon_id], expected_topics);
+    }
+
+    #[tokio::test]
+    async fn start_topic_debug_stream_does_not_orphan_subscriber_on_missing_daemon_connection() {
+        // Regression: the subscriber used to be registered in `topic_subscribers`
+        // *before* the per-daemon dispatch loop validated each daemon connection.
+        // When a topic's node mapped to a daemon with no live connection, the loop
+        // bailed with `?` and left the `subscription_id` orphaned in the map — the
+        // CLI only saw the returned error, never learned the id, and so could never
+        // `TopicUnsubscribe` it. A pre-dispatch failure must leave no subscriber.
+        let dataflow_id = DataflowId::from(Uuid::new_v4());
+        let daemon_id = DaemonId::new(Some("m1".to_string()));
+        let node_id: dora_core::config::NodeId = "sender".to_string().into();
+
+        let mut dataflow = test_running_dataflow(dataflow_id, daemon_id, node_id.clone());
+        dataflow.descriptor.debug.enable_debug_inspection = true;
+        let mut running_dataflows = HashMap::from([(dataflow_id, dataflow)]);
+
+        // No connection registered for the topic's daemon, so the dispatch loop
+        // bails before the (now-deferred) subscriber registration.
+        let mut daemon_connections = DaemonConnections::default();
+
+        let (tx, _rx) = tokio::sync::mpsc::channel(8);
+        let clock = HLC::default();
+        let topics = vec![(node_id, "message".to_string().into())];
+
+        let result = start_topic_debug_stream(
+            &mut running_dataflows,
+            &mut daemon_connections,
+            dataflow_id,
+            topics,
+            tx,
+            &clock,
+        )
+        .await;
+
+        assert!(
+            result.is_err(),
+            "a missing daemon connection must surface as an error"
+        );
+        assert!(
+            running_dataflows[&dataflow_id].topic_subscribers.is_empty(),
+            "a pre-dispatch failure must not leave an orphaned topic subscriber",
+        );
     }
 
     #[test]
