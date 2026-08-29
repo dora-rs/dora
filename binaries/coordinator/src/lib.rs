@@ -2513,24 +2513,11 @@ async fn start_inner(
                     };
                     if build.pending_build_results.is_empty() {
                         tracing::info!("dataflow build finished: `{build_id}`");
-                        let Some(mut build) = running_builds.remove(&build_id) else {
+                        let Some(build) = running_builds.remove(&build_id) else {
                             tracing::error!("build {build_id} disappeared from running_builds");
                             continue;
                         };
-                        let result = if build.errors.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(format!("build failed: {}", build.errors.join("\n\n")))
-                        };
-
-                        build.build_result.set_result(Ok(
-                            ControlRequestReply::DataflowBuildFinished { build_id, result },
-                        ));
-
-                        finished_builds.insert(build_id, build.build_result);
-                        while finished_builds.len() > MAX_FINISHED_BUILDS {
-                            finished_builds.shift_remove_index(0);
-                        }
+                        finalize_build(build_id, build, &mut finished_builds);
                     }
                 }
                 None => {
@@ -3754,10 +3741,9 @@ async fn apply_disconnect_actions(
 /// 1. remove the disconnected daemon from `pending_build_results` and record
 ///    the disconnect in `build.errors`, so the build resolves as failed rather
 ///    than silently succeeding on the strength of the *other* daemons' results;
-/// 2. if that empties `pending_build_results`, finalize the build immediately —
-///    resolve `build_result`, send a final log line to any attached
-///    `dora build --attach` session, and move the entry into `finished_builds`
-///    (mirroring the `DataflowBuildResult` finalize branch).
+/// 2. if that empties `pending_build_results`, finalize the build immediately
+///    via [`finalize_build`] (resolve `build_result` and move the entry into
+///    `finished_builds`), mirroring the `DataflowBuildResult` finalize branch.
 ///
 /// Without step 2, a build whose *last* pending daemon disconnects would linger
 /// in `running_builds` until [`check_build_timeouts`] fires the 20-minute
@@ -3785,30 +3771,42 @@ fn cleanup_disconnected_daemons_from_running_builds(
     }
 
     for build_id in emptied {
-        let Some(mut build) = running_builds.remove(&build_id) else {
+        let Some(build) = running_builds.remove(&build_id) else {
             continue;
-        };
-        // `errors` is non-empty here (we just pushed a disconnect error), so
-        // this resolves as `Err`, matching the `DataflowBuildResult` branch.
-        let result = if build.errors.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("build failed: {}", build.errors.join("\n\n")))
         };
         tracing::warn!(
             build_id = %build_id,
             "finalizing build as failed: a daemon disconnected before reporting its build result",
         );
-        build
-            .build_result
-            .set_result(Ok(ControlRequestReply::DataflowBuildFinished {
-                build_id,
-                result,
-            }));
-        finished_builds.insert(build_id, build.build_result);
-        while finished_builds.len() > MAX_FINISHED_BUILDS {
-            finished_builds.shift_remove_index(0);
-        }
+        // `build.errors` is non-empty (we just recorded a disconnect), so
+        // `finalize_build` resolves this as a failed build.
+        finalize_build(build_id, build, finished_builds);
+    }
+}
+
+/// Resolve a completed build's waiters and cache its result. `build.errors`
+/// decides success vs. failure. Shared by the `DataflowBuildResult` handler and
+/// [`cleanup_disconnected_daemons_from_running_builds`] so the `finished_builds`
+/// cap bookkeeping lives in a single place.
+fn finalize_build(
+    build_id: BuildId,
+    mut build: RunningBuild,
+    finished_builds: &mut IndexMap<BuildId, CachedResult>,
+) {
+    let result = if build.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("build failed: {}", build.errors.join("\n\n")))
+    };
+    build
+        .build_result
+        .set_result(Ok(ControlRequestReply::DataflowBuildFinished {
+            build_id,
+            result,
+        }));
+    finished_builds.insert(build_id, build.build_result);
+    while finished_builds.len() > MAX_FINISHED_BUILDS {
+        finished_builds.shift_remove_index(0);
     }
 }
 
