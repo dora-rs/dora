@@ -1,6 +1,6 @@
 # Migration Guide: dora 0.x → 1.0
 
-> **Status (2026-08-27):** complete for the 1.0 release. Every language API (Rust, Python, C, C++) and the descriptor surface now have a section with before/after examples. What is deliberately not covered is listed under [Still to do](#still-to-do-this-guide).
+> **Status (2026-08-29):** complete for the 1.0 release. Every language API (Rust, Python, C, C++), the descriptor surface, and the wire format now have a section with before/after examples. What is deliberately not covered is listed under [Still to do](#still-to-do-this-guide).
 >
 > Previous filename: `dora-compatibility.md` (which documented a fork→upstream compat layer that is obsolete under the tree-takeover consolidation strategy).
 
@@ -8,7 +8,7 @@
 
 dora 1.0 is the consolidation of the fork tree into the upstream `dora-rs/dora` repository. See [`plan-dora-1.0-consolidation.md`](plan-dora-1.0-consolidation.md) for the full context.
 
-**Headline:** 1.0 is a **hard break** from 0.x. You cannot mix-and-match 0.x and 1.0 components in a running cluster. Plan a full-cluster restart for the upgrade.
+**Headline:** 1.0 is a **hard break** from 0.x. You cannot mix-and-match 0.x and 1.0 components in a running cluster, because the binary encoding itself changed — see [Wire format](#wire-format-a-0x-peer-cannot-talk-to-a-10-peer). Plan a full-cluster restart for the upgrade.
 
 The 0.x tree is preserved under the `v0.x-final` tag. It shares no history with 1.0 — `git merge-base main v0.x-final` has no answer — so "removed in 1.0" below means "present at `v0.x-final`, absent on `main`", not "deleted by a commit you can bisect to".
 
@@ -17,18 +17,114 @@ The 0.x tree is preserved under the `v0.x-final` tag. It shares no history with 
 | Surface | 0.x behaviour | 1.0 behaviour | Evidence |
 |---|---|---|---|
 | Wire protocol (CLI ↔ coordinator) | tarpc over TCP with JSON framing | WebSocket with new message shapes | [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) §4 |
-| Wire encoding | bincode | postcard | `libraries/message/Cargo.toml` |
+| Wire encoding | bincode | postcard — no mixed-version mode (#3153) | [Wire format](#bincode--postcard-3153) |
+| HLC timestamp in JSON payloads | `id` is a `u128` number | `id` is a 16-byte array (uhlc 0.9, #3016) — binary plane unaffected | [uhlc 0.5 → 0.9](#uhlc-05--09-3016--the-json-plane-only) |
 | Message-enum variants (`NodeEvent`, `DaemonCommunication`) | 0.x variant order | New variants inserted (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`, `Shmem`) — positional tags shifted | [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) §3 |
 | Wire-protocol enums in `dora-message` | exhaustively matchable | `#[non_exhaustive]` — a `_ =>` arm is required (#3151) | `libraries/message/src/` |
 | Descriptor structs in `dora-message` (incl. `NodeRunConfig`) | struct-literal constructible | `#[non_exhaustive]` — use `Node::new` / `Descriptor::new` / `Deploy::default()` (#3387) | `libraries/message/src/descriptor.rs`, `libraries/message/src/config.rs` |
 | CLI handshake | Optional `get_version()` RPC | Mandatory `ControlRequest::Hello` with semver check | `libraries/message/src/cli_to_coordinator.rs` |
-| Topic data channel | subscription carried no encoding version | `protocol_version` in both directions; mismatch is refused (#3160) | `docs/websocket-topic-data-channel.md` |
-| Recording file extension | `.adorec` | `.drec` (magic bytes were already `DORAREC\x00` / `DORAEND\x00`) | `libraries/recording/src/lib.rs` |
+| Topic data channel | subscription carried no encoding version | `protocol_version` in both directions; mismatch is refused (#3160) | [Topic subscriptions](#topic-subscriptions-are-refused-on-encoding-mismatch-3160) |
+| Recording files | `.adorec`, `FORMAT_VERSION` 1 (bincode entries) | `.drec`, `FORMAT_VERSION` 2 (postcard entries); v1 is refused, not upgraded | `libraries/recording/src/lib.rs` |
 | Request-reply communication layer | `libraries/communication-layer/request-reply/` | Replaced by `send_service_request()` / `send_service_response()` helpers and service/action patterns | [`docs/patterns.md`](patterns.md) |
 | Auth | Query-parameter token | Bearer header token, constant-time comparison | `libraries/message/src/auth.rs` |
 | Python interpreter floor | `requires-python = ">=3.8"` | `requires-python = ">=3.11"` (abi3-py311) | `apis/python/node/pyproject.toml` |
 
 Additional fixes and hardening items from the 2026-03-21 audit are closed in 1.0; see [`audit-2026-03-21-closure.md`](audit-2026-03-21-closure.md) for the full per-finding record.
+
+## Wire format: a 0.x peer cannot talk to a 1.0 peer
+
+This is the single most important thing to know before upgrading, and no configuration recovers it: **there is no mixed-version mode.** The binary encoding changed during the rc window, so a 0.x node pointed at a 1.0 daemon does not degrade or negotiate down — it fails on the first frame.
+
+### `bincode` → `postcard` (#3153)
+
+bincode is unmaintained (RUSTSEC-2025-0141): development stopped at 1.3.3 and every version is flagged, so it was not something to carry into an encoding that 1.0 commits to. postcard is serde-based, so no message *type* changed — only the bytes — and unlike bincode it has a documented, stable wire spec, which is the property that matters under a stability guarantee. Messages also shrink 25–27 bytes each (`Metadata`: 34 → 27 B) from varint integers and length prefixes.
+
+Four format versions moved with it. Each one fails loudly rather than misparsing, which is the whole point — both encodings are positional, so a tolerated mismatch would surface as corrupt data rather than an error:
+
+| Surface | 0.x | 1.0 | What a stale peer or file gets |
+|---|---|---|---|
+| `Metadata::CURRENT_VERSION` (node ↔ daemon) | 1 | 2 | decode failure at register — see the caveat below |
+| Coordinator store `SCHEMA_VERSION` (redb) | 4 | 5 | coordinator refuses to open the database |
+| `.drec` `FORMAT_VERSION` | 1 | 2 | `dora replay` refuses the file |
+| Topic data channel `protocol_version` | absent, or 1 | 2 | subscription refused at handshake (#3160) |
+
+**Do not expect a clean version error from a 0.x node.** `NodeRegisterRequest` carries a `metadata_version` field so that layout drift *within* one encoding is caught at register with a legible message.
+
+It cannot catch a change of the encoding itself: the register frame is encoded the same way as every other frame, so decoding fails on the frame that carries the check before the check can run. Expect a low-level deserialization error, not `message wire-format mismatch: node speaks metadata format v1`.
+
+If you run a persistent coordinator store, the redb file from 0.x is not migrated. The coordinator names the file and tells you what to do:
+
+```
+redb schema version mismatch: database at `~/.dora/coordinator.redb` has v4,
+but this binary expects v5. Delete the file and restart to create a fresh
+database, or use `--store memory` to bypass persistence.
+```
+
+This only affects `--store redb`; the default `memory` backend keeps nothing across a restart and needs no action.
+
+### `uhlc` 0.5 → 0.9 (#3016) — the JSON plane only
+
+Worth stating precisely, because the natural assumption is wrong: **this bump did not change the binary plane.** uhlc 0.9 changes `ID`'s in-memory representation from `NonZeroU128` to `[u8; 16]`, but the two serialize identically — a `u128` is written little-endian, and 0.5 built that `u128` from the id bytes in little-endian order to begin with.
+
+The golden vectors in `libraries/message/tests/uhlc_wire_format.rs` were run against both 0.5.2 and 0.9.0 with the real `dora-message` types, and every vector matches byte for byte. What 0.9 actually reversed is `ID`'s `Display` / `FromStr`, which dora never uses.
+
+Daemon ↔ node messages, inter-daemon Zenoh samples and `.drec` entries were untouched by this bump, and it warranted no `Metadata::CURRENT_VERSION` change of its own.
+
+What does change shape is the JSON plane. On the CLI ↔ coordinator and coordinator ↔ daemon WebSocket links, a timestamp's `id` goes from a bare `u128` number to a 16-element byte array:
+
+```json
+// 0.x
+{"timestamp": {"time": 7346545054874578944, "id": 133075017253481751908959400507149664154}}
+
+// 1.0
+{"timestamp": {"time": 7346545054874578944,
+               "id": [154, 63, 12, 113, 212, 40, 78, 182, 21, 195, 135, 42, 233, 80, 29, 100]}}
+```
+
+Both links are gated by the `dora_version` semver handshake, so a mismatch fails at parse time with a serde type error rather than being misread, and nothing persists a uhlc timestamp as JSON on disk. This reaches you only if you have your own tooling parsing those WebSocket payloads.
+
+The new shape is strictly easier to consume. A real HLC id uses all 16 bytes, so under 0.5 the `u128` form exceeded every number `serde_json::Value` can hold (i64/u64/f64) — `serde_json::to_value` failed outright with "number out of range" on every timestamp, which is why dora's own components passed pre-serialized JSON fragments around instead.
+
+The `[u8; 16]` form round-trips through `serde_json::Value` losslessly. If you were working around that limit with a bignum-aware parser or raw string handling, you no longer need to.
+
+The bump was taken deliberately *before* the freeze rather than after it: it needed no source changes beyond an error type that all eight call sites only `Display`, and doing it afterwards would have cost a major bump.
+
+### Topic subscriptions are refused on encoding mismatch (#3160)
+
+The WebSocket topic data channel carries raw `Timestamped<InterDaemonEvent>` bytes to third-party subscribers, forwarded as-is with no envelope and no self-describing encoding. A subscriber speaking a different binary format therefore *misparses* those frames rather than failing to decode them — which before 1.0 meant silent corruption, since the channel had no version exchange at all.
+
+The subscription handshake now carries `protocol_version` in both directions, and either side refuses on mismatch:
+
+```json
+{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2}}
+{"TopicSubscribed": {"subscription_id": "...", "protocol_version": 2}}
+```
+
+Both fields are `#[serde(default)]`, so a peer predating the handshake omits them, deserializes to `None`, and is rejected for the same reason a wrong number is. The rejection names both sides so you can tell which one is old:
+
+```
+topic data protocol mismatch: client speaks version 1, this side speaks 2.
+Binary frames are positionally encoded, so subscribing would silently misparse
+rather than fail. Upgrade whichever side is older.
+```
+
+**If you wrote your own topic subscriber**, send `protocol_version: dora_message::TOPIC_DATA_PROTOCOL_VERSION` (currently `2`) in `TopicSubscribe` and check the value echoed in `TopicSubscribed` before consuming frames.
+
+The constant exists separately from the `Hello` semver handshake on purpose: third-party subscribers never send `Hello`, and `versions_compatible` is semver-caret, so a 1.0 and a 1.5 peer are "compatible" and `Hello` would wave through a future encoding change inside the 1.x series that only this version catches.
+
+The full frame layout is in [`websocket-topic-data-channel.md`](websocket-topic-data-channel.md).
+
+### 0.x recordings do not replay
+
+`.drec` entries are `Timestamped<InterDaemonEvent>` payloads, so they moved encoding with everything else. The container framing and the magic bytes (`DORAREC\x00` / `DORAEND\x00`) are unchanged, which is exactly why the reader carries an explicit floor: without it a v1 header would pass the magic and version checks and then fail per entry, surfacing as a corruption error instead of a version one.
+
+```
+recording format version 1 is no longer supported (min supported: 2); it was
+written by a dora release that encoded events with bincode. Re-record with this
+version of dora.
+```
+
+There is no converter, and renaming `.adorec` to `.drec` does not produce a readable file. If a capture matters, keep a `v0.x-final` build around to replay it; otherwise re-record under 1.0.
 
 ## Upgrade path
 
@@ -36,7 +132,7 @@ Additional fixes and hardening items from the 2026-03-21 audit are closed in 1.0
 2. **Rebuild every component.** Daemons, coordinators, CLI, and every node/operator binary must be rebuilt against the 1.0 crates. Do not run 0.x binaries against 1.0 daemons.
 3. **Check your Python version.** 1.0 wheels need CPython 3.11 or later. If you are on 3.8–3.10, upgrade the interpreter before upgrading dora — see [Python API changes](#python-api-changes).
 4. **Update YAML descriptors.** See [Descriptor changes](#descriptor-changes-dataflow-yaml) — several 0.x keys are now rejected by name rather than ignored.
-5. **Rename existing recordings.** `mv capture.adorec capture.drec` — the file format itself is unchanged, only the extension differs.
+5. **Re-record, don't rename, existing recordings.** Renaming is not enough: `.drec` `FORMAT_VERSION` went 1 → 2 when entry payloads moved to postcard, and the reader's floor is 2, so a 0.x capture is refused outright rather than misread — see [0.x recordings do not replay](#0x-recordings-do-not-replay). The container framing and magic bytes (`DORAREC\x00` / `DORAEND\x00`) are unchanged, but the entries inside are not.
 6. **Update CLI usage.** Any tooling that pipes files into `dora replay` should use `.drec` going forward. Shell completions and aliases referencing `*.adorec` need updating.
 7. **Coordinate the restart.** In a distributed deployment, bring down all 0.x daemons before starting 1.0 daemons. A fork CLI connecting to an upstream 0.x coordinator (or vice versa) will fail at the TCP handshake with a low-level framing error, not a graceful version-mismatch message.
 8. **If you installed the `adora-rs` PyPI package** (from the fork-era 0.x releases): uninstall it and install `dora-rs` directly. 1.0 is a clean break — `adora-rs` is not republished, so `pip install adora-rs` resolves to the last fork-era 0.x release and will not pull 1.0. Rust users on crates.io are unaffected — the fork never published `adora-*` crates.
@@ -464,6 +560,7 @@ There is no direct 1.0 replacement. `node_config_json(dora_node.send_output)` re
 - [`api-rust.md`](api-rust.md) — Rust API reference, Arrow version policy, and the 1.0 stability scope
 - [`api-python.md`](api-python.md) — Python API reference
 - [`api-c.md`](api-c.md) / [`api-cxx.md`](api-cxx.md) — C and C++ API references
+- [`websocket-topic-data-channel.md`](websocket-topic-data-channel.md) — topic-data frame layout and the `protocol_version` handshake
 - [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) — wire-protocol audit evidence
 - [`audit-2026-03-21-closure.md`](audit-2026-03-21-closure.md) — security/correctness closure
 - [`ownership-verification-2026-04-16.md`](ownership-verification-2026-04-16.md) — publish-path readiness
