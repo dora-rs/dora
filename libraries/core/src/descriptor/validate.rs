@@ -272,7 +272,17 @@ fn check_seconds_field(
         // false`). Inspect the resulting `Duration`, not the literal `0.0`.
         let duration = std::time::Duration::try_from_secs_f64(value);
         let is_zero = duration.as_ref().is_ok_and(|d| d.is_zero());
-        if duration.is_err() || (!allow_zero && is_zero) {
+        if !allow_zero && is_zero {
+            // Distinct message: a value like `1e-10` *is* positive, so calling it
+            // "not positive" would misdirect the user -- the real reason is that
+            // it rounds down to a zero-length duration.
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a positive number of seconds; this value is zero or \
+                 rounds down to a zero-length duration)"
+            );
+        }
+        if duration.is_err() {
             let requirement = if allow_zero {
                 "non-negative"
             } else {
