@@ -425,7 +425,26 @@ impl Logger {
                                 Indent(&message.message)
                             );
                         }
-                        _ => {}
+                        // Exhaustive on purpose: without an explicit `Trace` arm
+                        // these messages fell through a `_ => {}` and were
+                        // silently dropped, while every other level (including
+                        // `Debug`) was forwarded (#3348). Keeping the match
+                        // exhaustive also turns any future `log::Level` addition
+                        // into a compile error here rather than another silent
+                        // drop.
+                        LogLevel::Trace => {
+                            tracing::trace!(
+                                build_id = ?message.build_id.map(|id| id.to_string()),
+                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                                node_id = ?message.node_id.map(|id| id.to_string()),
+                                target = message.target,
+                                module_path = message.module_path,
+                                file = message.file,
+                                line = message.line,
+                                "{}",
+                                Indent(&message.message)
+                            );
+                        }
                     },
                 }
             }
@@ -720,5 +739,84 @@ mod tests {
     fn indent_empty_string_produces_empty() {
         let out = Indent("").to_string();
         assert_eq!(out, "");
+    }
+
+    /// Minimal `tracing::Subscriber` that records the level of every event it
+    /// receives, so a test can assert which severities the `Tracing` log
+    /// destination actually forwards.
+    #[derive(Clone, Default)]
+    struct LevelCapture {
+        levels: Arc<Mutex<Vec<tracing::Level>>>,
+    }
+
+    impl tracing::Subscriber for LevelCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            self.levels.lock().unwrap().push(*event.metadata().level());
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn log_message_at(level: LogLevel, message: &str) -> LogMessage {
+        LogMessage {
+            build_id: None,
+            dataflow_id: None,
+            node_id: None,
+            daemon_id: None,
+            level: LogLevelOrStdout::LogLevel(level),
+            target: None,
+            module_path: None,
+            file: None,
+            line: None,
+            message: message.to_string(),
+            timestamp: chrono::Utc::now(),
+            fields: None,
+        }
+    }
+
+    /// Regression for #3348: the `Tracing` destination forwarded every level
+    /// except `Trace`, which fell through a `_ => {}` wildcard and was silently
+    /// dropped. Assert that a `Trace` message now reaches `tracing::trace!`,
+    /// just like `Debug` and above.
+    #[test]
+    fn tracing_destination_forwards_trace_level() {
+        let capture = LevelCapture::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        tracing::subscriber::with_default(capture.clone(), || {
+            rt.block_on(async {
+                let mut logger = Logger {
+                    destination: LogDestination::Tracing,
+                    daemon_id: DaemonId::new(None),
+                    clock: Arc::new(uhlc::HLC::default()),
+                };
+                logger
+                    .log(log_message_at(LogLevel::Trace, "trace line"))
+                    .await;
+                logger
+                    .log(log_message_at(LogLevel::Debug, "debug line"))
+                    .await;
+            });
+        });
+
+        let levels = capture.levels.lock().unwrap();
+        assert!(
+            levels.contains(&tracing::Level::TRACE),
+            "Trace-level message must be forwarded, got {levels:?}"
+        );
+        assert!(
+            levels.contains(&tracing::Level::DEBUG),
+            "Debug-level message must be forwarded, got {levels:?}"
+        );
     }
 }
