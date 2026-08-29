@@ -108,11 +108,10 @@ pub fn expand_modules_with_boundaries(
     // Lexical project root: used by the module containment check so that a
     // symlinked `modules/` directory inside the project root is accepted,
     // consistent with how node path confinement works (#3247).
-    let absolute_base =
-        dunce::simplified(&std::path::absolute(base_dir).with_context(|| {
-            format!("failed to make base_dir absolute: {}", base_dir.display())
-        })?)
-        .to_path_buf();
+    let absolute_base = normalize_path(dunce::simplified(
+        &std::path::absolute(base_dir)
+            .with_context(|| format!("failed to make base_dir absolute: {}", base_dir.display()))?,
+    ));
     let mut seen = HashSet::new();
     let mut flat_nodes = Vec::new();
     let mut output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
@@ -3818,6 +3817,51 @@ nodes:
         );
 
         let expanded = expand_modules(&desc, &symlinked_project).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("worker.py")
+        );
+    }
+
+    #[test]
+    fn expand_modules_accepts_dotdot_in_base_dir() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let project_dir = sub.join("..").join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        write_file(
+            &project_dir,
+            "mod.yml",
+            r#"
+module:
+  name: inner
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: mod.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
         assert_eq!(expanded.nodes.len(), 1);
         assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
         assert_eq!(
