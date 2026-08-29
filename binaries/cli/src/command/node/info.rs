@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::io::Write;
 
 use clap::Args;
@@ -19,8 +20,10 @@ use crate::{
 };
 use dora_core::config::InputMapping;
 use dora_message::{
-    cli_to_coordinator::ControlRequest, coordinator_to_cli::NodeInfo, descriptor::Descriptor,
-    id::NodeId,
+    cli_to_coordinator::ControlRequest,
+    coordinator_to_cli::NodeInfo,
+    descriptor::Descriptor,
+    id::{DataId, NodeId},
 };
 
 /// Show detailed information about a specific node.
@@ -213,24 +216,26 @@ fn build_output_info(
     // and `operators:` nodes (their topics live under `operator.config.*` /
     // `operators[].config.*`), so iterating the raw fields would omit every
     // operator node's outputs and every operator-node subscriber.
-    node_topic_outputs(node_desc)
+    let outputs = node_topic_outputs(node_desc);
+    let mut subscribers: BTreeMap<&DataId, Vec<String>> =
+        outputs.iter().map(|o| (o, Vec::new())).collect();
+    // Scan every node's inputs once (not once per output): for each consumer of
+    // one of this node's outputs, append it to that output's subscriber list.
+    for other_node in &descriptor.nodes {
+        for (input_id, input) in node_topic_inputs(other_node) {
+            if let InputMapping::User(user) = &input.mapping
+                && user.source == node_desc.id
+                && let Some(list) = subscribers.get_mut(&user.output)
+            {
+                list.push(format!("{}/{}", other_node.id, input_id));
+            }
+        }
+    }
+    outputs
         .iter()
-        .map(|output_id| {
-            let mut subscribers = Vec::new();
-            for other_node in &descriptor.nodes {
-                for (input_id, input) in node_topic_inputs(other_node) {
-                    if let InputMapping::User(user) = &input.mapping
-                        && user.source == node_desc.id
-                        && user.output == *output_id
-                    {
-                        subscribers.push(format!("{}/{}", other_node.id, input_id));
-                    }
-                }
-            }
-            OutputInfo {
-                id: output_id.to_string(),
-                subscribers,
-            }
+        .map(|output_id| OutputInfo {
+            id: output_id.to_string(),
+            subscribers: subscribers.remove(output_id).unwrap_or_default(),
         })
         .collect()
 }
