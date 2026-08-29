@@ -16,6 +16,17 @@ use eyre::{Context, bail};
 
 use crate::command::{Executable, Run, default_tracing, topic::selector::public_topic_output_id};
 
+/// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
+/// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
+/// before NTP sync) rather than panicking. Using the same fallback for both the
+/// recording base and each entry keeps `timestamp_offset_nanos` consistent.
+fn epoch_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
 /// Record dataflow messages to a file for offline replay.
 ///
 /// Injects a record node into the dataflow that captures all (or filtered)
@@ -446,14 +457,9 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
-    // wall clock is set before 1970 (e.g. an embedded target booting with an
-    // unset RTC before NTP sync); fall back to a zero base rather than
-    // panicking the recorder. Entry offsets stay consistent because `now_nanos`
-    // below uses the same fallback.
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos() as u64;
+    // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
+    // rather than panicking the recorder (see its doc).
+    let start_nanos = epoch_nanos();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -563,12 +569,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     }
                 };
 
-                // Same pre-epoch fallback as `start_nanos` above so
-                // `timestamp_offset_nanos` stays consistent (and never panics).
-                let now_nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos() as u64;
+                let now_nanos = epoch_nanos();
 
                 let entry = RecordEntry {
                     node_id,
