@@ -21,7 +21,7 @@ extern "C" {
 
 namespace dora_extensions {
 
-// 简单的输入事件结构
+// Simple input event representation.
 struct InputEvent {
     std::string id;
     std::vector<uint8_t> data;
@@ -40,8 +40,8 @@ struct TimerEvent {
 };
 
 /**
- * @brief 专属工作者类
- * 每个实例拥有独立的线程和队列，处理特定类型的任务
+ * @brief Dedicated worker class.
+ * Each instance owns a thread and queue for processing a specific task type.
  */
 class SerialWorker {
 public:
@@ -56,13 +56,13 @@ public:
         stop();
     }
 
-    // 主循环通过此接口快速写入数据并通知
+    // Quickly enqueue data from the main loop and notify the worker.
     void enqueue(const InputEvent& event) {
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
             queue_.push(event);
         }
-        cv_.notify_one(); // 通知专属线程有新数据
+        cv_.notify_one(); // Notify the dedicated thread that data is available.
     }
 
     void stop() {
@@ -86,7 +86,7 @@ private:
                 event = std::move(queue_.front());
                 queue_.pop();
             }
-            // 执行具体的耗时业务逻辑
+            // Execute the potentially time-consuming application logic.
             if (handler_) {
                 handler_(event);
             }
@@ -103,25 +103,24 @@ private:
 };
 
 /**
- * @brief 任务响应式事件循环
+ * @brief Task-responsive event loop.
  */
 class SerialEventLoop {
 public:
     SerialEventLoop(const std::string& node_name) : node_name_(node_name), running_(false) {}
 
-    // 注册特定话题的专属处理器
+    // Register a dedicated handler for a specific topic.
     void register_handler(const std::string& id, SerialWorker::Handler handler) {
         workers_[id] = std::make_unique<SerialWorker>(id, handler);
     }
 
     /**
-     * @brief 注册定时器
-     *        Register timer
+     * @brief Register a timer.
      *
-     * @param id 定时器ID
-     * @param interval 时间间隔（毫秒）
-     * @param handler 回调函数
-     * @param repeat 是否重复，默认true
+     * @param id Timer ID.
+     * @param interval Interval in milliseconds.
+     * @param handler Callback function.
+     * @param repeat Whether the timer repeats; defaults to true.
      */
     void register_timer(const std::string& id, std::chrono::milliseconds interval,
                         std::function<void()> handler, bool repeat = true) {
@@ -136,11 +135,10 @@ public:
     }
 
     /**
-     * @brief 取消定时器
-     *        Cancel timer
+     * @brief Cancel a timer.
      *
-     * @param id 定时器ID
-     * @return 是否成功取消
+     * @param id Timer ID.
+     * @return Whether the timer was successfully cancelled.
      */
     bool cancel_timer(const std::string& id) {
         std::lock_guard<std::mutex> lock(timer_mutex_);
@@ -154,46 +152,54 @@ public:
     }
 
     /**
-     * @brief 发送输出（线程安全，可在任何线程调用）
-     *        Send output (thread-safe, can be called from any thread)
+     * @brief Send output. Thread-safe and callable from any thread.
      *
-     * @param output_id 输出ID
-     * @param data 输出数据
+     * @param output_id Output ID.
+     * @param data Output data.
      */
     void send_output(const std::string& output_id, const std::vector<uint8_t>& data) {
-        // 如果在主线程中且在事件循环内，直接发送
-        if (std::this_thread::get_id() == main_thread_id_ && in_event_loop_ && dora_context_) {
-            direct_send_output(output_id, data);
-        } else {
-            queue_output(output_id, data);
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            // Send directly when called by the main thread inside the event loop.
+            if (std::this_thread::get_id() == main_thread_id_ && in_event_loop_ && dora_context_) {
+                direct_send_output(dora_context_, output_id, data);
+                return;
+            }
         }
+        queue_output(output_id, data);
     }
 
     void run() {
-        // 1. 初始化Dora上下文
-        dora_context_ = init_dora_context_from_env();
-        if (!dora_context_) {
-            std::cerr << "[" << node_name_ << "] 初始化Dora上下文失败 / Init dora context failed" << std::endl;
+        // 1. Initialize the Dora context.
+        void* dora_context = init_dora_context_from_env();
+        if (!dora_context) {
+            std::cerr << "[" << node_name_ << "] Failed to initialize Dora context" << std::endl;
             return;
         }
         running_ = true;
-        in_event_loop_ = true;
-        main_thread_id_ = std::this_thread::get_id();
-        std::cout << "[" << node_name_ << "] 专属线程模式启动..." << std::endl;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            dora_context_ = dora_context;
+            in_event_loop_ = true;
+            main_thread_id_ = std::this_thread::get_id();
+        }
+        std::cout << "[" << node_name_ << "] Dedicated-thread mode started" << std::endl;
 
-        // 启动定时器线程
+        // Start the timer thread.
         timer_thread_ = std::make_unique<std::thread>(&SerialEventLoop::timer_thread_func, this);
 
         while (running_) {
-            // 处理输出队列中的消息
+            // Process messages in the output queue.
             process_output_queue();
 
-            // 2. 阻塞等待Dora事件
-            void* event = dora_next_event(dora_context_);
+            // 2. Block while waiting for the next Dora event.
+            void* event = dora_next_event(dora_context);
             if (!event) {
-                std::cerr << "[" << node_name_ << "] 意外的事件结束 / Unexpected end of event" << std::endl;
+                std::cerr << "[" << node_name_ << "] Unexpected end of event stream" << std::endl;
                 break;
             }
+            std::unique_ptr<void, decltype(&free_dora_event)> event_guard(
+                event, &free_dora_event);
 
             enum DoraEventType ty = read_dora_event_type(event);
 
@@ -208,43 +214,41 @@ public:
 
                 std::string input_id(id, id_len);
 
-                // 3. 核心分发逻辑：如果是已注册的话题，写入对应队列并立即返回
+                // 3. Dispatch registered topics to their queues and return immediately.
                 auto it = workers_.find(input_id);
                 if (it != workers_.end()) {
                     InputEvent ie;
                     ie.id = input_id;
                     ie.data = std::vector<uint8_t>(data, data + data_len);
 
-                    it->second->enqueue(ie); // 瞬间完成，不会阻塞主循环
+                    it->second->enqueue(ie); // Returns quickly without blocking the main loop.
                 }
             }
             else if (ty == DoraEventType_Stop) {
-                std::cout << "[" << node_name_ << "] 收到停止事件 / Received stop event" << std::endl;
-                free_dora_event(event);
+                std::cout << "[" << node_name_ << "] Received stop event" << std::endl;
                 running_ = false;
             }
             else {
-                std::cerr << "[" << node_name_ << "] 未知事件类型 / Unknown event type: " << ty << std::endl;
-                free_dora_event(event);
+                std::cerr << "[" << node_name_ << "] Unknown event type: " << ty << std::endl;
                 running_ = false;
-            }
-
-            if (ty != DoraEventType_Stop) {
-                free_dora_event(event);
             }
         }
 
-        in_event_loop_ = false;
-
-        // 停止定时器线程
+        // Stop the timer thread.
         if (timer_thread_ && timer_thread_->joinable()) {
             timer_thread_->join();
         }
         timer_thread_.reset();
 
-        // 释放Dora上下文
-        free_dora_context(dora_context_);
-        dora_context_ = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(state_mutex_);
+            in_event_loop_ = false;
+            main_thread_id_ = {};
+            dora_context_ = nullptr;
+        }
+
+        // Release the Dora context.
+        free_dora_context(dora_context);
     }
 
 private:
@@ -253,14 +257,10 @@ private:
         output_queue_.push({output_id, data});
     }
 
-    void direct_send_output(const std::string& output_id, const std::vector<uint8_t>& data) {
-        if (!dora_context_) {
-            std::cerr << "[" << node_name_ << "] 节点未初始化 / Node not initialized" << std::endl;
-            return;
-        }
-
+    void direct_send_output(void* dora_context, const std::string& output_id,
+                            const std::vector<uint8_t>& data) {
         std::lock_guard<std::mutex> lock(send_lock_);
-        dora_send_output(dora_context_,
+        dora_send_output(dora_context,
                          const_cast<char*>(output_id.c_str()), output_id.size(),
                          const_cast<char*>(reinterpret_cast<const char*>(data.data())), data.size());
     }
@@ -276,10 +276,13 @@ private:
             }
 
             try {
-                direct_send_output(message.output_id, message.data);
+                std::lock_guard<std::mutex> lock(state_mutex_);
+                if (dora_context_) {
+                    direct_send_output(dora_context_, message.output_id, message.data);
+                }
             } catch (const std::exception& e) {
                 std::cerr << "[" << node_name_
-                          << "] 处理输出消息出错 / Error processing output message: "
+                          << "] Error processing output message: "
                           << e.what() << std::endl;
             }
         }
@@ -288,38 +291,41 @@ private:
     void timer_thread_func() {
         while (running_) {
             auto now = std::chrono::steady_clock::now();
+            std::vector<std::function<void()>> due_handlers;
 
             {
                 std::lock_guard<std::mutex> lock(timer_mutex_);
-                auto timers_copy = timers_;
-
-                for (const auto& pair : timers_copy) {
-                    const auto& timer = pair.second;
+                for (auto timer_it = timers_.begin(); timer_it != timers_.end();) {
+                    auto& timer = timer_it->second;
                     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
                         now - timer.last_trigger);
 
                     if (elapsed >= timer.interval) {
                         auto handler_it = timer_handlers_.find(timer.id);
                         if (handler_it != timer_handlers_.end()) {
-                            try {
-                                handler_it->second();
-                            } catch (const std::exception& e) {
-                                std::cerr << "[" << node_name_
-                                          << "] 定时器回调出错 / Timer callback error: "
-                                          << e.what() << std::endl;
-                            }
+                            due_handlers.push_back(handler_it->second);
                         }
 
-                        auto current_it = timers_.find(timer.id);
-                        if (current_it != timers_.end()) {
-                            if (timer.repeat) {
-                                current_it->second.last_trigger = now;
-                            } else {
-                                timers_.erase(timer.id);
-                                timer_handlers_.erase(timer.id);
-                            }
+                        if (timer.repeat) {
+                            timer.last_trigger = now;
+                            ++timer_it;
+                        } else {
+                            timer_handlers_.erase(timer.id);
+                            timer_it = timers_.erase(timer_it);
                         }
+                    } else {
+                        ++timer_it;
                     }
+                }
+            }
+
+            for (const auto& handler : due_handlers) {
+                try {
+                    handler();
+                } catch (const std::exception& e) {
+                    std::cerr << "[" << node_name_
+                              << "] Timer callback error: "
+                              << e.what() << std::endl;
                 }
             }
 
@@ -329,18 +335,19 @@ private:
 
     std::string node_name_;
     std::atomic<bool> running_;
+    std::mutex state_mutex_;
     bool in_event_loop_ = false;
     std::thread::id main_thread_id_;
     void* dora_context_ = nullptr;
 
     std::unordered_map<std::string, std::unique_ptr<SerialWorker>> workers_;
 
-    // 输出队列 / Output queue
+    // Output queue.
     std::queue<OutputMessage> output_queue_;
     std::mutex output_queue_mutex_;
     std::mutex send_lock_;
 
-    // 定时器 / Timers
+    // Timers.
     std::unordered_map<std::string, TimerEvent> timers_;
     std::unordered_map<std::string, std::function<void()>> timer_handlers_;
     std::mutex timer_mutex_;

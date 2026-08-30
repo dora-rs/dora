@@ -8,7 +8,7 @@ A **task-responsive event loop** built on the Dora framework. It provides dedica
 - pthread
 - The Dora framework (providing `node_api.h` and the runtime library)
 
-When only building the tests without linking the Dora runtime, CMake automatically uses the bundled mock header.
+The test target uses the C API header from the current Dora checkout and provides a local fake runtime, so it does not link the Dora runtime library.
 
 ### Build and Test
 
@@ -18,6 +18,8 @@ cmake ..
 make
 ./serial_event_loop_test
 ```
+
+CMake derives `DORA_ROOT` from this example's location. For an out-of-tree checkout or a custom runtime build, override `DORA_ROOT` and/or `DORA_LIB_PATH` with `-D` options.
 
 ### Example
 

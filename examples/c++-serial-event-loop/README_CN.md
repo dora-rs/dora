@@ -7,7 +7,7 @@
 - pthread
 - Dora 框架（提供 `node_api.h` 和运行时库）
 
-如果只需编译测试（不链接 Dora 运行时），CMake 会自动使用内置的 mock 头文件。
+测试目标使用当前 Dora 源码树中的 C API 头文件，并提供本地 fake 运行时，因此不链接 Dora 运行时库。
 
 ### 构建与测试
 
@@ -17,6 +17,8 @@ cmake ..
 make
 ./serial_event_loop_test
 ```
+
+CMake 默认根据本示例的位置推导 `DORA_ROOT`。如果使用源码树外构建或自定义运行时库，可通过 `-D` 选项覆盖 `DORA_ROOT` 和/或 `DORA_LIB_PATH`。
 
 ### 示例
 
