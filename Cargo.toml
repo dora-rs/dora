@@ -102,7 +102,7 @@ edition = "2024"
 # harnesses (#3090). Bump that one only against Kani's rustc.
 rust-version = "1.95.0"
 # Python packages derive version from CARGO_PKG_VERSION automatically.
-version = "1.0.0-rc.4"
+version = "1.0.0-rc.5"
 description = "`dora` goal is to be a low latency, composable, and distributed data flow."
 documentation = "https://dora-rs.ai"
 readme = "./README.md"
@@ -110,36 +110,36 @@ license = "Apache-2.0"
 repository = "https://github.com/dora-rs/dora/"
 
 [workspace.dependencies]
-dora-node-api = { version = "=1.0.0-rc.4", path = "apis/rust/node", default-features = false }
-dora-node-api-python = { version = "=1.0.0-rc.4", path = "apis/python/node", default-features = false }
-dora-operator-api = { version = "=1.0.0-rc.4", path = "apis/rust/operator", default-features = false }
-dora-operator-api-macros = { version = "=1.0.0-rc.4", path = "apis/rust/operator/macros" }
-dora-operator-api-types = { version = "=1.0.0-rc.4", path = "apis/rust/operator/types" }
-dora-operator-api-python = { version = "=1.0.0-rc.4", path = "apis/python/operator" }
-dora-operator-api-c = { version = "=1.0.0-rc.4", path = "apis/c/operator" }
-dora-node-api-c = { version = "=1.0.0-rc.4", path = "apis/c/node" }
-dora-core = { version = "=1.0.0-rc.4", path = "libraries/core" }
-dora-hub-client = { version = "=1.0.0-rc.4", path = "libraries/hub-client" }
-dora-recording = { version = "=1.0.0-rc.4", path = "libraries/recording" }
-dora-arrow-convert = { version = "=1.0.0-rc.4", path = "libraries/arrow-convert" }
-dora-tracing = { version = "=1.0.0-rc.4", path = "libraries/extensions/telemetry/tracing" }
-dora-metrics = { version = "=1.0.0-rc.4", path = "libraries/extensions/telemetry/metrics" }
-dora-download = { version = "=1.0.0-rc.4", path = "libraries/extensions/download" }
-dora-log-utils = { version = "=1.0.0-rc.4", path = "libraries/log-utils" }
-dora-coordinator-store = { version = "=1.0.0-rc.4", path = "libraries/coordinator-store" }
-dora-cli = { version = "=1.0.0-rc.4", path = "binaries/cli" }
-dora-runtime-api = { version = "=1.0.0-rc.4", path = "binaries/runtime-api" }
-dora-runtime-shared-lib = { version = "=1.0.0-rc.4", path = "binaries/runtime-shared-lib" }
-dora-runtime-python = { version = "=1.0.0-rc.4", path = "binaries/runtime-python" }
-dora-daemon = { version = "=1.0.0-rc.4", path = "binaries/daemon" }
-dora-coordinator = { version = "=1.0.0-rc.4", path = "binaries/coordinator" }
-dora-ros2-bridge = { version = "=1.0.0-rc.4", path = "libraries/extensions/ros2-bridge" }
-dora-ros2-bridge-msg-gen = { version = "=1.0.0-rc.4", path = "libraries/extensions/ros2-bridge/msg-gen" }
+dora-node-api = { version = "=1.0.0-rc.5", path = "apis/rust/node", default-features = false }
+dora-node-api-python = { version = "=1.0.0-rc.5", path = "apis/python/node", default-features = false }
+dora-operator-api = { version = "=1.0.0-rc.5", path = "apis/rust/operator", default-features = false }
+dora-operator-api-macros = { version = "=1.0.0-rc.5", path = "apis/rust/operator/macros" }
+dora-operator-api-types = { version = "=1.0.0-rc.5", path = "apis/rust/operator/types" }
+dora-operator-api-python = { version = "=1.0.0-rc.5", path = "apis/python/operator" }
+dora-operator-api-c = { version = "=1.0.0-rc.5", path = "apis/c/operator" }
+dora-node-api-c = { version = "=1.0.0-rc.5", path = "apis/c/node" }
+dora-core = { version = "=1.0.0-rc.5", path = "libraries/core" }
+dora-hub-client = { version = "=1.0.0-rc.5", path = "libraries/hub-client" }
+dora-recording = { version = "=1.0.0-rc.5", path = "libraries/recording" }
+dora-arrow-convert = { version = "=1.0.0-rc.5", path = "libraries/arrow-convert" }
+dora-tracing = { version = "=1.0.0-rc.5", path = "libraries/extensions/telemetry/tracing" }
+dora-metrics = { version = "=1.0.0-rc.5", path = "libraries/extensions/telemetry/metrics" }
+dora-download = { version = "=1.0.0-rc.5", path = "libraries/extensions/download" }
+dora-log-utils = { version = "=1.0.0-rc.5", path = "libraries/log-utils" }
+dora-coordinator-store = { version = "=1.0.0-rc.5", path = "libraries/coordinator-store" }
+dora-cli = { version = "=1.0.0-rc.5", path = "binaries/cli" }
+dora-runtime-api = { version = "=1.0.0-rc.5", path = "binaries/runtime-api" }
+dora-runtime-shared-lib = { version = "=1.0.0-rc.5", path = "binaries/runtime-shared-lib" }
+dora-runtime-python = { version = "=1.0.0-rc.5", path = "binaries/runtime-python" }
+dora-daemon = { version = "=1.0.0-rc.5", path = "binaries/daemon" }
+dora-coordinator = { version = "=1.0.0-rc.5", path = "binaries/coordinator" }
+dora-ros2-bridge = { version = "=1.0.0-rc.5", path = "libraries/extensions/ros2-bridge" }
+dora-ros2-bridge-msg-gen = { version = "=1.0.0-rc.5", path = "libraries/extensions/ros2-bridge/msg-gen" }
 dora-ros2-bridge-python = { path = "libraries/extensions/ros2-bridge/python" }
-dora-mavlink2-bridge = { version = "=1.0.0-rc.4", path = "libraries/extensions/mavlink2-bridge" }
-dora-tensor-pool = { version = "=1.0.0-rc.4", path = "libraries/extensions/tensor-pool" }
-dora-tensor-pool-python = { version = "=1.0.0-rc.4", path = "libraries/extensions/tensor-pool/python" }
-dora-message = { version = "=1.0.0-rc.4", path = "libraries/message" }
+dora-mavlink2-bridge = { version = "=1.0.0-rc.5", path = "libraries/extensions/mavlink2-bridge" }
+dora-tensor-pool = { version = "=1.0.0-rc.5", path = "libraries/extensions/tensor-pool" }
+dora-tensor-pool-python = { version = "=1.0.0-rc.5", path = "libraries/extensions/tensor-pool/python" }
+dora-message = { version = "=1.0.0-rc.5", path = "libraries/message" }
 # Declared here so `dora-ros2-bridge` and `dora-ros2-bridge-arrow` cannot drift
 # apart on the ROS distro. `humble` selects the 24-byte `Gid` layout used by
 # `rmw_dds_common` graph discovery (see `ros2-client`'s `src/gid.rs`), matching
@@ -151,21 +151,28 @@ ros2-client = { version = "0.10.1", default-features = false, features = ["humbl
 # Kept in step with the `cdr-encoding` that `rustdds` depends on, so the
 # workspace resolves a single copy.
 cdr-encoding = "0.11"
-arrow = { version = "59", default-features = false }
+# The `>= 59.1` floor is load-bearing, not cosmetic: `arrow`'s `pyarrow` feature
+# pulls in `arrow-pyarrow`, which requires pyo3 ^0.28 up to 59.0 and ^0.29 from
+# 59.1 on. Since `pyo3-ffi` declares `links = "python"`, cargo permits exactly
+# one copy in the graph, so without this floor a resolution that picks
+# `arrow-pyarrow` 59.0 fails with an opaque duplicate-`links` error rather than
+# a legible version conflict.
+arrow = { version = "59.1", default-features = false }
 arrow-schema = { version = "59" }
 arrow-data = { version = "59" }
 arrow-array = { version = "59" }
 arrow-json = { version = "59" }
 parquet = { version = "59" }
-# pyo3 0.29 is blocked by `arrow-pyarrow` 59, which requires pyo3 ^0.28
-# (only one `pyo3-ffi` may link against `python`).
-pyo3 = { version = "0.28", features = [
+# Kept in lockstep with `arrow-pyarrow` — see the `arrow` floor above.
+pyo3 = { version = "0.29", features = [
     "eyre",
     "abi3-py311",
     "multiple-pymethods",
 ] }
-pythonize = "0.28"
-pyo3-build-config = { version = "0.28", features = ["resolve-config", "abi3-py311"] }
+pythonize = "0.29"
+# 0.29 dropped `resolve-config`/`abi3-*` from this crate: the build config is now
+# loaded from `pyo3-ffi`'s build script, so dependents need a direct `pyo3` dep.
+pyo3-build-config = "0.29"
 # git2 0.21 dropped `https`/`ssh` from its default features (0.20 had
 # `default = ["ssh", "https"]`), so request them explicitly — otherwise
 # libgit2 ships without a TLS transport ("no TLS stream available").
@@ -197,6 +204,7 @@ proptest = "1.11"
 mavlink = { version = "0.18", default-features = false, features = ["std", "serde", "dialect-common", "transport-tcp", "transport-udp", "transport-direct-serial"] }
 serialport = "4.9"
 url = "2.5"
+percent-encoding = "2.3"
 
 # Opt in per crate via `[lints] workspace = true`. `cfg(kani)` gates the
 # formal-verification proof harnesses (`make qa-kani`,

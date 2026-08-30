@@ -90,23 +90,11 @@ pub fn send_output_raw<F>(
 where
     F: FnOnce(&mut [u8])
 
-// Send raw bytes with explicit Arrow type information.
-pub fn send_typed_output<F>(
-    &mut self,
-    output_id: DataId,
-    type_info: ArrowTypeInfo,
-    parameters: MetadataParameters,
-    data_len: usize,
-    data: F,
-) -> NodeResult<()>
-where
-    F: FnOnce(&mut [u8])
-
-// Send a pre-allocated DataSample with type information.
+// Send a pre-allocated DataSample. The sample must already hold a
+// self-describing Arrow IPC stream; prefer send_output, which encodes for you.
 pub fn send_output_sample(
     &mut self,
     output_id: DataId,
-    type_info: ArrowTypeInfo,
     parameters: MetadataParameters,
     sample: Option<DataSample>,
 ) -> NodeResult<()>
@@ -129,7 +117,7 @@ pub fn send_service_request(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<String>
 
 // Send a service response. Semantic alias for send_output.
@@ -138,7 +126,7 @@ pub fn send_service_response(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<()>
 ```
 
@@ -725,7 +713,7 @@ pub struct DoraOutputSender<'a>(/* ... */);
 
 impl DoraOutputSender<'_> {
     // Send an output. `id` is the output ID from your dataflow YAML.
-    pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String>
+    pub fn send(&mut self, id: &str, data: impl IntoArrow) -> Result<(), String>
 }
 ```
 
@@ -771,11 +759,36 @@ judgement call.
 | Crate | Why |
 |---|---|
 | `dora-node-api` | The API nodes are written against |
+| `dora-node-api-c` | The C node API and its checked-in header, `apis/c/node/node_api.h` |
+| `dora-node-api-cxx` | The C++ node API, via the `cxx` bridge |
+| `dora-node-api-python` | The Python node API, shipped as the `dora-rs` wheel |
 | `dora-arrow-convert` | `DoraArray` / `IntoArrow` appear in `dora-node-api` signatures |
 | `dora-message` | The wire protocol; a break here desynchronizes deployed components |
 | `dora-cli` | The `dora` command, its subcommands, and the dataflow YAML schema |
 
-Breaking any of these requires a 2.0.
+Breaking any of these requires a 2.0. The four node APIs are covered on equal
+terms: dora advertises Rust, C, C++ and Python as first-class node languages,
+so freezing only the Rust one would leave the majority of the user-facing
+surface unstated.
+
+Two consequences worth naming, because the covered tier is what a 2.0 is
+measured against:
+
+- **`dora-node-api-python` is `publish = false`.** It reaches users as the
+  `dora-rs` wheel on PyPI rather than as a crate, so the guarantee attaches to
+  the Python module surface — the names importable from `dora` — not to a
+  crates.io API. The CUDA helpers moved out to `dora_tensor_pool` in #3249,
+  which keeps the exempt tensor-pool surface out of the frozen module.
+- **The C and C++ APIs name Arrow types across the FFI boundary** and both
+  depend on `dora-node-api` with the `arrow-v59` feature, while the Arrow major
+  version is itself outside the guarantee (below). These do not conflict: what
+  crosses the boundary is the Arrow **C Data Interface** (`ArrowArray` /
+  `ArrowSchema`), a stable ABI specified by Arrow independently of any arrow-rs
+  release. The frozen contract is the C header and that ABI; the arrow-rs major
+  version behind it stays exempt.
+
+`dora-node-api-cxx`'s optional `ros2-bridge` feature is not covered — it is
+off by default and pulls in the exempt `dora-ros2-bridge`.
 
 ### Shipped, but outside the guarantee
 
@@ -786,12 +799,26 @@ dataflow or a `Cargo.toml`.
 | Surface | Signal |
 |---|---|
 | `hub:` descriptor field, `dora hub`, `dora-hub-client` | `dora build` / `dora validate` print a warning on every use |
-| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-*` | Documented experimental; `StopAll` is not implemented |
+| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-shared-lib`, `dora-runtime-python` | Documented experimental; `StopAll` is not implemented |
 | `ros2:` descriptor field, `dora-ros2-bridge`(+`-msg-gen`, `-arrow`) | Crate docs state it may change at any point |
 | `dora-mavlink2-bridge`, `dora-mavlink2-bridge-node` | Domain-specific protocol bridge |
-| tensor-pool | Behind a generic extension seam, opt-in (#3152) |
+| tensor-pool (`dora-tensor-pool`) | Behind a generic extension seam, opt-in (#3152) |
 | `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
 | The Arrow major version | See the Arrow version policy above |
+| The pyo3 version | `pyo3-ffi` declares `links = "python"`, so a build graph can hold exactly one; dora's is an implementation detail behind the wheels. See the Python version policy below |
+| `dora-cli`'s `python` feature | Internal wheel plumbing — it marks a build hosted by the `dora-rs-cli` wheel, not a supported knob |
+
+Two of those crates are not on crates.io at all: `dora-operator-api-python`
+and `dora-runtime-python` are `publish = false`, and reach users compiled into
+the `dora-rs` wheel. Both link `pyo3`, and `pyo3-ffi` declares
+`links = "python"`, so cargo refuses two pyo3 versions in a single build graph.
+Published, they would force anyone building their own PyO3 extension onto
+dora's exact pyo3 minor and freeze that minor for the life of 1.x — for a
+delivery channel nobody uses, since writing a Python operator needs no Rust
+dependency. Unpublished, dora's pyo3 version stays an implementation detail
+that can move in a minor.
+
+One goes the other way: `dora-tensor-pool` is exempt and *is* on crates.io, for the reason the internal crates below are. `dora-daemon` names it in an optional dependency, cargo resolves every dependency of a published crate against the registry, and so leaving it `publish = false` would have blocked `dora-daemon`'s own release ([#3304](https://github.com/dora-rs/dora/issues/3304)). Reaching crates.io is not a promotion: the crate's description and its README both carry the exemption, and they are what its crates.io page shows.
 
 ### Internal
 
@@ -800,12 +827,15 @@ because cargo requires every dependency of a published crate to be published
 — not because they are an API. Depending on one directly is unsupported.
 
 `dora-core`, `dora-daemon`, `dora-coordinator`, `dora-coordinator-store`,
-`dora-recording`, `dora-download`, `dora-log-utils`, `dora-tracing`,
-`dora-metrics`, `dora-runtime-api`.
+`dora-recording`, `dora-download`, `dora-tracing`, `dora-metrics`,
+`dora-runtime-api`.
+
+`dora-log-utils` is not in this list: it is `publish = false` and no published
+crate depends on it, so it never reaches crates.io at all.
 
 ### How this is enforced
 
-Documentation alone would not survive contact with cargo, so two mechanisms
+Documentation alone would not survive contact with cargo, so three mechanisms
 back it:
 
 1. **Exact version pins.** Workspace crates depend on each other with `=`
@@ -817,10 +847,38 @@ back it:
    `default = []`, so using it is an affirmative act recorded in the
    consumer's `Cargo.toml` rather than a warning they can tune out.
    `arrow-v58` / `arrow-v59` are the pattern.
+3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish lists in `.github/workflows/release.yml` and `.github/workflows/cargo-release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
 
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already
 happens on every release, so the extra cost is close to zero.
+
+### Python version policy
+
+Both wheels are built `abi3-py311`, so **dora 1.x supports CPython 3.11 and
+later**. That floor is part of the 1.0 guarantee: raising it inside 1.x would
+uninstall dora for users on a Python it used to support, and no crates.io
+semver check would ever see it.
+
+abi3 makes the two directions asymmetric, in dora's favour:
+
+- **Newer CPython** — one `cp311-abi3` wheel loads on 3.12, 3.13 and later with
+  no rebuild, so a new interpreter release does not require a new dora release.
+  This is also the direction a pyo3 bump would otherwise threaten, which is why
+  the pyo3 version can stay exempt.
+- **Older CPython** — `requires-python = ">=3.11"` in both `pyproject.toml`s
+  makes pip refuse to install. This is the direction that breaks users, and it
+  moves only if dora deliberately moves it.
+
+Two limits stated rather than left implied:
+
+- **Free-threaded builds are not supported.** abi3 does not cover
+  `Py_GIL_DISABLED`; those interpreters need their own wheels and the release
+  matrix builds none, so there is no dora wheel for `python3.13t` or `3.14t`.
+- **CPython 3.11 reaches end of life in October 2027**, inside 1.x's expected
+  life. pyo3 drops old interpreters over time, so dora will eventually have to
+  either raise the floor — breaking users — or hold pyo3 back. Better decided
+  deliberately than under a deadline.
 
 ## Quick Start Example: Node
 

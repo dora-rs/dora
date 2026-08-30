@@ -21,8 +21,8 @@ env:
 jobs:
   # ── 0. Fail fast if the tag doesn't match the workspace version ──────────
   # Guards against tag/version skew (the v1.0.0-rc.3 tag shipped rc.2
-  # artifacts). Only the publish jobs gate on this — build jobs have no
-  # irreversible side effects, so they start immediately.
+  # artifacts). Every job with an irreversible side effect gates on this;
+  # the pure build jobs (`dist`, `c-cpp-libraries`) start immediately.
   check-version:
     name: Verify tag matches workspace version
     runs-on: ubuntu-latest
@@ -83,11 +83,10 @@ jobs:
             dora-node-api-c
             dora-operator-api-c
             dora-coordinator
+            dora-tensor-pool
             dora-daemon
-            dora-operator-api-python
             dora-runtime-api
             dora-runtime-shared-lib
-            dora-runtime-python
             dora-cli
             dora-ros2-bridge-msg-gen
             dora-ros2-bridge
@@ -129,77 +128,35 @@ jobs:
             echo "::endgroup::"
           done
 
-  # ── 2. Build Python wheels ────────────────────────────────────────────────
-  # Modeled after dora-rs/dora pip-release.yml:
-  #   - Linux: use --zig for cross-compilation (handles vendored-openssl)
-  #   - macOS: aarch64 only (x86_64 cross-compile has OpenSSL issues)
-  #   - Windows: x64 only
-  #   - working-directory instead of -m flag
-  build-wheels:
-    name: Build wheels (${{ matrix.platform.os }}-${{ matrix.platform.target }})
-    runs-on: ${{ matrix.platform.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        platform:
-          - { runner: ubuntu-22.04,  target: x86_64,  os: linux,   zig: true }
-          - { runner: ubuntu-22.04,  target: aarch64, os: linux,   zig: true }
-          - { runner: macos-14,      target: aarch64, os: macos,   zig: false }
-          - { runner: windows-2022,  target: x64,     os: windows, zig: false }
-        repository:
-          - { path: apis/python/node, name: dora-rs }
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Build wheels (zig)
-        if: matrix.platform.zig
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist --zig
-          manylinux: manylinux_2_28
-          working-directory: ${{ matrix.repository.path }}
-      - name: Build wheels (native)
-        if: ${{ !matrix.platform.zig }}
-        uses: PyO3/maturin-action@v1
-        with:
-          target: ${{ matrix.platform.target }}
-          args: --release --out dist
-          working-directory: ${{ matrix.repository.path }}
-      - uses: actions/upload-artifact@v7
-        with:
-          name: ${{ matrix.repository.name }}-${{ matrix.platform.os }}-${{ matrix.platform.target }}
-          path: ${{ matrix.repository.path }}/dist/
+  # ── 2. Python wheels + sdists ─────────────────────────────────────────────
+  # Delegated to pip-release.yml rather than rebuilt here. This job used to
+  # carry its own 4-target matrix for `dora-rs` only, while pip-release.yml
+  # carried the real 10-target matrix for `dora-rs` *and* `dora-rs-cli` —
+  # and pip-release.yml only ran on `release: published`, which a
+  # GITHUB_TOKEN-created release never raises. The result was a green
+  # release that shipped 4 of 11 `dora-rs` files and no `dora-rs-cli` at
+  # all (v1.0.0-rc.4). One matrix, one publisher, triggered by the tag.
+  #
+  # `needs: check-version` because this publishes: a tag/version mismatch
+  # must fail before anything irreversible reaches PyPI.
+  wheels:
+    name: Python wheels
+    needs: check-version
+    uses: ./.github/workflows/pip-release.yml
+    with:
+      publish: true
+    secrets:
+      PYPI_PASS: ${{ secrets.PYPI_PASS }}
 
-  # ── 3. Publish wheels to PyPI ─────────────────────────────────────────────
-  publish-pypi:
-    name: Publish to PyPI
-    needs: [build-wheels, check-version]
-    runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/p/dora-rs
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          pattern: dora-rs*
-          merge-multiple: true
-          path: dist/
-      # Authenticate with the PYPI_PASS API token (same mechanism as
-      # pip-release.yml). Keyless trusted publishing needs a publisher
-      # registered on PyPI first — to switch later, register one on
-      # https://pypi.org/manage/project/dora-rs/settings/publishing/ with
-      # workflow `release.yml` and environment `pypi`, then drop `password`.
-      - uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_PASS }}
-          packages-dir: dist/
-          skip-existing: true
+  # ── 3. Build the C/C++ libraries ──────────────────────────────────────────
+  # Same story as the wheels: publish-c-cpp-libraries.yml only ever ran on
+  # `release: published`, so none of its 8 archives reached the rc.3/rc.4
+  # releases. Called here for the build; `github-release` below attaches the
+  # artifacts, so the archives are part of the release from the moment it is
+  # created rather than uploaded to it afterwards.
+  c-cpp-libraries:
+    name: C/C++ libraries
+    uses: ./.github/workflows/publish-c-cpp-libraries.yml
 
   # ── 4. Build CLI binaries ─────────────────────────────────────────────────
   dist:
@@ -253,7 +210,7 @@ jobs:
   # ── 5. Create GitHub Release with changelog ───────────────────────────────
   github-release:
     name: GitHub Release
-    needs: [publish-crates, publish-pypi, dist]
+    needs: [publish-crates, wheels, dist, c-cpp-libraries]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -262,6 +219,13 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           pattern: dist-*
+          merge-multiple: true
+          path: release-assets/
+      # The C and C++ archives built above. `verify-release` fails the run if
+      # any of the 8 is absent, so a silently-dropped target cannot ship.
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: dora-c*-libraries-*
           merge-multiple: true
           path: release-assets/
       - name: Copy install scripts to release assets
@@ -279,3 +243,29 @@ jobs:
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.cliff.outputs.content }}
           files: release-assets/*
+
+  # ── 6. Fail the release if anything is missing ────────────────────────────
+  # The jobs above write to three different places, and nothing previously
+  # checked that all of them landed. v1.0.0-rc.4 went green having published
+  # 4 of 11 `dora-rs` files, no `dora-rs-cli`, and none of the 8 C/C++
+  # archives. This reads back what is actually published and fails the run
+  # naming whatever is absent, so an incomplete release is loud instead of
+  # silent — whatever the cause. The *static* half (publish list vs. the
+  # workspace manifests, and its ordering) is `make qa-publish-graph`, which
+  # already runs in PR CI — a stale list fails there, before a tag exists.
+  verify-release:
+    name: Verify release is complete
+    needs: [publish-crates, wheels, dist, c-cpp-libraries, github-release]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Verify every artifact was published
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 scripts/release/verify-release.py \
+            --version "${GITHUB_REF_NAME#v}" \
+            --repo "$GITHUB_REPOSITORY"

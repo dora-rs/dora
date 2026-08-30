@@ -281,6 +281,30 @@ fn reject_null_string_element<E: serde::ser::Error>(
     })
 }
 
+/// Reject a null element in a ROS2 numeric/bool `T[]`/`T[N]` column.
+///
+/// The scalar-primitive and scalar-bool paths already refuse nulls via
+/// [`check_not_null`]; the array and sequence primitive/bool paths must honor
+/// the same invariant. `PrimitiveArray::values()` / `BooleanArray::values()`
+/// return the raw value buffer, so a null slot silently reads as the buffer
+/// default (`0` / `false`) — inventing a value the producer never sent. Reject
+/// it instead, matching the scalar path and the string-element helper
+/// [`reject_null_string_element`] introduced in #3254.
+fn reject_null_element<E: serde::ser::Error>(
+    array: &dyn arrow::array::Array,
+    type_name: &str,
+) -> Result<(), E> {
+    if array.null_count() == 0 {
+        return Ok(());
+    }
+    let index = (0..array.len())
+        .find(|&i| array.is_null(i))
+        .unwrap_or_default();
+    Err(serde::ser::Error::custom(format!(
+        "{type_name} element at index {index} is null, but ROS2 messages cannot represent null"
+    )))
+}
+
 /// Guard for fixed-size array fields: a ROS2 `T[N]` array has no length prefix
 /// on the CDR wire, so the Arrow column must have exactly `expected` elements.
 /// A mismatch would otherwise emit the wrong element count into a fixed tuple

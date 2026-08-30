@@ -852,11 +852,14 @@ pub struct Node {
     /// internal node IDs are prefixed with `{module_id}.` and all wiring is
     /// rewritten so the runtime sees only flat nodes.
     ///
-    /// Mutually exclusive with every source and kind field: `path`, `args`,
-    /// `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,
-    /// `operator`, and `ros2`. Setting any of them alongside `module` is an
-    /// error -- a module node has no source of its own, so they would be
-    /// silently discarded during expansion.
+    /// A module node has no source or per-node runtime configuration of its own,
+    /// so only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are
+    /// meaningful on it. Every other node field is rejected at expansion time
+    /// rather than silently discarded -- both the source/kind fields (`path`,
+    /// `args`, `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,
+    /// `operator`, `ros2`) and per-node runtime fields (`outputs`,
+    /// `output_types`, `cpu_affinity`, `restart_policy`, ...). The same rule
+    /// applies at every nesting level.
     ///
     /// `env`, `build`, `deploy`, and `params` *are* accepted: they propagate
     /// into the module's inner nodes.

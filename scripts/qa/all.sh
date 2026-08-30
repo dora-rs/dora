@@ -5,7 +5,8 @@
 # Designed for local-first execution: same script runs locally and in CI.
 #
 # Modes (increasing thoroughness):
-#   --fast            ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap, typos)
+#   --fast            ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap,
+#                                typos, publish-graph)
 #   --full            ~5-10 min  pre-push (fast + tests + coverage + optional adversarial)
 #   --deep            ~15 min    target Tier 1 gate, stronger than today's CI
 #                                (full + mutants on diff + semver; see strategy doc §5 for why the
@@ -106,6 +107,7 @@ Will run:
   3. audit          -- cargo-audit + cargo-deny on the dependency tree
   4. unwrap-budget  -- count production .unwrap() / .expect( regressions
   5. typos          -- spell-check against _typos.toml allowlist
+  6. publish-graph  -- crates.io publish order / no unpublished deps
 ============================================================
 EOF
       ;;
@@ -115,10 +117,11 @@ EOF
 ============================================================
 $header
 Will run:
-  1-5. everything from qa-fast                  (fmt/clippy/audit/unwrap/typos)
-  6.   test         -- cargo test --all         (workspace test suite)
-  7.   coverage     -- cargo llvm-cov           (writes lcov.info)
-  8.   adversarial  -- codex/claude review      (optional; skipped if unavailable)
+  1-6. everything from qa-fast                  (fmt/clippy/audit/unwrap/typos/
+                                                 publish-graph)
+  7.   test         -- cargo test --all         (workspace test suite)
+  8.   coverage     -- cargo llvm-cov           (writes lcov.info)
+  9.   adversarial  -- codex/claude review      (optional; skipped if unavailable)
 ============================================================
 EOF
       ;;
@@ -128,10 +131,11 @@ EOF
 ============================================================
 $header
 Today's CI PR gate only runs a subset of this: fmt, clippy, typos,
-audit, unwrap-budget, and the workspace test suite. qa-deep adds the
-planned Tier 1 extras (see docs/plan-agentic-qa-strategy.md §5) that
-are kept laptop-only today because they're too slow for every PR:
-coverage, adversarial review, diff-scoped mutation testing, semver.
+audit, unwrap-budget, publish-graph, and the workspace test suite.
+qa-deep adds the planned Tier 1 extras (see
+docs/plan-agentic-qa-strategy.md §5) that are kept laptop-only today
+because they're too slow for every PR: coverage, adversarial review,
+diff-scoped mutation testing, semver.
 
 Will run:
   1-5.  everything from qa-fast                 (in CI today)
@@ -263,6 +267,7 @@ run "clippy"        cargo clippy --all \
 run "audit"         scripts/qa/audit.sh
 run "unwrap-budget" scripts/qa/unwrap-budget.sh
 run "typos"         scripts/qa/typos.sh
+run "publish-graph" scripts/qa/publish-graph.sh
 
 case "$MODE" in
   --fast)

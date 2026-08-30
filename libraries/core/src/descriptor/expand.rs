@@ -113,12 +113,19 @@ pub fn expand_modules_with_boundaries(
 
     for node in &descriptor.nodes {
         if node.module.is_some() {
-            // Validate module node fields against the module whitelist
-            classify::check_module(node)
-                .with_context(|| format!("invalid module node `{}`", node.id))?;
-
-            let (expanded, omap) =
+            // Field validation happens inside `expand_module_node`, so top-level
+            // and nested module nodes go through the same whitelist.
+            let (mut expanded, omap) =
                 expand_module_node(node, base_dir, &canonical_base, 0, &mut seen)?;
+            // Propagate the module node's own `build` to each expanded leaf node,
+            // mirroring how a nested module node's build is propagated in Phase 2
+            // of `expand_module_node`. `check_module` accepts `build` for exactly
+            // this reason.
+            if let Some(ref outer_build) = node.build {
+                for expanded_node in &mut expanded {
+                    prepend_module_build_to_node(expanded_node, outer_build);
+                }
+            }
             let module_id = node.id.to_string();
             output_maps.insert(module_id.clone(), omap);
             let node_ids: Vec<String> = expanded.iter().map(|n| n.id.to_string()).collect();
@@ -251,10 +258,11 @@ fn check_module_file_inner(
                     node.id,
                 );
             }
-            // The same mutual-exclusion rule applies at every nesting level.
+            // The same field whitelist applies at every nesting level.
             // Without this, `dora expand --module m.yml` reports a file as
             // valid while `dora run` on a dataflow using it hard-fails.
-            validate_module_node_fields(node)?;
+            classify::check_module(node)
+                .with_context(|| format!("invalid module node `{}`", node.id))?;
             let nested = module_dir.join(mod_path);
             let nested_canonical = nested.canonicalize().with_context(|| {
                 format!(
@@ -561,64 +569,6 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     refs
 }
 
-/// Reject source/kind fields on a module node that are mutually exclusive with
-/// the module reference itself.
-fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
-    let mut conflicts = Vec::new();
-
-    if node.path.is_some() {
-        conflicts.push("path");
-    }
-    // `args` belongs to `path`: a module node has no executable to pass them
-    // to, and `expand_module_node` never reads them, so they are dropped just
-    // as silently. Arguments reach inner nodes through `params:` instead.
-    if node.args.is_some() {
-        conflicts.push("args");
-    }
-    if node.path_sha256.is_some() {
-        conflicts.push("path_sha256");
-    }
-    if node.git.is_some() {
-        conflicts.push("git");
-    }
-    if node.hub.is_some() {
-        conflicts.push("hub");
-    }
-    if node.branch.is_some() {
-        conflicts.push("branch");
-    }
-    if node.tag.is_some() {
-        conflicts.push("tag");
-    }
-    if node.rev.is_some() {
-        conflicts.push("rev");
-    }
-    if node.operators.is_some() {
-        conflicts.push("operators");
-    }
-    if node.operator.is_some() {
-        conflicts.push("operator");
-    }
-    if node.ros2.is_some() {
-        conflicts.push("ros2");
-    }
-
-    if !conflicts.is_empty() {
-        bail!(
-            "module node `{}` sets fields that are mutually exclusive with \
-             `module`: {}\n\
-             hint: a module node only references a sub-dataflow -- remove these \
-             fields, or drop `module:` if this was meant to be a regular node. \
-             To configure the module's inner nodes use `params:`, `env:`, \
-             `build:`, or `deploy:`.",
-            node.id,
-            conflicts.join(", ")
-        );
-    }
-
-    Ok(())
-}
-
 /// Expand a single module node into its constituent flat nodes.
 ///
 /// Returns `(expanded_nodes, output_map)`; see [`ModuleOutputMap`].
@@ -637,7 +587,12 @@ fn expand_module_node(
         );
     }
 
-    validate_module_node_fields(node)?;
+    // Validate the module node's fields against the module whitelist. This is
+    // the single validation site for both top-level and nested module nodes, so
+    // a field that has no meaning on a module node (e.g. `outputs`,
+    // `cpu_affinity`) is rejected here rather than silently dropped during
+    // expansion, at every nesting level.
+    classify::check_module(node).with_context(|| format!("invalid module node `{}`", node.id))?;
 
     let module_path_str = node
         .module
@@ -971,13 +926,21 @@ fn resolve_module_relative_path(
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
-    // The node-level `build` is consumed only by `path:` nodes and by nested
-    // `module:` nodes (which forward it to their own leaves in Phase 2).
-    // Setting it on a runtime/operator/ROS2 node used to be a harmless dead
-    // value; the field classifier now rejects `build` on those kinds, so the
-    // module build has to land in the operator configs only -- which is where
-    // `build/mod.rs` reads it from for runtime nodes anyway.
-    if node.path.is_some() || node.module.is_some() {
+    // The node-level `build` is consumed by every standard node -- `path:`,
+    // `git:`, and `hub:` sourced -- (`build/mod.rs` reads `n.build` for all
+    // `CoreNodeKind::Custom` nodes) and by nested `module:` nodes (which
+    // forward it to their own leaves in Phase 2). It is *not* valid on
+    // runtime/operator/ROS2 nodes, where the field classifier rejects it, so
+    // for those the module build lands in the operator configs only.
+    //
+    // Do NOT key this off `node.path`: module expansion runs *before* git/hub
+    // source resolution, so a `git:`/`hub:`-sourced inner node still has
+    // `path == None` here. Keying off `path` silently dropped the module build
+    // for those nodes (#3296). Gate on "not a runtime/operator/ROS2 node"
+    // instead, which correctly includes git/hub standard leaves.
+    let is_standard_or_module = node.module.is_some()
+        || (node.operators.is_none() && node.operator.is_none() && node.ros2.is_none());
+    if is_standard_or_module {
         prepend_build(&mut node.build, module_build);
     }
     if let Some(ref mut operators) = node.operators {
@@ -2598,6 +2561,130 @@ nodes:
 
     // ---- Feature 5: module-level build ----
 
+    /// Regression for #3258 (defect 1): a `build:` set on the module node itself
+    /// (not the module file header) is accepted and propagates into the expanded
+    /// leaf nodes, matching the documented contract and the nested behavior.
+    #[test]
+    fn expand_top_level_module_build_propagated() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    build: python setup.py build
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: leaf_module.yml
+    build: pip install foo
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        let build = proc.build.as_deref().unwrap();
+        assert!(
+            build.starts_with("pip install foo"),
+            "the module node's own build must be prepended; got: {build}"
+        );
+        assert!(build.contains("python setup.py build"), "{build}");
+    }
+
+    /// Regression for #3258 (defect 2): a per-node runtime field that has no
+    /// meaning on a module node (here `outputs`) is rejected at expansion time
+    /// rather than silently dropped, at every nesting level.
+    #[test]
+    fn nested_module_node_rejects_disallowed_field() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        // `outputs` on the nested module node is not part of the module
+        // whitelist; expansion must reject it.
+        write_file(
+            base,
+            "outer_module.yml",
+            r#"
+module:
+  name: outer
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: inner
+    module: leaf_module.yml
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: top
+    module: outer_module.yml
+    inputs:
+      x: src/val
+"#,
+        );
+
+        let error = format!("{:#}", expand_modules(&desc, base).unwrap_err());
+        assert!(
+            error.contains("outputs") && error.contains("Module"),
+            "nested module node with `outputs` should be rejected; got: {error}"
+        );
+    }
+
     #[test]
     fn expand_module_build_prepended() {
         let tmp = TempDir::new().unwrap();
@@ -2695,6 +2782,72 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.build.as_deref(), Some("make all"));
+    }
+
+    /// A module-level `build:` must reach `git:`/`hub:`-sourced inner nodes,
+    /// not just `path:`-sourced ones. Module expansion runs before git/hub
+    /// source resolution, so these nodes still have `path == None` at this
+    /// point; the build must be keyed off the node kind, not `node.path`
+    /// (#3296).
+    #[test]
+    fn expand_module_build_prepended_to_git_and_hub_inner_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "git_hub_module.yml",
+            r#"
+module:
+  name: git_hub
+  outputs: [from_git, from_hub]
+
+build: pip install -r requirements.txt
+
+nodes:
+  - id: worker
+    git: https://github.com/example/worker.git
+    outputs:
+      - from_git
+    build: cargo build --release
+  - id: fetched
+    hub: example/fetched
+    outputs:
+      - from_hub
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: git_hub_module.yml
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        // git-sourced inner node: module build prepended before its own build.
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        assert_eq!(
+            worker.build.as_deref(),
+            Some("pip install -r requirements.txt\ncargo build --release"),
+        );
+
+        // hub-sourced inner node with no own build: module build is set.
+        let fetched = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.fetched")
+            .unwrap();
+        assert_eq!(
+            fetched.build.as_deref(),
+            Some("pip install -r requirements.txt"),
+        );
     }
 
     /// A module-level `build:` must not make an operator inner node

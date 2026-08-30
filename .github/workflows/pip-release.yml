@@ -8,21 +8,48 @@
 
 name: pip-release
 
-# Triggers: release (publish to PyPI), workflow_dispatch (manual),
-# push to main (post-merge verification), and push to Trunk Merge
-# Queue's batched branches. Building 24 wheels per PR push was
-# wasteful — now we build once per merge-queue batch (up to 5 PRs),
-# matching the expensive-job gating in .github/workflows/ci.yml.
+# Triggers: workflow_call (release.yml drives the tag-push release —
+# this is the path that publishes), release (legacy: a release published
+# by a real account, kept so a manually-cut release still works),
+# workflow_dispatch (manual re-run / recovery), push to main (post-merge
+# verification), and push to Trunk Merge Queue's batched branches.
+# Building 24 wheels per PR push was wasteful — now we build once per
+# merge-queue batch (up to 5 PRs), matching the expensive-job gating in
+# .github/workflows/ci.yml.
+#
+# Publishing is gated on `inputs.publish` rather than on the event, so
+# `release.yml` can call this workflow directly on a tag push. It used to
+# key off `github.event_name == 'release'` alone, which meant nothing
+# published unless a *human* cut the release: a release created by
+# `GITHUB_TOKEN` raises no `release: published` event, so v1.0.0-rc.4
+# never ran this workflow and `dora-rs-cli` was never published.
 #
 # No `paths:` filter: pip-release is a required merge condition,
 # so the check must always be produced on merge-queue branches. A
 # paths filter would cause Trunk to wait forever on batches that
 # don't touch Python/CLI.
 on:
+  workflow_call:
+    inputs:
+      publish:
+        description: "Upload the built wheels and sdists to PyPI."
+        type: boolean
+        default: false
+    secrets:
+      PYPI_PASS:
+        # Required, not optional: an absent secret would otherwise resolve to
+        # an empty token and fail at upload time rather than at the call.
+        description: "PyPI API token."
+        required: true
   release:
     types:
       - "published"
   workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload the built wheels and sdists to PyPI."
+        type: boolean
+        default: false
   push:
     branches:
       - main
@@ -36,7 +63,9 @@ env:
 
 concurrency:
     group: ${{ github.workflow }}-${{ github.ref }}
-    cancel-in-progress: ${{ github.event_name != 'release' }}
+    # Never cancel a run that is publishing — a half-uploaded wheel set is
+    # exactly the incomplete release this pipeline is meant to prevent.
+    cancel-in-progress: ${{ github.event_name != 'release' && !inputs.publish }}
 
 permissions:
   contents: write
@@ -63,7 +92,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -116,7 +145,7 @@ jobs:
             mkdir -p $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/
             ln -s /usr/arm-linux-gnueabihf/lib/libatomic.so.1 $HOME/.rustup/toolchains/${{ env.RUST_TOOLCHAIN_DIR }}/lib/rustlib/armv7-unknown-linux-gnueabihf/lib/libatomic.so
       - name: Upload wheels
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-linux-${{ matrix.platform.target }}
@@ -137,7 +166,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -154,7 +183,7 @@ jobs:
           working-directory: ${{ matrix.repository.path }}
 
       - name: Upload wheels
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
@@ -175,7 +204,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     container:
       image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
@@ -195,7 +224,7 @@ jobs:
           args: --release -o dist
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
@@ -212,7 +241,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -231,7 +260,7 @@ jobs:
           sccache: "false"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-windows-${{ matrix.platform.target }}
@@ -248,7 +277,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -265,7 +294,7 @@ jobs:
           sccache: "false"
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-macos-${{ matrix.platform.target }}
@@ -279,7 +308,7 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+          - path: apis/python/cli
             name: dora-rs-cli
     steps:
       - uses: actions/checkout@v6
@@ -290,7 +319,7 @@ jobs:
           args: --out dist
           working-directory: ${{ matrix.repository.path }}
       - name: Upload sdist
-        if: github.event_name == 'release'
+        if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.repository.name }}-sdist
@@ -316,18 +345,34 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-22.04
-    if: github.event_name == 'workflow_dispatch' || github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
+    if: inputs.publish || github.event_name == 'release' && startsWith(github.ref, 'refs/tags/')
     needs: [linux, musllinux, musleabi, windows, macos, sdist]
     strategy:
       fail-fast: false
       matrix:
         repository:
+          # `name` is the artifact name, which for the node API differs from
+          # the distribution it publishes — hence the explicit `pypi` field.
           - path: apis/python/node
             name: dora-node-api
-          - path: binaries/cli
+            pypi: dora-rs
+          - path: apis/python/cli
             name: dora-rs-cli
+            pypi: dora-rs-cli
+    # Preserves the deployment-environment gate that release.yml's own
+    # publish job used before it was folded into this workflow — whatever
+    # protection rules are configured on `pypi` still apply.
+    environment:
+      name: pypi
+      url: https://pypi.org/p/${{ matrix.repository.pypi }}
     steps:
+      # Scoped to this matrix leg's artifacts. An unscoped download pulls
+      # every artifact in the run, which on the release.yml path also means
+      # the CLI binaries and the C/C++ archives — hundreds of MB this job
+      # has no use for.
       - uses: actions/download-artifact@v8
+        with:
+          pattern: ${{ matrix.repository.name }}-*
       - name: Publish to PyPI
         uses: PyO3/maturin-action@v1
         env:

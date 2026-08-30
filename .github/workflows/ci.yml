@@ -176,6 +176,12 @@ jobs:
           # Restore the shared dev-profile cache; only `test` writes it.
           shared-key: workspace
           save-if: false
+      # Manifest-only, so it costs seconds and goes before the compile gates
+      # below: nothing else fails on a broken publish graph until release
+      # time, and by then the release has already uploaded crates that
+      # crates.io will not let anyone take back (#3304).
+      - name: Check the crates.io publish graph
+        run: make qa-publish-graph
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
@@ -194,6 +200,7 @@ jobs:
       - name: Check PyO3 crate test targets compile
         run: >
           cargo check --all-targets
+          -p dora-cli-api-python
           -p dora-node-api-python
           -p dora-operator-api-python
           -p dora-ros2-bridge-python
@@ -601,8 +608,17 @@ jobs:
           uv venv --seed -p 3.12
           echo "VIRTUAL_ENV=$PWD/.venv" >> "$GITHUB_ENV"
           source .venv/bin/activate
-          uv pip install pyarrow
+          uv pip install pyarrow pytest
           uv pip install -e apis/python/node
+      # Python-level unit tests of the installed `dora` package (the `dora`
+      # compat shim dora-hub nodes import, the `dora.builder` API, and
+      # `dora.testing.MockNode`). They live in apis/python/node/tests/ and ran
+      # in no CI job before (#3305); this job is their home because it is the
+      # one that installs `dora-rs` into a venv above.
+      - name: Run Python node API unit tests (dora package)
+        run: |
+          source .venv/bin/activate
+          make qa-test-python-node
       - name: Run semantic contract tests
         run: >
           cargo test -p dora-examples --test example-smoke contract_

@@ -137,6 +137,68 @@ jobs:
         # --test-threads=1: the run sub-tests share coordinator ports.
         run: cargo test -p dora-examples --test hub-smoke -- --test-threads=1
 
+  # Nothing else in CI builds a wheel, which is how the `dora-rs-cli` console
+  # script came to point at a `dora_cli:py_main` that no longer existed. The
+  # unit test in `dora-cli-api-python` pins the entry point itself; this job
+  # covers the rest of the path -- that the manifests `pip-release.yml`
+  # publishes from actually produce installable wheels.
+  wheel-smoke:
+    name: Python wheel smoke (dora-rs + dora-rs-cli)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+          # Without a shared-key this keys on the job name, which nothing ever
+          # writes, so the restore is a guaranteed miss and the job rebuilds the
+          # whole graph. `workspace` is the key ci.yml's test job writes on main.
+          shared-key: workspace
+      # Build on the abi3 floor, the same interpreter `pip-release.yml` uses.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - name: Install maturin
+        run: pip install maturin
+      # Same working directories as the `pip-release.yml` build matrix, so a
+      # manifest that moves without the workflow following it fails here
+      # instead of at release time.
+      - name: Build dora-rs wheel
+        run: maturin build --out "$GITHUB_WORKSPACE/dist"
+        working-directory: apis/python/node
+      - name: Build dora-rs-cli wheel
+        run: maturin build --out "$GITHUB_WORKSPACE/dist"
+        working-directory: apis/python/cli
+      # Install the built artifacts by path: `--pre` alone would still let pip
+      # prefer a released dora-rs from PyPI over the pre-release built here.
+      - name: Install and smoke the wheels (3.11)
+        run: |
+          pip install --pre dist/*.whl
+          python -c "import dora; print('dora', dora.__file__)"
+          dora --version
+          # A usage error must exit non-zero. The console script previously
+          # printed clap's error and returned success, so `dora typo && ...`
+          # silently continued.
+          if dora definitely-not-a-subcommand; then
+            echo "expected a usage error to exit non-zero" >&2
+            exit 1
+          fi
+      # abi3 promises one wheel works on every later CPython, and `docs/api-rust.md`
+      # states that as a 1.0 guarantee. Reinstall the *same* wheels on a newer
+      # interpreter to keep that promise tested rather than assumed.
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install and smoke the same wheels (3.13)
+        run: |
+          pip install --pre dist/*.whl
+          python -c "import dora; print('dora', dora.__file__)"
+          dora --version
+
   # Build the dora CLI once and upload as artifact for downstream jobs.
   # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
   build-cli:
@@ -1754,9 +1816,9 @@ jobs:
     # (PR-CI gate removed; runs independently in nightly)
     env:
       # The workspace pins `abi3-py311` in pyo3 features (workspace
-      # Cargo.toml:123 + apis/python/operator + ros2-bridge/python +
-      # binaries/runtime). pyo3-build-config 0.28+ asserts the build-
-      # time Python interpreter version is >= the abi3 minimum, but
+      # Cargo.toml + apis/python/operator + ros2-bridge/python +
+      # binaries/runtime-python). pyo3-ffi's build script asserts the
+      # build-time Python interpreter is >= the abi3 minimum, but
       # `cross` runs the build inside Docker images that ship Python
       # 3.10. abi3 builds don't actually need a runtime Python at
       # compile time — they bake the minimum into the binary — so
@@ -1861,7 +1923,7 @@ jobs:
           swap-storage: false
       # Provision Python 3.12 BEFORE the first cargo invocation. The
       # workspace pins `abi3-py311` in pyo3 features (workspace
-      # Cargo.toml:123) and pyo3-build-config 0.28+ rejects build-time
+      # Cargo.toml) and pyo3-ffi's build script rejects build-time
       # interpreters older than the abi3 minimum. ubuntu-22.04 ships
       # Python 3.10 by default, which would make `cargo test -p
       # dora-ros2-bridge-python` below fail with "cannot set a minimum
@@ -1983,6 +2045,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - wheel-smoke
       - smoke-suite
       - log-sinks
       - service-action
@@ -2053,6 +2116,9 @@ jobs:
             case "$1" in
               build-cli)
                 echo 'cargo install --path binaries/cli --locked --root ./dist'
+                ;;
+              wheel-smoke)
+                printf 'maturin build --out dist -m apis/python/node/Cargo.toml\nmaturin build --out dist -m apis/python/cli/Cargo.toml\npip install --pre dist/*.whl\ndora --version\n'
                 ;;
               smoke-suite)
                 echo 'cargo test -p dora-examples --test example-smoke -- --test-threads=1'
@@ -2541,6 +2607,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - wheel-smoke
       - smoke-suite
       - log-sinks
       - service-action

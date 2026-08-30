@@ -32,6 +32,7 @@ mod validate;
 
 pub use build::{BuildConfig, build};
 pub use run::{Run, run};
+pub(crate) use up::set_python_executable_path;
 
 use build::Build;
 use clean::CleanArgs;
