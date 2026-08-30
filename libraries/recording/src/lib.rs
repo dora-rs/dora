@@ -223,14 +223,15 @@ impl<R: Read> RecordingReader<R> {
             Err(e) => return Err(e).wrap_err("failed to read record length"),
         }
 
-        // Check if this is a footer marker instead of a record
+        // A record can never legitimately begin with the footer magic prefix:
+        // that would require a length prefix of 0x41524F44 ("DORA" little-endian
+        // ≈ 1.09 GB), far above MAX_RECORD_BYTES, so such a length is never
+        // written. The moment the 4-byte length prefix equals the footer prefix
+        // we're therefore at the footer (or trailing garbage) — either way,
+        // stop reading. (The trailing "END\0" bytes are not re-validated: both
+        // outcomes of that check already meant "stop", so reading them was dead
+        // work.)
         if len_buf == FOOTER_MAGIC[..4] {
-            let mut rest = [0u8; 4];
-            match self.reader.read_exact(&mut rest) {
-                Ok(()) if rest == FOOTER_MAGIC[4..] => return Ok(None),
-                _ => {}
-            }
-            // Not actually footer magic, treat as corrupted -- stop reading
             return Ok(None);
         }
 
