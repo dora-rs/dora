@@ -30,6 +30,7 @@ std::queue<DoraEventType> fake_dora_events;
 std::function<bool()> fake_dora_stop_condition;
 std::atomic<int> freed_event_count{0};
 std::atomic<bool> fake_dora_waiting{false};
+bool fake_dora_stream_closed = false;
 
 void reset_fake_dora(std::function<bool()> stop_condition = {}) {
     std::lock_guard<std::mutex> lock(fake_dora_mutex);
@@ -37,6 +38,7 @@ void reset_fake_dora(std::function<bool()> stop_condition = {}) {
     fake_dora_stop_condition = std::move(stop_condition);
     freed_event_count = 0;
     fake_dora_waiting = false;
+    fake_dora_stream_closed = false;
 }
 
 void enqueue_fake_event(DoraEventType type) {
@@ -63,6 +65,9 @@ void* dora_next_event(void*) {
                 const auto type = fake_dora_events.front();
                 fake_dora_events.pop();
                 return new FakeDoraEvent{type};
+            }
+            if (fake_dora_stream_closed) {
+                return nullptr;
             }
             if (fake_dora_stop_condition && fake_dora_stop_condition()) {
                 return new FakeDoraEvent{DoraEventType_Stop};
@@ -275,17 +280,20 @@ void test_timer_send_output() {
 }
 
 // ============================================================
-// Test 7: Free an unknown event exactly once.
+// Test 7: Non-terminal events do not stop the event loop.
 // ============================================================
-void test_unknown_event_freed_once() {
-    std::cout << "[Test 7] Freeing an unknown event exactly once..." << std::endl;
+void test_non_terminal_events_keep_loop_running() {
+    std::cout << "[Test 7] Keeping the loop running for non-terminal events..." << std::endl;
 
     reset_fake_dora();
+    enqueue_fake_event(DoraEventType_InputClosed);
+    enqueue_fake_event(DoraEventType_Error);
     enqueue_fake_event(DoraEventType_Unknown);
+    enqueue_fake_event(DoraEventType_Stop);
     SerialEventLoop loop("test_node");
     loop.run();
 
-    REQUIRE(freed_event_count == 1);
+    REQUIRE(freed_event_count == 4);
     std::cout << "[Test 7] Passed ✓" << std::endl;
 }
 
@@ -339,6 +347,20 @@ void test_send_output_during_shutdown() {
     std::cout << "[Test 9] Passed ✓" << std::endl;
 }
 
+// ============================================================
+// Test 10: A closed event stream shuts down the timer thread.
+// ============================================================
+void test_closed_event_stream_returns_from_run() {
+    std::cout << "[Test 10] Returning when the event stream closes..." << std::endl;
+
+    reset_fake_dora();
+    fake_dora_stream_closed = true;
+    SerialEventLoop loop("test_node");
+    loop.run();
+
+    std::cout << "[Test 10] Passed ✓" << std::endl;
+}
+
 int main() {
     std::cout << "========================================" << std::endl;
     std::cout << "  SerialEventLoop Unit Tests" << std::endl;
@@ -350,7 +372,8 @@ int main() {
     test_oneshot_timer();
     test_send_output();
     test_timer_send_output();
-    test_unknown_event_freed_once();
+    test_closed_event_stream_returns_from_run();
+    test_non_terminal_events_keep_loop_running();
     test_timer_callback_can_cancel_itself();
     test_send_output_during_shutdown();
 

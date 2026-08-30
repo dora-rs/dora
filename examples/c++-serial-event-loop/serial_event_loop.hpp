@@ -228,13 +228,19 @@ public:
                 std::cout << "[" << node_name_ << "] Received stop event" << std::endl;
                 running_ = false;
             }
+            else if (ty == DoraEventType_InputClosed) {
+                std::cout << "[" << node_name_ << "] An input was closed" << std::endl;
+            }
+            else if (ty == DoraEventType_Error) {
+                std::cerr << "[" << node_name_ << "] Received Dora error event" << std::endl;
+            }
             else {
                 std::cerr << "[" << node_name_ << "] Unknown event type: " << ty << std::endl;
-                running_ = false;
             }
         }
 
         // Stop the timer thread.
+        running_ = false;
         if (timer_thread_ && timer_thread_->joinable()) {
             timer_thread_->join();
         }
