@@ -38,7 +38,9 @@
 //!
 //! ### Receiving Events
 //!
-//! The [`EventStream`] is an [`AsyncIterator`][std::async_iter::AsyncIterator] that yields the incoming [`Event`]s.
+//! The [`EventStream`] implements the [`Stream`](futures::Stream) trait, yielding the incoming
+//! [`Event`]s. Iterate it asynchronously with [`StreamExt::next`](futures::StreamExt::next), or use
+//! the synchronous [`recv`](EventStream::recv) loop.
 //!
 //! Nodes should iterate over this event stream and react to events that they are interested in.
 //! Typically, the most important event type is [`Event::Input`].
