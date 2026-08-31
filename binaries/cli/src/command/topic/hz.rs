@@ -21,6 +21,14 @@ use crate::{
     common::CoordinatorOptions,
 };
 
+fn parse_window(s: &str) -> Result<usize, String> {
+    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
+    if val == 0 {
+        return Err("window must be at least 1".to_string());
+    }
+    Ok(val)
+}
+
 /// Measure topic publish intervals.
 ///
 /// Subscribe to one or more outputs and display per-topic interval statistics
@@ -48,14 +56,6 @@ use crate::{
 /// Measure all topics:
 ///   dora topic hz -d my-dataflow --window 10
 ///
-fn parse_window(s: &str) -> Result<usize, String> {
-    let val: usize = s.parse().map_err(|e| format!("{e}"))?;
-    if val == 0 {
-        return Err("window must be at least 1".to_string());
-    }
-    Ok(val)
-}
-
 #[derive(Debug, clap::Args)]
 #[clap(verbatim_doc_comment)]
 pub struct Hz {
