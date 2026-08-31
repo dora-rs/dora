@@ -762,6 +762,10 @@ fn check_capacity_gpu_pool(
 mod transport_tests {
     use super::*;
 
+    /// One row of the exhaustive `classify_transport` matrix:
+    /// `(src_dev, dst_dev, p2p, is_cuda)` paired with the expected path.
+    type TransportCase = ((i32, i32, bool, bool), TransportPath);
+
     // -- classify_transport -------------------------------------------------
 
     #[test]
@@ -814,7 +818,7 @@ mod transport_tests {
 
     #[test]
     fn classify_transport_full_8_case_matrix() {
-        let cases: &[((i32, i32, bool, bool), TransportPath)] = &[
+        let cases: &[TransportCase] = &[
             // (src_dev, dst_dev, p2p, is_cuda) → expected
             ((0, 0, false, false), TransportPath::SameDeviceDtoD),
             ((0, 0, false, true), TransportPath::SameDeviceDtoD),
