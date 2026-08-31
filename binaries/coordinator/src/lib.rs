@@ -2211,6 +2211,7 @@ async fn start_inner(
                     .await?;
                     cleanup_disconnected_daemons_from_running_builds(
                         &mut running_builds,
+                        &mut finished_builds,
                         &disconnected,
                     );
                     notify_daemons_about_disconnected_peers(
@@ -2396,6 +2397,18 @@ async fn start_inner(
                         &clock,
                     )
                     .await?;
+                    // Mirror the watchdog disconnect path: fail any in-flight
+                    // build the exited daemon was still part of. Without this, a
+                    // multi-daemon `dora build` where one daemon exits cleanly
+                    // mid-build never sees its pending set resolve (the exited
+                    // daemon's entry lingers), so the build is not finalized by
+                    // the `DataflowBuildResult` handler and instead hangs until
+                    // `check_build_timeouts` fires the 20-minute deadline. #1465.
+                    cleanup_disconnected_daemons_from_running_builds(
+                        &mut running_builds,
+                        &mut finished_builds,
+                        &disconnected,
+                    );
                     notify_daemons_about_disconnected_peers(
                         &disconnected,
                         &mut daemon_connections,
@@ -2500,24 +2513,11 @@ async fn start_inner(
                     };
                     if build.pending_build_results.is_empty() {
                         tracing::info!("dataflow build finished: `{build_id}`");
-                        let Some(mut build) = running_builds.remove(&build_id) else {
+                        let Some(build) = running_builds.remove(&build_id) else {
                             tracing::error!("build {build_id} disappeared from running_builds");
                             continue;
                         };
-                        let result = if build.errors.is_empty() {
-                            Ok(())
-                        } else {
-                            Err(format!("build failed: {}", build.errors.join("\n\n")))
-                        };
-
-                        build.build_result.set_result(Ok(
-                            ControlRequestReply::DataflowBuildFinished { build_id, result },
-                        ));
-
-                        finished_builds.insert(build_id, build.build_result);
-                        while finished_builds.len() > MAX_FINISHED_BUILDS {
-                            finished_builds.shift_remove_index(0);
-                        }
+                        finalize_build(build_id, build, &mut finished_builds);
                     }
                 }
                 None => {
@@ -3731,21 +3731,82 @@ async fn apply_disconnect_actions(
 }
 
 /// Mirror of [`cleanup_disconnected_daemons_from_running_dataflows`] for
-/// `running_builds`: prune disconnected daemon IDs from each running build's
-/// `pending_build_results` so the in-memory state matches the live cluster.
+/// `running_builds`: handle daemons that disconnect part-way through a
+/// `dora build`.
 ///
-/// This intentionally does NOT resolve `build_result` — the build timeout
-/// watchdog ([`check_build_timeouts`]) remains the single path that releases
-/// build waiters, preserving the chokepoint architecture documented at the
-/// disconnect-handler comment above (#1465).
+/// A daemon still listed in a build's `pending_build_results` disconnected
+/// before reporting its `build_result`, so that daemon's part of the build
+/// never completed. For each such build we:
+///
+/// 1. remove the disconnected daemon from `pending_build_results` and record
+///    the disconnect in `build.errors`, so the build resolves as failed rather
+///    than silently succeeding on the strength of the *other* daemons' results;
+/// 2. if that empties `pending_build_results`, finalize the build immediately
+///    via [`finalize_build`] (resolve `build_result` and move the entry into
+///    `finished_builds`), mirroring the `DataflowBuildResult` finalize branch.
+///
+/// Without step 2, a build whose *last* pending daemon disconnects would linger
+/// in `running_builds` until [`check_build_timeouts`] fires the 20-minute
+/// deadline, because the empty-set finalize check lives only in the
+/// `DataflowBuildResult` handler and no further report will ever arrive (#1465).
 fn cleanup_disconnected_daemons_from_running_builds(
     running_builds: &mut HashMap<BuildId, RunningBuild>,
+    finished_builds: &mut IndexMap<BuildId, CachedResult>,
     disconnected: &BTreeSet<DaemonId>,
 ) {
-    for build in running_builds.values_mut() {
+    let mut emptied = Vec::new();
+    for (build_id, build) in running_builds.iter_mut() {
+        let mut pruned_pending = false;
         for daemon_id in disconnected {
-            build.pending_build_results.remove(daemon_id);
+            if build.pending_build_results.remove(daemon_id) {
+                pruned_pending = true;
+                build.errors.push(format!(
+                    "daemon `{daemon_id}` disconnected before reporting its build result"
+                ));
+            }
         }
+        if pruned_pending && build.pending_build_results.is_empty() {
+            emptied.push(*build_id);
+        }
+    }
+
+    for build_id in emptied {
+        let Some(build) = running_builds.remove(&build_id) else {
+            continue;
+        };
+        tracing::warn!(
+            build_id = %build_id,
+            "finalizing build as failed: a daemon disconnected before reporting its build result",
+        );
+        // `build.errors` is non-empty (we just recorded a disconnect), so
+        // `finalize_build` resolves this as a failed build.
+        finalize_build(build_id, build, finished_builds);
+    }
+}
+
+/// Resolve a completed build's waiters and cache its result. `build.errors`
+/// decides success vs. failure. Shared by the `DataflowBuildResult` handler and
+/// [`cleanup_disconnected_daemons_from_running_builds`] so the `finished_builds`
+/// cap bookkeeping lives in a single place.
+fn finalize_build(
+    build_id: BuildId,
+    mut build: RunningBuild,
+    finished_builds: &mut IndexMap<BuildId, CachedResult>,
+) {
+    let result = if build.errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("build failed: {}", build.errors.join("\n\n")))
+    };
+    build
+        .build_result
+        .set_result(Ok(ControlRequestReply::DataflowBuildFinished {
+            build_id,
+            result,
+        }));
+    finished_builds.insert(build_id, build.build_result);
+    while finished_builds.len() > MAX_FINISHED_BUILDS {
+        finished_builds.shift_remove_index(0);
     }
 }
 
@@ -9922,6 +9983,94 @@ mod tests {
             .expect("sender should not drop");
         let err = reply.expect_err("late wait_for_build must surface the watchdog's Err");
         assert!(format!("{err:?}").contains("build timed out"));
+    }
+
+    #[test]
+    fn cleanup_disconnected_builds_prunes_and_keeps_others_pending() {
+        // A daemon exits while another is still building: only the exited daemon
+        // is pruned, the build stays in `running_builds` awaiting the survivor's
+        // `DataflowBuildResult`, and the disconnect is recorded as an error so
+        // the eventual result is a failure rather than a silent success.
+        let m1 = DaemonId::new(Some("m1".to_string()));
+        let m2 = DaemonId::new(Some("m2".to_string()));
+
+        let build_id = BuildId::generate();
+        let mut build = test_running_build(m1.clone(), /*backdate=*/ false);
+        build.pending_build_results.insert(m2.clone());
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+        let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
+
+        let disconnected = BTreeSet::from([m1.clone()]);
+        cleanup_disconnected_daemons_from_running_builds(
+            &mut running_builds,
+            &mut finished_builds,
+            &disconnected,
+        );
+
+        let build = running_builds
+            .get(&build_id)
+            .expect("build must stay pending while m2 is still building");
+        assert!(!build.pending_build_results.contains(&m1), "m1 pruned");
+        assert!(
+            build.pending_build_results.contains(&m2),
+            "m2 still pending"
+        );
+        assert!(
+            build.errors.iter().any(|e| e.contains("m1")),
+            "the disconnect must be recorded as a build error, got: {:?}",
+            build.errors
+        );
+        assert!(finished_builds.is_empty(), "build not finalized yet");
+    }
+
+    #[tokio::test]
+    async fn cleanup_disconnected_builds_finalizes_when_last_daemon_exits() {
+        // The exited daemon is the *last* one pending. The cleanup must finalize
+        // the build immediately (no further `DataflowBuildResult` will arrive),
+        // resolving the waiter with a failure instead of hanging until
+        // `check_build_timeouts`.
+        let m1 = DaemonId::new(Some("m1".to_string()));
+
+        let build_id = BuildId::generate();
+        let mut build = test_running_build(m1.clone(), /*backdate=*/ false);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        build.build_result.register(tx);
+
+        let mut running_builds: HashMap<BuildId, RunningBuild> = HashMap::new();
+        running_builds.insert(build_id, build);
+        let mut finished_builds: IndexMap<BuildId, CachedResult> = IndexMap::new();
+
+        let disconnected = BTreeSet::from([m1]);
+        cleanup_disconnected_daemons_from_running_builds(
+            &mut running_builds,
+            &mut finished_builds,
+            &disconnected,
+        );
+
+        assert!(
+            !running_builds.contains_key(&build_id),
+            "build must be finalized and removed from running_builds"
+        );
+        assert!(
+            finished_builds.contains_key(&build_id),
+            "finalized build must be cached in finished_builds for late waiters"
+        );
+        // The pre-registered waiter must resolve immediately (not hang) with a
+        // failed build result naming the disconnect.
+        let reply = timeout(TokioDuration::from_millis(50), rx)
+            .await
+            .expect("waiter should resolve, not hang")
+            .expect("sender should not drop")
+            .expect("build finalization delivers Ok(reply)");
+        match reply {
+            ControlRequestReply::DataflowBuildFinished { result, .. } => {
+                let err = result.expect_err("a mid-build disconnect must fail the build");
+                assert!(err.contains("disconnected"), "got: {err}");
+            }
+            other => panic!("expected DataflowBuildFinished, got {other:?}"),
+        }
     }
 
     #[test]
