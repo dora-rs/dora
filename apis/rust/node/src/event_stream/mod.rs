@@ -1716,15 +1716,10 @@ fn prime_in_band(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    let data: eyre::Result<Option<RawData>> = match data {
-        None => Ok(None),
-        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-    };
-
-    data.and_then(|data| {
-        let raw_data = data.unwrap_or(RawData::Empty);
-        raw_data.into_arrow_array().map(arrow::array::make_array)
-    })
+    // `DataMessage` has a single infallible variant, so the conversion cannot
+    // fail; the only fallible step is `into_arrow_array`.
+    let raw_data = data.map_or(RawData::Empty, |DataMessage::Vec(v)| RawData::Vec(v));
+    raw_data.into_arrow_array().map(arrow::array::make_array)
 }
 
 impl Stream for EventStream {
