@@ -16,6 +16,16 @@ use eyre::{Context, bail};
 
 use crate::command::{Executable, Run, default_tracing, topic::selector::public_topic_output_id};
 
+/// Default per-topic queue depth for the injected record node.
+///
+/// Ten times dora's real-time `DEFAULT_QUEUE_SIZE`, and paired with
+/// `backpressure` (which buffers another 10x on top), so a recorder that
+/// briefly falls behind its producers buffers instead of discarding. At 30 Hz
+/// that is ~3s of slack before backpressure engages and ~33s before anything
+/// is dropped -- enough to ride out a stalled write without holding an
+/// unbounded amount of payload memory. `--queue-size` tunes it.
+const DEFAULT_RECORD_QUEUE_SIZE: u64 = 100;
+
 /// Record dataflow messages to a file for offline replay.
 ///
 /// Injects a record node into the dataflow that captures all (or filtered)
@@ -55,6 +65,24 @@ pub struct Record {
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
     output_yaml: Option<String>,
+
+    /// Per-topic queue depth for the injected record node.
+    ///
+    /// The recorder writes to disk, so a producer burst or a stalled write can
+    /// outrun it. Each recorded topic gets this queue depth with
+    /// `queue_policy: backpressure`, which buffers up to 10x that before it
+    /// drops anything. Raise it to absorb longer stalls, at the cost of the
+    /// memory the buffered payloads hold.
+    ///
+    /// Ignored in `--proxy` mode, which records over the WebSocket instead of
+    /// injecting a node.
+    #[clap(
+        long,
+        value_name = "N",
+        default_value_t = DEFAULT_RECORD_QUEUE_SIZE,
+        value_parser = clap::value_parser!(u64).range(1..),
+    )]
+    queue_size: u64,
 
     /// Stream data through coordinator WebSocket instead of recording on target.
     /// Useful when the target machine has no local disk.
@@ -157,6 +185,49 @@ fn extend_prefixed_outputs(
     }
 }
 
+/// Build the `inputs:` mapping for the injected `__dora_record__` node.
+///
+/// Each topic is emitted as a mapping (`source` + `queue_size` +
+/// `queue_policy`) rather than as a bare `node/output` string. A bare string
+/// takes dora's real-time defaults -- a `DEFAULT_QUEUE_SIZE` queue with
+/// `drop_oldest` -- which is exactly wrong for a recorder: the node's work is
+/// disk I/O, so any producer burst or stalled write makes the scheduler evict
+/// the oldest events *before they reach the writer*, and the `.drec` is short
+/// with nothing in it to say so.
+///
+/// `backpressure` buffers 10x `queue_size` before dropping anything, and logs
+/// an error at that hard cap, so residual overflow is loud rather than silent
+/// (the record node also totals the drops into its final summary).
+///
+/// This mirrors what `dora replay` already does for the opposite direction --
+/// see `replay::raise_input_queue_sizes`, which sizes *receiver* queues so a
+/// full-speed replay cannot silently drop (#2144). Unlike replay there is no
+/// user-authored config to preserve here: this node is appended by the CLI, so
+/// every input is ours to size.
+fn build_record_inputs(topics: &BTreeMap<String, String>, queue_size: u64) -> serde_yaml::Mapping {
+    let mut inputs = serde_yaml::Mapping::new();
+    for (topic, input_id) in topics {
+        let mut input = serde_yaml::Mapping::new();
+        input.insert(
+            serde_yaml::Value::String("source".to_string()),
+            serde_yaml::Value::String(topic.clone()),
+        );
+        input.insert(
+            serde_yaml::Value::String("queue_size".to_string()),
+            serde_yaml::Value::Number(queue_size.into()),
+        );
+        input.insert(
+            serde_yaml::Value::String("queue_policy".to_string()),
+            serde_yaml::Value::String("backpressure".to_string()),
+        );
+        inputs.insert(
+            serde_yaml::Value::String(input_id.clone()),
+            serde_yaml::Value::Mapping(input),
+        );
+    }
+    inputs
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -213,13 +284,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         serde_json::to_string(&topic_map).wrap_err("failed to serialize topic map")?;
 
     // Build inputs mapping for the record node YAML entry
-    let mut inputs_mapping = serde_yaml::Mapping::new();
-    for (topic, input_id) in &topics {
-        inputs_mapping.insert(
-            serde_yaml::Value::String(input_id.clone()),
-            serde_yaml::Value::String(topic.clone()),
-        );
-    }
+    let inputs_mapping = build_record_inputs(&topics, args.queue_size);
 
     // Build env vars
     let mut env_mapping = serde_yaml::Mapping::new();
@@ -714,6 +779,76 @@ mod tests {
             topics,
             vec!["standard/status", "single/image", "runtime/op/status"]
         );
+    }
+
+    #[test]
+    fn record_inputs_carry_an_explicit_queue_size_and_backpressure() {
+        let topics = BTreeMap::from([
+            ("camera/image".to_string(), "camera___image".to_string()),
+            ("lidar/points".to_string(), "lidar___points".to_string()),
+        ]);
+
+        let inputs = build_record_inputs(&topics, DEFAULT_RECORD_QUEUE_SIZE);
+
+        assert_eq!(inputs.len(), 2);
+        for input_id in ["camera___image", "lidar___points"] {
+            let input = inputs
+                .get(serde_yaml::Value::String(input_id.to_string()))
+                .unwrap_or_else(|| panic!("missing input `{input_id}`"));
+            // A bare `node/output` string would silently take the real-time
+            // defaults (queue_size 10, drop_oldest) -- the bug this guards.
+            assert!(
+                input.is_mapping(),
+                "`{input_id}` must be a mapping, not a bare source string"
+            );
+            assert_eq!(
+                input["queue_size"].as_u64(),
+                Some(DEFAULT_RECORD_QUEUE_SIZE)
+            );
+            assert_eq!(input["queue_policy"].as_str(), Some("backpressure"));
+        }
+        assert_eq!(
+            inputs[serde_yaml::Value::String("camera___image".to_string())]["source"].as_str(),
+            Some("camera/image")
+        );
+    }
+
+    #[test]
+    fn record_inputs_honor_a_custom_queue_size() {
+        let topics = BTreeMap::from([("camera/image".to_string(), "camera___image".to_string())]);
+        let inputs = build_record_inputs(&topics, 4096);
+        assert_eq!(
+            inputs[serde_yaml::Value::String("camera___image".to_string())]["queue_size"].as_u64(),
+            Some(4096)
+        );
+    }
+
+    #[test]
+    fn generated_record_inputs_deserialize_to_the_intended_capacity() {
+        // End-to-end on the YAML contract: what the CLI writes is what the
+        // node API reads back. Pins the actual effective capacity rather than
+        // just the literal keys, so a rename or default change on either side
+        // of the boundary fails here.
+        use dora_message::config::{Input, QueuePolicy};
+
+        let topics = BTreeMap::from([("camera/image".to_string(), "camera___image".to_string())]);
+        let inputs = build_record_inputs(&topics, DEFAULT_RECORD_QUEUE_SIZE);
+
+        let yaml = serde_yaml::to_string(&inputs).unwrap();
+        let parsed: BTreeMap<String, Input> = serde_yaml::from_str(&yaml).unwrap();
+
+        let input = &parsed["camera___image"];
+        assert_eq!(input.mapping.to_string(), "camera/image");
+        assert_eq!(input.queue_size, Some(DEFAULT_RECORD_QUEUE_SIZE as usize));
+        assert_eq!(input.queue_policy, Some(QueuePolicy::Backpressure));
+
+        let policy = input.queue_policy.unwrap_or_default();
+        let size = input
+            .queue_size
+            .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE);
+        // 10x headroom on top of the configured depth, versus the 10-message
+        // drop_oldest queue a bare source string would have produced.
+        assert_eq!(policy.effective_cap(size), 1000);
     }
 
     #[test]
