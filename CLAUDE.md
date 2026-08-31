@@ -26,7 +26,7 @@ cargo test --all --exclude dora-runtime-python --exclude dora-node-api-python --
 cargo test -p dora-core
 
 # Lint
-cargo clippy --all
+cargo clippy --all --all-targets
 
 # Format
 cargo fmt --all
@@ -125,7 +125,7 @@ Run the `/simplify` skill to check for unnecessary complexity, code duplication,
 cargo fmt --all -- --check
 
 # 2. Clippy with warnings-as-errors — CI uses -D warnings
-cargo clippy --all \
+cargo clippy --all --all-targets \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \
@@ -186,7 +186,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 
 **PR CI (`.github/workflows/ci.yml`, ~30-45 min, #1716):** Linux-only. Blocks merge.
 - `cargo fmt --all -- --check`
-- `cargo clippy --all -- -D warnings` (excluding Python packages)
+- `cargo clippy --all --all-targets -- -D warnings` (excluding Python packages) — `--all-targets` so tests, benches, and example binaries are linted too
 - `cargo test --all` on **ubuntu-latest only** (excluding Python packages)
 - `cargo check --all-targets` on the three PyO3 crates, so their `#[cfg(test)]` modules are at least type-checked on every PR (`cargo check --all` covers lib targets only)
 - E2E tests: `ws-cli-e2e` + `fault-tolerance-e2e`
