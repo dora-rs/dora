@@ -204,8 +204,13 @@ const METRICS_INTERVAL: Duration = Duration::from_secs(2);
 /// no rate for that sample instead.
 const MIN_METRICS_WINDOW_SECS: f64 = 0.1;
 /// Capacity of the Zenoh publish drain channel. Large enough for burst
-/// patterns; messages are dropped with a warning when full.
+/// patterns; regular outputs are dropped with a warning when full, while
+/// required lifecycle events wait for capacity in a background task.
 const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
+/// Upper bound for a single Zenoh publish attempt. Required lifecycle events use
+/// blocking publishers, so this keeps a gone or congested peer from pinning a
+/// per-output drain task forever.
+const ZENOH_PUBLISH_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -462,7 +467,6 @@ pub struct Daemon {
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
-    pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
     pub(crate) logger: DaemonLogger,
@@ -1893,29 +1897,6 @@ impl Daemon {
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
-        // Zenoh publish drain task: offloads .put().await from the main event loop.
-        // The main loop sends ZenohOutbound messages via try_send; this task
-        // performs the actual network I/O without blocking event processing.
-        let (zenoh_publish_tx, mut zenoh_publish_rx) =
-            mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
-        let _zenoh_drain_handle = tokio::spawn(async move {
-            while let Some(msg) = zenoh_publish_rx.recv().await {
-                if let Err(e) = msg.publisher.put(msg.serialized).await {
-                    tracing::error!("zenoh publish failed: {e}");
-                    msg.net_publish_failures
-                        .fetch_add(1, atomic::Ordering::Relaxed);
-                    continue;
-                }
-                // Relaxed ordering is correct: counters are read-only for metrics
-                // reporting and never used as synchronization guards.
-                msg.net_bytes_sent
-                    .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
-                msg.net_messages_sent
-                    .fetch_add(1, atomic::Ordering::Relaxed);
-            }
-            tracing::debug!("zenoh publish drain task exiting");
-        });
-
         let daemon = Self {
             machine_id,
             logger: Logger {
@@ -1944,7 +1925,6 @@ impl Daemon {
             disable_multicast,
             bind_nodes_to_parent,
             pending_destroy: None,
-            zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
             extensions: ExtensionTable::new(),
@@ -3199,9 +3179,12 @@ impl Daemon {
                         .collect();
                     for output_id in outputs_to_remove {
                         if let Some(receivers) = dataflow.mappings.remove(&output_id) {
-                            for (receiver_id, input_id) in receivers {
-                                close_input(dataflow, &receiver_id, &input_id, &self.clock);
-                            }
+                            close_inputs_best_effort(
+                                dataflow,
+                                receivers,
+                                &self.clock,
+                                "failed to close input while removing node",
+                            );
                         }
                     }
 
@@ -3726,7 +3709,15 @@ impl Daemon {
                         .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
                         .unwrap_or(false);
                     if removed {
-                        close_input(dataflow, &target_node, &target_input, &self.clock);
+                        if let Err(err) =
+                            close_input(dataflow, &target_node, &target_input, &self.clock)
+                        {
+                            tracing::warn!(
+                                %target_node,
+                                %target_input,
+                                "failed to deliver InputClosed after removing mapping: {err:?}"
+                            );
+                        }
                         Ok(())
                     } else {
                         Err(format!(
@@ -4125,9 +4116,12 @@ impl Daemon {
                     })?;
 
                     if let Some(inputs) = dataflow.mappings.get(&output_id).cloned() {
-                        for (receiver_id, input_id) in &inputs {
-                            close_input(dataflow, receiver_id, input_id, &self.clock);
-                        }
+                        close_inputs_best_effort(
+                            dataflow,
+                            inputs,
+                            &self.clock,
+                            "failed to handle OutputClosed for input",
+                        );
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };
@@ -5305,15 +5299,17 @@ impl Daemon {
         let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
             format!("Reload failed: no running dataflow with ID `{dataflow_id}`")
         })?;
-        if let Some(channel) = dataflow.subscribe_channels.get(&node_id) {
-            match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
-                Ok(true) => {
-                    dataflow.inc_pending(&node_id);
-                }
-                Ok(false) => { /* event dropped (channel full) */ }
-                Err(_) => {
-                    dataflow.subscribe_channels.remove(&node_id);
-                }
+        let Some(channel) = dataflow.subscribe_channels.get(&node_id) else {
+            return Ok(());
+        };
+        match send_with_timestamp(channel, NodeEvent::Reload { operator_id }, &self.clock) {
+            Ok(true) => {
+                dataflow.inc_pending(&node_id);
+            }
+            Ok(false) => return Err(eyre!("node `{node_id}` channel full")),
+            Err(_) => {
+                dataflow.subscribe_channels.remove(&node_id);
+                return Err(eyre!("node `{node_id}` channel closed"));
             }
         }
         Ok(())
@@ -5449,7 +5445,9 @@ impl Daemon {
         }
 
         if remote_receivers {
-            self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
+            // Regular outputs are data-plane messages. Backpressure should drop
+            // them instead of surfacing an error that stops the daemon event loop.
+            self.try_send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
                 .await?;
         }
 
@@ -5487,51 +5485,33 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        // Get or create publisher (lazy, cached per output)
-        let publisher = match dataflow.publishers.entry(output_id.clone()) {
-            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
-            std::collections::btree_map::Entry::Vacant(e) => {
-                let publish_topic =
-                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
-                tracing::debug!("declaring control publisher on {publish_topic}");
-                let publisher = self
-                    .zenoh_session
-                    .declare_publisher(publish_topic)
-                    .congestion_control(CongestionControl::Drop)
-                    .express(true)
-                    .priority(Priority::RealTime)
-                    .await
-                    .map_err(|err| eyre!(err))
-                    .context("failed to create zenoh publisher")?;
-                let arc = Arc::new(publisher);
-                e.insert(arc.clone());
-                arc
-            }
-        };
-        let payload_len = serialized_event.len() as u64;
+        let publisher =
+            remote_receiver_control_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let queue = remote_output_publish_queue(dataflow, output_id);
+        let outbound = zenoh_outbound(dataflow, publisher, serialized_event);
+        enqueue_required_zenoh_outbound(queue, outbound, "inter-daemon output-closed event");
+        Ok(())
+    }
 
-        // Offload Zenoh I/O to the drain task — never blocks the event loop.
-        let outbound = ZenohOutbound {
-            publisher,
-            serialized: serialized_event,
-            payload_len,
-            net_bytes_sent: dataflow.net_bytes_sent.clone(),
-            net_messages_sent: dataflow.net_messages_sent.clone(),
-            net_publish_failures: dataflow.net_publish_failures.clone(),
-        };
-        match self.zenoh_publish_tx.try_send(outbound) {
-            Ok(()) => {}
-            Err(mpsc::error::TrySendError::Full(_)) => {
-                tracing::warn!(
-                    "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}), \
-                     dropping inter-daemon message"
-                );
-            }
-            Err(mpsc::error::TrySendError::Closed(_)) => {
-                tracing::error!("zenoh drain task is gone — inter-daemon publish channel closed");
-            }
-        }
+    async fn try_send_to_remote_receivers(
+        &mut self,
+        dataflow_id: Uuid,
+        output_id: &OutputId,
+        serialized_event: Vec<u8>,
+    ) -> Result<(), eyre::Error> {
+        let dataflow = self.running.get_mut(&dataflow_id).wrap_err_with(|| {
+            format!("send out failed: no running dataflow with ID `{dataflow_id}`")
+        })?;
 
+        let publisher =
+            remote_receiver_data_publisher(&self.zenoh_session, dataflow, output_id).await?;
+        let queue = remote_output_publish_queue(dataflow, output_id);
+        let outbound = zenoh_outbound(dataflow, publisher, serialized_event);
+        handle_publish_enqueue_result(
+            dataflow,
+            try_enqueue_zenoh_outbound(&queue, outbound),
+            "regular inter-daemon output",
+        );
         Ok(())
     }
 
@@ -5609,9 +5589,12 @@ impl Daemon {
             .flat_map(|(_, v)| v)
             .cloned()
             .collect();
-        for (receiver_id, input_id) in &local_node_inputs {
-            close_input(dataflow, receiver_id, input_id, &self.clock);
-        }
+        close_inputs_best_effort(
+            dataflow,
+            local_node_inputs,
+            &self.clock,
+            "failed to deliver InputClosed while closing outputs",
+        );
 
         let mut closed = Vec::new();
         for output_id in &dataflow.open_external_mappings {
@@ -7213,7 +7196,7 @@ fn close_input(
     receiver_id: &NodeId,
     input_id: &DataId,
     clock: &HLC,
-) {
+) -> eyre::Result<()> {
     // Clean up broken state if this input was circuit-broken
     let was_broken = dataflow
         .broken_inputs
@@ -7237,25 +7220,71 @@ fn close_input(
         .unwrap_or(false);
 
     if !was_open && !was_broken {
-        return;
+        return Ok(());
     }
 
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
-        && was_open
-        && send_with_timestamp(
-            channel,
-            NodeEvent::InputClosed {
-                id: input_id.clone(),
-            },
-            clock,
-        )
-        .ok()
-            == Some(true)
-    {
-        dataflow.inc_pending(receiver_id);
+    let mut result = Ok(());
+
+    if was_open && let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        result = Err(err);
     }
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+        if result.is_ok() {
+            result = Err(err);
+        } else {
+            tracing::warn!(
+                %receiver_id,
+                %input_id,
+                "failed to signal drained input after InputClosed delivery failed: {err:?}"
+            );
+        }
+    }
+
+    result
+}
+
+fn close_inputs_best_effort<I>(
+    dataflow: &mut RunningDataflow,
+    inputs: I,
+    clock: &HLC,
+    context: &'static str,
+) where
+    I: IntoIterator<Item = (NodeId, DataId)>,
+{
+    for (receiver_id, input_id) in inputs {
+        if let Err(err) = close_input(dataflow, &receiver_id, &input_id, clock) {
+            tracing::warn!(%receiver_id, %input_id, "{context}: {err:?}");
+        }
+    }
+}
+
+fn send_input_closed_strict(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
+    match send_with_timestamp(
+        channel,
+        NodeEvent::InputClosed {
+            id: input_id.clone(),
+        },
+        clock,
+    ) {
+        Ok(true) => {
+            dataflow.inc_pending(receiver_id);
+            Ok(())
+        }
+        Ok(false) => Err(eyre!("node `{receiver_id}` channel full")),
+        Err(_) => {
+            dataflow.subscribe_channels.remove(receiver_id);
+            Err(eyre!("node `{receiver_id}` channel closed"))
+        }
+    }
 }
 
 /// If `receiver_id` has finished, disable its restart policy and notify it
@@ -7266,32 +7295,43 @@ fn close_input(
 /// while a timer keeps ticking.
 ///
 /// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
-/// no-op if the node still has open/broken inputs or has no subscribe channel.
+/// no-op if the node still has open/broken inputs. Restart bookkeeping is
+/// independent from the node event channel; only the `AllInputsClosed` send
+/// requires a live channel.
 fn signal_all_inputs_closed_if_drained(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
     clock: &HLC,
-) {
-    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-        return;
-    };
+) -> eyre::Result<()> {
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
     // to tell to finish) disables restart.
-    if (dataflow.open_inputs(receiver_id).is_empty() || dataflow.is_drained(receiver_id))
-        && !dataflow.has_broken_input(receiver_id)
-        && let Some(node) = dataflow.running_nodes.get_mut(receiver_id)
-    {
+    let should_disable_restart = (dataflow.open_inputs(receiver_id).is_empty()
+        || dataflow.is_drained(receiver_id))
+        && !dataflow.has_broken_input(receiver_id);
+    if should_disable_restart && let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
         node.disable_restart();
     }
+
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
     if dataflow.is_finished(receiver_id)
-        && send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true)
+        && match send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock) {
+            Ok(true) => true,
+            Ok(false) => return Err(eyre!("node `{receiver_id}` channel full")),
+            Err(_) => {
+                dataflow.subscribe_channels.remove(receiver_id);
+                return Err(eyre!("node `{receiver_id}` channel closed"));
+            }
+        }
     {
         dataflow.inc_pending(receiver_id);
         dataflow
             .all_inputs_closed_at
             .insert(receiver_id.clone(), Instant::now());
     }
+    Ok(())
 }
 
 /// Circuit-breaker version of close_input: closes the input but keeps it recoverable.
@@ -7315,21 +7355,13 @@ fn break_input(
             .remove(&(receiver_id.clone(), input_id.clone()));
         return;
     }
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
-        && send_with_timestamp(
-            channel,
-            NodeEvent::InputClosed {
-                id: input_id.clone(),
-            },
-            clock,
-        )
-        .ok()
-            == Some(true)
-    {
-        dataflow.inc_pending(receiver_id);
+    if let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        tracing::warn!("failed to break input `{receiver_id}/{input_id}`: {err:?}");
     }
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+        tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
+    }
 }
 
 /// Grace period used when the finish-straggler watchdog is enabled but
@@ -7697,6 +7729,218 @@ impl CoreNodeKindExt for CoreNodeKind {
             CoreNodeKind::Custom(n) => {
                 matches!(&n.source, NodeSource::Local) && n.path == DYNAMIC_SOURCE
             }
+        }
+    }
+}
+
+async fn remote_receiver_data_publisher(
+    zenoh_session: &zenoh::Session,
+    dataflow: &mut RunningDataflow,
+    output_id: &OutputId,
+) -> eyre::Result<Arc<zenoh::pubsub::Publisher<'static>>> {
+    let dataflow_id = dataflow.id;
+    remote_receiver_publisher(
+        zenoh_session,
+        &mut dataflow.publishers,
+        dataflow_id,
+        output_id,
+        CongestionControl::Drop,
+    )
+    .await
+}
+
+async fn remote_receiver_control_publisher(
+    zenoh_session: &zenoh::Session,
+    dataflow: &mut RunningDataflow,
+    output_id: &OutputId,
+) -> eyre::Result<Arc<zenoh::pubsub::Publisher<'static>>> {
+    let dataflow_id = dataflow.id;
+    remote_receiver_publisher(
+        zenoh_session,
+        &mut dataflow.control_publishers,
+        dataflow_id,
+        output_id,
+        CongestionControl::Block,
+    )
+    .await
+}
+
+async fn remote_receiver_publisher(
+    zenoh_session: &zenoh::Session,
+    publishers: &mut BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
+    dataflow_id: DataflowId,
+    output_id: &OutputId,
+    congestion_control: CongestionControl,
+) -> eyre::Result<Arc<zenoh::pubsub::Publisher<'static>>> {
+    match publishers.entry(output_id.clone()) {
+        std::collections::btree_map::Entry::Occupied(e) => Ok(e.get().clone()),
+        std::collections::btree_map::Entry::Vacant(e) => {
+            let publish_topic = zenoh_daemon_control_topic(dataflow_id, &output_id.0, &output_id.1);
+            tracing::debug!("declaring control publisher on {publish_topic}");
+            let publisher = zenoh_session
+                .declare_publisher(publish_topic)
+                .congestion_control(congestion_control)
+                .express(true)
+                .priority(Priority::RealTime)
+                .await
+                .map_err(|err| eyre!(err))
+                .context("failed to create zenoh publisher")?;
+            let publisher = Arc::new(publisher);
+            e.insert(publisher.clone());
+            Ok(publisher)
+        }
+    }
+}
+
+fn remote_output_publish_queue(
+    dataflow: &mut RunningDataflow,
+    output_id: &OutputId,
+) -> mpsc::Sender<ZenohOutbound> {
+    match dataflow.remote_output_queues.entry(output_id.clone()) {
+        std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
+        std::collections::btree_map::Entry::Vacant(e) => {
+            let (tx, mut rx) = mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
+            let output_id = output_id.clone();
+            tokio::spawn(async move {
+                while let Some(msg) = rx.recv().await {
+                    // Regular Output and its OutputClosed use distinct Drop/Block
+                    // publishers on the same Zenoh key, but this per-output FIFO
+                    // is the ordering boundary: each publish is awaited before the
+                    // next one is submitted, so a close cannot pass earlier data.
+                    publish_zenoh_outbound(msg).await;
+                }
+                tracing::debug!(?output_id, "per-output zenoh publish drain task exiting");
+            });
+            e.insert(tx.clone());
+            tx
+        }
+    }
+}
+
+fn zenoh_outbound(
+    dataflow: &RunningDataflow,
+    publisher: Arc<zenoh::pubsub::Publisher<'static>>,
+    serialized: Vec<u8>,
+) -> ZenohOutbound {
+    ZenohOutbound {
+        publisher,
+        payload_len: serialized.len() as u64,
+        serialized,
+        net_bytes_sent: dataflow.net_bytes_sent.clone(),
+        net_messages_sent: dataflow.net_messages_sent.clone(),
+        net_publish_failures: dataflow.net_publish_failures.clone(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZenohEnqueueResult {
+    Queued,
+    Full,
+    Closed,
+}
+
+fn try_enqueue_zenoh_outbound<T>(tx: &mpsc::Sender<T>, outbound: T) -> ZenohEnqueueResult {
+    match tx.try_send(outbound) {
+        Ok(()) => ZenohEnqueueResult::Queued,
+        Err(mpsc::error::TrySendError::Full(_)) => ZenohEnqueueResult::Full,
+        Err(mpsc::error::TrySendError::Closed(_)) => ZenohEnqueueResult::Closed,
+    }
+}
+
+#[derive(Debug)]
+enum ZenohPublishOutcome<E> {
+    Published,
+    Failed(E),
+    TimedOut,
+}
+
+async fn await_zenoh_put_with_timeout<F, E>(publish: F, timeout: Duration) -> ZenohPublishOutcome<E>
+where
+    F: std::future::IntoFuture<Output = Result<(), E>>,
+{
+    match tokio::time::timeout(timeout, publish.into_future()).await {
+        Ok(Ok(())) => ZenohPublishOutcome::Published,
+        Ok(Err(err)) => ZenohPublishOutcome::Failed(err),
+        Err(_) => ZenohPublishOutcome::TimedOut,
+    }
+}
+
+async fn publish_zenoh_outbound(msg: ZenohOutbound) {
+    match await_zenoh_put_with_timeout(msg.publisher.put(msg.serialized), ZENOH_PUBLISH_TIMEOUT)
+        .await
+    {
+        ZenohPublishOutcome::Published => {}
+        ZenohPublishOutcome::Failed(e) => {
+            tracing::error!("zenoh publish failed: {e}");
+            msg.net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            return;
+        }
+        ZenohPublishOutcome::TimedOut => {
+            tracing::error!("zenoh publish timed out after {ZENOH_PUBLISH_TIMEOUT:?}");
+            msg.net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            return;
+        }
+    }
+    // Relaxed ordering is correct: counters are read-only for metrics
+    // reporting and never used as synchronization guards.
+    msg.net_bytes_sent
+        .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
+    msg.net_messages_sent
+        .fetch_add(1, atomic::Ordering::Relaxed);
+}
+
+fn handle_publish_enqueue_result(
+    dataflow: &RunningDataflow,
+    result: ZenohEnqueueResult,
+    event_kind: &'static str,
+) {
+    match result {
+        ZenohEnqueueResult::Queued => {}
+        ZenohEnqueueResult::Full => {
+            dataflow
+                .net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            tracing::warn!(
+                "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}); dropping {event_kind}"
+            );
+        }
+        ZenohEnqueueResult::Closed => {
+            dataflow
+                .net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+        }
+    }
+}
+
+fn enqueue_required_zenoh_outbound(
+    tx: mpsc::Sender<ZenohOutbound>,
+    outbound: ZenohOutbound,
+    event_kind: &'static str,
+) {
+    match tx.try_send(outbound) {
+        Ok(()) => {}
+        Err(mpsc::error::TrySendError::Full(outbound)) => {
+            tokio::spawn(async move {
+                tracing::debug!(
+                    "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}); \
+                     waiting to enqueue {event_kind}"
+                );
+                if let Err(mpsc::error::SendError(outbound)) = tx.send(outbound).await {
+                    outbound
+                        .net_publish_failures
+                        .fetch_add(1, atomic::Ordering::Relaxed);
+                    tracing::error!("zenoh drain task is gone; dropping {event_kind}");
+                }
+            });
+        }
+        Err(mpsc::error::TrySendError::Closed(outbound)) => {
+            outbound
+                .net_publish_failures
+                .fetch_add(1, atomic::Ordering::Relaxed);
+            tracing::error!("zenoh drain task is gone; dropping {event_kind}");
         }
     }
 }
@@ -8543,7 +8787,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Act: permanently close input_x
-        close_input(&mut df, &node_a, &input_x, &clock);
+        close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
         // Assert: input_x removed, input_y still open
         let open = df.open_inputs(&node_a);
@@ -8554,6 +8798,371 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "InputClosed"));
+    }
+
+    #[test]
+    fn close_input_returns_error_when_receiver_channel_is_full() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Timestamped {
+            inner: NodeEvent::AllInputsClosed,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(
+            result.is_err(),
+            "full channels must be reported as an error"
+        );
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_x),
+            "the input is still removed even when its notification cannot be delivered"
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "AllInputsClosed"));
+    }
+
+    #[test]
+    fn close_input_still_disables_restart_when_input_closed_notification_is_full() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, mut rx) = mpsc::channel(1);
+        tx.try_send(Timestamped {
+            inner: NodeEvent::AllInputsClosed,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        df.subscribe_channels.insert(node_a.clone(), tx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(result.is_err(), "full channels must still report an error");
+        assert!(
+            disable_restart.load(atomic::Ordering::Acquire),
+            "drain bookkeeping must still disable restart even when InputClosed cannot be delivered"
+        );
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_x),
+            "the input is still removed even when its notification cannot be delivered"
+        );
+
+        let events = drain_events(&mut rx);
+        assert_eq!(events.len(), 1);
+        assert!(matches_event(&events[0], "AllInputsClosed"));
+    }
+
+    #[test]
+    fn close_input_removes_closed_receiver_channel() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+        drop(rx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(
+            result.is_err(),
+            "closed channels must be reported as an error"
+        );
+        assert!(
+            !df.subscribe_channels.contains_key(&node_a),
+            "closed channels must be cleaned up so later sends do not keep failing"
+        );
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_x),
+            "the input is still removed from the open-input set"
+        );
+    }
+
+    #[test]
+    fn close_input_still_disables_restart_when_receiver_channel_is_closed() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let input_x: DataId = "input_x".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_x.clone());
+
+        let running = test_running_node();
+        let disable_restart = running.disable_restart.clone();
+        df.running_nodes.insert(node_a.clone(), running);
+
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_a.clone(), tx);
+        drop(rx);
+
+        let result = close_input(&mut df, &node_a, &input_x, &clock);
+        assert!(
+            result.is_err(),
+            "closed channels must still report an error"
+        );
+        assert!(
+            disable_restart.load(atomic::Ordering::Acquire),
+            "drain bookkeeping must disable restart even when the receiver channel is closed"
+        );
+        assert!(
+            !df.subscribe_channels.contains_key(&node_a),
+            "closed channels must still be cleaned up"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn reload_missing_node_channel_is_noop_for_non_host_daemons() {
+        let clock = Arc::new(HLC::default());
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            Some("non-host".to_string()),
+            None,
+            DaemonId::new(Some("non-host".to_string())),
+            None,
+            clock,
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            Vec::new(),
+            ZenohBind::Derived(LOCALHOST),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let dataflow_id = Uuid::new_v4();
+        daemon.running.insert(dataflow_id, test_dataflow());
+
+        daemon
+            .send_reload(dataflow_id, "node_on_other_daemon".to_string().into(), None)
+            .await
+            .expect("a daemon that does not host the reloaded node must not fail reload");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn output_closed_uses_block_publisher_but_shares_output_fifo_with_regular_output() {
+        let clock = Arc::new(HLC::default());
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            Some("daemon".to_string()),
+            None,
+            DaemonId::new(Some("daemon".to_string())),
+            None,
+            clock,
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            Vec::new(),
+            ZenohBind::Derived(LOCALHOST),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let dataflow_id = Uuid::new_v4();
+        let node_id = NodeId::from("source".to_string());
+        let output_id = DataId::from("value".to_string());
+        let output = OutputId(node_id.clone(), output_id.clone());
+        let (publish_tx, mut publish_rx) = mpsc::channel(2);
+        let mut dataflow = test_dataflow();
+        dataflow.open_external_mappings.insert(output.clone());
+        dataflow
+            .remote_output_queues
+            .insert(output.clone(), publish_tx);
+        daemon.running.insert(dataflow_id, dataflow);
+
+        daemon
+            .try_send_to_remote_receivers(dataflow_id, &output, b"data".to_vec())
+            .await
+            .unwrap();
+        daemon
+            .send_output_closed_events(dataflow_id, node_id, vec![output_id])
+            .await
+            .unwrap();
+
+        let data = publish_rx.try_recv().unwrap();
+        let close = publish_rx.try_recv().unwrap();
+        assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
+        assert_eq!(
+            close.publisher.congestion_control(),
+            CongestionControl::Block
+        );
+
+        let dataflow = daemon.running.get(&dataflow_id).unwrap();
+        let close = dataflow.control_publishers.get(&output).unwrap();
+        assert_eq!(close.congestion_control(), CongestionControl::Block);
+        assert!(
+            !Arc::ptr_eq(&data.publisher, close),
+            "regular output and OutputClosed must not share one blocking publisher"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn output_closed_stays_behind_queued_regular_output() {
+        let clock = Arc::new(HLC::default());
+        let (mut daemon, _events_rx) = Daemon::build_daemon(
+            Some("daemon".to_string()),
+            None,
+            DaemonId::new(Some("daemon".to_string())),
+            None,
+            clock,
+            None,
+            BTreeMap::new(),
+            LogDestination::Tracing,
+            None,
+            Vec::new(),
+            ZenohBind::Derived(LOCALHOST),
+            true,
+            false,
+        )
+        .await
+        .unwrap();
+
+        let dataflow_id = Uuid::new_v4();
+        let node_id = NodeId::from("source".to_string());
+        let output_id = DataId::from("value".to_string());
+        let output = OutputId(node_id.clone(), output_id.clone());
+        let (publish_tx, mut publish_rx) = mpsc::channel(2);
+        let mut dataflow = test_dataflow();
+        dataflow.open_external_mappings.insert(output.clone());
+        dataflow
+            .remote_output_queues
+            .insert(output.clone(), publish_tx);
+        daemon.running.insert(dataflow_id, dataflow);
+
+        daemon
+            .try_send_to_remote_receivers(dataflow_id, &output, b"data".to_vec())
+            .await
+            .unwrap();
+        daemon
+            .send_output_closed_events(dataflow_id, node_id, vec![output_id])
+            .await
+            .unwrap();
+
+        let data = publish_rx.try_recv().unwrap();
+        let close = publish_rx
+            .try_recv()
+            .expect("OutputClosed must share the output FIFO with earlier data");
+        assert_eq!(data.publisher.congestion_control(), CongestionControl::Drop);
+        assert_eq!(
+            close.publisher.congestion_control(),
+            CongestionControl::Block
+        );
+        assert_eq!(data.serialized, b"data");
+        assert_ne!(close.serialized, b"data");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn zenoh_publish_wait_is_bounded() {
+        let publish = std::future::pending::<Result<(), eyre::Report>>();
+        let handle = tokio::spawn(await_zenoh_put_with_timeout(publish, ZENOH_PUBLISH_TIMEOUT));
+
+        tokio::task::yield_now().await;
+        assert!(
+            !handle.is_finished(),
+            "the helper must not finish before the timeout elapses"
+        );
+
+        tokio::time::advance(ZENOH_PUBLISH_TIMEOUT).await;
+        assert!(matches!(
+            handle.await.unwrap(),
+            ZenohPublishOutcome::TimedOut
+        ));
+    }
+
+    #[test]
+    fn close_inputs_best_effort_continues_after_error() {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let node_a: NodeId = "node_a".to_string().into();
+        let node_b: NodeId = "node_b".to_string().into();
+        let input_a: DataId = "input_a".to_string().into();
+        let input_b: DataId = "input_b".to_string().into();
+        let input_b_guard: DataId = "input_b_guard".to_string().into();
+
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input_a.clone());
+        df.open_inputs
+            .entry(node_b.clone())
+            .or_default()
+            .extend([input_b.clone(), input_b_guard.clone()]);
+
+        let (tx_a, mut rx_a) = mpsc::channel(1);
+        tx_a.try_send(Timestamped {
+            inner: NodeEvent::AllInputsClosed,
+            timestamp: clock.new_timestamp(),
+        })
+        .unwrap();
+        df.subscribe_channels.insert(node_a.clone(), tx_a);
+
+        let (tx_b, mut rx_b) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(node_b.clone(), tx_b);
+
+        close_inputs_best_effort(
+            &mut df,
+            [
+                (node_a.clone(), input_a.clone()),
+                (node_b.clone(), input_b.clone()),
+            ],
+            &clock,
+            "test",
+        );
+
+        assert!(
+            !df.open_inputs(&node_a).contains(&input_a),
+            "the failing close still removes the first input"
+        );
+        assert!(
+            !df.open_inputs(&node_b).contains(&input_b),
+            "the helper must continue after the first error and close later inputs"
+        );
+        assert!(
+            df.open_inputs(&node_b).contains(&input_b_guard),
+            "the helper must not over-close unrelated inputs"
+        );
+
+        let events_a = drain_events(&mut rx_a);
+        assert_eq!(events_a.len(), 1);
+        assert!(matches_event(&events_a[0], "AllInputsClosed"));
+
+        let events_b = drain_events(&mut rx_b);
+        assert_eq!(events_b.len(), 1);
+        assert!(matches_event(&events_b[0], "InputClosed"));
     }
 
     // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
@@ -8821,7 +9430,7 @@ mod fault_tolerance_tests {
         let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
-        close_input(&mut df, &node_a, &input_x, &clock);
+        close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
         assert!(df.open_inputs(&node_a).is_empty());
 
@@ -8868,7 +9477,7 @@ mod fault_tolerance_tests {
         let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
-        close_input(&mut df, &node_a, &data_in, &clock);
+        close_input(&mut df, &node_a, &data_in, &clock).unwrap();
 
         assert!(
             df.open_inputs(&node_a).contains(&timer_in),
@@ -8911,7 +9520,7 @@ mod fault_tolerance_tests {
         let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
-        close_input(&mut df, &node_a, &input_x, &clock);
+        close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
         assert!(
             disable_restart.load(atomic::Ordering::Acquire),
@@ -9009,7 +9618,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Close last open input — but broken input still exists
-        close_input(&mut df, &node_a, &input_x, &clock);
+        close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
         let events = drain_events(&mut rx);
         // Only InputClosed, NO AllInputsClosed (broken input might recover)
@@ -9039,7 +9648,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Permanently close the broken input (upstream exited)
-        close_input(&mut df, &node_a, &input_x, &clock);
+        close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
         // broken_inputs cleaned up
         assert!(
@@ -9081,7 +9690,7 @@ mod fault_tolerance_tests {
             },
         );
 
-        close_input(&mut df, &node_a, &input_x, &clock);
+        close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
         assert!(
             !df.input_deadlines
@@ -9123,7 +9732,7 @@ mod fault_tolerance_tests {
         df.subscribe_channels.insert(node_c.clone(), tx);
 
         // 1. Producer of input_a exits.
-        close_input(&mut df, &node_c, &input_a, &clock);
+        close_input(&mut df, &node_c, &input_a, &clock).unwrap();
 
         // 2. Simulate the stale-deadline timeout firing as `check_input_timeouts`
         //    would: it inserts a broken record then calls break_input. With the
@@ -9139,7 +9748,7 @@ mod fault_tolerance_tests {
         );
 
         // 3. Producer of input_b exits — node is now fully drained.
-        close_input(&mut df, &node_c, &input_b, &clock);
+        close_input(&mut df, &node_c, &input_b, &clock).unwrap();
 
         let events = drain_events(&mut rx);
         assert!(
