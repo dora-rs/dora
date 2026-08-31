@@ -122,6 +122,7 @@ pub struct RunningNode {
     pub(crate) force_restart_next: Arc<AtomicBool>,
     pub(crate) last_activity: Arc<AtomicU64>,
     pub(crate) health_check_timeout: Option<Duration>,
+    pub(crate) startup_timeout: Option<Duration>,
     /// Per-node finish-drain grace override (from `finish_grace_secs` in the
     /// descriptor). When `Some`, overrides the global `DORA_FINISH_DRAIN_GRACE_SECS`
     /// for this node in the finish-straggler watchdog.

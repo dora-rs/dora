@@ -225,6 +225,7 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     max_restart_delay: node.max_restart_delay,
                     restart_window: node.restart_window,
                     health_check_timeout: node.health_check_timeout,
+                    startup_timeout: node.startup_timeout,
                     finish_grace_secs: node.finish_grace_secs,
                 })
             }
@@ -278,6 +279,7 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     max_restart_delay: node.max_restart_delay,
                     restart_window: node.restart_window,
                     health_check_timeout: node.health_check_timeout,
+                    startup_timeout: node.startup_timeout,
                     finish_grace_secs: node.finish_grace_secs,
                 })
             }

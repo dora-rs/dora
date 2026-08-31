@@ -228,6 +228,10 @@ const ALL_CHECKABLE_FIELDS: &[CheckableField] = &[
         is_set: |node| node.health_check_timeout.is_some(),
     },
     CheckableField {
+        name: "startup_timeout",
+        is_set: |node| node.startup_timeout.is_some(),
+    },
+    CheckableField {
         name: "finish_grace_secs",
         is_set: |node| node.finish_grace_secs.is_some(),
     },
@@ -314,6 +318,7 @@ const STANDARD_ALLOWED: &[&str] = &[
     "max_restart_delay",
     "restart_window",
     "health_check_timeout",
+    "startup_timeout",
     "finish_grace_secs",
     "send_stdout_as",
     "send_logs_as",

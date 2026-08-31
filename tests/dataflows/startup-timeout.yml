@@ -1,0 +1,12 @@
+health_check_interval: 0.1
+
+nodes:
+  - id: hang-before-init
+    build: cargo build -p hang-before-init-node
+    path: ../../target/debug/hang-before-init-node
+    restart_policy: never
+    startup_timeout: 0.5
+    env:
+      DORA_TEST_MARKER_FILE: /tmp/dora-startup-timeout.log
+    inputs:
+      tick: dora/timer/millis/200

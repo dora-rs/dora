@@ -830,6 +830,10 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    /// Startup connection deadline in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
+
     /// Per-node finish-drain grace period in seconds.
     ///
     /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
@@ -1196,6 +1200,10 @@ pub struct CustomNode {
     /// not reaped here either.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
+
+    /// Startup connection deadline in seconds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
 
     /// Per-node finish-drain grace period in seconds.
     ///

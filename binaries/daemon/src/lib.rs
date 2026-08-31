@@ -3127,6 +3127,7 @@ impl Daemon {
                             max_restart_delay: None,
                             restart_window: None,
                             health_check_timeout: None,
+                            startup_timeout: None,
                             finish_grace_secs: None,
                             module: None,
                             params: Default::default(),
@@ -3888,19 +3889,26 @@ impl Daemon {
         let now_millis = node_communication::current_millis();
         for dataflow in self.running.values() {
             for (node_id, node) in &dataflow.running_nodes {
+                let last = node.last_activity.load(atomic::Ordering::Acquire);
+                let connected = dataflow.connected_nodes.contains(node_id);
+                if !connected {
+                    if let Some(startup_timeout) = node.startup_timeout {
+                        let elapsed_ms = now_millis.saturating_sub(last);
+                        if elapsed_ms > startup_timeout.as_millis() as u64 {
+                            tracing::warn!(
+                                "node `{node_id}` failed to connect within {startup_timeout:?} (elapsed: {}ms), killing",
+                                elapsed_ms,
+                            );
+                            if let Some(process) = &node.process {
+                                process.submit(ProcessOperation::Kill);
+                            }
+                        }
+                    }
+                    continue;
+                }
                 let Some(timeout) = node.health_check_timeout else {
                     continue;
                 };
-                let last = node.last_activity.load(atomic::Ordering::Acquire);
-                // The health-check watchdog only monitors *post-connection*
-                // liveness. `last_activity` is seeded to the spawn timestamp
-                // (not 0), so a node that has not yet sent its first
-                // `DaemonRequest` would be measured as silent from spawn and
-                // SIGKILLed mid-startup — e.g. a node whose cold start (Python
-                // imports + model-weight load) legitimately exceeds
-                // `health_check_timeout`. Gate the kill on the node having
-                // connected, mirroring the finish-straggler watchdog (#2937).
-                let connected = dataflow.connected_nodes.contains(node_id);
                 if !health_check_should_kill(connected, last, now_millis, timeout) {
                     continue;
                 }
@@ -8186,6 +8194,7 @@ mod fault_tolerance_tests {
             force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
             health_check_timeout: None,
+            startup_timeout: None,
             finish_grace_secs: None,
         }
     }
