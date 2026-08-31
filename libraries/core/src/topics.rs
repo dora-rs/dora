@@ -375,7 +375,25 @@ pub struct ZenohSessionParams<'a> {
     /// daemons into an explicit mesh instead of relying on gossip through a
     /// single rendezvous: every daemon dials every other one, which is the
     /// clique zenoh 1.9 requires of a peer region.
+    ///
+    /// Operator-supplied, and therefore *authoritative*: naming them is a
+    /// statement that this deployment does not rely on scouting, so they
+    /// replace multicast (see the `#1856` guard below).
     pub connect_endpoints: &'a [String],
+    /// Peers this session dials that dora *discovered* rather than the operator
+    /// naming them — today, the endpoints the coordinator handed back at
+    /// registration.
+    ///
+    /// Dialed exactly like [`Self::connect_endpoints`], but deliberately
+    /// excluded from the decision to turn multicast scouting off. A discovered
+    /// list can be incomplete or stale in ways an operator-supplied one cannot:
+    /// a peer that has not yet reported its endpoint is missing from it, and a
+    /// peer that died moments ago is still in it until the coordinator notices.
+    /// Letting such a list disable scouting would make a partial answer *worse*
+    /// than no answer — it would strip the fallback that was working — so
+    /// discovery here is strictly additive: it adds links, and multicast stays
+    /// available to cover whatever it missed.
+    pub discovered_connect_endpoints: &'a [String],
     /// Whether this session may scout by multicast. A request, not a command —
     /// see the `#1856` guard below.
     pub multicast: MulticastScouting,
@@ -448,6 +466,7 @@ pub async fn open_zenoh_session_with_listen(
         listen_endpoint,
         inter_daemon_peer,
         connect_endpoints,
+        discovered_connect_endpoints,
         multicast,
     } = params;
 
@@ -552,14 +571,21 @@ pub async fn open_zenoh_session_with_listen(
             //      daemon discovery (extends #1778 to the daemon↔daemon
             //      hop). One daemon binds it as a listener, others connect
             //      and gossip-discover their peers via it.
-            // All are explicit endpoints; if we set any of them we
-            // disable multicast scouting so we don't end up with mixed
-            // discovery modes.
+            //   4. `discovered_connect_endpoints` — peers the coordinator
+            //      reported. Dialed like the rest, but see below: because a
+            //      discovered list can be incomplete or stale, it alone does
+            //      not disable scouting.
+            // Setting any of the *operator-supplied* ones disables multicast
+            // scouting, so we don't end up with mixed discovery modes.
             let mut connect_eps: Vec<String> = Vec::new();
             if let Ok(eps) = std::env::var(DORA_ZENOH_CONNECT_ENV) {
                 connect_eps.extend(split_endpoints(&eps));
             }
             connect_eps.extend(connect_endpoints.iter().cloned());
+            // Everything appended from here on is dialed but does not, on its
+            // own, justify dropping multicast — see `discovered_connect_endpoints`.
+            let authoritative_connect_eps = connect_eps.len();
+            connect_eps.extend(discovered_connect_endpoints.iter().cloned());
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
             }
@@ -575,6 +601,14 @@ pub async fn open_zenoh_session_with_listen(
             // which only collapses *adjacent* equals and would leave the
             // env/param/rendezvous interleaving untouched.
             let mut seen_connect = std::collections::HashSet::new();
+            // Counted before dedup: `retain` only ever removes later duplicates
+            // of an earlier entry, and the authoritative entries come first, so
+            // "were there any" is unaffected by it.
+            let has_authoritative_connect = authoritative_connect_eps > 0
+                || inter_daemon_peer.is_some()
+                || overlay
+                    .as_ref()
+                    .is_some_and(|o| !o.connect_endpoints.is_empty());
             connect_eps.retain(|ep| seen_connect.insert(ep.clone()));
             let mut connect_inserted = false;
             if !connect_eps.is_empty() {
@@ -699,7 +733,8 @@ pub async fn open_zenoh_session_with_listen(
             // absolute would disarm that recovery and strand the daemon.
             let requested_off =
                 multicast_disabled(matches!(multicast, MulticastScouting::Disabled));
-            if (connect_inserted || (requested_off && listen_configured))
+            if ((connect_inserted && has_authoritative_connect)
+                || (requested_off && listen_configured))
                 && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
             {
                 warn!("failed to disable zenoh scouting/multicast: {err}");
@@ -785,10 +820,15 @@ pub async fn open_zenoh_session_with_listen(
                                 if listen_inserted_into_configured.as_deref() == Some(requested) {
                                     effective_listen_endpoint = Some(requested.to_string());
                                 }
-                            } else if connect_inserted {
-                                // We set explicit `connect/endpoints` above, so
-                                // multicast scouting was disabled for this session
-                                // (#1856). There is therefore NO discovery fallback:
+                            } else if connect_inserted && has_authoritative_connect {
+                                // We set operator-supplied `connect/endpoints`
+                                // above, so multicast scouting was disabled for this
+                                // session (#1856). (A connect list that is only
+                                // *discovered* leaves scouting on, and so takes the
+                                // `else` branch below instead — telling a debugger
+                                // there is no fallback when there is would point
+                                // them the wrong way just as surely as #2762 did.)
+                                // There is therefore NO discovery fallback:
                                 // peers already told to dial `{requested}` (e.g. via
                                 // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
                                 // cannot reach this now-listener-less session, and it

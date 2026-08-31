@@ -43,14 +43,60 @@ pub enum RegisterResult {
     Ok {
         /// unique ID assigned by the coordinator
         daemon_id: DaemonId,
+        /// Zenoh listen endpoints of the daemons that were already registered
+        /// when this one joined, for it to dial.
+        ///
+        /// The coordinator is the only component every daemon already talks
+        /// to, which makes it the one place a daemon can learn where its peers
+        /// are without anyone configuring an address twice. Without this a
+        /// multi-machine deployment has to name every daemon's endpoint on
+        /// every other daemon's command line (`--zenoh-connect`), or rely on
+        /// multicast — which a mesh VPN does not carry.
+        ///
+        /// Only endpoints a daemon *verified as bound* appear here (see the
+        /// `info().locators()` check in `open_zenoh_session_with_listen`), so a
+        /// dial planned from this list has a listener behind it.
+        ///
+        /// Deliberately only the *earlier* daemons: zenoh reads
+        /// `connect/endpoints` once at session open and never re-reads it, so a
+        /// daemon cannot act on an endpoint that arrives later. It does not
+        /// need to — a zenoh transport is bidirectional, so the joining
+        /// daemon's dial carries traffic in both directions. Each daemon
+        /// dialing everyone who came before it therefore builds the full
+        /// clique, with no daemon ever needing to learn about a later one.
+        ///
+        /// Daemons may start simultaneously: each advertises its endpoint in
+        /// its own registration (see
+        /// [`crate::daemon_to_coordinator::DaemonRegisterRequest::zenoh_listen_endpoint`]),
+        /// and the coordinator handles registrations one at a time, so the one
+        /// that registers second always sees the first. That ordering is what
+        /// removes the need for a daemon to ever act on a *later* report —
+        /// which it could not do anyway, zenoh having no runtime equivalent of
+        /// `connect/endpoints`.
+        ///
+        /// `#[serde(default)]` keeps a daemon built before this field existed
+        /// decodable: it sees no peers and falls back to the multicast/explicit
+        /// wiring it already had.
+        #[serde(default)]
+        peer_zenoh_endpoints: Vec<String>,
     },
     Err(String),
 }
 
 impl RegisterResult {
+    /// The assigned id alone, for callers that do not wire zenoh.
     pub fn to_result(self) -> eyre::Result<DaemonId> {
+        self.into_parts().map(|(daemon_id, _)| daemon_id)
+    }
+
+    /// The assigned id plus the peer endpoints to dial; see
+    /// [`RegisterResult::Ok::peer_zenoh_endpoints`].
+    pub fn into_parts(self) -> eyre::Result<(DaemonId, Vec<String>)> {
         match self {
-            RegisterResult::Ok { daemon_id } => Ok(daemon_id),
+            RegisterResult::Ok {
+                daemon_id,
+                peer_zenoh_endpoints,
+            } => Ok((daemon_id, peer_zenoh_endpoints)),
             RegisterResult::Err(err) => Err(eyre::eyre!(err)),
         }
     }
@@ -235,4 +281,42 @@ pub struct SpawnDataflowNodes {
     /// When set, daemons can pull binaries from `{artifact_base_url}/{build_id}/{node_id}`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub artifact_base_url: Option<String>,
+}
+
+#[cfg(test)]
+mod register_result_tests {
+    use super::*;
+
+    /// A daemon built before `peer_zenoh_endpoints` existed sends a reply
+    /// without the field. It must still decode — into "no peers to dial" —
+    /// rather than failing registration outright, which would take the whole
+    /// daemon down over a field it does not need.
+    #[test]
+    fn a_reply_without_peer_endpoints_decodes_as_no_peers() {
+        let legacy = r#"{"Ok":{"daemon_id":{"machine_id":"A","uuid":"00000000-0000-0000-0000-000000000001"}}}"#;
+        let decoded: RegisterResult =
+            serde_json::from_str(legacy).expect("legacy register reply must stay decodable");
+        let (_, peers) = decoded.into_parts().expect("legacy reply is Ok");
+        assert!(peers.is_empty());
+    }
+
+    #[test]
+    fn peer_endpoints_round_trip() {
+        let peers = vec!["tcp/10.0.2.100:5456".to_string()];
+        let encoded = serde_json::to_string(&RegisterResult::Ok {
+            daemon_id: DaemonId::new(Some("A".to_string())),
+            peer_zenoh_endpoints: peers.clone(),
+        })
+        .expect("serialize");
+        let decoded: RegisterResult = serde_json::from_str(&encoded).expect("deserialize");
+        assert_eq!(decoded.into_parts().expect("ok").1, peers);
+    }
+
+    /// `to_result` is the id-only convenience over `into_parts`; an `Err` reply
+    /// must stay an error through both.
+    #[test]
+    fn an_error_reply_is_an_error_through_both_accessors() {
+        assert!(RegisterResult::Err("nope".into()).to_result().is_err());
+        assert!(RegisterResult::Err("nope".into()).into_parts().is_err());
+    }
 }

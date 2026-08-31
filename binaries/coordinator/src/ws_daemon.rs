@@ -182,12 +182,17 @@ async fn handle_daemon_request(
             let version_check_result = register_request.check_version();
             // capture before the partial moves below consume `register_request`
             let supports_hub_sources = register_request.supports_hub_sources();
+            let zenoh_listen_endpoint = register_request.zenoh_listen_endpoint;
             let labels = register_request.labels;
             let machine_id = register_request.machine_id;
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
             connection.peer_addr = Some(peer_addr);
+            // Recorded here, so it is on the connection before it is added to
+            // the registry — the next daemon's register reply, built later on
+            // the same serial event loop, therefore already contains it.
+            connection.zenoh_listen_endpoint = zenoh_listen_endpoint;
             // Capture the connection_id before moving `connection` into the event.
             let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
@@ -314,6 +319,11 @@ fn translate_daemon_event(
         DaemonEvent::Heartbeat { ft_stats } => Some(Event::DaemonHeartbeat {
             daemon_id,
             ft_stats,
+        }),
+        DaemonEvent::ZenohListenEndpoint { endpoint } => Some(Event::DaemonZenohEndpoint {
+            daemon_id,
+            connection_id,
+            endpoint,
         }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
         DaemonEvent::Exit => Some(Event::DaemonExit {

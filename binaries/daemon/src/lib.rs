@@ -1148,6 +1148,65 @@ fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -
     Ok(())
 }
 
+/// What `register` needs to reserve and advertise this daemon's zenoh listener.
+///
+/// Grouped because the three travel together through every hop between the run
+/// loop and the register frame, and separately they read as three unrelated
+/// booleans-and-options at each call site.
+pub(crate) struct ZenohRegistration {
+    /// Where the listener binds, and whether a bind failure is fatal.
+    pub bind: ZenohBind,
+    /// Whether the resulting endpoint is worth telling peers about — false for
+    /// a loopback bind, which would point a remote daemon at its own host.
+    pub advertise: bool,
+    /// The endpoint already reserved on a previous connect, reused so a
+    /// reconnect does not reserve a port the open session never bound.
+    pub reserved: Option<String>,
+}
+
+/// Reserve the endpoint this daemon's zenoh listener will bind.
+///
+/// Split out of `build_daemon` so it can run *before* the daemon registers:
+/// the endpoint is advertised in the registration, which is what lets the
+/// coordinator hand it to daemons that register afterwards without a window in
+/// which two of them learn nothing about each other (see
+/// `DaemonRegisterRequest::zenoh_listen_endpoint`).
+///
+/// A reservation binds an ephemeral port and drops the socket, so there is a
+/// window before zenoh's own bind in which another process could take it. That
+/// window already existed; registering first widens it by one round-trip. It
+/// stays tolerable because the listener is verified after `zenoh::open` — a
+/// port lost in the window is caught there, and the advertised endpoint is
+/// withdrawn rather than left to mislead peers.
+///
+/// Failing to reserve is fatal for an address the operator *named*: continuing
+/// would leave the daemon with no listener at all — undialable and silently
+/// dead — and someone who had to say the address out loud is, almost by
+/// definition, on a network where multicast will not rescue them. A derived
+/// address falls back instead: loopback always exists, so the error was
+/// effectively unreachable anyway.
+fn reserve_zenoh_listen_endpoint(zenoh_bind: ZenohBind) -> eyre::Result<Option<String>> {
+    match zenoh_bind.endpoint() {
+        Ok(ep) => Ok(Some(ep)),
+        Err(err) if zenoh_bind.is_explicit() => Err(err).wrap_err_with(|| {
+            format!(
+                "failed to bind the zenoh listen address {} given via \
+                 --zenoh-listen; other daemons would have no way to reach this \
+                 one. Check that this address exists on this host",
+                zenoh_bind.addr()
+            )
+        }),
+        Err(err) => {
+            tracing::warn!(
+                "failed to reserve zenoh listen endpoint on {}: {err}; \
+                 falling back to multicast scouting only",
+                zenoh_bind.addr()
+            );
+            Ok(None)
+        }
+    }
+}
+
 /// Extract a finished dataflow's collected node results out of
 /// `dataflow_node_results` for its terminal [`DataflowDaemonResult`].
 ///
@@ -1258,6 +1317,20 @@ impl Daemon {
                 })?;
         }
         announce_zenoh_bind(zenoh_bind, coordinator_ws_addr)?;
+        // Reserved lazily, by `register`, once the coordinator socket is up —
+        // *not* here. A reservation binds an ephemeral port and drops the
+        // socket, so everything between it and zenoh's own bind is a window in
+        // which another process can take that port; reserving here would stretch
+        // that window across the whole coordinator connect loop, which retries
+        // for many minutes when the coordinator is not up yet. Cached across
+        // reconnects because the session (and its bound port) outlives them.
+        let mut requested_listen_endpoint: Option<String> = None;
+        // Only a routable listener is worth advertising — handing `127.0.0.1`
+        // to a daemon on another machine would point it at its own loopback,
+        // and dialing it would cost that daemon its multicast fallback for
+        // nothing. A single-machine deployment therefore advertises nothing and
+        // keeps exactly the behavior it has today.
+        let advertise_listen_endpoint = !zenoh_bind.addr().is_loopback();
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -1304,6 +1377,11 @@ impl Daemon {
                     coordinator_ws_addr,
                     &machine_id,
                     labels.clone(),
+                    ZenohRegistration {
+                        bind: zenoh_bind,
+                        advertise: advertise_listen_endpoint,
+                        reserved: requested_listen_endpoint.clone(),
+                    },
                     &clock,
                     remote_daemon_events_rx,
                     dynamic_node_events_rx.clone(),
@@ -1339,7 +1417,17 @@ impl Daemon {
             };
 
             match connect_result {
-                Ok((daemon_id, coordinator_sender, incoming_events)) => {
+                Ok((
+                    daemon_id,
+                    reserved_listen_endpoint,
+                    peer_zenoh_endpoints,
+                    coordinator_sender,
+                    incoming_events,
+                )) => {
+                    // Cache the port `register` reserved so a reconnect reuses
+                    // it rather than reserving a second one the session never
+                    // bound.
+                    requested_listen_endpoint = reserved_listen_endpoint;
                     connected_once = true;
                     // Fresh successful connection: a later disconnect starts a
                     // new retry window rather than inheriting an old deadline.
@@ -1371,6 +1459,18 @@ impl Daemon {
                                 log_destination,
                                 inter_daemon_peer.clone(),
                                 zenoh_connect.clone(),
+                                requested_listen_endpoint.clone(),
+                                // Peers the coordinator knows about, dialed in
+                                // addition to any named on the command line.
+                                // `open_zenoh_session_with_listen` deduplicates,
+                                // so an endpoint given both ways costs nothing.
+                                //
+                                // Only applied on the first connect: this is
+                                // where the zenoh session is opened, and zenoh
+                                // reads `connect/endpoints` once. A reconnect
+                                // reuses the existing session (and its links),
+                                // so a later reply's list has nothing to act on.
+                                peer_zenoh_endpoints,
                                 zenoh_bind,
                                 disable_multicast,
                                 // A standalone daemon outlives nothing its
@@ -1761,7 +1861,10 @@ impl Daemon {
             builds,
             log_destination,
             inter_daemon_peer,
-            // `dora run` is single-machine: no remote daemon to dial.
+            // `dora run` is single-machine: no remote daemon to dial, and no
+            // coordinator to have discovered one from.
+            Vec::new(),
+            reserve_zenoh_listen_endpoint(ZenohBind::Derived(LOCALHOST))?,
             Vec::new(),
             ZenohBind::Derived(LOCALHOST),
             disable_multicast,
@@ -1798,6 +1901,13 @@ impl Daemon {
         log_destination: LogDestination,
         inter_daemon_peer: Option<String>,
         zenoh_connect: Vec<String>,
+        // The endpoint this daemon will bind, already reserved by the caller.
+        requested_listen_endpoint: Option<String>,
+        // Peers the coordinator reported at registration. Kept separate from
+        // `zenoh_connect` (which the operator named) because a discovered list
+        // must not disable multicast scouting — see
+        // `ZenohSessionParams::discovered_connect_endpoints`.
+        zenoh_discovered_connect: Vec<String>,
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
         bind_nodes_to_parent: bool,
@@ -1832,27 +1942,9 @@ impl Daemon {
         // the exact failure this code exists to prevent. Someone who named an
         // address explicitly is also, almost by definition, on a network where
         // multicast will not save them. So: fatal when explicit.
-        let requested_listen_endpoint = match zenoh_bind.endpoint() {
-            Ok(ep) => Some(ep),
-            Err(err) if zenoh_bind.is_explicit() => {
-                return Err(err).wrap_err_with(|| {
-                    format!(
-                        "failed to bind the zenoh listen address {} given via \
-                         --zenoh-listen; other daemons would have no way to reach this \
-                         one. Check that this address exists on this host",
-                        zenoh_bind.addr()
-                    )
-                });
-            }
-            Err(err) => {
-                tracing::warn!(
-                    "failed to reserve zenoh listen endpoint on {}: {err}; \
-                     falling back to multicast scouting only",
-                    zenoh_bind.addr()
-                );
-                None
-            }
-        };
+        // Reserved by the caller, before registering, so the endpoint can
+        // travel *with* the registration — see
+        // `DaemonRegisterRequest::zenoh_listen_endpoint`.
         // The helper is the source of truth for whether the listener actually
         // bound: `zenoh_listen_endpoint` only becomes `Some` if zenoh accepted
         // the listen/endpoints insert. Otherwise we must not inject
@@ -1863,6 +1955,7 @@ impl Daemon {
                 listen_endpoint: requested_listen_endpoint.as_deref(),
                 inter_daemon_peer: inter_daemon_peer.as_deref(),
                 connect_endpoints: &zenoh_connect,
+                discovered_connect_endpoints: &zenoh_discovered_connect,
                 multicast: if disable_multicast {
                     MulticastScouting::Disabled
                 } else {
@@ -2054,6 +2147,41 @@ impl Daemon {
                 && let Err(err) = sender.send_event(&bytes).await
             {
                 tracing::warn!("failed to send status report to coordinator: {err}");
+            }
+
+            // Confirm — or withdraw — the endpoint advertised at registration,
+            // now that the session is open and the listener has been checked
+            // against `info().locators()`.
+            //
+            // The announcement itself happened in the register request, because
+            // it has to be on record before the *next* daemon's reply is built;
+            // see `DaemonRegisterRequest::zenoh_listen_endpoint`. This is only
+            // the correction, and it matters most in the failure case: a daemon
+            // that advertised a port and then lost it to another process must
+            // say so, or the coordinator hands that dead endpoint to every
+            // daemon that registers afterwards.
+            //
+            // Skipped entirely when nothing was advertised (`zenoh_routable_addr`
+            // is `None` for a loopback bind — a single-machine deployment), since
+            // there is then nothing to confirm or withdraw.
+            //
+            // Re-sent on every reconnect, so a coordinator that restarted and
+            // lost the registry relearns this daemon's endpoint.
+            if self.zenoh_routable_addr.is_some() {
+                let stamped = Timestamped {
+                    inner: CoordinatorRequest::Event {
+                        daemon_id: self.daemon_id.clone(),
+                        event: DaemonEvent::ZenohListenEndpoint {
+                            endpoint: self.zenoh_listen_endpoint.clone(),
+                        },
+                    },
+                    timestamp: self.clock.new_timestamp(),
+                };
+                if let Ok(bytes) = serde_json::to_vec(&stamped)
+                    && let Err(err) = sender.send_event(&bytes).await
+                {
+                    tracing::warn!("failed to report zenoh listen endpoint to coordinator: {err}");
+                }
             }
         }
 
@@ -6882,6 +7010,8 @@ async fn set_up_event_stream(
     coordinator_ws_addr: SocketAddr,
     machine_id: &Option<String>,
     labels: BTreeMap<String, String>,
+    // Reservation happens inside `register`, once the coordinator socket is up.
+    zenoh: ZenohRegistration,
     clock: &Arc<HLC>,
     remote_daemon_events_rx: flume::Receiver<eyre::Result<Timestamped<InterDaemonEvent>>>,
     // Events from the dynamic-node listener. The listener is bound once by the
@@ -6890,6 +7020,8 @@ async fn set_up_event_stream(
     dynamic_node_events_rx: flume::Receiver<Timestamped<DynamicNodeEventWrapper>>,
 ) -> eyre::Result<(
     DaemonId,
+    Option<String>,
+    Vec<String>,
     coordinator::CoordinatorSender,
     impl Stream<Item = Timestamped<Event>> + Unpin,
 )> {
@@ -6904,10 +7036,17 @@ async fn set_up_event_stream(
             timestamp: clock_cloned.new_timestamp(),
         },
     });
-    let (daemon_id, coordinator_sender, coordinator_events) = coordinator::register(
+    let (
+        daemon_id,
+        reserved_listen_endpoint,
+        peer_zenoh_endpoints,
+        coordinator_sender,
+        coordinator_events,
+    ) = coordinator::register(
         coordinator_ws_addr,
         machine_id.clone(),
         labels,
+        zenoh,
         clock.clone(),
     )
     .await
@@ -6931,7 +7070,13 @@ async fn set_up_event_stream(
         dynamic_node_events,
     )
         .merge();
-    Ok((daemon_id, coordinator_sender, incoming))
+    Ok((
+        daemon_id,
+        reserved_listen_endpoint,
+        peer_zenoh_endpoints,
+        coordinator_sender,
+        incoming,
+    ))
 }
 
 fn note_output_sent_to_local_receivers(
