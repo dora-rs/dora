@@ -368,7 +368,7 @@ impl Logger {
                 let message = Timestamped {
                     inner: CoordinatorRequest::Event {
                         daemon_id,
-                        event: DaemonEvent::Log(message.clone()),
+                        event: DaemonEvent::Log(message),
                     },
                     timestamp: self.clock.new_timestamp(),
                 };
