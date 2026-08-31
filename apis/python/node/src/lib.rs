@@ -14,7 +14,9 @@ use dora_operator_api_python::{
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
+use futures::future::{Either, select};
 use futures::{Stream, StreamExt};
+use futures_timer::Delay;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use tokio::runtime::{Builder, Runtime};
@@ -368,7 +370,8 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// Default behaviour is to timeout after 2 seconds.
+    /// Iterating blocks until the next event is available; it does not time
+    /// out. Use `node.next(timeout=..)` if you need a bounded wait.
     ///
     /// :rtype: dict
     pub fn __next__(&self, py: Python) -> PyResult<Option<Py<PyDict>>> {
@@ -973,6 +976,33 @@ struct Events {
     _cleanup_handle: NodeCleanupHandle,
 }
 
+/// Await the next event from a merged (external/ROS2) stream, honoring an
+/// optional timeout.
+///
+/// The `timeout` was previously ignored on merged streams, so
+/// `node.next(timeout=..)` / `recv_async(timeout=..)` blocked forever once the
+/// upstream went quiet (dora-rs/dora#2027). Race the next event against a
+/// `Delay`, mirroring the Rust node API's own `EventStream::recv_async_timeout`.
+/// `Delay` needs no reactor, so this works both under `block_on` and in an
+/// async context. The event is polled first so a ready/buffered event wins over
+/// an already-elapsed (e.g. zero) timer, matching the `Dora` arm's
+/// `recv_timeout(ZERO)`.
+async fn recv_merged_with_timeout<S>(
+    events: &mut S,
+    timeout: Option<Duration>,
+) -> Option<MergedEvent<Py<PyAny>>>
+where
+    S: Stream<Item = MergedEvent<Py<PyAny>>> + Unpin,
+{
+    match timeout {
+        Some(timeout) => match select(events.next(), Delay::new(timeout)).await {
+            Either::Left((event, _)) => event,
+            Either::Right((_, _)) => None,
+        },
+        None => events.next().await,
+    }
+}
+
 impl Events {
     fn recv(&self, timeout: Option<Duration>) -> Option<PyEvent> {
         let mut inner = self.inner.blocking_lock();
@@ -981,7 +1011,9 @@ impl Events {
                 Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
                 None => events.recv().map(MergedEvent::Dora),
             },
-            EventsInner::Merged(events) => futures::executor::block_on(events.next()),
+            EventsInner::Merged(events) => {
+                futures::executor::block_on(recv_merged_with_timeout(events, timeout))
+            }
         };
         event.map(|event| PyEvent { event })
     }
@@ -1009,7 +1041,7 @@ impl Events {
                     .map(MergedEvent::Dora),
                 None => events.recv_async().await.map(MergedEvent::Dora),
             },
-            EventsInner::Merged(events) => events.next().await,
+            EventsInner::Merged(events) => recv_merged_with_timeout(events, timeout).await,
         };
         event.map(|event| PyEvent { event })
     }

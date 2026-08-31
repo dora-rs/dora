@@ -2512,6 +2512,7 @@ dependencies = [
  "eyre",
  "flume 0.12.0",
  "futures",
+ "futures-timer",
  "pyo3",
  "pyo3-build-config",
  "pythonize",
