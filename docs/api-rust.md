@@ -835,7 +835,7 @@ crate depends on it, so it never reaches crates.io at all.
 
 ### How this is enforced
 
-Documentation alone would not survive contact with cargo, so three mechanisms
+Documentation alone would not survive contact with cargo, so four mechanisms
 back it:
 
 1. **Exact version pins.** Workspace crates depend on each other with `=`
@@ -848,6 +848,15 @@ back it:
    consumer's `Cargo.toml` rather than a warning they can tune out.
    `arrow-v58` / `arrow-v59` are the pattern.
 3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish lists in `.github/workflows/release.yml` and `.github/workflows/cargo-release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
+4. **A pinned wheel surface.** The Python API ships as the `dora-rs` wheel,
+   not as a crate, so none of the mechanisms above reach it — a rename would
+   arrive on PyPI with nothing having failed first.
+   `apis/python/node/tests/test_public_surface.py` pins the names importable
+   from `dora` and the public members of the classes behind them. CI runs it
+   (`make qa-test-python-node`) in the one job that installs the module. A
+   name that disappears fails; a new one fails until it is filed as either
+   covered or exempt, so the choice is made deliberately rather than by
+   whatever the module happened to export.
 
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already
