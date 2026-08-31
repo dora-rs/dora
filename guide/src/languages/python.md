@@ -200,14 +200,19 @@ node.send_output("goal", data, {"goal_id": goal_id})
 **Streaming example** (flush downstream queues on user interruption):
 
 ```python
-params = {
-    "session_id": session_id,
-    "segment_id": 1,
-    "seq": 0,
-    "fin": False,
-    "flush": True,
-}
-node.send_output("text", data, metadata={"parameters": params})
+# `metadata` is a flat dict of parameter name -> value; there is no
+# enclosing "parameters" key.
+node.send_output(
+    "text",
+    data,
+    metadata={
+        "session_id": session_id,
+        "segment_id": 1,
+        "seq": 0,
+        "fin": False,
+        "flush": True,
+    },
+)
 ```
 
 See [patterns.md](patterns.md) for the full guide.

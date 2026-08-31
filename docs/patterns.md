@@ -250,15 +250,19 @@ when using flush.
 ### Python
 
 ```python
-# Streaming metadata is a plain dict
-params = {
-    "session_id": session_id,
-    "segment_id": 1,
-    "seq": 0,
-    "fin": False,
-    "flush": True,  # flush older queued messages
-}
-node.send_output("text", data, metadata={"parameters": params})
+# `metadata` is a flat dict of parameter name -> value; there is no
+# enclosing "parameters" key.
+node.send_output(
+    "text",
+    data,
+    metadata={
+        "session_id": session_id,
+        "segment_id": 1,
+        "seq": 0,
+        "fin": False,
+        "flush": True,  # flush older queued messages
+    },
+)
 ```
 
 ## 5. Choosing a pattern
@@ -324,14 +328,36 @@ Python nodes use the same metadata conventions. Parameters are plain dicts
 with string keys:
 
 ```python
+# Service client -- `send_service_request` generates the request_id (uuid7,
+# time-ordered, matching the Rust API) and returns it to correlate on.
+request_id = node.send_service_request("request", data)
+
+# Service server -- echo the request's metadata back, which carries request_id
+node.send_service_response("response", result, metadata=event["metadata"])
+```
+
+`metadata` is a **flat** dict of parameter name -> value, the same shape
+`event["metadata"]` has on the receiving side:
+
+```python
+node.send_output("goal", data, metadata={"goal_id": goal_id})
+assert event["metadata"]["goal_id"] == goal_id
+```
+
+Wrapping it in an enclosing `{"parameters": ...}` key does not fail loudly:
+the dict is not a supported parameter type, so it is coerced to its string
+representation under a parameter literally named `parameters` (with a
+warning). The correlation key never arrives, and the peer sees no
+`request_id`/`goal_id` at all.
+
+If you need the id before sending -- or are not using the service helpers --
+set it yourself, still flat:
+
+```python
 import uuid
 
-# Service client (uuid7 for time-ordered IDs, matching Rust API)
-params = {"request_id": str(uuid.uuid7())}
-node.send_output("request", data, metadata={"parameters": params})
-
-# Service server -- pass through parameters
-node.send_output("response", result, metadata=event["metadata"])
+request_id = str(uuid.uuid7())
+node.send_output("request", data, metadata={"request_id": request_id})
 ```
 
 > **Note**: `uuid.uuid7()` requires Python 3.13+. On older versions, use the
