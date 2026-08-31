@@ -192,6 +192,32 @@ impl AsRef<str> for NodeId {
     }
 }
 
+/// The identifier of an operator running inside a `dora runtime` node.
+///
+/// An operator is addressed as `<node_id>/<operator_id>/<output_id>`, so an
+/// `OperatorId` is the middle segment of a runtime output's fully-qualified
+/// name.
+///
+/// Unlike [`NodeId`] and [`DataId`], an `OperatorId` is **not** validated:
+/// [`FromStr`] is [`Infallible`] and [`From<String>`] accepts any string
+/// verbatim (this is why it derives `Deserialize` directly rather than through
+/// a validating deserializer). Callers are responsible for not embedding a `/`
+/// in an operator id — a `/` collides with the `<node>/<operator>/<output>`
+/// addressing separator and makes the operator unaddressable (it would resolve
+/// to a different operator/output split).
+///
+/// ```
+/// use dora_message::id::OperatorId;
+///
+/// // Construction is infallible from both `&str` and `String`:
+/// let from_str: OperatorId = "detector".parse().unwrap(); // FromStr is Infallible
+/// let from_string = OperatorId::from("detector".to_string());
+/// assert_eq!(from_str, from_string);
+///
+/// // Display and AsRef expose the underlying id:
+/// assert_eq!(from_str.to_string(), "detector");
+/// assert_eq!(from_str.as_ref(), "detector");
+/// ```
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
