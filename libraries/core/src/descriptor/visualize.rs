@@ -100,10 +100,26 @@ fn collect_dora_nodes(
     }
 }
 
+/// Escape Mermaid-significant characters in free-form label text (e.g. a node
+/// `description`) so it stays well-formed inside a quoted Mermaid label.
+///
+/// Node and data IDs are charset-validated to be Mermaid-safe, but a
+/// `description` is unrestricted, so a `"` (or `<`, `>`, `#`, `&`) would
+/// otherwise corrupt the generated diagram. Mermaid accepts HTML entity codes
+/// written with a leading `#` in place of `&`, so we emit those. `#` is escaped
+/// first so the entities we introduce are not re-processed.
+fn escape_mermaid_label(text: &str) -> String {
+    text.replace('#', "#35;")
+        .replace('&', "#amp;")
+        .replace('"', "#quot;")
+        .replace('<', "#lt;")
+        .replace('>', "#gt;")
+}
+
 fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
     let node_id = &node.id;
     let description = if let Some(desc) = &node.description {
-        format!("<hr/>*{desc}*")
+        format!("<hr/>*{}*", escape_mermaid_label(desc))
     } else {
         "".to_string()
     };
@@ -278,4 +294,41 @@ fn visualize_user_mapping(
 fn format_type_label(urn: &str) -> String {
     let short = crate::types::urn_short_name(urn);
     format!(" [{short}]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::escape_mermaid_label;
+
+    #[test]
+    fn escape_mermaid_label_passes_plain_text_through() {
+        assert_eq!(
+            escape_mermaid_label("Captures raw frames"),
+            "Captures raw frames"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_escapes_double_quote() {
+        // A `"` would otherwise prematurely close the quoted Mermaid label.
+        assert_eq!(
+            escape_mermaid_label(r#"Captures "raw" frames"#),
+            "Captures #quot;raw#quot; frames"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_escapes_all_significant_chars() {
+        assert_eq!(
+            escape_mermaid_label(r#"a & b < c > d " e # f"#),
+            "a #amp; b #lt; c #gt; d #quot; e #35; f"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_does_not_double_escape_entities() {
+        // The `#` from an introduced entity must not be re-escaped into `#35;`.
+        assert_eq!(escape_mermaid_label(r#"""#), "#quot;");
+        assert!(!escape_mermaid_label(r#"""#).contains("#35;"));
+    }
 }
