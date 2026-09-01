@@ -5273,14 +5273,24 @@ impl Daemon {
                 reply_sender,
             } => {
                 #[cfg(feature = "tensor-pool")]
-                self.handle_extension_request(
-                    dataflow_id,
-                    node_id,
-                    namespace,
-                    payload,
-                    reply_sender,
-                )
-                .await?;
+                if let Err(err) = self
+                    .handle_extension_request(
+                        dataflow_id,
+                        node_id,
+                        namespace,
+                        payload,
+                        reply_sender,
+                    )
+                    .await
+                {
+                    // Must not propagate: `handle_extension_request` owns the
+                    // reply channel (it may already have answered the node), so
+                    // a `?` here would unwind the daemon's main loop and drop
+                    // the coordinator connection — losing every other
+                    // dataflow's connection too. Log and carry on, matching the
+                    // `ExtensionStore`/`ExtensionLoad`/`ExtensionDrop` arms.
+                    tracing::error!("failed to handle extension request: {err:?}");
+                }
                 // The node asked for an extension this daemon was not built
                 // with. Answer explicitly so it fails loudly instead of
                 // waiting on a reply that never comes.
