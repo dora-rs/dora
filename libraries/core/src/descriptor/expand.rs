@@ -796,11 +796,23 @@ fn expand_module_node(
             final_nodes.extend(nested);
         } else {
             for (name, output_ref) in node_output_refs(&inner_node) {
+                // `output_ref` may be an operator-qualified `<op_id>/<output>`
+                // form, and `OperatorId` is unvalidated, so parse fallibly
+                // instead of `output_ref.into()` — `DataId::from` panics on
+                // characters outside `[a-zA-Z0-9_./-]`, which would abort
+                // expansion on an otherwise-parseable descriptor. Mirrors
+                // `prefix_output_with_operator_id` in `descriptor/mod.rs`.
+                let output: DataId = output_ref.parse().map_err(|e| {
+                    eyre::eyre!(
+                        "node `{}` produces an invalid output id `{output_ref}`: {e}",
+                        inner_node.id
+                    )
+                })?;
                 direct_output_targets.entry(name).or_default().push((
-                    format!("{}/{}", inner_node.id, output_ref),
+                    format!("{}/{output}", inner_node.id),
                     UserInputMapping {
                         source: inner_node.id.clone(),
-                        output: output_ref.into(),
+                        output,
                     },
                 ));
             }
@@ -1368,6 +1380,46 @@ nodes:
         assert_eq!(descriptor.exit_when_nodes_finish, None);
         let expanded = expand_modules(&descriptor, tmp.path()).unwrap();
         assert_eq!(expanded.exit_when_nodes_finish, None);
+    }
+
+    /// A module whose inner runtime node declares an operator with an id
+    /// containing characters outside `[a-zA-Z0-9_./-]` must surface a clean
+    /// descriptor error, not panic. `OperatorId` is unvalidated, so its id
+    /// flows verbatim into the `<op_id>/<output>` qualified output id, which
+    /// used to be built with `DataId::from` (panics) rather than a fallible
+    /// parse.
+    #[test]
+    fn expand_rejects_invalid_operator_output_id_without_panicking() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            base,
+            "bad_module.yml",
+            r#"
+module:
+  name: bad
+  outputs: [data_out]
+
+nodes:
+  - id: runtime_node
+    operators:
+      - id: "bad id"
+        shared-library: op
+        outputs:
+          - data_out
+"#,
+        );
+        let descriptor = parse_descriptor(
+            r#"
+nodes:
+  - id: my_mod
+    module: bad_module.yml
+"#,
+        );
+        let err = expand_modules(&descriptor, base)
+            .expect_err("an invalid operator output id must be a clean error, not a panic");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid output id"), "unexpected error: {msg}");
     }
 
     #[test]
