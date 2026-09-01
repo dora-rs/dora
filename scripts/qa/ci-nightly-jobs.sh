@@ -1179,13 +1179,27 @@ EOF
   # `dora replay` runs a local single-daemon `dora run` from the deploy-free
   # descriptor stored in the .drec. The recorded source nodes (rust-node and
   # rust-status-node) are swapped for replay nodes; rust-sink reprocesses the
-  # replayed status strings. `--speed 0` replays as fast as possible. Invoked
-  # from the repo root so the replay-node binary resolves under target/debug;
-  # the run's working_dir is the .drec's parent ($WORK), so node logs land in
-  # $WORK/out/.
+  # replayed status strings. Invoked from the repo root so the replay-node
+  # binary resolves under target/debug; the run's working_dir is the .drec's
+  # parent ($WORK), so node logs land in $WORK/out/.
+  #
+  # Paced replay (`--speed 1`), not `--speed 0`: the validation below asserts
+  # that every recorded message reaches the sink, and only a paced replay
+  # makes that assertion sound. `dora replay` already sizes each replayed
+  # input's queue to the recorded message count under `queue_policy:
+  # backpressure` (#2144), but that only covers the node-level queue; the
+  # direct node-to-node zenoh data plane below it is declared
+  # `CongestionControl::Drop`, and an unpaced burst can lose a sample there
+  # with the sender still reporting success (see the note on
+  # `raise_replayed_input_queue_sizes` in binaries/cli/src/command/replay.rs:
+  # "Drops below this layer ... are not addressed here"). That is what made
+  # this job fail in the 2026-09-01 nightly (dora-rs/dora#3372): 99 of 100
+  # values reached the sink, the recording and the replay node both reporting
+  # a clean 100. The recording spans ~1s of 10ms ticks, so replaying it at
+  # the rate the cluster produced it costs about a second.
   echo "=== dora replay $DREC (local single-daemon run) ==="
   rm -rf "$WORK/out"
-  if ! timeout -k 30s 120s dora replay "$DREC" --speed 0; then
+  if ! timeout -k 30s 120s dora replay "$DREC" --speed 1; then
     echo "ERROR: dora replay failed or exceeded 120s"
     rm -rf "$WORK"
     return 1
@@ -1208,10 +1222,11 @@ EOF
   fi
 
   # Validate that the replayed random-value sequence exactly reproduces the
-  # committed seed(42) baseline. dora's transport delivers every recorded
-  # output (reliable, ordered), so the replayed sink must see the full
-  # baseline sequence in order -- any drop, reorder, or value change is a
-  # genuine record/replay regression, not expected noise.
+  # committed seed(42) baseline. At the paced `--speed 1` used above, dora
+  # delivers every recorded output in order, so the replayed sink must see
+  # the full baseline sequence -- any drop, reorder, or value change is a
+  # genuine record/replay regression, not expected noise. (This does not hold
+  # for an unpaced `--speed 0` replay; see the note on the replay invocation.)
   echo "=== validate replayed state against seed(42) baseline ==="
   local baseline="tests/sample-inputs/expected-outputs-rust-status-node.jsonl"
   if ! python3 - "$sink_log" "$baseline" <<'PY'; then
