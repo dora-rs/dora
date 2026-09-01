@@ -1596,7 +1596,10 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    timeout-minutes: 90
+    # Headroom for the raised `Test Python Dynamic Node example` cap below:
+    # the last green macos-latest run of this job took 64m with that step at
+    # 14m, so a step allowed to reach 40m would sit right on a 90m job cap.
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v6
       - uses: dtolnay/rust-toolchain@master
@@ -1678,7 +1681,16 @@ jobs:
           dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
       - name: Test Python Dynamic Node example
-        timeout-minutes: 20
+        # 40, not 20: the `uv pip install` below is a second from-scratch
+        # build of the PyO3 extension (uv builds it in an isolated env, so
+        # the `Set up Python venv` build above is not reused), and on macOS
+        # that build alone dominates the step. The last green nightly before
+        # dora-rs/dora#3372 spent 14m01s here on macos-latest against the
+        # 20-minute cap -- 70% of budget -- and the next one crossed it while
+        # still on `Building dora-rs`. Linux and Windows run this in ~40s.
+        # Reusing the first build instead of redoing it would be the real
+        # fix; until then the cap has to reflect what the step actually costs.
+        timeout-minutes: 40
         shell: bash
         run: |
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
