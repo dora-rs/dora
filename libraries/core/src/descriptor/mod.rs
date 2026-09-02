@@ -243,22 +243,16 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 node.id
             );
         }
-        resolved.insert(
-            node.id.clone(),
-            ResolvedNode {
-                id: node.id,
-                name: node.name,
-                description: node.description,
-                // Merge the dataflow-level `env` into the per-node `env`.
-                // Per-node keys win on conflict so a node can override a
-                // shared default (e.g. global `RUST_LOG=info` with one
-                // verbose node setting `RUST_LOG=debug`).
-                env: merge_env(desc.env.as_ref(), node.env),
-                cpu_affinity: node.cpu_affinity,
-                deploy: node.deploy,
-                kind,
-            },
-        );
+        let mut resolved_node = ResolvedNode::new(node.id.clone(), kind);
+        resolved_node.name = node.name;
+        resolved_node.description = node.description;
+        // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
+        // win on conflict so a node can override a shared default (e.g. global
+        // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
+        resolved_node.env = merge_env(desc.env.as_ref(), node.env);
+        resolved_node.cpu_affinity = node.cpu_affinity;
+        resolved_node.deploy = node.deploy;
+        resolved.insert(node.id, resolved_node);
     }
 
     Ok(resolved)

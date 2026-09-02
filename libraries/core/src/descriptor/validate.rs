@@ -3107,15 +3107,7 @@ nodes:
         let node = |n: u32| -> ResolvedNode {
             let mut custom = custom_node();
             custom.max_rotated_files = Some(n);
-            ResolvedNode {
-                id: NodeId::from("n".to_owned()),
-                name: None,
-                description: None,
-                env: None,
-                cpu_affinity: None,
-                deploy: None,
-                kind: CoreNodeKind::Custom(custom),
-            }
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
         };
 
         // 0 is a real configuration: keep the active log only, rotating the

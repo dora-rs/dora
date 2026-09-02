@@ -71,6 +71,11 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "dora-rs specification")]
+// Same rationale as `Node`: keeps a new *dataflow-level* key a minor release.
+// This is where `exit_when_nodes_finish`, `health_check_interval`, `type_rules`
+// and `strict_types` landed, so it grows at least as often as `Node` does.
+// Construct with `Descriptor::new`; the fields remain `pub`.
+#[non_exhaustive]
 pub struct Descriptor {
     /// List of nodes in the dataflow
     ///
@@ -184,6 +189,28 @@ pub struct Descriptor {
     pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
+impl Descriptor {
+    /// A dataflow of `nodes` with every dataflow-level option left at its
+    /// default (the state a YAML file with only a `nodes:` key deserializes
+    /// to).
+    ///
+    /// `Descriptor` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign the options you need — the
+    /// fields are all still `pub`.
+    pub fn new(nodes: Vec<Node>) -> Self {
+        Self {
+            nodes,
+            deploy: None,
+            debug: Default::default(),
+            health_check_interval: None,
+            strict_types: None,
+            exit_when_nodes_finish: None,
+            type_rules: Default::default(),
+            env: None,
+        }
+    }
+}
+
 /// A type compatibility rule declared in the dataflow YAML.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -213,8 +240,12 @@ pub enum RestartPolicy {
 }
 
 /// Deployment configuration for distributing nodes across machines.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// Same rationale as `Node`: keeps a new deployment key a minor release.
+// Every field has a meaningful default, so `Deploy::default()` is the
+// construction entry point rather than a bespoke `new`.
+#[non_exhaustive]
 pub struct Deploy {
     /// Target machine for deployment
     pub machine: Option<String>,
@@ -987,6 +1018,11 @@ impl Node {
 
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Same rationale as `Node`: keeps a new per-node key a minor release. This is
+// where keys that are not custom-node-specific land — `cpu_affinity` and
+// `deploy` are threaded `Node` -> `ResolvedNode` without passing through
+// `CustomNode`. Construct with `ResolvedNode::new`; the fields remain `pub`.
+#[non_exhaustive]
 pub struct ResolvedNode {
     pub id: NodeId,
     pub name: Option<String>,
@@ -1005,6 +1041,24 @@ pub struct ResolvedNode {
 
 #[allow(missing_docs)]
 impl ResolvedNode {
+    /// A resolved node with the given ID and kind, and every other field left
+    /// at its default.
+    ///
+    /// `ResolvedNode` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign the fields you need — they
+    /// are all still `pub`.
+    pub fn new(id: NodeId, kind: CoreNodeKind) -> Self {
+        Self {
+            id,
+            name: None,
+            description: None,
+            env: None,
+            cpu_affinity: None,
+            deploy: None,
+            kind,
+        }
+    }
+
     pub fn has_git_source(&self) -> bool {
         self.kind
             .as_custom()

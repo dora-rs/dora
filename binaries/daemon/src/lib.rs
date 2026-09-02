@@ -96,16 +96,7 @@ pub mod bench_support {
         HLC,
         Vec<mpsc::Receiver<Timestamped<NodeEvent>>>,
     ) {
-        let descriptor = dora_message::descriptor::Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: dora_message::descriptor::Debug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        };
+        let descriptor = dora_message::descriptor::Descriptor::new(vec![]);
         let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
 
         let sender_id: NodeId = "sender".to_string().into();
@@ -7956,23 +7947,11 @@ mod fault_tolerance_tests {
     use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
 
-    use dora_message::{
-        daemon_to_node::NodeEvent,
-        descriptor::{Debug as DescriptorDebug, Descriptor},
-    };
+    use dora_message::{daemon_to_node::NodeEvent, descriptor::Descriptor};
     use std::sync::atomic::{AtomicBool, AtomicU64};
 
     fn test_dataflow() -> RunningDataflow {
-        let descriptor = Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: DescriptorDebug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        };
+        let descriptor = Descriptor::new(vec![]);
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
     }
 

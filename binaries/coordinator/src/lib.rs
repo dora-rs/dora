@@ -4741,16 +4741,10 @@ fn resolve_single_node(
     node: Node,
     running_descriptor: &Descriptor,
 ) -> eyre::Result<(NodeId, ResolvedNode)> {
-    let tmp_desc = Descriptor {
-        nodes: vec![node],
-        deploy: None,
-        debug: Default::default(),
-        health_check_interval: None,
-        strict_types: None,
-        type_rules: Vec::new(),
-        env: running_descriptor.env.clone(),
-        exit_when_nodes_finish: None,
-    };
+    // Only `env` is carried over from the running dataflow — the rest stay at
+    // `Descriptor::new`'s defaults, as before.
+    let mut tmp_desc = Descriptor::new(vec![node]);
+    tmp_desc.env = running_descriptor.env.clone();
     dora_core::descriptor::resolve_aliases_and_set_defaults_in_topology(
         &tmp_desc,
         &running_descriptor.nodes,

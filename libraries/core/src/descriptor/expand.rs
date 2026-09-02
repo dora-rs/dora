@@ -150,17 +150,19 @@ pub fn expand_modules_with_boundaries(
         }
     }
 
+    // `Descriptor` is `#[non_exhaustive]`: build through `Descriptor::new` and
+    // carry over the dataflow-level options from the source descriptor.
+    let mut expanded = Descriptor::new(flat_nodes);
+    expanded.deploy = descriptor.deploy.clone();
+    expanded.debug = descriptor.debug.clone();
+    expanded.health_check_interval = descriptor.health_check_interval;
+    expanded.strict_types = descriptor.strict_types;
+    expanded.exit_when_nodes_finish = descriptor.exit_when_nodes_finish;
+    expanded.type_rules = descriptor.type_rules.clone();
+    expanded.env = descriptor.env.clone();
+
     Ok(ExpandedDescriptor {
-        descriptor: Descriptor {
-            nodes: flat_nodes,
-            deploy: descriptor.deploy.clone(),
-            debug: descriptor.debug.clone(),
-            health_check_interval: descriptor.health_check_interval,
-            strict_types: descriptor.strict_types,
-            exit_when_nodes_finish: descriptor.exit_when_nodes_finish,
-            type_rules: descriptor.type_rules.clone(),
-            env: descriptor.env.clone(),
-        },
+        descriptor: expanded,
         boundaries,
     })
 }
