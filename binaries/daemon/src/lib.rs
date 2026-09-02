@@ -3088,51 +3088,9 @@ impl Daemon {
                     // Construct a minimal Node from the inputs we
                     // already collected — only `id` and `inputs` are
                     // consulted by the daemon.
-                    dataflow
-                        .descriptor
-                        .nodes
-                        .push(dora_message::descriptor::Node {
-                            id: node_id.clone(),
-                            name: None,
-                            description: None,
-                            path: None,
-                            path_sha256: None,
-                            args: None,
-                            env: None,
-                            operators: None,
-                            operator: None,
-                            ros2: None,
-                            outputs: Default::default(),
-                            output_types: Default::default(),
-                            output_framing: Default::default(),
-                            inputs: inputs.into_iter().collect(),
-                            input_types: Default::default(),
-                            shared_memory_pool_size: None,
-                            output_metadata: Default::default(),
-                            pattern: None,
-                            send_stdout_as: None,
-                            send_logs_as: None,
-                            min_log_level: None,
-                            max_log_size: None,
-                            max_rotated_files: None,
-                            build: None,
-                            git: None,
-                            hub: None,
-                            branch: None,
-                            tag: None,
-                            rev: None,
-                            restart_policy: Default::default(),
-                            max_restarts: 0,
-                            restart_delay: None,
-                            max_restart_delay: None,
-                            restart_window: None,
-                            health_check_timeout: None,
-                            finish_grace_secs: None,
-                            module: None,
-                            params: Default::default(),
-                            cpu_affinity: None,
-                            deploy: None,
-                        });
+                    let mut added = dora_message::descriptor::Node::new(node_id.clone());
+                    added.inputs = inputs.into_iter().collect();
+                    dataflow.descriptor.nodes.push(added);
 
                     // Spawn timer tasks for any interval this node just
                     // registered. Timer tasks are only ever created in

@@ -55,7 +55,7 @@ impl QueuePolicy {
 }
 
 /// Contains the input and output configuration of the node.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct NodeRunConfig {
     /// Inputs for the nodes as a map from input ID to `node_id/output_id`.
     ///

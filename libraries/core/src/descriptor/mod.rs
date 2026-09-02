@@ -1,6 +1,6 @@
 use dora_message::{
     config::{InputMapping, NodeRunConfig},
-    descriptor::{EnvValue, NodeSource},
+    descriptor::EnvValue,
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
@@ -198,35 +198,12 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
         // resolve nodes
         let kind = match node_class {
             classify::NodeClass::Standard { source } => {
-                let path = node.path.as_ref().ok_or_eyre("missing `path` attribute")?;
-                CoreNodeKind::Custom(CustomNode {
-                    path: path.clone(),
-                    source,
-                    path_sha256: node.path_sha256,
-                    args: node.args,
-                    build: node.build,
-                    send_stdout_as: node.send_stdout_as,
-                    send_logs_as: node.send_logs_as,
-                    min_log_level: node.min_log_level,
-                    max_log_size: node.max_log_size,
-                    max_rotated_files: node.max_rotated_files,
-                    run_config: NodeRunConfig {
-                        inputs: node.inputs,
-                        outputs: node.outputs,
-                        output_types: node.output_types,
-                        output_framing: node.output_framing,
-                        input_types: node.input_types,
-                        shared_memory_pool_size: node.shared_memory_pool_size,
-                    },
-                    envs: None,
-                    restart_policy: node.restart_policy,
-                    max_restarts: node.max_restarts,
-                    restart_delay: node.restart_delay,
-                    max_restart_delay: node.max_restart_delay,
-                    restart_window: node.restart_window,
-                    health_check_timeout: node.health_check_timeout,
-                    finish_grace_secs: node.finish_grace_secs,
-                })
+                let path = node.path.take().ok_or_eyre("missing `path` attribute")?;
+                let mut custom = custom_node_from(&mut node, path);
+                custom.source = source;
+                custom.path_sha256 = node.path_sha256.take();
+                custom.build = node.build.take();
+                CoreNodeKind::Custom(custom)
             }
             classify::NodeClass::Runtime => {
                 let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
@@ -252,34 +229,11 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     EnvValue::String(bridge_config_json),
                 );
 
-                CoreNodeKind::Custom(CustomNode {
-                    path: "dora-ros2-bridge-node".to_string(),
-                    source: NodeSource::Local,
-                    path_sha256: None,
-                    args: node.args,
-                    build: None,
-                    send_stdout_as: node.send_stdout_as,
-                    send_logs_as: node.send_logs_as,
-                    min_log_level: node.min_log_level,
-                    max_log_size: node.max_log_size,
-                    max_rotated_files: node.max_rotated_files,
-                    run_config: NodeRunConfig {
-                        inputs: node.inputs,
-                        outputs: node.outputs,
-                        output_types: node.output_types,
-                        output_framing: node.output_framing,
-                        input_types: node.input_types,
-                        shared_memory_pool_size: node.shared_memory_pool_size,
-                    },
-                    envs: Some(envs),
-                    restart_policy: node.restart_policy,
-                    max_restarts: node.max_restarts,
-                    restart_delay: node.restart_delay,
-                    max_restart_delay: node.max_restart_delay,
-                    restart_window: node.restart_window,
-                    health_check_timeout: node.health_check_timeout,
-                    finish_grace_secs: node.finish_grace_secs,
-                })
+                // The bridge binary is fixed, so `path` is a constant and
+                // `source`/`path_sha256`/`build` stay at their defaults.
+                let mut custom = custom_node_from(&mut node, "dora-ros2-bridge-node".to_string());
+                custom.envs = Some(envs);
+                CoreNodeKind::Custom(custom)
             }
         };
 
@@ -308,6 +262,43 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
     }
 
     Ok(resolved)
+}
+
+/// Build the `CustomNode` for `node`, filling in every per-node descriptor key
+/// that all custom-node kinds resolve identically.
+///
+/// The caller then sets only what its kind differs on: `source`, `path_sha256`
+/// and `build` for a standard node, `envs` for the ROS2 bridge.
+///
+/// While `CustomNode` was constructible with a struct literal, the compiler
+/// caught a key added to one branch of
+/// [`resolve_aliases_and_set_defaults_in_topology`] and forgotten in the other.
+/// Now that it is `#[non_exhaustive]` it cannot, so the shared copy lives here
+/// instead: a new per-node key is wired in once and both kinds pick it up.
+fn custom_node_from(node: &mut Node, path: String) -> CustomNode {
+    let mut custom = CustomNode::new(path);
+    custom.args = node.args.take();
+    custom.send_stdout_as = node.send_stdout_as.take();
+    custom.send_logs_as = node.send_logs_as.take();
+    custom.min_log_level = node.min_log_level.take();
+    custom.max_log_size = node.max_log_size.take();
+    custom.max_rotated_files = node.max_rotated_files.take();
+    custom.restart_policy = node.restart_policy;
+    custom.max_restarts = node.max_restarts;
+    custom.restart_delay = node.restart_delay.take();
+    custom.max_restart_delay = node.max_restart_delay.take();
+    custom.restart_window = node.restart_window.take();
+    custom.health_check_timeout = node.health_check_timeout.take();
+    custom.finish_grace_secs = node.finish_grace_secs.take();
+    custom.run_config = NodeRunConfig {
+        inputs: std::mem::take(&mut node.inputs),
+        outputs: std::mem::take(&mut node.outputs),
+        output_types: std::mem::take(&mut node.output_types),
+        output_framing: std::mem::take(&mut node.output_framing),
+        input_types: std::mem::take(&mut node.input_types),
+        shared_memory_pool_size: node.shared_memory_pool_size.take(),
+    };
+    custom
 }
 
 impl DescriptorExt for Descriptor {
@@ -1109,5 +1100,60 @@ nodes:
             msg.contains("duplicate node ID") && msg.contains("my-node"),
             "unexpected error message: {msg}"
         );
+    }
+
+    /// Every `CustomNode` field must be accounted for: either `custom_node_from`
+    /// copies it for all node kinds, or the kind-specific arm sets it.
+    ///
+    /// While `CustomNode` was constructible with a struct literal, forgetting a
+    /// field here was a compile error. `#[non_exhaustive]` traded that away, so
+    /// this is the replacement — modelled on
+    /// `classify::tests::all_node_fields_are_classified_or_marked_shared`. When
+    /// it fails, a key was added to `CustomNode` and nothing resolves it: decide
+    /// whether it is shared (add it to `custom_node_from` and to `SHARED`) or
+    /// kind-specific (set it in the arm and add it to `KIND_SPECIFIC`).
+    #[test]
+    fn every_custom_node_field_is_resolved() {
+        /// Copied for every node kind by `custom_node_from`. `run_config` is
+        /// `#[serde(flatten)]`, so its keys appear inline in the schema.
+        const SHARED: &[&str] = &[
+            "args",
+            "send_stdout_as",
+            "send_logs_as",
+            "min_log_level",
+            "max_log_size",
+            "max_rotated_files",
+            "restart_policy",
+            "max_restarts",
+            "restart_delay",
+            "max_restart_delay",
+            "restart_window",
+            "health_check_timeout",
+            "finish_grace_secs",
+            "inputs",
+            "outputs",
+            "output_types",
+            "output_framing",
+            "input_types",
+            "shared_memory_pool_size",
+        ];
+        /// Set by the individual match arms of
+        /// `resolve_aliases_and_set_defaults_in_topology`.
+        const KIND_SPECIFIC: &[&str] = &["path", "source", "path_sha256", "build", "envs"];
+
+        let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
+        let schema = serde_json::to_value(schema).expect("schema should serialize");
+        let properties = schema
+            .pointer("/$defs/CustomNode/properties")
+            .or_else(|| schema.pointer("/definitions/CustomNode/properties"))
+            .or_else(|| schema.pointer("/properties"))
+            .and_then(serde_json::Value::as_object)
+            .expect("CustomNode schema should expose properties");
+
+        let actual: std::collections::BTreeSet<_> = properties.keys().map(String::as_str).collect();
+        let resolved: std::collections::BTreeSet<_> =
+            SHARED.iter().chain(KIND_SPECIFIC).copied().collect();
+
+        assert_eq!(actual, resolved);
     }
 }

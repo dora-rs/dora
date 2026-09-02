@@ -259,6 +259,15 @@ pub struct Debug {
 /// separate process and can communicate with other nodes through inputs and outputs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// Adding a descriptor key must stay a *minor* release. Without this, every new
+// per-node field is `constructible_struct_adds_field` — a semver-major break
+// for `dora-message` — which turns routine feature work into a "land it before
+// the next major or wait" scramble. `Node::new` is the construction entry point
+// for other crates; the fields stay `pub`, so they are still freely readable
+// and assignable. The message enums in this crate are already
+// `#[non_exhaustive]` for the same reason; `RunDataflowOptions` in the daemon
+// is the existing struct-shaped precedent.
+#[non_exhaustive]
 pub struct Node {
     /// Unique node identifier. Must not contain `/` characters.
     ///
@@ -916,6 +925,66 @@ pub struct Node {
     pub deploy: Option<Deploy>,
 }
 
+impl Node {
+    /// A node with the given ID and every other field left at its descriptor
+    /// default (the state a YAML node with only an `id:` key deserializes to).
+    ///
+    /// `Node` is `#[non_exhaustive]`, so other crates cannot build one with a
+    /// struct literal. Start here and assign the fields you need — they are all
+    /// still `pub`:
+    ///
+    /// ```
+    /// use dora_message::descriptor::Node;
+    ///
+    /// let mut node = Node::new("camera".to_owned().into());
+    /// node.path = Some("./camera".to_owned());
+    /// ```
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            name: None,
+            description: None,
+            path: None,
+            path_sha256: None,
+            args: None,
+            env: None,
+            operators: None,
+            operator: None,
+            ros2: None,
+            outputs: Default::default(),
+            output_types: Default::default(),
+            output_framing: Default::default(),
+            inputs: Default::default(),
+            input_types: Default::default(),
+            shared_memory_pool_size: None,
+            output_metadata: Default::default(),
+            pattern: None,
+            send_stdout_as: None,
+            send_logs_as: None,
+            min_log_level: None,
+            max_log_size: None,
+            max_rotated_files: None,
+            build: None,
+            git: None,
+            hub: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            restart_policy: Default::default(),
+            max_restarts: 0,
+            restart_delay: None,
+            max_restart_delay: None,
+            restart_window: None,
+            health_check_timeout: None,
+            finish_grace_secs: None,
+            module: None,
+            params: Default::default(),
+            cpu_affinity: None,
+            deploy: None,
+        }
+    }
+}
+
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResolvedNode {
@@ -1128,6 +1197,9 @@ impl OperatorSource {
 
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+// See the note on `Node`: keeps a new resolved-node field a minor release.
+// Construct with `CustomNode::new`; the fields remain `pub`.
+#[non_exhaustive]
 pub struct CustomNode {
     /// Path of the source code
     ///
@@ -1217,6 +1289,38 @@ pub struct CustomNode {
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
+}
+
+impl CustomNode {
+    /// A local-source node at `path` with every other field left at its
+    /// default.
+    ///
+    /// `CustomNode` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign the fields you need — they
+    /// are all still `pub`.
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            source: NodeSource::Local,
+            path_sha256: None,
+            args: None,
+            envs: None,
+            build: None,
+            send_stdout_as: None,
+            send_logs_as: None,
+            min_log_level: None,
+            max_log_size: None,
+            max_rotated_files: None,
+            restart_policy: Default::default(),
+            max_restarts: 0,
+            restart_delay: None,
+            max_restart_delay: None,
+            restart_window: None,
+            health_check_timeout: None,
+            finish_grace_secs: None,
+            run_config: NodeRunConfig::default(),
+        }
+    }
 }
 
 #[allow(missing_docs)]
@@ -1477,6 +1581,27 @@ pub struct Ros2QosConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Node::new` must agree with what serde produces for a YAML node that
+    /// sets nothing but `id`.
+    ///
+    /// The two are independent sources of the same defaults: serde's come from
+    /// the per-field `#[serde(default)]` attributes, `Node::new`'s are written
+    /// out by hand. The daemon builds dynamically registered nodes through
+    /// `Node::new` (`Daemon::handle_add_node`) and declared nodes through
+    /// serde, so a divergence — say a field that later grows a
+    /// `#[serde(default = "…")]` custom default — would silently give the two
+    /// kinds different configuration.
+    #[test]
+    fn node_new_matches_yaml_defaults() {
+        let from_yaml: Node = serde_yaml::from_str("id: some-node\n").unwrap();
+        let constructed = Node::new("some-node".to_owned().into());
+        assert_eq!(
+            serde_yaml::to_value(&from_yaml).unwrap(),
+            serde_yaml::to_value(&constructed).unwrap(),
+            "`Node::new` drifted from the descriptor defaults serde applies"
+        );
+    }
 
     #[test]
     fn ros2_transport_defaults_to_dds() {
