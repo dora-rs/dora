@@ -94,7 +94,9 @@ they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 - coverage (already in `qa-full`)
 - adversarial LLM review (already in `qa-full`; skipped if tools missing)
 - mutation testing (diff-scoped)
-- semver checks
+- the compile half of the compatibility gate (`cargo-semver-checks`, plus a
+  rebuild proving the CLI and schema snapshots are current). Its no-compile
+  half already ran in `qa-fast`
 
 ### Overnight run on a powerful machine (full CI nightly parity)
 

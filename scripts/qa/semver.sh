@@ -34,17 +34,25 @@ PUBLIC_CRATES=(
   dora-arrow-convert
 )
 
-# dora-* crates are not yet published on crates.io, so use the last git
-# tag as the baseline. Override by exporting SEMVER_BASELINE=<ref> before
-# running this script.
-BASELINE="${SEMVER_BASELINE:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}"
+# Compare against the last released tag -- what deployed users are running.
+# `breaking-changes.sh` passes the ref it resolved so both halves of the gate
+# agree on one baseline; override by hand with SEMVER_BASELINE=<ref>.
+BASELINE="${SEMVER_BASELINE:-${BREAKING_BASELINE:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}}"
 echo "Baseline: $BASELINE"
 echo
 
 FAILED=0
 for crate in "${PUBLIC_CRATES[@]}"; do
   echo "--- $crate ---"
-  if ! cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE"; then
+  # `--release-type minor` is what makes this mean anything. Left to derive
+  # the release type from the version numbers, cargo-semver-checks sees that
+  # the workspace version has already moved (an rc to its release, or 1.0 to
+  # 1.1), concludes breakage is permitted, and skips every lint -- printing
+  # "no semver update required" having run 0 of 254 checks. Forcing `minor`
+  # runs the major-breaking lints on every run, which is the post-1.0 rule:
+  # no breaking change without a deliberate 2.0.
+  if ! cargo semver-checks check-release -p "$crate" \
+      --baseline-rev "$BASELINE" --release-type minor; then
     FAILED=1
   fi
 done

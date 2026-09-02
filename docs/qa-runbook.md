@@ -67,6 +67,8 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 | `make qa-coverage` | `cargo llvm-cov` (writes `lcov.info`) | ~5 min | To see coverage locally |
 | `make qa-mutants` | `cargo mutants --in-diff origin/main` on critical crates | ~5-30 min | To verify tests actually detect bugs |
 | `make qa-semver` | `cargo semver-checks` vs last tag | ~1-2 min | Before bumping published crate versions |
+| `make qa-breaking` | every surface dora 1.x freezes, vs the last release tag | ~2 s (`ARGS="--fast"`) / ~2-5 min (full) | The `--fast` half runs in `qa-fast` and in PR CI; run the full one when you touched the CLI, the descriptor, `dora-message`, or a node API |
+| `make qa-breaking-update` | re-record the CLI snapshot and the JSON schemas | ~1-2 min | After *adding* a command, flag or descriptor field — commit the diff |
 
 All targets call scripts under `scripts/qa/`. The scripts are the source of truth — if something looks wrong, read the script.
 
@@ -216,15 +218,30 @@ Construct an input where the mutated version produces a different output from th
 
 **Do not** waive mutations just to make the gate pass. The point of the gate is to surface weak tests.
 
-### 3.10 `semver` (soft) flagged
+### 3.10 `semver` flagged
 
 **Cause**: `cargo-semver-checks` found a breaking change in a publishable crate's public API since the last tag.
 
 **Fix**:
-- If the change is intentional: make sure the crate's version is bumped to a new major or minor (per SemVer rules) before release.
 - If unintentional: revert the breaking change.
+- If intentional: it needs a 2.0. Inside 1.x there is no version bump that makes it acceptable — that is what the 1.0 guarantee says (`docs/api-rust.md`).
 
-The gate is soft during 0.x development — it only warns. It becomes a hard gate after the 1.0 release per `plan-dora-1.0-consolidation.md`.
+Soft during 0.x, hard from 1.0 on. It runs as a step of the `breaking-changes` gate below, which passes `--release-type minor` so the lints run whatever the version numbers say.
+
+### 3.11 `breaking-changes` failed
+
+**Cause**: a surface dora 1.x freezes changed. The report names the surface and the item — a removed `dora` flag, a reordered postcard field, a YAML property that became required, a raised `requires-python`.
+
+**Fix**, in the order worth trying:
+
+1. **Unintentional** (the common case): revert that part. The report quotes the old and new form, so the diff to undo is usually one line.
+2. **You added something, and the gate is complaining that a generated snapshot is stale.** Run `make qa-breaking-update` and commit the result. Additions are fine; the snapshot diff is how they get reviewed.
+3. **The change is genuinely needed and genuinely breaking.** Keep the old surface working alongside the new one — a deprecated alias, an added variant rather than a changed one, a new optional field rather than a required one. Removing the old form waits for 2.0.
+
+Two failures that read oddly:
+
+- **"major version bump ... silences cargo-semver-checks"** — bumping the major turns the Rust half of the gate off, so the gate stops at the bump itself. When the 2.0 is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking`.
+- **"the generated surface files are stale"** — regenerating changed the tree, so the comparison ran against an out-of-date snapshot and its "ok" meant nothing. Commit the regenerated files and read the report again.
 
 ---
 

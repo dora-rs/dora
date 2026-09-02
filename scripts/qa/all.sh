@@ -6,10 +6,11 @@
 #
 # Modes (increasing thoroughness):
 #   --fast            ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap,
-#                                secret-files, typos, publish-graph)
+#                                secret-files, typos, publish-graph,
+#                                breaking-changes)
 #   --full            ~5-10 min  pre-push (fast + tests + coverage + optional adversarial)
 #   --deep            ~15 min    target Tier 1 gate, stronger than today's CI
-#                                (full + mutants on diff + semver; see strategy doc §5 for why the
+#                                (full + mutants on diff + breaking-changes; see strategy doc §5 for why the
 #                                extras are laptop-only)
 #   --tier1                      back-compat alias for --deep
 #   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
@@ -31,7 +32,7 @@
 #                                Requires BOTH `uv` AND Python 3.12 (preflighted
 #                                with specific install hints; matches GHA's
 #                                actions/setup-python@3.12 + uv setup).
-#   --release-gate               Tier 3 automatable (deep + semver; audit+dogfood are human gates)
+#   --release-gate               Tier 3 automatable (deep + breaking-changes; audit+dogfood are human gates)
 #   --mutation-audit  ~10-18 hrs full-repo cargo-mutants across 6 critical crates
 #                                (1679+ mutants). Deliberate test-quality audit, not every nightly.
 #
@@ -110,6 +111,9 @@ Will run:
   5. secret-files   -- no credential-shaped filenames tracked by git
   6. typos          -- spell-check against _typos.toml allowlist
   7. publish-graph  -- crates.io publish order / no unpublished deps
+  8. breaking-changes -- 1.x frozen surfaces vs the last release tag
+                       (C header, cxx bridge, YAML schema, wire format,
+                        CLI snapshot, Python floor; no build)
 ============================================================
 EOF
       ;;
@@ -119,11 +123,12 @@ EOF
 ============================================================
 $header
 Will run:
-  1-7. everything from qa-fast                  (fmt/clippy/audit/unwrap/
-                                                 secret-files/typos/publish-graph)
-  8.   test         -- cargo test --all         (workspace test suite)
-  9.   coverage     -- cargo llvm-cov           (writes lcov.info)
-  10.  adversarial  -- codex/claude review      (optional; skipped if unavailable)
+  1-8. everything from qa-fast                  (fmt/clippy/audit/unwrap/
+                                                 secret-files/typos/publish-graph/
+                                                 breaking-changes)
+  9.   test         -- cargo test --all         (workspace test suite)
+  10.  coverage     -- cargo llvm-cov           (writes lcov.info)
+  11.  adversarial  -- codex/claude review      (optional; skipped if unavailable)
 ============================================================
 EOF
       ;;
@@ -138,15 +143,17 @@ test suite.
 qa-deep adds the planned Tier 1 extras (see
 docs/plan-agentic-qa-strategy.md §5) that are kept laptop-only today
 because they're too slow for every PR: coverage, adversarial review,
-diff-scoped mutation testing, semver.
+diff-scoped mutation testing, and the compile half of the
+compatibility gate.
 
 Will run:
-  1-7.  everything from qa-fast                 (in CI today)
-  8.    test         -- cargo test --all        (in CI today)
-  9.    coverage     -- cargo llvm-cov          (NOT in CI; laptop-only)
-  10.   adversarial  -- codex/claude review     (NOT in CI; skipped w/o tools)
-  11.   mutants      -- cargo-mutants on diff   (NOT in CI; laptop-only)
-  12.   semver       -- cargo-semver-checks     (NOT in CI; pre-release only)
+  1-8.  everything from qa-fast                 (in CI today)
+  9.    test         -- cargo test --all        (in CI today)
+  10.   coverage     -- cargo llvm-cov          (NOT in CI; laptop-only)
+  11.   adversarial  -- codex/claude review     (NOT in CI; skipped w/o tools)
+  12.   mutants      -- cargo-mutants on diff   (NOT in CI; laptop-only)
+  13.   breaking-changes -- cargo-semver-checks + snapshot freshness
+                       (the no-compile half already ran in step 8)
 ============================================================
 EOF
       ;;
@@ -156,13 +163,13 @@ EOF
 ============================================================
 $header
 For overnight runs on a powerful machine. Will run:
-  1-7.  everything from qa-fast
-  8-10. everything from qa-full                 (test, coverage, adversarial)
-  11.   mutants (diff-scoped)                   -- same as qa-deep
-  12.   semver                                  -- cargo-semver-checks vs last tag
-  13.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
-  14.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
-  15.   example-smoke                           -- tests/example-smoke.rs (52 tests;
+  1-8.  everything from qa-fast
+  9-11. everything from qa-full                 (test, coverage, adversarial)
+  12.   mutants (diff-scoped)                   -- same as qa-deep
+  13.   breaking-changes                        -- cargo-semver-checks + snapshot freshness
+  14.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
+  15.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
+  16.   example-smoke                           -- tests/example-smoke.rs (52 tests;
                                                    covers GHA smoke-suite + log-sinks
                                                    + service-action + streaming).
                                                    Runs inside a scratch uv venv that
@@ -170,14 +177,14 @@ For overnight runs on a powerful machine. Will run:
                                                    matching the GHA Python setup exactly
                                                    (so workspace Python bindings are used,
                                                    NOT PyPI). Requires uv.
-  16.   hub-smoke                              -- tests/hub-smoke.rs -- the Hub
+  17.   hub-smoke                              -- tests/hub-smoke.rs -- the Hub
                                                    e2e (publish / build / run /
                                                    yank / outdated / --hub-override
                                                    / binary / identity). Hermetic
                                                    (local git fixture, no network),
                                                    Rust-only -- no venv. Runs
                                                    regardless of the uv/3.12 setup.
-  17.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
+  18.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
                                                    Platform-aware: runs the subset of GHA
                                                    nightly jobs that applies to the dev's OS.
                                                    Covers record-replay, cluster-smoke,
@@ -245,10 +252,10 @@ EOF
 ============================================================
 $header
 The automatable parts of the Tier 3 release gate. Will run:
-  1-7.   everything from qa-fast
-  8-10.  everything from qa-full                 (test, coverage, adversarial)
-  11.    mutants (diff-scoped)
-  12.    semver
+  1-8.   everything from qa-fast
+  9-11.  everything from qa-full                 (test, coverage, adversarial)
+  12.    mutants (diff-scoped)
+  13.    breaking-changes                        -- every surface dora 1.x freezes
 Non-automatable Tier 3 gates (external security audit, 7-day dogfood
 campaign, migration validation on external repos) are human-gated --
 see docs/plan-agentic-qa-strategy.md §7.
@@ -272,6 +279,10 @@ run "unwrap-budget" scripts/qa/unwrap-budget.sh
 run "secret-files"  scripts/qa/secret-files.sh
 run "typos"         scripts/qa/typos.sh
 run "publish-graph" scripts/qa/publish-graph.sh
+# The no-compile half of the 1.x compatibility gate: C header, cxx bridge,
+# YAML schema, wire format, CLI snapshot, Python floor. Seconds, so it
+# belongs in the per-commit tier -- the compile half runs in --deep.
+run "breaking-changes" scripts/qa/breaking-changes.sh --fast
 
 case "$MODE" in
   --fast)
@@ -299,7 +310,9 @@ esac
 case "$MODE" in
   --deep|--nightly|--release-gate)
     run "mutants (diff-scoped)" scripts/qa/mutants.sh
-    run "semver"                scripts/qa/semver.sh
+    # Supersedes the bare `semver` step: this runs cargo-semver-checks (via
+    # semver.sh) *and* the surface checks rustdoc cannot see.
+    run "breaking-changes"      scripts/qa/breaking-changes.sh
     ;;
 esac
 
