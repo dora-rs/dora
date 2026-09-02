@@ -51,7 +51,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 
 | Target | Runs | Budget | When to use |
 |---|---|---|---|
-| `make qa-fast` | fmt + clippy + audit + unwrap-budget + typos + publish-graph | ~15 s | Pre-commit |
+| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
@@ -148,7 +148,19 @@ Compare against `git diff` to see which ones are yours.
 
 Note: the budget ratchet is intentionally asymmetric. You can reduce the number freely; any increase needs justification.
 
-### 3.5 `publish-graph` failed
+### 3.5 `secret-files` failed
+
+**Cause**: git is tracking a file that either matches a `.gitignore` rule or carries a name that claims to hold a credential.
+
+**If it is a real credential**: deleting the file is not the fix. The value stays readable in history (`git show <commit>^:<path>`) and in every clone and fork that already pulled — which is why `.adora-token` (#2194) needed rotation, not just removal. Rotate the credential first, then remove the file.
+
+**If it is a fixture or a template**: rename it so the name no longer claims to be live — `.env.example`, `test-key.pem.template`. The gate anchors its patterns at the end of the name, so those suffixed forms pass.
+
+**If the `.gitignore` half is what flagged it**: a tracked file matching an ignore rule is worth a human look even when it holds no secret. It means the file was force-added or arrived through an import that bypassed the ignore rules — exactly how `.adora-token` got in.
+
+Reproduce locally with `make qa-secret-files`; the rationale is documented at the top of [`scripts/qa/secret-files.sh`](../scripts/qa/secret-files.sh).
+
+### 3.6 `publish-graph` failed
 
 **Cause**: a change to the publish graph that `cargo publish` would reject — but only at release time, once crates.io already holds whatever the release uploaded before the failure. The gate reports one of three things.
 
@@ -160,7 +172,7 @@ Note: the budget ratchet is intentionally asymmetric. You can reduce the number 
 
 Reproduce locally with `make qa-publish-graph`; the rules and what each protects are documented at the top of [`scripts/qa/publish-graph.sh`](../scripts/qa/publish-graph.sh).
 
-### 3.6 `test` failed
+### 3.7 `test` failed
 
 **Cause**: you broke a test.
 
@@ -172,7 +184,7 @@ cargo test -p <crate> <test_name> -- --nocapture
 
 If the test was wrong and the code is right, fix the test. If the code was wrong, fix the code. Don't fix the test to match broken code.
 
-### 3.7 `coverage` (soft) flagged
+### 3.8 `coverage` (soft) flagged
 
 **Cause**: the diff coverage gate (if running on a PR) found less than 70% of your new/changed lines are covered by tests.
 
@@ -183,7 +195,7 @@ make qa-coverage
 open target/llvm-cov/html/index.html   # if you also run `cargo llvm-cov --html`
 ```
 
-### 3.8 `mutation` escaped
+### 3.9 `mutation` escaped
 
 **Cause**: `cargo-mutants` found a mutation that no test detected — meaning your tests are incomplete for the mutated code path.
 
@@ -204,7 +216,7 @@ Construct an input where the mutated version produces a different output from th
 
 **Do not** waive mutations just to make the gate pass. The point of the gate is to surface weak tests.
 
-### 3.9 `semver` (soft) flagged
+### 3.10 `semver` (soft) flagged
 
 **Cause**: `cargo-semver-checks` found a breaking change in a publishable crate's public API since the last tag.
 

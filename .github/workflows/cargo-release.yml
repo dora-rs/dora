@@ -24,7 +24,7 @@ jobs:
 
       - uses: r7kamura/rust-problem-matchers@v1.5.1
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         if: runner.os == 'Linux'
         with:
           # this might remove tools that are actually needed,

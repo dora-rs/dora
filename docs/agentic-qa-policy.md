@@ -64,7 +64,7 @@ impact. Current list (update when a new subsystem earns it):
 
 ### Class A — Low-risk
 
-- [ ] `make qa-fast` (fmt + clippy + audit + unwrap-budget + typos + publish-graph).
+- [ ] `make qa-fast` (fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph).
 
 That's the whole bar. Don't over-test cosmetic changes — reviewers can
 eyeball them and CI backs it up. `typos` is now part of `qa-fast`
