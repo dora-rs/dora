@@ -354,6 +354,8 @@ impl std::fmt::Display for NodeStatus {
 pub struct FaultToleranceSnapshot {
     pub restarts: u64,
     pub health_check_kills: u64,
+    #[serde(default)]
+    pub startup_timeout_kills: u64,
     pub input_timeouts: u64,
     pub circuit_breaker_recoveries: u64,
 }

@@ -2152,6 +2152,7 @@ impl Daemon {
                                     ft_stats: Some(dora_message::daemon_to_coordinator::FaultToleranceSnapshot {
                                         restarts: self.ft_stats.restarts.load(atomic::Ordering::Relaxed),
                                         health_check_kills: self.ft_stats.health_check_kills.load(atomic::Ordering::Relaxed),
+                                        startup_timeout_kills: self.ft_stats.startup_timeout_kills.load(atomic::Ordering::Relaxed),
                                         input_timeouts: self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
                                         circuit_breaker_recoveries: self.ft_stats.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed),
                                     }),
@@ -2188,6 +2189,10 @@ impl Daemon {
                             health_kills = self
                                 .ft_stats
                                 .health_check_kills
+                                .load(atomic::Ordering::Relaxed),
+                            startup_kills = self
+                                .ft_stats
+                                .startup_timeout_kills
                                 .load(atomic::Ordering::Relaxed),
                             input_timeouts =
                                 self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
@@ -3889,26 +3894,43 @@ impl Daemon {
         let now_millis = node_communication::current_millis();
         for dataflow in self.running.values() {
             for (node_id, node) in &dataflow.running_nodes {
-                let last = node.last_activity.load(atomic::Ordering::Acquire);
+                let Some(process) = &node.process else {
+                    continue;
+                };
                 let connected = dataflow.connected_nodes.contains(node_id);
                 if !connected {
                     if let Some(startup_timeout) = node.startup_timeout {
-                        let elapsed_ms = now_millis.saturating_sub(last);
-                        if elapsed_ms > startup_timeout.as_millis() as u64 {
+                        let spawned_at = node.spawned_at.load(atomic::Ordering::Acquire);
+                        if startup_timeout_should_kill(
+                            connected,
+                            spawned_at,
+                            now_millis,
+                            startup_timeout,
+                        ) && !node.startup_kill_sent.swap(true, atomic::Ordering::AcqRel)
+                        {
+                            let elapsed_ms = now_millis.saturating_sub(spawned_at);
                             tracing::warn!(
                                 "node `{node_id}` failed to connect within {startup_timeout:?} (elapsed: {}ms), killing",
                                 elapsed_ms,
                             );
-                            if let Some(process) = &node.process {
-                                process.submit(ProcessOperation::Kill);
-                            }
+                            self.ft_stats
+                                .startup_timeout_kills
+                                .fetch_add(1, atomic::Ordering::Relaxed);
+                            dataflow
+                                .startup_timeout_kills
+                                .insert((node_id.clone(), node.generation));
+                            process.submit(ProcessOperation::Kill);
                         }
                     }
                     continue;
                 }
+                // The health-check watchdog only monitors *post-connection*
+                // liveness (#2937). Nodes that have not yet connected are
+                // bounded by `startup_timeout` above.
                 let Some(timeout) = node.health_check_timeout else {
                     continue;
                 };
+                let last = node.last_activity.load(atomic::Ordering::Acquire);
                 if !health_check_should_kill(connected, last, now_millis, timeout) {
                     continue;
                 }
@@ -3920,9 +3942,7 @@ impl Daemon {
                 self.ft_stats
                     .health_check_kills
                     .fetch_add(1, atomic::Ordering::Relaxed);
-                if let Some(process) = &node.process {
-                    process.submit(ProcessOperation::Kill);
-                }
+                process.submit(ProcessOperation::Kill);
             }
         }
     }
@@ -6313,6 +6333,9 @@ impl Daemon {
                         dataflow
                             .grace_duration_kills
                             .remove(&(node_id.clone(), generation));
+                        dataflow
+                            .startup_timeout_kills
+                            .remove(&(node_id.clone(), generation));
                     }
                     return Ok(());
                 }
@@ -6345,6 +6368,12 @@ impl Daemon {
                         // its work and responded to stop, just late.)
                         let finish_escalated = dataflow
                             .map(|d| d.finish_escalated.contains(&node_id))
+                            .unwrap_or_default();
+                        let startup_timed_out = dataflow
+                            .map(|d| {
+                                d.startup_timeout_kills
+                                    .contains(&(node_id.clone(), generation))
+                            })
                             .unwrap_or_default();
                         // The daemon explicitly sent SoftKill (SIGTERM)
                         // to this node as part of an operator-initiated
@@ -6426,6 +6455,7 @@ impl Daemon {
                                 None if grace_duration_kill || finish_escalated => {
                                     NodeErrorCause::GraceDuration
                                 }
+                                None if startup_timed_out => NodeErrorCause::StartupTimeout,
                                 None => {
                                     let cause = dataflow
                                         .and_then(|d| d.node_stderr_most_recent.get(&node_id))
@@ -6470,6 +6500,9 @@ impl Daemon {
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     dataflow
                         .grace_duration_kills
+                        .remove(&(node_id.clone(), generation));
+                    dataflow
+                        .startup_timeout_kills
                         .remove(&(node_id.clone(), generation));
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     // a respawned node must re-subscribe before it counts as
@@ -7382,7 +7415,26 @@ fn is_sigterm_like_exit(exit_status: &NodeExitStatus) -> bool {
 }
 
 /// Decide whether the health-check watchdog should kill a node.
+/// Pure predicate for startup watchdog decision (#3022).
 ///
+/// Returns `true` if a spawned process is unconnected and the elapsed time since
+/// process spawn exceeds `timeout`.
+///
+/// Returns `false` if `connected` is true or `spawned_at_millis` is 0 (process has
+/// not yet spawned or is sleeping in restart backoff).
+fn startup_timeout_should_kill(
+    connected: bool,
+    spawned_at_millis: u64,
+    now_millis: u64,
+    timeout: Duration,
+) -> bool {
+    if connected || spawned_at_millis == 0 {
+        return false;
+    }
+    let elapsed_ms = now_millis.saturating_sub(spawned_at_millis);
+    u128::from(elapsed_ms) > timeout.as_millis()
+}
+
 /// Returns `true` only once the node has **connected** at least once (sent its
 /// first `DaemonRequest`) and has then been silent for longer than `timeout`.
 ///
@@ -7403,7 +7455,7 @@ fn health_check_should_kill(
         return false;
     }
     let elapsed_ms = now_millis.saturating_sub(last_activity_millis);
-    elapsed_ms > timeout.as_millis() as u64
+    u128::from(elapsed_ms) > timeout.as_millis()
 }
 
 /// Grace period before the finish-straggler watchdog escalates a stuck node, or
@@ -8193,6 +8245,8 @@ mod fault_tolerance_tests {
             disable_restart: Arc::new(AtomicBool::new(false)),
             force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
+            spawned_at: Arc::new(AtomicU64::new(0)),
+            startup_kill_sent: Arc::new(AtomicBool::new(false)),
             health_check_timeout: None,
             startup_timeout: None,
             finish_grace_secs: None,
@@ -10193,5 +10247,56 @@ mod health_check_tests {
         let last = 10_000u64;
         let now = 1_000u64;
         assert!(!health_check_should_kill(true, last, now, TIMEOUT));
+    }
+}
+
+#[cfg(test)]
+mod startup_timeout_tests {
+    use super::startup_timeout_should_kill;
+    use std::time::Duration;
+
+    const TIMEOUT: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn unspawned_or_in_backoff_is_never_killed() {
+        // spawned_at_millis == 0 represents unspawned or in restart backoff sleep
+        let now = 10_000u64;
+        assert!(!startup_timeout_should_kill(false, 0, now, TIMEOUT));
+    }
+
+    #[test]
+    fn connected_node_is_never_killed_by_startup_watchdog() {
+        // Connected nodes are governed by health_check_timeout, not startup_timeout
+        let spawn = 1_000u64;
+        let now = spawn + 10_000;
+        assert!(!startup_timeout_should_kill(true, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn unconnected_node_within_timeout_is_not_killed() {
+        let spawn = 1_000u64;
+        let now = spawn + 4_000; // 4s < 5s
+        assert!(!startup_timeout_should_kill(false, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn unconnected_node_past_timeout_is_killed() {
+        let spawn = 1_000u64;
+        let now = spawn + 6_000; // 6s > 5s
+        assert!(startup_timeout_should_kill(false, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn exactly_at_timeout_is_not_killed() {
+        let spawn = 1_000u64;
+        let now = spawn + 5_000;
+        assert!(!startup_timeout_should_kill(false, spawn, now, TIMEOUT));
+    }
+
+    #[test]
+    fn clock_skew_does_not_underflow() {
+        let spawn = 10_000u64;
+        let now = 1_000u64;
+        assert!(!startup_timeout_should_kill(false, spawn, now, TIMEOUT));
     }
 }

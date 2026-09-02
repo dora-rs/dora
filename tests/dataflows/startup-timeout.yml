@@ -1,3 +1,6 @@
+# `check_node_health` runs on `NodeHealthCheckInterval` ticks (default
+# 5 s, binaries/daemon/src/lib.rs). Override to 0.1 s so the startup kill
+# path fires quickly with the test's 0.5 s timeout.
 health_check_interval: 0.1
 
 nodes:
@@ -6,7 +9,5 @@ nodes:
     path: ../../target/debug/hang-before-init-node
     restart_policy: never
     startup_timeout: 0.5
-    env:
-      DORA_TEST_MARKER_FILE: /tmp/dora-startup-timeout.log
     inputs:
       tick: dora/timer/millis/200

@@ -156,6 +156,11 @@ impl std::fmt::Display for NodeError {
                         f,
                         "node was killed by dora because it didn't react to a stop message in time ({signal_str})"
                     )
+                } else if matches!(self.cause, NodeErrorCause::StartupTimeout) {
+                    write!(
+                        f,
+                        "node was killed by dora because it failed to connect within startup_timeout ({signal_str})"
+                    )
                 } else {
                     write!(f, "exited because of signal {signal_str}")
                 }
@@ -164,7 +169,7 @@ impl std::fmt::Display for NodeError {
         }?;
 
         match &self.cause {
-            NodeErrorCause::GraceDuration => {} // handled above
+            NodeErrorCause::GraceDuration | NodeErrorCause::StartupTimeout => {} // handled above
             NodeErrorCause::Cascading { caused_by_node } => write!(
                 f,
                 ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
@@ -186,6 +191,8 @@ impl std::fmt::Display for NodeError {
 pub enum NodeErrorCause {
     /// Node was killed because it didn't react to a stop message in time.
     GraceDuration,
+    /// Node was killed because it failed to connect to dora within startup_timeout.
+    StartupTimeout,
     /// Node failed because another node failed before,
     Cascading {
         caused_by_node: NodeId,

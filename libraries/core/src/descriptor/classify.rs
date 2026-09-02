@@ -293,7 +293,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
 /// inputs, outputs, output_types, input_types, output_framing,
 /// shared_memory_pool_size, restart_policy, max_restarts,
 /// restart_delay, max_restart_delay, restart_window,
-/// health_check_timeout, finish_grace_secs,
+/// health_check_timeout, startup_timeout, finish_grace_secs,
 /// send_stdout_as, send_logs_as, min_log_level, max_log_size, max_rotated_files,
 /// output_metadata, pattern, cpu_affinity
 const STANDARD_ALLOWED: &[&str] = &[
@@ -360,7 +360,7 @@ fn check_operator(node: &Node) -> Result<()> {
 /// ros2, args, inputs, outputs, output_types, input_types,
 /// output_framing, shared_memory_pool_size,
 /// restart_policy, max_restarts, restart_delay, max_restart_delay,
-/// restart_window, health_check_timeout, finish_grace_secs,
+/// restart_window, health_check_timeout, startup_timeout, finish_grace_secs,
 /// send_stdout_as, send_logs_as, min_log_level, max_log_size, max_rotated_files,
 /// output_metadata, pattern, cpu_affinity (+ shared)
 const ROS2_ALLOWED: &[&str] = &[
@@ -378,6 +378,7 @@ const ROS2_ALLOWED: &[&str] = &[
     "max_restart_delay",
     "restart_window",
     "health_check_timeout",
+    "startup_timeout",
     "finish_grace_secs",
     "send_stdout_as",
     "send_logs_as",
@@ -514,6 +515,10 @@ hub: dora-yolo@^0.5
             (
                 "health_check_timeout",
                 "id: x\npath: ./node\nhealth_check_timeout: 10.0\n",
+            ),
+            (
+                "startup_timeout",
+                "id: x\npath: ./node\nstartup_timeout: 10.0\n",
             ),
             (
                 "finish_grace_secs",

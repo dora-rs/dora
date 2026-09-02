@@ -573,12 +573,13 @@ async fn node_killed_on_startup_timeout_unwedges_dataflow() {
         .expect("failed to build hang-before-init-node");
     assert!(status.success(), "hang-before-init-node build failed");
 
-    let marker = Path::new("/tmp/dora-startup-timeout.log");
-    let _ = std::fs::remove_file(marker);
+    let marker = std::env::temp_dir().join("dora-startup-timeout.log");
+    let _ = std::fs::remove_file(&marker);
 
     let dataflow_path =
         Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/startup-timeout.yml");
 
+    let start = std::time::Instant::now();
     let result = Daemon::run_dataflow(
         &dataflow_path,
         None,
@@ -595,8 +596,13 @@ async fn node_killed_on_startup_timeout_unwedges_dataflow() {
     .await;
 
     let dr = result.expect("dataflow should complete within deadline");
-    let contents = std::fs::read_to_string(marker).expect("marker file should exist");
-    let _ = std::fs::remove_file(marker);
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "dataflow took {elapsed:?}, expected unwedging well before 10s fallback stop_after (startup_timeout: 0.5s)"
+    );
+    let contents = std::fs::read_to_string(&marker).expect("marker file should exist");
+    let _ = std::fs::remove_file(&marker);
     assert!(
         contents.contains("incarnation"),
         "hang-before-init-node should have written marker before hanging"
@@ -609,11 +615,29 @@ async fn node_killed_on_startup_timeout_unwedges_dataflow() {
     let err = node_result
         .as_ref()
         .expect_err("hang-before-init should have errored");
-    use dora_message::common::NodeExitStatus;
+    #[cfg(unix)]
     assert!(
-        matches!(err.exit_status, NodeExitStatus::Signal(9)),
+        matches!(
+            err.exit_status,
+            dora_message::common::NodeExitStatus::Signal(9)
+        ),
         "expected Signal(9) kill on startup timeout expiry, got {:?} (cause: {:?})",
         err.exit_status,
+        err.cause,
+    );
+    #[cfg(windows)]
+    assert!(
+        !err.exit_status.is_success(),
+        "expected non-zero exit on startup timeout expiry, got {:?} (cause: {:?})",
+        err.exit_status,
+        err.cause,
+    );
+    assert!(
+        matches!(
+            err.cause,
+            dora_message::common::NodeErrorCause::StartupTimeout
+        ),
+        "expected NodeErrorCause::StartupTimeout, got {:?}",
         err.cause,
     );
 }

@@ -32,7 +32,10 @@ use std::{
     future::Future,
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64},
+    },
 };
 use tokio::sync::mpsc;
 
@@ -683,6 +686,8 @@ impl Spawner {
             .await;
 
         let last_activity = Arc::new(AtomicU64::new(crate::node_communication::current_millis()));
+        let spawned_at = Arc::new(AtomicU64::new(0));
+        let startup_kill_sent = Arc::new(AtomicBool::new(false));
         // The incarnation identity for this spawn: assigned before the
         // listener is bound so every `Event::Node` from this process's
         // connection carries it (dora-rs/dora#2927).
@@ -736,6 +741,8 @@ impl Spawner {
                 node_config,
                 node_stderr_most_recent,
                 last_activity,
+                spawned_at,
+                startup_kill_sent,
             )
             .await
         };
@@ -757,6 +764,8 @@ impl Spawner {
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         last_activity: Arc<AtomicU64>,
+        spawned_at: Arc<AtomicU64>,
+        startup_kill_sent: Arc<AtomicBool>,
     ) -> eyre::Result<PreparedNode> {
         std::fs::create_dir_all(&node_working_dir)
             .context("failed to create node working directory")?;
@@ -873,6 +882,8 @@ impl Spawner {
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
             last_activity,
+            spawned_at,
+            startup_kill_sent,
             ft_stats: self.ft_stats,
         })
     }

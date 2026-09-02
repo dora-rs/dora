@@ -94,6 +94,12 @@ fn check_dataflow_static_resolved(
     for node in nodes.values() {
         if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
             check_timing_fields(&node.id, custom)?;
+            if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
+                bail!(
+                    "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+                    node.id
+                );
+            }
         }
         // `input_timeout` is a second-valued `f64` that the daemon also feeds
         // to `Duration::from_secs_f64`, on both the initial-spawn and the
@@ -1511,6 +1517,24 @@ operators:
         assert!(
             err.contains("startup_timeout") && err.contains("non-negative"),
             "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn dynamic_node_rejects_startup_timeout() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "error should explain dynamic node startup_timeout rejection, got: {err}"
         );
     }
 

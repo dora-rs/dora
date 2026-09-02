@@ -196,6 +196,8 @@ pub struct PreparedNode {
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
     pub(super) last_activity: Arc<AtomicU64>,
+    pub(super) spawned_at: Arc<AtomicU64>,
+    pub(super) startup_kill_sent: Arc<AtomicBool>,
     pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
@@ -243,6 +245,8 @@ impl PreparedNode {
                 }
             },
             last_activity: self.last_activity.clone(),
+            spawned_at: self.spawned_at.clone(),
+            startup_kill_sent: self.startup_kill_sent.clone(),
             health_check_timeout: self.health_check_timeout(),
             startup_timeout: self.startup_timeout(),
             finish_grace_secs: self.finish_grace_secs(),
@@ -263,50 +267,41 @@ impl PreparedNode {
         Ok(running_node)
     }
 
-    fn restart_policy(&self) -> RestartPolicy {
+    fn custom(&self) -> Option<&dora_core::descriptor::CustomNode> {
         match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+            dora_core::descriptor::CoreNodeKind::Custom(n) => Some(n),
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
+    }
+
+    fn restart_policy(&self) -> RestartPolicy {
+        self.custom()
+            .map_or(RestartPolicy::Never, |n| n.restart_policy)
     }
 
     fn health_check_timeout(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.health_check_timeout.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.health_check_timeout.map(Duration::from_secs_f64))
     }
 
     fn startup_timeout(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.startup_timeout.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.startup_timeout.map(Duration::from_secs_f64))
     }
 
     fn finish_grace_secs(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.finish_grace_secs.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.finish_grace_secs.map(Duration::from_secs_f64))
     }
 
     fn restart_config(&self) -> RestartConfig {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
+        self.custom()
+            .map_or_else(RestartConfig::default, |n| RestartConfig {
                 max_restarts: n.max_restarts,
                 restart_delay: n.restart_delay.map(Duration::from_secs_f64),
                 max_restart_delay: n.max_restart_delay.map(Duration::from_secs_f64),
                 restart_window: n.restart_window.map(Duration::from_secs_f64),
-            },
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
-        }
+            })
     }
 
     /// Settle the daemon's restart debt when the loop aborts after having
@@ -374,6 +369,11 @@ impl PreparedNode {
                     .await;
                 break;
             };
+
+            // Process has exited; reset spawn timestamp and kill latch for the backoff period.
+            self.spawned_at.store(0, atomic::Ordering::Release);
+            self.startup_kill_sent
+                .store(false, atomic::Ordering::Release);
 
             // Consume the one-shot `force_restart_next` flag set by
             // `restart_single_node` (operator-requested `dora node
@@ -728,6 +728,11 @@ impl PreparedNode {
         let pid = child.id().context(
             "Could not get the pid for the just spawned node and indicate that there is an error",
         )?;
+        let now = crate::node_communication::current_millis();
+        self.spawned_at.store(now, atomic::Ordering::Release);
+        self.startup_kill_sent
+            .store(false, atomic::Ordering::Release);
+        self.last_activity.store(now, atomic::Ordering::Release);
         logger
             .log(
                 LogLevel::Debug,
@@ -1287,6 +1292,8 @@ mod tests {
             daemon_tx,
             node_stderr_most_recent: Arc::new(ArrayQueue::new(4)),
             last_activity: Arc::new(AtomicU64::new(0)),
+            spawned_at: Arc::new(AtomicU64::new(0)),
+            startup_kill_sent: Arc::new(AtomicBool::new(false)),
             ft_stats: Arc::new(crate::FaultToleranceStats::default()),
         }
     }

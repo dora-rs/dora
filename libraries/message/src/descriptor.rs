@@ -831,6 +831,12 @@ pub struct Node {
     pub health_check_timeout: Option<f64>,
 
     /// Startup connection deadline in seconds.
+    ///
+    /// If the node process fails to connect (subscribe to events) within this
+    /// many seconds after process spawn, the daemon kills the process and
+    /// evaluates the `restart_policy`.
+    ///
+    /// Evaluated on each `health_check_interval` tick (default 5s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
 
@@ -1202,6 +1208,12 @@ pub struct CustomNode {
     pub health_check_timeout: Option<f64>,
 
     /// Startup connection deadline in seconds.
+    ///
+    /// If the node process fails to connect (subscribe to events) within this
+    /// many seconds after process spawn, the daemon kills the process and
+    /// evaluates the `restart_policy`.
+    ///
+    /// Evaluated on each `health_check_interval` tick (default 5s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
 

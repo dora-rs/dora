@@ -4,7 +4,8 @@ use std::time::Duration;
 
 fn main() -> eyre::Result<()> {
     let marker_path = std::env::var("DORA_TEST_MARKER_FILE")
-        .context("DORA_TEST_MARKER_FILE env var must be set by the fixture")?;
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| std::env::temp_dir().join("dora-startup-timeout.log"));
     let mut marker = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
