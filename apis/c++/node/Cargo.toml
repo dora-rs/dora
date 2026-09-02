@@ -33,6 +33,7 @@ dora-node-api = { workspace = true , features = ["arrow-v59"] }
 eyre = { workspace = true }
 dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.6" }
+futures-timer = "3.0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-big-array = { version = "0.5.1", optional = true }

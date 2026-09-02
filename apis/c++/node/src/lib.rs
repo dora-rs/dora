@@ -19,6 +19,8 @@ use dora_node_api::{
     merged::MergedEvent,
 };
 use eyre::{Result as EyreResult, bail, eyre};
+use futures_lite::future::{block_on, or};
+use futures_timer::Delay;
 use serde::Serialize;
 use serde_json::Value as JsonValue;
 
@@ -452,41 +454,53 @@ fn next_event(events: &mut Box<Events>) -> Box<DoraEvent> {
     events.next()
 }
 
-/// Block up to `timeout_ms` for the next event. Polls `try_recv` with
-/// an `Instant`-based deadline (and a short sleep between polls) so we
-/// can distinguish "timed out" from "stream closed" structurally —
-/// `EventStream::recv_timeout` returns `None` for both cases and
-/// matching on a wrapped `Event::Error(msg.contains("timed out"))`
-/// would be fragile (#1409 review feedback).
+/// Block up to `timeout_ms` for the next event.
+///
+/// Races the async receive against a timer so an incoming event wakes the
+/// thread immediately (no polling latency) and an idle wait consumes no CPU.
+/// The three outcomes are kept structurally distinct — event / stream closed
+/// / timed out — which is why this does not go through
+/// `EventStream::recv_timeout`: that folds a timeout into a wrapped
+/// `Event::Error` distinguishable only by matching its message text, which is
+/// fragile (#1409 review feedback).
 fn next_event_timeout(events: &mut Box<Events>, timeout_ms: u64) -> Box<DoraEvent> {
-    // `timeout_ms` arrives across the cxx::bridge as `u64`, so a C++
-    // caller can supply values that would panic the underlying
-    // `Instant + Duration` arithmetic on platforms with a bounded
-    // Instant range. Use `checked_add` and treat overflow as
-    // "effectively no deadline" -- keep polling indefinitely until
-    // an event arrives or the stream closes. Never returns
-    // `TimedOut` in the overflow case, matching the caller's
-    // intent ("wait as long as needed").
-    let deadline = Instant::now().checked_add(Duration::from_millis(timeout_ms));
-    // 1 ms keeps the busy-wait cost negligible while bounding overshoot
-    // of the caller-supplied deadline to ~1 ms in the worst case.
-    let poll_interval = Duration::from_millis(1);
-    loop {
-        match events.0.try_recv() {
-            Ok(event) => return Box::new(DoraEvent(EventOrReason::Event(event))),
-            Err(TryRecvError::Closed) => return Box::new(DoraEvent(EventOrReason::Closed)),
-            Err(TryRecvError::Empty) => match deadline {
-                Some(d) => {
-                    let now = Instant::now();
-                    if now >= d {
-                        return Box::new(DoraEvent(EventOrReason::TimedOut));
-                    }
-                    std::thread::sleep(std::cmp::min(d - now, poll_interval));
-                }
-                None => std::thread::sleep(poll_interval),
-            },
-        }
+    // `timeout_ms` crosses the cxx::bridge as an unbounded `u64`; clamp it to a
+    // duration whose `Instant::now() + dur` is representable so the timer's
+    // internal deadline arithmetic can never panic on a bogus `UINT64_MAX`.
+    // Shared with the pattern helpers via `clamp_pattern_timeout` so both paths
+    // treat an over-range timeout the same way ("wait a very long time").
+    let duration = clamp_pattern_timeout(timeout_ms);
+
+    // Fast path for a non-blocking probe (`timeout_ms == 0`): a single
+    // `try_recv`, avoiding arming a waker and a zero-length timer.
+    if duration.is_zero() {
+        return Box::new(DoraEvent(match events.0.try_recv() {
+            Ok(event) => EventOrReason::Event(event),
+            Err(TryRecvError::Closed) => EventOrReason::Closed,
+            Err(TryRecvError::Empty) => EventOrReason::TimedOut,
+        }));
     }
+
+    // The receive and the timer resolve to the same type so `or` can race them;
+    // whichever finishes first wins and the other future is dropped. Dropping
+    // the in-flight `recv_async` is sound — the Rust `EventStream::recv_*_timeout`
+    // helpers rely on the same cancel-on-timeout behavior.
+    enum Outcome {
+        Received(Option<Event>),
+        TimedOut,
+    }
+    let outcome = block_on(or(
+        async { Outcome::Received(events.0.recv_async().await) },
+        async {
+            Delay::new(duration).await;
+            Outcome::TimedOut
+        },
+    ));
+    Box::new(DoraEvent(match outcome {
+        Outcome::Received(Some(event)) => EventOrReason::Event(event),
+        Outcome::Received(None) => EventOrReason::Closed,
+        Outcome::TimedOut => EventOrReason::TimedOut,
+    }))
 }
 
 /// Non-blocking single poll. Returns `EventOrReason::Empty` (surfaced
