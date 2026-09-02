@@ -1141,6 +1141,11 @@ nodes:
         /// `resolve_aliases_and_set_defaults_in_topology`.
         const KIND_SPECIFIC: &[&str] = &["path", "source", "path_sha256", "build", "envs"];
 
+        // Field names come from the schema, so a field marked
+        // `#[schemars(skip)]` would never appear in `properties` and would slip
+        // past silently. `Node::deploy` is exactly such a field, and the
+        // classify test compensates with a hardcoded insert — do the same here
+        // if `CustomNode` ever gains one.
         let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
         let schema = serde_json::to_value(schema).expect("schema should serialize");
         let properties = schema

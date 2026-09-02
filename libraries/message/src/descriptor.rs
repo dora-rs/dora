@@ -1053,6 +1053,11 @@ pub struct OperatorDefinition {
 
 #[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+// Same rationale as `Node`: keeps a new operator-level descriptor key a minor
+// release. No constructor yet because nothing constructs one outside this crate
+// — every instance comes from deserialization. Adding a constructor later is
+// itself a minor change, so only the `#[non_exhaustive]` half is time-critical.
+#[non_exhaustive]
 pub struct SingleOperatorDefinition {
     /// Operator identifier (optional for single operators)
     pub id: Option<OperatorId>,
@@ -1062,6 +1067,11 @@ pub struct SingleOperatorDefinition {
 
 #[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+// Same rationale as `Node`: keeps a new operator-level descriptor key a minor
+// release. No constructor yet because nothing constructs one outside this crate
+// — every instance comes from deserialization. Adding a constructor later is
+// itself a minor change, so only the `#[non_exhaustive]` half is time-critical.
+#[non_exhaustive]
 pub struct OperatorConfig {
     /// Human-readable operator name
     pub name: Option<String>,
