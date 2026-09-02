@@ -811,10 +811,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       # Deliberately a shallow checkout. The gate needs one released tag, and
-      # `fetch-depth: 0` would pull 1.3 GB of history on every PR to get it —
-      # breaking-changes.sh resolves the tag name over `ls-remote` and fetches
+      # `fetch-depth: 0` would pull 1.3 GB of history on every PR to get it.
+      # The steps below name the tag over `ls-remote` (no objects) and fetch
       # that single tag at depth 1 instead.
       - uses: actions/checkout@v6
+      # Resolved once and shared with the semver step below. Each resolution
+      # costs an `ls-remote` against a repo with 140-odd tags, and both steps
+      # must compare against the same release anyway.
+      - name: Resolve the release to compare against
+        run: |
+          echo "BREAKING_BASELINE=$(python3 scripts/qa/breaking_changes.py --print-baseline)" \
+            >> "$GITHUB_ENV"
       - name: Frozen surfaces vs the last release
         env:
           # Lets surfaces the last release predates — anything whose snapshot
