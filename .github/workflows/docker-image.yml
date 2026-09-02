@@ -28,7 +28,7 @@ jobs:
     env:
       IMAGE: ghcr.io/dora-rs/dora-slim:latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Registry credentials and the publish step are gated on `push`, i.e.
       # a merge to main. This job also runs on `pull_request`, where the
