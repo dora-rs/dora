@@ -1,6 +1,6 @@
 # Distributed Deployment Guide
 
-Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices.
+Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices. For the network between the machines — how the daemons find each other on a LAN, on a VPN mesh, or across NAT with zenoh routers — start with the [Multi-machine Guide](multi-machine.md).
 
 ## Table of Contents
 
