@@ -7636,14 +7636,16 @@ trait CoreNodeKindExt {
 impl CoreNodeKindExt for CoreNodeKind {
     fn run_config(&self) -> NodeRunConfig {
         match self {
-            CoreNodeKind::Runtime(n) => NodeRunConfig {
-                inputs: runtime_node_inputs(n),
-                outputs: runtime_node_outputs(n),
-                output_types: BTreeMap::new(),
-                output_framing: BTreeMap::new(),
-                input_types: BTreeMap::new(),
-                shared_memory_pool_size: None,
-            },
+            CoreNodeKind::Runtime(n) => {
+                // A runtime node's I/O is the union of its operators', and the
+                // remaining keys (type annotations, framing, pool size) have no
+                // runtime-node surface — they stay at their defaults, which is
+                // also the right answer for any I/O key added later.
+                let mut run_config = NodeRunConfig::default();
+                run_config.inputs = runtime_node_inputs(n);
+                run_config.outputs = runtime_node_outputs(n);
+                run_config
+            }
             CoreNodeKind::Custom(n) => n.run_config.clone(),
         }
     }
@@ -8109,14 +8111,7 @@ mod fault_tolerance_tests {
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
-                run_config: NodeRunConfig {
-                    inputs: BTreeMap::new(),
-                    outputs: BTreeSet::new(),
-                    output_types: BTreeMap::new(),
-                    input_types: BTreeMap::new(),
-                    output_framing: BTreeMap::new(),
-                    shared_memory_pool_size: None,
-                },
+                run_config: NodeRunConfig::default(),
                 daemon_communication: None,
                 dataflow_descriptor: serde_yaml::Value::Null,
                 dynamic: false,

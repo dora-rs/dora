@@ -195,14 +195,31 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             }
         }
 
+        // Take the fields the `ResolvedNode` itself needs before the match
+        // below moves `node`'s per-node keys out by value. `node` is then
+        // maybe-moved for the rest of the iteration, so a later read of a key
+        // that resolution already consumed stays a compile error instead of
+        // silently returning an emptied value.
+        let id = node.id.clone();
+        let name = node.name.take();
+        let description = node.description.take();
+        // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
+        // win on conflict so a node can override a shared default (e.g. global
+        // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
+        let env = merge_env(desc.env.as_ref(), node.env.take());
+        let cpu_affinity = node.cpu_affinity.take();
+        let deploy = node.deploy.take();
+
         // resolve nodes
         let kind = match node_class {
             classify::NodeClass::Standard { source } => {
                 let path = node.path.take().ok_or_eyre("missing `path` attribute")?;
-                let mut custom = custom_node_from(&mut node, path);
+                let path_sha256 = node.path_sha256.take();
+                let build = node.build.take();
+                let mut custom = custom_node_from(node, path);
                 custom.source = source;
-                custom.path_sha256 = node.path_sha256.take();
-                custom.build = node.build.take();
+                custom.path_sha256 = path_sha256;
+                custom.build = build;
                 CoreNodeKind::Custom(custom)
             }
             classify::NodeClass::Runtime => {
@@ -231,28 +248,22 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
 
                 // The bridge binary is fixed, so `path` is a constant and
                 // `source`/`path_sha256`/`build` stay at their defaults.
-                let mut custom = custom_node_from(&mut node, "dora-ros2-bridge-node".to_string());
+                let mut custom = custom_node_from(node, "dora-ros2-bridge-node".to_string());
                 custom.envs = Some(envs);
                 CoreNodeKind::Custom(custom)
             }
         };
 
-        if resolved.contains_key(&node.id) {
-            eyre::bail!(
-                "duplicate node ID `{}` — each node must have a unique `id`",
-                node.id
-            );
+        if resolved.contains_key(&id) {
+            eyre::bail!("duplicate node ID `{id}` — each node must have a unique `id`");
         }
-        let mut resolved_node = ResolvedNode::new(node.id.clone(), kind);
-        resolved_node.name = node.name;
-        resolved_node.description = node.description;
-        // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
-        // win on conflict so a node can override a shared default (e.g. global
-        // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
-        resolved_node.env = merge_env(desc.env.as_ref(), node.env);
-        resolved_node.cpu_affinity = node.cpu_affinity;
-        resolved_node.deploy = node.deploy;
-        resolved.insert(node.id, resolved_node);
+        let mut resolved_node = ResolvedNode::new(id.clone(), kind);
+        resolved_node.name = name;
+        resolved_node.description = description;
+        resolved_node.env = env;
+        resolved_node.cpu_affinity = cpu_affinity;
+        resolved_node.deploy = deploy;
+        resolved.insert(id, resolved_node);
     }
 
     Ok(resolved)
@@ -269,29 +280,36 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
 /// [`resolve_aliases_and_set_defaults_in_topology`] and forgotten in the other.
 /// Now that it is `#[non_exhaustive]` it cannot, so the shared copy lives here
 /// instead: a new per-node key is wired in once and both kinds pick it up.
-fn custom_node_from(node: &mut Node, path: String) -> CustomNode {
+///
+/// Takes `node` by value so the fields land in the `CustomNode` by move, the
+/// way the struct literals did — a caller cannot be left holding a partly
+/// emptied `Node`.
+fn custom_node_from(node: Node, path: String) -> CustomNode {
     let mut custom = CustomNode::new(path);
-    custom.args = node.args.take();
-    custom.send_stdout_as = node.send_stdout_as.take();
-    custom.send_logs_as = node.send_logs_as.take();
-    custom.min_log_level = node.min_log_level.take();
-    custom.max_log_size = node.max_log_size.take();
-    custom.max_rotated_files = node.max_rotated_files.take();
+    custom.args = node.args;
+    custom.send_stdout_as = node.send_stdout_as;
+    custom.send_logs_as = node.send_logs_as;
+    custom.min_log_level = node.min_log_level;
+    custom.max_log_size = node.max_log_size;
+    custom.max_rotated_files = node.max_rotated_files;
     custom.restart_policy = node.restart_policy;
     custom.max_restarts = node.max_restarts;
-    custom.restart_delay = node.restart_delay.take();
-    custom.max_restart_delay = node.max_restart_delay.take();
-    custom.restart_window = node.restart_window.take();
-    custom.health_check_timeout = node.health_check_timeout.take();
-    custom.finish_grace_secs = node.finish_grace_secs.take();
-    custom.run_config = NodeRunConfig {
-        inputs: std::mem::take(&mut node.inputs),
-        outputs: std::mem::take(&mut node.outputs),
-        output_types: std::mem::take(&mut node.output_types),
-        output_framing: std::mem::take(&mut node.output_framing),
-        input_types: std::mem::take(&mut node.input_types),
-        shared_memory_pool_size: node.shared_memory_pool_size.take(),
-    };
+    custom.restart_delay = node.restart_delay;
+    custom.max_restart_delay = node.max_restart_delay;
+    custom.restart_window = node.restart_window;
+    custom.health_check_timeout = node.health_check_timeout;
+    custom.finish_grace_secs = node.finish_grace_secs;
+    // `NodeRunConfig` is `#[non_exhaustive]` too, so this is field-by-field
+    // rather than a literal. Its keys are `#[serde(flatten)]` into `CustomNode`,
+    // so `every_custom_node_field_is_carried_through` covers them alongside the
+    // rest — a new I/O key left unassigned here fails that test.
+    custom.run_config = NodeRunConfig::default();
+    custom.run_config.inputs = node.inputs;
+    custom.run_config.outputs = node.outputs;
+    custom.run_config.output_types = node.output_types;
+    custom.run_config.output_framing = node.output_framing;
+    custom.run_config.input_types = node.input_types;
+    custom.run_config.shared_memory_pool_size = node.shared_memory_pool_size;
     custom
 }
 
@@ -645,6 +663,7 @@ mod tests {
     }
 
     use super::*;
+    use std::collections::BTreeSet;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
         pairs
@@ -1096,6 +1115,26 @@ nodes:
         );
     }
 
+    /// Every `CustomNode` field name, taken from its JSON schema.
+    ///
+    /// A field marked `#[schemars(skip)]` would never appear in `properties`
+    /// and would slip past the two tests below. `Node::deploy` is exactly such
+    /// a field, and the classify test compensates with a hardcoded insert — do
+    /// the same here if `CustomNode` ever gains one.
+    fn custom_node_field_names() -> BTreeSet<String> {
+        let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
+        let schema = serde_json::to_value(schema).expect("schema should serialize");
+        schema
+            .pointer("/$defs/CustomNode/properties")
+            .or_else(|| schema.pointer("/definitions/CustomNode/properties"))
+            .or_else(|| schema.pointer("/properties"))
+            .and_then(serde_json::Value::as_object)
+            .expect("CustomNode schema should expose properties")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
     /// Every `CustomNode` field must be accounted for: either `custom_node_from`
     /// copies it for all node kinds, or the kind-specific arm sets it.
     ///
@@ -1106,6 +1145,10 @@ nodes:
     /// it fails, a key was added to `CustomNode` and nothing resolves it: decide
     /// whether it is shared (add it to `custom_node_from` and to `SHARED`) or
     /// kind-specific (set it in the arm and add it to `KIND_SPECIFIC`).
+    ///
+    /// This half only proves the name was thought about;
+    /// [`every_custom_node_field_is_carried_through`] proves the value actually
+    /// arrives.
     #[test]
     fn every_custom_node_field_is_resolved() {
         /// Copied for every node kind by `custom_node_from`. `run_config` is
@@ -1135,24 +1178,91 @@ nodes:
         /// `resolve_aliases_and_set_defaults_in_topology`.
         const KIND_SPECIFIC: &[&str] = &["path", "source", "path_sha256", "build", "envs"];
 
-        // Field names come from the schema, so a field marked
-        // `#[schemars(skip)]` would never appear in `properties` and would slip
-        // past silently. `Node::deploy` is exactly such a field, and the
-        // classify test compensates with a hardcoded insert — do the same here
-        // if `CustomNode` ever gains one.
-        let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
-        let schema = serde_json::to_value(schema).expect("schema should serialize");
-        let properties = schema
-            .pointer("/$defs/CustomNode/properties")
-            .or_else(|| schema.pointer("/definitions/CustomNode/properties"))
-            .or_else(|| schema.pointer("/properties"))
-            .and_then(serde_json::Value::as_object)
-            .expect("CustomNode schema should expose properties");
+        let resolved: BTreeSet<String> = SHARED
+            .iter()
+            .chain(KIND_SPECIFIC)
+            .map(|name| (*name).to_owned())
+            .collect();
 
-        let actual: std::collections::BTreeSet<_> = properties.keys().map(String::as_str).collect();
-        let resolved: std::collections::BTreeSet<_> =
-            SHARED.iter().chain(KIND_SPECIFIC).copied().collect();
+        assert_eq!(custom_node_field_names(), resolved);
+    }
 
-        assert_eq!(actual, resolved);
+    /// The name check above passes as soon as a field is *listed*, so adding a
+    /// key to `SHARED` without wiring it into `custom_node_from` turns it green
+    /// while the descriptor key is accepted in YAML and silently ignored on
+    /// every node. This is the behavioral half: resolve a node whose YAML sets
+    /// every key to a non-default value, and assert none of them arrived at
+    /// `CustomNode::new`'s default.
+    ///
+    /// When it fails for a newly added key, wire the key into `custom_node_from`
+    /// (or the kind-specific arm) *and* give it a non-default value in the YAML
+    /// below. Only a field that resolution structurally cannot make differ
+    /// belongs in `UNCHECKED`.
+    #[test]
+    fn every_custom_node_field_is_carried_through() {
+        /// `source` resolves to `NodeSource::Local` for a `path:` node, which is
+        /// already `CustomNode::new`'s default, so it can never differ here —
+        /// `classify`'s own tests cover the git/hub sources. `envs` is set only
+        /// by the ROS2-bridge arm and has no YAML surface of its own.
+        const UNCHECKED: &[&str] = &["source", "envs"];
+
+        let yaml = r#"
+nodes:
+  - id: full
+    path: ./full-node
+    path_sha256: abc123
+    build: cargo build
+    args: --verbose
+    send_stdout_as: stdout-topic
+    send_logs_as: logs-topic
+    min_log_level: debug
+    max_log_size: 4MB
+    max_rotated_files: 3
+    restart_policy: always
+    max_restarts: 7
+    restart_delay: 1.5
+    max_restart_delay: 9.5
+    restart_window: 60.0
+    health_check_timeout: 2.5
+    finish_grace_secs: 3.5
+    shared_memory_pool_size: 8MB
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - out
+    output_types:
+      out: arrow.int32
+    output_framing:
+      out: arrow-ipc
+    input_types:
+      tick: arrow.uint64
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let node = resolved.values().next().expect("one node");
+        let CoreNodeKind::Custom(custom) = &node.kind else {
+            panic!("expected a custom node, got {:?}", node.kind);
+        };
+
+        let resolved = serde_json::to_value(custom).expect("serialize resolved");
+        // A sentinel `path` that the YAML above does not use, so `path` itself
+        // is checked like every other field rather than comparing equal to it.
+        let default =
+            serde_json::to_value(CustomNode::new("<unset>".to_owned())).expect("serialize default");
+
+        for field in custom_node_field_names() {
+            if UNCHECKED.contains(&field.as_str()) {
+                continue;
+            }
+            assert_ne!(
+                resolved.get(&field),
+                default.get(&field),
+                "`{field}` is still at its `CustomNode::new` default after \
+                 resolution — the descriptor key is parsed and then dropped. \
+                 Wire it into `custom_node_from` (or the kind-specific match \
+                 arm) in `resolve_aliases_and_set_defaults_in_topology`. If the \
+                 YAML above does not set it, set it there too."
+            );
+        }
     }
 }
