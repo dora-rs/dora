@@ -138,7 +138,7 @@ qa-publish-graph:
 	@scripts/qa/publish-graph.sh
 
 qa-clippy:
-	@cargo clippy --all \
+	@cargo clippy --all --all-targets \
 		--exclude dora-node-api-python \
 		--exclude dora-operator-api-python \
 		--exclude dora-ros2-bridge-python \

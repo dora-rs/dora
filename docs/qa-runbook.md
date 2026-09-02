@@ -60,7 +60,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 | `make qa-mutation-audit` | `cargo-mutants --full` on 6 critical crates | ~10-18 hrs | Deliberate test-quality audit, not every nightly |
 | `make qa-examples` | `scripts/smoke-all.sh` -- all smoke-eligible example dataflows end-to-end (skips CUDA/ROS2/webcam/C++/interactive) | ~15-20 min | When you want actual dataflows exercised. Orthogonal to ladder -- qa-fast/full/deep all `--exclude dora-examples`. Pass `ARGS="--rust-only"` etc. |
 | `make qa-fmt` | `cargo fmt --all -- --check` | ~2 s | Spot-check |
-| `make qa-clippy` | `cargo clippy --all -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
+| `make qa-clippy` | `cargo clippy --all --all-targets -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
 | `make qa-audit` | `cargo audit` + `cargo deny check` | ~10 s | After bumping deps |
 | `make qa-unwrap` | count `.unwrap()` / `.expect(` in production code | ~2 s | After adding unwraps |
 | `make qa-test` | `cargo test --all` (excluding Python) | ~3-5 min | After code changes |

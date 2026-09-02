@@ -8470,13 +8470,13 @@ mod fault_tolerance_tests {
     }
 
     fn matches_event(event: &NodeEvent, expected: &str) -> bool {
-        match (event, expected) {
-            (NodeEvent::InputClosed { .. }, "InputClosed") => true,
-            (NodeEvent::InputRecovered { .. }, "InputRecovered") => true,
-            (NodeEvent::AllInputsClosed, "AllInputsClosed") => true,
-            (NodeEvent::Input { .. }, "Input") => true,
-            _ => false,
-        }
+        matches!(
+            (event, expected),
+            (NodeEvent::InputClosed { .. }, "InputClosed")
+                | (NodeEvent::InputRecovered { .. }, "InputRecovered")
+                | (NodeEvent::AllInputsClosed, "AllInputsClosed")
+                | (NodeEvent::Input { .. }, "Input")
+        )
     }
 
     // -- Test 1: close_input removes input, sends InputClosed, no AllInputsClosed with remaining inputs --
@@ -10092,14 +10092,11 @@ mod announce_zenoh_bind_tests {
 
 #[cfg(test)]
 mod node_results_cleanup_tests {
-    use super::{NodeId, extract_node_results};
+    use super::{DaemonRunResult, NodeId, extract_node_results};
     use std::collections::BTreeMap;
     use uuid::Uuid;
 
-    fn populated() -> (
-        Uuid,
-        BTreeMap<Uuid, BTreeMap<NodeId, Result<(), super::NodeError>>>,
-    ) {
+    fn populated() -> (Uuid, DaemonRunResult) {
         let id = Uuid::new_v4();
         let mut inner = BTreeMap::new();
         inner.insert(NodeId::from("node".to_string()), Ok(()));

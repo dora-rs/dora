@@ -63,7 +63,7 @@ make qa-fast
 Runs:
 
 - `cargo fmt --all -- --check`
-- `cargo clippy --all -- -D warnings` with Python crates excluded
+- `cargo clippy --all --all-targets -- -D warnings` with Python crates excluded
 - supply-chain audit
 - unwrap-budget check
 - typo check
@@ -199,7 +199,7 @@ could silently break without failing any unit/integration test.
 ```bash
 cargo fmt --all -- --check
 
-cargo clippy --all \
+cargo clippy --all --all-targets \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \

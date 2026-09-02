@@ -103,7 +103,8 @@ print_overview() {
 $header
 Will run:
   1. fmt            -- cargo fmt --all -- --check
-  2. clippy         -- cargo clippy --all -- -D warnings (excluding Python)
+  2. clippy         -- cargo clippy --all --all-targets -- -D warnings
+                       (excluding Python)
   3. audit          -- cargo-audit + cargo-deny on the dependency tree
   4. unwrap-budget  -- count production .unwrap() / .expect( regressions
   5. typos          -- spell-check against _typos.toml allowlist
@@ -259,7 +260,7 @@ print_overview "$MODE"
 
 # ----- Always run (fast) -----
 run "fmt"           cargo fmt --all -- --check
-run "clippy"        cargo clippy --all \
+run "clippy"        cargo clippy --all --all-targets \
                       --exclude dora-node-api-python \
                       --exclude dora-operator-api-python \
                       --exclude dora-ros2-bridge-python \

@@ -139,20 +139,23 @@ jobs:
           # save, so the race can't cache a check-only (.rmeta) subset.
           shared-key: workspace
           save-if: false
+      # `--all-targets` so the lint gate covers what `cargo clippy --all`
+      # alone skips: unit tests, integration tests, benches, and example
+      # binaries. Those are a large share of the workspace's code, and
+      # until now the only compile gate on them was `cargo check --examples`
+      # plus `cargo test` -- neither of which lints.
       - run: >
-          cargo clippy --all
+          cargo clippy --all --all-targets
           --exclude dora-node-api-python
           --exclude dora-operator-api-python
           --exclude dora-ros2-bridge-python
           -- -D warnings
       # `--all` does not enable opt-in features, so neither the extension's
       # daemon half nor the daemon's wiring for it would otherwise be linted.
-      # `--all-targets` on the extension covers its tests, which live with the
-      # code it tests.
       - name: Clippy (tensor-pool extension)
         run: >
           cargo clippy -p dora-tensor-pool --features daemon --all-targets -- -D warnings
-          && cargo clippy -p dora-daemon --features tensor-pool -- -D warnings
+          && cargo clippy -p dora-daemon --features tensor-pool --all-targets -- -D warnings
 
   # Cheap compile gate on every PR. `cargo check` skips codegen/link,
   # so it's much faster than the full `test` job below. Exposed as the
