@@ -156,7 +156,7 @@ make qa-test-python
 # cargo test -p <crate-name>
 ```
 
-**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + typos + publish-graph in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
+**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
 
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
 
@@ -195,6 +195,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - Typo checking via `crate-ci/typos` (config: `_typos.toml`)
 - Supply-chain audit (`cargo-audit` + `cargo-deny`)
 - Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
+- Committed-credential check (`make qa-secret-files`, a step in the `Check` job): fails if git tracks a file whose name says it holds a secret. .gitignore is not enough on its own — it does not apply to files arriving through an import or a squash-merge of another repo's history, which is how `.adora-token` reached the public repo (#2194)
 - crates.io publish-graph check (`make qa-publish-graph`, a step in the `Check` job): no published crate may depend on a `publish = false` one, and the ordered publish lists in `release.yml` / `cargo-release.yml` must agree and list every dependency before its dependents (#3304)
 - License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)

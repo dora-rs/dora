@@ -66,6 +66,7 @@ Runs:
 - `cargo clippy --all -- -D warnings` with Python crates excluded
 - supply-chain audit
 - unwrap-budget check
+- committed-credential check
 - typo check
 - crates.io publish-graph check
 

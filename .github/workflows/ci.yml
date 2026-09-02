@@ -111,7 +111,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt
@@ -122,7 +122,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
@@ -162,7 +162,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      # Pure git, so it costs no time and genuinely goes first — before the
+      # toolchain install and cache restore, so a leaked credential fails in
+      # seconds rather than after CI has provisioned a Rust build. A
+      # committed credential cannot be walked back once pushed: the blob
+      # stays readable in history and in every fork. .gitignore already
+      # listed `.adora-token` and still did not stop it reaching the public
+      # repo, because gitignore does not apply to an import or a
+      # squash-merge of another repo's history (#2194).
+      - name: Check for committed credential files
+        run: make qa-secret-files
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -230,7 +240,7 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -389,7 +399,7 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -540,7 +550,7 @@ jobs:
       MATURIN_PEP517_ARGS: "--profile dev"
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -654,7 +664,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)
@@ -730,7 +740,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: crate-ci/typos@master
+      - uses: crate-ci/typos@d43b6c087ac471e2ea7b8af622ff15f05c0c365b # v1.50.1
 
   # ===== Fast supply-chain gates =====
   # Only the cheap, deterministic QA gates run remotely. The deeper
@@ -743,7 +753,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: taiki-e/install-action@v2
@@ -777,7 +787,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - name: Pin toolchain set for a stable rust-cache key (see header)

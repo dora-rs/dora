@@ -625,7 +625,7 @@ Dora ships with a three-tier QA system designed for AI-authored code. Everything
 
 ```bash
 make qa-install        # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
-make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
+make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph (pre-commit)
 make qa-full           # ~5-10m  -- qa-fast + tests + coverage (pre-push)
 make qa-deep           # ~15m    -- qa-full + mutation testing + semver (target Tier 1 gate, stronger than today's CI; alias: qa-tier1)
 make qa-nightly        # ~3-4h -- qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs (full parity with .github/workflows/nightly.yml)

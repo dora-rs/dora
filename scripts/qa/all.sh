@@ -6,7 +6,7 @@
 #
 # Modes (increasing thoroughness):
 #   --fast            ~1 min     pre-commit sanity (fmt, clippy, audit, unwrap,
-#                                typos, publish-graph)
+#                                secret-files, typos, publish-graph)
 #   --full            ~5-10 min  pre-push (fast + tests + coverage + optional adversarial)
 #   --deep            ~15 min    target Tier 1 gate, stronger than today's CI
 #                                (full + mutants on diff + semver; see strategy doc §5 for why the
@@ -106,8 +106,9 @@ Will run:
   2. clippy         -- cargo clippy --all -- -D warnings (excluding Python)
   3. audit          -- cargo-audit + cargo-deny on the dependency tree
   4. unwrap-budget  -- count production .unwrap() / .expect( regressions
-  5. typos          -- spell-check against _typos.toml allowlist
-  6. publish-graph  -- crates.io publish order / no unpublished deps
+  5. secret-files   -- no credential-shaped filenames tracked by git
+  6. typos          -- spell-check against _typos.toml allowlist
+  7. publish-graph  -- crates.io publish order / no unpublished deps
 ============================================================
 EOF
       ;;
@@ -117,11 +118,11 @@ EOF
 ============================================================
 $header
 Will run:
-  1-6. everything from qa-fast                  (fmt/clippy/audit/unwrap/typos/
-                                                 publish-graph)
-  7.   test         -- cargo test --all         (workspace test suite)
-  8.   coverage     -- cargo llvm-cov           (writes lcov.info)
-  9.   adversarial  -- codex/claude review      (optional; skipped if unavailable)
+  1-7. everything from qa-fast                  (fmt/clippy/audit/unwrap/
+                                                 secret-files/typos/publish-graph)
+  8.   test         -- cargo test --all         (workspace test suite)
+  9.   coverage     -- cargo llvm-cov           (writes lcov.info)
+  10.  adversarial  -- codex/claude review      (optional; skipped if unavailable)
 ============================================================
 EOF
       ;;
@@ -131,19 +132,20 @@ EOF
 ============================================================
 $header
 Today's CI PR gate only runs a subset of this: fmt, clippy, typos,
-audit, unwrap-budget, publish-graph, and the workspace test suite.
+audit, unwrap-budget, secret-files, publish-graph, and the workspace
+test suite.
 qa-deep adds the planned Tier 1 extras (see
 docs/plan-agentic-qa-strategy.md §5) that are kept laptop-only today
 because they're too slow for every PR: coverage, adversarial review,
 diff-scoped mutation testing, semver.
 
 Will run:
-  1-5.  everything from qa-fast                 (in CI today)
-  6.    test         -- cargo test --all        (in CI today)
-  7.    coverage     -- cargo llvm-cov          (NOT in CI; laptop-only)
-  8.    adversarial  -- codex/claude review     (NOT in CI; skipped w/o tools)
-  9.    mutants      -- cargo-mutants on diff   (NOT in CI; laptop-only)
-  10.   semver       -- cargo-semver-checks     (NOT in CI; pre-release only)
+  1-7.  everything from qa-fast                 (in CI today)
+  8.    test         -- cargo test --all        (in CI today)
+  9.    coverage     -- cargo llvm-cov          (NOT in CI; laptop-only)
+  10.   adversarial  -- codex/claude review     (NOT in CI; skipped w/o tools)
+  11.   mutants      -- cargo-mutants on diff   (NOT in CI; laptop-only)
+  12.   semver       -- cargo-semver-checks     (NOT in CI; pre-release only)
 ============================================================
 EOF
       ;;
@@ -153,13 +155,13 @@ EOF
 ============================================================
 $header
 For overnight runs on a powerful machine. Will run:
-  1-5.  everything from qa-fast
-  6-8.  everything from qa-full                 (test, coverage, adversarial)
-  9.    mutants (diff-scoped)                   -- same as qa-deep
-  10.   semver                                  -- cargo-semver-checks vs last tag
-  11.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
-  12.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
-  13.   example-smoke                           -- tests/example-smoke.rs (52 tests;
+  1-7.  everything from qa-fast
+  8-10. everything from qa-full                 (test, coverage, adversarial)
+  11.   mutants (diff-scoped)                   -- same as qa-deep
+  12.   semver                                  -- cargo-semver-checks vs last tag
+  13.   proptest @ 1000 cases per property      (vs 50 cases in Tier 1)
+  14.   miri                                    -- undefined-behavior check (SKIP if cargo +nightly miri missing)
+  15.   example-smoke                           -- tests/example-smoke.rs (52 tests;
                                                    covers GHA smoke-suite + log-sinks
                                                    + service-action + streaming).
                                                    Runs inside a scratch uv venv that
@@ -167,14 +169,14 @@ For overnight runs on a powerful machine. Will run:
                                                    matching the GHA Python setup exactly
                                                    (so workspace Python bindings are used,
                                                    NOT PyPI). Requires uv.
-  14.   hub-smoke                              -- tests/hub-smoke.rs -- the Hub
+  16.   hub-smoke                              -- tests/hub-smoke.rs -- the Hub
                                                    e2e (publish / build / run /
                                                    yank / outdated / --hub-override
                                                    / binary / identity). Hermetic
                                                    (local git fixture, no network),
                                                    Rust-only -- no venv. Runs
                                                    regardless of the uv/3.12 setup.
-  15.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
+  17.   ci-nightly-jobs                         -- scripts/qa/ci-nightly-jobs.sh
                                                    Platform-aware: runs the subset of GHA
                                                    nightly jobs that applies to the dev's OS.
                                                    Covers record-replay, cluster-smoke,
@@ -242,10 +244,10 @@ EOF
 ============================================================
 $header
 The automatable parts of the Tier 3 release gate. Will run:
-  1-5.   everything from qa-fast
-  6-8.   everything from qa-full                 (test, coverage, adversarial)
-  9.     mutants (diff-scoped)
-  10.    semver
+  1-7.   everything from qa-fast
+  8-10.  everything from qa-full                 (test, coverage, adversarial)
+  11.    mutants (diff-scoped)
+  12.    semver
 Non-automatable Tier 3 gates (external security audit, 7-day dogfood
 campaign, migration validation on external repos) are human-gated --
 see docs/plan-agentic-qa-strategy.md §7.
@@ -266,6 +268,7 @@ run "clippy"        cargo clippy --all \
                       -- -D warnings
 run "audit"         scripts/qa/audit.sh
 run "unwrap-budget" scripts/qa/unwrap-budget.sh
+run "secret-files"  scripts/qa/secret-files.sh
 run "typos"         scripts/qa/typos.sh
 run "publish-graph" scripts/qa/publish-graph.sh
 
