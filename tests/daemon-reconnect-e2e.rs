@@ -120,15 +120,24 @@ fn log_contains(path: &Path, needle: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn wait_until(mut f: impl FnMut() -> bool, timeout: Duration, what: &str) {
+/// Poll `f` until it holds, reporting whether it did within `timeout`. For
+/// call sites that need their own cleanup and diagnostics on a miss; the rest
+/// want [`wait_until`], which panics instead.
+fn wait_for(mut f: impl FnMut() -> bool, timeout: Duration) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
         if f() {
-            return;
+            return true;
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    panic!("timed out after {timeout:?} waiting for: {what}");
+    false
+}
+
+fn wait_until(f: impl FnMut() -> bool, timeout: Duration, what: &str) {
+    if !wait_for(f, timeout) {
+        panic!("timed out after {timeout:?} waiting for: {what}");
+    }
 }
 
 fn spawn_coordinator(dora: &Path, port: u16, redb: &Path, log: &Path) -> Child {
@@ -491,8 +500,14 @@ fn node_survives_daemon_watchdog_disconnect() {
         Duration::from_secs(50),
         "coordinator watchdog to disconnect the frozen daemon",
     );
-    // The disconnect must open a reclaim window, NOT terminally fail the dataflow.
-    if !log_contains(&coord_log, "entering reclaim window") {
+    // The disconnect must open a reclaim window, NOT terminally fail the
+    // dataflow. This trails the watchdog line by a `store.unregister_daemon`
+    // redb commit, so a slow fsync leaves a window in which only the watchdog
+    // line is on disk — poll rather than read the log once.
+    if !wait_for(
+        || log_contains(&coord_log, "entering reclaim window"),
+        Duration::from_secs(15),
+    ) {
         signal(daemon_pid, "-CONT");
         dump_logs(&coord_log, &daemon_log);
         panic!("coordinator did not enter the reclaim window on daemon disconnect");
