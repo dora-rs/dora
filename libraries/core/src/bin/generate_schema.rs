@@ -103,14 +103,33 @@ mod tests {
     /// compares an out-of-date snapshot and passes for the wrong reason. This
     /// test runs wherever `cargo test` does, so a merge-queue batch cannot
     /// leave it behind.
+    ///
+    /// Compared as parsed JSON, not as text, because the key order is not
+    /// stable across build graphs: `dora-node-api` enables
+    /// `serde_json/preserve_order`, which unifies into this crate's
+    /// `serde_json` in any workspace-wide build. The same generator then
+    /// emits declaration order under `cargo test --all` and sorted order
+    /// under `cargo run -p dora-core`, so a text comparison fails in the
+    /// merge queue while passing on the laptop that recorded the file.
+    /// Order carries no meaning in a JSON Schema; drift in the *content* is
+    /// what this asserts.
+    ///
+    /// The gate's own freshness check is unaffected and stays textual: it
+    /// regenerates with `cargo run -p dora-core`, whose graph cannot reach
+    /// `preserve_order` -- that comes from `dora-node-api` and `dora-cli`,
+    /// neither of which `dora-core` depends on.
     #[test]
     fn checked_in_descriptor_schema_is_current() {
         let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
         let checked_in = fs::read_to_string(manifest_dir.join("dora-schema.json"))
             .expect("libraries/core/dora-schema.json is missing");
+        let checked_in: serde_json::Value = serde_json::from_str(&checked_in)
+            .expect("libraries/core/dora-schema.json is not valid JSON");
+        let generated: serde_json::Value = serde_json::from_str(&descriptor_schema_json())
+            .expect("the generated descriptor schema is not valid JSON");
 
         assert!(
-            checked_in == descriptor_schema_json(),
+            checked_in == generated,
             "libraries/core/dora-schema.json is out of date. Regenerate it:\n  \
              cargo run -p dora-core --bin generate_schema"
         );
