@@ -1683,17 +1683,7 @@ mod tests {
     }
 
     fn empty_descriptor() -> Descriptor {
-        use dora_message::descriptor::Debug as DescriptorDebug;
-        Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: DescriptorDebug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        }
+        Descriptor::new(vec![])
     }
 
     #[test]

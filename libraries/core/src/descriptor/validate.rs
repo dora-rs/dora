@@ -1453,27 +1453,7 @@ operators:
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {
-        dora_message::descriptor::CustomNode {
-            path: "node".to_string(),
-            source: dora_message::descriptor::NodeSource::Local,
-            path_sha256: None,
-            args: None,
-            envs: None,
-            build: None,
-            send_stdout_as: None,
-            send_logs_as: None,
-            min_log_level: None,
-            max_log_size: None,
-            max_rotated_files: None,
-            restart_policy: Default::default(),
-            max_restarts: 0,
-            restart_delay: None,
-            max_restart_delay: None,
-            restart_window: None,
-            health_check_timeout: None,
-            finish_grace_secs: None,
-            run_config: serde_yaml::from_str("{}").unwrap(),
-        }
+        dora_message::descriptor::CustomNode::new("node".to_string())
     }
 
     #[test]
@@ -3127,15 +3107,7 @@ nodes:
         let node = |n: u32| -> ResolvedNode {
             let mut custom = custom_node();
             custom.max_rotated_files = Some(n);
-            ResolvedNode {
-                id: NodeId::from("n".to_owned()),
-                name: None,
-                description: None,
-                env: None,
-                cpu_affinity: None,
-                deploy: None,
-                kind: CoreNodeKind::Custom(custom),
-            }
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
         };
 
         // 0 is a real configuration: keep the active log only, rotating the

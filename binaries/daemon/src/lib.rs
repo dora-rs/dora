@@ -96,16 +96,7 @@ pub mod bench_support {
         HLC,
         Vec<mpsc::Receiver<Timestamped<NodeEvent>>>,
     ) {
-        let descriptor = dora_message::descriptor::Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: dora_message::descriptor::Debug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        };
+        let descriptor = dora_message::descriptor::Descriptor::new(vec![]);
         let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
 
         let sender_id: NodeId = "sender".to_string().into();
@@ -3262,51 +3253,9 @@ impl Daemon {
                     // Construct a minimal Node from the inputs we
                     // already collected — only `id` and `inputs` are
                     // consulted by the daemon.
-                    dataflow
-                        .descriptor
-                        .nodes
-                        .push(dora_message::descriptor::Node {
-                            id: node_id.clone(),
-                            name: None,
-                            description: None,
-                            path: None,
-                            path_sha256: None,
-                            args: None,
-                            env: None,
-                            operators: None,
-                            operator: None,
-                            ros2: None,
-                            outputs: Default::default(),
-                            output_types: Default::default(),
-                            output_framing: Default::default(),
-                            inputs: inputs.into_iter().collect(),
-                            input_types: Default::default(),
-                            shared_memory_pool_size: None,
-                            output_metadata: Default::default(),
-                            pattern: None,
-                            send_stdout_as: None,
-                            send_logs_as: None,
-                            min_log_level: None,
-                            max_log_size: None,
-                            max_rotated_files: None,
-                            build: None,
-                            git: None,
-                            hub: None,
-                            branch: None,
-                            tag: None,
-                            rev: None,
-                            restart_policy: Default::default(),
-                            max_restarts: 0,
-                            restart_delay: None,
-                            max_restart_delay: None,
-                            restart_window: None,
-                            health_check_timeout: None,
-                            finish_grace_secs: None,
-                            module: None,
-                            params: Default::default(),
-                            cpu_affinity: None,
-                            deploy: None,
-                        });
+                    let mut added = dora_message::descriptor::Node::new(node_id.clone());
+                    added.inputs = inputs.into_iter().collect();
+                    dataflow.descriptor.nodes.push(added);
 
                     // Spawn timer tasks for any interval this node just
                     // registered. Timer tasks are only ever created in
@@ -7878,14 +7827,16 @@ trait CoreNodeKindExt {
 impl CoreNodeKindExt for CoreNodeKind {
     fn run_config(&self) -> NodeRunConfig {
         match self {
-            CoreNodeKind::Runtime(n) => NodeRunConfig {
-                inputs: runtime_node_inputs(n),
-                outputs: runtime_node_outputs(n),
-                output_types: BTreeMap::new(),
-                output_framing: BTreeMap::new(),
-                input_types: BTreeMap::new(),
-                shared_memory_pool_size: None,
-            },
+            CoreNodeKind::Runtime(n) => {
+                // A runtime node's I/O is the union of its operators', and the
+                // remaining keys (type annotations, framing, pool size) have no
+                // runtime-node surface — they stay at their defaults, which is
+                // also the right answer for any I/O key added later.
+                let mut run_config = NodeRunConfig::default();
+                run_config.inputs = runtime_node_inputs(n);
+                run_config.outputs = runtime_node_outputs(n);
+                run_config
+            }
             CoreNodeKind::Custom(n) => n.run_config.clone(),
         }
     }
@@ -8189,23 +8140,11 @@ mod fault_tolerance_tests {
     use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
 
-    use dora_message::{
-        daemon_to_node::NodeEvent,
-        descriptor::{Debug as DescriptorDebug, Descriptor},
-    };
+    use dora_message::{daemon_to_node::NodeEvent, descriptor::Descriptor};
     use std::sync::atomic::{AtomicBool, AtomicU64};
 
     fn test_dataflow() -> RunningDataflow {
-        let descriptor = Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: DescriptorDebug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        };
+        let descriptor = Descriptor::new(vec![]);
         RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor)
     }
 
@@ -8363,14 +8302,7 @@ mod fault_tolerance_tests {
             node_config: NodeConfig {
                 dataflow_id: Uuid::nil(),
                 node_id: NodeId::from("test".to_string()),
-                run_config: NodeRunConfig {
-                    inputs: BTreeMap::new(),
-                    outputs: BTreeSet::new(),
-                    output_types: BTreeMap::new(),
-                    input_types: BTreeMap::new(),
-                    output_framing: BTreeMap::new(),
-                    shared_memory_pool_size: None,
-                },
+                run_config: NodeRunConfig::default(),
                 daemon_communication: None,
                 dataflow_descriptor: serde_yaml::Value::Null,
                 dynamic: false,

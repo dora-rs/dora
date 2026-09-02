@@ -20,6 +20,7 @@ The 0.x tree is preserved under the `v0.x-final` tag. It shares no history with 
 | Wire encoding | bincode | postcard | `libraries/message/Cargo.toml` |
 | Message-enum variants (`NodeEvent`, `DaemonCommunication`) | 0.x variant order | New variants inserted (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`, `Shmem`) — positional tags shifted | [`phase--1-audit-2026-04-16.md`](phase--1-audit-2026-04-16.md) §3 |
 | Wire-protocol enums in `dora-message` | exhaustively matchable | `#[non_exhaustive]` — a `_ =>` arm is required (#3151) | `libraries/message/src/` |
+| Descriptor structs in `dora-message` (incl. `NodeRunConfig`) | struct-literal constructible | `#[non_exhaustive]` — use `Node::new` / `Descriptor::new` / `Deploy::default()` (#3387) | `libraries/message/src/descriptor.rs`, `libraries/message/src/config.rs` |
 | CLI handshake | Optional `get_version()` RPC | Mandatory `ControlRequest::Hello` with semver check | `libraries/message/src/cli_to_coordinator.rs` |
 | Topic data channel | subscription carried no encoding version | `protocol_version` in both directions; mismatch is refused (#3160) | `docs/websocket-topic-data-channel.md` |
 | Recording file extension | `.adorec` | `.drec` (magic bytes were already `DORAREC\x00` / `DORAEND\x00`) | `libraries/recording/src/lib.rs` |
@@ -290,6 +291,43 @@ match request {
 Pick the fallback to match the role: the coordinator warns and continues (a newer daemon must not be able to tear down its connection), the daemon replies with an explicit error (so a newer node fails loudly instead of hanging), and read-only observability paths skip.
 
 `dora_node_api::Event` was already `#[non_exhaustive]` in 0.x, so the four new variants (`InputRecovered`, `NodeRestarted`, `ParamUpdate`, `ParamDeleted`) do not break existing matches.
+
+### Descriptor structs are `#[non_exhaustive]` (#3387)
+
+`Descriptor`, `Node`, `CustomNode`, `ResolvedNode`, `Deploy`, `Debug`, `TypeRuleDef`, `OperatorConfig`, `SingleOperatorDefinition` and `NodeRunConfig` on the published `dora-message` crate now carry `#[non_exhaustive]`, so adding a descriptor key later is a minor release rather than a major one. Struct literals no longer compile from outside the crate. `..Default::default()` is not an escape hatch either: `#[non_exhaustive]` bans functional-update syntax across crate boundaries too, for the types that implement `Default` (`Deploy`, `Debug`, `NodeRunConfig` — `Node`, `Descriptor`, `CustomNode` and `ResolvedNode` never did, so in 0.x they were always spelled out field by field).
+
+Every field stays `pub`, so the migration is to construct from the entry point and then assign:
+
+```rust
+// 0.x — a struct literal naming every field
+let node = Node {
+    id: "camera".parse()?,
+    path: Some("./camera".to_owned()),
+    name: None,
+    description: None,
+    // … and every other field, explicitly
+};
+
+// 1.0 — construct, then assign
+let mut node = Node::new("camera".parse()?);
+node.path = Some("./camera".to_owned());
+```
+
+`NodeId` is validated, so build it with `parse()` (fallible) rather than `.into()`, which panics on an invalid id — this matters for the `AddNode` path, where the id comes from a request.
+
+| Type | Entry point |
+|---|---|
+| `Descriptor` | `Descriptor::new(nodes)` |
+| `Node` | `Node::new(id)` |
+| `CustomNode` | `CustomNode::new(path)` |
+| `ResolvedNode` | `ResolvedNode::new(id, kind)` |
+| `Deploy`, `Debug`, `NodeRunConfig` | `Default::default()` |
+| `TypeRuleDef` | `TypeRuleDef::new(from, to)` |
+| `OperatorConfig`, `SingleOperatorDefinition` | deserialization only |
+
+This affects Rust code that builds descriptors programmatically — the dynamic-topology `AddNode` surface is the common case. Reading and mutating an existing descriptor is unchanged. There is no YAML, JSON-schema or wire-format change.
+
+The descriptor *enums* (`RestartPolicy`, `NodeSource`, `EnvValue`, `OutputFraming`, …) are deliberately **not** marked, so matches on them still compile unchanged. That means a new variant stays a major change — see the note on `RestartPolicy` in `descriptor.rs` for why that trade was made.
 
 ### Pool and pinned-memory requests replaced by the extension seam (#3219)
 
