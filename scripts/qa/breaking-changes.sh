@@ -36,9 +36,7 @@ cd "$(dirname "$0")/../.."
 # The generated inputs the surface diff reads, and the commands that write
 # them. Defined once: the freshness check below and `--update` (which
 # `make qa-breaking-update` calls) must never disagree about the list.
-# Same path as `CLI_SURFACE` in breaking_changes.py.
-CLI_SNAPSHOT="binaries/cli/cli-surface.txt"
-GENERATED_FILES="dora-schema.json libraries/core/dora-schema.json libraries/core/dora-node-schema.json $CLI_SNAPSHOT"
+GENERATED_FILES="dora-schema.json libraries/core/dora-schema.json libraries/core/dora-node-schema.json binaries/cli/cli-surface.txt"
 
 regenerate_inputs() {
   UPDATE_CLI_SURFACE=1 cargo test -p dora-cli --test cli_surface >/dev/null
@@ -78,13 +76,10 @@ source scripts/qa/baseline.sh
 BASELINE=$(resolve_breaking_baseline "$BASELINE_OVERRIDE") || exit 2
 FAILED=0
 
-# The fallback exists for surfaces the release predates, and today that is
-# exactly one file. Fetching a whole commit for it when the baseline already
-# carries the snapshot would be several megabytes wasted on every PR, forever
-# -- so check first. Best-effort either way: a shallow checkout that cannot
-# reach the PR base just leaves that check skipped.
-if [[ -n "${BREAKING_FALLBACK_BASELINE:-}" ]] &&
-   ! git cat-file -e "${BASELINE}:${CLI_SNAPSHOT}" 2>/dev/null; then
+# Best-effort, and a no-op wherever the history is already present: a
+# checkout that cannot reach the PR base just leaves the fallback checks
+# skipped rather than failing the run.
+if [[ -n "${BREAKING_FALLBACK_BASELINE:-}" ]]; then
   ensure_ref "$BREAKING_FALLBACK_BASELINE" || true
 fi
 

@@ -151,14 +151,7 @@ def grep_tracked(root: Path, ref: str | None, pattern: str) -> dict[str, str]:
 
 
 def resolve_baseline(root: Path) -> str:
-    """The newest released tag -- what deployed users are actually running.
-
-    Falls back to asking the remote for its tag *names* when the checkout has
-    none. A CI checkout is shallow and tagless, and the repo's pack is well
-    over a gigabyte, so `fetch-depth: 0` would make every PR pay a full clone
-    to read one file. `ls-remote` transfers no objects; the caller then fetches
-    just the one tag this returns.
-    """
+    """The newest released tag -- what deployed users are actually running."""
     proc = subprocess.run(
         ["git", "-C", str(root), "tag", "--list", "v*"],
         capture_output=True,
@@ -167,19 +160,11 @@ def resolve_baseline(root: Path) -> str:
     )
     tags = [t for t in proc.stdout.splitlines() if t and tag_sort_key(t)]
     if not tags:
-        remote = subprocess.run(
-            ["git", "-C", str(root), "ls-remote", "--tags", "origin"],
-            capture_output=True,
-            text=True,
+        raise SystemExit(
+            "error: no release tags found. A shallow checkout has none — CI "
+            "uses `fetch-depth: 0` for this reason; locally, `git fetch "
+            "--tags`. Or name one with --baseline <ref>."
         )
-        tags = [
-            name
-            for line in remote.stdout.splitlines()
-            for name in [line.split("refs/tags/")[-1]]
-            if not name.endswith("^{}") and tag_sort_key(name)
-        ]
-    if not tags:
-        raise SystemExit("error: no release tags found; pass --baseline <ref> explicitly")
     return max(tags, key=tag_sort_key)
 
 
