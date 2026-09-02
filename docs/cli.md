@@ -1704,6 +1704,8 @@ class Operator:
 
 ## Distributed Deployments
 
+The commands below set up one LAN. The [Multi-machine Guide](multi-machine.md) covers that case, VPN meshes, and isolated subnets joined by zenoh routers.
+
 ### Setup
 
 ```bash

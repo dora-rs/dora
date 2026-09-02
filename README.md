@@ -231,7 +231,7 @@ dora cluster status
 dora cluster down
 ```
 
-See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks.
+See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks. The network side — one LAN, a VPN mesh, or isolated subnets joined by zenoh routers — is the [Multi-machine Guide](docs/multi-machine.md).
 
 ## CLI Commands
 
@@ -317,7 +317,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 
 Reference a node with one line of YAML -- `hub: dora-yolo@^0.5` -- and `dora build` resolves, pins, and type-checks it. See the [Hub guide](guide/src/hub/overview.md).
 
-For full CLI documentation, see [docs/cli.md](docs/cli.md). For distributed deployment, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
+For full CLI documentation, see [docs/cli.md](docs/cli.md). For running a dataflow across several machines, start with [docs/multi-machine.md](docs/multi-machine.md); for cluster management, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
 
 ## Dataflow Configuration
 

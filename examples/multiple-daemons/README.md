@@ -31,7 +31,9 @@ Execute the following steps in this directory:
 
 # Usage Across Multiple Machines
 
-The steps below start each daemon by hand. For a managed cluster — machine list
+The steps below start each daemon by hand. The [Multi-machine Guide](../../docs/multi-machine.md)
+walks through the same setup for a LAN, for a VPN mesh without multicast, and
+for isolated subnets joined by zenoh routers. For a managed cluster — machine list
 in a `cluster.yml`, SSH lifecycle commands, label-based scheduling, systemd
 services — see the [Distributed Deployment Guide](../../docs/distributed-deployment.md),
 which also documents how each daemon picks the address it advertises to the
@@ -65,9 +67,9 @@ others.
 
       An explicitly named `--zenoh-listen` address **must** bind or the daemon exits: a daemon that silently fails to bind is undialable, and failing loudly beats a cluster that looks up and exchanges nothing. Make sure the address is one this machine actually holds (a NAT or VIP address is not) and that the port is free.
 
-      A [zenoh router](https://zenoh.io/docs/getting-started/deployment/#zenoh-router) is **not** a substitute for this. Since zenoh 1.9, peers no longer relay for each other, and peers that sit under one router in a single region are no exception: two NAT'd daemons will discover each other through a `zenohd` and still exchange nothing. A router helps only where the daemons are mutually dialable anyway (it then supplies discovery, which `--zenoh-peer` also does), or where the peers are split into separate router subregions.
+      A [zenoh router](https://zenoh.io/docs/getting-started/deployment/#zenoh-router) is **not** a substitute for this. Since zenoh 1.9, peers no longer relay for each other, and peers that sit under one router in a single region are no exception: two NAT'd daemons will discover each other through a `zenohd` and still exchange nothing. A router helps only where the daemons are mutually dialable anyway (it then supplies discovery, which `--zenoh-peer` also does), or where each isolated network is a zenoh region of its own — a subregion of a shared router (`gateway.south` + `region_name`), or a router per network. Both setups are in the [Multi-machine Guide](../../docs/multi-machine.md#2-isolated-subnets-joined-by-zenoh-routers).
 
-      If you do run your own [`zenohd`](https://zenoh.io/docs/getting-started/installation/) instances, point dora at them with a `ZENOH_CONFIG` environment variable:
+      If you do run your own [`zenohd`](https://zenoh.io/docs/getting-started/installation/) instances, point dora at them with `dora daemon --zenoh-config-overlay <FILE>`, which adds your routers to the links dora plans (the guide above shows the file). The older `ZENOH_CONFIG` environment variable also works:
       ```bash
       ZENOH_CONFIG=<ZENOH_CONFIG_FILE_PATH> RUST_LOG=debug dora daemon --coordinator-addr <IP> --machine-id <MACHINE_ID>
       ```
