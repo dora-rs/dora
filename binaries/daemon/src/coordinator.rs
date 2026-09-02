@@ -189,11 +189,19 @@ pub async fn register(
     // register round-trip rather than however long the retry loop above took.
     // Only on the first connect: a reconnect reuses the still-open session's
     // port, and re-reserving would hand out one nothing is listening on.
+    // Only a derived bind reaches the reservation here; an explicit one was
+    // reserved before the connect loop precisely so its failures stay fatal
+    // instead of being retried as connectivity problems. A derived reservation
+    // never fails fatally — it degrades to `None`.
     let reserved_listen_endpoint = match zenoh.reserved {
         Some(ep) => Some(ep),
         None => crate::reserve_zenoh_listen_endpoint(zenoh.bind)?,
     };
-    let advertised_listen_endpoint = reserved_listen_endpoint.clone().filter(|_| zenoh.advertise);
+    let advertised_listen_endpoint = match zenoh.advertise {
+        crate::AdvertiseListener::Never => None,
+        crate::AdvertiseListener::Reserved => reserved_listen_endpoint.clone(),
+        crate::AdvertiseListener::Bound(bound) => bound,
+    };
 
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 

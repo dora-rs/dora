@@ -179,12 +179,24 @@ machines:
 > in its own registration, and the coordinator processes registrations serially,
 > so the one that registers second is always handed the first one's address.
 >
-> One residual gap: the registry lives in the coordinator's memory, so a
-> coordinator restart empties it until the daemons re-register (which they do
-> automatically, re-advertising as they go). A *new* daemon that registers
-> during that gap can be handed an incomplete list. Existing daemons are
-> unaffected — their zenoh links do not run through the coordinator and survive
-> its restart — and with multicast available the gap is covered by scouting.
+> Three residual gaps, all covered by multicast where it is available, which is
+> why it stays on by default:
+>
+> * The registry lives in the coordinator's memory, so a coordinator restart
+>   empties it until the daemons re-register (which they do automatically,
+>   re-advertising as they go). A *new* daemon registering during that gap can
+>   be handed an incomplete list. Existing daemons are unaffected — their zenoh
+>   links do not run through the coordinator and survive its restart.
+> * A daemon is handed endpoints once, at registration. If one of them is stale,
+>   that daemon has no way to recover: zenoh reads `connect/endpoints` at session
+>   open and never again. The advertising daemon withdraws a listener that failed
+>   to bind, which bounds the exposure for daemons registering *later*, but not
+>   for one that already has it.
+> * Discovery is one-directional by construction — only the joiner dials. Where
+>   a firewall permits connections in one direction only, the explicit
+>   `--zenoh-connect` mesh could still form the link from the reachable side,
+>   because both ends dial; this cannot. Name the endpoints explicitly for such
+>   a topology.
 >
 > The flags below remain for the cases the automatic path cannot cover: a
 > multi-homed host that would advertise the wrong interface (`--zenoh-listen`), a

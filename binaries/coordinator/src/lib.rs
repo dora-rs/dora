@@ -437,17 +437,22 @@ async fn start_inner(
                         None => DaemonId::new(machine_id),
                     };
 
-                    // Gathered before `add` below, so the joining daemon is
-                    // not in the map yet and receives exactly the peers that
-                    // preceded it — see `RegisterResult::Ok::peer_zenoh_endpoints`
-                    // for why only earlier daemons are needed.
-                    let peer_zenoh_endpoints = daemon_connections.zenoh_endpoints_for(&daemon_id);
                     let reply: Timestamped<RegisterResult> = Timestamped {
                         inner: match version_check_result.as_ref() {
-                            Ok(_) => RegisterResult::Ok {
-                                daemon_id: daemon_id.clone(),
-                                peer_zenoh_endpoints,
-                            },
+                            // Gathered here rather than before the match, so a
+                            // version-mismatched daemon retrying in a loop does
+                            // not make the coordinator walk its whole daemon map
+                            // and clone every endpoint per attempt — on the
+                            // serial event loop that is time no one gets back.
+                            //
+                            // Gathered before `add` below, so the joining daemon
+                            // is not in the map yet and receives exactly the
+                            // peers that preceded it; see
+                            // `RegisterResult::Ok::peer_zenoh_endpoints`.
+                            Ok(_) => RegisterResult::ok(
+                                daemon_id.clone(),
+                                daemon_connections.zenoh_endpoints_for(&daemon_id),
+                            ),
                             Err(err) => RegisterResult::Err(err.clone()),
                         },
                         timestamp: clock.new_timestamp(),

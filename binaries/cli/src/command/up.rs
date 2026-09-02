@@ -37,8 +37,8 @@ pub struct Up {
     ///
     /// This is the *bind* address. `DORA_COORDINATOR_ADDR` stays the address
     /// this and every other lifecycle command connects to.
-    #[clap(long, value_name = "IP", default_value_t = LOCALHOST, env = "DORA_COORDINATOR_INTERFACE")]
-    interface: std::net::IpAddr,
+    #[clap(long, value_name = "IP", env = "DORA_COORDINATOR_INTERFACE")]
+    interface: Option<std::net::IpAddr>,
     /// Archive the default coordinator store before starting a fresh coordinator.
     ///
     /// Use this after an upgrade when the on-disk schema is incompatible.
@@ -67,7 +67,7 @@ pub(crate) fn up(
     config_path: Option<&Path>,
     auth: bool,
     recreate_store: bool,
-    interface: std::net::IpAddr,
+    interface: Option<std::net::IpAddr>,
 ) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     // Surface a malformed value instead of silently falling back to the
@@ -85,11 +85,7 @@ pub(crate) fn up(
     // these commands at a coordinator reachable under a different address than
     // the one it binds (a NAT, a container port mapping).
     let env_addr: Option<std::net::IpAddr> = coordinator_env_opt("DORA_COORDINATOR_ADDR")?;
-    let addr = env_addr.unwrap_or(if interface.is_unspecified() {
-        LOCALHOST
-    } else {
-        interface
-    });
+    let addr = connect_addr_for(env_addr, interface)?;
     let port: u16 =
         coordinator_env_value("DORA_COORDINATOR_PORT", DORA_COORDINATOR_PORT_WS_DEFAULT)?;
     let coordinator_addr = (addr, port).into();
@@ -98,7 +94,7 @@ pub(crate) fn up(
     // `DORA_COORDINATOR_PORT` set only in this process's environment would be
     // read by the child too, but a `--port` on the command line would not.
     let spawn = CoordinatorSpawn {
-        interface: Some(interface),
+        interface,
         port: Some(port),
         auth,
     };
@@ -136,7 +132,7 @@ pub(crate) fn up(
             }
         }
         Err(_) => {
-            ensure_no_coordinator_elsewhere_on_port(coordinator_addr)?;
+            ensure_no_coordinator_elsewhere_on_port(coordinator_addr, interface)?;
             start_and_wait_for_coordinator(coordinator_addr, port, spawn)?
         }
     };
@@ -146,16 +142,19 @@ pub(crate) fn up(
         // on loopback: its nodes are then reachable only through the
         // daemon-forwarded path from other machines. Naming a concrete
         // interface instead gives remote daemons something to dial.
+        // `addr` — not `interface` — because that is the address this daemon
+        // must actually reach the coordinator at, and the one it derives its
+        // zenoh bind from.
         let daemon_coordinator_addr =
-            Some(interface).filter(|i| !i.is_loopback() && !i.is_unspecified());
-        if interface.is_unspecified() {
+            Some(addr).filter(|i| !i.is_loopback() && !i.is_unspecified());
+        if interface.is_some_and(|i| i.is_unspecified()) {
             println!(
                 "note: the local daemon's zenoh listener stays on loopback with a wildcard \
                  --interface; pass this machine's address (e.g. --interface 192.168.1.10) \
                  so daemons on other machines can dial its nodes directly"
             );
         }
-        start_daemon(daemon_coordinator_addr).wrap_err("failed to start dora-daemon")?;
+        start_daemon(daemon_coordinator_addr, port).wrap_err("failed to start dora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
@@ -188,6 +187,38 @@ where
     T::Err: std::fmt::Display,
 {
     parse_coordinator_env(var_name, std::env::var(var_name).ok().as_deref(), default)
+}
+
+/// The address `dora up` — and its readiness poll — connects to.
+///
+/// `--interface` is the *bind* address; this is the one to reach it on. They
+/// are not interchangeable: a coordinator bound to a concrete non-loopback
+/// address does not answer on loopback, so polling loopback would time out and
+/// kill the coordinator we just started, reporting "is port N already in use?"
+/// — which names the wrong cause entirely.
+///
+/// A wildcard bind covers loopback, so the default stands there. An explicit
+/// `DORA_COORDINATOR_ADDR` wins, since it is how a user points these commands
+/// at a coordinator reachable under a different address than the one it binds
+/// (a NAT, a container port mapping) — except when it contradicts a concrete
+/// `--interface`, which is a mistake worth naming rather than silently
+/// resolving into a startup timeout.
+fn connect_addr_for(
+    env_addr: Option<std::net::IpAddr>,
+    interface: Option<std::net::IpAddr>,
+) -> eyre::Result<std::net::IpAddr> {
+    let bound_concretely = interface.filter(|i| !i.is_unspecified());
+    match (env_addr, bound_concretely) {
+        (Some(env), Some(iface)) if env != iface => bail!(
+            "DORA_COORDINATOR_ADDR is {env} but --interface is {iface}, so the \
+             coordinator would bind {iface} and answer nowhere else while every \
+             command looked for it on {env}\n\n  \
+             hint: drop one of them, or set DORA_COORDINATOR_ADDR={iface}"
+        ),
+        (Some(env), _) => Ok(env),
+        (None, Some(iface)) => Ok(iface),
+        (None, None) => Ok(LOCALHOST),
+    }
 }
 
 /// Like [`coordinator_env_value`], but reports whether the variable was set at
@@ -258,10 +289,14 @@ fn ensure_no_listener_before_archive(
     // would find nothing at the routable address and rename the redb file out
     // from under that live coordinator. Any listener on this port locally is
     // reason enough to refuse.
-    let probes = [
-        coordinator_addr,
-        (LOCALHOST, coordinator_addr.port()).into(),
-    ];
+    let loopback = SocketAddr::from((LOCALHOST, coordinator_addr.port()));
+    // Deduplicated: on the default path both entries are loopback, and probing
+    // it twice doubles the wait wherever the port is DROP-filtered rather than
+    // refused.
+    let mut probes = vec![coordinator_addr];
+    if coordinator_addr != loopback {
+        probes.push(loopback);
+    }
     for addr in probes {
         if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok() {
             return Err(connect_err.wrap_err(format!(
@@ -286,7 +321,17 @@ fn ensure_no_listener_before_archive(
 /// Only the loopback/derived pair is checked, which is what distinguishes the
 /// two `dora up` invocations from each other; a coordinator on some third
 /// interface still falls through to the port-in-use error.
-fn ensure_no_coordinator_elsewhere_on_port(coordinator_addr: SocketAddr) -> eyre::Result<()> {
+fn ensure_no_coordinator_elsewhere_on_port(
+    coordinator_addr: SocketAddr,
+    interface: Option<std::net::IpAddr>,
+) -> eyre::Result<()> {
+    // Only when `--interface` is what moved us off loopback. A plain
+    // `DORA_COORDINATOR_ADDR` pointing elsewhere is a deliberate "reach the
+    // coordinator over there", and the hint below ("drop --interface") would
+    // name a flag the user never passed.
+    if interface.is_none() {
+        return Ok(());
+    }
     let loopback = SocketAddr::from((LOCALHOST, coordinator_addr.port()));
     if coordinator_addr == loopback {
         return Ok(());
@@ -788,11 +833,15 @@ pub(crate) fn spawn_coordinator(spawn: CoordinatorSpawn) -> eyre::Result<Coordin
 ///
 /// `None` leaves the daemon's own default (loopback), which is what a
 /// single-machine `dora up` wants.
-fn start_daemon(coordinator_addr: Option<std::net::IpAddr>) -> eyre::Result<()> {
+fn start_daemon(coordinator_addr: Option<std::net::IpAddr>, port: u16) -> eyre::Result<()> {
     let path = dora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
+    // Passed explicitly for the same reason the coordinator's is: relying on
+    // environment inheritance means a port resolved here from a flag rather
+    // than a variable would not reach the child.
+    cmd.args(["--coordinator-port".to_string(), port.to_string()]);
     if let Some(addr) = coordinator_addr {
         cmd.args(["--coordinator-addr".to_string(), addr.to_string()]);
     }
@@ -811,11 +860,52 @@ fn start_daemon(coordinator_addr: Option<std::net::IpAddr>) -> eyre::Result<()> 
 #[cfg(feature = "redb-backend")]
 mod tests {
     use super::{
-        archive_coordinator_store, available_backup_path, ensure_no_listener_before_archive,
-        lock_coordinator_store_recreation,
+        LOCALHOST, archive_coordinator_store, available_backup_path, connect_addr_for,
+        ensure_no_listener_before_archive, lock_coordinator_store_recreation,
     };
     use std::sync::mpsc;
     use std::time::Duration;
+
+    /// The crux of the `--interface` handling: the address we poll for
+    /// readiness has to be one the coordinator actually answers on, or `dora up`
+    /// kills the coordinator it just started and blames the port.
+    #[test]
+    fn connect_address_follows_a_concrete_bind_interface() {
+        use std::net::IpAddr;
+        let iface: IpAddr = "192.168.1.10".parse().unwrap();
+
+        // Nothing configured: loopback, exactly as before this flag existed.
+        assert_eq!(connect_addr_for(None, None).unwrap(), LOCALHOST);
+        // A concrete bind is also where it answers.
+        assert_eq!(connect_addr_for(None, Some(iface)).unwrap(), iface);
+        // A wildcard bind covers loopback, so the default stands.
+        assert_eq!(
+            connect_addr_for(None, Some("0.0.0.0".parse().unwrap())).unwrap(),
+            LOCALHOST
+        );
+        // An explicit env var wins — that is how a NAT or port mapping is
+        // expressed — including alongside a wildcard bind.
+        let env: IpAddr = "10.9.9.9".parse().unwrap();
+        assert_eq!(connect_addr_for(Some(env), None).unwrap(), env);
+        assert_eq!(
+            connect_addr_for(Some(env), Some("0.0.0.0".parse().unwrap())).unwrap(),
+            env
+        );
+        // Agreeing values are not a conflict.
+        assert_eq!(connect_addr_for(Some(iface), Some(iface)).unwrap(), iface);
+    }
+
+    /// A contradiction is named rather than resolved into a startup timeout:
+    /// `DORA_COORDINATOR_ADDR=127.0.0.1` in a shell profile plus
+    /// `--interface <routable>` used to bind one address and poll another.
+    #[test]
+    fn a_bind_interface_contradicting_the_connect_address_is_rejected() {
+        let err = connect_addr_for(Some(LOCALHOST), Some("192.168.1.10".parse().unwrap()))
+            .expect_err("contradicting addresses must be refused");
+        let msg = format!("{err}");
+        assert!(msg.contains("DORA_COORDINATOR_ADDR"), "{msg}");
+        assert!(msg.contains("--interface"), "{msg}");
+    }
 
     /// A coordinator bound to loopback must block the archive even when the
     /// address we failed to connect to was a different one.

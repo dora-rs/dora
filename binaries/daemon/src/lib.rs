@@ -1156,12 +1156,32 @@ fn announce_zenoh_bind(zenoh_bind: ZenohBind, coordinator_ws_addr: SocketAddr) -
 pub(crate) struct ZenohRegistration {
     /// Where the listener binds, and whether a bind failure is fatal.
     pub bind: ZenohBind,
-    /// Whether the resulting endpoint is worth telling peers about — false for
-    /// a loopback bind, which would point a remote daemon at its own host.
-    pub advertise: bool,
-    /// The endpoint already reserved on a previous connect, reused so a
-    /// reconnect does not reserve a port the open session never bound.
+    /// What to tell the coordinator this daemon is reachable at.
+    pub advertise: AdvertiseListener,
+    /// The endpoint already reserved, reused so a reconnect does not reserve a
+    /// port the open session never bound. Pre-filled for an explicit bind,
+    /// whose reservation happens before the connect loop.
     pub reserved: Option<String>,
+}
+
+/// Which endpoint a registration advertises to the coordinator.
+///
+/// Spelled out rather than left as a bool plus the reserved value, because the
+/// reserved endpoint and the *bound* one diverge exactly when it matters: a
+/// listener that lost its port between reservation and `zenoh::open` leaves the
+/// daemon holding a reserved string nothing is listening on, and re-advertising
+/// it on the next reconnect would hand that dead port to every daemon that
+/// registers afterwards.
+pub(crate) enum AdvertiseListener {
+    /// Nothing — a loopback bind, which would point a remote daemon at its own
+    /// host.
+    Never,
+    /// Whatever `register` reserves. The first connect, where no session exists
+    /// yet and the reserved endpoint is the only candidate.
+    Reserved,
+    /// What the open session actually bound, verified against
+    /// `info().locators()`. `None` withdraws a previously advertised endpoint.
+    Bound(Option<String>),
 }
 
 /// Reserve the endpoint this daemon's zenoh listener will bind.
@@ -1317,14 +1337,31 @@ impl Daemon {
                 })?;
         }
         announce_zenoh_bind(zenoh_bind, coordinator_ws_addr)?;
-        // Reserved lazily, by `register`, once the coordinator socket is up —
-        // *not* here. A reservation binds an ephemeral port and drops the
-        // socket, so everything between it and zenoh's own bind is a window in
-        // which another process can take that port; reserving here would stretch
-        // that window across the whole coordinator connect loop, which retries
-        // for many minutes when the coordinator is not up yet. Cached across
-        // reconnects because the session (and its bound port) outlives them.
-        let mut requested_listen_endpoint: Option<String> = None;
+        // A *derived* address is reserved lazily, by `register`, once the
+        // coordinator socket is up. A reservation binds an ephemeral port and
+        // drops the socket, so everything between it and zenoh's own bind is a
+        // window in which another process can take that port; reserving here
+        // would stretch that window across the whole coordinator connect loop,
+        // which retries for many minutes when the coordinator is not up yet.
+        //
+        // An address the operator *named* is reserved here instead, because
+        // failing to reserve it is fatal, and a fatal error raised from inside
+        // `register` would surface as a coordinator-connection failure: the
+        // daemon would log "waiting for coordinator", reconnect, re-reserve and
+        // repeat forever, blaming the network for a local bind problem. Doing
+        // it up front costs a wider window for the one case that names an
+        // address without a port; a named port reserves nothing at all, so the
+        // common explicit form pays nothing. It also means the call inside
+        // `register` only ever sees a derived bind, whose failures are
+        // non-fatal by construction.
+        //
+        // Either way the result is cached across reconnects, because the
+        // session — and the port it bound — outlives them.
+        let mut requested_listen_endpoint: Option<String> = if zenoh_bind.is_explicit() {
+            reserve_zenoh_listen_endpoint(zenoh_bind)?
+        } else {
+            None
+        };
         // Only a routable listener is worth advertising — handing `127.0.0.1`
         // to a daemon on another machine would point it at its own loopback,
         // and dialing it would cost that daemon its multicast fallback for
@@ -1379,7 +1416,16 @@ impl Daemon {
                     labels.clone(),
                     ZenohRegistration {
                         bind: zenoh_bind,
-                        advertise: advertise_listen_endpoint,
+                        // On a reconnect the session is already open, so the
+                        // endpoint it *bound* is the truth — not the one we
+                        // reserved, which may be a port we lost.
+                        advertise: if !advertise_listen_endpoint {
+                            AdvertiseListener::Never
+                        } else if let Some(d) = daemon.as_ref() {
+                            AdvertiseListener::Bound(d.zenoh_listen_endpoint.clone())
+                        } else {
+                            AdvertiseListener::Reserved
+                        },
                         reserved: requested_listen_endpoint.clone(),
                     },
                     &clock,

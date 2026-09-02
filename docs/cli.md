@@ -1702,21 +1702,24 @@ class Operator:
 ### Setup
 
 ```bash
-# Machine A (coordinator + daemon).
 # The coordinator binds loopback by default, which no other machine can reach,
-# so bind the address the daemons will dial. Without this, machine B and C only
+# so bind the address the daemons will dial. Without this, machines B and C only
 # report a connection timeout.
 #
-# Name the concrete address rather than `0.0.0.0`: machine A's own daemon
-# derives its zenoh listener from this address too, so a wildcard leaves that
-# daemon on loopback and invisible to B and C.
-#
-# The coordinator then answers on 192.168.1.10 and *not* on loopback, while
-# `dora list`/`logs`/`stop`/`start`/`down` all default to loopback — so set the
-# address for them once, on machine A and on any machine you drive the dataflow
-# from. (`dora up` derives it from `--interface` on its own; the others do not.)
+# `dora list`/`logs`/`stop`/`start`/`down` all default to loopback, so set the
+# address once for them — on machine A and on any machine you drive the dataflow
+# from.
 export DORA_COORDINATOR_ADDR=192.168.1.10
-dora up --interface 192.168.1.10
+
+# Machine A: coordinator, plus its own *named* daemon.
+#
+# `dora up` would start an unnamed daemon, which `deploy: {machine: A}` can
+# never place a node on — so start the two separately whenever machine A is
+# itself a deploy target. Name the concrete address rather than `0.0.0.0`: each
+# daemon derives its zenoh listener from the coordinator address, and a wildcard
+# leaves A's daemon on loopback and undialable by B and C.
+dora coordinator --interface 192.168.1.10
+dora daemon --coordinator-addr 192.168.1.10 --machine-id A
 
 # Machine B (daemon only, pointing to the coordinator on Machine A)
 dora daemon --coordinator-addr 192.168.1.10 --machine-id B
@@ -1724,6 +1727,10 @@ dora daemon --coordinator-addr 192.168.1.10 --machine-id B
 # Machine C (same)
 dora daemon --coordinator-addr 192.168.1.10 --machine-id C
 ```
+
+`dora up --interface 192.168.1.10` remains the shortcut for a machine that only
+hosts the coordinator and runs no deployed nodes of its own: it starts both, but
+its daemon is unnamed.
 
 Each daemon derives the address its peers should dial from `--coordinator-addr`
 (the local address that routes toward the coordinator, which is the LAN address

@@ -612,14 +612,15 @@ pub async fn open_zenoh_session_with_listen(
             connect_eps.retain(|ep| seen_connect.insert(ep.clone()));
             let mut connect_inserted = false;
             if !connect_eps.is_empty() {
-                let json = format!(
-                    "[{}]",
-                    connect_eps
-                        .iter()
-                        .map(|s| format!(r#""{s}""#))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
+                // Serialized, not interpolated. These strings are no longer all
+                // operator-supplied: the coordinator hands over endpoints that
+                // other daemons reported, so a `"` in one would otherwise end
+                // the JSON5 string and either break the whole array — costing
+                // this session every connect endpoint, legitimate ones included
+                // — or append endpoints of someone else's choosing to the dial
+                // list. `endpoint_array_json` escapes; `validate_zenoh_endpoint`
+                // rejects such a value on ingest. Both, deliberately.
+                let json = endpoint_array_json(&connect_eps);
                 match zenoh_config.insert_json5("connect/endpoints", &json) {
                     Ok(()) => connect_inserted = true,
                     Err(err) => {
@@ -685,14 +686,7 @@ pub async fn open_zenoh_session_with_listen(
                 listen_eps.extend(overlay.listen_endpoints.iter().cloned());
             }
             if !listen_eps.is_empty() {
-                let json = format!(
-                    "[{}]",
-                    listen_eps
-                        .iter()
-                        .map(|s| format!(r#""{s}""#))
-                        .collect::<Vec<_>>()
-                        .join(",")
-                );
+                let json = endpoint_array_json(&listen_eps);
                 let listen_inserted = match zenoh_config.insert_json5("listen/endpoints", &json) {
                     Ok(()) => {
                         listen_inserted_into_configured = listen_endpoint.map(String::from);
@@ -733,8 +727,15 @@ pub async fn open_zenoh_session_with_listen(
             // absolute would disarm that recovery and strand the daemon.
             let requested_off =
                 multicast_disabled(matches!(multicast, MulticastScouting::Disabled));
-            if ((connect_inserted && has_authoritative_connect)
-                || (requested_off && listen_configured))
+            // Computed once and reused by the listener-did-not-bind diagnostic
+            // below, which used to test `connect_inserted` alone — a proxy that
+            // disagreed with this in both directions, telling a session with
+            // scouting off that it was "falling back to multicast scouting"
+            // (and vice versa). That is the same class of misdirection #2762
+            // fixed once already.
+            let multicast_scouting_off = (connect_inserted && has_authoritative_connect)
+                || (requested_off && listen_configured);
+            if multicast_scouting_off
                 && let Err(err) = zenoh_config.insert_json5("scouting/multicast/enabled", "false")
             {
                 warn!("failed to disable zenoh scouting/multicast: {err}");
@@ -820,15 +821,9 @@ pub async fn open_zenoh_session_with_listen(
                                 if listen_inserted_into_configured.as_deref() == Some(requested) {
                                     effective_listen_endpoint = Some(requested.to_string());
                                 }
-                            } else if connect_inserted && has_authoritative_connect {
-                                // We set operator-supplied `connect/endpoints`
-                                // above, so multicast scouting was disabled for this
-                                // session (#1856). (A connect list that is only
-                                // *discovered* leaves scouting on, and so takes the
-                                // `else` branch below instead — telling a debugger
-                                // there is no fallback when there is would point
-                                // them the wrong way just as surely as #2762 did.)
-                                // There is therefore NO discovery fallback:
+                            } else if multicast_scouting_off {
+                                // Scouting is off for this session, so there is
+                                // NO discovery fallback:
                                 // peers already told to dial `{requested}` (e.g. via
                                 // the per-node `DORA_ZENOH_CONNECT` plan from #2716)
                                 // cannot reach this now-listener-less session, and it
@@ -877,6 +872,57 @@ pub async fn open_zenoh_session_with_listen(
         ),
     };
     Ok((zenoh_session, effective_listen_endpoint))
+}
+
+/// Render endpoints as a JSON array for `insert_json5`, escaping each one.
+///
+/// `serde_json` output is valid JSON5, and escaping is what keeps a hostile or
+/// merely malformed endpoint from reshaping the array around it.
+#[cfg(feature = "zenoh")]
+fn endpoint_array_json(endpoints: &[String]) -> String {
+    serde_json::Value::Array(
+        endpoints
+            .iter()
+            .map(|e| serde_json::Value::String(e.clone()))
+            .collect(),
+    )
+    .to_string()
+}
+
+/// Whether `endpoint` is safe to accept from the network as a zenoh locator.
+///
+/// Applied to the endpoint a daemon reports to the coordinator, which is the
+/// first value to reach dora's zenoh config from off-machine — everything
+/// before it came from the operator's own command line. The coordinator hands
+/// it to every daemon that registers later, so an unchecked value would travel
+/// straight into their `connect/endpoints`.
+///
+/// Deliberately a charset check rather than a locator parse: zenoh's locator
+/// grammar covers protocols dora does not model (`quic`, `unixsock-stream`,
+/// metadata after `?`, config after `#`), and rejecting a valid endpoint would
+/// break a working deployment. What matters is that nothing here can terminate
+/// a JSON string or escape it — so quotes, backslashes and control characters
+/// are refused, along with anything long enough to be worth truncating.
+pub fn validate_zenoh_endpoint(endpoint: &str) -> Result<(), String> {
+    const MAX_LEN: usize = 256;
+    if endpoint.is_empty() {
+        return Err("zenoh endpoint must not be empty".to_string());
+    }
+    if endpoint.len() > MAX_LEN {
+        return Err(format!(
+            "zenoh endpoint is {} bytes, over the {MAX_LEN}-byte limit",
+            endpoint.len()
+        ));
+    }
+    if let Some(bad) = endpoint
+        .chars()
+        .find(|c| !matches!(c, 'a'..='z' | 'A'..='Z' | '0'..='9' | '.' | ':' | '/' | '-' | '_' | '[' | ']' | '%' | '?' | '#' | '=' | '&' | '+' | '*' | ','))
+    {
+        return Err(format!(
+            "zenoh endpoint contains the disallowed character {bad:?}"
+        ));
+    }
+    Ok(())
 }
 
 /// Default TCP port for a daemon's inter-daemon zenoh listener.
@@ -1228,6 +1274,51 @@ pub fn zenoh_daemon_control_topic(
 pub fn dataflow_extension_topic(dataflow_id: &uuid::Uuid, namespace: &str) -> String {
     let network_id = "default";
     format!("dora/{network_id}/{dataflow_id}/ext/{namespace}")
+}
+
+#[cfg(test)]
+mod endpoint_validation_tests {
+    use super::validate_zenoh_endpoint;
+
+    #[test]
+    fn ordinary_locators_are_accepted() {
+        for ok in [
+            "tcp/127.0.0.1:7447",
+            "tcp/10.0.2.100:5456",
+            "tcp/[fd7a:1::2]:5456",
+            "udp/192.168.1.1:7447",
+            "tcp/host.example:7447",
+            "tcp/10.0.0.1:7447?prio=high",
+            "tcp/10.0.0.1:7447#iface=eth0",
+        ] {
+            assert!(validate_zenoh_endpoint(ok).is_ok(), "rejected `{ok}`");
+        }
+    }
+
+    /// The reason this validator exists: the endpoint reaches dora's zenoh
+    /// config from off-machine, and a quote would end the JSON string it is
+    /// written into — either breaking the whole array (costing that daemon
+    /// every connect endpoint) or appending endpoints of someone else's
+    /// choosing to it.
+    #[test]
+    fn quotes_and_escapes_are_rejected() {
+        for bad in [
+            r#"tcp/1.2.3.4:1"#.to_string() + "\"",
+            r#"tcp/1.2.3.4:1","tcp/evil:7447"#.to_string(),
+            r"tcp/1.2.3.4:1\u0022".to_string(),
+            "tcp/1.2.3.4:1\n".to_string(),
+            "tcp/1.2.3.4:1 ".to_string(),
+        ] {
+            assert!(validate_zenoh_endpoint(&bad).is_err(), "accepted `{bad}`");
+        }
+    }
+
+    #[test]
+    fn empty_and_oversized_endpoints_are_rejected() {
+        assert!(validate_zenoh_endpoint("").is_err());
+        assert!(validate_zenoh_endpoint(&"a".repeat(257)).is_err());
+        assert!(validate_zenoh_endpoint(&"a".repeat(256)).is_ok());
+    }
 }
 
 #[cfg(test)]

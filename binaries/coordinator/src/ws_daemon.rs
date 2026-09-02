@@ -182,7 +182,25 @@ async fn handle_daemon_request(
             let version_check_result = register_request.check_version();
             // capture before the partial moves below consume `register_request`
             let supports_hub_sources = register_request.supports_hub_sources();
-            let zenoh_listen_endpoint = register_request.zenoh_listen_endpoint;
+            // Validated on ingest: this is the only value in the registration
+            // that the coordinator re-publishes to *other* daemons, where it
+            // lands in their zenoh `connect/endpoints`. A daemon is not a
+            // trusted input just because it registered.
+            let zenoh_listen_endpoint = match register_request.zenoh_listen_endpoint {
+                Some(ep) => match dora_core::topics::validate_zenoh_endpoint(&ep) {
+                    Ok(()) => Some(ep),
+                    Err(err) => {
+                        // Dropped rather than fatal: the daemon is otherwise
+                        // fine and can still run nodes over the daemon-forwarded
+                        // path; only direct peer dialing is lost.
+                        tracing::warn!(
+                            "ignoring zenoh endpoint reported by registering daemon: {err}"
+                        );
+                        None
+                    }
+                },
+                None => None,
+            };
             let labels = register_request.labels;
             let machine_id = register_request.machine_id;
             let mut connection =

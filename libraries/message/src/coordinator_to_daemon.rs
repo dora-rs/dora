@@ -39,7 +39,14 @@ pub enum StateCatchUpOperation {
 pub use crate::common::Timestamped;
 
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[non_exhaustive]
 pub enum RegisterResult {
+    /// Constructed through [`RegisterResult::ok`], not by literal: the variant
+    /// is `#[non_exhaustive]` so that the *next* field added here is a minor
+    /// change rather than a 2.0. Adding `peer_zenoh_endpoints` to an exhaustive
+    /// variant was itself a major break (`enum_struct_variant_field_added`);
+    /// paying it once, with the attribute, is what keeps it from recurring.
+    #[non_exhaustive]
     Ok {
         /// unique ID assigned by the coordinator
         daemon_id: DaemonId,
@@ -84,6 +91,14 @@ pub enum RegisterResult {
 }
 
 impl RegisterResult {
+    /// A successful registration: the assigned id and the peers to dial.
+    pub fn ok(daemon_id: DaemonId, peer_zenoh_endpoints: Vec<String>) -> Self {
+        Self::Ok {
+            daemon_id,
+            peer_zenoh_endpoints,
+        }
+    }
+
     /// The assigned id alone, for callers that do not wire zenoh.
     pub fn to_result(self) -> eyre::Result<DaemonId> {
         self.into_parts().map(|(daemon_id, _)| daemon_id)
