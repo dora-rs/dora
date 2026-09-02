@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "dora-rs specification",
-  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```\n# fn main() -> Result<(), Box<dyn std::error::Error>> {\nuse dora_message::descriptor::Descriptor;\nlet yaml = r#\"\nnodes:\n  - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n\"#;\nlet descriptor: Descriptor = serde_yaml::from_str(yaml)?;\nassert_eq!(descriptor.nodes.len(), 2);\n# Ok(())\n# }\n```\n\nConstruct with [`Descriptor::new`], then assign: `Descriptor` is\n`#[non_exhaustive]`, so struct literals and `..Default::default()` do not\nwork from another crate. The fields stay `pub`.",
+  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```\n# fn main() -> Result<(), Box<dyn std::error::Error>> {\nuse dora_message::descriptor::Descriptor;\nlet yaml = r#\"\nnodes:\n  - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n\"#;\nlet descriptor: Descriptor = serde_yaml::from_str(yaml)?;\nassert_eq!(descriptor.nodes.len(), 2);\n# Ok(())\n# }\n```",
   "type": "object",
   "properties": {
     "env": {
@@ -232,7 +232,7 @@
     },
     "Node": {
       "title": "Dora Node Configuration",
-      "description": "A node represents a computational unit in a Dora dataflow. Each node runs as a\nseparate process and can communicate with other nodes through inputs and outputs.\n\nConstruct with [`Node::new`], then assign: `Node` is `#[non_exhaustive]`, so\nstruct literals and `..Default::default()` do not work from another crate.\nThe fields stay `pub`.",
+      "description": "A node represents a computational unit in a Dora dataflow. Each node runs as a\nseparate process and can communicate with other nodes through inputs and outputs.",
       "type": "object",
       "properties": {
         "args": {
@@ -552,7 +552,6 @@
       "type": "string"
     },
     "OperatorDefinition": {
-      "description": "The per-operator descriptor keys, shared by single- and multi-operator nodes.\n\n`#[non_exhaustive]` with no constructor: deserialization is the only way to\nbuild one from another crate. Adding a constructor is a minor change, so\nopen an issue if you need to build one programmatically.",
       "type": "object",
       "properties": {
         "build": {
@@ -1084,7 +1083,6 @@
       }
     },
     "SingleOperatorDefinition": {
-      "description": "The `operator:` key of a single-operator node.\n\n`#[non_exhaustive]` with no constructor: deserialization is the only way to\nbuild one from another crate. Adding a constructor is a minor change, so\nopen an issue if you need to build one programmatically.",
       "type": "object",
       "properties": {
         "build": {

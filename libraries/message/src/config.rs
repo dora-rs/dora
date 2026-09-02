@@ -55,15 +55,13 @@ impl QueuePolicy {
 }
 
 /// Contains the input and output configuration of the node.
-///
-/// Construct with `NodeRunConfig::default()`, then assign: `NodeRunConfig` is
-/// `#[non_exhaustive]`, so struct literals and `..Default::default()` do not
-/// work from another crate. The fields stay `pub`.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 // Same rationale as `descriptor::Node`: these six fields are `#[serde(flatten)]`
-// into `Node`/`CustomNode`, so they are top-level per-node YAML keys and a
-// seventh I/O key must stay a minor release. Marking this later would itself be
-// the major change, so it cannot wait for the conversion to be convenient.
+// into `CustomNode`, and `Node` declares the same six keys directly, so they
+// are top-level per-node YAML keys and a seventh I/O key must stay a minor
+// release. Marking this later would itself be the major change, so it cannot
+// wait for the conversion to be convenient. Construct with
+// `NodeRunConfig::default()`; the fields remain `pub`.
 #[non_exhaustive]
 pub struct NodeRunConfig {
     /// Inputs for the nodes as a map from input ID to `node_id/output_id`.

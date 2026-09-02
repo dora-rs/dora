@@ -1,5 +1,5 @@
 use dora_message::{
-    config::{InputMapping, NodeRunConfig},
+    config::InputMapping,
     descriptor::EnvValue,
     id::{DataId, NodeId, OperatorId},
 };
@@ -195,31 +195,14 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             }
         }
 
-        // Take the fields the `ResolvedNode` itself needs before the match
-        // below moves `node`'s per-node keys out by value. `node` is then
-        // maybe-moved for the rest of the iteration, so a later read of a key
-        // that resolution already consumed stays a compile error instead of
-        // silently returning an emptied value.
-        let id = node.id.clone();
-        let name = node.name.take();
-        let description = node.description.take();
-        // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
-        // win on conflict so a node can override a shared default (e.g. global
-        // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
-        let env = merge_env(desc.env.as_ref(), node.env.take());
-        let cpu_affinity = node.cpu_affinity.take();
-        let deploy = node.deploy.take();
-
-        // resolve nodes
+        // resolve nodes. The two custom-node arms drain the custom-node keys
+        // out of `node` with `CustomNode::from_node`; the node-level keys stay
+        // behind for `ResolvedNode::from_node` below.
         let kind = match node_class {
             classify::NodeClass::Standard { source } => {
                 let path = node.path.take().ok_or_eyre("missing `path` attribute")?;
-                let path_sha256 = node.path_sha256.take();
-                let build = node.build.take();
-                let mut custom = custom_node_from(node, path);
+                let mut custom = CustomNode::from_node(&mut node, path);
                 custom.source = source;
-                custom.path_sha256 = path_sha256;
-                custom.build = build;
                 CoreNodeKind::Custom(custom)
             }
             classify::NodeClass::Runtime => {
@@ -247,70 +230,31 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 );
 
                 // The bridge binary is fixed, so `path` is a constant and
-                // `source`/`path_sha256`/`build` stay at their defaults.
-                let mut custom = custom_node_from(node, "dora-ros2-bridge-node".to_string());
+                // `source` stays at its default. `path_sha256` and `build` are
+                // not accepted on a `ros2:` node (classification rejects them),
+                // so `from_node` finds them unset.
+                let mut custom =
+                    CustomNode::from_node(&mut node, "dora-ros2-bridge-node".to_string());
                 custom.envs = Some(envs);
                 CoreNodeKind::Custom(custom)
             }
         };
 
-        if resolved.contains_key(&id) {
-            eyre::bail!("duplicate node ID `{id}` — each node must have a unique `id`");
+        if resolved.contains_key(&node.id) {
+            eyre::bail!(
+                "duplicate node ID `{}` — each node must have a unique `id`",
+                node.id
+            );
         }
-        let mut resolved_node = ResolvedNode::new(id.clone(), kind);
-        resolved_node.name = name;
-        resolved_node.description = description;
-        resolved_node.env = env;
-        resolved_node.cpu_affinity = cpu_affinity;
-        resolved_node.deploy = deploy;
-        resolved.insert(id, resolved_node);
+        let mut resolved_node = ResolvedNode::from_node(node, kind);
+        // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
+        // win on conflict so a node can override a shared default (e.g. global
+        // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
+        resolved_node.env = merge_env(desc.env.as_ref(), resolved_node.env.take());
+        resolved.insert(resolved_node.id.clone(), resolved_node);
     }
 
     Ok(resolved)
-}
-
-/// Build the `CustomNode` for `node`, filling in every per-node descriptor key
-/// that all custom-node kinds resolve identically.
-///
-/// The caller then sets only what its kind differs on: `source`, `path_sha256`
-/// and `build` for a standard node, `envs` for the ROS2 bridge.
-///
-/// While `CustomNode` was constructible with a struct literal, the compiler
-/// caught a key added to one branch of
-/// [`resolve_aliases_and_set_defaults_in_topology`] and forgotten in the other.
-/// Now that it is `#[non_exhaustive]` it cannot, so the shared copy lives here
-/// instead: a new per-node key is wired in once and both kinds pick it up.
-///
-/// Takes `node` by value so the fields land in the `CustomNode` by move, the
-/// way the struct literals did — a caller cannot be left holding a partly
-/// emptied `Node`.
-fn custom_node_from(node: Node, path: String) -> CustomNode {
-    let mut custom = CustomNode::new(path);
-    custom.args = node.args;
-    custom.send_stdout_as = node.send_stdout_as;
-    custom.send_logs_as = node.send_logs_as;
-    custom.min_log_level = node.min_log_level;
-    custom.max_log_size = node.max_log_size;
-    custom.max_rotated_files = node.max_rotated_files;
-    custom.restart_policy = node.restart_policy;
-    custom.max_restarts = node.max_restarts;
-    custom.restart_delay = node.restart_delay;
-    custom.max_restart_delay = node.max_restart_delay;
-    custom.restart_window = node.restart_window;
-    custom.health_check_timeout = node.health_check_timeout;
-    custom.finish_grace_secs = node.finish_grace_secs;
-    // `NodeRunConfig` is `#[non_exhaustive]` too, so this is field-by-field
-    // rather than a literal. Its keys are `#[serde(flatten)]` into `CustomNode`,
-    // so `every_custom_node_field_is_carried_through` covers them alongside the
-    // rest — a new I/O key left unassigned here fails that test.
-    custom.run_config = NodeRunConfig::default();
-    custom.run_config.inputs = node.inputs;
-    custom.run_config.outputs = node.outputs;
-    custom.run_config.output_types = node.output_types;
-    custom.run_config.output_framing = node.output_framing;
-    custom.run_config.input_types = node.input_types;
-    custom.run_config.shared_memory_pool_size = node.shared_memory_pool_size;
-    custom
 }
 
 impl DescriptorExt for Descriptor {
@@ -663,6 +607,7 @@ mod tests {
     }
 
     use super::*;
+    use dora_message::descriptor::{GitRepoRev, NodeSource};
     use std::collections::BTreeSet;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
@@ -1118,9 +1063,9 @@ nodes:
     /// Every `CustomNode` field name, taken from its JSON schema.
     ///
     /// A field marked `#[schemars(skip)]` would never appear in `properties`
-    /// and would slip past the two tests below. `Node::deploy` is exactly such
-    /// a field, and the classify test compensates with a hardcoded insert — do
-    /// the same here if `CustomNode` ever gains one.
+    /// and would slip past the carried-through tests below. `Node::deploy` is
+    /// exactly such a field, and the classify test compensates with a
+    /// hardcoded insert — do the same here if `CustomNode` ever gains one.
     fn custom_node_field_names() -> BTreeSet<String> {
         let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
         let schema = serde_json::to_value(schema).expect("schema should serialize");
@@ -1135,83 +1080,10 @@ nodes:
             .collect()
     }
 
-    /// Every `CustomNode` field must be accounted for: either `custom_node_from`
-    /// copies it for all node kinds, or the kind-specific arm sets it.
-    ///
-    /// While `CustomNode` was constructible with a struct literal, forgetting a
-    /// field here was a compile error. `#[non_exhaustive]` traded that away, so
-    /// this is the replacement — modelled on
-    /// `classify::tests::all_node_fields_are_classified_or_marked_shared`. When
-    /// it fails, a key was added to `CustomNode` and nothing resolves it: decide
-    /// whether it is shared (add it to `custom_node_from` and to `SHARED`) or
-    /// kind-specific (set it in the arm and add it to `KIND_SPECIFIC`).
-    ///
-    /// This half only proves the name was thought about;
-    /// [`every_custom_node_field_is_carried_through`] proves the value actually
-    /// arrives.
-    #[test]
-    fn every_custom_node_field_is_resolved() {
-        /// Copied for every node kind by `custom_node_from`. `run_config` is
-        /// `#[serde(flatten)]`, so its keys appear inline in the schema.
-        const SHARED: &[&str] = &[
-            "args",
-            "send_stdout_as",
-            "send_logs_as",
-            "min_log_level",
-            "max_log_size",
-            "max_rotated_files",
-            "restart_policy",
-            "max_restarts",
-            "restart_delay",
-            "max_restart_delay",
-            "restart_window",
-            "health_check_timeout",
-            "finish_grace_secs",
-            "inputs",
-            "outputs",
-            "output_types",
-            "output_framing",
-            "input_types",
-            "shared_memory_pool_size",
-        ];
-        /// Set by the individual match arms of
-        /// `resolve_aliases_and_set_defaults_in_topology`.
-        const KIND_SPECIFIC: &[&str] = &["path", "source", "path_sha256", "build", "envs"];
-
-        let resolved: BTreeSet<String> = SHARED
-            .iter()
-            .chain(KIND_SPECIFIC)
-            .map(|name| (*name).to_owned())
-            .collect();
-
-        assert_eq!(custom_node_field_names(), resolved);
-    }
-
-    /// The name check above passes as soon as a field is *listed*, so adding a
-    /// key to `SHARED` without wiring it into `custom_node_from` turns it green
-    /// while the descriptor key is accepted in YAML and silently ignored on
-    /// every node. This is the behavioral half: resolve a node whose YAML sets
-    /// every key to a non-default value, and assert none of them arrived at
-    /// `CustomNode::new`'s default.
-    ///
-    /// When it fails for a newly added key, wire the key into `custom_node_from`
-    /// (or the kind-specific arm) *and* give it a non-default value in the YAML
-    /// below. Only a field that resolution structurally cannot make differ
-    /// belongs in `UNCHECKED`.
-    #[test]
-    fn every_custom_node_field_is_carried_through() {
-        /// `source` resolves to `NodeSource::Local` for a `path:` node, which is
-        /// already `CustomNode::new`'s default, so it can never differ here —
-        /// `classify`'s own tests cover the git/hub sources. `envs` is set only
-        /// by the ROS2-bridge arm and has no YAML surface of its own.
-        const UNCHECKED: &[&str] = &["source", "envs"];
-
-        let yaml = r#"
-nodes:
-  - id: full
-    path: ./full-node
-    path_sha256: abc123
-    build: cargo build
+    /// The per-node keys every custom-node kind resolves identically, each set
+    /// to a value that differs from `CustomNode::new`'s default — a YAML
+    /// fragment to append to a `- id:` entry.
+    const SHARED_CUSTOM_NODE_KEYS: &str = r#"
     args: --verbose
     send_stdout_as: stdout-topic
     send_logs_as: logs-topic
@@ -1237,32 +1109,171 @@ nodes:
     input_types:
       tick: arrow.uint64
 "#;
+
+    /// Resolve the single node in `yaml` and assert that every `CustomNode`
+    /// key outside `kind_specific` arrived carrying the value the YAML
+    /// declared — and that the YAML did set it to something other than
+    /// `CustomNode::new`'s default, so the comparison is never a trivial
+    /// `None == None`. Returns the resolved node for the kind-specific checks.
+    ///
+    /// `CustomNode::from_node` is a struct literal inside `dora-message`, so a
+    /// key added to `CustomNode` is already a compile error there. This is the
+    /// value-level half: it catches a key wired to the wrong `Node` field, or
+    /// left at its default. When it fails for a newly added key, carry the key
+    /// in `from_node` and give it a non-default value in
+    /// `SHARED_CUSTOM_NODE_KEYS`.
+    fn resolve_and_check_carried_through(yaml: &str, kind_specific: &[&str]) -> CustomNode {
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let declared = serde_json::to_value(&desc.nodes[0]).expect("serialize declared");
         let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
         let node = resolved.values().next().expect("one node");
         let CoreNodeKind::Custom(custom) = &node.kind else {
             panic!("expected a custom node, got {:?}", node.kind);
         };
 
-        let resolved = serde_json::to_value(custom).expect("serialize resolved");
-        // A sentinel `path` that the YAML above does not use, so `path` itself
-        // is checked like every other field rather than comparing equal to it.
+        let actual = serde_json::to_value(custom).expect("serialize resolved");
+        // A sentinel `path` that no YAML here uses, so `path` itself is checked
+        // like every other field rather than comparing equal to it.
         let default =
             serde_json::to_value(CustomNode::new("<unset>".to_owned())).expect("serialize default");
 
         for field in custom_node_field_names() {
-            if UNCHECKED.contains(&field.as_str()) {
+            if kind_specific.contains(&field.as_str()) {
                 continue;
             }
             assert_ne!(
-                resolved.get(&field),
+                actual.get(&field),
                 default.get(&field),
                 "`{field}` is still at its `CustomNode::new` default after \
-                 resolution — the descriptor key is parsed and then dropped. \
-                 Wire it into `custom_node_from` (or the kind-specific match \
-                 arm) in `resolve_aliases_and_set_defaults_in_topology`. If the \
-                 YAML above does not set it, set it there too."
+                 resolution — either the YAML does not set it (add it to \
+                 `SHARED_CUSTOM_NODE_KEYS`) or the key is parsed and then \
+                 dropped (carry it in `CustomNode::from_node`)."
+            );
+            assert_eq!(
+                actual.get(&field),
+                declared.get(&field),
+                "`{field}` resolved to a different value than the YAML declared \
+                 — `CustomNode::from_node` copies it from the wrong `Node` field."
             );
         }
+        custom.clone()
+    }
+
+    /// A `path:` node: every shared key and the standard-only `path_sha256` /
+    /// `build` arrive. `source` resolves to `Local`, which is already the
+    /// default, and `envs` is set only by the ROS2-bridge arm — the two tests
+    /// below cover those.
+    #[test]
+    fn every_custom_node_field_is_carried_through() {
+        let yaml = format!(
+            "nodes:\n  - id: full\n    path: ./full-node\n    path_sha256: abc123\n    \
+             build: cargo build{SHARED_CUSTOM_NODE_KEYS}"
+        );
+        let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
+        assert!(
+            matches!(custom.source, NodeSource::Local),
+            "{:?}",
+            custom.source
+        );
+        assert!(custom.envs.is_none(), "{:?}", custom.envs);
+    }
+
+    /// The `source` a `git:` node classifies to must reach the resolved node:
+    /// it is the one assignment in the standard arm that `from_node` does not
+    /// cover, and dropping it would turn every git node into a local one.
+    #[test]
+    fn git_source_is_carried_through() {
+        let yaml = format!(
+            "nodes:\n  - id: full\n    path: node\n    path_sha256: abc123\n    \
+             build: cargo build\n    git: https://github.com/example/node.git\n    \
+             branch: main{SHARED_CUSTOM_NODE_KEYS}"
+        );
+        let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
+        assert!(
+            matches!(
+                &custom.source,
+                NodeSource::GitBranch { repo, rev: Some(GitRepoRev::Branch(branch)) }
+                    if repo == "https://github.com/example/node.git" && branch == "main"
+            ),
+            "{:?}",
+            custom.source
+        );
+        assert!(custom.envs.is_none(), "{:?}", custom.envs);
+    }
+
+    /// The ROS2-bridge arm: `path` is the bridge binary, `envs` carries the
+    /// bridge config the binary reads at startup, and every shared key still
+    /// arrives. `path_sha256` and `build` are rejected on a `ros2:` node by
+    /// classification, so they must stay unset.
+    #[test]
+    fn ros2_bridge_node_is_carried_through() {
+        let yaml = format!(
+            "nodes:\n  - id: bridge\n    ros2:\n      topic: /odom\n      \
+             message_type: nav_msgs/msg/Odometry\n      direction: subscribe\
+             {SHARED_CUSTOM_NODE_KEYS}"
+        );
+        let custom = resolve_and_check_carried_through(
+            &yaml,
+            &["path", "source", "path_sha256", "build", "envs"],
+        );
+        assert_eq!(custom.path, "dora-ros2-bridge-node");
+        assert!(
+            matches!(custom.source, NodeSource::Local),
+            "{:?}",
+            custom.source
+        );
+        assert!(custom.path_sha256.is_none(), "{:?}", custom.path_sha256);
+        assert!(custom.build.is_none(), "{:?}", custom.build);
+        let envs = custom
+            .envs
+            .expect("the bridge is configured through its environment");
+        let Some(EnvValue::String(config)) = envs.get("DORA_ROS2_BRIDGE_CONFIG") else {
+            panic!("DORA_ROS2_BRIDGE_CONFIG missing from {envs:?}");
+        };
+        assert!(config.contains("/odom"), "{config}");
+    }
+
+    /// The node-level keys — the ones `ResolvedNode::from_node` consumes once
+    /// `CustomNode::from_node` has drained the rest — must reach the resolved
+    /// node. `from_node` is a struct literal inside `dora-message`, so a new
+    /// `ResolvedNode` field is a compile error there; this checks the values,
+    /// including that the dataflow-level `env` is merged in with the per-node
+    /// key winning.
+    #[test]
+    fn node_level_keys_are_carried_through() {
+        let yaml = r#"
+env:
+  RUST_LOG: info
+  SHARED: global
+nodes:
+  - id: full
+    name: Full Node
+    description: Sets every node-level key
+    path: ./full-node
+    env:
+      SHARED: per-node
+    cpu_affinity: [0, 1]
+    deploy:
+      machine: gpu-box
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let node = resolved.values().next().expect("one node");
+
+        assert_eq!(node.id.to_string(), "full");
+        assert_eq!(node.name.as_deref(), Some("Full Node"));
+        assert_eq!(
+            node.description.as_deref(),
+            Some("Sets every node-level key")
+        );
+        assert_eq!(
+            node.env,
+            Some(env(&[("RUST_LOG", "info"), ("SHARED", "per-node")]))
+        );
+        assert_eq!(node.cpu_affinity, Some(vec![0, 1]));
+        assert_eq!(
+            node.deploy.as_ref().and_then(|d| d.machine.as_deref()),
+            Some("gpu-box")
+        );
     }
 }
