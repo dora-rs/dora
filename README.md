@@ -24,7 +24,15 @@
   <a href="https://github.com/dora-rs/dora/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dora-rs/dora" alt="License"/></a>
 </div>
 
+<br/>
+
+<p align="center">
+  <b>dora 1.0 is out.</b> Read the <a href="https://github.com/dora-rs/dora/blob/main/docs/blog/2026-09-02-dora-1.0.md">1.0 release post</a>.
+</p>
+
 # Dora
+
+
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
