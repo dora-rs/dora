@@ -199,28 +199,26 @@ def strip_rust_comments(text: str) -> str:
     Block comments are left alone: they are rare in the files parsed here and
     stripping them naively would corrupt any `*/` inside a string literal.
     """
-    out = []
-    for line in text.splitlines():
-        stripped = re.sub(r"//[^\n]*", "", line)
-        out.append(stripped)
-    return "\n".join(out)
+    return re.sub(r"//[^\n]*", "", text)
 
 
 def collapse_ws(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
-def balanced_block(text: str, open_idx: int) -> tuple[str, int]:
-    """Body of the `{...}` starting at `open_idx`, plus the index after it."""
+def balanced_block(
+    text: str, open_idx: int, open_ch: str = "{", close_ch: str = "}"
+) -> tuple[str, int]:
+    """Body of the bracketed group starting at `open_idx`, and the index after."""
     depth = 0
     for i in range(open_idx, len(text)):
-        if text[i] == "{":
+        if text[i] == open_ch:
             depth += 1
-        elif text[i] == "}":
+        elif text[i] == close_ch:
             depth -= 1
             if depth == 0:
                 return text[open_idx + 1 : i], i + 1
-    raise ValueError("unbalanced braces")
+    raise ValueError(f"unbalanced {open_ch}{close_ch}")
 
 
 def split_top_level(text: str, sep: str = ",") -> list[str]:
@@ -271,16 +269,70 @@ def compare_ordered(
             Finding(BREAK, f"{owner}: {kind} order changed ({reorder_note})")
         )
     # An addition anywhere but the end shifts every later member's position.
-    if added and not removed and kept_old == kept_new:
-        tail = new[len(new) - len(added) :]
-        if sorted(tail) != sorted(added):
+    # Nothing was removed and the shared members kept their order, so `old` is
+    # a subsequence of `new`: appending is exactly `new` starting with `old`.
+    if added and not removed and kept_old == kept_new and new[: len(old)] != old:
+        findings.append(
+            Finding(
+                BREAK,
+                f"{owner}: {kind} inserted before the end, shifting later "
+                f"{kind}s ({reorder_note})",
+            )
+        )
+    return findings
+
+
+def compare_signature_maps(
+    noun: str,
+    old: dict[str, str],
+    new: dict[str, str],
+    *,
+    added_level: str = WARN,
+) -> list[Finding]:
+    """Compare `name -> signature` maps: the C functions and the cxx fns."""
+    findings = []
+    for name, signature in old.items():
+        if name not in new:
+            findings.append(Finding(BREAK, f"{noun} `{name}` removed"))
+        elif new[name] != signature:
             findings.append(
                 Finding(
                     BREAK,
-                    f"{owner}: {kind} inserted before the end, shifting later "
-                    f"{kind}s ({reorder_note})",
+                    f"{noun} `{name}` signature changed: "
+                    f"`{signature}` -> `{new[name]}`",
                 )
             )
+    for name in new:
+        if name not in old:
+            findings.append(Finding(added_level, f"{noun} `{name}` added"))
+    return findings
+
+
+def compare_member_maps(
+    noun: str,
+    member_kind: str,
+    old: dict[str, list[str]],
+    new: dict[str, list[str]],
+    *,
+    added_level: str,
+    reorder_note: str,
+) -> list[Finding]:
+    """Compare `name -> ordered members` maps: C enums, cxx structs and enums."""
+    findings = []
+    for name, members in old.items():
+        if name not in new:
+            findings.append(Finding(BREAK, f"{noun} `{name}` removed"))
+            continue
+        findings.extend(
+            compare_ordered(
+                member_kind,
+                f"{noun} `{name}`",
+                members,
+                new[name],
+                added_level=added_level,
+                reorder_note=reorder_note,
+            )
+        )
     return findings
 
 
@@ -349,37 +401,19 @@ def check_c_header(root: Path, baseline: Baseline) -> SurfaceResult:
     old = parse_c_header(old_text)
     new = parse_c_header((root / C_HEADER).read_text())
 
-    for name, sig in old["functions"].items():
-        if name not in new["functions"]:
-            result.findings.append(Finding(BREAK, f"function `{name}` removed"))
-        elif new["functions"][name] != sig:
-            result.findings.append(
-                Finding(
-                    BREAK,
-                    f"function `{name}` signature changed: "
-                    f"`{sig}` -> `{new['functions'][name]}`",
-                )
-            )
-    for name in new["functions"]:
-        if name not in old["functions"]:
-            result.findings.append(Finding(WARN, f"function `{name}` added"))
-
-    for name, constants in old["enums"].items():
-        if name not in new["enums"]:
-            result.findings.append(Finding(BREAK, f"enum `{name}` removed"))
-            continue
-        # C enum constants are ABI: their ordinals are compiled into every
-        # node built against the old header.
-        result.findings.extend(
-            compare_ordered(
-                "constant",
-                f"enum `{name}`",
-                constants,
-                new["enums"][name],
-                added_level=WARN,
-                reorder_note="ordinals are compiled into existing nodes",
-            )
-        )
+    result.findings += compare_signature_maps(
+        "function", old["functions"], new["functions"]
+    )
+    # C enum constants are ABI: their ordinals are compiled into every node
+    # built against the old header.
+    result.findings += compare_member_maps(
+        "enum",
+        "constant",
+        old["enums"],
+        new["enums"],
+        added_level=WARN,
+        reorder_note="ordinals are compiled into existing nodes",
+    )
 
     result.summary = (
         f"{len(new['functions'])} functions, {len(new['enums'])} enums"
@@ -454,46 +488,26 @@ def check_cxx_bridge(root: Path, baseline: Baseline) -> SurfaceResult:
     old = parse_cxx_bridge(old_text)
     new = parse_cxx_bridge((root / CXX_BRIDGE).read_text())
 
-    for name, fields in old["structs"].items():
-        if name not in new["structs"]:
-            result.findings.append(Finding(BREAK, f"struct `{name}` removed"))
-            continue
-        result.findings.extend(
-            compare_ordered(
-                "field",
-                f"struct `{name}`",
-                fields,
-                new["structs"][name],
-                # A new field changes the generated C++ struct layout.
-                added_level=BREAK,
-                reorder_note="the generated C++ struct layout changes",
-            )
-        )
-    for name, variants in old["enums"].items():
-        if name not in new["enums"]:
-            result.findings.append(Finding(BREAK, f"enum `{name}` removed"))
-            continue
-        result.findings.extend(
-            compare_ordered(
-                "variant",
-                f"enum `{name}`",
-                variants,
-                new["enums"][name],
-                added_level=WARN,
-                reorder_note="discriminants are compiled into existing nodes",
-            )
-        )
-    for name, sig in old["functions"].items():
-        if name not in new["functions"]:
-            result.findings.append(Finding(BREAK, f"fn `{name}` removed"))
-        elif new["functions"][name] != sig:
-            result.findings.append(
-                Finding(
-                    BREAK,
-                    f"fn `{name}` signature changed: `{sig}` -> "
-                    f"`{new['functions'][name]}`",
-                )
-            )
+    result.findings += compare_member_maps(
+        "struct",
+        "field",
+        old["structs"],
+        new["structs"],
+        # A new field changes the generated C++ struct layout.
+        added_level=BREAK,
+        reorder_note="the generated C++ struct layout changes",
+    )
+    result.findings += compare_member_maps(
+        "enum",
+        "variant",
+        old["enums"],
+        new["enums"],
+        added_level=WARN,
+        reorder_note="discriminants are compiled into existing nodes",
+    )
+    result.findings += compare_signature_maps(
+        "fn", old["functions"], new["functions"]
+    )
 
     result.summary = (
         f"{len(new['structs'])} structs, {len(new['enums'])} enums, "
@@ -506,6 +520,10 @@ def check_cxx_bridge(root: Path, baseline: Baseline) -> SurfaceResult:
 # Surface 3: the dataflow YAML schema
 # --------------------------------------------------------------------------
 
+# `libraries/core/dora-schema.json` is deliberately absent: it is a byte-for-byte
+# copy of the root file (the generator writes both), so diffing it would report
+# every schema finding twice. The freshness check in breaking-changes.sh still
+# covers it -- there the point is that the copies stay in step.
 SCHEMAS = ["dora-schema.json", "libraries/core/dora-node-schema.json"]
 
 
@@ -773,7 +791,11 @@ def parse_wire_types(files: dict[str, str]) -> dict[str, dict]:
     types: dict[str, dict] = {}
     for rel, text in sorted(files.items()):
         text = strip_cfg_test_modules(strip_rust_comments(text))
-        module = Path(rel).stem
+        # Full relative path, not just the stem: two `mod.rs`-style files in
+        # different subdirectories would otherwise collide and one would
+        # silently overwrite the other, shrinking the checked set on both
+        # sides at once so the gate still reported "ok".
+        module = "::".join(Path(rel).with_suffix("").parts)
         i = 0
         while True:
             at = text.find("#[", i)
@@ -796,20 +818,11 @@ def parse_wire_types(files: dict[str, str]) -> dict[str, dict]:
                     normalize_member(e) for e in split_top_level(body) if e.strip()
                 ]
             elif rest < len(text) and text[rest] == "(":
-                depth, j = 0, rest
-                while j < len(text):
-                    if text[j] == "(":
-                        depth += 1
-                    elif text[j] == ")":
-                        depth -= 1
-                        if depth == 0:
-                            break
-                    j += 1
-                fields = split_top_level(text[rest + 1 : j])
+                body, i = balanced_block(text, rest, "(", ")")
                 members = [
-                    f"{idx}: {normalize_member(f)}" for idx, f in enumerate(fields)
+                    f"{idx}: {normalize_member(f)}"
+                    for idx, f in enumerate(split_top_level(body))
                 ]
-                i = j
             else:
                 members = []
                 i = rest
@@ -958,6 +971,8 @@ def check_cli(root: Path, baseline: Baseline) -> SurfaceResult:
 # Surface 6: the Python support floor
 # --------------------------------------------------------------------------
 
+# The two published wheels. `scripts/release/verify-release.py` keeps the same
+# pair as PYPI_MANIFESTS -- a third wheel has to be added in both places.
 PYPROJECTS = ["apis/python/node/pyproject.toml", "apis/python/cli/pyproject.toml"]
 
 
@@ -1064,12 +1079,19 @@ def workspace_version(text: str) -> str | None:
 
 
 def check_version_guard(root: Path, baseline: Baseline) -> SurfaceResult:
-    """Catch the one change that would silence every other check.
+    """Stop at a major version bump, which is the one thing this cannot judge.
 
-    `cargo-semver-checks` reports nothing when the version bump already allows
-    breakage, so a major bump turns the Rust half of this gate off. Post-1.0
-    that bump is exactly the event worth stopping at, so it is reported here
-    rather than being the thing that hides everything else.
+    Every check here asks "does this still honour what the last release
+    promised". A 2.0 changes the question: the promises are being withdrawn on
+    purpose, so a report of breaking changes is the expected answer rather than
+    a problem, and a gate that just went green or red would be misleading
+    either way. The bump therefore has to be stated (`ALLOW_MAJOR_BUMP=1`),
+    which puts a human on the decision.
+
+    Related but separate: `cargo-semver-checks` would *also* fall silent on a
+    major bump, concluding breakage is permitted. `semver.sh` passes
+    `--release-type minor` so it does not. This guard is not a workaround for
+    that -- do not remove either one on the strength of the other.
     """
     result = SurfaceResult(name="Workspace version")
     old_text = baseline.read("Cargo.toml")
@@ -1090,9 +1112,11 @@ def check_version_guard(root: Path, baseline: Baseline) -> SurfaceResult:
         result.findings.append(
             Finding(
                 BREAK,
-                f"major version bump {old} -> {new}: this silences "
-                "cargo-semver-checks, so breaking changes stop being reported. "
-                "Set ALLOW_MAJOR_BUMP=1 once that is deliberate.",
+                f"major version bump {old} -> {new}: a 2.0 withdraws the "
+                "promises every other check here is measuring against, so "
+                "they can no longer answer anything useful. Set "
+                "ALLOW_MAJOR_BUMP=1 (in the job or the shell) to say the bump "
+                "is deliberate.",
             )
         )
     result.summary = f"{old} -> {new}"
@@ -1127,7 +1151,7 @@ def run(root: Path, ref: str, fallback: str | None = None) -> tuple[list[Surface
             # the cxx bridge module both land here.
             results.append(
                 SurfaceResult(
-                    name=getattr(check, "__name__", "check"),
+                    name=check.__name__.removeprefix("check_").replace("_", " "),
                     findings=[
                         Finding(
                             BREAK,

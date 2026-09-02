@@ -114,32 +114,25 @@ fn cli_surface_snapshot_is_current() {
     if recorded != current {
         let recorded_lines: BTreeSet<_> = recorded.lines().filter(|l| keep(l)).collect();
         let current_lines: BTreeSet<_> = current.lines().filter(|l| keep(l)).collect();
-        let removed: Vec<_> = recorded_lines.difference(&current_lines).collect();
-        let added: Vec<_> = current_lines.difference(&recorded_lines).collect();
+        let render = |lines: BTreeSet<&&str>| {
+            if lines.is_empty() {
+                "(none)".to_owned()
+            } else {
+                lines
+                    .iter()
+                    .map(|line| line.to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n  ")
+            }
+        };
         panic!(
             "the `dora` command surface changed.\n\n\
              removed (breaking -- dora 1.x froze these):\n  {}\n\n\
              added (fine, but record it):\n  {}\n\n\
              Update the snapshot in this commit so the change is reviewed:\n  \
              UPDATE_CLI_SURFACE=1 cargo test -p dora-cli --test cli_surface",
-            if removed.is_empty() {
-                "(none)".to_owned()
-            } else {
-                removed
-                    .iter()
-                    .map(|l| l.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
-            },
-            if added.is_empty() {
-                "(none)".to_owned()
-            } else {
-                added
-                    .iter()
-                    .map(|l| l.to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n  ")
-            },
+            render(recorded_lines.difference(&current_lines).collect()),
+            render(current_lines.difference(&recorded_lines).collect()),
         );
     }
 }

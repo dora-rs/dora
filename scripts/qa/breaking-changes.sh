@@ -12,7 +12,8 @@
 #     - the postcard wire format of dora-message
 #     - the `dora` command surface (via its checked-in snapshot)
 #     - the Python support floor (requires-python / abi3)
-#     - a major version bump, which would silence the check below
+#     - a major version bump, which withdraws the promises the rest of
+#       this gate measures against
 #
 #   compilation required (--full, minutes)
 #     - the Rust API of the crates the guarantee covers (cargo-semver-checks)
@@ -23,6 +24,7 @@
 # Usage:
 #   scripts/qa/breaking-changes.sh                  # everything
 #   scripts/qa/breaking-changes.sh --fast           # no-compile checks only
+#   scripts/qa/breaking-changes.sh --update         # re-record the generated inputs
 #   scripts/qa/breaking-changes.sh --baseline v1.0.0
 #
 # Env: BREAKING_BASELINE=<ref>, ALLOW_MAJOR_BUMP=1.
@@ -30,6 +32,16 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+
+# The generated inputs the surface diff reads, and the commands that write
+# them. Defined once: the freshness check below and `--update` (which
+# `make qa-breaking-update` calls) must never disagree about the list.
+GENERATED_FILES="dora-schema.json libraries/core/dora-schema.json libraries/core/dora-node-schema.json binaries/cli/cli-surface.txt"
+
+regenerate_inputs() {
+  UPDATE_CLI_SURFACE=1 cargo test -p dora-cli --test cli_surface >/dev/null
+  cargo run --quiet -p dora-core --bin generate_schema >/dev/null
+}
 
 MODE=full
 # A plain string, not an array: an empty array under `set -u` aborts on bash
@@ -40,6 +52,7 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --fast) MODE=fast ;;
     --full) MODE=full ;;
+    --update) MODE=update ;;
     --baseline)
       [[ $# -ge 2 ]] || { echo "--baseline needs a ref" >&2; exit 2; }
       BASELINE_OVERRIDE="$2"; shift ;;
@@ -49,16 +62,24 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 
+if [[ "$MODE" == update ]]; then
+  regenerate_inputs
+  git diff --stat -- $GENERATED_FILES
+  exit 0
+fi
+
+# Relative to the repo root, which the `cd` above guarantees: `$(dirname $0)`
+# would be wrong when the script is invoked by a relative path from anywhere
+# but the root.
 # shellcheck source=baseline.sh
-source "$(dirname "$0")/baseline.sh"
+source scripts/qa/baseline.sh
 BASELINE=$(resolve_breaking_baseline "$BASELINE_OVERRIDE") || exit 2
 FAILED=0
 
 # Best-effort: the fallback covers surfaces the release predates, so a shallow
 # checkout that cannot reach the PR base just leaves those checks skipped.
-if [[ -n "${BREAKING_FALLBACK_BASELINE:-}" ]] &&
-   ! git rev-parse -q --verify "${BREAKING_FALLBACK_BASELINE}^{commit}" >/dev/null 2>&1; then
-  git fetch --quiet --depth=1 origin "$BREAKING_FALLBACK_BASELINE" 2>/dev/null || true
+if [[ -n "${BREAKING_FALLBACK_BASELINE:-}" ]]; then
+  ensure_ref "$BREAKING_FALLBACK_BASELINE" || true
 fi
 
 # The differ is text-driven, so an upstream reformat could silently turn an
@@ -85,10 +106,8 @@ fi
 # comparing a stale file and passes for the wrong reason.
 echo "=== generated inputs are current ==="
 if [[ -n "${CARGO:-}" ]] || command -v cargo >/dev/null; then
-  UPDATE_CLI_SURFACE=1 cargo test -p dora-cli --test cli_surface >/dev/null
-  cargo run --quiet -p dora-core --bin generate_schema >/dev/null
-  SCHEMAS="dora-schema.json libraries/core/dora-schema.json libraries/core/dora-node-schema.json binaries/cli/cli-surface.txt"
-  if ! git diff --exit-code --stat -- $SCHEMAS; then
+  regenerate_inputs
+  if ! git diff --exit-code --stat -- $GENERATED_FILES; then
     echo
     echo "The generated surface files are stale. Regenerating them changed the"
     echo "tree, which means the check above compared an out-of-date snapshot."

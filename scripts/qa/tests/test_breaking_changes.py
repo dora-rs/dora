@@ -378,5 +378,55 @@ class PythonFloorTest(unittest.TestCase):
         self.assertEqual(python_floor('requires-python = ">=3.11"'), ">=3.11")
 
 
+ROOT = Path(__file__).resolve().parents[3]
+
+
+class RealRepoCoverageTest(unittest.TestCase):
+    """Floors on what each extractor finds in the real tree.
+
+    Every test above runs on inline fixtures, which cannot see the failure that
+    matters most: an extractor that quietly stops matching. A narrowed regex or
+    a colliding key shrinks the checked set on *both* sides at once, so every
+    surface keeps reporting "ok" while guarding nothing. The floors are set far
+    below today's counts -- they exist to catch collapse, not to be updated
+    whenever the API grows. `cli_surface.rs` makes the same bargain for the
+    snapshot it generates.
+    """
+
+    def test_c_header(self):
+        parsed = parse_c_header((ROOT / "apis/c/node/node_api.h").read_text())
+        self.assertGreaterEqual(len(parsed["functions"]), 8)
+        self.assertGreaterEqual(len(parsed["enums"]), 1)
+
+    def test_cxx_bridge(self):
+        parsed = parse_cxx_bridge((ROOT / "apis/c++/node/src/lib.rs").read_text())
+        self.assertGreaterEqual(len(parsed["structs"]), 8)
+        self.assertGreaterEqual(len(parsed["enums"]), 3)
+        self.assertGreaterEqual(len(parsed["functions"]), 40)
+
+    def test_wire_types(self):
+        src = ROOT / "libraries/message/src"
+        files = {
+            str(path.relative_to(src)): path.read_text() for path in src.rglob("*.rs")
+        }
+        parsed = parse_wire_types(files)
+        self.assertGreaterEqual(len(parsed), 80)
+        # Every type must have been read past its opening brace.
+        empty = [name for name, t in parsed.items() if not t["members"]]
+        self.assertLessEqual(len(empty), 5, f"suspiciously many empty types: {empty}")
+
+    def test_dataflow_schema(self):
+        import json
+
+        flat = flatten_schema(json.loads((ROOT / "dora-schema.json").read_text()))
+        self.assertGreaterEqual(len(flat), 100)
+        self.assertIn("#/$defs/Node", flat)
+
+    def test_cli_snapshot(self):
+        parsed = parse_cli_surface((ROOT / "binaries/cli/cli-surface.txt").read_text())
+        self.assertGreaterEqual(len(parsed), 50)
+        self.assertIn("dora build", parsed)
+
+
 if __name__ == "__main__":
     unittest.main()

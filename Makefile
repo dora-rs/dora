@@ -213,10 +213,7 @@ qa-breaking:
 # and the JSON schemas. Run this when a PR *adds* to either surface, and
 # commit the result -- that diff is how the addition gets reviewed.
 qa-breaking-update:
-	@UPDATE_CLI_SURFACE=1 cargo test -p dora-cli --test cli_surface
-	@cargo run --quiet -p dora-core --bin generate_schema
-	@git diff --stat -- dora-schema.json libraries/core/dora-schema.json \
-		libraries/core/dora-node-schema.json binaries/cli/cli-surface.txt
+	@scripts/qa/breaking-changes.sh --update
 
 # Check that a published release is complete: every crate on release.yml's
 # publish list is on crates.io, both wheels are on PyPI with the full

@@ -240,7 +240,7 @@ Soft during 0.x, hard from 1.0 on. It runs as a step of the `breaking-changes` g
 
 Two failures that read oddly:
 
-- **"major version bump ... silences cargo-semver-checks"** — bumping the major turns the Rust half of the gate off, so the gate stops at the bump itself. When the 2.0 is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking`.
+- **"major version bump ..."** — a 2.0 withdraws the promises the gate measures against, so it stops there rather than reporting a green or a red that means nothing. When the bump is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking` (and set the same variable on the `breaking-changes` job for the PR that carries it).
 - **"the generated surface files are stale"** — regenerating changed the tree, so the comparison ran against an out-of-date snapshot and its "ok" meant nothing. Commit the regenerated files and read the report again.
 
 ---

@@ -842,7 +842,7 @@ jobs:
         with:
           tool: cargo-semver-checks
       - name: Rust API of the crates 1.0 covers
-        run: scripts/qa/semver.sh
+        run: make qa-semver
 
   # ===== License check =====
   # Restored from upstream dora CI — explicit license validation.

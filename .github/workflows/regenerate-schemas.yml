@@ -26,6 +26,13 @@ jobs:
         with:
           cache-on-failure: true
 
+      # Schemas only, deliberately. `binaries/cli/cli-surface.txt` is the same
+      # shape of generated artifact, but it cannot drift on `main`: the
+      # `cli_surface` test fails a merge-queue batch that leaves it stale,
+      # while nothing runs the schema generator before a merge — which is why
+      # the schemas need this self-heal and the snapshot does not. Adding it
+      # here would build the whole CLI on every push to main and cache it,
+      # against a 10 GB per-repo budget (see the ci.yml header).
       - name: Update Schema
         run: cargo run -p dora-core --bin generate_schema
       - name: Open a schema-sync PR if the schema drifted

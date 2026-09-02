@@ -39,8 +39,11 @@ PUBLIC_CRATES=(
 # release, and so this works in a shallow CI checkout: `git describe` fails
 # there, which would have silently made the baseline `main`. Override by hand
 # with SEMVER_BASELINE=<ref>.
+# Relative to the repo root, which the `cd` above guarantees: `$(dirname $0)`
+# would be wrong when the script is invoked by a relative path from anywhere
+# but the root.
 # shellcheck source=baseline.sh
-source "$(dirname "$0")/baseline.sh"
+source scripts/qa/baseline.sh
 BASELINE=$(resolve_breaking_baseline) || exit 2
 echo "Baseline: $BASELINE"
 echo

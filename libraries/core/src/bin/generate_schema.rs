@@ -22,7 +22,12 @@ fn workspace_root(manifest_dir: &Path) -> Option<PathBuf> {
         .then(|| root.to_path_buf())
 }
 
-fn main() {
+/// The descriptor schema exactly as it is written to disk.
+///
+/// Factored out of `main` so a test can assert the checked-in copies match it:
+/// the post-processing below is part of the published artifact, so comparing
+/// against a bare `schema_for!` would not.
+fn descriptor_schema_json() -> String {
     let schema = schema_for!(Descriptor);
     let raw_schema =
         serde_json::to_string_pretty(&schema).expect("Could not serialize schema to json");
@@ -43,12 +48,16 @@ fn main() {
             }",
         "",
     );
-    let raw_schema = raw_schema.replace(
+    raw_schema.replace(
         "{
             \"$ref\": \"#/definitions/Input\"
           }",
         "true",
-    );
+    )
+}
+
+fn main() {
+    let raw_schema = descriptor_schema_json();
 
     // Get the Cargo root manifest directory
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is not set");
@@ -78,8 +87,34 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_root;
+    use super::{descriptor_schema_json, workspace_root};
     use std::{fs, path::Path};
+
+    /// The checked-in descriptor schema must match what the generator produces.
+    ///
+    /// Nothing asserted this: `root_schema_matches_crate_copy` below only
+    /// checks the two copies against *each other*, so both could drift from
+    /// the descriptor together — and they did, silently, until a change to
+    /// `OperatorId`'s doc comment showed up in a regeneration.
+    ///
+    /// It matters more than a stale doc comment. `dora-cli`'s YAML schema is
+    /// inside the 1.0 guarantee, and `scripts/qa/breaking-changes.sh` checks
+    /// that promise by diffing this file against the last release. Stale, it
+    /// compares an out-of-date snapshot and passes for the wrong reason. This
+    /// test runs wherever `cargo test` does, so a merge-queue batch cannot
+    /// leave it behind.
+    #[test]
+    fn checked_in_descriptor_schema_is_current() {
+        let manifest_dir = Path::new(env!("CARGO_MANIFEST_DIR"));
+        let checked_in = fs::read_to_string(manifest_dir.join("dora-schema.json"))
+            .expect("libraries/core/dora-schema.json is missing");
+
+        assert!(
+            checked_in == descriptor_schema_json(),
+            "libraries/core/dora-schema.json is out of date. Regenerate it:\n  \
+             cargo run -p dora-core --bin generate_schema"
+        );
+    }
 
     /// The descriptor schema is published at two URLs: the repo-root copy that
     /// `docs/yaml-spec.md` and `guide/src/concepts/dataflow-yaml.md` paste into

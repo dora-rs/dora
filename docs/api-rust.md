@@ -880,13 +880,13 @@ back it:
    Everything but the first row is read out of source text or a checked-in
    snapshot, so that half needs no compilation and runs in seconds.
 
-   Two behaviours are worth knowing before they surprise someone. The gate
-   fails a **major version bump**: `cargo-semver-checks` reports nothing once
-   the version says breakage is allowed, so the bump would otherwise switch
-   the check off rather than trip it (`ALLOW_MAJOR_BUMP=1` when it is
-   deliberate). And it passes `--release-type minor` for the same reason —
-   left to infer the release type from an rc-to-release version move, it
-   skipped all 254 lints and reported "no semver update required" having
+   Two behaviours are worth knowing before they surprise someone. It fails a
+   **major version bump**, because a 2.0 withdraws the promises every check
+   is measuring against — green and red would both be misleading, so the bump
+   has to be stated (`ALLOW_MAJOR_BUMP=1`). Separately, `cargo-semver-checks`
+   runs with `--release-type minor`: left to infer the release type from an
+   rc-to-release version move it concluded breakage was already permitted,
+   skipped all 254 lints, and reported "no semver update required" having
    checked nothing.
 
 A consequence of (1): a patch fix in an internal crate requires re-releasing
