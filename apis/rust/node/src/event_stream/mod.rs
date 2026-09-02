@@ -989,9 +989,12 @@ impl EventStream {
 
     /// Returns and resets the accumulated drop counts per input ID.
     ///
-    /// When inputs overflow their queue limits, the oldest messages are discarded.
-    /// For `drop_oldest` inputs this happens at `queue_size`. For `backpressure`
-    /// inputs this happens at a hard safety cap of 10x `queue_size`.
+    /// When inputs overflow their queue limits, events are discarded to keep memory bounded. For
+    /// `drop_oldest` inputs the cap is `queue_size` (clamped to at least 1); an overflow normally
+    /// evicts the oldest queued event, but correlated service/action messages and the `Stop` event
+    /// are preserved where possible, so the evicted event may instead be a newer one (or the
+    /// incoming event itself). For `backpressure` inputs the hard safety cap is
+    /// `max(10 × queue_size, 100)`.
     /// This method returns a map from input ID to the number of messages dropped
     /// since the last call.
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
@@ -1713,15 +1716,10 @@ fn prime_in_band(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    let data: eyre::Result<Option<RawData>> = match data {
-        None => Ok(None),
-        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-    };
-
-    data.and_then(|data| {
-        let raw_data = data.unwrap_or(RawData::Empty);
-        raw_data.into_arrow_array().map(arrow::array::make_array)
-    })
+    // `DataMessage` has a single infallible variant, so the conversion cannot
+    // fail; the only fallible step is `into_arrow_array`.
+    let raw_data = data.map_or(RawData::Empty, |DataMessage::Vec(v)| RawData::Vec(v));
+    raw_data.into_arrow_array().map(arrow::array::make_array)
 }
 
 impl Stream for EventStream {

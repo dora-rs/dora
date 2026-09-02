@@ -776,8 +776,6 @@ pub struct DoraNode {
     /// the schema is only re-published when it changes or a publish failed) and
     /// the time of the last full-stream send (for the periodic in-band refresh).
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
-    /// Threshold for using zenoh SHM vs inline bytes (default 4096).
-
     /// Diagnostic (dora-rs/dora#2742): how many large sends have already been
     /// traced hop-by-hop. The Windows nightly wedges the *runtime's* main loop
     /// inside `send_output` on the very first large output, so tracing only the
@@ -1089,14 +1087,7 @@ impl DoraNode {
             node_id: "test-node"
                 .parse()
                 .map_err(|e| NodeError::Init(format!("{e}")))?,
-            run_config: NodeRunConfig {
-                inputs: Default::default(),
-                outputs: Default::default(),
-                output_types: Default::default(),
-                output_framing: Default::default(),
-                input_types: Default::default(),
-                shared_memory_pool_size: None,
-            },
+            run_config: NodeRunConfig::default(),
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -1126,14 +1117,7 @@ impl DoraNode {
             node_id: "test-node"
                 .parse()
                 .map_err(|e| NodeError::Init(format!("{e}")))?,
-            run_config: NodeRunConfig {
-                inputs: Default::default(),
-                outputs: Default::default(),
-                output_types: Default::default(),
-                output_framing: Default::default(),
-                input_types: Default::default(),
-                shared_memory_pool_size: None,
-            },
+            run_config: NodeRunConfig::default(),
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -1570,6 +1554,13 @@ impl DoraNode {
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if the payload cannot be Arrow-IPC encoded, or if runtime type
+    /// checking is enabled in error mode (`DORA_RUNTIME_TYPE_CHECK=error`) and the array's Arrow
+    /// type does not match the output's declared type. An `output_id` that is not declared as an
+    /// output is *not* an error — the call is ignored and returns `Ok`.
+    ///
     /// ```no_run
     /// use dora_node_api::{DoraNode, MetadataParameters};
     /// use dora_core::config::DataId;
@@ -1607,6 +1598,15 @@ impl DoraNode {
     /// operator thread does the encoding so that no memory owned by the
     /// operator's language runtime is ever released on the node's thread — see
     /// [`SampleAllocator`] (dora-rs/dora#2742).
+    ///
+    /// Like [`send_output`](Self::send_output), an `output_id` that is not a
+    /// declared output is ignored (returns `Ok`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if runtime type checking is enabled in error mode
+    /// (`DORA_RUNTIME_TYPE_CHECK=error`) and the sample's Arrow type does not match the output's
+    /// declared type.
     pub fn send_output_encoded(
         &mut self,
         output_id: DataId,
@@ -1676,10 +1676,16 @@ impl DoraNode {
 
     /// Send the given raw byte data as output.
     ///
-    /// Might copy the data once to move it into shared memory.
+    /// Might copy the data once to move it into shared memory. `data_len` must equal `data.len()`;
+    /// the allocated sample is sized from `data_len` and the payload is copied from `data`.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if `data_len` does not equal `data.len()` (which would
+    /// otherwise panic in the internal `copy_from_slice`).
     pub fn send_output_bytes(
         &mut self,
         output_id: DataId,
@@ -1879,6 +1885,12 @@ impl DoraNode {
     /// The node is not allowed to send more outputs with the closed IDs.
     ///
     /// Closing outputs early can be helpful to receivers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if any id is not a declared output of this node. Unlike
+    /// [`send_output`](Self::send_output), which silently ignores unknown outputs, this validates
+    /// the whole batch *before* closing any output, so on error none of them are closed.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
         // Validate the whole batch before mutating any local state. Removing
         // outputs eagerly would leave the node's local output set out of sync
@@ -2336,6 +2348,10 @@ impl DoraNode {
     /// metadata parameters. Returns the generated request ID.
     ///
     /// Any existing `request_id` key in `parameters` is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_output`](Self::send_output).
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
@@ -2374,6 +2390,10 @@ impl DoraNode {
     /// Send a streaming segment chunk. Convenience wrapper around
     /// [`send_output`](Self::send_output) that builds metadata from the
     /// [`StreamSegment`] builder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_output`](Self::send_output).
     pub fn send_stream_chunk(
         &mut self,
         output_id: DataId,

@@ -174,9 +174,14 @@ fn inspect(
                     .unwrap_or_else(|| output_id.clone());
                 let output_name = format!("{node_id}/{display_output}");
 
+                // `duration_since(UNIX_EPOCH)` errors when the wall clock is set
+                // before 1970 (e.g. an embedded target booting with an unset RTC
+                // before NTP sync). Fall back to a zero timestamp rather than
+                // panicking a live `dora topic echo`, mirroring the daemon's
+                // `current_millis()` helper.
                 let timestamp = SystemTime::now()
                     .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
+                    .unwrap_or_default()
                     .as_millis();
 
                 let data_str = if let Some(data) = data {

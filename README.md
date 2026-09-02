@@ -231,7 +231,7 @@ dora cluster status
 dora cluster down
 ```
 
-See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks.
+See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks. The network side — one LAN, a VPN mesh, or isolated subnets joined by zenoh routers — is the [Multi-machine Guide](docs/multi-machine.md).
 
 ## CLI Commands
 
@@ -317,7 +317,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 
 Reference a node with one line of YAML -- `hub: dora-yolo@^0.5` -- and `dora build` resolves, pins, and type-checks it. See the [Hub guide](guide/src/hub/overview.md).
 
-For full CLI documentation, see [docs/cli.md](docs/cli.md). For distributed deployment, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
+For full CLI documentation, see [docs/cli.md](docs/cli.md). For running a dataflow across several machines, start with [docs/multi-machine.md](docs/multi-machine.md); for cluster management, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
 
 ## Dataflow Configuration
 
@@ -625,7 +625,7 @@ Dora ships with a three-tier QA system designed for AI-authored code. Everything
 
 ```bash
 make qa-install        # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
-make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
+make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph (pre-commit)
 make qa-full           # ~5-10m  -- qa-fast + tests + coverage (pre-push)
 make qa-deep           # ~15m    -- qa-full + mutation testing + semver (target Tier 1 gate, stronger than today's CI; alias: qa-tier1)
 make qa-nightly        # ~3-4h -- qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs (full parity with .github/workflows/nightly.yml)

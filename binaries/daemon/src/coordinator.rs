@@ -122,13 +122,21 @@ static COORDINATOR_PENDING: std::sync::LazyLock<
     >,
 > = std::sync::LazyLock::new(|| std::sync::Mutex::new(std::collections::HashMap::new()));
 
+/// Register with the coordinator.
+///
+/// Returns the assigned id, the zenoh endpoints of the daemons that were
+/// already registered (see `RegisterResult::Ok::peer_zenoh_endpoints`), the
+/// event sender and the incoming event stream.
 pub async fn register(
     addr: SocketAddr,
     machine_id: Option<String>,
     labels: std::collections::BTreeMap<String, String>,
+    zenoh: crate::ZenohRegistration,
     clock: Arc<HLC>,
 ) -> eyre::Result<(
     DaemonId,
+    Option<String>,
+    Vec<String>,
     CoordinatorSender,
     impl Stream<Item = Timestamped<CoordinatorEvent>>,
 )> {
@@ -176,6 +184,25 @@ pub async fn register(
         }
     };
 
+    // Reserve the zenoh listen port now, with the coordinator socket already
+    // up, so the window between reserving the port and zenoh binding it is one
+    // register round-trip rather than however long the retry loop above took.
+    // Only on the first connect: a reconnect reuses the still-open session's
+    // port, and re-reserving would hand out one nothing is listening on.
+    // Only a derived bind reaches the reservation here; an explicit one was
+    // reserved before the connect loop precisely so its failures stay fatal
+    // instead of being retried as connectivity problems. A derived reservation
+    // never fails fatally — it degrades to `None`.
+    let reserved_listen_endpoint = match zenoh.reserved {
+        Some(ep) => Some(ep),
+        None => crate::reserve_zenoh_listen_endpoint(zenoh.bind)?,
+    };
+    let advertised_listen_endpoint = match zenoh.advertise {
+        crate::AdvertiseListener::Never => None,
+        crate::AdvertiseListener::Reserved => reserved_listen_endpoint.clone(),
+        crate::AdvertiseListener::Bound(bound) => bound,
+    };
+
     let (mut ws_tx, mut ws_rx) = ws_stream.split();
 
     // Channel for outgoing messages (daemon events + command replies).
@@ -187,7 +214,11 @@ pub async fn register(
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
     // for uhlc::ID(NonZeroU128) inside the timestamp.
     let register_params_json = serde_json::to_string(&Timestamped {
-        inner: CoordinatorRequest::Register(DaemonRegisterRequest::new(machine_id, labels)),
+        inner: CoordinatorRequest::Register(DaemonRegisterRequest::with_zenoh_endpoint(
+            machine_id,
+            labels,
+            advertised_listen_endpoint,
+        )),
         timestamp: clock.new_timestamp(),
     })?;
     let register_id = Uuid::new_v4();
@@ -202,7 +233,7 @@ pub async fn register(
     // Wait for register reply with timeout.
     // The coordinator's register handler sends back Timestamped<RegisterResult>
     // wrapped in a WsRequest with method "daemon_event".
-    let daemon_id = tokio::time::timeout(REGISTER_TIMEOUT, async {
+    let (daemon_id, peer_zenoh_endpoints) = tokio::time::timeout(REGISTER_TIMEOUT, async {
         loop {
             let msg = ws_rx
                 .next()
@@ -225,7 +256,7 @@ pub async fn register(
                 tracing::warn!("failed to update timestamp after register: {err}");
             }
 
-            break result.inner.to_result();
+            break result.inner.into_parts();
         }
     })
     .await
@@ -268,6 +299,8 @@ pub async fn register(
 
     Ok((
         daemon_id,
+        reserved_listen_endpoint,
+        peer_zenoh_endpoints,
         CoordinatorSender { sender: send_tx },
         ReceiverStream::new(rx),
     ))

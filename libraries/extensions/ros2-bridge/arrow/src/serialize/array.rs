@@ -12,7 +12,7 @@ use serde::ser::SerializeTuple;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, check_array_len, error, reject_null_string_element};
+use super::{TypedValue, check_array_len, error, reject_null_element, reject_null_string_element};
 
 /// Serialize an array with known size as tuple.
 pub struct ArraySerializeWrapper<'a> {
@@ -278,6 +278,7 @@ where
             .as_primitive_opt()
             .ok_or_else(|| error(format!("not a primitive {} array", type_name::<T>())))?;
         check_array_len(array.len(), self.len)?;
+        reject_null_element(array, type_name::<T>())?;
 
         for value in array.values() {
             seq.serialize_element(value)?;
@@ -303,6 +304,7 @@ impl serde::Serialize for BoolArrayAsTuple<'_> {
             .as_boolean_opt()
             .ok_or_else(|| error("not a boolean array"))?;
         check_array_len(array.len(), self.len)?;
+        reject_null_element(array, "bool")?;
 
         for value in array.values() {
             seq.serialize_element(&value)?;
@@ -353,7 +355,8 @@ mod tests {
 
     use arrow::{
         array::{
-            ArrayRef, BinaryArray, Int32Array, ListArray, StringArray, StructArray, UInt8Array,
+            ArrayRef, BinaryArray, BooleanArray, Int32Array, ListArray, StringArray, StructArray,
+            UInt8Array,
         },
         buffer::OffsetBuffer,
         datatypes::{DataType, Field},
@@ -641,5 +644,86 @@ mod tests {
             type_info: &type_info(3),
         })
         .expect_err("size-3 field with 2 bytes must error");
+    }
+
+    /// Build a struct with a `names` field wrapping the given `Int32` list, so
+    /// we can drive an `int32[3]` message column with per-element nulls.
+    fn build_int32_array(values: Vec<Option<i32>>) -> ArrayRef {
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let list = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([values.len()]),
+            Arc::new(Int32Array::from(values)),
+            None,
+        );
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("names", DataType::List(item), false)),
+            Arc::new(list) as ArrayRef,
+        )]);
+        Arc::new(struct_array) as ArrayRef
+    }
+
+    /// Same shape for a `Bool` list, so we can drive a `bool[3]` column.
+    fn build_bool_array(values: Vec<Option<bool>>) -> ArrayRef {
+        let item = Arc::new(Field::new("item", DataType::Boolean, true));
+        let list = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([values.len()]),
+            Arc::new(BooleanArray::from(values)),
+            None,
+        );
+        let struct_array = StructArray::from(vec![(
+            Arc::new(Field::new("names", DataType::List(item), false)),
+            Arc::new(list) as ArrayRef,
+        )]);
+        Arc::new(struct_array) as ArrayRef
+    }
+
+    fn serializes_primitive_array(value: &ArrayRef, field_type: NestableType) -> bool {
+        let messages = fixed_array_message(field_type);
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("ArrMsg"),
+            messages,
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value,
+            type_info: &type_info,
+        })
+        .is_ok()
+    }
+
+    /// #3271: a null element in a fixed `int32[N]` field must be rejected. The
+    /// scalar and string-array paths already reject nulls; the primitive-array
+    /// path previously iterated `array.values()`, which ignores the validity
+    /// bitmap and silently encodes the raw buffer slot (`0`) — inventing a
+    /// value the producer never sent.
+    #[test]
+    fn fixed_int32_array_null_element_is_rejected() {
+        let with_null = build_int32_array(vec![Some(1), None, Some(3)]);
+        assert!(
+            !serializes_primitive_array(&with_null, NestableType::BasicType(BasicType::I32)),
+            "a null element in an int32[3] field must error, not encode as 0"
+        );
+        let all_present = build_int32_array(vec![Some(1), Some(2), Some(3)]);
+        assert!(
+            serializes_primitive_array(&all_present, NestableType::BasicType(BasicType::I32)),
+            "an all-present int32[3] field must still serialize"
+        );
+    }
+
+    /// #3271: same guard on the fixed `bool[N]` path.
+    #[test]
+    fn fixed_bool_array_null_element_is_rejected() {
+        let with_null = build_bool_array(vec![Some(true), None, Some(false)]);
+        assert!(
+            !serializes_primitive_array(&with_null, NestableType::BasicType(BasicType::Bool)),
+            "a null element in a bool[3] field must error, not encode as false"
+        );
+        let all_present = build_bool_array(vec![Some(true), Some(false), Some(true)]);
+        assert!(
+            serializes_primitive_array(&all_present, NestableType::BasicType(BasicType::Bool)),
+            "an all-present bool[3] field must still serialize"
+        );
     }
 }

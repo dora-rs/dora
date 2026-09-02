@@ -19,11 +19,41 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      # Only the publish step below needs this, and it is gated to `push`.
+      # `permissions:` accepts no expressions, so the scope cannot be
+      # narrowed per event from here — genuinely withholding it on PR runs
+      # means splitting publish into its own job, which is only coherent
+      # once the build is fixed (see the FIXME below).
       packages: write
+    env:
+      IMAGE: ghcr.io/dora-rs/dora-slim:latest
     steps:
       - uses: actions/checkout@v6
 
+      # Registry credentials and the publish step are gated on `push`, i.e.
+      # a merge to main. This job also runs on `pull_request`, where the
+      # point is to prove the Dockerfile still builds -- not to publish it.
+      #
+      # Without the gate, a PR touching `docker/**` would overwrite the
+      # public `:latest` tag with its own unreviewed Dockerfile. Fork PRs
+      # could not (GitHub downgrades GITHUB_TOKEN to read-only there
+      # regardless of the `permissions:` block above), but PRs from branches
+      # in this repo -- how most work here lands -- carry the real write
+      # token. The hole was latent rather than exploited: the build step has
+      # failed on every run since at least 2026-03, so the push was never
+      # reached.
+      #
+      # FIXME: that failure is `Multi-platform build is not supported for
+      # the docker driver` -- plain `docker build` cannot do the four
+      # platforms this asks for. The fix is `docker/setup-buildx-action` +
+      # `docker/build-push-action` with `push: ${{ github.event_name ==
+      # 'push' }}`, which also makes the multi-arch manifest publishable at
+      # all (a buildx multi-platform build cannot be `--load`ed locally, so
+      # the build/push split below could not work even once buildx is set
+      # up). Deliberately left for a separate change: this one closes the
+      # publish hole without touching what the workflow builds.
       - name: "Login to GitHub Container Registry"
+        if: github.event_name == 'push'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
@@ -31,6 +61,8 @@ jobs:
           password: ${{secrets.GITHUB_TOKEN}}
 
       - name: Build the Docker image
-        run: |
-          docker build docker/slim --platform linux/amd64,linux/arm64,linux/arm32v6,linux/arm32v7 -t multi-platform --tag ghcr.io/dora-rs/dora-slim:latest
-          docker push ghcr.io/dora-rs/dora-slim:latest
+        run: docker build docker/slim --platform linux/amd64,linux/arm64,linux/arm32v6,linux/arm32v7 -t multi-platform --tag "$IMAGE"
+
+      - name: Push the Docker image
+        if: github.event_name == 'push'
+        run: docker push "$IMAGE"

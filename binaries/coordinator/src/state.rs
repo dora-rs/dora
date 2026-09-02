@@ -77,6 +77,30 @@ impl DaemonConnections {
         self.daemons.get(daemon_id).map(|c| c.connection_id)
     }
 
+    /// Zenoh endpoints of every connected daemon except `joining`, for a
+    /// daemon that is registering now to dial.
+    ///
+    /// `joining` is excluded so a re-registering daemon is not told to dial
+    /// its own previous listener: `add` has not replaced its entry yet at the
+    /// point the register reply is built, and that endpoint is either its own
+    /// (a self-dial) or dead (the process restarted with a fresh ephemeral
+    /// port).
+    pub(crate) fn zenoh_endpoints_for(&self, joining: &DaemonId) -> Vec<String> {
+        self.daemons
+            .iter()
+            .filter(|(id, _)| *id != joining)
+            .filter_map(|(_, conn)| conn.zenoh_listen_endpoint.clone())
+            .collect()
+    }
+
+    /// Record (or, with `None`, withdraw) a daemon's zenoh endpoint after it
+    /// verified its listener. Unknown daemon → no-op.
+    pub(crate) fn set_zenoh_endpoint(&mut self, id: &DaemonId, endpoint: Option<String>) {
+        if let Some(conn) = self.daemons.get_mut(id) {
+            conn.zenoh_listen_endpoint = endpoint;
+        }
+    }
+
     pub(crate) fn unnamed(&self) -> impl Iterator<Item = &DaemonId> {
         self.daemons.keys().filter(|id| id.machine_id().is_none())
     }
@@ -115,6 +139,15 @@ pub(crate) struct DaemonConnection {
     /// connection's `DaemonExit` from a freshly re-registered connection
     /// that reused the same `DaemonId` (daemon reconnect race, #2392).
     pub(crate) connection_id: Uuid,
+    /// The zenoh endpoint this daemon reported as bound, handed to daemons
+    /// that register later so they can dial it.
+    ///
+    /// `None` until the daemon reports one, and it only reports a listener it
+    /// verified as bound — so an entry here always has something behind it.
+    /// Lives on the connection rather than in a side map so it is pruned with
+    /// the connection: a daemon that dropped must not keep being advertised,
+    /// and a restarted one replaces its own stale entry on re-register.
+    pub(crate) zenoh_listen_endpoint: Option<String>,
 }
 
 /// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
@@ -143,6 +176,7 @@ impl DaemonConnection {
             // conservative default keeps non-registration constructors safe
             supports_hub_sources: false,
             connection_id: Uuid::new_v4(),
+            zenoh_listen_endpoint: None,
         }
     }
 
@@ -764,5 +798,128 @@ mod send_and_receive_tests {
             err.to_string().contains("daemon blew up"),
             "error should carry the daemon's message, got: {err}"
         );
+    }
+}
+
+#[cfg(test)]
+mod zenoh_endpoint_registry_tests {
+    use super::*;
+
+    fn connection() -> DaemonConnection {
+        let (tx, _rx) = mpsc::channel(1);
+        DaemonConnection::new(tx, Arc::new(Mutex::new(HashMap::new())), BTreeMap::new())
+    }
+
+    fn daemon(machine: &str) -> DaemonId {
+        DaemonId::new(Some(machine.to_string()))
+    }
+
+    /// The joining daemon is handed every *other* daemon's endpoint. This is
+    /// the whole mechanism: without it a multi-machine deployment has to name
+    /// each daemon's address on every other daemon's command line.
+    #[test]
+    fn a_joining_daemon_is_given_the_endpoints_of_the_daemons_before_it() {
+        let mut connections = DaemonConnections::default();
+        let (a, b) = (daemon("A"), daemon("B"));
+        connections.add(a.clone(), connection());
+        connections.add(b.clone(), connection());
+        connections.set_zenoh_endpoint(&a, Some("tcp/10.0.2.100:5456".into()));
+        connections.set_zenoh_endpoint(&b, Some("tcp/10.0.2.101:5456".into()));
+
+        let mut given = connections.zenoh_endpoints_for(&daemon("C"));
+        given.sort();
+        assert_eq!(given, ["tcp/10.0.2.100:5456", "tcp/10.0.2.101:5456"]);
+    }
+
+    /// A daemon must never be told to dial itself. On re-registration its old
+    /// connection is still in the map when the reply is built, and that
+    /// endpoint is either its own or a dead one from the previous process.
+    #[test]
+    fn a_re_registering_daemon_is_not_told_to_dial_itself() {
+        let mut connections = DaemonConnections::default();
+        let a = daemon("A");
+        connections.add(a.clone(), connection());
+        connections.set_zenoh_endpoint(&a, Some("tcp/10.0.2.100:5456".into()));
+
+        assert!(connections.zenoh_endpoints_for(&a).is_empty());
+    }
+
+    /// The ordering the whole mechanism rests on: a daemon's endpoint is set on
+    /// its connection *before* that connection is added, so it is already
+    /// visible to the next daemon's register reply. The coordinator's event
+    /// loop handles registrations one at a time, so two daemons starting
+    /// simultaneously are ordered by it and the later one always sees the
+    /// earlier — there is no window in which both see nothing.
+    #[test]
+    fn an_endpoint_registered_with_the_connection_is_visible_to_the_next_daemon() {
+        let mut connections = DaemonConnections::default();
+
+        // What the register handler does for daemon A.
+        let mut conn_a = connection();
+        conn_a.zenoh_listen_endpoint = Some("tcp/10.0.2.100:5456".into());
+        connections.add(daemon("A"), conn_a);
+
+        // B registers immediately afterwards, before A has confirmed anything.
+        assert_eq!(
+            connections.zenoh_endpoints_for(&daemon("B")),
+            ["tcp/10.0.2.100:5456"],
+        );
+    }
+
+    /// A daemon whose listener failed to bind withdraws its endpoint, so it
+    /// stops being handed to daemons that register later. Without this the
+    /// coordinator would keep advertising a port with nothing behind it.
+    #[test]
+    fn a_withdrawn_endpoint_is_no_longer_handed_out() {
+        let mut connections = DaemonConnections::default();
+        let a = daemon("A");
+        let mut conn_a = connection();
+        conn_a.zenoh_listen_endpoint = Some("tcp/10.0.2.100:5456".into());
+        connections.add(a.clone(), conn_a);
+
+        connections.set_zenoh_endpoint(&a, None);
+
+        assert!(connections.zenoh_endpoints_for(&daemon("B")).is_empty());
+    }
+
+    /// A daemon that has not reported an endpoint contributes none. It has
+    /// either not opened its session yet or bound loopback, and advertising a
+    /// loopback endpoint would point a remote peer at its own machine.
+    #[test]
+    fn a_daemon_without_a_reported_endpoint_contributes_nothing() {
+        let mut connections = DaemonConnections::default();
+        let (a, b) = (daemon("A"), daemon("B"));
+        connections.add(a.clone(), connection());
+        connections.add(b.clone(), connection());
+        connections.set_zenoh_endpoint(&b, Some("tcp/10.0.2.101:5456".into()));
+
+        assert_eq!(
+            connections.zenoh_endpoints_for(&daemon("C")),
+            ["tcp/10.0.2.101:5456"]
+        );
+    }
+
+    /// A dropped daemon stops being advertised, because the endpoint lives on
+    /// the connection rather than in a side map that would have to be pruned
+    /// separately.
+    #[test]
+    fn removing_a_daemon_withdraws_its_endpoint() {
+        let mut connections = DaemonConnections::default();
+        let a = daemon("A");
+        connections.add(a.clone(), connection());
+        connections.set_zenoh_endpoint(&a, Some("tcp/10.0.2.100:5456".into()));
+        connections.remove(&a);
+
+        assert!(connections.zenoh_endpoints_for(&daemon("C")).is_empty());
+    }
+
+    /// Setting an endpoint for a daemon that is not connected is a no-op
+    /// rather than an insertion: a late report from a connection the
+    /// coordinator has already dropped must not resurrect it.
+    #[test]
+    fn reporting_an_endpoint_for_an_unknown_daemon_is_ignored() {
+        let mut connections = DaemonConnections::default();
+        connections.set_zenoh_endpoint(&daemon("ghost"), Some("tcp/10.0.2.100:5456".into()));
+        assert!(connections.zenoh_endpoints_for(&daemon("C")).is_empty());
     }
 }

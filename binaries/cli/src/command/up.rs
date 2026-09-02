@@ -28,6 +28,17 @@ pub struct Up {
     /// this token to connect.
     #[clap(long)]
     auth: bool,
+    /// Network interface the coordinator binds to.
+    ///
+    /// Defaults to loopback, which keeps a development coordinator off the
+    /// network. Pass a routable address (or `0.0.0.0`) when daemons on other
+    /// machines have to reach it — a loopback coordinator refuses their
+    /// connections, and the daemon only reports a connect timeout.
+    ///
+    /// This is the *bind* address. `DORA_COORDINATOR_ADDR` stays the address
+    /// this and every other lifecycle command connects to.
+    #[clap(long, value_name = "IP", env = "DORA_COORDINATOR_INTERFACE")]
+    interface: Option<std::net::IpAddr>,
     /// Archive the default coordinator store before starting a fresh coordinator.
     ///
     /// Use this after an upgrade when the on-disk schema is incompatible.
@@ -39,7 +50,12 @@ pub struct Up {
 impl Executable for Up {
     fn execute(self) -> eyre::Result<()> {
         default_tracing()?;
-        up(self.config.as_deref(), self.auth, self.recreate_store)
+        up(
+            self.config.as_deref(),
+            self.auth,
+            self.recreate_store,
+            self.interface,
+        )
     }
 }
 
@@ -47,21 +63,52 @@ impl Executable for Up {
 #[serde(deny_unknown_fields)]
 struct UpConfig {}
 
-pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -> eyre::Result<()> {
+pub(crate) fn up(
+    config_path: Option<&Path>,
+    auth: bool,
+    recreate_store: bool,
+    interface: Option<std::net::IpAddr>,
+) -> eyre::Result<()> {
     let UpConfig {} = parse_dora_config(config_path)?;
     // Surface a malformed value instead of silently falling back to the
     // default: every other lifecycle command reads these env vars through
     // clap's typed `env=` on `CoordinatorOptions`, which errors on an
     // unparseable value. If `dora up` quietly ignored a typo it would bind a
     // different port than `dora stop`/`list`/`down` then look for.
-    let addr: std::net::IpAddr = coordinator_env_value("DORA_COORDINATOR_ADDR", LOCALHOST)?;
+    // A coordinator bound to a concrete non-loopback interface does *not*
+    // accept connections on loopback, so that interface is also the address
+    // this command — and the readiness poll below, which would otherwise time
+    // out and kill the coordinator it just started — has to connect to. The
+    // wildcard is the exception: it covers loopback too, so the default stands.
+    //
+    // An explicit `DORA_COORDINATOR_ADDR` still wins: it is how a user points
+    // these commands at a coordinator reachable under a different address than
+    // the one it binds (a NAT, a container port mapping).
+    let env_addr: Option<std::net::IpAddr> = coordinator_env_opt("DORA_COORDINATOR_ADDR")?;
+    let addr = connect_addr_for(env_addr, interface)?;
     let port: u16 =
         coordinator_env_value("DORA_COORDINATOR_PORT", DORA_COORDINATOR_PORT_WS_DEFAULT)?;
     let coordinator_addr = (addr, port).into();
-    if recreate_store && !addr.is_loopback() {
+    // The port is passed explicitly so the spawned coordinator binds the same
+    // one every other lifecycle command connects to; without it a
+    // `DORA_COORDINATOR_PORT` set only in this process's environment would be
+    // read by the child too, but a `--port` on the command line would not.
+    let spawn = CoordinatorSpawn {
+        interface,
+        port: Some(port),
+        auth,
+    };
+    // Keyed off the *explicit* env var rather than `addr`: a `--interface`
+    // pointing at one of this machine's own addresses still means a local
+    // store, and refusing it would be wrong. Only a user-supplied address can
+    // mean "some other machine's coordinator".
+    if recreate_store
+        && let Some(env_addr) = env_addr
+        && !env_addr.is_loopback()
+    {
         bail!(
             "--recreate-store only applies to the local default coordinator store, \
-             but DORA_COORDINATOR_ADDR is set to the non-loopback address {addr}\n\n  \
+             but DORA_COORDINATOR_ADDR is set to the non-loopback address {env_addr}\n\n  \
              hint: unset DORA_COORDINATOR_ADDR, or run this command on the machine \
              that hosts the coordinator store"
         );
@@ -80,15 +127,34 @@ pub(crate) fn up(config_path: Option<&Path>, auth: bool, recreate_store: bool) -
                 Err(err) => {
                     ensure_no_listener_before_archive(coordinator_addr, err)?;
                     archive_default_coordinator_store()?;
-                    start_and_wait_for_coordinator(coordinator_addr, port, auth)?
+                    start_and_wait_for_coordinator(coordinator_addr, port, spawn)?
                 }
             }
         }
-        Err(_) => start_and_wait_for_coordinator(coordinator_addr, port, auth)?,
+        Err(_) => {
+            ensure_no_coordinator_elsewhere_on_port(coordinator_addr, interface)?;
+            start_and_wait_for_coordinator(coordinator_addr, port, spawn)?
+        }
     };
 
     if !daemon_running(&session)? {
-        start_daemon().wrap_err("failed to start dora-daemon")?;
+        // A wildcard bind has no single address to hand the daemon, so it stays
+        // on loopback: its nodes are then reachable only through the
+        // daemon-forwarded path from other machines. Naming a concrete
+        // interface instead gives remote daemons something to dial.
+        // `addr` — not `interface` — because that is the address this daemon
+        // must actually reach the coordinator at, and the one it derives its
+        // zenoh bind from.
+        let daemon_coordinator_addr =
+            Some(addr).filter(|i| !i.is_loopback() && !i.is_unspecified());
+        if interface.is_some_and(|i| i.is_unspecified()) {
+            println!(
+                "note: the local daemon's zenoh listener stays on loopback with a wildcard \
+                 --interface; pass this machine's address (e.g. --interface 192.168.1.10) \
+                 so daemons on other machines can dial its nodes directly"
+            );
+        }
+        start_daemon(daemon_coordinator_addr, port).wrap_err("failed to start dora-daemon")?;
 
         // wait a bit until daemon is connected
         let mut i = 0;
@@ -123,6 +189,49 @@ where
     parse_coordinator_env(var_name, std::env::var(var_name).ok().as_deref(), default)
 }
 
+/// The address `dora up` — and its readiness poll — connects to.
+///
+/// `--interface` is the *bind* address; this is the one to reach it on. They
+/// are not interchangeable: a coordinator bound to a concrete non-loopback
+/// address does not answer on loopback, so polling loopback would time out and
+/// kill the coordinator we just started, reporting "is port N already in use?"
+/// — which names the wrong cause entirely.
+///
+/// A wildcard bind covers loopback, so the default stands there. An explicit
+/// `DORA_COORDINATOR_ADDR` wins, since it is how a user points these commands
+/// at a coordinator reachable under a different address than the one it binds
+/// (a NAT, a container port mapping) — except when it contradicts a concrete
+/// `--interface`, which is a mistake worth naming rather than silently
+/// resolving into a startup timeout.
+fn connect_addr_for(
+    env_addr: Option<std::net::IpAddr>,
+    interface: Option<std::net::IpAddr>,
+) -> eyre::Result<std::net::IpAddr> {
+    let bound_concretely = interface.filter(|i| !i.is_unspecified());
+    match (env_addr, bound_concretely) {
+        (Some(env), Some(iface)) if env != iface => bail!(
+            "DORA_COORDINATOR_ADDR is {env} but --interface is {iface}, so the \
+             coordinator would bind {iface} and answer nowhere else while every \
+             command looked for it on {env}\n\n  \
+             hint: drop one of them, or set DORA_COORDINATOR_ADDR={iface}"
+        ),
+        (Some(env), _) => Ok(env),
+        (None, Some(iface)) => Ok(iface),
+        (None, None) => Ok(LOCALHOST),
+    }
+}
+
+/// Like [`coordinator_env_value`], but reports whether the variable was set at
+/// all, for callers whose default depends on other flags. A present-but-
+/// unparseable value is still a hard error.
+fn coordinator_env_opt<T>(var_name: &str) -> eyre::Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
+    parse_coordinator_env_opt(var_name, std::env::var(var_name).ok().as_deref())
+}
+
 /// Testable core of [`coordinator_env_value`], split out so tests can supply a
 /// raw value without touching the process-global environment.
 fn parse_coordinator_env<T>(var_name: &str, raw: Option<&str>, default: T) -> eyre::Result<T>
@@ -130,11 +239,22 @@ where
     T: std::str::FromStr,
     T::Err: std::fmt::Display,
 {
+    Ok(parse_coordinator_env_opt(var_name, raw)?.unwrap_or(default))
+}
+
+/// Parsing core shared by both accessors: an absent variable is `None`, a
+/// present but unparseable one is an error.
+fn parse_coordinator_env_opt<T>(var_name: &str, raw: Option<&str>) -> eyre::Result<Option<T>>
+where
+    T: std::str::FromStr,
+    T::Err: std::fmt::Display,
+{
     match raw {
         Some(s) => s
             .parse()
+            .map(Some)
             .map_err(|e| eyre::eyre!("invalid {var_name}: {s:?} ({e})")),
-        None => Ok(default),
+        None => Ok(None),
     }
 }
 
@@ -162,18 +282,73 @@ fn ensure_no_listener_before_archive(
     coordinator_addr: SocketAddr,
     connect_err: eyre::Report,
 ) -> eyre::Result<()> {
-    if std::net::TcpStream::connect_timeout(&coordinator_addr, Duration::from_secs(1)).is_ok() {
-        return Err(connect_err.wrap_err(format!(
-            "refusing to archive the coordinator store: a process is listening on \
-             {coordinator_addr} but the connection failed\n\n  \
-             hint: resolve the connection error below (e.g. an auth token mismatch), \
-             or stop the coordinator with `dora down` before recreating the store"
-        )));
+    // Probe loopback as well as the address we tried to reach. The store being
+    // archived is this machine's *default* one, and the coordinator holding it
+    // may well be bound somewhere we were not looking: a plain `dora up` binds
+    // loopback, so a later `dora up --recreate-store --interface <routable IP>`
+    // would find nothing at the routable address and rename the redb file out
+    // from under that live coordinator. Any listener on this port locally is
+    // reason enough to refuse.
+    let loopback = SocketAddr::from((LOCALHOST, coordinator_addr.port()));
+    // Deduplicated: on the default path both entries are loopback, and probing
+    // it twice doubles the wait wherever the port is DROP-filtered rather than
+    // refused.
+    let mut probes = vec![coordinator_addr];
+    if coordinator_addr != loopback {
+        probes.push(loopback);
+    }
+    for addr in probes {
+        if std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(1)).is_ok() {
+            return Err(connect_err.wrap_err(format!(
+                "refusing to archive the coordinator store: a process is listening on \
+                 {addr} but the connection failed\n\n  \
+                 hint: resolve the connection error below (e.g. an auth token mismatch), \
+                 or stop the coordinator with `dora down` before recreating the store"
+            )));
+        }
     }
     Ok(())
 }
 
-struct CoordinatorStartup {
+/// Refuse to start a second coordinator when one already holds this port at a
+/// different local address.
+///
+/// `--interface` moved the address we probe, so a coordinator started by a
+/// plain `dora up` (loopback) is invisible to the probe above. Spawning anyway
+/// produces a child that dies on the redb lock and surfaces as "coordinator
+/// exited before it became ready", which says nothing about the real cause.
+///
+/// Only the loopback/derived pair is checked, which is what distinguishes the
+/// two `dora up` invocations from each other; a coordinator on some third
+/// interface still falls through to the port-in-use error.
+fn ensure_no_coordinator_elsewhere_on_port(
+    coordinator_addr: SocketAddr,
+    interface: Option<std::net::IpAddr>,
+) -> eyre::Result<()> {
+    // Only when `--interface` is what moved us off loopback. A plain
+    // `DORA_COORDINATOR_ADDR` pointing elsewhere is a deliberate "reach the
+    // coordinator over there", and the hint below ("drop --interface") would
+    // name a flag the user never passed.
+    if interface.is_none() {
+        return Ok(());
+    }
+    let loopback = SocketAddr::from((LOCALHOST, coordinator_addr.port()));
+    if coordinator_addr == loopback {
+        return Ok(());
+    }
+    if std::net::TcpStream::connect_timeout(&loopback, Duration::from_secs(1)).is_ok() {
+        bail!(
+            "a coordinator is already running on port {} bound to loopback, so it \
+             cannot be reached at {coordinator_addr}\n\n  \
+             hint: stop it with `dora down` and re-run, or drop --interface to \
+             attach to the loopback coordinator",
+            coordinator_addr.port()
+        );
+    }
+    Ok(())
+}
+
+pub(crate) struct CoordinatorStartup {
     child: std::process::Child,
     /// `None` when the capture file could not be created; startup proceeds
     /// without stderr in error reports rather than failing.
@@ -183,13 +358,13 @@ struct CoordinatorStartup {
 fn start_and_wait_for_coordinator(
     coordinator_addr: SocketAddr,
     port: u16,
-    auth: bool,
+    spawn: CoordinatorSpawn,
 ) -> eyre::Result<crate::ws_client::WsSession> {
-    let startup = start_coordinator(auth).wrap_err("failed to start dora-coordinator")?;
+    let startup = spawn_coordinator(spawn).wrap_err("failed to start dora-coordinator")?;
     wait_for_coordinator_start(coordinator_addr, port, startup)
 }
 
-fn wait_for_coordinator_start(
+pub(crate) fn wait_for_coordinator_start(
     coordinator_addr: SocketAddr,
     port: u16,
     mut startup: CoordinatorStartup,
@@ -545,16 +720,104 @@ fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrRe
     Ok(config)
 }
 
-pub(crate) fn dora_executable_path() -> eyre::Result<std::ffi::OsString> {
-    if cfg!(feature = "python") {
-        // When invoked via Python wrapper, argv[1] is the real dora binary path
-        std::env::args_os()
-            .nth(1)
-            .context("could not get dora path from Python wrapper arguments")
+/// Path to the `dora` console script recorded by the `dora-rs-cli` wheel's
+/// `py_main`. See [`set_python_executable_path`].
+static PYTHON_EXECUTABLE_PATH: std::sync::OnceLock<std::ffi::OsString> = std::sync::OnceLock::new();
+
+/// Record the console-script/executable path (`sys.argv[0]`) that the wheel's
+/// `py_main` was launched with, so [`dora_executable_path`] can re-spawn the
+/// real `dora` binary (`dora coordinator`, `dora daemon`, …).
+///
+/// `sys.argv[0]` is the robust source on **both** platforms: pip's launcher
+/// puts the console-script path there on Unix and the `dora.exe` path there on
+/// Windows. This is called from [`crate::lib_main_from_argv`], the single entry
+/// point both the wheel and the standalone binary go through.
+pub(crate) fn set_python_executable_path(path: std::ffi::OsString) {
+    // First writer wins; a second call (there is none in practice) is ignored.
+    let _ = PYTHON_EXECUTABLE_PATH.set(path);
+}
+
+/// Decide which executable to re-spawn as `dora`.
+///
+/// Split out from [`dora_executable_path`] so the platform-independent decision
+/// is unit-testable without the `python` feature compiled in.
+///
+/// - From the Python wrapper (`dora-rs-cli` wheel): use the recorded
+///   `sys.argv[0]`. `current_exe()` is wrong there — inside the embedded
+///   interpreter it returns the Python interpreter on Unix, so spawning it would
+///   run `python coordinator`. The previous `args_os().nth(1)` was also wrong on
+///   Windows, where the process argv has no interpreter entry and `nth(1)` is
+///   the subcommand (e.g. `"up"`) rather than the dora path (#3327).
+/// - Standalone binary: use `current_exe()`.
+fn choose_executable_path(
+    from_python_wrapper: bool,
+    recorded: Option<std::ffi::OsString>,
+    current_exe: impl FnOnce() -> std::io::Result<PathBuf>,
+) -> eyre::Result<std::ffi::OsString> {
+    if from_python_wrapper {
+        recorded.context(
+            "could not determine the dora executable path from the Python wrapper \
+             (sys.argv[0] was not recorded)",
+        )
     } else {
-        std::env::current_exe()
+        current_exe()
             .map(Into::into)
             .wrap_err("could not determine dora executable path")
+    }
+}
+
+pub(crate) fn dora_executable_path() -> eyre::Result<std::ffi::OsString> {
+    choose_executable_path(
+        cfg!(feature = "python"),
+        PYTHON_EXECUTABLE_PATH.get().cloned(),
+        std::env::current_exe,
+    )
+}
+
+#[cfg(test)]
+mod executable_path_tests {
+    use super::choose_executable_path;
+    use std::ffi::OsString;
+    use std::path::PathBuf;
+
+    #[test]
+    fn python_wrapper_uses_recorded_argv0() {
+        // In the wheel, the recorded `sys.argv[0]` (the console-script path) must
+        // be used verbatim -- not `current_exe()`, which would be the embedded
+        // Python interpreter on Unix.
+        let path = choose_executable_path(true, Some(OsString::from("/opt/venv/bin/dora")), || {
+            panic!("current_exe must not be consulted for the Python wrapper")
+        })
+        .expect("recorded path should resolve");
+        assert_eq!(path, OsString::from("/opt/venv/bin/dora"));
+    }
+
+    #[test]
+    fn python_wrapper_without_recorded_path_errors() {
+        let err = choose_executable_path(true, None, || Ok(PathBuf::from("/should/not/be/used")))
+            .expect_err("missing recorded path must be an error, not a wrong fallback");
+        assert!(
+            format!("{err:#}").contains("Python wrapper"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn standalone_binary_uses_current_exe() {
+        let path = choose_executable_path(false, None, || Ok(PathBuf::from("/usr/bin/dora")))
+            .expect("current_exe should resolve");
+        assert_eq!(path, OsString::from("/usr/bin/dora"));
+    }
+
+    #[test]
+    fn standalone_binary_ignores_any_recorded_path() {
+        // Even if a path was recorded, the standalone binary trusts `current_exe`.
+        let path =
+            choose_executable_path(false, Some(OsString::from("/opt/venv/bin/dora")), || {
+                Ok(PathBuf::from("/usr/bin/dora"))
+            })
+            .expect("current_exe should resolve");
+        assert_eq!(path, OsString::from("/usr/bin/dora"));
     }
 }
 
@@ -576,11 +839,39 @@ fn detach_process_with_stderr(cmd: &mut Command, stderr: impl Into<Stdio>) {
     }
 }
 
-fn start_coordinator(auth: bool) -> eyre::Result<CoordinatorStartup> {
+/// How a spawned `dora coordinator` child should be configured.
+///
+/// Both `dora up` and `dora cluster up` start a coordinator, and they used to
+/// do it with two independent implementations that disagreed on the most
+/// important default: `dora up` passed no `--interface` at all (so the child
+/// inherited loopback and no remote daemon could reach it) while
+/// `dora cluster up` passed `0.0.0.0`. The teardown half of the pair has been
+/// shared since `dora cluster down` started delegating to [`down`]; this is
+/// the same consolidation for startup.
+///
+/// `None` means "do not pass the flag", leaving the coordinator's own default.
+pub(crate) struct CoordinatorSpawn {
+    pub interface: Option<std::net::IpAddr>,
+    pub port: Option<u16>,
+    pub auth: bool,
+}
+
+pub(crate) fn spawn_coordinator(spawn: CoordinatorSpawn) -> eyre::Result<CoordinatorStartup> {
+    let CoordinatorSpawn {
+        interface,
+        port,
+        auth,
+    } = spawn;
     let path = dora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("coordinator");
     cmd.arg("--quiet");
+    if let Some(interface) = interface {
+        cmd.args(["--interface".to_string(), interface.to_string()]);
+    }
+    if let Some(port) = port {
+        cmd.args(["--port".to_string(), port.to_string()]);
+    }
     if auth {
         cmd.arg("--auth");
     }
@@ -596,16 +887,52 @@ fn start_coordinator(auth: bool) -> eyre::Result<CoordinatorStartup> {
          hint: ensure the `dora` binary is in your PATH",
     )?;
 
-    println!("started dora coordinator");
+    match interface {
+        Some(interface) if !interface.is_loopback() && !interface.is_unspecified() => {
+            // Every other lifecycle command (`list`, `logs`, `stop`, `start`,
+            // `down`) defaults `--coordinator-addr` to loopback, where a
+            // coordinator bound to a concrete address does not answer. `dora up`
+            // derives its own connect address from `--interface`; the rest
+            // cannot, so say plainly what they need.
+            println!("started dora coordinator on {interface} (reachable from other machines)");
+            println!(
+                "  other commands default to loopback — export \
+                 DORA_COORDINATOR_ADDR={interface} (or pass --coordinator-addr {interface})"
+            );
+        }
+        Some(interface) if !interface.is_loopback() => {
+            println!("started dora coordinator on {interface} (reachable from other machines)");
+        }
+        _ => println!("started dora coordinator"),
+    }
 
     Ok(CoordinatorStartup { child, stderr })
 }
 
-fn start_daemon() -> eyre::Result<()> {
+/// Start the local daemon that `dora up` manages.
+///
+/// `coordinator_addr` is the address the daemon should use to reach the
+/// coordinator. It is not merely how the daemon connects: the daemon derives
+/// the address its *zenoh* listener binds from it (the local address that
+/// routes toward the coordinator), and a loopback coordinator therefore yields
+/// a loopback listener that no other machine can dial. Passing the routable
+/// interface through is what lets a daemon on another machine reach this one
+/// directly instead of falling back to multicast — see `zenoh_bind_address_for`.
+///
+/// `None` leaves the daemon's own default (loopback), which is what a
+/// single-machine `dora up` wants.
+fn start_daemon(coordinator_addr: Option<std::net::IpAddr>, port: u16) -> eyre::Result<()> {
     let path = dora_executable_path()?;
     let mut cmd = Command::new(path);
     cmd.arg("daemon");
     cmd.arg("--quiet");
+    // Passed explicitly for the same reason the coordinator's is: relying on
+    // environment inheritance means a port resolved here from a flag rather
+    // than a variable would not reach the child.
+    cmd.args(["--coordinator-port".to_string(), port.to_string()]);
+    if let Some(addr) = coordinator_addr {
+        cmd.args(["--coordinator-addr".to_string(), addr.to_string()]);
+    }
     detach_process(&mut cmd);
     cmd.spawn().wrap_err(
         "failed to run `dora daemon`\n\n  \
@@ -621,11 +948,76 @@ fn start_daemon() -> eyre::Result<()> {
 #[cfg(feature = "redb-backend")]
 mod tests {
     use super::{
-        archive_coordinator_store, available_backup_path, ensure_no_listener_before_archive,
-        lock_coordinator_store_recreation,
+        LOCALHOST, archive_coordinator_store, available_backup_path, connect_addr_for,
+        ensure_no_listener_before_archive, lock_coordinator_store_recreation,
     };
     use std::sync::mpsc;
     use std::time::Duration;
+
+    /// The crux of the `--interface` handling: the address we poll for
+    /// readiness has to be one the coordinator actually answers on, or `dora up`
+    /// kills the coordinator it just started and blames the port.
+    #[test]
+    fn connect_address_follows_a_concrete_bind_interface() {
+        use std::net::IpAddr;
+        let iface: IpAddr = "192.168.1.10".parse().unwrap();
+
+        // Nothing configured: loopback, exactly as before this flag existed.
+        assert_eq!(connect_addr_for(None, None).unwrap(), LOCALHOST);
+        // A concrete bind is also where it answers.
+        assert_eq!(connect_addr_for(None, Some(iface)).unwrap(), iface);
+        // A wildcard bind covers loopback, so the default stands.
+        assert_eq!(
+            connect_addr_for(None, Some("0.0.0.0".parse().unwrap())).unwrap(),
+            LOCALHOST
+        );
+        // An explicit env var wins — that is how a NAT or port mapping is
+        // expressed — including alongside a wildcard bind.
+        let env: IpAddr = "10.9.9.9".parse().unwrap();
+        assert_eq!(connect_addr_for(Some(env), None).unwrap(), env);
+        assert_eq!(
+            connect_addr_for(Some(env), Some("0.0.0.0".parse().unwrap())).unwrap(),
+            env
+        );
+        // Agreeing values are not a conflict.
+        assert_eq!(connect_addr_for(Some(iface), Some(iface)).unwrap(), iface);
+    }
+
+    /// A contradiction is named rather than resolved into a startup timeout:
+    /// `DORA_COORDINATOR_ADDR=127.0.0.1` in a shell profile plus
+    /// `--interface <routable>` used to bind one address and poll another.
+    #[test]
+    fn a_bind_interface_contradicting_the_connect_address_is_rejected() {
+        let err = connect_addr_for(Some(LOCALHOST), Some("192.168.1.10".parse().unwrap()))
+            .expect_err("contradicting addresses must be refused");
+        let msg = format!("{err}");
+        assert!(msg.contains("DORA_COORDINATOR_ADDR"), "{msg}");
+        assert!(msg.contains("--interface"), "{msg}");
+    }
+
+    /// A coordinator bound to loopback must block the archive even when the
+    /// address we failed to connect to was a different one.
+    ///
+    /// `dora up --recreate-store --interface <routable IP>` connects to that
+    /// routable address; a coordinator started by a plain `dora up` earlier is
+    /// listening on loopback and never sees that probe. Probing only the
+    /// address we tried would archive the redb file out from under it.
+    #[test]
+    fn archive_refused_when_a_coordinator_holds_the_port_on_loopback_only() {
+        let listener =
+            std::net::TcpListener::bind("127.0.0.1:0").expect("bind loopback coordinator stand-in");
+        let port = listener.local_addr().expect("read local addr").port();
+
+        // A routable-looking address on the same port, which nothing is bound
+        // to — exactly what `--interface <routable IP>` would hand us.
+        let unbound: std::net::SocketAddr = format!("10.255.255.1:{port}").parse().unwrap();
+        let result = ensure_no_listener_before_archive(unbound, eyre::eyre!("connection refused"));
+
+        assert!(
+            result.is_err(),
+            "archive must be refused while a coordinator holds port {port} on loopback"
+        );
+    }
 
     #[test]
     fn archive_refused_while_store_file_is_locked() {

@@ -431,9 +431,10 @@ impl ResolvedNodeExt for ResolvedNode {
             CoreNodeKind::Custom(n) => n.max_rotated_files,
         };
         if let Some(n) = value {
-            if n == 0 {
-                bail!("`max_rotated_files` must be at least 1");
-            }
+            // 0 is meaningful: keep the active log only, rotating the previous
+            // one away rather than retaining it. That matches the documented
+            // disk bound `max_log_size * (1 + max_rotated_files)`, which at 0
+            // is one active file.
             if n > 100 {
                 bail!("`max_rotated_files` must not exceed 100");
             }
@@ -1459,28 +1460,7 @@ operators:
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {
-        dora_message::descriptor::CustomNode {
-            path: "node".to_string(),
-            source: dora_message::descriptor::NodeSource::Local,
-            path_sha256: None,
-            args: None,
-            envs: None,
-            build: None,
-            send_stdout_as: None,
-            send_logs_as: None,
-            min_log_level: None,
-            max_log_size: None,
-            max_rotated_files: None,
-            restart_policy: Default::default(),
-            max_restarts: 0,
-            restart_delay: None,
-            max_restart_delay: None,
-            restart_window: None,
-            health_check_timeout: None,
-            startup_timeout: None,
-            finish_grace_secs: None,
-            run_config: serde_yaml::from_str("{}").unwrap(),
-        }
+        dora_message::descriptor::CustomNode::new("node".to_string())
     }
 
     #[test]
@@ -3158,6 +3138,23 @@ nodes:
                 "expected '{expected}' to be mentioned in error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn max_rotated_files_accepts_zero_and_still_caps_at_100() {
+        let node = |n: u32| -> ResolvedNode {
+            let mut custom = custom_node();
+            custom.max_rotated_files = Some(n);
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
+        };
+
+        // 0 is a real configuration: keep the active log only, rotating the
+        // previous one away. The documented disk bound
+        // `max_log_size * (1 + max_rotated_files)` is one file at 0.
+        assert_eq!(node(0).max_rotated_files().unwrap(), Some(0));
+        // The upper bound is unchanged.
+        assert_eq!(node(100).max_rotated_files().unwrap(), Some(100));
+        assert!(node(101).max_rotated_files().is_err());
     }
 }
 

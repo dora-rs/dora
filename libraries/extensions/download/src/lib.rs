@@ -120,10 +120,20 @@ fn split_disposition_params(header: &str) -> impl Iterator<Item = &str> {
 /// query string and fragment (e.g. the long presigned-URL parameters that S3
 /// and GitHub-release redirects append) never leak into the name. Returns
 /// `None` when the URL has no non-empty path segment.
+///
+/// `Url::path_segments` yields segments in their percent-*encoded* form, so the
+/// chosen segment is decoded before use: a download from `.../my%20model.bin`
+/// must land on disk as `my model.bin`, not the literal `my%20model.bin`. Bytes
+/// that do not form valid UTF-8 after decoding become the Unicode replacement
+/// character (`decode_utf8_lossy`) rather than dropping the name; the result is
+/// still vetted by `sanitize_filename`.
 fn filename_from_url(url: &reqwest::Url) -> Option<String> {
-    url.path_segments()?
-        .rfind(|segment| !segment.is_empty())
-        .map(|segment| segment.to_string())
+    let segment = url.path_segments()?.rfind(|segment| !segment.is_empty())?;
+    Some(
+        percent_encoding::percent_decode_str(segment)
+            .decode_utf8_lossy()
+            .into_owned(),
+    )
 }
 
 /// Sanitize a candidate filename: strip path components to prevent traversal,
@@ -325,6 +335,17 @@ mod tests {
         assert_eq!(
             name_from("https://example.com/a/b/weights.safetensors"),
             Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_percent_decoded() {
+        // Regression: `Url::path_segments` returns percent-encoded segments, so
+        // a URL ending in `my%20model.bin` must be decoded to `my model.bin`
+        // rather than saved as the literal `my%20model.bin`.
+        assert_eq!(
+            name_from("https://example.com/models/my%20model.bin"),
+            Some("my model.bin".to_string())
         );
     }
 

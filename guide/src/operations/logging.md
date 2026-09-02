@@ -507,7 +507,7 @@ The `dora logs --local` command automatically reads all rotated files for a node
 
 ### `max_rotated_files`
 
-Control how many rotated log files to keep (default: 5, range: 1-100).
+Control how many rotated log files to keep (default: 5, range: 0-100).
 
 ```yaml
 nodes:
@@ -518,6 +518,8 @@ nodes:
 ```
 
 With `max_rotated_files: 10` and `max_log_size: "50MB"`, maximum disk usage is `50MB * 11` = 550MB per node. Lower values save disk space; higher values preserve more history.
+
+Set `max_rotated_files: 0` to keep no history at all: the active log is rotated away rather than renamed, so disk usage stays at one `max_log_size` file per node.
 
 ### Runtime Node Restrictions
 
@@ -898,7 +900,7 @@ nodes:
 
     # Log file rotation
     max_log_size: "50MB"         # rotate when file exceeds 50MB
-    max_rotated_files: 5         # keep 5 rotated files (default, range 1-100)
+    max_rotated_files: 5         # keep 5 rotated files (default, range 0-100)
 
     inputs:
       tick: dora/timer/millis/100
@@ -1259,7 +1261,7 @@ nodes:
 
 **Set `min_log_level` in production.** Source-level filtering at the daemon prevents debug noise from reaching log files and the network. This is the most effective way to reduce log volume since it filters before any I/O.
 
-**Always set `max_log_size` for long-running dataflows.** Without rotation, a single noisy node can fill the disk. Start with `"50MB"` (300MB total per node with rotation) and adjust based on your storage budget. Use `max_rotated_files` to tune how much history to keep (default 5, range 1-100).
+**Always set `max_log_size` for long-running dataflows.** Without rotation, a single noisy node can fill the disk. Start with `"50MB"` (300MB total per node with rotation) and adjust based on your storage budget. Use `max_rotated_files` to tune how much history to keep (default 5, range 0-100).
 
 **Use environment variables for team defaults.** Set `DORA_LOG_LEVEL` and `DORA_LOG_FORMAT` in your shell profile or CI configuration. Individual developers can override with CLI flags.
 

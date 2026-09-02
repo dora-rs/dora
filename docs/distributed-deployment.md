@@ -1,6 +1,6 @@
 # Distributed Deployment Guide
 
-Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices.
+Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices. For the network between the machines — how the daemons find each other on a LAN, on a VPN mesh, or across NAT with zenoh routers — start with the [Multi-machine Guide](multi-machine.md).
 
 ## Table of Contents
 
@@ -157,6 +157,51 @@ machines:
 > address a daemon binds, and remote daemons dial exactly that; since zenoh 1.9
 > peers do not relay for each other, a pair that cannot form a direct link has no
 > fallback and silently exchanges nothing.
+>
+> **The coordinator wires this automatically.** Each daemon derives the address
+> its peers should dial from `--coordinator-addr` (the local address that routes
+> toward the coordinator — the LAN address on a LAN, the tunnel address on a mesh
+> VPN), sends it along with its registration, and receives in return the
+> endpoints of the daemons that registered before it. (It confirms the endpoint
+> once its listener is verified, and withdraws it if the bind failed, so a dead
+> endpoint is not handed out for long.) Each daemon
+> dialing the ones that preceded it builds the full clique, so a deployment where
+> every daemon can reach the coordinator needs no zenoh configuration at all —
+> not even on a network without multicast.
+>
+> Only a *routable* listener is distributed: a daemon that bound loopback (which
+> is what a coordinator on `127.0.0.1` yields) reports nothing, because handing
+> `127.0.0.1` to another machine would point it at its own loopback. That is why
+> a coordinator meant to serve remote daemons must bind a routable address —
+> `dora up --interface <IP>`, or `dora cluster up`, which does it for you.
+>
+> Daemons may start in any order and all at once: each advertises its endpoint
+> in its own registration, and the coordinator processes registrations serially,
+> so the one that registers second is always handed the first one's address.
+>
+> Three residual gaps, all covered by multicast where it is available, which is
+> why it stays on by default:
+>
+> * The registry lives in the coordinator's memory, so a coordinator restart
+>   empties it until the daemons re-register (which they do automatically,
+>   re-advertising as they go). A *new* daemon registering during that gap can
+>   be handed an incomplete list. Existing daemons are unaffected — their zenoh
+>   links do not run through the coordinator and survive its restart.
+> * A daemon is handed endpoints once, at registration. If one of them is stale,
+>   that daemon has no way to recover: zenoh reads `connect/endpoints` at session
+>   open and never again. The advertising daemon withdraws a listener that failed
+>   to bind, which bounds the exposure for daemons registering *later*, but not
+>   for one that already has it.
+> * Discovery is one-directional by construction — only the joiner dials. Where
+>   a firewall permits connections in one direction only, the explicit
+>   `--zenoh-connect` mesh could still form the link from the reachable side,
+>   because both ends dial; this cannot. Name the endpoints explicitly for such
+>   a topology.
+>
+> The flags below remain for the cases the automatic path cannot cover: a
+> multi-homed host that would advertise the wrong interface (`--zenoh-listen`), a
+> deployment that must be wired before the coordinator is reachable, or a
+> topology with your own routers (`--zenoh-config-overlay`).
 >
 > When every machine has a dialable address, `dora cluster up` wires the daemons
 > into an explicit mesh: each one gets
@@ -335,9 +380,10 @@ dora cluster up <PATH>
 
 ```bash
 $ dora cluster up cluster.yml
-Starting coordinator on 10.0.0.1:6013...
-Starting daemon on robot (ubuntu@10.0.0.2)... OK
-Starting daemon on gpu-server (ubuntu@10.0.0.3)... OK
+started dora coordinator on 0.0.0.0 (reachable from other machines)
+Starting daemon on robot (ubuntu@10.0.0.2)
+Starting daemon on gpu-server (ubuntu@10.0.0.3)
+Waiting for 2 daemon(s) to connect...
 All 2 daemons connected.
 ```
 

@@ -72,8 +72,12 @@ pub struct Daemon {
     /// multicast graph can keep zenoh from binding its scouting group, which
     /// fails session startup outright.
     ///
-    /// Not for multi-daemon setups without `--zenoh-peer`: those discover each
-    /// other *by* multicast, and this would leave them unable to.
+    /// Safe for a multi-daemon setup as long as the daemons can reach the
+    /// coordinator: it hands each of them the endpoints of the daemons that
+    /// registered earlier, so they wire themselves without scouting. Only a
+    /// deployment that has no such path — daemons whose listeners are not
+    /// mutually dialable — still depends on multicast, and this would leave
+    /// those unable to find each other.
     ///
     /// Dynamic nodes need care too. They are started outside the daemon, so
     /// they inherit neither its environment nor a `DORA_ZENOH_CONNECT`, and

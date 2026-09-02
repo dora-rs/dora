@@ -8,7 +8,9 @@ pip install dora-rs
 ```.
 """
 
-from enum import Enum
+# Aliased private: a bare `from enum import Enum` also makes `dora.Enum`
+# importable, which was never intended to be part of the API.
+from enum import Enum as _Enum
 
 from .dora import *
 from .dora import (
@@ -35,7 +37,7 @@ except ImportError:
     pass
 
 
-class DoraStatus(Enum):
+class DoraStatus(_Enum):
     """Dora status to indicate if operator `on_input` loop should be stopped.
 
     Args:

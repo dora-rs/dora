@@ -762,6 +762,10 @@ fn check_capacity_gpu_pool(
 mod transport_tests {
     use super::*;
 
+    /// One row of the exhaustive `classify_transport` matrix:
+    /// `(src_dev, dst_dev, p2p, is_cuda)` paired with the expected path.
+    type TransportCase = ((i32, i32, bool, bool), TransportPath);
+
     // -- classify_transport -------------------------------------------------
 
     #[test]
@@ -814,7 +818,7 @@ mod transport_tests {
 
     #[test]
     fn classify_transport_full_8_case_matrix() {
-        let cases: &[((i32, i32, bool, bool), TransportPath)] = &[
+        let cases: &[TransportCase] = &[
             // (src_dev, dst_dev, p2p, is_cuda) → expected
             ((0, 0, false, false), TransportPath::SameDeviceDtoD),
             ((0, 0, false, true), TransportPath::SameDeviceDtoD),
@@ -1429,12 +1433,16 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 /// in `write_tensor_pool`.
 unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
     unsafe {
+        // Release fence BEFORE the completion store, so the writer's payload
+        // writes are ordered before the even ("complete") generation becomes
+        // visible. A fence placed *after* the store orders nothing on a
+        // weakly-ordered CPU (dora-rs/dora#3288).
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         if copy_ok {
             std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
         } else {
             std::ptr::write_volatile(gen_ptr, pre_write_gen);
         }
-        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -2271,8 +2279,11 @@ impl Pool<'_> {
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
-            std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
+            // Release fence BEFORE the completion store (dora-rs/dora#3288):
+            // it orders the preceding payload writes before the "complete"
+            // generation is published; a fence after the store is inert.
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+            std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
         }
 
         // Store shmem in pool (keep alive)
@@ -3774,7 +3785,12 @@ impl Pool<'_> {
             };
         }
 
-        // Seqlock: re-read generation — mismatch means data changed during read
+        // Seqlock: re-read generation — mismatch means data changed during read.
+        // Acquire fence BEFORE the re-read so the payload loads above cannot be
+        // reordered past this load; otherwise a concurrent write that bumps the
+        // generation mid-read is not detected on a weakly-ordered CPU
+        // (dora-rs/dora#3288).
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
         let read_gen2 = unsafe { std::ptr::read_volatile(shmem_ptr.add(96) as *const u64) };
         if read_gen2 != read_gen {
             return Ok(None);

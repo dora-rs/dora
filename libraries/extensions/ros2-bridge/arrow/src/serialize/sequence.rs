@@ -9,7 +9,7 @@ use serde::ser::SerializeSeq;
 
 use crate::TypeInfo;
 
-use super::{TypedValue, error, reject_null_string_element};
+use super::{TypedValue, error, reject_null_element, reject_null_string_element};
 
 /// Serialize a variable-sized sequence.
 pub struct SequenceSerializeWrapper<'a> {
@@ -255,6 +255,7 @@ where
             .value
             .as_primitive_opt()
             .ok_or_else(|| error(format!("not a primitive {} array", type_name::<T>())))?;
+        reject_null_element(array, type_name::<T>())?;
 
         let mut seq = serializer.serialize_seq(Some(array.len()))?;
 
@@ -334,6 +335,7 @@ impl serde::Serialize for BoolArray<'_> {
             .value
             .as_boolean_opt()
             .ok_or_else(|| error("not a boolean array"))?;
+        reject_null_element(array, "bool")?;
         // Variable-length `sequence<bool>` / `bool[]` must be encoded with a
         // serde sequence so the CDR codec emits the mandatory u32 length
         // prefix. Using `serialize_tuple` here omits that prefix, which makes
@@ -744,6 +746,113 @@ mod tests {
         assert!(
             string_seq_serializes_ok(&messages, vec![Some("a"), Some("b"), Some("c")]),
             "an all-present string[] field must still serialize"
+        );
+    }
+
+    /// A message with a single `sequence<T>` field of the given `value_type`.
+    fn primitive_seq_message(
+        value_type: NestableType,
+    ) -> Arc<HashMap<String, HashMap<String, Message>>> {
+        let message = Message {
+            package: "test_msgs".to_string(),
+            name: "PrimSeqMsg".to_string(),
+            members: vec![Member {
+                name: "values".to_string(),
+                r#type: MemberType::Sequence(Sequence { value_type }),
+                default: None,
+            }],
+            constants: vec![],
+        };
+        let mut package = HashMap::new();
+        package.insert("PrimSeqMsg".to_string(), message);
+        let mut messages = HashMap::new();
+        messages.insert("test_msgs".to_string(), package);
+        Arc::new(messages)
+    }
+
+    fn primitive_seq_serializes_ok(
+        messages: &Arc<HashMap<String, HashMap<String, Message>>>,
+        list: ArrayRef,
+        item_ty: DataType,
+    ) -> bool {
+        let value = Arc::new(StructArray::from(vec![(
+            Arc::new(Field::new(
+                "values",
+                DataType::List(Arc::new(Field::new("item", item_ty, true))),
+                false,
+            )),
+            list,
+        )])) as ArrayRef;
+        let type_info = TypeInfo {
+            package_name: Cow::Borrowed("test_msgs"),
+            message_name: Cow::Borrowed("PrimSeqMsg"),
+            messages: messages.clone(),
+        };
+        cdr_encoding::to_vec::<_, LittleEndian>(&TypedValue {
+            value: &value,
+            type_info: &type_info,
+        })
+        .is_ok()
+    }
+
+    /// #3271: a null element in a `sequence<int32>` (`int32[]`) field must
+    /// error. `BasicSequence::serialize` previously iterated `array.values()`,
+    /// which returns the raw value buffer — a null slot decoded as `0` on the
+    /// receiving ROS2 peer, inventing a value the producer never sent.
+    #[test]
+    fn int32_sequence_null_element_is_rejected() {
+        let messages = primitive_seq_message(NestableType::BasicType(BasicType::I32));
+        let item = Arc::new(Field::new("item", DataType::Int32, true));
+        let with_null = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([3usize]),
+            Arc::new(Int32Array::from(vec![Some(1), None, Some(3)])),
+            None,
+        );
+        assert!(
+            !primitive_seq_serializes_ok(&messages, Arc::new(with_null), DataType::Int32),
+            "a null element in an int32[] field must error, not encode as 0"
+        );
+        let all_present = ListArray::new(
+            item,
+            OffsetBuffer::from_lengths([3usize]),
+            Arc::new(Int32Array::from(vec![Some(1), Some(2), Some(3)])),
+            None,
+        );
+        assert!(
+            primitive_seq_serializes_ok(&messages, Arc::new(all_present), DataType::Int32),
+            "an all-present int32[] field must still serialize"
+        );
+    }
+
+    /// #3271: same guard on the `sequence<bool>` (`bool[]`) path.
+    #[test]
+    fn bool_sequence_null_element_is_rejected() {
+        let messages = primitive_seq_message(NestableType::BasicType(BasicType::Bool));
+        let item = Arc::new(Field::new("item", DataType::Boolean, true));
+        let with_null = ListArray::new(
+            item.clone(),
+            OffsetBuffer::from_lengths([3usize]),
+            Arc::new(BooleanArray::from(vec![Some(true), None, Some(false)])),
+            None,
+        );
+        assert!(
+            !primitive_seq_serializes_ok(&messages, Arc::new(with_null), DataType::Boolean),
+            "a null element in a bool[] field must error, not encode as false"
+        );
+        let all_present = ListArray::new(
+            item,
+            OffsetBuffer::from_lengths([3usize]),
+            Arc::new(BooleanArray::from(vec![
+                Some(true),
+                Some(false),
+                Some(true),
+            ])),
+            None,
+        );
+        assert!(
+            primitive_seq_serializes_ok(&messages, Arc::new(all_present), DataType::Boolean),
+            "an all-present bool[] field must still serialize"
         );
     }
 }

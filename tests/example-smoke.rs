@@ -2035,16 +2035,18 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     // Daemon A (listens on the zenoh peer port) and daemon B (dials it).
     // Each daemon also gets an explicit local listen port: two daemons on
     // one host would otherwise pick the same default and collide.
-    let mut local_listen_port = TcpListener::bind("127.0.0.1:0")
+    let base_listen_port = TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .map(|a| a.port())
         .expect("pick local listen port");
-    for (machine, dial) in [
+    for (offset, (machine, dial)) in [
         ("A", format!("tcp/0.0.0.0:{zenoh_port}")),
         ("B", format!("tcp/127.0.0.1:{zenoh_port}")),
-    ] {
-        let listen_port = local_listen_port;
-        local_listen_port += 1;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let listen_port = base_listen_port + offset as u16;
         let log = tmp.join(format!("daemon-{machine}.log"));
         // The yml's `working_dir: .` is relative to
         // the daemon's cwd (the repo root, per the multiple-daemons
