@@ -585,7 +585,23 @@ pub async fn open_zenoh_session_with_listen(
             // Everything appended from here on is dialed but does not, on its
             // own, justify dropping multicast — see `discovered_connect_endpoints`.
             let authoritative_connect_eps = connect_eps.len();
-            connect_eps.extend(discovered_connect_endpoints.iter().cloned());
+            // Discovered endpoints are checked here as well as by whoever handed
+            // them over. The coordinator validates what daemons report to it, so
+            // this is not the only guard — but it is the one that sits where the
+            // value is *used*, which keeps the property true for any future
+            // source of discovered endpoints and for a coordinator that is
+            // itself wrong. Operator-supplied endpoints are deliberately not
+            // filtered: someone who typed an endpoint on the command line is
+            // owed a zenoh error about it, not silence.
+            connect_eps.extend(discovered_connect_endpoints.iter().filter_map(|ep| {
+                match validate_zenoh_endpoint(ep) {
+                    Ok(()) => Some(ep.clone()),
+                    Err(err) => {
+                        warn!("ignoring discovered zenoh endpoint: {err}");
+                        None
+                    }
+                }
+            }));
             if let Some(peer) = inter_daemon_peer {
                 connect_eps.push(peer.to_string());
             }
@@ -896,6 +912,12 @@ fn endpoint_array_json(endpoints: &[String]) -> String {
 /// before it came from the operator's own command line. The coordinator hands
 /// it to every daemon that registers later, so an unchecked value would travel
 /// straight into their `connect/endpoints`.
+///
+/// Called on every hop that value takes: both ways a daemon can report one
+/// (`accept_reported_zenoh_endpoint` in the coordinator covers the registration
+/// *and* the later correction, which exists to replace it), and again where a
+/// receiving daemon merges the result into its own dial list. Validating only
+/// at the first hop would leave the property depending on which path ran last.
 ///
 /// Deliberately a charset check rather than a locator parse: zenoh's locator
 /// grammar covers protocols dora does not model (`quic`, `unixsock-stream`,
