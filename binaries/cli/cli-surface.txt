@@ -365,6 +365,7 @@ dora trace view | <trace_id> (required)
 dora up
 dora up | --auth
 dora up | --config <value>
+dora up | --interface <value>
 dora up | --recreate-store
 dora validate
 dora validate | --node-manifest <value>
