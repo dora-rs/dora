@@ -1707,15 +1707,52 @@ class Operator:
 ### Setup
 
 ```bash
-# Machine A (coordinator + daemon)
-dora up
+# The coordinator binds loopback by default, which no other machine can reach,
+# so bind the address the daemons will dial. Without this, machines B and C only
+# report a connection timeout.
+#
+# `dora list`/`logs`/`stop`/`start`/`down` all default to loopback, so set the
+# address once for them — on machine A and on any machine you drive the dataflow
+# from.
+export DORA_COORDINATOR_ADDR=192.168.1.10
 
-# Machine B (daemon only, pointing to coordinator on Machine A)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
+# Machine A: coordinator, plus its own *named* daemon.
+#
+# `dora up` would start an unnamed daemon, which `deploy: {machine: A}` can
+# never place a node on — so start the two separately whenever machine A is
+# itself a deploy target. Name the concrete address rather than `0.0.0.0`: each
+# daemon derives its zenoh listener from the coordinator address, and a wildcard
+# leaves A's daemon on loopback and undialable by B and C.
+dora coordinator --interface 192.168.1.10
+dora daemon --coordinator-addr 192.168.1.10 --machine-id A
+
+# Machine B (daemon only, pointing to the coordinator on Machine A)
+dora daemon --coordinator-addr 192.168.1.10 --machine-id B
 
 # Machine C (same)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
+dora daemon --coordinator-addr 192.168.1.10 --machine-id C
 ```
+
+`dora up --interface 192.168.1.10` remains the shortcut for a machine that only
+hosts the coordinator and runs no deployed nodes of its own: it starts both, but
+its daemon is unnamed.
+
+Each daemon derives the address its peers should dial from `--coordinator-addr`
+(the local address that routes toward the coordinator, which is the LAN address
+on a LAN and the tunnel address on a mesh VPN), sends it along with its
+registration, and receives in return the addresses of the daemons that
+registered before it. Each daemon dialing the ones that
+preceded it builds the full mesh, so nothing else has to be configured for the
+daemons to reach each other — including on a network without multicast, such as
+a mesh VPN.
+
+Override the derived address with `--zenoh-listen <IP>` on a multi-homed host
+that would otherwise advertise an interface the other machines cannot reach.
+
+The daemons can be started in any order, and simultaneously: each advertises
+its endpoint in its own registration, and the coordinator handles registrations
+one at a time, so whichever registers second is always handed the first one's
+address.
 
 ### Dataflow with Machine Assignment
 

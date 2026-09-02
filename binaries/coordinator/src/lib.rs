@@ -439,9 +439,20 @@ async fn start_inner(
 
                     let reply: Timestamped<RegisterResult> = Timestamped {
                         inner: match version_check_result.as_ref() {
-                            Ok(_) => RegisterResult::Ok {
-                                daemon_id: daemon_id.clone(),
-                            },
+                            // Gathered here rather than before the match, so a
+                            // version-mismatched daemon retrying in a loop does
+                            // not make the coordinator walk its whole daemon map
+                            // and clone every endpoint per attempt — on the
+                            // serial event loop that is time no one gets back.
+                            //
+                            // Gathered before `add` below, so the joining daemon
+                            // is not in the map yet and receives exactly the
+                            // peers that preceded it; see
+                            // `RegisterResult::Ok::peer_zenoh_endpoints`.
+                            Ok(_) => RegisterResult::ok(
+                                daemon_id.clone(),
+                                daemon_connections.zenoh_endpoints_for(&daemon_id),
+                            ),
                             Err(err) => RegisterResult::Err(err.clone()),
                         },
                         timestamp: clock.new_timestamp(),
@@ -2317,6 +2328,37 @@ async fn start_inner(
                     if let Some(stats) = ft_stats {
                         connection.ft_stats = Some(stats);
                     }
+                }
+            }
+            Event::DaemonZenohEndpoint {
+                daemon_id,
+                connection_id,
+                endpoint,
+            } => {
+                // Same guard as `DaemonExit` below (#2392): a report still in
+                // flight from a connection that has since been replaced would
+                // otherwise overwrite the live endpoint with a dead one, and
+                // every daemon registering afterwards would be handed it.
+                if daemon_connections.connection_id_of(&daemon_id) == Some(connection_id) {
+                    match &endpoint {
+                        Some(ep) => {
+                            tracing::debug!("daemon `{daemon_id}` confirmed zenoh endpoint `{ep}`")
+                        }
+                        // The daemon advertised an endpoint when it registered
+                        // and then failed to bind it. Withdrawing stops the
+                        // coordinator handing a dead endpoint to every daemon
+                        // that registers from here on.
+                        None => tracing::warn!(
+                            "daemon `{daemon_id}` withdrew its zenoh endpoint: its listener \
+                             did not bind, so other daemons cannot reach it directly"
+                        ),
+                    }
+                    daemon_connections.set_zenoh_endpoint(&daemon_id, endpoint);
+                } else {
+                    tracing::debug!(
+                        "ignoring zenoh endpoint {endpoint:?} from a superseded \
+                         connection of daemon `{daemon_id}`"
+                    );
                 }
             }
             Event::Log(message) => {

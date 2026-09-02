@@ -182,12 +182,20 @@ async fn handle_daemon_request(
             let version_check_result = register_request.check_version();
             // capture before the partial moves below consume `register_request`
             let supports_hub_sources = register_request.supports_hub_sources();
+            let zenoh_listen_endpoint = accept_reported_zenoh_endpoint(
+                register_request.zenoh_listen_endpoint,
+                "registering",
+            );
             let labels = register_request.labels;
             let machine_id = register_request.machine_id;
             let mut connection =
                 DaemonConnection::new(cmd_tx.clone(), pending_replies.clone(), labels.clone());
             connection.supports_hub_sources = supports_hub_sources;
             connection.peer_addr = Some(peer_addr);
+            // Recorded here, so it is on the connection before it is added to
+            // the registry — the next daemon's register reply, built later on
+            // the same serial event loop, therefore already contains it.
+            connection.zenoh_listen_endpoint = zenoh_listen_endpoint;
             // Capture the connection_id before moving `connection` into the event.
             let connection_id = connection.connection_id;
             let (daemon_id_tx, daemon_id_rx) = oneshot::channel();
@@ -288,6 +296,34 @@ async fn handle_daemon_request(
     }
 }
 
+/// Accept a zenoh endpoint a daemon reported, or drop it.
+///
+/// Both ways a daemon can report one — in its registration, and in the
+/// `ZenohListenEndpoint` correction that follows — end at the same place: the
+/// coordinator stores it and hands it to every daemon that registers later,
+/// which puts it straight into their zenoh `connect/endpoints`. So both are
+/// checked here, through one function, rather than at each site: a daemon is
+/// not a trusted input just because it registered, and the correction exists
+/// precisely to *replace* the registered value, so validating only the
+/// registration would have left the invariant to whichever path ran last.
+///
+/// A rejected value becomes `None`, which withdraws any endpoint already on
+/// record rather than leaving a stale one standing. Withdrawal is the safe
+/// direction: the daemon simply is not dialed directly and its dataflows fall
+/// back to the daemon-forwarded path. Never fatal — the daemon is otherwise
+/// healthy, and dropping its connection over a malformed endpoint would cost
+/// far more than the direct link is worth.
+fn accept_reported_zenoh_endpoint(endpoint: Option<String>, state: &str) -> Option<String> {
+    let endpoint = endpoint?;
+    match dora_core::topics::validate_zenoh_endpoint(&endpoint) {
+        Ok(()) => Some(endpoint),
+        Err(err) => {
+            tracing::warn!("ignoring zenoh endpoint reported by {state} daemon: {err}");
+            None
+        }
+    }
+}
+
 fn translate_daemon_event(
     daemon_id: DaemonId,
     event: DaemonEvent,
@@ -314,6 +350,11 @@ fn translate_daemon_event(
         DaemonEvent::Heartbeat { ft_stats } => Some(Event::DaemonHeartbeat {
             daemon_id,
             ft_stats,
+        }),
+        DaemonEvent::ZenohListenEndpoint { endpoint } => Some(Event::DaemonZenohEndpoint {
+            daemon_id,
+            connection_id,
+            endpoint: accept_reported_zenoh_endpoint(endpoint, "connected"),
         }),
         DaemonEvent::Log(message) => Some(Event::Log(message)),
         DaemonEvent::Exit => Some(Event::DaemonExit {
@@ -407,5 +448,54 @@ async fn handle_daemon_response(
         let _ = sender.send(result_json);
     } else {
         tracing::warn!("no pending reply for daemon WS response id {}", response.id);
+    }
+}
+
+#[cfg(test)]
+mod reported_endpoint_tests {
+    use super::*;
+
+    fn endpoint_of(event: Option<Event>) -> Option<String> {
+        match event {
+            Some(Event::DaemonZenohEndpoint { endpoint, .. }) => endpoint,
+            other => panic!("expected a DaemonZenohEndpoint event, got {other:?}"),
+        }
+    }
+
+    fn translate(endpoint: Option<String>) -> Option<String> {
+        endpoint_of(translate_daemon_event(
+            DaemonId::new(Some("A".to_string())),
+            DaemonEvent::ZenohListenEndpoint { endpoint },
+            Uuid::new_v4(),
+        ))
+    }
+
+    #[test]
+    fn a_valid_reported_endpoint_is_kept() {
+        assert_eq!(
+            translate(Some("tcp/10.0.2.100:5456".into())),
+            Some("tcp/10.0.2.100:5456".to_string())
+        );
+    }
+
+    /// The correction path is the *second* way a daemon can report an endpoint,
+    /// and it is designed to replace the value validated at registration — so
+    /// it has to be checked too, or the invariant holds only until the
+    /// correction arrives.
+    #[test]
+    fn an_invalid_reported_endpoint_is_dropped_on_the_correction_path() {
+        assert_eq!(
+            translate(Some(r#"tcp/1.2.3.4:1","tcp/evil:7447"#.into())),
+            None
+        );
+        assert_eq!(translate(Some("tcp/1.2.3.4:1 rm -rf".into())), None);
+        assert_eq!(translate(Some("a".repeat(300))), None);
+    }
+
+    /// An explicit withdrawal must still reach the coordinator: it is how a
+    /// daemon whose listener failed to bind stops being advertised.
+    #[test]
+    fn an_explicit_withdrawal_passes_through() {
+        assert_eq!(translate(None), None);
     }
 }
