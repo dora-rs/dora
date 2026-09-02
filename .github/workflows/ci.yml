@@ -110,7 +110,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -121,7 +121,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -164,7 +164,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Pure git, so it costs no time and genuinely goes first — before the
       # toolchain install and cache restore, so a leaked credential fails in
       # seconds rather than after CI has provisioned a Rust build. A
@@ -242,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -401,7 +401,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -552,7 +552,7 @@ jobs:
       # per-repo Actions cache cap (see the caching note in the header).
       MATURIN_PEP517_ARGS: "--profile dev"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -585,7 +585,7 @@ jobs:
             /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The three PyO3 crates are excluded from the workspace `cargo test`
@@ -610,7 +610,7 @@ jobs:
         # implementation detail (LD_LIBRARY_PATH only adds a search path).
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -666,7 +666,7 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -702,7 +702,7 @@ jobs:
       # so the most recent main-branch save is found.
       - name: Restore baseline
         id: cache-baseline
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-not-used
@@ -733,7 +733,7 @@ jobs:
       # On main branch: save criterion data as the new baseline
       - name: Cache baseline
         if: github.ref == 'refs/heads/main' && success()
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-${{ github.sha }}
@@ -742,7 +742,7 @@ jobs:
     name: Typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: crate-ci/typos@d43b6c087ac471e2ea7b8af622ff15f05c0c365b # v1.50.1
 
   # ===== Fast supply-chain gates =====
@@ -755,7 +755,7 @@ jobs:
     name: Audit (cargo-audit + cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -776,7 +776,7 @@ jobs:
     name: Unwrap budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: make qa-unwrap
@@ -789,7 +789,7 @@ jobs:
     name: License check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
