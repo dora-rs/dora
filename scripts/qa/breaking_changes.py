@@ -21,6 +21,7 @@ Exit codes: 0 clean, 1 breaking changes found, 2 the gate could not run.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -127,6 +128,26 @@ def tag_sort_key(tag: str) -> tuple:
     major, minor, patch, pre = match.groups()
     # A prerelease sorts below the same version's final release.
     return (int(major), int(minor), int(patch), 0 if pre else 1, pre or "")
+
+
+def grep_tracked(root: Path, ref: str | None, pattern: str) -> dict[str, str]:
+    """Matching lines from tracked `Cargo.toml` files, keyed by path.
+
+    `ref` reads the tree at that revision; None reads the working tree.
+    """
+    command = ["git", "-C", str(root), "grep", pattern]
+    if ref:
+        command.append(ref)
+    command += ["--", "*Cargo.toml"]
+    output = subprocess.run(command, capture_output=True, text=True).stdout
+    hits: dict[str, str] = {}
+    for line in output.splitlines():
+        if ref and line.startswith(f"{ref}:"):
+            line = line[len(ref) + 1 :]
+        path, _, content = line.partition(":")
+        if path:
+            hits[path] = hits.get(path, "") + content + "\n"
+    return hits
 
 
 def resolve_baseline(root: Path) -> str:
@@ -488,6 +509,43 @@ def check_cxx_bridge(root: Path, baseline: Baseline) -> SurfaceResult:
 SCHEMAS = ["dora-schema.json", "libraries/core/dora-node-schema.json"]
 
 
+UNION_KEYS = ("oneOf", "anyOf", "allOf")
+
+
+def subschema_key(node) -> str:
+    """Stable identity for one alternative of a `oneOf` / `anyOf` list.
+
+    Not its index. schemars emits one alternative per enum variant, so an
+    added variant shifts every later index and an index-keyed diff then
+    compares unrelated alternatives -- reporting a pile of breaks for a purely
+    additive change. Keyed by content, an insertion is just an insertion.
+    """
+    if isinstance(node, dict):
+        if "$ref" in node:
+            return str(node["$ref"]).rsplit("/", 1)[-1]
+        if "const" in node:
+            return f"const={json.dumps(node['const'], sort_keys=True)}"
+        if isinstance(node.get("enum"), list):
+            return "enum=" + ",".join(sorted(json.dumps(v) for v in node["enum"]))
+        if isinstance(node.get("properties"), dict):
+            return "object{" + ",".join(sorted(node["properties"])) + "}"
+        if "type" in node:
+            t = node["type"]
+            return t if isinstance(t, str) else "|".join(sorted(t))
+    digest = hashlib.sha256(json.dumps(node, sort_keys=True).encode()).hexdigest()
+    return f"sha:{digest[:12]}"
+
+
+def union_member_keys(members: list) -> list[str]:
+    """`subschema_key` per member, disambiguated if two collide."""
+    keys, seen = [], {}
+    for member in members:
+        key = subschema_key(member)
+        seen[key] = seen.get(key, 0) + 1
+        keys.append(key if seen[key] == 1 else f"{key}#{seen[key]}")
+    return keys
+
+
 def flatten_schema(node, path: str = "#", out: dict | None = None) -> dict:
     """Map every schema location to the parts of it a dataflow can depend on.
 
@@ -510,10 +568,20 @@ def flatten_schema(node, path: str = "#", out: dict | None = None) -> dict:
             entry["type"] = sorted(t) if isinstance(t, list) else [t]
         if isinstance(node.get("additionalProperties"), bool):
             entry["additionalProperties"] = node["additionalProperties"]
+        unions = {}
+        for key in UNION_KEYS:
+            if isinstance(node.get(key), list):
+                unions[key] = union_member_keys(node[key])
+        if unions:
+            entry["unions"] = unions
         if entry:
             out[path] = entry
         for key, value in node.items():
-            flatten_schema(value, f"{path}/{key}", out)
+            if key in UNION_KEYS and isinstance(value, list):
+                for member_key, member in zip(unions[key], value):
+                    flatten_schema(member, f"{path}/{key}/{member_key}", out)
+            else:
+                flatten_schema(value, f"{path}/{key}", out)
     elif isinstance(node, list):
         for i, value in enumerate(node):
             flatten_schema(value, f"{path}/{i}", out)
@@ -530,11 +598,14 @@ def diff_schema(old: dict, new: dict) -> list[Finding]:
             if any(path.startswith(p + "/") for p in reported_gone):
                 continue
             reported_gone.append(path)
-            # A removed property is already reported against its parent, in
-            # the parent's own terms ("property `env` removed"). Reporting the
+            # A removed property or union alternative is already reported
+            # against its parent, in the parent's own terms. Reporting the
             # vanished path too says the same thing twice, less clearly.
             parent, _, _ = path.rpartition("/")
-            if parent.endswith("/properties") and parent.rpartition("/")[0] in new:
+            covered_by_parent = parent.endswith("/properties") or parent.endswith(
+                UNION_KEYS
+            )
+            if covered_by_parent and parent.rpartition("/")[0] in new:
                 continue
             findings.append(Finding(BREAK, f"{path}: removed from the schema"))
             continue
@@ -557,6 +628,13 @@ def diff_schema(old: dict, new: dict) -> list[Finding]:
         for t in old_entry.get("type", []):
             if t not in new_entry.get("type", []):
                 findings.append(Finding(BREAK, f"{path}: no longer accepts type `{t}`"))
+        for key, members in old_entry.get("unions", {}).items():
+            now = new_entry.get("unions", {}).get(key, [])
+            for member in members:
+                if member not in now:
+                    findings.append(
+                        Finding(BREAK, f"{path}: {key} no longer accepts `{member}`")
+                    )
         if new_entry.get("additionalProperties") is False and old_entry.get(
             "additionalProperties"
         ) is not False:
@@ -608,42 +686,52 @@ SERDE_WIRE_KEYS = (
 )
 
 
-def skip_attributes(text: str, i: int) -> int:
-    """Advance past whitespace and `#[...]` attributes starting at `i`."""
+def collect_attribute_run(text: str, i: int) -> tuple[list[str], int]:
+    """The run of `#[...]` attributes starting at `i`, and the index after it."""
+    attrs = []
     while True:
         while i < len(text) and text[i].isspace():
             i += 1
-        if text.startswith("#[", i):
-            depth = 0
-            while i < len(text):
-                if text[i] == "[":
-                    depth += 1
-                elif text[i] == "]":
-                    depth -= 1
-                    if depth == 0:
-                        i += 1
-                        break
-                i += 1
-        else:
-            return i
+        if not text.startswith("#[", i):
+            return attrs, i
+        depth, start = 0, i
+        while i < len(text):
+            if text[i] == "[":
+                depth += 1
+            elif text[i] == "]":
+                depth -= 1
+                if depth == 0:
+                    i += 1
+                    break
+            i += 1
+        attrs.append(text[start:i])
+
+
+def serde_wire_attrs(attrs: str) -> list[str]:
+    """The serde keys in `attrs` that change what goes on the wire.
+
+    `default`, `alias` and friends only widen decoding, so they are dropped:
+    treating them as changes would fail the gate on a strictly compatible edit.
+    """
+    kept = []
+    for attr in re.findall(r"#\[serde\(([^\]]*)\)\]", attrs):
+        for part in split_top_level(attr):
+            if part.split("=")[0].strip() in SERDE_WIRE_KEYS:
+                kept.append(collapse_ws(part))
+    return sorted(kept)
 
 
 def normalize_member(entry: str) -> str:
     """A member as the wire sees it: name, type, and the serde keys that move
-    bytes. `#[serde(default)]` and friends only widen decoding, so they are
-    dropped -- keeping them would report every such addition as a change."""
-    kept = []
-    for attr in re.findall(r"#\[serde\(([^\]]*)\)\]", entry):
-        for part in split_top_level(attr):
-            if part.split("=")[0].strip() in SERDE_WIRE_KEYS:
-                kept.append(collapse_ws(part))
+    bytes."""
+    kept = serde_wire_attrs(entry)
     entry = collapse_ws(re.sub(r"#\[[^\]]*\]", " ", entry))
     entry = re.sub(r"^pub(\([^)]*\))?\s+", "", entry)
     # A trailing comma inside a braced variant payload is rustfmt's choice, not
     # a wire change -- normalize it away so reformatting cannot fail the gate.
     entry = re.sub(r",\s*(?=[}\)])", " ", entry)
     entry = collapse_ws(entry)
-    suffix = f" [serde: {', '.join(sorted(kept))}]" if kept else ""
+    suffix = f" [serde: {', '.join(kept)}]" if kept else ""
     return entry + suffix
 
 
@@ -662,6 +750,11 @@ def strip_cfg_test_modules(text: str) -> str:
         text = text[: match.start()] + text[end:]
 
 
+ITEM_RE = re.compile(
+    r"(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+(\w+)\s*(?:<[^>]*>)?\s*"
+)
+
+
 def parse_wire_types(files: dict[str, str]) -> dict[str, dict]:
     """Serde-derived types in `dora-message`, with members in declaration order.
 
@@ -672,27 +765,33 @@ def parse_wire_types(files: dict[str, str]) -> dict[str, dict]:
     other if this drifts.
 
     Newtypes count: `DataId(String)` becoming `DataId(u64)` changes the bytes
-    of every message carrying one.
+    of every message carrying one. So do container attributes: `#[serde(
+    untagged)]` decides whether a variant tag is written at all, and it can sit
+    on either side of the derive -- which is why whole attribute *runs* are
+    collected rather than scanned forward from the derive.
     """
     types: dict[str, dict] = {}
     for rel, text in sorted(files.items()):
         text = strip_cfg_test_modules(strip_rust_comments(text))
         module = Path(rel).stem
-        for m in re.finditer(r"#\[derive\(([^)]*)\)\]", text):
-            derives = m.group(1)
+        i = 0
+        while True:
+            at = text.find("#[", i)
+            if at == -1:
+                break
+            attrs, after = collect_attribute_run(text, at)
+            i = after
+            joined = " ".join(attrs)
+            derives = " ".join(re.findall(r"#\[derive\(([^)]*)\)\]", joined))
             if "Serialize" not in derives and "Deserialize" not in derives:
                 continue
-            i = skip_attributes(text, m.end())
-            item = re.match(
-                r"(?:pub(?:\([^)]*\))?\s+)?(struct|enum)\s+(\w+)\s*(?:<[^>]*>)?\s*",
-                text[i:],
-            )
+            item = ITEM_RE.match(text, after)
             if not item:
                 continue
             kind, name = item.group(1), item.group(2)
-            rest = i + item.end()
+            rest = item.end()
             if rest < len(text) and text[rest] == "{":
-                body, _ = balanced_block(text, rest)
+                body, i = balanced_block(text, rest)
                 members = [
                     normalize_member(e) for e in split_top_level(body) if e.strip()
                 ]
@@ -710,9 +809,15 @@ def parse_wire_types(files: dict[str, str]) -> dict[str, dict]:
                 members = [
                     f"{idx}: {normalize_member(f)}" for idx, f in enumerate(fields)
                 ]
+                i = j
             else:
                 members = []
-            types[f"{module}::{name}"] = {"kind": kind, "members": members}
+                i = rest
+            types[f"{module}::{name}"] = {
+                "kind": kind,
+                "members": members,
+                "container": serde_wire_attrs(joined),
+            }
     return types
 
 
@@ -740,6 +845,17 @@ def check_wire_format(root: Path, baseline: Baseline) -> SurfaceResult:
             )
             continue
         new_type = new[name]
+        if new_type.get("container") != old_type.get("container"):
+            # `untagged`, `tag`, `from`/`into`: these decide the framing of the
+            # whole type, so a change reshapes every message carrying it.
+            result.findings.append(
+                Finding(
+                    BREAK,
+                    f"`{name}`: serde container attributes changed "
+                    f"({old_type.get('container') or 'none'} -> "
+                    f"{new_type.get('container') or 'none'})",
+                )
+            )
         if new_type["kind"] != old_type["kind"]:
             result.findings.append(
                 Finding(
@@ -805,10 +921,16 @@ def parse_cli_surface(text: str) -> dict[str, set[str]]:
 def check_cli(root: Path, baseline: Baseline) -> SurfaceResult:
     result = SurfaceResult(name="`dora` command surface")
     current = root / CLI_SURFACE
+    old_text, used_ref = baseline.read_or_fallback(CLI_SURFACE)
     if not current.exists():
+        # Deleting the snapshot must not be the way to silence this check.
+        if old_text is not None:
+            result.findings.append(
+                Finding(BREAK, f"{CLI_SURFACE} was deleted, so the surface is unchecked")
+            )
+            return result
         result.skipped = f"{CLI_SURFACE} has not been generated"
         return result
-    old_text, used_ref = baseline.read_or_fallback(CLI_SURFACE)
     if old_text is None:
         result.skipped = (
             "no baseline snapshot (the first release carrying one becomes the "
@@ -837,7 +959,6 @@ def check_cli(root: Path, baseline: Baseline) -> SurfaceResult:
 # --------------------------------------------------------------------------
 
 PYPROJECTS = ["apis/python/node/pyproject.toml", "apis/python/cli/pyproject.toml"]
-ABI3_MANIFESTS = ["apis/python/node/Cargo.toml", "apis/python/cli/Cargo.toml"]
 
 
 def python_floor(text: str) -> str | None:
@@ -845,9 +966,17 @@ def python_floor(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def abi3_tag(text: str) -> str | None:
-    match = re.search(r"abi3-py(\d+)", text)
-    return f"abi3-py{match.group(1)}" if match else None
+def abi3_floor(text: str) -> tuple[int, int] | None:
+    """The lowest `abi3-pyXY` tag in `text`, as (major, minor).
+
+    Parsed digit by digit rather than through `version_tuple`, which reads the
+    `3` in "abi3" and returns the same answer for every tag.
+    """
+    tags = [
+        (int(m.group(1)), int(m.group(2)))
+        for m in re.finditer(r"abi3-py(\d)(\d+)", text)
+    ]
+    return min(tags) if tags else None
 
 
 def version_tuple(spec: str) -> tuple[int, ...]:
@@ -865,39 +994,60 @@ def check_python_floor(root: Path, baseline: Baseline) -> SurfaceResult:
         current = root / rel
         if old_text is None or not current.exists():
             continue
-        old_floor = python_floor(old_text)
-        new_floor = python_floor(current.read_text())
-        if old_floor is None or new_floor is None:
+        old_spec = python_floor(old_text)
+        new_spec = python_floor(current.read_text())
+        if old_spec is None or new_spec is None:
             continue
-        checked.append(new_floor)
-        if version_tuple(new_floor) > version_tuple(old_floor):
+        checked.append(new_spec)
+        if version_tuple(new_spec) > version_tuple(old_spec):
             result.findings.append(
                 Finding(
                     BREAK,
-                    f"{rel}: requires-python raised {old_floor} -> {new_floor}; "
+                    f"{rel}: requires-python raised {old_spec} -> {new_spec}; "
                     "pip refuses to install on interpreters dora used to support",
                 )
             )
-    for rel in ABI3_MANIFESTS:
-        old_text = baseline.read(rel)
-        current = root / rel
-        if old_text is None or not current.exists():
+
+    # The abi3 tag is set on the workspace `pyo3` dependency and repeated in
+    # the crates that name pyo3 directly, so scan every manifest rather than
+    # guessing which one holds it -- the two wheel crates inherit it and
+    # mention it only in comments. Compared per manifest, not as one lowest
+    # floor across all of them: a raise in the workspace dependency is what
+    # actually moves the wheels, and a single unraised crate elsewhere would
+    # otherwise hide it.
+    old_abi3 = grep_tracked(root, baseline.ref, "abi3-py")
+    new_abi3 = grep_tracked(root, None, "abi3-py")
+    floors = []
+    for rel, old_line in sorted(old_abi3.items()):
+        old_floor = abi3_floor(old_line)
+        new_floor = abi3_floor(new_abi3.get(rel, ""))
+        if not old_floor:
             continue
-        old_tag, new_tag = abi3_tag(old_text), abi3_tag(current.read_text())
-        if old_tag and new_tag and version_tuple(new_tag) > version_tuple(old_tag):
-            result.findings.append(
-                Finding(BREAK, f"{rel}: abi3 floor raised {old_tag} -> {new_tag}")
-            )
-        elif old_tag and not new_tag:
+        if not new_floor:
+            if rel in new_abi3 or (root / rel).exists():
+                result.findings.append(
+                    Finding(
+                        WARN,
+                        f"{rel}: the abi3 feature is gone, so its wheel is no "
+                        "longer built for a stable ABI",
+                    )
+                )
+            continue
+        floors.append(new_floor)
+        if new_floor > old_floor:
             result.findings.append(
                 Finding(
-                    WARN,
-                    f"{rel}: the abi3 feature is gone, so the wheel is no longer "
-                    "built for a stable ABI",
+                    BREAK,
+                    f"{rel}: abi3 floor raised py{old_floor[0]}{old_floor[1]} -> "
+                    f"py{new_floor[0]}{new_floor[1]}; wheels stop loading on "
+                    "interpreters dora used to support",
                 )
             )
+    if floors:
+        checked.append("abi3-py%d%d" % min(floors))
+
     if not checked:
-        result.skipped = "no pyproject.toml files in the baseline"
+        result.skipped = "no Python manifests in the baseline"
         return result
     result.summary = ", ".join(sorted(set(checked)))
     return result
@@ -966,7 +1116,28 @@ CHECKS = [
 
 def run(root: Path, ref: str, fallback: str | None = None) -> tuple[list[SurfaceResult], int]:
     baseline = Baseline(root, ref, fallback)
-    results = [check(root, baseline) for check in CHECKS]
+    results = []
+    for check in CHECKS:
+        try:
+            results.append(check(root, baseline))
+        except Exception as error:  # noqa: BLE001 - see below
+            # A surface that cannot be parsed is unchecked, and an unchecked
+            # frozen surface is a failure, not a traceback that also takes the
+            # remaining checks down with it. Deleting the C header or renaming
+            # the cxx bridge module both land here.
+            results.append(
+                SurfaceResult(
+                    name=getattr(check, "__name__", "check"),
+                    findings=[
+                        Finding(
+                            BREAK,
+                            f"could not be checked ({type(error).__name__}: {error}); "
+                            "treated as a failure because an unchecked surface "
+                            "is an unguarded one",
+                        )
+                    ],
+                )
+            )
     return results, sum(len(r.breaks()) for r in results)
 
 

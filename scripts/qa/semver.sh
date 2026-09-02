@@ -35,9 +35,13 @@ PUBLIC_CRATES=(
 )
 
 # Compare against the last released tag -- what deployed users are running.
-# `breaking-changes.sh` passes the ref it resolved so both halves of the gate
-# agree on one baseline; override by hand with SEMVER_BASELINE=<ref>.
-BASELINE="${SEMVER_BASELINE:-${BREAKING_BASELINE:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}}"
+# Resolved by the shared helper so both halves of the gate check the same
+# release, and so this works in a shallow CI checkout: `git describe` fails
+# there, which would have silently made the baseline `main`. Override by hand
+# with SEMVER_BASELINE=<ref>.
+# shellcheck source=baseline.sh
+source "$(dirname "$0")/baseline.sh"
+BASELINE=$(resolve_breaking_baseline) || exit 2
 echo "Baseline: $BASELINE"
 echo
 

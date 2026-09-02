@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from breaking_changes import (  # noqa: E402
     BREAK,
     WARN,
+    abi3_floor,
     compare_ordered,
     diff_schema,
     flatten_schema,
@@ -189,6 +190,21 @@ class WireFormatTest(unittest.TestCase):
         self.assertIn("m::Real", parsed)
         self.assertNotIn("m::Fixture", parsed)
 
+    def test_container_attributes_are_part_of_the_type(self):
+        # `untagged` decides whether a variant tag is written at all, and it
+        # can sit either side of the derive.
+        before = parse_wire_types(
+            {"m.rs": "#[derive(Serialize)]\npub enum E { A(u8), B(u16) }\n"}
+        )
+        after = parse_wire_types(
+            {
+                "m.rs": "#[serde(untagged)]\n#[derive(Serialize)]\n"
+                "pub enum E { A(u8), B(u16) }\n"
+            }
+        )
+        self.assertEqual(before["m::E"]["container"], [])
+        self.assertEqual(after["m::E"]["container"], ["untagged"])
+
     def test_non_serde_types_are_ignored(self):
         self.assertNotIn("m::S", parse_wire_types({"m.rs": "pub struct S { a: u8 }"}))
 
@@ -297,6 +313,48 @@ class BaselineTagTest(unittest.TestCase):
 
     def test_non_version_tags_are_rejected(self):
         self.assertFalse(tag_sort_key("v0.x-final"))
+
+
+class SchemaUnionTest(unittest.TestCase):
+    """`oneOf` / `anyOf` alternatives are identified by content, not index."""
+
+    BASE = {
+        "$defs": {
+            "Source": {
+                "oneOf": [
+                    {"$ref": "#/$defs/Git"},
+                    {"$ref": "#/$defs/Path"},
+                    {"$ref": "#/$defs/Url"},
+                ]
+            }
+        }
+    }
+
+    def diff(self, new):
+        return diff_schema(flatten_schema(self.BASE), flatten_schema(new))
+
+    def test_inserting_an_alternative_is_not_a_break(self):
+        # Index-keyed, this shifts Path and Url and reports them as changed.
+        new = {"$defs": {"Source": {"oneOf": [{"$ref": "#/$defs/Hub"}] +
+                                    self.BASE["$defs"]["Source"]["oneOf"]}}}
+        self.assertEqual(self.diff(new), [])
+
+    def test_removing_an_alternative_is_a_break(self):
+        new = {
+            "$defs": {"Source": {"oneOf": self.BASE["$defs"]["Source"]["oneOf"][:2]}}
+        }
+        self.assertTrue(find(self.diff(new), "no longer accepts `Url`"))
+
+
+class Abi3Test(unittest.TestCase):
+    def test_parses_the_interpreter_version_not_the_3_in_abi3(self):
+        self.assertEqual(abi3_floor('features = ["abi3-py311"]'), (3, 11))
+        self.assertEqual(abi3_floor('features = ["abi3-py38"]'), (3, 8))
+        self.assertLess(abi3_floor("abi3-py38"), abi3_floor("abi3-py311"))
+        self.assertIsNone(abi3_floor("no tag here"))
+
+    def test_lowest_tag_in_a_manifest_wins(self):
+        self.assertEqual(abi3_floor("abi3-py312 abi3-py311"), (3, 11))
 
 
 class CliSurfaceTest(unittest.TestCase):

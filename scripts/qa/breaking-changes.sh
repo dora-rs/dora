@@ -32,30 +32,27 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 
 MODE=full
-BASELINE_ARG=()
+# A plain string, not an array: an empty array under `set -u` aborts on bash
+# 3.2, which is what macOS ships -- `make qa-fast` would fail there on a clean
+# tree.
+BASELINE_OVERRIDE=""
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --fast) MODE=fast ;;
     --full) MODE=full ;;
-    --baseline) BASELINE_ARG=(--baseline "$2"); shift ;;
+    --baseline)
+      [[ $# -ge 2 ]] || { echo "--baseline needs a ref" >&2; exit 2; }
+      BASELINE_OVERRIDE="$2"; shift ;;
     -h|--help) sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
   shift
 done
 
-BASELINE=$(python3 scripts/qa/breaking_changes.py --print-baseline "${BASELINE_ARG[@]}")
+# shellcheck source=baseline.sh
+source "$(dirname "$0")/baseline.sh"
+BASELINE=$(resolve_breaking_baseline "$BASELINE_OVERRIDE") || exit 2
 FAILED=0
-
-# A CI checkout is shallow and carries no tags. Fetch the single tag the gate
-# needs rather than making every PR clone 1.3 GB of history for one diff.
-if ! git rev-parse -q --verify "${BASELINE}^{commit}" >/dev/null 2>&1; then
-  echo "fetching baseline $BASELINE (not in this checkout)"
-  git fetch --quiet --depth=1 origin "refs/tags/${BASELINE}:refs/tags/${BASELINE}" || {
-    echo "error: could not fetch $BASELINE -- the gate cannot run without a baseline" >&2
-    exit 2
-  }
-fi
 
 # Best-effort: the fallback covers surfaces the release predates, so a shallow
 # checkout that cannot reach the PR base just leaves those checks skipped.
