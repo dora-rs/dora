@@ -84,7 +84,9 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     // Discover which nodes produced recorded data and how many messages each
     // output carries (used to size receiver queues below).
     let mut recorded_counts: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-    while let Some(entry) = reader.next_entry()? {
+    // Only the ids are needed here; `next_entry_header` skips copying each
+    // entry's event payload out of the record buffer.
+    while let Some(entry) = reader.next_entry_header()? {
         *recorded_counts
             .entry(entry.node_id)
             .or_default()

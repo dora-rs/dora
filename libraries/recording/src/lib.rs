@@ -102,6 +102,34 @@ pub struct RecordEntry {
     pub event_bytes: Vec<u8>,
 }
 
+impl RecordEntry {
+    /// Assemble an owned entry from the borrowed fields produced by
+    /// `parse_record`, copying the ids and payload out of the record buffer.
+    fn owned(
+        node_id: &str,
+        output_id: &str,
+        timestamp_offset_nanos: u64,
+        event_bytes: &[u8],
+    ) -> Self {
+        Self {
+            node_id: node_id.to_string(),
+            output_id: output_id.to_string(),
+            timestamp_offset_nanos,
+            event_bytes: event_bytes.to_vec(),
+        }
+    }
+}
+
+/// A recorded entry's metadata without its event payload, produced by
+/// [`RecordingReader::next_entry_header`] for callers that need the ids or
+/// timing but not the (potentially large) payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordEntryHeader {
+    pub node_id: String,
+    pub output_id: String,
+    pub timestamp_offset_nanos: u64,
+}
+
 /// Optional footer written at end of recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecordingFooter {
@@ -216,6 +244,75 @@ impl<R: Read> RecordingReader<R> {
 
     /// Read the next entry. Returns `None` at EOF or footer.
     pub fn next_entry(&mut self) -> eyre::Result<Option<RecordEntry>> {
+        let Some(record_buf) = self.read_next_record()? else {
+            return Ok(None);
+        };
+        let (node_id, output_id, timestamp_offset_nanos, event_bytes) = parse_record(&record_buf)?;
+        Ok(Some(RecordEntry::owned(
+            node_id,
+            output_id,
+            timestamp_offset_nanos,
+            event_bytes,
+        )))
+    }
+
+    /// Read the next entry's metadata, *without* copying its event payload out
+    /// of the record buffer. Returns `None` at EOF or footer.
+    ///
+    /// Every length field is still bounds-checked and both ids are still
+    /// validated as UTF-8, so a corrupt record is rejected exactly as by
+    /// [`next_entry`](Self::next_entry); only the payload `.to_vec()` is
+    /// skipped. Use this when the caller needs the entry's ids or timing but
+    /// not the payload — e.g. counting how many messages each output recorded.
+    pub fn next_entry_header(&mut self) -> eyre::Result<Option<RecordEntryHeader>> {
+        let Some(record_buf) = self.read_next_record()? else {
+            return Ok(None);
+        };
+        let (node_id, output_id, timestamp_offset_nanos, _event_bytes) = parse_record(&record_buf)?;
+        Ok(Some(RecordEntryHeader {
+            node_id: node_id.to_string(),
+            output_id: output_id.to_string(),
+            timestamp_offset_nanos,
+        }))
+    }
+
+    /// Read the next entry produced by `node`, skipping entries from other
+    /// nodes. Returns `None` at EOF or footer.
+    ///
+    /// Foreign entries are still fully read from the stream and validated (so
+    /// corruption is rejected exactly as by [`next_entry`](Self::next_entry)),
+    /// but nothing is copied out of the record buffer for them — neither the
+    /// (potentially multi-megabyte) event payload nor the ids. `dora replay`
+    /// spawns one replay process per node, each scanning the whole recording
+    /// and keeping only its own node's entries; using
+    /// [`next_entry`](Self::next_entry) there makes every process heap-copy
+    /// every *other* node's payloads just to discard them.
+    pub fn next_entry_for_node(&mut self, node: &str) -> eyre::Result<Option<RecordEntry>> {
+        loop {
+            let Some(record_buf) = self.read_next_record()? else {
+                return Ok(None);
+            };
+            let (node_id, output_id, timestamp_offset_nanos, event_bytes) =
+                parse_record(&record_buf)?;
+            if node_id != node {
+                // Validated above; skip without allocating the ids or copying
+                // the payload (all borrowed from `record_buf`).
+                continue;
+            }
+            return Ok(Some(RecordEntry::owned(
+                node_id,
+                output_id,
+                timestamp_offset_nanos,
+                event_bytes,
+            )));
+        }
+    }
+
+    /// Read the next record body from the stream, or `None` at EOF/footer.
+    /// Shared framing for [`next_entry`](Self::next_entry),
+    /// [`next_entry_header`](Self::next_entry_header), and
+    /// [`next_entry_for_node`](Self::next_entry_for_node).
+    fn read_next_record(&mut self) -> eyre::Result<Option<Vec<u8>>> {
         let mut len_buf = [0u8; 4];
         match self.reader.read_exact(&mut len_buf) {
             Ok(()) => {}
@@ -247,35 +344,38 @@ impl<R: Read> RecordingReader<R> {
             // (handled above): stop gracefully at EOF so every fully-written
             // record still replays, rather than failing the whole replay with
             // `truncated record`. Genuine intra-record corruption in a
-            // *complete* record is still rejected below by the bounds checks in
-            // `read_array` / `read_slice`.
+            // *complete* record is still rejected by the bounds checks in
+            // `read_array` / `read_slice` (see `parse_record`).
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
             Err(e) => return Err(e).wrap_err("failed to read record"),
         }
 
-        let mut pos = 0;
-
-        let node_id_len = u16::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let node_id = std::str::from_utf8(read_slice(&record_buf, &mut pos, node_id_len)?)
-            .wrap_err("invalid node_id utf8")?
-            .to_string();
-
-        let output_id_len = u16::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let output_id = std::str::from_utf8(read_slice(&record_buf, &mut pos, output_id_len)?)
-            .wrap_err("invalid output_id utf8")?
-            .to_string();
-
-        let timestamp_offset_nanos = u64::from_le_bytes(read_array(&record_buf, &mut pos)?);
-        let event_bytes_len = u32::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let event_bytes = read_slice(&record_buf, &mut pos, event_bytes_len)?.to_vec();
-
-        Ok(Some(RecordEntry {
-            node_id,
-            output_id,
-            timestamp_offset_nanos,
-            event_bytes,
-        }))
+        Ok(Some(record_buf))
     }
+}
+
+/// Parse a record body into its `(node_id, output_id, timestamp_offset_nanos,
+/// event_bytes)` fields, all **borrowed** from `record_buf`. Callers copy out
+/// only the fields they keep — [`RecordingReader::next_entry_for_node`] compares
+/// the borrowed node id and skips foreign records without allocating anything.
+/// Every length field is bounds-checked via [`read_array`] / [`read_slice`], so
+/// a corrupt or crafted record fails gracefully rather than panicking.
+fn parse_record(record_buf: &[u8]) -> eyre::Result<(&str, &str, u64, &[u8])> {
+    let mut pos = 0;
+
+    let node_id_len = u16::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
+    let node_id = std::str::from_utf8(read_slice(record_buf, &mut pos, node_id_len)?)
+        .wrap_err("invalid node_id utf8")?;
+
+    let output_id_len = u16::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
+    let output_id = std::str::from_utf8(read_slice(record_buf, &mut pos, output_id_len)?)
+        .wrap_err("invalid output_id utf8")?;
+
+    let timestamp_offset_nanos = u64::from_le_bytes(read_array(record_buf, &mut pos)?);
+    let event_bytes_len = u32::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
+    let event_bytes = read_slice(record_buf, &mut pos, event_bytes_len)?;
+
+    Ok((node_id, output_id, timestamp_offset_nanos, event_bytes))
 }
 
 fn read_array<const N: usize>(buf: &[u8], pos: &mut usize) -> eyre::Result<[u8; N]> {
@@ -694,6 +794,91 @@ mod tests {
         assert!(
             err.to_string().contains("too large"),
             "expected 'too large' error, got: {err}"
+        );
+    }
+
+    /// `next_entry_header` yields the same ids/timing as `next_entry`, in order,
+    /// without materializing the payload — the counting pass in `dora replay`
+    /// relies on this.
+    #[test]
+    fn next_entry_header_yields_ids_without_payload() {
+        let header = sample_header();
+        let entries = vec![
+            sample_entry("cam", "frame", 0, b"\x01\x02\x03"),
+            sample_entry("lidar", "points", 100_000, b"\x04\x05"),
+            sample_entry("cam", "frame", 200_000, b"\x06"),
+        ];
+
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        for expected in &entries {
+            let got = reader.next_entry_header().unwrap().unwrap();
+            assert_eq!(got.node_id, expected.node_id);
+            assert_eq!(got.output_id, expected.output_id);
+            assert_eq!(got.timestamp_offset_nanos, expected.timestamp_offset_nanos);
+        }
+        assert!(reader.next_entry_header().unwrap().is_none());
+    }
+
+    /// `next_entry_for_node` returns only the requested node's entries, in
+    /// order, with their payloads intact, and skips every other node's entries.
+    #[test]
+    fn next_entry_for_node_filters_by_node() {
+        let header = sample_header();
+        let entries = vec![
+            sample_entry("cam", "frame", 0, b"\x01\x02\x03"),
+            sample_entry("lidar", "points", 100_000, b"\x04\x05"),
+            sample_entry("cam", "frame", 200_000, b"\x06"),
+        ];
+
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        for e in &entries {
+            writer.write_entry(e).unwrap();
+        }
+        writer.finish().unwrap();
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let first = reader.next_entry_for_node("cam").unwrap().unwrap();
+        assert_eq!(&first, &entries[0]);
+        let second = reader.next_entry_for_node("cam").unwrap().unwrap();
+        assert_eq!(&second, &entries[2]);
+        // Only two `cam` entries exist; the `lidar` entry must have been skipped.
+        assert!(reader.next_entry_for_node("cam").unwrap().is_none());
+    }
+
+    /// A corrupt record (a length field claiming more bytes than the record
+    /// holds) must still be rejected when reached by `next_entry_for_node`,
+    /// even for an entry from a node the caller is skipping — the validation
+    /// is not bypassed by the filter.
+    #[test]
+    fn next_entry_for_node_still_rejects_corrupt_records() {
+        let header = sample_header();
+        let mut buf = Vec::new();
+        write_header(&mut buf, &header).unwrap();
+
+        // Hand-craft one record whose declared node_id length overruns the body.
+        let node_id = b"other";
+        let mut record = Vec::new();
+        record.extend_from_slice(&(node_id.len() as u16 + 10).to_le_bytes()); // lie: too long
+        record.extend_from_slice(node_id);
+        let record_len = record.len() as u32;
+        buf.extend_from_slice(&record_len.to_le_bytes());
+        buf.extend_from_slice(&record);
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let err = reader
+            .next_entry_for_node("cam")
+            .expect_err("a corrupt record must be rejected, not silently skipped");
+        assert!(
+            err.to_string().contains("buffer too short"),
+            "expected a bounds error, got: {err}"
         );
     }
 }
