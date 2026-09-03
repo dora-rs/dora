@@ -5610,26 +5610,28 @@ impl Daemon {
             format!("send out failed: no running dataflow with ID `{dataflow_id}`")
         })?;
 
-        // Get or create publisher (lazy, cached per output)
-        let publisher = match dataflow.publishers.entry(output_id.clone()) {
-            std::collections::btree_map::Entry::Occupied(e) => e.get().clone(),
-            std::collections::btree_map::Entry::Vacant(e) => {
-                let publish_topic =
-                    zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
-                tracing::debug!("declaring control publisher on {publish_topic}");
-                let publisher = self
-                    .zenoh_session
-                    .declare_publisher(publish_topic)
-                    .congestion_control(CongestionControl::Drop)
-                    .express(true)
-                    .priority(Priority::RealTime)
-                    .await
-                    .map_err(|err| eyre!(err))
-                    .context("failed to create zenoh publisher")?;
-                let arc = Arc::new(publisher);
-                e.insert(arc.clone());
-                arc
-            }
+        // Get or create publisher (lazy, cached per output). The cache is
+        // populated once per output and hit on every subsequent message, so
+        // probe it by reference first and only clone the `OutputId` key (two
+        // heap strings) on the one-time miss — `entry(output_id.clone())` would
+        // otherwise clone the key on every message just to hit the cache.
+        let publisher = if let Some(publisher) = dataflow.publishers.get(output_id) {
+            publisher.clone()
+        } else {
+            let publish_topic = zenoh_daemon_control_topic(dataflow.id, &output_id.0, &output_id.1);
+            tracing::debug!("declaring control publisher on {publish_topic}");
+            let publisher = self
+                .zenoh_session
+                .declare_publisher(publish_topic)
+                .congestion_control(CongestionControl::Drop)
+                .express(true)
+                .priority(Priority::RealTime)
+                .await
+                .map_err(|err| eyre!(err))
+                .context("failed to create zenoh publisher")?;
+            let arc = Arc::new(publisher);
+            dataflow.publishers.insert(output_id.clone(), arc.clone());
+            arc
         };
         let payload_len = serialized_event.len() as u64;
 
