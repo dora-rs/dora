@@ -55,6 +55,13 @@ jobs:
       - name: Publish in dependency order
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          # Verification builds each crate from its own tarball. Left to
+          # itself cargo gives every crate a private
+          # `target/package/<crate>-<version>/target` and recompiles the
+          # whole dependency tree once per crate; pointing them all at the
+          # workspace target dir — which rust-cache above restores — builds
+          # the shared dependencies once for the entire list.
+          CARGO_TARGET_DIR: ${{ github.workspace }}/target
         run: |
           # Topological order: leaves first, binaries last. `cargo publish`
           # resolves path deps against crates.io, so every workspace dep of a
@@ -94,6 +101,15 @@ jobs:
             dora-operator-api-cxx
             dora-ros2-bridge-arrow
           )
+          # Published WITH verification: cargo builds each crate from the
+          # tarball it just packed, resolving its dependencies against
+          # crates.io. That is the only check that sees a crate the way an
+          # installing user does. `--no-verify` was set here, and it is why
+          # `dora-operator-api-c` 1.0.0 shipped unable to build at all,
+          # breaking `cargo install dora-cli` for everyone (#3400). A crate
+          # that fails to verify is not uploaded, so the release stops
+          # before adding another version nobody can take back.
+          #
           # `cargo publish` blocks until the crate is available in the
           # index, so no propagation sleep is needed. Tolerate only
           # already-published versions (idempotent re-runs) and retry on
@@ -102,10 +118,25 @@ jobs:
           # job instead of silently producing a partial release.
           max_attempts=4
           backoff=630 # rate-limit window is 10 min, plus 30s slack
+          # `cargo publish` verifies before it talks to the registry, so a
+          # re-run of a partially finished release would pay a full build
+          # for every crate that already landed. Ask the index first and
+          # skip those; the "already uploaded" branch below stays as the
+          # backstop for a version published between this check and the
+          # upload. (Versions are read per crate: dora-message carries its
+          # own, independent of the workspace version.)
+          metadata=$(cargo metadata --no-deps --format-version 1)
           for crate in "${CRATES[@]}"; do
             echo "::group::Publishing $crate"
+            version=$(echo "$metadata" \
+              | jq -r --arg c "$crate" '.packages[] | select(.name == $c) | .version')
+            if cargo search "$crate" | grep -q "^$crate = \"$version\""; then
+              echo "$crate $version is already on crates.io, skipping"
+              echo "::endgroup::"
+              continue
+            fi
             for attempt in $(seq 1 "$max_attempts"); do
-              if output=$(cargo publish -p "$crate" --no-verify 2>&1); then
+              if output=$(cargo publish -p "$crate" 2>&1); then
                 echo "$output" | tail -5
                 break
               fi
