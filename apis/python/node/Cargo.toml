@@ -37,6 +37,7 @@ flume = { workspace = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 pythonize = { workspace = true }
 futures = { workspace = true }
+futures-timer = "3.0.4"
 dora-ros2-bridge-python = { workspace = true }
 dora-download = { workspace = true }
 dora-tensor-pool-python = { workspace = true, optional = true }
