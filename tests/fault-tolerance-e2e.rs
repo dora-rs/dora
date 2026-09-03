@@ -634,10 +634,10 @@ async fn node_killed_on_startup_timeout_unwedges_dataflow() {
     );
     assert!(
         matches!(
-            err.cause,
-            dora_message::common::NodeErrorCause::StartupTimeout
+            &err.cause,
+            dora_message::common::NodeErrorCause::Other { stderr } if stderr.contains("startup_timeout")
         ),
-        "expected NodeErrorCause::StartupTimeout, got {:?}",
+        "expected NodeErrorCause::Other with startup_timeout message, got {:?}",
         err.cause,
     );
 }

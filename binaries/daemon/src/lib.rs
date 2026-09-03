@@ -2319,7 +2319,6 @@ impl Daemon {
                                         health_check_kills: self.ft_stats.health_check_kills.load(atomic::Ordering::Relaxed),
                                         input_timeouts: self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
                                         circuit_breaker_recoveries: self.ft_stats.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed),
-                                        startup_timeout_kills: self.ft_stats.startup_timeout_kills.load(atomic::Ordering::Relaxed),
                                     }),
                                 },
                             },
@@ -6585,7 +6584,9 @@ impl Daemon {
                                 None if grace_duration_kill || finish_escalated => {
                                     NodeErrorCause::GraceDuration
                                 }
-                                None if startup_timed_out => NodeErrorCause::StartupTimeout,
+                                None if startup_timed_out => NodeErrorCause::Other {
+                                    stderr: "process killed: startup_timeout exceeded before node connected".to_string(),
+                                },
                                 None => {
                                     let cause = dataflow
                                         .and_then(|d| d.node_stderr_most_recent.get(&node_id))

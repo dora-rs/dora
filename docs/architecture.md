@@ -648,7 +648,6 @@ Tracks which node failure caused downstream failures, enabling root-cause analys
 pub struct FaultToleranceSnapshot {
     pub restarts: u64,
     pub health_check_kills: u64,
-    pub startup_timeout_kills: u64,
     pub input_timeouts: u64,
     pub circuit_breaker_recoveries: u64,
 }
