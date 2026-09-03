@@ -1,5 +1,18 @@
 # Changelog
 
+## v1.0.1 (2026-09-03)
+
+Patch release. 1.0.0 could not be installed from crates.io.
+
+### Fixed
+
+- **`cargo install dora-cli` works again** ([#3400](https://github.com/dora-rs/dora/issues/3400)). `dora-operator-api-c`'s build script read its cmake templates from the sibling `apis/c/node/` crate with `include_str!("../node/cmake/…")`. `cargo package` builds a crate's tarball from that one directory and ships nothing else, so the published 1.0.0 crate did not contain the files its own build script names, and compiling it failed at the first line. The workspace build never saw this, because in a checkout the sibling crate is right there. The templates now live in `apis/c/operator/cmake/` as a crate-local copy, matching what the two C++ API crates already did for the same reason. Anyone who hit the error needs no change beyond upgrading; nothing about the C operator API itself moved.
+- **`dora-cli` no longer builds three crates it never used** ([#3402](https://github.com/dora-rs/dora/pull/3402)). `dora-operator-api-c`, `tokio-stream` and `tracing-log` were declared and never referenced. The first is why the packaging bug above broke `cargo install dora-cli` at all: installing the CLI compiled a C static-library crate the CLI does not call.
+
+### Internal
+
+- The release workflow publishes with verification instead of `--no-verify` ([#3403](https://github.com/dora-rs/dora/pull/3403)), so a crate that cannot build from its own tarball stops the release rather than reaching crates.io. `cargo-release.yml`, whose `release: published` trigger is never raised for a `GITHUB_TOKEN`-created release, is folded into `release.yml` ([#3404](https://github.com/dora-rs/dora/pull/3404)). A new `make qa-package-includes` gate fails any publishable crate whose `include_str!` target is not a git-tracked file inside that crate.
+
 ## v1.0.0 (2026-09-02)
 
 ### Breaking
