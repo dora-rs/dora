@@ -47,7 +47,15 @@ fn runtime() -> PyResult<&'static Runtime> {
 /// to avoid holding an `Entered` guard across thread boundaries.
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
-    let level = record.getattr("levelno")?.extract::<u8>()?;
+    // Python logging levels are arbitrary ints (`logging.addLevelName` /
+    // `logging.log(n, ..)` accept any value), so a `u8` extraction raises
+    // `OverflowError` for any level > 255 and turns a benign log call into an
+    // error at the call site. `i64` covers the full range of a real level
+    // (any custom int, including one well above ERROR, maps to the right
+    // bucket); the `unwrap_or(0)` fallback only fires for a non-integer
+    // `levelno`, which is malformed input handled as the lowest severity,
+    // mirroring the `lineno` handling below.
+    let level = record.getattr("levelno")?.extract::<i64>().unwrap_or(0);
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.extract::<u32>().unwrap_or(0);
