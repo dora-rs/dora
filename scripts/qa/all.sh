@@ -16,17 +16,22 @@
 #   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
 #                                (deep + proptest@1000 + miri + example-smoke +
 #                                hub-smoke + ci-nightly-jobs). nightly.yml has
-#                                19 test jobs: example-smoke covers 4
+#                                26 test jobs (source of truth; see CLAUDE.md
+#                                "Nightly CI"): example-smoke covers 4
 #                                (smoke-suite, log-sinks, service-action,
 #                                streaming); hub-smoke covers 1 (the Hub e2e);
-#                                ci-nightly-jobs.sh drives the 14
+#                                ci-nightly-jobs.sh drives the 21
 #                                remaining with platform-aware dispatch
-#                                (record-replay, cluster-smoke, topic-and-top-smoke,
+#                                (record-replay, cluster-smoke, cluster-e2e [Linux],
+#                                cluster-record-replay [Linux], topic-and-top-smoke,
 #                                cpu-affinity-smoke [Linux], redb-backend-smoke,
 #                                daemon-reconnect-smoke [Linux],
-#                                state-reconstruction-smoke, test-cross-platform,
-#                                examples, cli-tests, bench-example, cross-check,
-#                                ros2-bridge [Linux+ROS2], msrv). Green local
+#                                state-reconstruction-smoke,
+#                                multi-daemon-late-subscriber [Linux],
+#                                test-cross-platform, examples, cli-tests
+#                                (+cli-tests-python), bench-example, cross-check,
+#                                ros2-bridge [Linux], ros2-zenoh-humble,
+#                                ros2-zenoh-kilted, msrv, kani-proofs). Green local
 #                                qa-nightly on platform X predicts a green CI
 #                                nightly for platform X's jobs.
 #                                Requires BOTH `uv` AND Python 3.12 (preflighted
@@ -188,13 +193,17 @@ For overnight runs on a powerful machine. Will run:
                                                    Platform-aware: runs the subset of GHA
                                                    nightly jobs that applies to the dev's OS.
                                                    Covers record-replay, cluster-smoke,
-                                                   topic-and-top, cpu-affinity [Linux],
+                                                   cluster-e2e [Linux], cluster-record-replay
+                                                   [Linux], topic-and-top, cpu-affinity [Linux],
                                                    redb-backend, daemon-reconnect [Linux],
-                                                   state-reconstruction, test-cross-platform,
-                                                   examples, cli-tests, bench-example, msrv,
-                                                   cross-check, ros2-bridge [Linux+ROS2].
+                                                   state-reconstruction,
+                                                   multi-daemon-late-subscriber [Linux],
+                                                   test-cross-platform, examples, cli-tests
+                                                   (+cli-tests-python), bench-example, msrv,
+                                                   kani-proofs, cross-check, ros2-bridge [Linux],
+                                                   ros2-zenoh-humble, ros2-zenoh-kilted.
 
-example-smoke + hub-smoke + ci-nightly-jobs together cover all 19 GHA
+example-smoke + hub-smoke + ci-nightly-jobs together cover all 26 GHA
 nightly test jobs. A green
 local qa-nightly on platform X predicts a green CI nightly schedule
 for platform X's jobs. (Cross-platform jobs that the dev's OS can't
@@ -409,11 +418,14 @@ case "$MODE" in
     # above; the `hub:` feature is nightly-tier, not per-PR.
     run "hub-smoke" cargo test -p dora-examples --test hub-smoke -- --test-threads=1
 
-    # Drive the 14 remaining GHA nightly jobs with platform-aware dispatch
-    # (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux],
-    # redb-backend, daemon-reconnect [Linux], state-reconstruction,
-    # test-cross-platform, examples, cli-tests, bench-example, cross-check,
-    # ros2-bridge [Linux+ROS2], msrv). Jobs that can't run on the dev's OS
+    # Drive the 21 remaining GHA nightly jobs with platform-aware dispatch
+    # (record-replay, cluster-smoke, cluster-e2e [Linux], cluster-record-replay
+    # [Linux], topic-and-top, cpu-affinity [Linux], redb-backend,
+    # daemon-reconnect [Linux], state-reconstruction,
+    # multi-daemon-late-subscriber [Linux], test-cross-platform, examples,
+    # cli-tests (+cli-tests-python), bench-example, cross-check,
+    # ros2-bridge [Linux], ros2-zenoh-humble, ros2-zenoh-kilted, msrv,
+    # kani-proofs). Jobs that can't run on the dev's OS
     # SKIP cleanly. The script installs dora CLI into a scratch dir, so it
     # won't clobber the user's ~/.cargo/bin/dora. See #1707 + #1716 for the
     # alignment rationale.
