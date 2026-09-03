@@ -43,6 +43,8 @@ use futures::{StreamExt, task::SpawnExt};
 
 /// Maximum pending service requests before dropping new ones.
 const MAX_PENDING_REQUESTS: usize = 64;
+static INVALID_ROS_DOMAIN_ID_WARNED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
 
 fn peer_value_or_warn<T, E: std::fmt::Display>(result: Result<T, E>, operation: &str) -> Option<T> {
     match result {
@@ -64,8 +66,11 @@ fn main() -> eyre::Result<()> {
 
     let config_json = std::env::var("DORA_ROS2_BRIDGE_CONFIG")
         .context("missing DORA_ROS2_BRIDGE_CONFIG env var")?;
-    let config: Ros2BridgeConfig =
+    let config_value: serde_json::Value =
         serde_json::from_str(&config_json).context("failed to parse ROS2 bridge config")?;
+    warn_explicit_service_action_best_effort(&config_value);
+    let config: Ros2BridgeConfig =
+        serde_json::from_value(config_value).context("failed to parse ROS2 bridge config")?;
 
     let messages = load_messages()?;
 
@@ -103,10 +108,9 @@ fn run_zenoh_mode(
         unreachable!()
     };
     tracing::info!(profile = ?compatibility, config_source = if config_uri.is_some() { "explicit" } else { "environment-or-default" }, "starting native ROS2 Zenoh transport");
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let context = futures::executor::block_on(ZenohContext::open(ZenohContextOptions {
         domain_id,
         config_uri: config_uri
@@ -147,10 +151,9 @@ fn run_zenoh_topic_mode(
         unreachable!()
     };
     let resolver = TypeDescriptionResolver::from_ament_prefix_path();
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let mut publishers = Vec::new();
     let mut subscribers = Vec::new();
     for topic in resolve_topics(config)? {
@@ -270,10 +273,9 @@ fn run_zenoh_service_mode(
         &service_name,
         &TypeDescriptionResolver::from_ament_prefix_path(),
     )?;
-    let domain_id = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain_id = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let key = DataKey::new(domain_id, name, &identity)?;
     let qos = config.qos.to_neutral_qos();
     let token = TopicToken {
@@ -470,10 +472,9 @@ fn run_zenoh_action_mode(
     };
     let cancel = resolve_service(compatibility, "action_msgs", "CancelGoal", &resolver)?;
     let status = resolve_message(compatibility, "action_msgs", "GoalStatusArray", &resolver)?;
-    let domain = std::env::var("ROS_DOMAIN_ID")
-        .ok()
-        .and_then(|value| value.parse().ok())
-        .unwrap_or(0);
+    let domain = usize::from(parse_ros_domain_id(
+        std::env::var("ROS_DOMAIN_ID").ok().as_deref(),
+    ));
     let endpoints = dora_ros2_bridge::transport::action::ActionEndpoints::new(
         action_name,
         &package,
@@ -1018,7 +1019,7 @@ fn run_topic_mode(
 ) -> eyre::Result<()> {
     let topics = resolve_topics(&config)?;
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, _ros_context, _pool) = create_ros_node(&config)?;
 
     let mut subscribers: Vec<(String, SubscriptionStream)> = Vec::new();
     let mut publishers: Vec<(
@@ -1126,9 +1127,9 @@ fn run_service_mode(
         messages: messages.clone(),
     };
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
+    let (mut ros_node, ros_context, _pool) = create_ros_node(&config)?;
 
-    let service_qos = config.qos.to_rustdds_qos();
+    let service_qos = service_or_action_qos(&config.qos);
 
     match role {
         Ros2Role::Client => {
@@ -1144,7 +1145,7 @@ fn run_service_mode(
                 .map_err(|e| eyre!("failed to create service client: {e:?}"))?;
 
             // Wait for service availability
-            wait_for_service(&client, &ros_node)?;
+            wait_for_service(&client, &ros_node, &ros_context, service_name, service_type)?;
 
             run_service_client(client, request_type_info, response_type_info)
         }
@@ -1353,8 +1354,8 @@ fn run_action_mode(
     let result_type_info = make_type_info("Result");
     let feedback_type_info = make_type_info("Feedback");
 
-    let (mut ros_node, _pool) = create_ros_node(&config)?;
-    let qos = config.qos.to_rustdds_qos();
+    let (mut ros_node, ros_context, _pool) = create_ros_node(&config)?;
+    let qos = service_or_action_qos(&config.qos);
     let action_ros2_name = ros2_client::Name::new("/", action_name.trim_start_matches('/'))
         .map_err(|e| eyre!("failed to create action name: {e}"))?;
     let action_type_name = ros2_client::ActionTypeName::new(&package, &type_name);
@@ -1366,10 +1367,10 @@ fn run_action_mode(
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_subscription: qos.clone(),
-                status_subscription: qos,
+                status_subscription: action_status_qos(&config.qos),
             };
 
-            let client = ros_node
+            let mut client = ros_node
                 .create_action_client::<BridgeActionType>(
                     dora_ros2_bridge::detect_service_mapping(),
                     &action_ros2_name,
@@ -1378,11 +1379,8 @@ fn run_action_mode(
                 )
                 .map_err(|e| eyre!("failed to create action client: {e:?}"))?;
 
-            // NOTE: ros2_client does not provide a wait_for_action_server API.
-            // The first goal send will time out (ACTION_GOAL_TIMEOUT) if the
-            // action server is not yet available. Start the action server
-            // before this dataflow for reliable operation.
-            tracing::info!("action client created, waiting for goals from Dora inputs");
+            wait_for_action_client_services(&mut client, &ros_node, &ros_context, action_name)?;
+            tracing::info!("action goal service is ready, waiting for goals from Dora inputs");
 
             run_action_client(client, goal_type_info, result_type_info, feedback_type_info)
         }
@@ -1392,7 +1390,7 @@ fn run_action_mode(
                 result_service: qos.clone(),
                 cancel_service: qos.clone(),
                 feedback_publisher: qos.clone(),
-                status_publisher: qos,
+                status_publisher: action_status_qos(&config.qos),
             };
 
             let server = ros_node
@@ -1986,9 +1984,14 @@ struct SubscriptionStream {
 
 fn create_ros_node(
     config: &Ros2BridgeConfig,
-) -> eyre::Result<(ros2_client::Node, futures::executor::ThreadPool)> {
+) -> eyre::Result<(
+    ros2_client::Node,
+    ros2_client::Context,
+    futures::executor::ThreadPool,
+)> {
+    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
     let ros_context =
-        ros2_client::Context::new().map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
+        create_ros_context(domain_id).map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
     let node_name = config
         .node_name
         .clone()
@@ -2013,7 +2016,126 @@ fn create_ros_node(
     })
     .context("failed to spawn ros2 spinner")?;
 
-    Ok((ros_node, pool))
+    Ok((ros_node, ros_context, pool))
+}
+
+fn create_ros_context(domain_id: u16) -> rustdds::dds::CreateResult<ros2_client::Context> {
+    match ros_context_creation(domain_id) {
+        RosContextCreation::DefaultDomain => {
+            // ros2-client's default constructor is not equivalent to
+            // ContextOptions::domain_id(0) in FastDDS/Humble service discovery.
+            ros2_client::Context::new()
+        }
+        RosContextCreation::ExplicitDomain(domain_id) => ros2_client::Context::with_options(
+            ros2_client::ContextOptions::new().domain_id(domain_id),
+        ),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RosContextCreation {
+    DefaultDomain,
+    ExplicitDomain(u16),
+}
+
+fn ros_context_creation(domain_id: u16) -> RosContextCreation {
+    if domain_id == 0 {
+        RosContextCreation::DefaultDomain
+    } else {
+        RosContextCreation::ExplicitDomain(domain_id)
+    }
+}
+
+fn parse_ros_domain_id(value: Option<&str>) -> u16 {
+    match value {
+        Some(value) => match value.parse::<u16>() {
+            Ok(domain_id) => domain_id,
+            Err(_) => {
+                if !INVALID_ROS_DOMAIN_ID_WARNED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    tracing::warn!("{}", warning_for_invalid_ros_domain_id(value));
+                }
+                0
+            }
+        },
+        None => 0,
+    }
+}
+
+fn warning_for_invalid_ros_domain_id(value: &str) -> String {
+    format!("invalid ROS_DOMAIN_ID `{value}`; defaulting to DDS domain 0")
+}
+
+fn warn_explicit_service_action_best_effort(config: &serde_json::Value) -> bool {
+    let is_service_or_action = config.get("service").is_some() || config.get("action").is_some();
+    let explicit_best_effort = config
+        .get("qos")
+        .and_then(|qos| qos.get("reliable"))
+        .and_then(serde_json::Value::as_bool)
+        == Some(false);
+
+    if is_service_or_action && explicit_best_effort {
+        tracing::warn!(
+            "service/action QoS ignores explicit `reliable: false`; ROS2 services require RELIABLE QoS"
+        );
+        true
+    } else {
+        false
+    }
+}
+
+fn default_service_qos_config() -> Ros2QosConfig {
+    Ros2QosConfig {
+        reliable: true,
+        durability: None,
+        liveliness: None,
+        lease_duration: None,
+        max_blocking_time: None,
+        keep_last: Some(10),
+        keep_all: false,
+    }
+}
+
+fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    if !config.reliable && !config.is_default_topic_qos() {
+        tracing::warn!(
+            "service/action QoS keeps RELIABLE delivery even though the descriptor QoS uses topic-style best effort; ROS2 services require RELIABLE QoS"
+        );
+    }
+
+    let mut qos = default_service_qos_config();
+    if let Some(durability) = &config.durability {
+        qos.durability = Some(durability.clone());
+    }
+    if let Some(liveliness) = &config.liveliness {
+        qos.liveliness = Some(liveliness.clone());
+    }
+    if let Some(lease_duration) = config.lease_duration {
+        qos.lease_duration = Some(lease_duration);
+    }
+    if let Some(max_blocking_time) = config.max_blocking_time {
+        qos.max_blocking_time = Some(max_blocking_time);
+    }
+    if let Some(keep_last) = config.keep_last {
+        qos.keep_last = Some(keep_last);
+    }
+    qos.keep_all = config.keep_all;
+    qos.to_rustdds_qos()
+}
+
+fn action_status_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
+    action_status_qos_config(config).to_rustdds_qos()
+}
+
+fn action_status_qos_config(config: &Ros2QosConfig) -> Ros2QosConfig {
+    let mut status = if config.is_default_topic_qos() {
+        default_service_qos_config()
+    } else {
+        config.clone()
+    };
+    status.reliable = true;
+    status.keep_last = status.keep_last.or(Some(10));
+    status.durability = Some("transient_local".to_string());
+    status
 }
 
 /// Wait for a ROS2 service to become available.
@@ -2023,25 +2145,242 @@ fn create_ros_node(
 fn wait_for_service(
     client: &ros2_client::Client<BridgeServiceType>,
     ros_node: &ros2_client::Node,
+    ros_context: &ros2_client::Context,
+    service_name: &str,
+    service_type: &str,
 ) -> eyre::Result<()> {
+    const MAX_RETRIES: usize = 10;
+    let domain_id = current_ros_domain_id();
     let service_ready = async {
-        for _ in 0..10 {
+        println!(
+            "{}",
+            service_waiting_message(service_name, service_type, domain_id)
+        );
+        for _ in 0..MAX_RETRIES {
             let ready = client.wait_for_service(ros_node);
             futures::pin_mut!(ready);
             let timeout = futures_timer::Delay::new(Duration::from_secs(2));
             match futures::future::select(ready, timeout).await {
                 futures::future::Either::Left(((), _)) => {
-                    tracing::info!("service is ready");
+                    println!(
+                        "{}",
+                        service_connected_message(service_name, service_type, domain_id)
+                    );
                     return Ok(());
                 }
                 futures::future::Either::Right(_) => {
-                    tracing::info!("timeout waiting for service, retrying");
+                    tracing::debug!(
+                        service = service_name,
+                        service_type,
+                        "timeout waiting for ROS2 service, retrying"
+                    );
                 }
             }
         }
-        eyre::bail!("service not available after 10 retries");
+        let discovered_topics = discovered_topic_names(ros_context);
+        eyre::bail!(
+            "{}",
+            service_unavailable_message_with_discovery(
+                service_name,
+                service_type,
+                MAX_RETRIES,
+                domain_id,
+                &discovered_topics,
+            )
+        );
     };
     futures::executor::block_on(service_ready)
+}
+
+fn discovered_topic_names(ros_context: &ros2_client::Context) -> Vec<String> {
+    ros_context
+        .discovered_topics()
+        .into_iter()
+        .map(|topic| topic.topic_name().to_string())
+        .collect()
+}
+
+fn wait_for_action_client_services(
+    client: &mut ros2_client::action::ActionClient<BridgeActionType>,
+    ros_node: &ros2_client::Node,
+    ros_context: &ros2_client::Context,
+    action_name: &str,
+) -> eyre::Result<()> {
+    const MAX_RETRIES: usize = 10;
+    let domain_id = current_ros_domain_id();
+
+    macro_rules! wait_endpoint {
+        ($client:expr, $endpoint:expr, $label:literal) => {{
+            let service_ready = async {
+                println!("{}", action_service_waiting_message($endpoint, domain_id));
+                for _ in 0..MAX_RETRIES {
+                    let ready = $client.wait_for_service(ros_node);
+                    futures::pin_mut!(ready);
+                    let timeout = futures_timer::Delay::new(Duration::from_secs(2));
+                    match futures::future::select(ready, timeout).await {
+                        futures::future::Either::Left(((), _)) => {
+                            println!("{}", action_service_connected_message($endpoint, domain_id));
+                            return Ok(());
+                        }
+                        futures::future::Either::Right(_) => {
+                            tracing::debug!(
+                                action = action_name,
+                                endpoint = $endpoint,
+                                service = $label,
+                                "timeout waiting for ROS2 action service, retrying"
+                            );
+                        }
+                    }
+                }
+                let discovered_topics = discovered_topic_names(ros_context);
+                eyre::bail!(
+                    "{}",
+                    action_service_unavailable_message(
+                        $endpoint,
+                        MAX_RETRIES,
+                        domain_id,
+                        &discovered_topics,
+                    )
+                );
+            };
+            futures::executor::block_on(service_ready)
+        }};
+    }
+
+    wait_endpoint!(
+        client.goal_client(),
+        &action_goal_service_name(action_name),
+        "send_goal"
+    )?;
+    wait_endpoint!(
+        client.result_client(),
+        &action_result_service_name(action_name),
+        "get_result"
+    )?;
+    wait_endpoint!(
+        client.cancel_client(),
+        &action_cancel_service_name(action_name),
+        "cancel_goal"
+    )?;
+
+    Ok(())
+}
+
+fn current_ros_domain_id() -> u16 {
+    parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref())
+}
+
+fn service_waiting_message(service_name: &str, service_type: &str, domain_id: u16) -> String {
+    format!("Waiting for ROS2 service: {service_name} [{service_type}], ROS_DOMAIN_ID={domain_id}")
+}
+
+fn service_connected_message(service_name: &str, service_type: &str, domain_id: u16) -> String {
+    format!("ROS2 service connected: {service_name} [{service_type}], ROS_DOMAIN_ID={domain_id}")
+}
+
+fn service_unavailable_message(
+    service_name: &str,
+    service_type: &str,
+    retries: usize,
+    domain_id: u16,
+) -> String {
+    format!(
+        "ROS2 service not available after {retries} retries: {service_name} [{service_type}], ROS_DOMAIN_ID={domain_id}"
+    )
+}
+
+struct ServiceTopicNames {
+    request: String,
+    response: String,
+}
+
+fn service_topic_names(service_name: &str) -> ServiceTopicNames {
+    let service_name = service_name.trim_start_matches('/');
+    ServiceTopicNames {
+        request: format!("rq/{service_name}Request"),
+        response: format!("rr/{service_name}Reply"),
+    }
+}
+
+#[cfg(test)]
+fn service_topics_discovered(service_name: &str, discovered_topics: &[String]) -> bool {
+    let topic_names = service_topic_names(service_name);
+    discovered_topics
+        .iter()
+        .any(|topic| topic == &topic_names.request)
+        && discovered_topics
+            .iter()
+            .any(|topic| topic == &topic_names.response)
+}
+
+fn service_unavailable_message_with_discovery(
+    service_name: &str,
+    service_type: &str,
+    retries: usize,
+    domain_id: u16,
+    discovered_topics: &[String],
+) -> String {
+    let topic_names = service_topic_names(service_name);
+    let request_found = discovered_topics
+        .iter()
+        .any(|topic| topic == &topic_names.request);
+    let response_found = discovered_topics
+        .iter()
+        .any(|topic| topic == &topic_names.response);
+    let found_count = usize::from(request_found) + usize::from(response_found);
+
+    format!(
+        "{}, discovered_service_topics={found_count}/2, request_topic={}:{}, response_topic={}:{}",
+        service_unavailable_message(service_name, service_type, retries, domain_id),
+        topic_names.request,
+        if request_found { "found" } else { "missing" },
+        topic_names.response,
+        if response_found { "found" } else { "missing" },
+    )
+}
+
+fn action_goal_service_name(action_name: &str) -> String {
+    format!("{action_name}/_action/send_goal")
+}
+
+fn action_result_service_name(action_name: &str) -> String {
+    format!("{action_name}/_action/get_result")
+}
+
+fn action_cancel_service_name(action_name: &str) -> String {
+    format!("{action_name}/_action/cancel_goal")
+}
+
+fn action_service_waiting_message(endpoint: &str, domain_id: u16) -> String {
+    format!("Waiting for ROS2 action service: {endpoint}, ROS_DOMAIN_ID={domain_id}")
+}
+
+fn action_service_connected_message(endpoint: &str, domain_id: u16) -> String {
+    format!("ROS2 action service connected: {endpoint}, ROS_DOMAIN_ID={domain_id}")
+}
+
+fn action_service_unavailable_message(
+    endpoint: &str,
+    retries: usize,
+    domain_id: u16,
+    discovered_topics: &[String],
+) -> String {
+    let topic_names = service_topic_names(endpoint);
+    let request_found = discovered_topics
+        .iter()
+        .any(|topic| topic == &topic_names.request);
+    let response_found = discovered_topics
+        .iter()
+        .any(|topic| topic == &topic_names.response);
+    let found_count = usize::from(request_found) + usize::from(response_found);
+
+    format!(
+        "ROS2 action service not available after {retries} retries: {endpoint}, ROS_DOMAIN_ID={domain_id}, discovered_service_topics={found_count}/2, request_topic={}:{}, response_topic={}:{}",
+        topic_names.request,
+        if request_found { "found" } else { "missing" },
+        topic_names.response,
+        if response_found { "found" } else { "missing" },
+    )
 }
 
 fn load_messages() -> eyre::Result<Arc<HashMap<String, HashMap<String, Message>>>> {
@@ -2163,9 +2502,34 @@ impl ToNeutralQos for Ros2QosConfig {
     }
 }
 
+trait IsDefaultTopicQos {
+    fn is_default_topic_qos(&self) -> bool;
+}
+
+impl IsDefaultTopicQos for Ros2QosConfig {
+    fn is_default_topic_qos(&self) -> bool {
+        !self.reliable
+            && self.durability.is_none()
+            && self.liveliness.is_none()
+            && self.lease_duration.is_none()
+            && self.max_blocking_time.is_none()
+            && self.keep_last.is_none()
+            && !self.keep_all
+    }
+}
+
 #[cfg(test)]
 mod peer_failure_tests {
-    use super::peer_value_or_warn;
+    use super::{
+        IsDefaultTopicQos, RosContextCreation, action_cancel_service_name,
+        action_goal_service_name, action_result_service_name, action_service_connected_message,
+        action_service_unavailable_message, action_status_qos_config, default_service_qos_config,
+        parse_ros_domain_id, peer_value_or_warn, ros_context_creation, service_connected_message,
+        service_or_action_qos, service_topic_names, service_topics_discovered,
+        service_unavailable_message, service_unavailable_message_with_discovery,
+        warn_explicit_service_action_best_effort, warning_for_invalid_ros_domain_id,
+    };
+    use dora_message::descriptor::Ros2QosConfig;
 
     #[test]
     fn malformed_peer_value_is_dropped_without_poisoning_the_next_value() {
@@ -2173,5 +2537,219 @@ mod peer_failure_tests {
         assert!(peer_value_or_warn(malformed, "test").is_none());
         let valid: eyre::Result<u32> = Ok(42);
         assert_eq!(peer_value_or_warn(valid, "test"), Some(42));
+    }
+
+    #[test]
+    fn ros_domain_id_parser_uses_env_value_and_defaults_to_zero() {
+        assert_eq!(parse_ros_domain_id(Some("23")), 23);
+        assert_eq!(parse_ros_domain_id(Some("0")), 0);
+        assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
+        assert_eq!(parse_ros_domain_id(None), 0);
+    }
+
+    #[test]
+    fn invalid_ros_domain_id_warns_before_defaulting_to_zero() {
+        assert_eq!(parse_ros_domain_id(Some("not-a-number")), 0);
+
+        assert_eq!(
+            warning_for_invalid_ros_domain_id("not-a-number"),
+            "invalid ROS_DOMAIN_ID `not-a-number`; defaulting to DDS domain 0"
+        );
+    }
+
+    #[test]
+    fn default_domain_uses_ros2_client_default_context_constructor() {
+        assert_eq!(ros_context_creation(0), RosContextCreation::DefaultDomain);
+        assert_eq!(
+            ros_context_creation(23),
+            RosContextCreation::ExplicitDomain(23)
+        );
+    }
+
+    #[test]
+    fn service_default_qos_is_reliable_without_changing_topic_default_detection() {
+        let topic_default = Ros2QosConfig::default();
+        assert!(topic_default.is_default_topic_qos());
+
+        let service_default = default_service_qos_config();
+        assert!(service_default.reliable);
+        assert_eq!(service_default.keep_last, Some(10));
+        assert!(service_default.durability.is_none());
+        assert!(!service_default.is_default_topic_qos());
+
+        let explicit_best_effort = Ros2QosConfig {
+            keep_last: Some(1),
+            ..Ros2QosConfig::default()
+        };
+        assert!(!explicit_best_effort.is_default_topic_qos());
+    }
+
+    #[test]
+    fn service_qos_keeps_reliable_when_overriding_other_fields() {
+        let qos = Ros2QosConfig {
+            keep_last: Some(20),
+            ..Ros2QosConfig::default()
+        };
+        let rustdds = service_or_action_qos(&qos);
+
+        assert!(matches!(
+            rustdds.reliability(),
+            Some(dora_ros2_bridge::rustdds::policy::Reliability::Reliable { .. })
+        ));
+        assert!(matches!(
+            rustdds.history(),
+            Some(dora_ros2_bridge::rustdds::policy::History::KeepLast { depth }) if depth == 20
+        ));
+    }
+
+    #[test]
+    fn service_qos_warns_when_explicit_best_effort_is_ignored() {
+        let qos = Ros2QosConfig {
+            reliable: false,
+            keep_last: Some(20),
+            ..Ros2QosConfig::default()
+        };
+        let rustdds = service_or_action_qos(&qos);
+
+        assert!(matches!(
+            rustdds.reliability(),
+            Some(dora_ros2_bridge::rustdds::policy::Reliability::Reliable { .. })
+        ));
+
+        let config = serde_json::json!({
+            "service": "/add_two_ints",
+            "service_type": "example_interfaces/AddTwoInts",
+            "role": "client",
+            "qos": {
+                "reliable": false
+            }
+        });
+        assert!(warn_explicit_service_action_best_effort(&config));
+    }
+
+    #[test]
+    fn action_status_default_qos_is_transient_local_for_rcl_clients() {
+        let status_default = action_status_qos_config(&Ros2QosConfig::default());
+
+        assert!(status_default.reliable);
+        assert_eq!(
+            status_default.durability.as_deref(),
+            Some("transient_local")
+        );
+        assert_eq!(status_default.keep_last, Some(10));
+    }
+
+    #[test]
+    fn action_service_unavailable_message_names_endpoint_and_domain() {
+        let discovered_topics = ["rq/fibonacci/_action/send_goalRequest".to_string()];
+        let message = action_service_unavailable_message(
+            "/fibonacci/_action/send_goal",
+            10,
+            23,
+            &discovered_topics,
+        );
+
+        assert!(message.contains("/fibonacci"));
+        assert!(message.contains("send_goal"));
+        assert!(message.contains("10 retries"));
+        assert!(message.contains("ROS_DOMAIN_ID=23"));
+        assert!(message.contains("request_topic=rq/fibonacci/_action/send_goalRequest:found"));
+        assert!(message.contains("response_topic=rr/fibonacci/_action/send_goalReply:missing"));
+    }
+
+    #[test]
+    fn service_connected_message_identifies_endpoint_without_retry_count() {
+        let message =
+            service_connected_message("/add_two_ints", "example_interfaces/srv/AddTwoInts", 23);
+
+        assert!(message.contains("ROS2 service connected"));
+        assert!(message.contains("/add_two_ints"));
+        assert!(message.contains("example_interfaces/srv/AddTwoInts"));
+        assert!(message.contains("ROS_DOMAIN_ID=23"));
+        assert!(!message.contains("retry"));
+    }
+
+    #[test]
+    fn service_unavailable_message_keeps_retry_count_for_diagnostics() {
+        let message = service_unavailable_message(
+            "/add_two_ints",
+            "example_interfaces/srv/AddTwoInts",
+            10,
+            23,
+        );
+
+        assert!(message.contains("ROS2 service not available"));
+        assert!(message.contains("10 retries"));
+        assert!(message.contains("/add_two_ints"));
+        assert!(message.contains("example_interfaces/srv/AddTwoInts"));
+        assert!(message.contains("ROS_DOMAIN_ID=23"));
+    }
+
+    #[test]
+    fn service_unavailable_message_reports_discovered_service_topics() {
+        let topics = [
+            "rq/add_two_intsRequest".to_string(),
+            "rr/add_two_intsReply".to_string(),
+            "rq/other_serviceRequest".to_string(),
+        ];
+        let message = service_unavailable_message_with_discovery(
+            "/add_two_ints",
+            "example_interfaces/srv/AddTwoInts",
+            10,
+            23,
+            &topics,
+        );
+
+        assert!(message.contains("ROS2 service not available"));
+        assert!(message.contains("discovered_service_topics=2/2"));
+        assert!(message.contains("request_topic=rq/add_two_intsRequest:found"));
+        assert!(message.contains("response_topic=rr/add_two_intsReply:found"));
+        assert!(!message.contains("other_service"));
+    }
+
+    #[test]
+    fn service_topic_names_follow_ros2_service_mapping() {
+        let names = service_topic_names("/add_two_ints");
+
+        assert_eq!(names.request, "rq/add_two_intsRequest");
+        assert_eq!(names.response, "rr/add_two_intsReply");
+    }
+
+    #[test]
+    fn service_topics_discovered_requires_request_and_response_topics() {
+        let topics = [
+            "rq/add_two_intsRequest".to_string(),
+            "rr/add_two_intsReply".to_string(),
+        ];
+        assert!(service_topics_discovered("/add_two_ints", &topics));
+
+        let request_only = ["rq/add_two_intsRequest".to_string()];
+        assert!(!service_topics_discovered("/add_two_ints", &request_only));
+    }
+
+    #[test]
+    fn action_service_connected_message_identifies_endpoint_without_retry_count() {
+        let message = action_service_connected_message("/fibonacci/_action/send_goal", 23);
+
+        assert!(message.contains("ROS2 action service connected"));
+        assert!(message.contains("/fibonacci/_action/send_goal"));
+        assert!(message.contains("ROS_DOMAIN_ID=23"));
+        assert!(!message.contains("retry"));
+    }
+
+    #[test]
+    fn action_service_names_cover_goal_result_and_cancel_endpoints() {
+        assert_eq!(
+            action_goal_service_name("/fibonacci"),
+            "/fibonacci/_action/send_goal"
+        );
+        assert_eq!(
+            action_result_service_name("/fibonacci"),
+            "/fibonacci/_action/get_result"
+        );
+        assert_eq!(
+            action_cancel_service_name("/fibonacci"),
+            "/fibonacci/_action/cancel_goal"
+        );
     }
 }
