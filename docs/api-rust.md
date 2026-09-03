@@ -835,7 +835,7 @@ crate depends on it, so it never reaches crates.io at all.
 
 ### How this is enforced
 
-Documentation alone would not survive contact with cargo, so four mechanisms
+Documentation alone would not survive contact with cargo, so five mechanisms
 back it:
 
 1. **Exact version pins.** Workspace crates depend on each other with `=`
@@ -857,6 +857,37 @@ back it:
    name that disappears fails; a new one fails until it is filed as either
    covered or exempt, so the choice is made deliberately rather than by
    whatever the module happened to export.
+
+5. **A compatibility gate on every PR.** `make qa-breaking`, run as the
+   `Breaking changes` job in `ci.yml`, checks each surface above against the
+   last released tag. (1)-(3) are cargo mechanisms and (4) covers one wheel,
+   which between them left most of this list unguarded: the `dora` command,
+   the dataflow YAML schema, the C header, the cxx bridge and the postcard
+   wire format are all invisible to rustdoc, and a change to any of them could
+   reach users with every check green.
+
+   | Surface | Checked by |
+   |---|---|
+   | `dora-node-api`, `dora-message`, `dora-arrow-convert` | `cargo-semver-checks` against the tag |
+   | `dora-node-api-c` | declaration diff of `apis/c/node/node_api.h`, enum ordinals included |
+   | `dora-node-api-cxx` | item diff of the `#[cxx::bridge]` block |
+   | `dora-node-api-python` | mechanism (4) above |
+   | `dora-cli` — the `dora` command | `binaries/cli/cli-surface.txt`, a clap-generated snapshot |
+   | `dora-cli` — the YAML schema | JSON-Schema-aware diff: removed property, newly required property, removed enum value, `additionalProperties` closing |
+   | the wire protocol | field and variant *order* of every serde type in `dora-message` — what postcard actually encodes |
+   | the Python floor | `requires-python` and the abi3 tag in both wheels |
+
+   Everything but the first row is read out of source text or a checked-in
+   snapshot, so that half needs no compilation and runs in seconds.
+
+   Two behaviours are worth knowing before they surprise someone. It fails a
+   **major version bump**, because a 2.0 withdraws the promises every check
+   is measuring against — green and red would both be misleading, so the bump
+   has to be stated (`ALLOW_MAJOR_BUMP=1`). Separately, `cargo-semver-checks`
+   runs with `--release-type minor`: left to infer the release type from an
+   rc-to-release version move it concluded breakage was already permitted,
+   skipped all 254 lints, and reported "no semver update required" having
+   checked nothing.
 
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already

@@ -62,7 +62,7 @@
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
         qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph qa-clippy qa-test qa-test-python \
-        qa-test-python-node qa-coverage qa-mutants qa-semver \
+        qa-test-python-node qa-coverage qa-mutants qa-semver qa-breaking qa-breaking-update \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
         qa-verify-release
 
@@ -196,6 +196,24 @@ qa-mutants:
 
 qa-semver:
 	@scripts/qa/semver.sh
+
+# The dora 1.x compatibility gate: every surface the 1.0 guarantee freezes,
+# checked against the last released tag (docs/api-rust.md, "Stability scope
+# at 1.0"). `ARGS="--fast"` drops to the no-compile checks (seconds) -- that
+# subset is what PR CI runs and what `make qa-fast` includes; the default
+# adds cargo-semver-checks and the snapshot-freshness rebuild.
+#
+#   make qa-breaking
+#   make qa-breaking ARGS="--fast"
+#   make qa-breaking ARGS="--baseline v1.0.0"
+qa-breaking:
+	@scripts/qa/breaking-changes.sh $(ARGS)
+
+# Re-record the generated inputs the gate diffs: the `dora` command snapshot
+# and the JSON schemas. Run this when a PR *adds* to either surface, and
+# commit the result -- that diff is how the addition gets reviewed.
+qa-breaking-update:
+	@scripts/qa/breaking-changes.sh --update
 
 # Check that a published release is complete: every crate on release.yml's
 # publish list is on crates.io, both wheels are on PyPI with the full

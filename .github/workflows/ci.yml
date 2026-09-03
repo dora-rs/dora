@@ -4,7 +4,7 @@
 #
 #   Cheap (every PR, ~5-10 min):
 #     fmt, clippy, check (cargo check --all + --examples),
-#     typos, audit, unwrap-budget, check-license.
+#     typos, audit, unwrap-budget, breaking-changes, check-license.
 #     These gate entry into the Trunk Merge Queue.
 #
 #   Expensive (push to main, merge-queue batches, workflow_dispatch):
@@ -780,6 +780,81 @@ jobs:
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: make qa-unwrap
+
+  # ===== Compatibility gate =====
+  # dora 1.0 freezes a set of surfaces for the life of 1.x (docs/api-rust.md,
+  # "Stability scope at 1.0"). Until now nothing checked most of them: the
+  # publish-graph gate and the exact version pins are cargo mechanisms, and
+  # cargo-semver-checks — which was laptop-only — sees rustdoc and nothing
+  # else. A deleted `dora` subcommand, a reordered postcard field, a YAML key
+  # that became required, a raised Python floor: all of those would have
+  # reached users with every check green.
+  #
+  # Two steps, cheapest first, because they fail for different reasons and the
+  # first one is nearly free:
+  #
+  #   1. The surface diff. No compilation — every surface is read out of source
+  #      text or a checked-in snapshot on both sides — so it finishes in
+  #      seconds and runs on every PR.
+  #   2. cargo-semver-checks on the crates whose Rust API is covered. This one
+  #      compiles rustdoc for two revisions. It is kept on the PR tier because
+  #      a breaking change is much cheaper to fix before review than after
+  #      release; if it turns out to be the slowest cheap gate, move just this
+  #      step to the expensive tier with the same
+  #      `if: github.event_name != 'pull_request'` the `test` job uses.
+  #
+  # Not here: freshness of the CLI snapshot the first step diffs. That needs
+  # `cargo test -p dora-cli`, which the `test` job already runs on every
+  # merge-queue batch, so a stale snapshot still cannot merge.
+  breaking-changes:
+    name: Breaking changes
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, unlike every other job here, because this one compares
+      # against a release tag and the default shallow checkout has no tags at
+      # all. Working around that is the classic shallow-clone tax: `git
+      # describe` and `git merge-base` do not work, which is exactly how the
+      # semver step first broke. Measured on this repo, the extra cost is
+      # small — a depth-1 checkout of one branch is 3.6 MB, all of `main`'s
+      # history is 5.9 MB, and every branch and tag together is 45 MB — so
+      # the tag-fetching machinery it would save was not worth its own bugs.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Resolved once and shared with the semver step below: both halves must
+      # compare against the same release.
+      - name: Resolve the release to compare against
+        run: |
+          echo "BREAKING_BASELINE=$(python3 scripts/qa/breaking_changes.py --print-baseline)" \
+            >> "$GITHUB_ENV"
+      - name: Frozen surfaces vs the last release
+        env:
+          # Lets surfaces the last release predates — anything whose snapshot
+          # was added after it — still be checked against the PR's base
+          # instead of sitting skipped until the next release.
+          BREAKING_FALLBACK_BASELINE: ${{ github.event.pull_request.base.sha }}
+        run: make qa-breaking ARGS="--fast"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own key: rustdoc JSON for two revisions is a different artifact
+          # set from the dev-profile `workspace` cache, and mixing them would
+          # evict what the compile jobs restore from.
+          shared-key: semver
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Rust API of the crates 1.0 covers
+        run: make qa-semver
 
   # ===== License check =====
   # Restored from upstream dora CI — explicit license validation.
