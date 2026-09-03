@@ -91,12 +91,11 @@ Some examples have platform caveats (full detail in
   `rcl`/`rclcpp`/`rclpy` client ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)),
   so the action examples pair a dora server with a dora client in one dataflow.
   **Service** servers are discovered fine by a real `ros2` client.
-- The deferred action `get_result` round-trip is flaky in upstream
-  `ros2-client`/`rustdds` (it repeatedly hung the x86 nightly job and stalls on
-  the macOS/arm64 dev harness). The Rust/C++ action examples are therefore
+- The Rust/C++ action examples require full ROS2 runtime validation and are
   **not run in nightly CI**; validate them with `scripts/ros2dev.sh qa` on x86
-  Linux before a release. Tracked in
-  [#1170](https://github.com/dora-rs/dora/issues/1170).
+  Linux before a release. They exercise the deferred action `get_result`
+  round-trip that previously exposed `ros2-client`/`rustdds` timing issues.
+  Tracked in [#1170](https://github.com/dora-rs/dora/issues/1170).
 
 The `parameter` examples use the *local* parameter API (no discovery), so they
 run deterministically on every platform.

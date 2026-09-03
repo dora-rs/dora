@@ -252,7 +252,7 @@ nodes:
       - response
 ```
 
-The bridge waits for the service to become available (up to 10 retries, 2 seconds each), then for each Arrow input it receives:
+The bridge waits for the service to become available (up to 30 retries, 2 seconds each), then for each Arrow input it receives:
 
 1. Serializes the Arrow data as an `AddTwoInts_Request` CDR message
 2. Sends the request to the ROS2 service
@@ -305,7 +305,7 @@ Responses can arrive in any order -- the bridge correlates them by `request_id`,
 
 | Behavior | Value |
 |----------|-------|
-| Service client: wait for availability | 10 retries, 2s each (20s total) |
+| Service client: wait for availability | 30 retries, 2s each (60s total) |
 | Service client: response timeout | 30 seconds |
 | Service server: pending request limit | 64 |
 

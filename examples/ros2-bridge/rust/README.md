@@ -23,11 +23,10 @@ See the [top-level README](../README.md) for the capability×language matrix and
 ¹ Action examples are gated behind `--features ros2-examples`. A dora-hosted
 action server is not discoverable by a real `rcl` client
 ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the
-`action-server` example pairs a dora server with a dora client. The deferred
-`get_result` round-trip is flaky in upstream `ros2-client`/`rustdds` (it
-repeatedly hung the x86 nightly job and stalls on the arm64 dev harness), so the
-action examples are **not run in nightly CI** — validate them with
-`scripts/ros2dev.sh qa` on x86 Linux before a release ([#1170](https://github.com/dora-rs/dora/issues/1170)).
+`action-server` example pairs a dora server with a dora client. The action
+examples require full ROS2 runtime validation and are **not run in nightly CI** —
+validate them with `scripts/ros2dev.sh qa` on x86 Linux before a release
+([#1170](https://github.com/dora-rs/dora/issues/1170)).
 See [`docs/ros2-bridge.md`](../../../docs/ros2-bridge.md).
 
 ## Setup
