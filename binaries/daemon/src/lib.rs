@@ -2317,9 +2317,9 @@ impl Daemon {
                                     ft_stats: Some(dora_message::daemon_to_coordinator::FaultToleranceSnapshot {
                                         restarts: self.ft_stats.restarts.load(atomic::Ordering::Relaxed),
                                         health_check_kills: self.ft_stats.health_check_kills.load(atomic::Ordering::Relaxed),
-                                        startup_timeout_kills: self.ft_stats.startup_timeout_kills.load(atomic::Ordering::Relaxed),
                                         input_timeouts: self.ft_stats.input_timeouts.load(atomic::Ordering::Relaxed),
                                         circuit_breaker_recoveries: self.ft_stats.circuit_breaker_recoveries.load(atomic::Ordering::Relaxed),
+                                        startup_timeout_kills: self.ft_stats.startup_timeout_kills.load(atomic::Ordering::Relaxed),
                                     }),
                                 },
                             },

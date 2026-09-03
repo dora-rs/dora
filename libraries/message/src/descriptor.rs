@@ -924,16 +924,6 @@ pub struct Node {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
-    /// Startup connection deadline in seconds.
-    ///
-    /// If the node process fails to connect (subscribe to events) within this
-    /// many seconds after process spawn, the daemon kills the process and
-    /// evaluates the `restart_policy`.
-    ///
-    /// Evaluated on each `health_check_interval` tick (default 5s).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub startup_timeout: Option<f64>,
-
     /// Per-node finish-drain grace period in seconds.
     ///
     /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
@@ -1015,6 +1005,16 @@ pub struct Node {
     /// Machine deployment configuration.
     #[schemars(skip)]
     pub deploy: Option<Deploy>,
+
+    /// Startup connection deadline in seconds.
+    ///
+    /// If the node process fails to connect (subscribe to events) within this
+    /// many seconds after process spawn, the daemon kills the process and
+    /// evaluates the `restart_policy`.
+    ///
+    /// Evaluated on each `health_check_interval` tick (default 5s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
 }
 
 impl Node {
@@ -1071,12 +1071,12 @@ impl Node {
             max_restart_delay: None,
             restart_window: None,
             health_check_timeout: None,
-            startup_timeout: None,
             finish_grace_secs: None,
             module: None,
             params: Default::default(),
             cpu_affinity: None,
             deploy: None,
+            startup_timeout: None,
         }
     }
 }
@@ -1448,6 +1448,12 @@ pub struct CustomNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub finish_grace_secs: Option<f64>,
+
+    #[serde(flatten)]
+    pub run_config: NodeRunConfig,
+
     /// Startup connection deadline in seconds.
     ///
     /// If the node process fails to connect (subscribe to events) within this
@@ -1457,15 +1463,6 @@ pub struct CustomNode {
     /// Evaluated on each `health_check_interval` tick (default 5s).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
-
-    /// Per-node finish-drain grace period in seconds.
-    ///
-    /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub finish_grace_secs: Option<f64>,
-
-    #[serde(flatten)]
-    pub run_config: NodeRunConfig,
 }
 
 impl CustomNode {
@@ -1494,9 +1491,9 @@ impl CustomNode {
             max_restart_delay: None,
             restart_window: None,
             health_check_timeout: None,
-            startup_timeout: None,
             finish_grace_secs: None,
             run_config: NodeRunConfig::default(),
+            startup_timeout: None,
         }
     }
 
@@ -1540,7 +1537,6 @@ impl CustomNode {
             max_restart_delay: node.max_restart_delay.take(),
             restart_window: node.restart_window.take(),
             health_check_timeout: node.health_check_timeout.take(),
-            startup_timeout: node.startup_timeout.take(),
             finish_grace_secs: node.finish_grace_secs.take(),
             run_config: NodeRunConfig {
                 inputs: std::mem::take(&mut node.inputs),
@@ -1550,6 +1546,7 @@ impl CustomNode {
                 input_types: std::mem::take(&mut node.input_types),
                 shared_memory_pool_size: node.shared_memory_pool_size.take(),
             },
+            startup_timeout: node.startup_timeout.take(),
         }
     }
 }

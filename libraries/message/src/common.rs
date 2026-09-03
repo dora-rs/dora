@@ -191,8 +191,6 @@ impl std::fmt::Display for NodeError {
 pub enum NodeErrorCause {
     /// Node was killed because it didn't react to a stop message in time.
     GraceDuration,
-    /// Node was killed because it failed to connect to dora within startup_timeout.
-    StartupTimeout,
     /// Node failed because another node failed before,
     Cascading {
         caused_by_node: NodeId,
@@ -201,6 +199,8 @@ pub enum NodeErrorCause {
     Other {
         stderr: String,
     },
+    /// Node was killed because it failed to connect to dora within startup_timeout.
+    StartupTimeout,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
