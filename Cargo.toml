@@ -274,6 +274,14 @@ name = "cxx-arrow-dataflow"
 path = "examples/c++-arrow-dataflow/run.rs"
 
 [[example]]
+name = "cxx-thread-safe-output"
+path = "examples/cxx-thread-safe-output/run.rs"
+
+[[example]]
+name = "cxx-thread-safe-output-bench"
+path = "examples/cxx-thread-safe-output-bench/run.rs"
+
+[[example]]
 name = "cxx-service-action"
 path = "examples/c++-service-action/run.rs"
 

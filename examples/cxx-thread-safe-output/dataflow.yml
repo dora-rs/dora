@@ -1,0 +1,7 @@
+nodes:
+  - id: cxx-thread-safe-output
+    path: build/node_rust_api
+    inputs:
+      tick: dora/timer/millis/300
+    outputs:
+      - result
