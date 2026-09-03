@@ -69,6 +69,7 @@ Runs:
 - committed-credential check
 - typo check
 - crates.io publish-graph check
+- build-time include check (every `include_str!` target ships with its crate)
 
 ### Before push
 

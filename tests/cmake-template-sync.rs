@@ -1,9 +1,13 @@
-//! The cmake config templates exist as three copies: the canonical
-//! `apis/c/node/cmake/` plus crate-local copies in `apis/c++/node/cmake/`
-//! and `apis/c++/operator/cmake/`. The copies exist because `cargo package`
-//! cannot include files from outside a crate's directory, so each published
-//! crate must carry its own. Nothing else keeps them in sync — this test
-//! does.
+//! The cmake config templates exist as four copies: the canonical
+//! `apis/c/node/cmake/` plus crate-local copies in `apis/c/operator/cmake/`,
+//! `apis/c++/node/cmake/` and `apis/c++/operator/cmake/`. The copies exist
+//! because `cargo package` cannot include files from outside a crate's
+//! directory, so each published crate must carry its own. Nothing else keeps
+//! them in sync — this test does. `scripts/qa/package-includes.sh` guards
+//! the other half: that no published crate goes back to reaching across
+//! crate boundaries for a build-time file, which is how the copy went
+//! missing from `dora-operator-api-c` 1.0.0 and broke `cargo install
+//! dora-cli` (#3400).
 
 use std::path::Path;
 
@@ -12,6 +16,7 @@ fn cmake_templates_are_in_sync() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR"));
     let canonical_dir = root.join("apis/c/node/cmake");
     let copy_dirs = [
+        root.join("apis/c/operator/cmake"),
         root.join("apis/c++/node/cmake"),
         root.join("apis/c++/operator/cmake"),
     ];
@@ -26,7 +31,7 @@ fn cmake_templates_are_in_sync() {
                 canonical,
                 copy,
                 "{}/{template} has drifted from apis/c/node/cmake/{template}; \
-                 edit the canonical file and copy it to both c++ crates",
+                 edit the canonical file and copy it to every crate-local cmake/ dir",
                 dir.display()
             );
         }

@@ -51,7 +51,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 
 | Target | Runs | Budget | When to use |
 |---|---|---|---|
-| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph | ~15 s | Pre-commit |
+| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph + package-includes + breaking-changes | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
@@ -174,7 +174,17 @@ Reproduce locally with `make qa-secret-files`; the rationale is documented at th
 
 Reproduce locally with `make qa-publish-graph`; the rules and what each protects are documented at the top of [`scripts/qa/publish-graph.sh`](../scripts/qa/publish-graph.sh).
 
-### 3.7 `test` failed
+### 3.7 `package-includes` failed
+
+**Cause**: a publishable crate reads a file at build time that its published `.crate` would not contain. `cargo package` ships the git-tracked files under one crate directory and nothing else, so the workspace build stays green and the failure lands on whoever runs `cargo install` — after the version is on crates.io and can no longer be replaced.
+
+**"resolves to X, outside crate Y"**: the path leaves the crate directory, usually a `../` into a sibling crate. Keep a crate-local copy of the file and include that; if two crates need the same file, add a test that keeps the copies identical, as [`tests/cmake-template-sync.rs`](../tests/cmake-template-sync.rs) does for the cmake templates. That test lives in `dora-examples`, which every bulk `cargo test` excludes, so no `make qa-*` target runs it — drift in the copies is caught by the `contract-tests` CI job, or locally by naming it: `cargo test -p dora-examples --test cmake-template-sync`. This is #3400: `dora-operator-api-c/build.rs` read `../node/cmake/*.cmake.in`, and `cargo install dora-cli` failed for every 1.0.0 user.
+
+**"which git does not track"**: the path is inside the crate but the file is generated or ignored, so packaging drops it. Commit the file, or have the build script write it into `OUT_DIR` and include it from there.
+
+Reproduce locally with `make qa-package-includes`, and confirm a fix end to end with `cargo package -p <crate>` — that builds the crate from its own tarball, which is exactly what the gate approximates statically.
+
+### 3.8 `test` failed
 
 **Cause**: you broke a test.
 
@@ -186,7 +196,7 @@ cargo test -p <crate> <test_name> -- --nocapture
 
 If the test was wrong and the code is right, fix the test. If the code was wrong, fix the code. Don't fix the test to match broken code.
 
-### 3.8 `coverage` (soft) flagged
+### 3.9 `coverage` (soft) flagged
 
 **Cause**: the diff coverage gate (if running on a PR) found less than 70% of your new/changed lines are covered by tests.
 
@@ -197,7 +207,7 @@ make qa-coverage
 open target/llvm-cov/html/index.html   # if you also run `cargo llvm-cov --html`
 ```
 
-### 3.9 `mutation` escaped
+### 3.10 `mutation` escaped
 
 **Cause**: `cargo-mutants` found a mutation that no test detected — meaning your tests are incomplete for the mutated code path.
 
@@ -218,7 +228,7 @@ Construct an input where the mutated version produces a different output from th
 
 **Do not** waive mutations just to make the gate pass. The point of the gate is to surface weak tests.
 
-### 3.10 `semver` flagged
+### 3.11 `semver` flagged
 
 **Cause**: `cargo-semver-checks` found a breaking change in a publishable crate's public API since the last tag.
 
@@ -228,7 +238,7 @@ Construct an input where the mutated version produces a different output from th
 
 Soft during 0.x, hard from 1.0 on. It runs as a step of the `breaking-changes` gate below, which passes `--release-type minor` so the lints run whatever the version numbers say.
 
-### 3.11 `breaking-changes` failed
+### 3.12 `breaking-changes` failed
 
 **Cause**: a surface dora 1.x freezes changed. The report names the surface and the item — a removed `dora` flag, a reordered postcard field, a YAML property that became required, a raised `requires-python`.
 
