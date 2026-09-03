@@ -156,7 +156,7 @@ make qa-test-python
 # cargo test -p <crate-name>
 ```
 
-**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph + the no-compile half of the 1.x compatibility gate in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
+**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph + package-includes + the no-compile half of the 1.x compatibility gate in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
 
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
 
@@ -181,7 +181,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-kani` — ~5-10 min cold, <1 min warm. Formal verification: runs the `#[kani::proof]` harnesses (Kani/CBMC model checker) in `dora-message` (auth `constant_time_eq`). A passing proof is exhaustive over the harness state space, not sampled. Run when touching files with `#[cfg(kani)]` proof modules and in pre-release gating; install via `make qa-kani-install`. See [`docs/formal-verification.md`](docs/formal-verification.md).
 - `make qa-pgo` — ~30-40 min. Profile-Guided Optimization measurement: builds `dora-cli` with `cargo-pgo` (instrument → train on `examples/benchmark/` → optimize), then runs the benchmark twice (baseline vs PGO) and prints a side-by-side comparison with a +5%-throughput-geomean verdict. Run on your target platform — PGO results don't transfer across OS/arch. macOS-arm64 first-measurement showed +25% throughput geomean, latency unchanged (see [#331](https://github.com/dora-rs/dora/issues/331)). **Do not add to CI** — the build pipeline cost is release-pipeline scope, not per-commit. Install via `make qa-pgo-install`.
 
-**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, publish-graph, breaking changes, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
+**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, publish-graph, package-includes, breaking changes, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 
 ### Remote CI jobs
 
@@ -199,6 +199,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - Committed-credential check (`make qa-secret-files`, a step in the `Check` job): fails if git tracks a file whose name says it holds a secret. .gitignore is not enough on its own — it does not apply to files arriving through an import or a squash-merge of another repo's history, which is how `.adora-token` reached the public repo (#2194)
 - crates.io publish-graph check (`make qa-publish-graph`, a step in the `Check` job): no published crate may depend on a `publish = false` one, and the ordered publish lists in `release.yml` / `cargo-release.yml` must agree and list every dependency before its dependents (#3304)
 - Breaking-change gate (`make qa-breaking ARGS="--fast"` + `cargo-semver-checks`): every surface dora 1.x freezes — the C header, the cxx bridge, the dataflow YAML schema, the postcard wire format, the `dora` command snapshot, the Python floor, and the Rust API of the covered crates — diffed against the last release tag
+- Build-time include check (`make qa-package-includes`, a step in the `Check` job): every `include_str!` / `include_bytes!` target of a publishable crate must be a git-tracked file inside that crate, since `cargo package` ships nothing else. `dora-operator-api-c` read its cmake templates from the sibling `apis/c/node/` crate, which built here and broke `cargo install dora-cli` on 1.0.0 (#3400)
 - License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)
 

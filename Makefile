@@ -61,7 +61,8 @@
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
-        qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph qa-clippy qa-test qa-test-python \
+        qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph qa-package-includes \
+        qa-clippy qa-test qa-test-python \
         qa-test-python-node qa-coverage qa-mutants qa-semver qa-breaking qa-breaking-update \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
         qa-verify-release
@@ -142,6 +143,12 @@ qa-secret-files:
 # cargo-release.yml must list every dependency before its dependents.
 qa-publish-graph:
 	@scripts/qa/publish-graph.sh
+
+# Build-time file inclusion gate (#3400): every `include_str!` /
+# `include_bytes!` target of a publishable crate must be a git-tracked
+# file inside that crate, or the published `.crate` will not have it.
+qa-package-includes:
+	@scripts/qa/package-includes.sh
 
 qa-clippy:
 	@cargo clippy --all --all-targets \

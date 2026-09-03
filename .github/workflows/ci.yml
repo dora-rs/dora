@@ -195,6 +195,11 @@ jobs:
       # crates.io will not let anyone take back (#3304).
       - name: Check the crates.io publish graph
         run: make qa-publish-graph
+      # Same reasoning, other half of the publish surface: a crate that
+      # reads a file outside its own directory at build time compiles here
+      # and fails for everyone who installs it from crates.io (#3400).
+      - name: Check that build-time includes ship with their crate
+        run: make qa-package-includes
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
@@ -632,6 +637,11 @@ jobs:
         run: |
           source .venv/bin/activate
           make qa-test-python-node
+      # Guards the four hand-kept copies of the cmake templates (#3400).
+      # It lives in `dora-examples`, which every bulk `cargo test` excludes,
+      # so it ran nowhere before; this job already builds that harness.
+      - name: Check the cmake templates are in sync
+        run: cargo test -p dora-examples --test cmake-template-sync
       - name: Run semantic contract tests
         run: >
           cargo test -p dora-examples --test example-smoke contract_

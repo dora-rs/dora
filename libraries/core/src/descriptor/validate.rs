@@ -2668,24 +2668,40 @@ nodes:
         check_wiring(&descriptor).unwrap();
     }
 
+    /// Reads a fixture that lives outside this crate, or `None` when this is
+    /// not a repository checkout. `include_str!` would be the obvious choice,
+    /// but a path that leaves the crate directory is not in the published
+    /// `.crate`, so the crate would fail to *compile* its tests for anyone
+    /// building from crates.io (#3400).
+    ///
+    /// The workspace manifest is the marker for "we are in the repo". Only
+    /// its absence skips: inside a checkout a missing fixture is a stale
+    /// path and panics, so this keeps the one property `include_str!` had
+    /// that a plain `.ok()` would throw away.
+    fn repo_fixture(relative: &str) -> Option<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("Cargo.toml").is_file() {
+            return None;
+        }
+        let path = root.join(relative);
+        Some(
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("fixture {} is missing: {e}", path.display())),
+        )
+    }
+
     #[test]
     fn ros2_zenoh_documentation_examples_parse_with_explicit_profiles() {
         let examples = [
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml"
-            )),
+            "examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml",
         ];
-        for yaml in examples {
-            let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        for relative in examples {
+            let Some(yaml) = repo_fixture(relative) else {
+                continue; // packaged crate: the examples tree is not shipped
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
             let ros2 = descriptor
                 .nodes
                 .iter()
@@ -2703,10 +2719,9 @@ nodes:
 
     #[test]
     fn ros2_zenoh_documentation_links_upstream_wire_contract() {
-        let guide = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../guide/src/advanced/ros2-bridge.md"
-        ));
+        let Some(guide) = repo_fixture("guide/src/advanced/ros2-bridge.md") else {
+            return; // packaged crate: the guide is not shipped
+        };
         assert!(guide.contains("https://github.com/ros2/rmw_zenoh/blob/rolling/docs/design.md"));
         assert!(guide.contains("https://www.ros.org/reps/rep-2016.html"));
     }
