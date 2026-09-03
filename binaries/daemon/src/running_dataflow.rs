@@ -468,11 +468,49 @@ impl RunningDataflow {
     /// failure of the *new* incarnation misattributed to the stale cause and
     /// classified as `NodeErrorCause::Cascading`, suppressing its real stderr
     /// capture.
+    ///
+    /// The lazily-declared remote `publishers` — an `OutputId`-keyed
+    /// (`(node id, output)`) map that the `RemoveNode` / `ReplaceNode` routing
+    /// cleanup never touched — are dropped too. They are created on demand in
+    /// `send_to_remote_receivers`, so without this a removed node's zenoh
+    /// `Publisher` (and its retained session clone) would stay declared for the
+    /// life of the dataflow, accumulating unboundedly across repeated dynamic
+    /// add/remove cycles that use fresh node ids or output names. Dropping them
+    /// is safe on both call sites because the next remote send re-declares the
+    /// publisher.
+    ///
+    /// The sibling `debug_topic_watchers` map is deliberately *not* purged here
+    /// — see [`Self::forget_debug_topic_watchers`], which the `RemoveNode` call
+    /// site invokes separately.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
+        self.publishers
+            .retain(|output_id, _| &output_id.0 != node_id);
+    }
+
+    /// Drops the `OutputId`-keyed debug-topic watchers registered for `node_id`
+    /// when the coordinator forwarded a `StartTopicDebugStream`.
+    ///
+    /// Otherwise they are only reaped on an explicit unsubscribe, so a
+    /// debug-watched output of a since-removed node lingers for the life of the
+    /// dataflow. A dead source produces no frames, so dropping its watchers is
+    /// safe (a later unsubscribe simply finds nothing for that output).
+    ///
+    /// This is **`RemoveNode`-only**, and deliberately not folded into
+    /// [`Self::forget_node_bookkeeping`]. A `ReplaceNode` resumes under the
+    /// *same* `OutputId(node_id, output)` and nothing on that path
+    /// re-registers watchers — they are only ever (re)created by a fresh
+    /// `StartTopicDebugStream` from the coordinator. Purging them on replace
+    /// would silently drop an active `dora topic` / debug-inspection stream
+    /// across a fault-tolerant restart, never to recover, which is exactly the
+    /// class of node-id-keyed subscription state that path preserves on
+    /// purpose.
+    pub(crate) fn forget_debug_topic_watchers(&mut self, node_id: &NodeId) {
+        self.debug_topic_watchers
+            .retain(|output_id, _| &output_id.0 != node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
