@@ -506,6 +506,17 @@ pub async fn open_zenoh_session_with_listen(
         }
         Err(std::env::VarError::NotPresent) => {
             let mut zenoh_config = zenoh::Config::default();
+            // Bound timeouts so unreachable peers don't hang teardown (#2776).
+            for (key, val) in [
+                ("transport/unicast/open_timeout", "1000"),
+                ("connect/timeout_ms", "2000"),
+                ("scouting/timeout", "1000"),
+                ("routing/interests/timeout", "1000"),
+            ] {
+                if let Err(err) = zenoh_config.insert_json5(key, val) {
+                    warn!("failed to set zenoh `{key}` to {val}: {err}");
+                }
+            }
             // NOTE: we used to set `routing/peer: { mode: "linkstate" }` here so
             // that peers would relay for each other (e.g. two daemons on separate
             // networks reaching each other through a public one). In zenoh 1.8 that
@@ -1699,6 +1710,30 @@ mod tests {
                 "unexpected error for `{bad}`: {err}"
             );
         }
+    }
+
+    #[cfg(feature = "zenoh")]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn unreachable_peer_teardown_bounded() {
+        use std::time::Instant;
+        use zenoh::Wait;
+
+        let (session, _) = open_zenoh_session_with_listen(ZenohSessionParams {
+            connect_endpoints: &["tcp/198.51.100.1:7447".to_string()],
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+
+        let sub = session.declare_subscriber("test/topic").wait().unwrap();
+        let publ = session.declare_publisher("test/topic").wait().unwrap();
+
+        let start = Instant::now();
+        drop(publ);
+        drop(sub);
+        drop(session);
+
+        assert!(start.elapsed() < std::time::Duration::from_secs(5));
     }
 
     // Concrete addresses pass validation whether or not they exist on this host:
