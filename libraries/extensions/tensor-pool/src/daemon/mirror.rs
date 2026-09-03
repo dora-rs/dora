@@ -51,6 +51,49 @@ pub(crate) fn read_header_u64(ptr: *const u8) -> u64 {
     u64::from_le_bytes(buf)
 }
 
+/// Read the registered pool size recorded in a mirror segment's DORADMA
+/// header JSON, *bounding the JSON length against the mapping* so a
+/// corrupt or truncated header cannot make the `from_raw_parts` slice run
+/// past the segment.
+///
+/// The header stores the JSON byte length at offset 8 and the JSON blob at
+/// [`DORADMA_HEADER_SIZE`]. That length is attacker-influenceable — the
+/// write paths `open()` (not create) a segment under the predictable name
+/// `dora_pool_{machine}_{dataflow}_{pool}`, so another local process could
+/// pre-create it, and a partially written segment can hold a stale length —
+/// and it was previously fed straight into `from_raw_parts`, an
+/// out-of-bounds read (UB) whenever `json_len` exceeded the mapping. This
+/// checks it against `shmem_len` first, mirroring the `data_offset` bound
+/// the callers already apply before copying the payload.
+///
+/// Returns `None` when the segment is smaller than the fixed header or when
+/// `json_len` would overrun the mapping (a corrupt header — the caller
+/// drops the frame). Returns `Some(0)` when the JSON is present but carries
+/// no usable `size` field, which the caller's size check already rejects.
+///
+/// `shmem_ptr` must point at a readable mapping of at least `shmem_len`
+/// bytes (the caller holds the live `Shmem`).
+pub(crate) fn read_registered_size(shmem_ptr: *const u8, shmem_len: usize) -> Option<usize> {
+    // The fixed header (magic + length/offset fields) and the JSON start
+    // must both lie within the mapping before any header field is read.
+    if shmem_len < DORADMA_HEADER_SIZE {
+        return None;
+    }
+    let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) } as usize;
+    let json_end = DORADMA_HEADER_SIZE.checked_add(json_len)?;
+    if json_end > shmem_len {
+        return None;
+    }
+    let json_bytes =
+        unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
+    Some(
+        serde_json::from_slice::<serde_json::Value>(json_bytes)
+            .ok()
+            .and_then(|v| v.get("size").and_then(|s| s.as_u64()))
+            .unwrap_or(0) as usize,
+    )
+}
+
 /// Write 8 bytes as a little-endian u64 at `ptr`. Mirror of the node
 /// API's header writes (`json_len_le` / `data_off_le` byte copies).
 pub(crate) fn write_header_u64(ptr: *mut u8, value: u64) {
@@ -363,14 +406,11 @@ pub(crate) fn write_cross_pool_data(
     // path's registered-size check closes; the zenoh relay is the active
     // data plane whenever the direct endpoint is unavailable, not just a
     // fallback).
-    let registered_size = {
-        let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) } as usize;
-        let json_bytes =
-            unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
-        serde_json::from_slice::<serde_json::Value>(json_bytes)
-            .ok()
-            .and_then(|v| v.get("size").and_then(|s| s.as_u64()))
-            .unwrap_or(0) as usize
+    let Some(registered_size) = read_registered_size(shmem_ptr, shmem.len()) else {
+        tracing::warn!(
+            "memory pool: {shared_memory_id} header JSON length exceeds segment, dropping frame"
+        );
+        return false;
     };
     if tensor_data.len() != registered_size || size != registered_size {
         tracing::warn!(
@@ -579,5 +619,62 @@ mod cross_mirror_descriptor_tests {
             "cpu",
         );
         assert_eq!(get_str(&decode(&bytes), "pinned_type"), "cpu");
+    }
+}
+
+#[cfg(test)]
+mod read_registered_size_tests {
+    use super::{DORADMA_HEADER_SIZE, DORADMA_MAGIC, read_registered_size};
+
+    /// Build an in-memory DORADMA-style header buffer: magic, a `json_len`
+    /// at offset 8, and `json` written at [`DORADMA_HEADER_SIZE`]. Passing
+    /// an over-long `json_len` models a corrupt/hostile header.
+    fn header_buf(json: &[u8], json_len: u64) -> Vec<u8> {
+        let mut buf = vec![0u8; DORADMA_HEADER_SIZE + json.len()];
+        buf[..8].copy_from_slice(DORADMA_MAGIC);
+        buf[8..16].copy_from_slice(&json_len.to_le_bytes());
+        buf[DORADMA_HEADER_SIZE..DORADMA_HEADER_SIZE + json.len()].copy_from_slice(json);
+        buf
+    }
+
+    #[test]
+    fn reads_the_size_field_from_a_valid_header() {
+        let json = br#"{"size":4096,"dtype":"int64"}"#;
+        let buf = header_buf(json, json.len() as u64);
+        assert_eq!(
+            read_registered_size(buf.as_ptr(), buf.len()),
+            Some(4096),
+            "a well-formed header must yield its recorded pool size"
+        );
+    }
+
+    #[test]
+    fn rejects_a_json_len_past_the_mapping() {
+        // The regression: a header whose `json_len` runs past the segment
+        // must be rejected, not turned into an out-of-bounds `from_raw_parts`
+        // slice (UB). The buffer is only `DORADMA_HEADER_SIZE + 4` bytes but
+        // the header claims a `u64::MAX` JSON blob.
+        let buf = header_buf(b"{}", 2);
+        assert_eq!(
+            read_registered_size(buf.as_ptr(), buf.len()),
+            Some(0),
+            "an in-bounds header without a usable size field yields Some(0)"
+        );
+        // Now over-declare the length: it must be rejected outright.
+        let mut corrupt = buf.clone();
+        corrupt[8..16].copy_from_slice(&u64::MAX.to_le_bytes());
+        assert_eq!(
+            read_registered_size(corrupt.as_ptr(), corrupt.len()),
+            None,
+            "an out-of-bounds json_len must be rejected, not read past the mapping"
+        );
+    }
+
+    #[test]
+    fn rejects_a_segment_smaller_than_the_header() {
+        // A truncated segment must be rejected before any header field past
+        // the magic is read.
+        let buf = [0u8; 8];
+        assert_eq!(read_registered_size(buf.as_ptr(), buf.len()), None);
     }
 }
