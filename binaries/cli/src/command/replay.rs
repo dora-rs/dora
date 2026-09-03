@@ -204,30 +204,10 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     run.execute()
 }
 
-/// Sizes receiver queues so a full-speed replay cannot silently drop messages.
-///
-/// Replay can outpace receivers — especially with `--speed 0` — and dora's
-/// real-time defaults drop under pressure: each input queue holds
-/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
-/// sized from the queue sizes. For every input fed by a replayed node, this
-/// sets `queue_size` to the recorded message count for that output and
-/// `queue_policy: backpressure`, so one pass of the recording fits entirely
-/// and any residual overflow is logged loudly instead of dropped silently
-/// (#2144).
-///
-/// Scope and limits:
-/// - Inputs with an explicit `queue_size` are left untouched: an explicit
-///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
-///   which replay should reproduce, not override.
-/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
-///   partial `--replace`, live intermediate nodes can re-emit at full speed
-///   into their own downstream consumers' default queues (warned at the call
-///   site).
-/// - The sizing bounds one pass of the recording; `--loop` can still
-///   overflow, at which point the backpressure policy logs errors at its
-///   hard cap instead of dropping silently.
-/// - Drops below this layer (zenoh congestion on multi-daemon replay) are
-///   not addressed here.
+/// Rewrites each recorded node in the descriptor into a replay node: swaps its
+/// `path` for the `dora-replay-node` binary, strips the build/source/operator
+/// keys and its `inputs`, republishes its recorded `outputs`, and injects the
+/// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -335,6 +315,36 @@ fn append_prefixed_outputs(
     }
 }
 
+/// Raises replayed inputs' node-level queue sizes so a full-speed replay does
+/// not drop messages *at the node input-queue layer*.
+///
+/// Replay can outpace receivers — especially with `--speed 0` — and dora's
+/// real-time defaults drop under pressure: each input queue holds
+/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
+/// sized from the queue sizes. For every input fed by a replayed node, this
+/// sets `queue_size` to the recorded message count for that output and
+/// `queue_policy: backpressure`, so one pass of the recording fits entirely
+/// and any residual overflow is logged loudly instead of dropped silently
+/// (#2144).
+///
+/// Scope and limits:
+/// - Inputs with an explicit `queue_size` are left untouched: an explicit
+///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
+///   which replay should reproduce, not override.
+/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
+///   partial `--replace`, live intermediate nodes can re-emit at full speed
+///   into their own downstream consumers' default queues (warned at the call
+///   site).
+/// - The sizing bounds one pass of the recording; `--loop` can still
+///   overflow, at which point the backpressure policy logs errors at its
+///   hard cap instead of dropping silently.
+/// - This addresses only the node input-queue layer. The layer beneath it —
+///   the direct node-to-node zenoh data plane, whose output publishers use
+///   `CongestionControl::Drop` (`apis/rust/node/src/node/mod.rs`) — can still
+///   drop an unpaced `--speed 0` burst while `send` reports success. That
+///   holds for single-daemon replay too, since same-machine nodes exchange
+///   outputs over the same direct path, so this is not a multi-daemon-only
+///   gap. Not addressed here (dora-rs/dora#3397).
 fn raise_replayed_input_queue_sizes(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
