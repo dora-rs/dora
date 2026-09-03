@@ -246,16 +246,56 @@ where
         .wrap_err_with(|| format!("server returned an error status for `{url}`"))?;
 
     let filename = get_filename(&response).context("Could not find a filename")?;
-    let bytes = response
-        .bytes()
-        .await
-        .wrap_err_with(|| format!("failed to download from `{url}`"))?;
+    let path = target_dir.join(&filename);
+
+    // Stream the body to a temp file while hashing it incrementally, so peak
+    // memory stays O(chunk) rather than O(file size). Model artifacts
+    // (safetensors/weights) are routinely multiple GB, and buffering the whole
+    // body in RAM first (the previous `response.bytes()`) risked OOM-ing the
+    // process on a large download. The bytes land on a temp sibling and are
+    // only renamed onto `path` once the digest has been verified, so a
+    // mismatched or interrupted download never leaves a usable file at the
+    // target path.
+    //
+    // The temp name is unique (pid + process-wide counter) and independent of
+    // `filename`'s length: two concurrent downloads into the same dir — the
+    // daemon can spawn nodes sharing one content-addressed hub artifact — must
+    // not race on a single `.partial` file, and a `.{filename}.partial` scheme
+    // would also push an already-max-length filename past the 255-byte
+    // component limit.
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let tmp_path = target_dir.join(format!(
+        ".dora-download-{}-{}.partial",
+        std::process::id(),
+        COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut hasher = Sha256::new();
+    let mut response = response;
+    let stream_to_tmp = async {
+        let mut file = tokio::fs::File::create(&tmp_path)
+            .await
+            .wrap_err("failed to create target file")?;
+        while let Some(chunk) = response
+            .chunk()
+            .await
+            .wrap_err_with(|| format!("failed to download from `{url}`"))?
+        {
+            hasher.update(&chunk);
+            file.write_all(&chunk)
+                .await
+                .wrap_err("failed to write downloaded operator to file")?;
+        }
+        file.sync_all().await.wrap_err("failed to `sync_all`")?;
+        Ok::<(), eyre::ErrReport>(())
+    };
+    if let Err(err) = stream_to_tmp.await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err);
+    }
 
     // Verify integrity if a digest was provided.
     // Without a digest, the download is vulnerable to MITM or CDN compromise
     // since the downloaded binary may be executed or dlopen-ed.
-    let mut hasher = Sha256::new();
-    hasher.update(&bytes);
     let actual_hash: String = hasher
         .finalize()
         .iter()
@@ -265,6 +305,7 @@ where
         // `actual_hash` is lowercase hex; a digest from an index/lockfile may be
         // uppercase, so compare case-insensitively rather than rejecting it.
         if !expected.eq_ignore_ascii_case(&actual_hash) {
+            let _ = tokio::fs::remove_file(&tmp_path).await;
             eyre::bail!("SHA-256 mismatch for `{url}`: expected {expected}, got {actual_hash}");
         }
     } else {
@@ -276,19 +317,18 @@ where
         );
     }
 
-    let path = target_dir.join(filename);
-    let mut file = tokio::fs::File::create(&path)
-        .await
-        .wrap_err("failed to create target file")?;
-    file.write_all(&bytes)
-        .await
-        .wrap_err("failed to write downloaded operator to file")?;
-    file.sync_all().await.wrap_err("failed to `sync_all`")?;
-
     #[cfg(unix)]
-    file.set_permissions(std::fs::Permissions::from_mode(0o700))
-        .await
-        .wrap_err("failed to make downloaded file executable")?;
+    if let Err(err) =
+        tokio::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o700)).await
+    {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err).wrap_err("failed to make downloaded file executable");
+    }
+
+    if let Err(err) = tokio::fs::rename(&tmp_path, &path).await {
+        let _ = tokio::fs::remove_file(&tmp_path).await;
+        return Err(err).wrap_err("failed to move downloaded file into place");
+    }
 
     Ok(path.to_path_buf())
 }
