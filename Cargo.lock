@@ -3581,6 +3581,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hang-before-init-node"
+version = "1.0.0"
+dependencies = [
+ "eyre",
+]
+
+[[package]]
 name = "hashbrown"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"

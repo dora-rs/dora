@@ -1096,6 +1096,7 @@ nodes:
     max_restart_delay: 9.5
     restart_window: 60.0
     health_check_timeout: 2.5
+    startup_timeout: 4.5
     finish_grace_secs: 3.5
     shared_memory_pool_size: 8MB
     inputs:

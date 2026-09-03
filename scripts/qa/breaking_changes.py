@@ -676,6 +676,22 @@ def check_schema(root: Path, baseline: Baseline) -> SurfaceResult:
 
 WIRE_DIR = "libraries/message/src"
 
+# Modules in `dora-message` that are framed as JSON or YAML, not positional
+# postcard binary:
+# - `descriptor` and `config` are dataflow YAML/JSON descriptors (governed by
+#   Surface 3: Dataflow YAML schema, and made #[non_exhaustive] in #3387).
+# - WebSocket protocol modules (*_to_*.rs, ws_protocol.rs) use serde_json framing
+#   with named keys, so additive fields are backward- and forward-compatible.
+NON_POSTCARD_MODULES = {
+    "descriptor",
+    "config",
+    "daemon_to_coordinator",
+    "coordinator_to_daemon",
+    "cli_to_coordinator",
+    "coordinator_to_cli",
+    "ws_protocol",
+}
+
 
 SERDE_WIRE_KEYS = (
     "rename",
@@ -862,19 +878,26 @@ def check_wire_format(root: Path, baseline: Baseline) -> SurfaceResult:
                 )
             )
             continue
+        is_postcard = name.split("::")[0] not in NON_POSTCARD_MODULES
         if old_type["kind"] == "struct":
-            # Every field is length-free and positional: adding one makes new
-            # messages undecodable by old peers *and* old messages undecodable
-            # by new ones, so additions break both directions.
-            added_level = BREAK
-            note = "postcard encodes fields positionally"
+            if is_postcard:
+                # Every field is length-free and positional: adding one makes new
+                # messages undecodable by old peers *and* old messages undecodable
+                # by new ones, so additions break both directions.
+                added_level = BREAK
+                note = "postcard encodes fields positionally"
+            else:
+                # JSON/YAML protocols serialize fields by name, so adding a field
+                # (especially with #[serde(default)]) is non-breaking.
+                added_level = WARN
+                note = "named fields in self-describing framing (JSON/YAML)"
         else:
             # A new variant only breaks new -> old (an old peer cannot decode a
             # discriminant it has never heard of). Old messages still decode,
             # so this is reported rather than blocked -- it is how the protocol
             # is meant to grow.
             added_level = WARN
-            note = "postcard encodes the variant index"
+            note = "postcard encodes the variant index" if is_postcard else "enum variant"
         result.findings.extend(
             compare_ordered(
                 "field" if old_type["kind"] == "struct" else "variant",

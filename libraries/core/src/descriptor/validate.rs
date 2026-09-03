@@ -94,6 +94,12 @@ fn check_dataflow_static_resolved(
     for node in nodes.values() {
         if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
             check_timing_fields(&node.id, custom)?;
+            if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
+                bail!(
+                    "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+                    node.id
+                );
+            }
         }
         // `input_timeout` is a second-valued `f64` that the daemon also feeds
         // to `Duration::from_secs_f64`, on both the initial-spawn and the
@@ -234,6 +240,7 @@ fn check_timing_fields(
     for (field, value) in [
         ("finish_grace_secs", custom.finish_grace_secs),
         ("health_check_timeout", custom.health_check_timeout),
+        ("startup_timeout", custom.startup_timeout),
         ("restart_delay", custom.restart_delay),
         ("max_restart_delay", custom.max_restart_delay),
         ("restart_window", custom.restart_window),
@@ -1465,6 +1472,7 @@ operators:
         // a large finite grace is fine
         node.finish_grace_secs = Some(3600.0);
         node.health_check_timeout = Some(0.0);
+        node.startup_timeout = Some(5.0);
         check_timing_fields(&id, &node).unwrap();
     }
 
@@ -1477,6 +1485,36 @@ operators:
         assert!(
             err.contains("finish_grace_secs") && err.contains("non-negative"),
             "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn timing_fields_reject_negative_startup_timeout() {
+        let id = NodeId::from("n".to_owned());
+        let mut node = custom_node();
+        node.startup_timeout = Some(-0.5);
+        let err = check_timing_fields(&id, &node).unwrap_err().to_string();
+        assert!(
+            err.contains("startup_timeout") && err.contains("non-negative"),
+            "error should name the field and the constraint, got: {err}"
+        );
+    }
+
+    #[test]
+    fn dynamic_node_rejects_startup_timeout() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: dyn
+    path: dynamic
+    startup_timeout: 5.0
+"#,
+        )
+        .unwrap();
+        let err = check_dataflow_static(&descriptor).unwrap_err().to_string();
+        assert!(
+            err.contains("dynamic node `dyn` cannot specify `startup_timeout`"),
+            "error should explain dynamic node startup_timeout rejection, got: {err}"
         );
     }
 

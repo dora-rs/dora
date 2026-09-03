@@ -564,6 +564,84 @@ async fn health_check_timeout_sigkills_unresponsive_node() {
     );
 }
 
+/// A node hanging before init_from_env is killed on startup_timeout (#3022).
+#[tokio::test(flavor = "multi_thread")]
+async fn node_killed_on_startup_timeout_unwedges_dataflow() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "hang-before-init-node"])
+        .status()
+        .expect("failed to build hang-before-init-node");
+    assert!(status.success(), "hang-before-init-node build failed");
+
+    let marker = std::env::temp_dir().join("dora-startup-timeout.log");
+    let _ = std::fs::remove_file(&marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/startup-timeout.yml");
+
+    let start = std::time::Instant::now();
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_secs(10)),
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete within deadline");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "dataflow took {elapsed:?}, expected unwedging well before 10s fallback stop_after (startup_timeout: 0.5s)"
+    );
+    let contents = std::fs::read_to_string(&marker).expect("marker file should exist");
+    let _ = std::fs::remove_file(&marker);
+    assert!(
+        contents.contains("incarnation"),
+        "hang-before-init-node should have written marker before hanging"
+    );
+
+    let node_result = dr
+        .node_results
+        .get(&"hang-before-init".to_string().into())
+        .expect("hang-before-init should be in node_results");
+    let err = node_result
+        .as_ref()
+        .expect_err("hang-before-init should have errored");
+    #[cfg(unix)]
+    assert!(
+        matches!(
+            err.exit_status,
+            dora_message::common::NodeExitStatus::Signal(9)
+        ),
+        "expected Signal(9) kill on startup timeout expiry, got {:?} (cause: {:?})",
+        err.exit_status,
+        err.cause,
+    );
+    #[cfg(windows)]
+    assert!(
+        !err.exit_status.is_success(),
+        "expected non-zero exit on startup timeout expiry, got {:?} (cause: {:?})",
+        err.exit_status,
+        err.cause,
+    );
+    assert!(
+        matches!(
+            &err.cause,
+            dora_message::common::NodeErrorCause::Other { stderr } if stderr.contains("startup_timeout")
+        ),
+        "expected NodeErrorCause::Other with startup_timeout message, got {:?}",
+        err.cause,
+    );
+}
+
 /// `NodeRestarted` is delivered to downstream nodes after an upstream
 /// node is restarted (#1631).
 ///
