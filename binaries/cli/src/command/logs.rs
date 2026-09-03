@@ -392,6 +392,13 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         follow_state = next_state;
 
         new_messages.sort_by_key(|a| a.timestamp);
+        // Apply the same `--since`/`--until` window the initial batch (via
+        // `filter_and_tail`) and the coordinator-backed follow path already
+        // apply, so `--until` (show only logs older than the cutoff) suppresses
+        // freshly appended lines here too instead of streaming them. `now` is
+        // the fixed reference captured at follow start, matching
+        // `stream_logs_from_coordinator`.
+        let new_messages = apply_time_filters(new_messages, args.since, args.until, now);
         for msg in new_messages {
             if matches_grep(&msg, args.grep.as_deref()) {
                 print_log_message(msg, &config);
@@ -1353,6 +1360,26 @@ mod tests {
         );
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].message, "mid");
+    }
+
+    // Regression: the local `--follow` loop feeds each poll's newly appended
+    // lines through `apply_time_filters` before printing. A line appended
+    // "now" is newer than the `--until` cutoff, so `--until` must suppress it —
+    // otherwise `dora logs --local --follow --until <dur>` would stream fresh
+    // lines that the same flag excludes from the initial batch and from the
+    // coordinator follow path.
+    #[test]
+    fn until_suppresses_freshly_appended_follow_line() {
+        let now = Utc::now();
+        let just_appended = now - chrono::TimeDelta::seconds(1);
+        let msgs = vec![make_msg("live", None, None, just_appended)];
+        // until=5m -> only lines older than 5 minutes ago; a line from 1s ago
+        // is dropped.
+        let result = apply_time_filters(msgs, None, Some(std::time::Duration::from_secs(300)), now);
+        assert!(
+            result.is_empty(),
+            "a fresh follow line must be suppressed by --until"
+        );
     }
 
     // --- apply_grep ---
