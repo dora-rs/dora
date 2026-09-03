@@ -4,7 +4,7 @@
 #
 #   Cheap (every PR, ~5-10 min):
 #     fmt, clippy, check (cargo check --all + --examples),
-#     typos, audit, unwrap-budget, check-license.
+#     typos, audit, unwrap-budget, breaking-changes, check-license.
 #     These gate entry into the Trunk Merge Queue.
 #
 #   Expensive (push to main, merge-queue batches, workflow_dispatch):
@@ -110,7 +110,7 @@ jobs:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -121,7 +121,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -164,7 +164,7 @@ jobs:
     name: Check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       # Pure git, so it costs no time and genuinely goes first — before the
       # toolchain install and cache restore, so a leaked credential fails in
       # seconds rather than after CI has provisioned a Rust build. A
@@ -242,7 +242,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -401,7 +401,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -552,7 +552,7 @@ jobs:
       # per-repo Actions cache cap (see the caching note in the header).
       MATURIN_PEP517_ARGS: "--profile dev"
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -585,7 +585,7 @@ jobs:
             /opt/hostedtoolcache/CodeQL || true
           docker system prune -af || true
           df -h
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       # The three PyO3 crates are excluded from the workspace `cargo test`
@@ -610,7 +610,7 @@ jobs:
         # implementation detail (LD_LIBRARY_PATH only adds a search path).
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -666,7 +666,7 @@ jobs:
     if: github.event_name != 'pull_request'
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -702,7 +702,7 @@ jobs:
       # so the most recent main-branch save is found.
       - name: Restore baseline
         id: cache-baseline
-        uses: actions/cache/restore@v5
+        uses: actions/cache/restore@v6
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-not-used
@@ -733,7 +733,7 @@ jobs:
       # On main branch: save criterion data as the new baseline
       - name: Cache baseline
         if: github.ref == 'refs/heads/main' && success()
-        uses: actions/cache/save@v5
+        uses: actions/cache/save@v6
         with:
           path: target/criterion
           key: bench-baseline-${{ runner.os }}-${{ github.sha }}
@@ -742,7 +742,7 @@ jobs:
     name: Typos
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: crate-ci/typos@d43b6c087ac471e2ea7b8af622ff15f05c0c365b # v1.50.1
 
   # ===== Fast supply-chain gates =====
@@ -755,7 +755,7 @@ jobs:
     name: Audit (cargo-audit + cargo-deny)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -776,10 +776,85 @@ jobs:
     name: Unwrap budget
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Install ripgrep
         run: sudo apt-get update && sudo apt-get install -y ripgrep
       - run: make qa-unwrap
+
+  # ===== Compatibility gate =====
+  # dora 1.0 freezes a set of surfaces for the life of 1.x (docs/api-rust.md,
+  # "Stability scope at 1.0"). Until now nothing checked most of them: the
+  # publish-graph gate and the exact version pins are cargo mechanisms, and
+  # cargo-semver-checks — which was laptop-only — sees rustdoc and nothing
+  # else. A deleted `dora` subcommand, a reordered postcard field, a YAML key
+  # that became required, a raised Python floor: all of those would have
+  # reached users with every check green.
+  #
+  # Two steps, cheapest first, because they fail for different reasons and the
+  # first one is nearly free:
+  #
+  #   1. The surface diff. No compilation — every surface is read out of source
+  #      text or a checked-in snapshot on both sides — so it finishes in
+  #      seconds and runs on every PR.
+  #   2. cargo-semver-checks on the crates whose Rust API is covered. This one
+  #      compiles rustdoc for two revisions. It is kept on the PR tier because
+  #      a breaking change is much cheaper to fix before review than after
+  #      release; if it turns out to be the slowest cheap gate, move just this
+  #      step to the expensive tier with the same
+  #      `if: github.event_name != 'pull_request'` the `test` job uses.
+  #
+  # Not here: freshness of the CLI snapshot the first step diffs. That needs
+  # `cargo test -p dora-cli`, which the `test` job already runs on every
+  # merge-queue batch, so a stale snapshot still cannot merge.
+  breaking-changes:
+    name: Breaking changes
+    runs-on: ubuntu-latest
+    steps:
+      # Full history, unlike every other job here, because this one compares
+      # against a release tag and the default shallow checkout has no tags at
+      # all. Working around that is the classic shallow-clone tax: `git
+      # describe` and `git merge-base` do not work, which is exactly how the
+      # semver step first broke. Measured on this repo, the extra cost is
+      # small — a depth-1 checkout of one branch is 3.6 MB, all of `main`'s
+      # history is 5.9 MB, and every branch and tag together is 45 MB — so
+      # the tag-fetching machinery it would save was not worth its own bugs.
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      # Resolved once and shared with the semver step below: both halves must
+      # compare against the same release.
+      - name: Resolve the release to compare against
+        run: |
+          echo "BREAKING_BASELINE=$(python3 scripts/qa/breaking_changes.py --print-baseline)" \
+            >> "$GITHUB_ENV"
+      - name: Frozen surfaces vs the last release
+        env:
+          # Lets surfaces the last release predates — anything whose snapshot
+          # was added after it — still be checked against the PR's base
+          # instead of sitting skipped until the next release.
+          BREAKING_FALLBACK_BASELINE: ${{ github.event.pull_request.base.sha }}
+        run: make qa-breaking ARGS="--fast"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - name: Pin toolchain set for a stable rust-cache key (see header)
+        shell: bash
+        run: |
+          rustup default "$RUST_VERSION"
+          extra="$(rustup toolchain list | awk '{print $1}' | grep -vF "$RUST_VERSION" || true)"
+          for tc in $extra; do rustup toolchain uninstall "$tc" || true; done
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # Its own key: rustdoc JSON for two revisions is a different artifact
+          # set from the dev-profile `workspace` cache, and mixing them would
+          # evict what the compile jobs restore from.
+          shared-key: semver
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-semver-checks
+      - name: Rust API of the crates 1.0 covers
+        run: make qa-semver
 
   # ===== License check =====
   # Restored from upstream dora CI — explicit license validation.
@@ -789,7 +864,7 @@ jobs:
     name: License check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}

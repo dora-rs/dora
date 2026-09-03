@@ -34,20 +34,45 @@ PUBLIC_CRATES=(
   dora-arrow-convert
 )
 
-# dora-* crates are not yet published on crates.io, so use the last git
-# tag as the baseline. Override by exporting SEMVER_BASELINE=<ref> before
-# running this script.
-BASELINE="${SEMVER_BASELINE:-$(git describe --tags --abbrev=0 2>/dev/null || echo main)}"
+# Compare against the last released tag -- what deployed users are running.
+# Resolved by the shared helper so both halves of the gate check the same
+# release, and so this works in a shallow CI checkout: `git describe` fails
+# there, which would have silently made the baseline `main`. Override by hand
+# with SEMVER_BASELINE=<ref>.
+# Relative to the repo root, which the `cd` above guarantees: `$(dirname $0)`
+# would be wrong when the script is invoked by a relative path from anywhere
+# but the root.
+# shellcheck source=baseline.sh
+source scripts/qa/baseline.sh
+BASELINE=$(resolve_breaking_baseline) || exit 2
 echo "Baseline: $BASELINE"
 echo
 
-FAILED=0
+# Guarded because an empty list would silently turn into "check the whole
+# workspace", which is a different (and much slower) question.
+[ ${#PUBLIC_CRATES[@]} -gt 0 ] || { echo "error: PUBLIC_CRATES is empty" >&2; exit 2; }
+CRATE_ARGS=()
 for crate in "${PUBLIC_CRATES[@]}"; do
-  echo "--- $crate ---"
-  if ! cargo semver-checks check-release -p "$crate" --baseline-rev "$BASELINE"; then
-    FAILED=1
-  fi
+  CRATE_ARGS+=(-p "$crate")
 done
+
+FAILED=0
+# One invocation for all three, not one each: they depend on each other, so a
+# single run shares the `cargo metadata` pass, the baseline checkout and the
+# rustdoc build over the common dependency graph instead of repeating all of
+# it three times. On a cold CI runner that is the bulk of this job.
+#
+# `--release-type minor` is what makes this mean anything. Left to derive
+# the release type from the version numbers, cargo-semver-checks sees that
+# the workspace version has already moved (an rc to its release, or 1.0 to
+# 1.1), concludes breakage is permitted, and skips every lint -- printing
+# "no semver update required" having run 0 of 254 checks. Forcing `minor`
+# runs the major-breaking lints on every run, which is the post-1.0 rule:
+# no breaking change without a deliberate 2.0.
+if ! cargo semver-checks check-release "${CRATE_ARGS[@]}" \
+    --baseline-rev "$BASELINE" --release-type minor; then
+  FAILED=1
+fi
 
 if [[ "$FAILED" == "1" ]]; then
   echo

@@ -24,7 +24,15 @@
   <a href="https://github.com/dora-rs/dora/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dora-rs/dora" alt="License"/></a>
 </div>
 
+<br/>
+
+<p align="center">
+  <b>dora 1.0 is out.</b> Read the <a href="https://github.com/dora-rs/dora/blob/main/docs/blog/2026-09-02-dora-1.0.md">1.0 release post</a>.
+</p>
+
 # Dora
+
+
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
@@ -651,6 +659,7 @@ cargo install typos-cli
 - **Property testing** -- `proptest` on wire-protocol types; catches edge cases unit tests miss
 - **Miri** -- UB detection on pure-Rust unsafe hotspots (e.g., `dora-core::metadata`)
 - **SemVer check** -- `cargo-semver-checks` against the last git tag
+- **Breaking-change gate** -- every surface dora 1.x freezes, diffed against the last release tag: the C header, the cxx bridge, the dataflow YAML schema, the postcard wire format, the `dora` command, the Python floor, and the Rust API of the covered crates. Runs on every PR; the surface half needs no build (`make qa-breaking`)
 - **Adversarial LLM review** -- `scripts/qa/adversarial.sh` runs a *different* model on your diff to catch single-model blind spots (local today; CI pending API secret)
 
 **Reference docs:**

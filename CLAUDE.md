@@ -156,7 +156,7 @@ make qa-test-python
 # cargo test -p <crate-name>
 ```
 
-**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
+**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph + the no-compile half of the 1.x compatibility gate in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
 
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
 
@@ -176,11 +176,12 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - `make qa-examples` — ~15-20 min. Runs all **smoke-eligible** example dataflows end-to-end via `scripts/smoke-all.sh`. Skips examples that need CUDA, ROS2, webcam, multi-machine deploy, C/C++ toolchains, or interactive CLI (run `scripts/smoke-all.sh -h` to see the SKIP list). Orthogonal to the qa-fast/full/deep ladder: those targets `--exclude dora-examples` to keep per-commit / pre-push budgets tight. Run this when you want actual dataflows exercised (after touching node/operator APIs, CLI subcommands, or the descriptor surface). Pass flags via `ARGS`, e.g. `make qa-examples ARGS="--rust-only"` or `make qa-examples ARGS="-v"`.
 - `make qa-coverage` — generates an lcov report locally. Run when you want to see what's covered.
 - `make qa-mutants` — mutation testing, slow. Run when investigating test quality on a specific file or on the PR diff.
-- `make qa-semver` — breaking-change check. Run before publishing to crates.io.
+- `make qa-semver` — the Rust-API half of the breaking-change check. Run before publishing to crates.io; `make qa-breaking` runs it as one step among the others.
+- `make qa-breaking` — the dora 1.x compatibility gate: every surface the 1.0 guarantee freezes, checked against the last release tag (`docs/api-rust.md`, "Stability scope at 1.0"). **Not a deep gate** — its no-compile half is in `qa-fast` and in PR CI, taking ~2 s. The default (full) form adds `cargo-semver-checks` and rebuilds the CLI/schema snapshots to prove they are current; run that when you touched the CLI, the descriptor, `dora-message`, or a node API. `make qa-breaking-update` re-records the snapshots after an addition.
 - `make qa-kani` — ~5-10 min cold, <1 min warm. Formal verification: runs the `#[kani::proof]` harnesses (Kani/CBMC model checker) in `dora-message` (auth `constant_time_eq`). A passing proof is exhaustive over the harness state space, not sampled. Run when touching files with `#[cfg(kani)]` proof modules and in pre-release gating; install via `make qa-kani-install`. See [`docs/formal-verification.md`](docs/formal-verification.md).
 - `make qa-pgo` — ~30-40 min. Profile-Guided Optimization measurement: builds `dora-cli` with `cargo-pgo` (instrument → train on `examples/benchmark/` → optimize), then runs the benchmark twice (baseline vs PGO) and prints a side-by-side comparison with a +5%-throughput-geomean verdict. Run on your target platform — PGO results don't transfer across OS/arch. macOS-arm64 first-measurement showed +25% throughput geomean, latency unchanged (see [#331](https://github.com/dora-rs/dora/issues/331)). **Do not add to CI** — the build pipeline cost is release-pipeline scope, not per-commit. Install via `make qa-pgo-install`.
 
-**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, publish-graph, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
+**Remote CI is deliberately kept lean** — only the fast hard gates (fmt, clippy, test on Linux, typos, supply chain audit, unwrap budget, publish-graph, breaking changes, E2E, contract tests, benchmark regression, license check) — so it stays fast (~30-45 min critical path) and runner capacity is not a bottleneck. Do not expand PR CI with slow jobs. See [`docs/qa-runbook.md`](docs/qa-runbook.md) for when and how to use each deep gate locally.
 
 ### Remote CI jobs
 
@@ -197,6 +198,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - Unwrap-budget check (production `.unwrap()` / `.expect(` ratchet)
 - Committed-credential check (`make qa-secret-files`, a step in the `Check` job): fails if git tracks a file whose name says it holds a secret. .gitignore is not enough on its own — it does not apply to files arriving through an import or a squash-merge of another repo's history, which is how `.adora-token` reached the public repo (#2194)
 - crates.io publish-graph check (`make qa-publish-graph`, a step in the `Check` job): no published crate may depend on a `publish = false` one, and the ordered publish lists in `release.yml` / `cargo-release.yml` must agree and list every dependency before its dependents (#3304)
+- Breaking-change gate (`make qa-breaking ARGS="--fast"` + `cargo-semver-checks`): every surface dora 1.x freezes — the C header, the cxx bridge, the dataflow YAML schema, the postcard wire format, the `dora` command snapshot, the Python floor, and the Rust API of the covered crates — diffed against the last release tag
 - License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)
 
