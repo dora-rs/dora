@@ -7,6 +7,13 @@ on:
       # Pre-release tags (e.g. v1.0.0-rc.2). The bare pattern above does not
       # match a `-rc.N` suffix, which silently skipped the v1.0.0 rc releases.
       - "v[0-9]+.[0-9]+.[0-9]+-*"
+  # Manual re-run of a release that died partway. Select the release *tag*
+  # as the ref — `check-version` refuses anything else. This replaces
+  # cargo-release.yml, which carried a second copy of the publish list and
+  # could only ever run this way: its `release: published` trigger is never
+  # raised for a release created by a GITHUB_TOKEN action, which is how
+  # every release here is created.
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -30,6 +37,13 @@ jobs:
       - uses: actions/checkout@v7
       - name: Compare tag with workspace version
         run: |
+          # workflow_dispatch can be pointed at a branch, where the checks
+          # below would compare the workspace version against a branch name
+          # and fail with a confusing message.
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            echo "::error::run this workflow against a release tag; got $GITHUB_REF_TYPE '$GITHUB_REF_NAME'"
+            exit 1
+          fi
           tag_version="${GITHUB_REF_NAME#v}"
           # dora-cli inherits [workspace.package].version, so it stands in
           # for the workspace version here.
@@ -72,7 +86,6 @@ jobs:
           # Excludes `publish = false` binaries (dora-record-node,
           # dora-replay-node, dora-ros2-bridge-node — delivered via the CLI)
           # and the PyPI-only dora-node-api-python.
-          # Keep in sync with .github/workflows/cargo-release.yml.
           CRATES=(
             dora-message
             dora-arrow-convert

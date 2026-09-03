@@ -847,7 +847,7 @@ back it:
    `default = []`, so using it is an affirmative act recorded in the
    consumer's `Cargo.toml` rather than a warning they can tune out.
    `arrow-v58` / `arrow-v59` are the pattern.
-3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish lists in `.github/workflows/release.yml` and `.github/workflows/cargo-release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
+3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish list in `.github/workflows/release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
 4. **A pinned wheel surface.** The Python API ships as the `dora-rs` wheel,
    not as a crate, so none of the mechanisms above reach it — a rename would
    arrive on PyPI with nothing having failed first.
