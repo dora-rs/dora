@@ -253,6 +253,29 @@ impl std::fmt::Display for BuildId {
     }
 }
 
+/// This `dora-message` build's own version, as a parsed [`semver::Version`].
+///
+/// This is the compile-time [`VERSION`] (`CARGO_PKG_VERSION`) parsed into a
+/// structured [`semver::Version`] so it can be compared with a peer's
+/// version. dora's components stamp it into their connection handshakes and
+/// compare it against the version a peer reports — `cli_to_coordinator::ControlRequest::Hello`,
+/// the daemon's `daemon_to_coordinator::DaemonRegisterRequest`, and the node's
+/// `node_to_daemon::NodeRegisterRequest` — to detect an incompatible peer.
+///
+/// # Examples
+///
+/// ```
+/// // The structured version round-trips to the crate's `VERSION` string.
+/// assert_eq!(
+///     dora_message::current_crate_version().to_string(),
+///     dora_message::VERSION,
+/// );
+/// ```
+///
+/// # Panics
+///
+/// Parses [`VERSION`], which for any released build is a valid semver string
+/// baked in by Cargo, so this never panics in practice.
 pub fn current_crate_version() -> semver::Version {
     let crate_version_raw = env!("CARGO_PKG_VERSION");
 

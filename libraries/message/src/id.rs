@@ -84,8 +84,19 @@ fn validate_data_id(id: &str) -> Result<(), InvalidId> {
     Ok(())
 }
 
+/// Error returned when a string fails validation as a [`NodeId`] or
+/// [`DataId`].
+///
+/// Produced by their [`FromStr`](std::str::FromStr) implementations. The
+/// wrapped `String` is a human-readable explanation of why the id was
+/// rejected (empty, a reserved name, a disallowed character, an empty path
+/// segment, …); its [`Display`](std::fmt::Display) forwards to that message.
+/// ([`OperatorId`] parsing is infallible and does not produce this error.)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidId(pub String);
+pub struct InvalidId(
+    /// Human-readable reason the id was rejected.
+    pub String,
+);
 
 impl std::fmt::Display for InvalidId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
