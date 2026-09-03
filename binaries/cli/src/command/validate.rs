@@ -58,10 +58,16 @@ fn validate_node_manifest(path: &Path) -> eyre::Result<()> {
 }
 
 fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre::Result<()> {
-    let working_dir = dataflow
+    let parent = dataflow
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| std::path::Path::new("."));
+    let working_dir = parent.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve working directory for `{}`",
+            dataflow.display()
+        )
+    })?;
 
     println!("Validating {}...", dataflow.display());
 
@@ -74,7 +80,7 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
                 dataflow.display()
             )
         })?
-        .expand(working_dir)
+        .expand(&working_dir)
         .context("failed to expand modules in dataflow descriptor")?;
 
     let strict = strict_types || descriptor.strict_types.unwrap_or(false);
@@ -150,7 +156,7 @@ fn validate_dataflow(dataflow: &Path, strict_types: bool, offline: bool) -> eyre
     println!("Descriptor config OK.");
 
     // Inject contracts from node manifests adjacent to path: nodes (§6.2)
-    let injection = inject_adjacent_manifests(&mut descriptor, working_dir, &mut registry);
+    let injection = inject_adjacent_manifests(&mut descriptor, &working_dir, &mut registry);
     for note in &injection.notes {
         println!("  {note}");
     }

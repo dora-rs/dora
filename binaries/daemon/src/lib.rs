@@ -1665,12 +1665,15 @@ impl Daemon {
             Some(p) => p
                 .canonicalize()
                 .context("failed to canonicalize working_dir override")?,
-            None => dataflow_path
-                .canonicalize()
-                .context("failed to canonicalize dataflow path")?
-                .parent()
-                .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-                .to_owned(),
+            None => {
+                let parent = dataflow_path
+                    .parent()
+                    .filter(|p| !p.as_os_str().is_empty())
+                    .unwrap_or_else(|| Path::new("."));
+                parent
+                    .canonicalize()
+                    .context("failed to canonicalize dataflow parent directory")?
+            }
         };
 
         // `hub:` dataflows are desugared in memory by `dora build` — the
