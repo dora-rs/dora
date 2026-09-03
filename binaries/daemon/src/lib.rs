@@ -6639,6 +6639,12 @@ impl Daemon {
                     // connected, else a slow restart could be silence-escalated
                     // mid-startup (dora-rs/dora#2270).
                     dataflow.connected_nodes.remove(&node_id);
+                    if let Some(running_node) = dataflow.running_nodes.get(&node_id) {
+                        running_node.spawned_at.store(0, atomic::Ordering::Release);
+                        running_node
+                            .startup_kill_sent
+                            .store(false, atomic::Ordering::Release);
+                    }
                 }
 
                 // A node that crashed cannot withdraw its own descriptors.
