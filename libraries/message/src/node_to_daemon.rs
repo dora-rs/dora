@@ -163,7 +163,7 @@ impl NodeRegisterRequest {
         Self {
             dataflow_id,
             node_id,
-            dora_version: semver::Version::parse(env!("CARGO_PKG_VERSION")).unwrap(),
+            dora_version: current_crate_version(),
             metadata_version: Metadata::CURRENT_VERSION,
         }
     }
