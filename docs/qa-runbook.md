@@ -168,8 +168,6 @@ Reproduce locally with `make qa-secret-files`; the rationale is documented at th
 
 **"X depends on Y, which is `publish = false`"**: cargo resolves every dependency of a published crate against the registry, so Y has to be on crates.io for X to publish. Either publish Y (drop `publish = false`, add it to both publish lists, and place it in a tier in [`api-rust.md`](api-rust.md#stability-scope-at-10)), or stop X from naming it. Optional dependencies are not an escape: they are in the published manifest whether or not the feature is on. That is #3304, and it is why `dora-tensor-pool` is published.
 
-**"the publish lists differ"**: `.github/workflows/release.yml` and `.github/workflows/cargo-release.yml` each carry the ordered list, and each says to keep it in sync with the other. Edit both.
-
 **"which the publish lists publish after it" / "missing from the publish lists"**: the lists are consumed in order, and a crate cannot publish before its dependencies exist in the index. Move the dependency earlier, or add it.
 
 Reproduce locally with `make qa-publish-graph`; the rules and what each protects are documented at the top of [`scripts/qa/publish-graph.sh`](../scripts/qa/publish-graph.sh).

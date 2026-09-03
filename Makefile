@@ -138,8 +138,8 @@ qa-secret-files:
 	@scripts/qa/secret-files.sh
 
 # Manifest-only crates.io publish-graph gate (#3304): no published crate
-# may depend on a `publish = false` one, and release.yml /
-# cargo-release.yml must list every dependency before its dependents.
+# may depend on a `publish = false` one, and release.yml's ordered list
+# must name every dependency before its dependents.
 qa-publish-graph:
 	@scripts/qa/publish-graph.sh
 
