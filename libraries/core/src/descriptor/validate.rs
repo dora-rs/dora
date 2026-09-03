@@ -667,27 +667,39 @@ fn validate_ros2_config(
                 topics.len()
             );
         }
-        let mut has_subscribe = false;
-        let mut has_publish = false;
         for t in topics {
             validate_ros2_name(node_id, "topic", &t.topic)?;
             validate_ros2_type_format(node_id, &t.topic, &t.message_type)?;
+            // The bridge routes each topic to a dora port: a subscribe topic
+            // feeds an output, a publish topic consumes an input. When the
+            // mapping is not set explicitly the bridge derives the port id from
+            // the topic name (`Ros2TopicConfig::derived_port_id`). Either way,
+            // the resulting id must be a declared port — otherwise data is
+            // silently dropped at runtime with no diagnostic: a subscribe
+            // `send_output` to an unknown id is ignored, and a publish topic
+            // bound to an unknown input never receives any data to publish.
             match &t.direction {
-                Ros2Direction::Subscribe => has_subscribe = true,
-                Ros2Direction::Publish => has_publish = true,
+                Ros2Direction::Subscribe => {
+                    let output = t.output.clone().unwrap_or_else(|| t.derived_port_id());
+                    if !node_outputs.contains(output.as_str()) {
+                        bail!(
+                            "node `{node_id}`: ros2 subscribe topic `{}` maps to output \
+                             `{output}`, which is not declared in the node's `outputs`",
+                            t.topic
+                        );
+                    }
+                }
+                Ros2Direction::Publish => {
+                    let input = t.input.clone().unwrap_or_else(|| t.derived_port_id());
+                    if !node_inputs.contains_key(input.as_str()) {
+                        bail!(
+                            "node `{node_id}`: ros2 publish topic `{}` maps to input \
+                             `{input}`, which is not declared in the node's `inputs`",
+                            t.topic
+                        );
+                    }
+                }
             }
-        }
-        if has_subscribe && node_outputs.is_empty() {
-            bail!(
-                "node `{node_id}`: ros2 multi-topic bridge with subscribe topics \
-                 requires at least one output"
-            );
-        }
-        if has_publish && node_inputs.is_empty() {
-            bail!(
-                "node `{node_id}`: ros2 multi-topic bridge with publish topics \
-                 requires at least one input"
-            );
         }
     } else if let Some(service) = &config.service {
         validate_ros2_name(node_id, "service", service)?;
@@ -1405,7 +1417,8 @@ mod tests {
     use crate::types::TypeRegistry;
     use dora_message::config::{Input, InputMapping};
     use dora_message::descriptor::{
-        Descriptor, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Role, Ros2TransportConfig,
+        Descriptor, RmwZenohCompatibility, Ros2BridgeConfig, Ros2Direction, Ros2Role,
+        Ros2TopicConfig, Ros2TransportConfig,
     };
     use std::{path::PathBuf, time::Duration};
 
@@ -1805,6 +1818,148 @@ nodes:
         )
         .unwrap_err();
         assert!(err.to_string().contains("config_uri must not be empty"));
+    }
+
+    #[test]
+    fn validate_multi_topic_rejects_undeclared_subscribe_output() {
+        // A subscribe topic mapped to an output the node never declares would
+        // pass validation and then silently drop every message at runtime
+        // (`DoraNode::send_output` ignores unknown output ids).
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/scan".into(),
+                message_type: "sensor_msgs/LaserScan".into(),
+                direction: Ros2Direction::Subscribe,
+                output: Some("typo_out".into()),
+                input: None,
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("scan".to_owned())]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("typo_out") && err.contains("not declared"),
+            "error should name the undeclared output, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_rejects_undeclared_publish_input() {
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/cmd_vel".into(),
+                message_type: "geometry_msgs/Twist".into(),
+                direction: Ros2Direction::Publish,
+                output: None,
+                input: Some("typo_in".into()),
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::from([(DataId::from("cmd".to_owned()), dummy_input())]),
+            &BTreeSet::new(),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("typo_in") && err.contains("not declared"),
+            "error should name the undeclared input, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_rejects_undeclared_derived_output() {
+        // No explicit `output:` — the bridge derives the output id from the
+        // topic name (`/scan` -> `scan`). A derived id that is not a declared
+        // output silently drops every message, so validation must reject it.
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/scan".into(),
+                message_type: "sensor_msgs/LaserScan".into(),
+                direction: Ros2Direction::Subscribe,
+                output: None,
+                input: None,
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("laser".to_owned())]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("scan") && err.contains("not declared"),
+            "error should name the derived output, got: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_multi_topic_accepts_derived_output() {
+        // The topic-derived id (`/scan` -> `scan`) matches a declared output.
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![Ros2TopicConfig {
+                topic: "/scan".into(),
+                message_type: "sensor_msgs/LaserScan".into(),
+                direction: Ros2Direction::Subscribe,
+                output: None,
+                input: None,
+                qos: None,
+            }]),
+            ..Default::default()
+        };
+        validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("scan".to_owned())]),
+        )
+        .expect("a topic-derived output matching a declared output should validate");
+    }
+
+    #[test]
+    fn validate_multi_topic_accepts_declared_ports() {
+        let config = Ros2BridgeConfig {
+            topics: Some(vec![
+                Ros2TopicConfig {
+                    topic: "/scan".into(),
+                    message_type: "sensor_msgs/LaserScan".into(),
+                    direction: Ros2Direction::Subscribe,
+                    output: Some("scan".into()),
+                    input: None,
+                    qos: None,
+                },
+                Ros2TopicConfig {
+                    topic: "/cmd_vel".into(),
+                    message_type: "geometry_msgs/Twist".into(),
+                    direction: Ros2Direction::Publish,
+                    output: None,
+                    input: Some("cmd".into()),
+                    qos: None,
+                },
+            ]),
+            ..Default::default()
+        };
+        validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::from([(DataId::from("cmd".to_owned()), dummy_input())]),
+            &BTreeSet::from([DataId::from("scan".to_owned())]),
+        )
+        .expect("multi-topic config mapping declared ports should validate");
     }
 
     #[test]

@@ -1742,6 +1742,21 @@ pub struct Ros2TopicConfig {
     pub qos: Option<Ros2QosConfig>,
 }
 
+impl Ros2TopicConfig {
+    /// The dora port id the bridge binds this topic to when the explicit
+    /// `input`/`output` mapping is not set: strip the leading `/`, then map any
+    /// remaining `/` to `_` (e.g. `/robot/scan` -> `robot_scan`).
+    ///
+    /// Both the descriptor validator (`dora-core`) and the ros2 bridge node
+    /// depend on producing the *same* id — the validator rejects configs whose
+    /// derived port is not declared precisely because the bridge would otherwise
+    /// silently drop the data — so the rule lives here in the shared message
+    /// crate rather than being duplicated at each call site.
+    pub fn derived_port_id(&self) -> String {
+        self.topic.trim_start_matches('/').replace('/', "_")
+    }
+}
+
 /// Direction of ROS2 bridge communication.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
