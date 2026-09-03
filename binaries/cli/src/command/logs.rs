@@ -122,7 +122,6 @@ impl Executable for LogsArgs {
                 self.tail,
                 self.follow,
                 self.grep.as_deref(),
-                &self.level,
                 self.since,
                 self.until,
                 &config,
@@ -147,7 +146,6 @@ impl Executable for LogsArgs {
                     &session,
                     uuid,
                     None,
-                    &self.level,
                     self.since,
                     self.until,
                     self.grep.as_deref(),
@@ -1093,27 +1091,58 @@ fn matches_node_filter(msg_node: Option<&str>, want: Option<&str>) -> bool {
     }
 }
 
+/// The level to subscribe the coordinator log stream at when following: the
+/// most verbose (highest) filter across the global `level` and every per-node
+/// `--log-filter` override.
+///
+/// The coordinator drops any message strictly more verbose than the
+/// subscription level, so the stream must be opened at least as verbosely as
+/// the loosest filter the client might display; the precise per-node decision
+/// is left to the client-side `should_display`. `Stdout` maps to `Trace` (the
+/// most permissive filter), matching how the coordinator treats it.
+fn follow_subscription_level(
+    level: &dora_core::build::LogLevelOrStdout,
+    node_filters: &HashMap<String, dora_core::build::LogLevelOrStdout>,
+) -> log::LevelFilter {
+    fn as_filter(level: &dora_core::build::LogLevelOrStdout) -> log::LevelFilter {
+        match level {
+            dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
+            dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
+        }
+    }
+    node_filters
+        .values()
+        .map(as_filter)
+        .fold(as_filter(level), std::cmp::max)
+}
+
 /// Subscribe to coordinator log stream with time/grep/node filtering.
 ///
 /// `node`, when set, restricts the stream to messages from that single node —
 /// mirroring the node scoping already applied to the historical fetch in
 /// [`logs`]. Without this, `--node <N> --follow` would show history for `N`
 /// but then stream live logs from every node once following began.
-#[allow(clippy::too_many_arguments)]
 fn stream_logs_from_coordinator(
     session: &WsSession,
     uuid: Uuid,
     node: Option<&NodeId>,
-    level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     grep: Option<&str>,
     config: &LogOutputConfig,
 ) -> Result<()> {
-    let log_level = match level {
-        dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
-        dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
-    };
+    // Subscribe at the most verbose level requested by *any* active filter --
+    // the global `--level` and every per-node `--log-filter` override. The
+    // coordinator drops messages more verbose than the subscription level
+    // (`LogSubscriber::send_message`), so subscribing at only the global level
+    // would starve a per-node filter that is more verbose than the global one:
+    // the historical dump (fetched unfiltered, filtered client-side) would show
+    // those lines but the live `--follow` stream never would. The precise
+    // per-node filtering is then applied client-side by `print_log_message`.
+    //
+    // Both the subscription width and the client-side display filter read from
+    // the same `config`, so they cannot drift apart.
+    let log_level = follow_subscription_level(&config.min_level, &config.node_filters);
 
     let now = Utc::now();
     let since_threshold =
@@ -1185,7 +1214,6 @@ pub fn logs(
     tail: Option<usize>,
     follow: bool,
     grep: Option<&str>,
-    level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     config: &LogOutputConfig,
@@ -1229,16 +1257,7 @@ pub fn logs(
         return Ok(());
     }
 
-    stream_logs_from_coordinator(
-        session,
-        uuid,
-        Some(&node),
-        level,
-        since,
-        until,
-        grep,
-        config,
-    )
+    stream_logs_from_coordinator(session, uuid, Some(&node), since, until, grep, config)
 }
 
 #[cfg(test)]
@@ -1982,5 +2001,63 @@ mod tests {
             ..Default::default()
         };
         assert!(level_filter_is_active(&restrictive));
+    }
+
+    // --- follow_subscription_level ---
+
+    #[test]
+    fn follow_subscription_level_uses_global_when_no_node_filters() {
+        let level = LogLevelOrStdout::LogLevel(log::Level::Error);
+        assert_eq!(
+            follow_subscription_level(&level, &HashMap::new()),
+            log::LevelFilter::Error
+        );
+    }
+
+    #[test]
+    fn follow_subscription_level_widens_to_more_verbose_node_filter() {
+        // Global `error`, but node `x` is filtered at `debug`. The coordinator
+        // drops anything more verbose than the subscription level, so
+        // subscribing at `error` would never deliver `x`'s debug/info/warn
+        // lines even though the client would display them. The subscription
+        // must widen to `debug`.
+        let level = LogLevelOrStdout::LogLevel(log::Level::Error);
+        let mut node_filters = HashMap::new();
+        node_filters.insert(
+            "x".to_string(),
+            LogLevelOrStdout::LogLevel(log::Level::Debug),
+        );
+        assert_eq!(
+            follow_subscription_level(&level, &node_filters),
+            log::LevelFilter::Debug
+        );
+    }
+
+    #[test]
+    fn follow_subscription_level_keeps_global_when_node_filter_is_less_verbose() {
+        // Global `debug`, node `x` only wants `error`. The global level is the
+        // loosest, so the subscription stays at `debug` and the client filters
+        // `x` down to `error`.
+        let level = LogLevelOrStdout::LogLevel(log::Level::Debug);
+        let mut node_filters = HashMap::new();
+        node_filters.insert(
+            "x".to_string(),
+            LogLevelOrStdout::LogLevel(log::Level::Error),
+        );
+        assert_eq!(
+            follow_subscription_level(&level, &node_filters),
+            log::LevelFilter::Debug
+        );
+    }
+
+    #[test]
+    fn follow_subscription_level_stdout_filter_is_most_permissive() {
+        let level = LogLevelOrStdout::LogLevel(log::Level::Error);
+        let mut node_filters = HashMap::new();
+        node_filters.insert("x".to_string(), LogLevelOrStdout::Stdout);
+        assert_eq!(
+            follow_subscription_level(&level, &node_filters),
+            log::LevelFilter::Trace
+        );
     }
 }
