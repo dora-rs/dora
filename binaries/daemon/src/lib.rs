@@ -2659,9 +2659,23 @@ impl Daemon {
             }
         }
 
-        // Finish dataflows after the loop to avoid borrow checker issues
+        // Finish dataflows after the loop to avoid borrow checker issues.
+        //
+        // `finish_dataflow` always runs each dataflow's local cleanup now,
+        // but it still surfaces a coordinator-report failure. A bare `?`
+        // here would abort the batch on the first such failure and leak the
+        // cleanup of every remaining dataflow in `dataflows_to_finish` — the
+        // same leak this whole path guards against, just moved to the batch
+        // siblings. Finish every dataflow, then return the first error so the
+        // caller's reconnect-on-error behavior is preserved.
+        let mut first_err = None;
         for dataflow_id in dataflows_to_finish {
-            self.finish_dataflow(dataflow_id).await?;
+            if let Err(err) = self.finish_dataflow(dataflow_id).await {
+                first_err.get_or_insert(err);
+            }
+        }
+        if let Some(err) = first_err {
+            return Err(err);
         }
 
         self.exit_when_all_finished = true;
@@ -6133,22 +6147,37 @@ impl Daemon {
             )
             .await;
 
-        if let Some(sender) = &self.coordinator_sender {
-            let msg = serde_json::to_vec(&Timestamped {
-                inner: CoordinatorRequest::Event {
-                    daemon_id: self.daemon_id.clone(),
-                    event: DaemonEvent::AllNodesFinished {
-                        dataflow_id,
-                        result,
+        // Report the finish to the coordinator, but do NOT let a failed
+        // report skip the local cleanup below. A coordinator connection
+        // blip commonly co-occurs with a finishing dataflow, and
+        // `send_event` returns `Err` exactly when that connection is gone.
+        // Propagating that error with `?` before the cleanup would leave
+        // the finished dataflow's listener loops unsignalled and its entry
+        // stranded in `self.running` forever (the daemon survives the
+        // reconnect), and the memory-pool subscriber task leaked. Capture
+        // the report result and surface it only after cleanup has run.
+        let report_result: eyre::Result<()> = async {
+            if let Some(sender) = &self.coordinator_sender {
+                let msg = serde_json::to_vec(&Timestamped {
+                    inner: CoordinatorRequest::Event {
+                        daemon_id: self.daemon_id.clone(),
+                        event: DaemonEvent::AllNodesFinished {
+                            dataflow_id,
+                            result,
+                        },
                     },
-                },
-                timestamp: self.clock.new_timestamp(),
-            })?;
-            sender
-                .send_event(&msg)
-                .await
-                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
+                    timestamp: self.clock.new_timestamp(),
+                })
+                .wrap_err("failed to serialize dataflow-finish report")?;
+                sender
+                    .send_event(&msg)
+                    .await
+                    .wrap_err("failed to report dataflow finish to dora-coordinator")?;
+            }
+            Ok(())
         }
+        .await;
+
         // Signal all listener loops for this dataflow to shut down
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
@@ -6161,6 +6190,10 @@ impl Daemon {
         // tasks and can create duplicate consumers.
         #[cfg(feature = "tensor-pool")]
         self.pool_cleanup_dataflow(dataflow_id).await;
+
+        // Now that local cleanup has run, surface any coordinator-report
+        // failure to the caller (the reconnect loop) as before.
+        report_result?;
         Ok(())
     }
 
