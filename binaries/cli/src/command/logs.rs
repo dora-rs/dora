@@ -752,9 +752,13 @@ fn find_log_files(dataflow_dir: &Path) -> Result<Vec<PathBuf>> {
 /// Extract rotation index from a log filename. Current file returns 0, `.1.jsonl` returns 1, etc.
 fn rotation_index(path: &Path) -> u32 {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    // Pattern: log_<node>.<N>.jsonl
+    // Pattern: log_<node>.<N>.<ext>, where <ext> is `jsonl` or the legacy
+    // `txt`. `find_log_files` collects both extensions, so both must be handled
+    // here or a rotated `.txt` file sorts as if it were the current file.
     if let Some(rest) = name.strip_prefix("log_")
-        && let Some(rest) = rest.strip_suffix(".jsonl")
+        && let Some(rest) = rest
+            .strip_suffix(".jsonl")
+            .or_else(|| rest.strip_suffix(".txt"))
     {
         // Check if the last segment after the last '.' is a number
         if let Some(dot_pos) = rest.rfind('.')
@@ -1289,6 +1293,15 @@ mod tests {
     #[test]
     fn rotation_index_txt_file() {
         assert_eq!(rotation_index(&PathBuf::from("log_sensor.txt")), 0);
+    }
+
+    #[test]
+    fn rotation_index_rotated_txt_file() {
+        // `find_log_files` collects rotated legacy `.txt` files too, so their
+        // index must be parsed like `.jsonl`. Before the fix this returned 0
+        // (treated as the current file) and sorted out of order.
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.1.txt")), 1);
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.3.txt")), 3);
     }
 
     // --- apply_time_filters ---
