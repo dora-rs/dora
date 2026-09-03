@@ -362,8 +362,23 @@ impl IndexCatalog {
         // versions() returns ascending order; walk highest-first, skipping
         // yanked versions
         let mut had_yanked_match = false;
+        let mut unreadable: Option<eyre::Report> = None;
         for version in matching.iter().rev() {
-            let entry = self.entry(&reference.namespace, &reference.name, version)?;
+            // A single malformed entry file — a typo, or a version published by
+            // a newer index schema this client can't parse (entries use
+            // `deny_unknown_fields`) — must not sink the whole resolution when a
+            // lower matching version is perfectly installable. Skip an
+            // unreadable entry the same way a yanked one is skipped, and only
+            // surface the parse error if nothing else satisfies the
+            // requirement. This also matches the "available versions" hint
+            // below, which already tolerates a per-entry parse error.
+            let entry = match self.entry(&reference.namespace, &reference.name, version) {
+                Ok(entry) => entry,
+                Err(err) => {
+                    unreadable = Some(err);
+                    continue;
+                }
+            };
             if entry.yanked {
                 had_yanked_match = true;
                 continue;
@@ -371,6 +386,22 @@ impl IndexCatalog {
             return Ok(ResolvedVersion {
                 version: (*version).clone(),
                 entry,
+            });
+        }
+        // A matching version whose entry couldn't be read is surfaced before
+        // the yanked case: it's an actionable index bug rather than a
+        // deliberate state, and reporting "yanked" first would be inaccurate
+        // when the unreadable version isn't itself the yanked one (e.g. a
+        // range that matched one yanked and one corrupt version). This also
+        // beats the misleading "no version satisfies" below, which would list
+        // only the *other*, non-matching versions.
+        if let Some(err) = unreadable {
+            return Err(err).with_context(|| {
+                format!(
+                    "could not read an index entry for `{}` matching `{}`",
+                    reference.key(),
+                    reference.requirement
+                )
             });
         }
         // distinguish "your range matched only yanked versions" from "no
@@ -550,6 +581,59 @@ mod tests {
         let (git, rev) = resolved.entry.source.git_pin().unwrap();
         assert_eq!(git, "https://github.com/dora-rs/dora-hub");
         assert_eq!(rev, "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+    }
+
+    #[test]
+    fn resolve_skips_an_unreadable_higher_entry_and_falls_back() {
+        // A single corrupt entry — a typo, or a version file written by a
+        // newer index schema this client can't parse — for a *higher* version
+        // must not break installation when a lower matching version is
+        // installable.
+        let (tmp, _catalog) = fixture();
+        let pkg = tmp.path().join("dora-rs/dora-yolo");
+        // 0.5.3 is the highest match for ^0.5, but its entry is unparseable
+        // (missing the required `manifest`/`source` fields).
+        std::fs::write(pkg.join("0.5.3.yml"), "bogus: true\n").unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        let resolved = catalog.resolve(&parse_ref("dora-yolo@^0.5")).unwrap();
+        assert_eq!(resolved.version, Version::parse("0.5.2").unwrap());
+    }
+
+    #[test]
+    fn resolve_surfaces_the_parse_error_when_every_match_is_unreadable() {
+        // If the *only* version satisfying the requirement is unreadable, the
+        // parse error must be surfaced rather than a misleading "no version
+        // satisfies" that would list only non-matching versions.
+        let (tmp, _catalog) = fixture();
+        let pkg = tmp.path().join("dora-rs/dora-yolo");
+        std::fs::write(pkg.join("0.7.0.yml"), "bogus: true\n").unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        let err = catalog.resolve(&parse_ref("dora-yolo@^0.7")).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("could not read an index entry"),
+            "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_reports_the_unreadable_entry_not_yanked_when_the_range_has_both() {
+        // A range that matches one yanked version and one unreadable version
+        // (with no installable one) must report the unreadable entry — the
+        // actionable index bug — rather than claim "every version has been
+        // yanked", which is false when the unreadable version isn't yanked.
+        let (tmp, _catalog) = fixture();
+        let pkg = tmp.path().join("dora-rs/dora-yolo");
+        // fixture already has 0.6.0 yanked; add a corrupt 0.6.1.
+        std::fs::write(pkg.join("0.6.1.yml"), "bogus: true\n").unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        // A plain requirement never matches a prerelease, and ^0.6 spans both
+        // 0.6.0 (yanked) and 0.6.1 (corrupt).
+        let err = catalog.resolve(&parse_ref("dora-yolo@^0.6")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("could not read an index entry"),
+            "unexpected error: {msg}"
+        );
     }
 
     #[cfg(unix)]
