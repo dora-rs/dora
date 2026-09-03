@@ -1654,10 +1654,11 @@ impl DoraNode {
         actual: &arrow_schema::DataType,
         parameters: &MetadataParameters,
     ) -> NodeResult<()> {
+        // `is_output_type_mismatch` decides whether to flag; the `mode` here
+        // decides whether a flagged mismatch errors or only warns.
         if let Some((mode, checks)) = &self.runtime_type_checks
             && let Some(expected) = checks.get(output_id)
-            && !carries_pattern_correlation(parameters)
-            && actual != expected
+            && is_output_type_mismatch(actual, expected, parameters)
         {
             let msg =
                 format!("output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}");
@@ -3239,6 +3240,31 @@ fn schema_once_eligible(
     payload_len < zero_copy_threshold && !carries_pattern_correlation(params)
 }
 
+/// Whether a send-side runtime output type check should flag this payload.
+///
+/// A message is *not* flagged when:
+/// - it carries pattern-correlation metadata (`request_id`/`goal_id`/
+///   `goal_status`): such an output is polymorphic by design and a single
+///   declared Arrow type cannot cover every reply/feedback shape
+///   (dora-rs/adora#150); or
+/// - its payload is a `Null` array (timer ticks, and metadata-only sends such
+///   as `send_output(id, params, ())`).
+///
+/// The `Null` carve-out keeps the send side consistent with the receive-side
+/// first-message check in [`EventStream::note_produced_event`], which already
+/// skips `Null`. Without it, a node emitting an empty tick on a typed output
+/// would fail under `DORA_RUNTIME_TYPE_CHECK=error` even though the identical
+/// message is accepted on the consuming node.
+fn is_output_type_mismatch(
+    actual: &arrow_schema::DataType,
+    expected: &arrow_schema::DataType,
+    parameters: &MetadataParameters,
+) -> bool {
+    !carries_pattern_correlation(parameters)
+        && *actual != arrow_schema::DataType::Null
+        && actual != expected
+}
+
 /// Init Opentelemetry Tracing
 ///
 /// This requires a tokio runtime spawning this function to be functional
@@ -4030,6 +4056,44 @@ mod tests {
         assert!(
             schema_once_eligible(100, THRESHOLD, &stream),
             "small streaming chunk (stable schema) stays eligible for schema-once"
+        );
+    }
+
+    #[test]
+    fn output_type_check_skips_null_payloads() {
+        use arrow_schema::DataType;
+        let plain = MetadataParameters::default();
+
+        // A Null payload on a typed output is not flagged — mirrors the
+        // receive-side carve-out in `EventStream::note_produced_event`, so a
+        // node emitting an empty tick (`send_output(id, params, ())`) is not
+        // rejected under `DORA_RUNTIME_TYPE_CHECK=error`.
+        assert!(
+            !is_output_type_mismatch(&DataType::Null, &DataType::Float32, &plain),
+            "a Null payload must never be flagged as a type mismatch"
+        );
+
+        // A genuinely wrong non-null type is still flagged.
+        assert!(
+            is_output_type_mismatch(&DataType::Int64, &DataType::Float32, &plain),
+            "a mismatched non-null type must be flagged"
+        );
+
+        // A matching type is not flagged.
+        assert!(
+            !is_output_type_mismatch(&DataType::Float32, &DataType::Float32, &plain),
+            "a matching type must not be flagged"
+        );
+
+        // Pattern-correlation messages remain exempt regardless of type.
+        let mut pattern = MetadataParameters::default();
+        pattern.insert(
+            dora_message::metadata::REQUEST_ID.to_string(),
+            dora_message::metadata::Parameter::String("req-1".into()),
+        );
+        assert!(
+            !is_output_type_mismatch(&DataType::Int64, &DataType::Float32, &pattern),
+            "a pattern-correlation message stays exempt from the type check"
         );
     }
 
