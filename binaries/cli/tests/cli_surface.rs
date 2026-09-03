@@ -110,6 +110,10 @@ fn cli_surface_snapshot_is_current() {
             path.display()
         )
     });
+    // Windows checkouts of this repo can normalize the committed LF line
+    // endings to CRLF (e.g. via a global `core.autocrlf=true`), which would
+    // otherwise fail this raw comparison despite the surface being unchanged.
+    let recorded = recorded.replace("\r\n", "\n");
 
     if recorded != current {
         let recorded_lines: BTreeSet<_> = recorded.lines().filter(|l| keep(l)).collect();
