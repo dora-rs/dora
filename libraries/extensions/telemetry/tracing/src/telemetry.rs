@@ -1,5 +1,6 @@
 use eyre::Context as _;
 use opentelemetry::propagation::Extractor;
+use opentelemetry::trace::TraceContextExt as _;
 use opentelemetry::{Context, global};
 use opentelemetry_otlp::WithExportConfig;
 
@@ -78,6 +79,19 @@ const CONTEXT_ENTRY_SEP: char = '\n';
 /// OTel Baggage keys are stripped to prevent sensitive data from leaking
 /// across node boundaries in the dataflow.
 pub fn serialize_context(context: &Context) -> String {
+    // Fast path: with no valid active span there is nothing to propagate.
+    // The W3C `TraceContextPropagator` (the propagator dora installs, see
+    // `set_text_map_propagator` above) injects `traceparent`/`tracestate`
+    // only when the span context is valid, so for an invalid context the map
+    // below stays empty and this returns "". Nodes commonly enable telemetry
+    // for logging without an active OTel span, and `serialize_context` runs
+    // on the per-message send path (`DoraNode::send_output`) and per-event in
+    // the operator runtimes — skipping the `HashMap` allocation and the
+    // global-propagator call there avoids per-message overhead that only
+    // produces an empty string.
+    if !context.span().span_context().is_valid() {
+        return String::new();
+    }
     let mut map = HashMap::new();
     global::get_text_map_propagator(|propagator| propagator.inject_context(context, &mut map));
     // Strip baggage to avoid propagating sensitive data across nodes
@@ -192,6 +206,17 @@ mod tests {
         assert_eq!(recovered.trace_id(), span_context.trace_id());
         assert_eq!(recovered.span_id(), span_context.span_id());
         assert_eq!(recovered.trace_state().header(), trace_state.header());
+    }
+
+    #[test]
+    fn serialize_invalid_context_is_empty() {
+        use opentelemetry::Context;
+
+        // A default context carries no valid span, so there is nothing for the
+        // W3C propagator to inject. `serialize_context` must return an empty
+        // string here (the fast path skips the propagator/allocation entirely,
+        // and callers rely on "" to mean "no trace context to attach").
+        assert_eq!(serialize_context(&Context::new()), "");
     }
 
     #[test]
