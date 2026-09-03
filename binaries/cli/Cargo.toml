@@ -42,7 +42,6 @@ dora-core = { workspace = true, features = ["zenoh"] }
 dora-hub-client = { workspace = true }
 dora-message = { workspace = true }
 dora-node-api-c = { workspace = true }
-dora-operator-api-c = { workspace = true }
 dora-download = { workspace = true }
 serde = { workspace = true }
 serde_yaml = { workspace = true }
@@ -57,13 +56,11 @@ tokio-tungstenite = "0.29"
 notify = "8.2.0"
 ctrlc = "3.5.2"
 tracing = { workspace = true }
-tracing-log = "0.2.0"
 dora-tracing = { workspace = true, optional = true }
 dora-daemon = { workspace = true }
 dora-coordinator = { workspace = true }
 dora-runtime-shared-lib = { workspace = true }
 tokio = { workspace = true, features = ["full"] }
-tokio-stream = { version = "0.1.18", features = ["io-util", "net"] }
 futures = { workspace = true }
 duration-str = "0.21"
 tabwriter = "1.4.1"
