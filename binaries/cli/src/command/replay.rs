@@ -45,7 +45,7 @@ pub struct Replay {
     replace: Vec<String>,
 
     /// Playback speed multiplier (default: 1.0, 0 = fast as possible)
-    #[clap(long, default_value = "1.0")]
+    #[clap(long, default_value = "1.0", value_parser = parse_speed)]
     speed: f64,
 
     /// Loop the recording
@@ -61,6 +61,27 @@ impl Executable for Replay {
     fn execute(self) -> eyre::Result<()> {
         // Run::execute() sets up its own tracing subscriber.
         run_replay(self)
+    }
+}
+
+/// clap `value_parser` for `--speed`: accept only a finite, non-negative `f64`.
+///
+/// A bare `f64` parse accepts `-1`, `nan`, and `inf`. The pacing math
+/// (`replay-node::pacing_sleep_nanos`) treats anything `<= 0.0` as "as fast as
+/// possible", and a `NaN` slips through that guard (`NaN <= 0.0` is false) only
+/// to yield `0` from the `as u64` cast — so all three would silently replay at
+/// full speed with no diagnostic. Validating here rejects them at parse time
+/// with a clean clap usage error, before `run_replay` opens the recording.
+fn parse_speed(s: &str) -> Result<f64, String> {
+    let speed: f64 = s
+        .parse()
+        .map_err(|e| format!("`{s}` is not a number: {e}"))?;
+    if speed.is_finite() && speed >= 0.0 {
+        Ok(speed)
+    } else {
+        Err(format!(
+            "`{speed}` is not a finite, non-negative multiplier (use 0 for as fast as possible)"
+        ))
     }
 }
 
@@ -477,6 +498,23 @@ mod tests {
             false,
         );
         serde_yaml::to_string(&descriptor).unwrap()
+    }
+
+    #[test]
+    fn parse_speed_accepts_valid_and_rejects_invalid() {
+        // Valid: 0 (as fast as possible) and any finite positive multiplier.
+        assert_eq!(parse_speed("0").unwrap(), 0.0);
+        assert_eq!(parse_speed("1.0").unwrap(), 1.0);
+        assert_eq!(parse_speed("0.25").unwrap(), 0.25);
+        assert_eq!(parse_speed("1000").unwrap(), 1000.0);
+
+        // Invalid: negative, the non-finite values a bare f64 parse accepts
+        // (all of which used to silently replay at full speed), and non-numbers.
+        assert!(parse_speed("-1").is_err());
+        assert!(parse_speed("nan").is_err());
+        assert!(parse_speed("inf").is_err());
+        assert!(parse_speed("-inf").is_err());
+        assert!(parse_speed("fast").is_err());
     }
 
     #[test]
