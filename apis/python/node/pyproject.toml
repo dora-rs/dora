@@ -6,8 +6,16 @@ build-backend = "maturin"
 name = "dora-rs"
 dynamic = ["version"]
 # Install pyarrow at the same time of dora-rs.
-# Python >= 3.11 because abi3-py311 is the Cargo.toml floor (#1833 / #1291).
-requires-python = ">=3.11"
+# >=3.10, not >=3.11: the release matrix now ships BOTH a `cp311-abi3` wheel
+# (3.11 and every later CPython) and version-specific `cp310` wheels. Wheel
+# tags, not this floor, decide which one an interpreter gets — 3.10 cannot
+# select the abi3 wheel and 3.11+ never selects a cp310 one.
+#
+# Consequence worth knowing: on a platform with no cp310 wheel, pip on 3.10
+# falls through to the sdist, whose default features include `abi3`, and the
+# build fails in pyo3's config rather than resolving cleanly. Build such a
+# platform with `--no-default-features` (see the `abi3` feature in Cargo.toml).
+requires-python = ">=3.10"
 license = { text = "MIT" }
 readme = "README.md"
 dependencies = ['pyarrow>=14.0.1', "pyyaml>=6.0", "numpy>=1.20"]

@@ -895,10 +895,13 @@ happens on every release, so the extra cost is close to zero.
 
 ### Python version policy
 
-Both wheels are built `abi3-py311`, so **dora 1.x supports CPython 3.11 and
+Both wheels are built `abi3-py311`, and the release matrix additionally builds
+version-specific `cp310` wheels, so **dora 1.x supports CPython 3.10 and
 later**. That floor is part of the 1.0 guarantee: raising it inside 1.x would
 uninstall dora for users on a Python it used to support, and no crates.io
-semver check would ever see it.
+semver check would ever see it. Lowering it, as the cp310 wheels do, is
+additive — it cannot uninstall anyone — but it is still a deliberate decision
+rather than a drive-by, and it carries the caveat below.
 
 abi3 makes the two directions asymmetric, in dora's favour:
 
@@ -906,15 +909,32 @@ abi3 makes the two directions asymmetric, in dora's favour:
   no rebuild, so a new interpreter release does not require a new dora release.
   This is also the direction a pyo3 bump would otherwise threaten, which is why
   the pyo3 version can stay exempt.
-- **Older CPython** — `requires-python = ">=3.11"` in both `pyproject.toml`s
-  makes pip refuse to install. This is the direction that breaks users, and it
-  moves only if dora deliberately moves it.
+- **Older CPython** — abi3 cannot reach below its floor, so 3.10 is served by
+  separate `cp310` wheels built with the `abi3` cargo feature off. They are
+  built from the same commit and are identical in behaviour save for one
+  documented gap (below). `requires-python = ">=3.10"` in both
+  `pyproject.toml`s; wheel tags, not that floor, decide which artifact an
+  interpreter selects.
 
-Two limits stated rather than left implied:
+Three limits stated rather than left implied:
+
+- **`send_output_raw` is unavailable on 3.10.** The zero-copy send path uses the
+  buffer-protocol slots `bf_getbuffer`/`bf_releasebuffer`, which entered the
+  *stable* C API only in 3.11 (#1833). On a cp310 wheel the method raises
+  `NotImplementedError` pointing at `send_output()` (one copy). This is the one
+  behavioural difference between the two wheel kinds, and it is why 3.10 gets
+  its own wheel rather than a lowered abi3 floor — `abi3-py310` cannot express
+  it.
 
 - **Free-threaded builds are not supported.** abi3 does not cover
   `Py_GIL_DISABLED`; those interpreters need their own wheels and the release
   matrix builds none, so there is no dora wheel for `python3.13t` or `3.14t`.
+- **CPython 3.10 reaches end of life in October 2026**, i.e. almost
+  immediately. These wheels exist for platforms whose interpreter is not the
+  user's to choose — NVIDIA JetPack / Ubuntu 22.04 images ship 3.10 as the
+  system Python, and "upgrade the interpreter first" is not advice that
+  survives contact with a deployed robot. Expect them to be dropped once those
+  images move.
 - **CPython 3.11 reaches end of life in October 2027**, inside 1.x's expected
   life. pyo3 drops old interpreters over time, so dora will eventually have to
   either raise the floor — breaking users — or hold pyo3 back. Better decided

@@ -11,8 +11,17 @@ repository.workspace = true
 publish = false  # PyO3 cdylib, shipped via PyPI as `dora-rs-cli`, not crates.io
 
 [features]
-default = ["telemetry"]
+default = ["telemetry", "abi3"]
 telemetry = ["dora-runtime-python/telemetry"]
+# Build an abi3-py311 wheel: one `cp311-abi3` artifact loads on 3.11 and every
+# later CPython. ON by default, so a normal build is configured exactly as it
+# was before this feature existed. Turn it OFF (`--no-default-features`, plus
+# the other defaults re-stated) to get a version-specific build — that is how
+# the cp310 wheels in pip-release.yml are produced, and the only supported
+# reason to do so. abi3 is what excludes 3.10: `abi3-py310` is not an
+# alternative, because the buffer-protocol slots `send_output_raw` needs
+# entered the STABLE C API only in 3.11 (#1833).
+abi3 = ["pyo3/abi3-py311"]
 
 [dependencies]
 dora-cli = { workspace = true, features = ["python"] }

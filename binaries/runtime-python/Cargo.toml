@@ -36,7 +36,7 @@ dora-operator-api-types = { workspace = true }
 dora-tracing = { workspace = true, optional = true }
 arrow = { workspace = true, features = ["pyarrow"] }
 # pyo3-abi3 flag allow simpler linking. See: https://pyo3.rs/v0.13.2/building_and_distribution.html
-pyo3 = { workspace = true, features = ["eyre", "abi3-py311"] }
+pyo3 = { workspace = true, features = ["eyre"] }
 pythonize = { workspace = true }
 eyre = { workspace = true }
 flume = { workspace = true }

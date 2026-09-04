@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **CPython 3.10 wheels** ([#1833](https://github.com/dora-rs/dora/pull/1833) follow-up). `dora-rs` and `dora-rs-cli` now ship version-specific `cp310` wheels alongside the existing `cp311-abi3` ones, across the same platform matrix, and `requires-python` moves `>=3.11` → `>=3.10`. Nothing changes for 3.11+: `abi3` is now a **default-on** cargo feature on `dora-node-api-python` / `dora-cli-api-python`, so a default build is configured exactly as before; the cp310 leg builds with it off. abi3 is precisely what excluded 3.10 — the buffer-protocol slots `send_output_raw` needs entered the *stable* C API only in 3.11 — so `abi3-py310` is not an alternative and the interpreter needs its own wheel. **One documented gap:** on a cp310 wheel `Node.send_output_raw()` raises `NotImplementedError` pointing at `send_output()`; the stub upstream already maintained under `#[cfg(not(Py_3_11))]` is what users hit. Everything else — `next()`, `send_output()`, event iteration, the ROS 2 bridge, the CLI — is unchanged. Motivation is platforms whose interpreter is not the user's to choose (NVIDIA JetPack / Ubuntu 22.04 ship 3.10 as system Python). Note CPython 3.10 is EOL in October 2026; see the [Python version policy](docs/api-rust.md#python-version-policy) for the caveat and expected removal.
+
 ## v1.0.1 (2026-09-03)
 
 Patch release. 1.0.0 could not be installed from crates.io.

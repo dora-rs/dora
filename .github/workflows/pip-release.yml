@@ -92,13 +92,26 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
           - path: apis/python/cli
             name: dora-rs-cli
+            no_abi3_features: telemetry
+        abi:
+          # Today's build, unchanged: one cp311-abi3 wheel that loads on 3.11
+          # and every later CPython.
+          - tag: abi3
+            python: "3.11"
+          # CPython 3.10 is exactly what abi3-py311 excludes, so it needs a
+          # version-specific wheel. `--no-default-features` drops the `abi3`
+          # feature and must re-state the crate's other defaults, which is what
+          # `no_abi3_features` on each repository entry carries.
+          - tag: cp310
+            python: "3.10"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.abi.python }}
       - run: rustup default ${{ env.RUST_VERSION }}
       - run: rustup update ${{ env.RUST_VERSION }}
       # No rust-cache step here, deliberately. This job used to run
@@ -124,7 +137,7 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist --zig
+          args: --release --out dist --zig ${{ matrix.abi.tag == 'cp310' && format('--no-default-features --features {0}', matrix.repository.no_abi3_features) || '' }}
           manylinux: manylinux_2_28
           # sccache's GitHub-cache backend writes one entry per compiled
           # object, flooding the 10 GB repo-wide cache with thousands of
@@ -148,7 +161,7 @@ jobs:
         if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.repository.name }}-linux-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-linux-${{ matrix.platform.target }}-${{ matrix.abi.tag }}
           path: ${{ matrix.repository.path }}/dist
 
   musllinux:
@@ -166,18 +179,31 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
           - path: apis/python/cli
             name: dora-rs-cli
+            no_abi3_features: telemetry
+        abi:
+          # Today's build, unchanged: one cp311-abi3 wheel that loads on 3.11
+          # and every later CPython.
+          - tag: abi3
+            python: "3.11"
+          # CPython 3.10 is exactly what abi3-py311 excludes, so it needs a
+          # version-specific wheel. `--no-default-features` drops the `abi3`
+          # feature and must re-state the crate's other defaults, which is what
+          # `no_abi3_features` on each repository entry carries.
+          - tag: cp310
+            python: "3.10"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.abi.python }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist
+          args: --release --out dist ${{ matrix.abi.tag == 'cp310' && format('--no-default-features --features {0}', matrix.repository.no_abi3_features) || '' }}
           sccache: "false"
           manylinux: musllinux_1_2
           working-directory: ${{ matrix.repository.path }}
@@ -186,7 +212,7 @@ jobs:
         if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}-${{ matrix.abi.tag }}
           path: ${{ matrix.repository.path }}/dist
 
   musleabi:
@@ -204,8 +230,21 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
           - path: apis/python/cli
             name: dora-rs-cli
+            no_abi3_features: telemetry
+        abi:
+          # Today's build, unchanged: one cp311-abi3 wheel that loads on 3.11
+          # and every later CPython.
+          - tag: abi3
+            python: "3.11"
+          # CPython 3.10 is exactly what abi3-py311 excludes, so it needs a
+          # version-specific wheel. `--no-default-features` drops the `abi3`
+          # feature and must re-state the crate's other defaults, which is what
+          # `no_abi3_features` on each repository entry carries.
+          - tag: cp310
+            python: "3.10"
     container:
       image: docker://messense/rust-musl-cross:${{ matrix.platform.image_tag }}
       env:
@@ -214,20 +253,20 @@ jobs:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.abi.python }}
       - name: Build Wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
           manylinux: auto
           container: off
-          args: --release -o dist
+          args: --release -o dist ${{ matrix.abi.tag == 'cp310' && format('--no-default-features --features {0}', matrix.repository.no_abi3_features) || '' }}
           working-directory: ${{ matrix.repository.path }}
       - name: Upload wheels
         if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-musllinux-${{ matrix.platform.target }}-${{ matrix.abi.tag }}
           path: ${{ matrix.repository.path }}/dist
 
   windows:
@@ -241,19 +280,32 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
           - path: apis/python/cli
             name: dora-rs-cli
+            no_abi3_features: telemetry
+        abi:
+          # Today's build, unchanged: one cp311-abi3 wheel that loads on 3.11
+          # and every later CPython.
+          - tag: abi3
+            python: "3.11"
+          # CPython 3.10 is exactly what abi3-py311 excludes, so it needs a
+          # version-specific wheel. `--no-default-features` drops the `abi3`
+          # feature and must re-state the crate's other defaults, which is what
+          # `no_abi3_features` on each repository entry carries.
+          - tag: cp310
+            python: "3.10"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.abi.python }}
           architecture: ${{ matrix.platform.target }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i ${{ env.PYTHON_VERSION }}
+          args: --release --out dist -i ${{ matrix.abi.python }} ${{ matrix.abi.tag == 'cp310' && format('--no-default-features --features {0}', matrix.repository.no_abi3_features) || '' }}
           # Was "true" — sccache floods the 10 GB repo cache with
           # per-object entries that evict PR CI's workspace caches. See
           # the linux job above for the full rationale.
@@ -263,7 +315,7 @@ jobs:
         if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.repository.name }}-windows-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-windows-${{ matrix.platform.target }}-${{ matrix.abi.tag }}
           path: ${{ matrix.repository.path }}/dist
 
   macos:
@@ -277,18 +329,31 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
           - path: apis/python/cli
             name: dora-rs-cli
+            no_abi3_features: telemetry
+        abi:
+          # Today's build, unchanged: one cp311-abi3 wheel that loads on 3.11
+          # and every later CPython.
+          - tag: abi3
+            python: "3.11"
+          # CPython 3.10 is exactly what abi3-py311 excludes, so it needs a
+          # version-specific wheel. `--no-default-features` drops the `abi3`
+          # feature and must re-state the crate's other defaults, which is what
+          # `no_abi3_features` on each repository entry carries.
+          - tag: cp310
+            python: "3.10"
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-python@v7
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          python-version: ${{ matrix.abi.python }}
       - name: Build wheels
         uses: PyO3/maturin-action@v1
         with:
           target: ${{ matrix.platform.target }}
-          args: --release --out dist -i ${{ env.PYTHON_VERSION }}
+          args: --release --out dist -i ${{ matrix.abi.python }} ${{ matrix.abi.tag == 'cp310' && format('--no-default-features --features {0}', matrix.repository.no_abi3_features) || '' }}
           # Explicit: never enable the sccache GitHub-cache backend here
           # (floods the 10 GB repo cache). See the linux job for details.
           sccache: "false"
@@ -297,7 +362,7 @@ jobs:
         if: github.event_name == 'release' || inputs.publish
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.repository.name }}-macos-${{ matrix.platform.target }}
+          name: ${{ matrix.repository.name }}-macos-${{ matrix.platform.target }}-${{ matrix.abi.tag }}
           path: ${{ matrix.repository.path }}/dist
 
   sdist:
@@ -308,8 +373,10 @@ jobs:
         repository:
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
           - path: apis/python/cli
             name: dora-rs-cli
+            no_abi3_features: telemetry
     steps:
       - uses: actions/checkout@v7
       - name: Build sdist
@@ -355,10 +422,11 @@ jobs:
           # the distribution it publishes — hence the explicit `pypi` field.
           - path: apis/python/node
             name: dora-node-api
+            no_abi3_features: tracing,metrics,async
             pypi: dora-rs
           - path: apis/python/cli
             name: dora-rs-cli
-            pypi: dora-rs-cli
+            no_abi3_features: telemetry
     # Preserves the deployment-environment gate that release.yml's own
     # publish job used before it was folded into this workflow — whatever
     # protection rules are configured on `pypi` still apply.
