@@ -36,23 +36,9 @@ fn descriptor_schema_json() -> String {
     //
     // 'OneOf' such as Custom Nodes, Operators and Single Operators overwrite property values of the initial struct `Nodes`.`
     // which make the original properties such as `id` and `name` not validated by IDE extensions.
-    let raw_schema = raw_schema.replace(
+    raw_schema.replace(
         "\"additionalProperties\": false",
         "\"additionalProperties\": true",
-    );
-
-    // Remove `serde(from=` nested field as they are not handled properly by `schemars`
-    let raw_schema = raw_schema.replace(
-        "\"python\": {
-              \"$ref\": \"#/definitions/PythonSource\"
-            }",
-        "",
-    );
-    raw_schema.replace(
-        "{
-            \"$ref\": \"#/definitions/Input\"
-          }",
-        "true",
     )
 }
 
