@@ -51,7 +51,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 
 | Target | Runs | Budget | When to use |
 |---|---|---|---|
-| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph + package-includes + breaking-changes | ~15 s | Pre-commit |
+| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph + package-includes + breaking-changes + ci-reporting | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
@@ -250,6 +250,20 @@ Two failures that read oddly:
 
 - **"major version bump ..."** — a 2.0 withdraws the promises the gate measures against, so it stops there rather than reporting a green or a red that means nothing. When the bump is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking` (and set the same variable on the `breaking-changes` job for the PR that carries it).
 - **"the generated surface files are stale"** — regenerating changed the tree, so the comparison ran against an out-of-date snapshot and its "ok" meant nothing. Commit the regenerated files and read the report again.
+
+### 3.13 `ci-reporting` failed
+
+**Cause**: a change to `.github/workflows/nightly.yml` left one of its jobs outside the failure-reporting wiring. Both reporter jobs read `needs.<job>.result`, so a job missing from a `needs` list — or carrying job-level `continue-on-error: true` — can never be named in the `nightly-regression` issue. The gate reports one of three things.
+
+**"job-level `continue-on-error` on jobs listed in `file-issue-on-failure` needs"**: `needs.<job>.result` reads `success` for such a job even when it failed, so it is listed as reported while being unreportable — how the two `ros2-zenoh-*` jobs failed silently for two weeks across thirteen nightly issues (#2742). Drop the flag, or, if the job has to stay advisory while it earns trust, add it to [`.nightly-advisory-jobs`](../.nightly-advisory-jobs) with a reason and the issue tracking its removal. Any value but `false` counts — `True`, a quoted `"true"`, a value with a trailing comment, and a `${{ }}` expression, which is a flag whenever it evaluates true. Step-level `continue-on-error` is not flagged and needs no exemption — it does not touch `needs.<job>.result`.
+
+**"nightly jobs missing from `file-issue-on-failure` needs"**: add the job to that list. Omission leaves it unmonitored in exactly the same way a flag does; `hub-smoke` sat unreported like this from the day it was added.
+
+**"jobs watched by `file-issue-on-failure` but not by `close-issue-on-success`"**: add it to the closer as well. A job only the reporter watches produces a *flapping* issue — filed by one nightly, closed by the next while the job is still red, so the tracker asserts the problem is fixed.
+
+**"unreadable job header"** (exit 2, not 1): the parser found a line where a job name belongs that it cannot read — a quoted name, say. It stops rather than skipping the job, because a skipped job is missing from the second check *and* has its `needs` and `continue-on-error` read as the job above it, which is the silent pass this gate exists to prevent. Write the name as `  <job>:`, with a trailing comment if you want one, or teach the parser.
+
+Reproduce locally with `make qa-ci-reporting`; the three invariants and the failure each one is named after are documented at the top of [`scripts/qa/ci-nightly-reporting.sh`](../scripts/qa/ci-nightly-reporting.sh).
 
 ---
 

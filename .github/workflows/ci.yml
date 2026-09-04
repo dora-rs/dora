@@ -866,6 +866,16 @@ jobs:
       - name: Rust API of the crates 1.0 covers
         run: make qa-semver
 
+  # Structural check on nightly.yml's failure reporting: asserts that no job
+  # is silently unmonitored. Parses the workflow only -- no toolchain, no
+  # cache, sub-second -- so it stays within the lean-PR-CI budget.
+  ci-reporting:
+    name: Nightly reporting wiring
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: make qa-ci-reporting
+
   # ===== License check =====
   # Restored from upstream dora CI — explicit license validation.
   # cargo-deny (in the audit job) covers most license policy, but

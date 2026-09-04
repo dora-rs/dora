@@ -70,6 +70,7 @@ Runs:
 - typo check
 - crates.io publish-graph check
 - build-time include check (every `include_str!` target ships with its crate)
+- nightly reporting-wiring check (`nightly.yml`: no job unmonitored)
 
 ### Before push
 

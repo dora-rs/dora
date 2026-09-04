@@ -1971,7 +1971,10 @@ jobs:
   # `file-issue-on-failure` — `needs.<job>.result` reads `success` for a
   # continue-on-error job — which is why they failed silently from the
   # day they were added (#2790, 2026-07-21) until #2742 went looking.
-  # Drop `continue-on-error` once they are trustworthy.
+  # Drop `continue-on-error` once they are trustworthy (#2987). Until then
+  # the exemption is recorded in `.nightly-advisory-jobs`, which
+  # `scripts/qa/ci-nightly-reporting.sh` checks against this list — adding
+  # the flag to any other reported job now fails PR CI.
   ros2-zenoh-humble:
     name: ROS2 Zenoh Interop (Humble)
     runs-on: ubuntu-latest
@@ -2059,6 +2062,7 @@ jobs:
       - build-cli
       - wheel-smoke
       - smoke-suite
+      - hub-smoke
       - log-sinks
       - service-action
       - streaming
@@ -2621,6 +2625,7 @@ jobs:
       - build-cli
       - wheel-smoke
       - smoke-suite
+      - hub-smoke
       - log-sinks
       - service-action
       - streaming
@@ -2642,6 +2647,12 @@ jobs:
       - bench-example
       - cross-check
       - ros2-bridge
+      # Watched here too, not just by the reporter: a job the reporter watches
+      # and the closer does not produces a FLAPPING issue (filed by one
+      # nightly, closed by the next while still broken). Harmless while they
+      # are advisory (`result` reads `success`), correct once that drops (#2987).
+      - ros2-zenoh-humble
+      - ros2-zenoh-kilted
       - msrv
     # Inverse of `file-issue-on-failure`: on a scheduled run where the suite
     # actually ran (build-cli succeeded) and nothing failed or was cancelled
