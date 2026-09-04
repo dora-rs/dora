@@ -97,7 +97,7 @@ fn create_custom_node(
         .with_context(|| format!("failed to write `{}`", node_path.display()))?;
 
     // tests/tests___node_name__.py
-    let node_path = root.join("tests").join(format!(
+    let node_path = tests_path.join(format!(
         "test_{}.py",
         name.replace(" ", "_").replace("-", "_")
     ));
