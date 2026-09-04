@@ -55,11 +55,20 @@ fn create_custom_node(
     fs::create_dir(&root)
         .with_context(|| format!("failed to create root directory `{}`", root.display()))?;
 
-    fs::create_dir(&module_path)
-        .with_context(|| format!("failed to create module directory `{}`", root.display()))?;
+    fs::create_dir(&module_path).with_context(|| {
+        format!(
+            "failed to create module directory `{}`",
+            module_path.display()
+        )
+    })?;
 
-    fs::create_dir(root.join("tests"))
-        .with_context(|| format!("failed to create tests directory `{}`", root.display()))?;
+    let tests_path = root.join("tests");
+    fs::create_dir(&tests_path).with_context(|| {
+        format!(
+            "failed to create tests directory `{}`",
+            tests_path.display()
+        )
+    })?;
 
     // PYPROJECT.toml
     let node_path = root.join("pyproject.toml");
@@ -127,7 +136,7 @@ fn create_dataflow(
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
     fs::create_dir(root)
-        .with_context(|| format!("failed to create module directory `{}`", root.display()))?;
+        .with_context(|| format!("failed to create root directory `{}`", root.display()))?;
 
     let dataflow_yml = DATAFLOW_YML.replace("___name___", &name);
     let dataflow_yml_path = root.join("dataflow.yml");
