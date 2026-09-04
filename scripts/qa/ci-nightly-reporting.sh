@@ -64,15 +64,33 @@ if [[ ! -f "$WORKFLOW" ]]; then
   exit 2
 fi
 
-# Flatten the workflow into three record types:
-#   JOB  <job>         a top-level key under `jobs:`
-#   COE  <job>         that job carries job-level `continue-on-error: true`
-#   NEED <job> <dep>   <job> lists <dep> in its `needs:`
+# Flatten the workflow into four record types:
+#   JOB  <job>            a top-level key under `jobs:`
+#   COE  <job> <value>    that job carries a job-level `continue-on-error`
+#                         whose value is not `false`
+#   NEED <job> <dep>      <job> lists <dep> in its `needs:`
+#   UNPARSED <line>       a line where a job header belongs that this parser
+#                         does not recognise (see below)
 #
 # Indentation is the whole grammar here: 2 spaces = job name, 4 = job key,
 # 6 = `needs:` list item, 8 = step key. That is load-bearing (see invariant 1
 # above), so the patterns anchor on exact leading whitespace rather than
 # using a looser match.
+#
+# What is *inside* a line is matched loosely, in the other direction: a value
+# is read as a value rather than as one literal spelling. `true`, `True`,
+# `TRUE`, `"true"` and `true  # while it settles` are the same flag to GitHub,
+# and a trailing comment is the likeliest thing to be written next to one, so
+# the value is stripped of its comment, quotes and case before it is judged —
+# and anything that is not `false` counts, including a `${{ }}` expression this
+# script cannot evaluate. The same tolerance applies to a job header, which may
+# carry a trailing comment.
+#
+# A 2-space line that is *not* recognised as a job header is fatal rather than
+# skipped: the job would drop out of invariant 2 entirely, and its keys would
+# be attributed to the job above it, so both the omission and the
+# misattribution would pass silently. That is the failure this whole script
+# exists to prevent, so the parser refuses to analyse instead.
 parse_workflow() {
   awk '
     # --- track entry into / exit from the top-level `jobs:` mapping ---
@@ -80,15 +98,20 @@ parse_workflow() {
     injobs && /^[^[:space:]#]/ { injobs = 0; job = ""; inneeds = 0 }
     !injobs { next }
 
-    # --- job header: `  <name>:` ---
-    /^  [A-Za-z0-9_-]+:[[:space:]]*$/ {
+    # --- job header: `  <name>:`, optionally with a trailing comment ---
+    /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
       job = $0
       sub(/^  /, "", job)
+      sub(/[[:space:]]*#.*$/, "", job)
       sub(/:[[:space:]]*$/, "", job)
       inneeds = 0
       print "JOB " job
       next
     }
+
+    # Anything else at job-header depth: a quoted name, or a spelling this
+    # parser does not know. Reported, not ignored — see the header comment.
+    /^  [^[:space:]#]/ { print "UNPARSED " NR; next }
 
     job == "" { next }
 
@@ -106,7 +129,7 @@ parse_workflow() {
     inneeds && /^    [A-Za-z]/ { inneeds = 0 }
 
     # --- `needs:` in its three YAML spellings ---
-    /^    needs:[[:space:]]*$/ { inneeds = 1; next }
+    /^    needs:[[:space:]]*(#.*)?$/ { inneeds = 1; next }
     /^    needs:[[:space:]]*\[/ {
       list = $0
       sub(/^    needs:[[:space:]]*\[/, "", list)
@@ -127,8 +150,24 @@ parse_workflow() {
       next
     }
 
-    # --- job-level `continue-on-error: true` (exactly 4 spaces) ---
-    /^    continue-on-error:[[:space:]]*true[[:space:]]*$/ { print "COE " job; next }
+    # --- job-level `continue-on-error` (exactly 4 spaces) ---
+    #
+    # Not `== "true"`: `True`, `TRUE` and a quoted `"true"` are the same
+    # boolean to GitHub, and a `${{ }}` expression is a flag this script cannot
+    # evaluate. Only a literal `false` — the default, spelled out — is treated
+    # as "this job can report".
+    /^    continue-on-error:/ {
+      val = $0
+      sub(/^    continue-on-error:[[:space:]]*/, "", val)
+      sub(/[[:space:]]*#.*$/, "", val)
+      sub(/[[:space:]]+$/, "", val)
+      # Judged unquoted and case-folded, but reported as written, so the
+      # message quotes the file rather than a normalised rewrite of it.
+      norm = tolower(val)
+      gsub(/["'"'"']/, "", norm)
+      if (norm != "false") print "COE " job " " (val == "" ? "(empty)" : val)
+      next
+    }
   ' "$WORKFLOW"
 }
 
@@ -137,6 +176,24 @@ RECORDS="$(parse_workflow)"
 jobs_list()  { printf '%s\n' "$RECORDS" | awk '$1=="JOB"{print $2}' | sort -u; }
 coe_list()   { printf '%s\n' "$RECORDS" | awk '$1=="COE"{print $2}' | sort -u; }
 needs_of()   { printf '%s\n' "$RECORDS" | awk -v j="$1" '$1=="NEED" && $2==j {print $3}' | sort -u; }
+# The value as written, for the failure message: `true`, `True`, an expression.
+coe_value()  { printf '%s\n' "$RECORDS" \
+                 | awk -v j="$1" '$1=="COE" && $2==j { sub(/^COE [^ ]+ /, ""); print; exit }'; }
+
+# A job header this parser cannot read is not a job it may skip: the job would
+# be missing from invariant 2, and the keys under it -- its own `needs`, its
+# own `continue-on-error` -- would be read as the previous job's. Both would
+# pass silently, so refuse to answer instead.
+UNPARSED_LINES="$(printf '%s\n' "$RECORDS" | awk '$1=="UNPARSED"{print $2}')"
+if [[ -n "$UNPARSED_LINES" ]]; then
+  echo "ci-nightly-reporting: unreadable job header in $WORKFLOW, line(s):" >&2
+  while IFS= read -r n; do
+    [[ -n "$n" ]] && printf '  %s: %s\n' "$n" "$(sed -n "${n}p" "$WORKFLOW")" >&2
+  done <<< "$UNPARSED_LINES"
+  echo "A job name is matched as '  <name>:', optionally with a trailing" >&2
+  echo "comment. Rename the job to that form, or teach the parser above." >&2
+  exit 2
+fi
 
 ALL_JOBS="$(jobs_list)"
 COE_JOBS="$(coe_list)"
@@ -183,13 +240,18 @@ done <<< "$COE_JOBS"
 
 if [[ -n "${advisory_violations//[$'\n']/}" ]]; then
   fail=1
-  echo "FAIL: job-level 'continue-on-error: true' on jobs listed in '$REPORTER' needs:"
-  while IFS= read -r j; do [[ -n "$j" ]] && note "$j"; done <<< "$advisory_violations"
+  echo "FAIL: job-level 'continue-on-error' on jobs listed in '$REPORTER' needs:"
+  while IFS= read -r j; do
+    [[ -n "$j" ]] && note "$j (continue-on-error: $(coe_value "$j"))"
+  done <<< "$advisory_violations"
   echo
   echo "  'needs.<job>.result' reads 'success' for a continue-on-error job, so"
   echo "  these are listed as reported but can never actually report. Either"
   echo "  drop the flag, or add the job to $EXCEPTIONS with a reason and issue"
   echo "  reference if it is deliberately advisory for now."
+  echo
+  echo "  A \${{ }} expression counts as well: whenever it evaluates true, the"
+  echo "  job cannot report that night."
   echo
 fi
 
