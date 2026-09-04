@@ -507,7 +507,7 @@ output_sender.send("count", n.into_arrow())?;
 
 ### CPython 3.11 is the floor (was 3.8)
 
-`requires-python` moved from `>=3.8` to `>=3.11` and the wheels are built `abi3-py311`. If you are on 3.8 to 3.10, upgrade the interpreter first; there is no 1.0 wheel for those versions and no compatibility shim. Free-threaded builds (`python3.13t`, `python3.14t`) are not supported. The [Python version policy](api-rust.md#python-version-policy) has the full guarantee.
+`requires-python` moved from `>=3.8` to `>=3.10` and the primary wheels are built `abi3-py311`. If you are on 3.8 or 3.9, upgrade the interpreter first; there is no 1.0 wheel for those versions and no compatibility shim. **3.10 is supported by separate `cp310` wheels**, with one gap: `send_output_raw` raises `NotImplementedError` there — use `send_output()`. Free-threaded builds (`python3.13t`, `python3.14t`) are not supported. The [Python version policy](api-rust.md#python-version-policy) has the full guarantee.
 
 ### `numpy` is now a hard dependency
 

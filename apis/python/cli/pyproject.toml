@@ -7,7 +7,16 @@ name = "dora-rs-cli"
 dynamic = ["version"]
 scripts = { "dora" = "dora_cli:py_main" }
 license = { text = "MIT" }
-requires-python = ">=3.11"
+# >=3.10, not >=3.11: the release matrix now ships BOTH a `cp311-abi3` wheel
+# (3.11 and every later CPython) and version-specific `cp310` wheels. Wheel
+# tags, not this floor, decide which one an interpreter gets — 3.10 cannot
+# select the abi3 wheel and 3.11+ never selects a cp310 one.
+#
+# Consequence worth knowing: on a platform with no cp310 wheel, pip on 3.10
+# falls through to the sdist, whose default features include `abi3`, and the
+# build fails in pyo3's config rather than resolving cleanly. Build such a
+# platform with `--no-default-features` (see the `abi3` feature in Cargo.toml).
+requires-python = ">=3.10"
 dependencies = ['dora-rs >= 0.3.9', 'uv']
 
 [tool.maturin]

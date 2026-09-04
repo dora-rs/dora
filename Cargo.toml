@@ -164,9 +164,16 @@ arrow-array = { version = "59" }
 arrow-json = { version = "59" }
 parquet = { version = "59" }
 # Kept in lockstep with `arrow-pyarrow` — see the `arrow` floor above.
+# `abi3-py311` is deliberately NOT listed here. Cargo features are additive and
+# every python crate inherits this dep, so stating abi3 at the workspace level
+# makes it impossible to turn off for a single build. It now lives as a
+# default-on `abi3` feature on the two crates maturin actually builds
+# (`dora-node-api-python`, `dora-cli-api-python`), which is the only place it
+# has to be enabled for the whole graph to get it. Default builds are therefore
+# byte-for-byte the same configuration as before; `--no-default-features`
+# yields a version-specific (non-abi3) build. See docs/api-rust.md.
 pyo3 = { version = "0.29", features = [
     "eyre",
-    "abi3-py311",
     "multiple-pymethods",
 ] }
 pythonize = "0.29"
