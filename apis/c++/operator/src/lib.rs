@@ -108,71 +108,50 @@ impl DoraOperator for OperatorWrapper {
         event: &Event,
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, std::string::String> {
+        let operator = self
+            .operator
+            .as_mut()
+            .ok_or_else(|| "C++ new_operator() returned a null operator".to_string())?;
+        let mut output_sender = OutputSender(output_sender);
         match event {
             Event::Input {
                 id,
                 metadata: _,
                 data,
             } => {
-                let operator = self.operator.as_mut().unwrap();
-                let mut output_sender = OutputSender(output_sender);
                 let data: &[u8] = data
                     .try_into()
                     .map_err(|err| format!("expected byte array: {err}"))?;
-
-                let result = ffi::on_input(operator, id, data, &mut output_sender);
-                if result.error.is_empty() {
-                    Ok(match result.stop {
-                        false => DoraStatus::Continue,
-                        true => DoraStatus::Stop,
-                    })
-                } else {
-                    Err(result.error)
-                }
+                finish(ffi::on_input(operator, id, data, &mut output_sender))
             }
             Event::InputClosed { id } => {
-                let operator = self.operator.as_mut().unwrap();
-                let mut output_sender = OutputSender(output_sender);
-                let result = ffi::on_input_closed(operator, id, &mut output_sender);
-                if result.error.is_empty() {
-                    Ok(match result.stop {
-                        false => DoraStatus::Continue,
-                        true => DoraStatus::Stop,
-                    })
-                } else {
-                    Err(result.error)
-                }
+                finish(ffi::on_input_closed(operator, id, &mut output_sender))
             }
-            Event::Stop => {
-                let operator = self.operator.as_mut().unwrap();
-                let mut output_sender = OutputSender(output_sender);
-                let result = ffi::on_stop(operator, &mut output_sender);
-                if result.error.is_empty() {
-                    Ok(match result.stop {
-                        false => DoraStatus::Continue,
-                        true => DoraStatus::Stop,
-                    })
-                } else {
-                    Err(result.error)
-                }
-            }
-            Event::InputParseError { id, error } => {
-                let operator = self.operator.as_mut().unwrap();
-                let mut output_sender = OutputSender(output_sender);
-                let result = ffi::on_input_parse_error(operator, id, error, &mut output_sender);
-                if result.error.is_empty() {
-                    Ok(match result.stop {
-                        false => DoraStatus::Continue,
-                        true => DoraStatus::Stop,
-                    })
-                } else {
-                    Err(result.error)
-                }
-            }
+            Event::Stop => finish(ffi::on_stop(operator, &mut output_sender)),
+            Event::InputParseError { id, error } => finish(ffi::on_input_parse_error(
+                operator,
+                id,
+                error,
+                &mut output_sender,
+            )),
             // Other events (NodeFailed, Reload, Error, …) currently
             // have no operator-side callback. Operators that need to
             // react to them should subscribe via the node API instead.
             _ => Ok(DoraStatus::Continue),
         }
+    }
+}
+
+/// Translate a C++ callback result into a [`DoraStatus`], surfacing any
+/// non-empty error string to the operator runtime.
+fn finish(result: ffi::DoraOnInputResult) -> Result<DoraStatus, std::string::String> {
+    if result.error.is_empty() {
+        Ok(if result.stop {
+            DoraStatus::Stop
+        } else {
+            DoraStatus::Continue
+        })
+    } else {
+        Err(result.error)
     }
 }
