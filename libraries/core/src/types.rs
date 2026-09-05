@@ -199,7 +199,8 @@ pub struct ParsedUrn {
 /// - `std/media/v1/AudioFrame[sample_type=f32,channels=2]` (multiple params)
 ///
 /// Returns `None` for malformed input: a `[` with no closing `]`, empty
-/// brackets `[]`, or an empty parameter key or value.
+/// brackets `[]`, an empty parameter key or value, or a `[params]` block with
+/// no base type (e.g. `[sample_type=f32]`).
 ///
 /// ```
 /// use dora_core::types::parse_urn;
@@ -220,6 +221,7 @@ pub struct ParsedUrn {
 /// assert!(parse_urn("std/media/v1/AudioFrame[").is_none()); // no closing ]
 /// assert!(parse_urn("std/media/v1/AudioFrame[]").is_none()); // empty brackets
 /// assert!(parse_urn("std/media/v1/AudioFrame[=f32]").is_none()); // empty key
+/// assert!(parse_urn("[sample_type=f32]").is_none()); // no base type
 /// assert!(parse_urn("").is_none());
 /// ```
 pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
@@ -236,6 +238,9 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
         return None; // malformed: has `[` but no closing `]`
     }
     let base = urn[..bracket_start].to_string();
+    if base.is_empty() {
+        return None; // malformed: a `[params]` block with no base type
+    }
     let params_str = &urn[bracket_start + 1..urn.len() - 1];
     if params_str.is_empty() {
         return None; // malformed: empty brackets
@@ -757,7 +762,16 @@ impl Default for TypeRegistry {
 /// Simple edit distance (Levenshtein) for typo suggestions.
 /// Returns `usize::MAX` for inputs longer than 256 characters to prevent DoS.
 pub fn edit_distance(a: &str, b: &str) -> usize {
-    if a.len() > 256 || b.len() > 256 {
+    // Guard on character count, not byte length: the DP matrix below is sized
+    // by `chars().count()`, so that is the quantity the DoS cap must bound. A
+    // byte-length check also over-rejects a multibyte input that is well under
+    // 256 characters (>256 bytes), silently suppressing an otherwise valid typo
+    // suggestion — contrary to this function's documented "256 characters".
+    // `take(257)` keeps the guard bounded: it stops scanning after 257
+    // characters rather than walking a hostile, arbitrarily long string in
+    // full, and it runs before the `collect`s below so an oversized input
+    // never allocates the `Vec<char>`.
+    if a.chars().take(257).count() > 256 || b.chars().take(257).count() > 256 {
         return usize::MAX;
     }
     let a: Vec<char> = a.chars().collect();
@@ -817,6 +831,22 @@ mod tests {
     fn suggest_returns_none_for_unrelated() {
         let reg = TypeRegistry::new();
         assert!(reg.suggest("std/core/v1/Xyzzy").is_none());
+    }
+
+    #[test]
+    fn edit_distance_guards_on_characters_not_bytes() {
+        // Two 200-character multibyte strings are >256 bytes but well under the
+        // documented 256-character cap, so they must be measured, not bailed on
+        // with `usize::MAX`. `é` is 2 bytes, so 200 of them is 400 bytes.
+        let a: String = "é".repeat(200);
+        let mut b: String = "é".repeat(199);
+        b.push('e'); // one differing character
+        assert!(a.len() > 256 && b.len() > 256, "inputs exceed 256 bytes");
+        assert_eq!(edit_distance(&a, &b), 1);
+
+        // Genuinely over the character cap still short-circuits.
+        let long: String = "a".repeat(257);
+        assert_eq!(edit_distance(&long, "a"), usize::MAX);
     }
 
     #[test]
@@ -897,6 +927,21 @@ mod tests {
         assert!(parse_urn("foo[]").is_none()); // empty brackets
         assert!(parse_urn("foo[=val]").is_none()); // empty key
         assert!(parse_urn("foo[key=]").is_none()); // empty value
+    }
+
+    #[test]
+    fn parse_urn_rejects_empty_base() {
+        // A `[params]` block with no base type is malformed: the bracket is at
+        // offset 0, so the base is empty. It must be rejected, not accepted as a
+        // `ParsedUrn { base: "", .. }`.
+        assert!(parse_urn("[sample_type=f32]").is_none());
+        assert!(parse_urn("[a=1,b=2]").is_none());
+
+        // Before the fix, both parsed to an empty base with disjoint params, so
+        // `params_agree` treated them as a wildcard match — two unrelated
+        // empty-base strings spuriously `types_match`. Now they are unparseable
+        // and fall back to exact string equality, so they no longer match.
+        assert!(!types_match("[a=1]", "[b=2]"));
     }
 
     #[test]
