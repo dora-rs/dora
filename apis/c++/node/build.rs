@@ -163,13 +163,16 @@ mod ros2 {
     use std::path::{Path, PathBuf};
 
     pub fn generate() -> Vec<PathBuf> {
-        use rust_format::Formatter;
         let paths = ament_prefix_paths();
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
         let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), &out_dir, true);
-        let generated_string = rust_format::PrettyPlease::default()
-            .format_tokens(generated)
-            .unwrap();
+        // Format the generated cxx-bridge code with prettyplease directly.
+        // syn 2 parses the constructs the old `rust-format` path relied on a
+        // `verbatim`-featured prettyplease 0.1 to handle, so this drops the
+        // fragile version-unification pin that coupling required (dora-rs/dora#2452).
+        let syntax_tree = syn::parse2::<syn::File>(generated)
+            .expect("failed to parse generated ROS2 message tokens");
+        let generated_string = prettyplease::unparse(&syntax_tree);
         let target_file = out_dir.join("messages.rs");
         std::fs::write(&target_file, generated_string).unwrap();
         println!(
