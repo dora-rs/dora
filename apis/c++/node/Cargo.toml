@@ -20,8 +20,8 @@ tracing = ["dora-node-api/tracing"]
 ros2-bridge = [
     "dep:dora-ros2-bridge",
     "dep:dora-ros2-bridge-msg-gen",
-    "dep:rust-format",
     "dep:prettyplease",
+    "dep:syn",
     "dep:serde-big-array",
     "rmw-zenoh",
 ]
@@ -42,11 +42,9 @@ chrono = { version = "0.4", features = ["serde"] }
 [build-dependencies]
 cxx-build = "1.0.194"
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
-rust-format = { version = "0.3.4", features = [
-    "pretty_please",
-], optional = true }
-# Deliberately 0.1, NOT the latest 0.2: this dep exists only to enable the
-# `verbatim` feature on the prettyplease 0.1 copy that `rust-format` uses
-# internally (version unification). Bumping to 0.2 would make it inert and
-# silently drop `verbatim` from rust-format's formatter.
-prettyplease = { version = "0.1", features = ["verbatim"], optional = true }
+# Format the generated cxx-bridge messages with prettyplease + syn 2 directly,
+# instead of going through `rust-format` (which pins an internal prettyplease
+# 0.1 and needed a fragile `verbatim`-feature version-unification hack). See
+# dora-rs/dora#2452.
+prettyplease = { version = "0.2", optional = true }
+syn = { version = "2", features = ["full", "parsing"], optional = true }
