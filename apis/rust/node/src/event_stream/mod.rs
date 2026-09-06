@@ -947,8 +947,13 @@ impl EventStream {
     fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
         // `contains_key` short-circuits cheaply once the check is consumed, so
-        // steady-state topic messages pay a single map lookup (zero extra cost
-        // after the first message per input).
+        // steady-state topic messages pay a single map lookup after the check
+        // is consumed. The check is consumed on the first *non-`Null`* message
+        // (see the `Null` note below), so an input that only ever carries
+        // `Null` (an annotated timer, an empty-payload stream) keeps re-running
+        // this cheap, allocation-free inspection each message rather than a
+        // single lookup — the deliberate cost of not disabling validation on a
+        // `Null` first message.
         //
         // Skip the check (and keep it armed) when the message carries pattern
         // metadata (`request_id`, `goal_id`, or `goal_status`) — the input is
