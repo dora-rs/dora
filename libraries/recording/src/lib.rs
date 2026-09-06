@@ -199,6 +199,10 @@ impl<W: Write> RecordingWriter<W> {
 pub struct RecordingReader<R: Read> {
     reader: BufReader<R>,
     header: RecordingHeader,
+    /// Scratch buffer reused across [`next_entry`](Self::next_entry) calls to
+    /// hold the current record's bytes, so the per-record read does not
+    /// allocate a fresh `Vec` every message on the replay path.
+    record_buf: Vec<u8>,
 }
 
 impl<R: Read> RecordingReader<R> {
@@ -206,7 +210,11 @@ impl<R: Read> RecordingReader<R> {
     pub fn open(inner: R) -> eyre::Result<Self> {
         let mut reader = BufReader::new(inner);
         let header = read_header(&mut reader)?;
-        Ok(Self { reader, header })
+        Ok(Self {
+            reader,
+            header,
+            record_buf: Vec::new(),
+        })
     }
 
     /// The recording header parsed by [`open`](Self::open).
@@ -238,8 +246,14 @@ impl<R: Read> RecordingReader<R> {
         if record_len > MAX_RECORD_BYTES {
             eyre::bail!("record too large: {record_len} bytes (max {MAX_RECORD_BYTES})");
         }
-        let mut record_buf = vec![0u8; record_len];
-        match self.reader.read_exact(&mut record_buf) {
+        // Reuse the scratch buffer instead of allocating a fresh `Vec` per
+        // record: sized to exactly `record_len` (retaining capacity across
+        // calls), it still bounds every field parse below, so the
+        // whole-record integrity checks and torn-trailing-record handling are
+        // unchanged.
+        self.record_buf.clear();
+        self.record_buf.resize(record_len, 0);
+        match self.reader.read_exact(&mut self.record_buf) {
             Ok(()) => {}
             // A crash (SIGKILL / Ctrl-C) can flush a record's 4-byte length
             // prefix but only part of the record body that follows. Treat such
@@ -254,20 +268,21 @@ impl<R: Read> RecordingReader<R> {
         }
 
         let mut pos = 0;
+        let record_buf = self.record_buf.as_slice();
 
-        let node_id_len = u16::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let node_id = std::str::from_utf8(read_slice(&record_buf, &mut pos, node_id_len)?)
+        let node_id_len = u16::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
+        let node_id = std::str::from_utf8(read_slice(record_buf, &mut pos, node_id_len)?)
             .wrap_err("invalid node_id utf8")?
             .to_string();
 
-        let output_id_len = u16::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let output_id = std::str::from_utf8(read_slice(&record_buf, &mut pos, output_id_len)?)
+        let output_id_len = u16::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
+        let output_id = std::str::from_utf8(read_slice(record_buf, &mut pos, output_id_len)?)
             .wrap_err("invalid output_id utf8")?
             .to_string();
 
-        let timestamp_offset_nanos = u64::from_le_bytes(read_array(&record_buf, &mut pos)?);
-        let event_bytes_len = u32::from_le_bytes(read_array(&record_buf, &mut pos)?) as usize;
-        let event_bytes = read_slice(&record_buf, &mut pos, event_bytes_len)?.to_vec();
+        let timestamp_offset_nanos = u64::from_le_bytes(read_array(record_buf, &mut pos)?);
+        let event_bytes_len = u32::from_le_bytes(read_array(record_buf, &mut pos)?) as usize;
+        let event_bytes = read_slice(record_buf, &mut pos, event_bytes_len)?.to_vec();
 
         Ok(Some(RecordEntry {
             node_id,
