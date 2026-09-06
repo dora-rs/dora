@@ -564,10 +564,18 @@ fn main() -> Result<()> {
             .context("spawning mavlink reader thread")?
     };
 
-    loop {
+    'run: loop {
         while let Ok((id, arr)) = rx.try_recv() {
-            node.send_output(id, MetadataParameters::default(), arr)
-                .map_err(|e| eyre!("send_output: {e}"))?;
+            if let Err(e) = node.send_output(id, MetadataParameters::default(), arr) {
+                // A `send_output` failure means the dora stream is gone (the
+                // daemon went away). Returning `?` here would skip the
+                // deliberate three-layer reader shutdown below and leak the
+                // reader thread blocked in `conn.recv()` — reaped only at
+                // process exit. Wind down cleanly instead, matching the
+                // best-effort final drain that already ignores this error.
+                tracing::error!("send_output failed, shutting down: {e:#}");
+                break 'run;
+            }
         }
 
         // If the reader thread exited on its own (a fatal transport
