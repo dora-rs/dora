@@ -241,8 +241,7 @@ fn declare_output_publishers(
         if output_routing.daemon_only {
             debug!(
                 output = %output_id,
-                "output pinned to the daemon path (a consumer is reachable only by \
-                 inter-daemon forwarding)"
+                "output pinned to the daemon path by consumer routing requirements"
             );
             continue;
         }

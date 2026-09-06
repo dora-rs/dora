@@ -3113,6 +3113,16 @@ impl Daemon {
                         &dataflow.mappings,
                         &dataflow.open_external_mappings,
                         &dataflow.dynamic_nodes,
+                        |receiver, input_id| {
+                            dataflow
+                                .running_nodes
+                                .get(receiver)
+                                .and_then(|node| node.node_config.run_config.inputs.get(input_id))
+                                .is_some_and(|input| {
+                                    input.queue_policy
+                                        == Some(dora_message::config::QueuePolicy::Backpressure)
+                                })
+                        },
                     );
 
                     // Prepare stderr buffer (harmless — just an empty
@@ -3607,6 +3617,16 @@ impl Daemon {
                         &dataflow.mappings,
                         &dataflow.open_external_mappings,
                         &dataflow.dynamic_nodes,
+                        |receiver, input_id| {
+                            dataflow
+                                .running_nodes
+                                .get(receiver)
+                                .and_then(|node| node.node_config.run_config.inputs.get(input_id))
+                                .is_some_and(|input| {
+                                    input.queue_policy
+                                        == Some(dora_message::config::QueuePolicy::Backpressure)
+                                })
+                        },
                     );
                     // Fresh stderr buffer for the new incarnation; installed
                     // into the map only after the spawn succeeds.

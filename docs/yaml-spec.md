@@ -166,6 +166,12 @@ inputs:
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
+Backpressure inputs use the reliable daemon route rather than the direct Zenoh
+callback path, whose shared ingress channel may drop events before the per-input
+policy can apply. This routing choice applies to the producer's entire output,
+including other consumers of that output. The scheduler's documented hard cap
+still applies; backpressure is not an unbounded-memory guarantee.
+
 #### Built-in Timers
 
 Timers are virtual nodes that emit ticks at fixed intervals:
