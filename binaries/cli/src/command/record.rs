@@ -376,11 +376,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     let output_file = match &args.output {
-        Some(p) => {
-            // Resolve to filename only if user provided a bare name, otherwise use as-is
-            let path = PathBuf::from(p);
-            path.to_string_lossy().to_string()
-        }
+        Some(p) => p.clone(),
         None => {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
             format!("recording_{ts}.drec")
