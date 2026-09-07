@@ -232,11 +232,53 @@ impl NodeEvent {
             | NodeEvent::InputRecovered { .. }
             | NodeEvent::NodeRestarted { .. }
             | NodeEvent::AllInputsClosed
-            | NodeEvent::ParamUpdate { .. }
-            | NodeEvent::ParamDeleted { .. }
-            | NodeEvent::NodeFailed { .. } => 0,
+            | NodeEvent::ParamDeleted { .. } => 0,
+            // Payload-carrying variants: count the variable-length field so the
+            // pre-sized buffer does not realloc on encode (matches the sibling
+            // `DaemonRequest::encode_size_hint`, which counts its own payloads).
+            NodeEvent::ParamUpdate { value_json, .. } => value_json.len(),
+            NodeEvent::NodeFailed { error, .. } => error.len(),
             NodeEvent::ExtensionDropped { namespace, key } => namespace.len() + key.len(),
         };
         payload.saturating_add(PER_EVENT_ENVELOPE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_size_hint_counts_param_update_payload() {
+        let value_json = vec![0u8; 10_000];
+        let event = NodeEvent::ParamUpdate {
+            key: "some_param".to_string(),
+            value_json: value_json.clone(),
+        };
+        // The hint feeds `encode_presized`, so it must cover the payload or the
+        // pre-sized buffer reallocates while encoding — the exact cost the hint
+        // exists to avoid. Before the fix, ParamUpdate reported a flat envelope.
+        assert!(
+            event.encode_size_hint() >= value_json.len(),
+            "ParamUpdate hint ({}) must include its {}-byte value_json",
+            event.encode_size_hint(),
+            value_json.len()
+        );
+    }
+
+    #[test]
+    fn encode_size_hint_counts_node_failed_error() {
+        let error = "e".repeat(4096);
+        let event = NodeEvent::NodeFailed {
+            affected_input_ids: Vec::new(),
+            error: error.clone(),
+            source_node_id: NodeId::from("upstream".to_string()),
+        };
+        assert!(
+            event.encode_size_hint() >= error.len(),
+            "NodeFailed hint ({}) must include its {}-byte error string",
+            event.encode_size_hint(),
+            error.len()
+        );
     }
 }
