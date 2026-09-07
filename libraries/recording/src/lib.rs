@@ -264,7 +264,10 @@ impl<R: Read> RecordingReader<R> {
         {
             self.record_buf = Vec::new();
         }
-        self.record_buf.clear();
+        // `resize` alone sets the length to exactly `record_len` (truncating or
+        // zero-extending); `read_exact` below overwrites all of it, so there is
+        // no need to `clear()` first — doing so would force a full re-zero of
+        // the buffer instead of only the grown tail.
         self.record_buf.resize(record_len, 0);
         match self.reader.read_exact(&mut self.record_buf) {
             Ok(()) => {}
