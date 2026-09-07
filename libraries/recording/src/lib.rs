@@ -251,6 +251,19 @@ impl<R: Read> RecordingReader<R> {
         // calls), it still bounds every field parse below, so the
         // whole-record integrity checks and torn-trailing-record handling are
         // unchanged.
+        //
+        // Guard against pinning an oversized allocation for the reader's whole
+        // lifetime: one large record (up to MAX_RECORD_BYTES = 64 MiB)
+        // followed by many small ones would otherwise keep that capacity
+        // resident. Drop the buffer when it dwarfs the current record; the
+        // common case (uniformly sized records) keeps `capacity ~= record_len`
+        // and stays on the reuse path.
+        const REUSE_CAP_FLOOR: usize = 1024 * 1024; // 1 MiB
+        if self.record_buf.capacity() > REUSE_CAP_FLOOR
+            && self.record_buf.capacity() > record_len.saturating_mul(4)
+        {
+            self.record_buf = Vec::new();
+        }
         self.record_buf.clear();
         self.record_buf.resize(record_len, 0);
         match self.reader.read_exact(&mut self.record_buf) {
@@ -408,6 +421,34 @@ mod tests {
             timestamp_offset_nanos: offset,
             event_bytes: data.to_vec(),
         }
+    }
+
+    #[test]
+    fn scratch_buffer_does_not_pin_an_oversized_allocation() {
+        // A large record followed by a small one must not leave the reader
+        // holding the large record's capacity for the rest of the stream.
+        let header = sample_header();
+        let big = sample_entry("cam", "image", 0, &vec![7u8; 2 * 1024 * 1024]); // 2 MiB
+        let small = sample_entry("cam", "image", 1, b"tiny");
+
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        writer.write_entry(&big).unwrap();
+        writer.write_entry(&small).unwrap();
+        writer.finish().unwrap();
+
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let first = reader.next_entry().unwrap().expect("big record");
+        assert_eq!(first.event_bytes.len(), 2 * 1024 * 1024);
+        assert!(reader.record_buf.capacity() >= 2 * 1024 * 1024);
+
+        let second = reader.next_entry().unwrap().expect("small record");
+        assert_eq!(second.event_bytes, b"tiny");
+        assert!(
+            reader.record_buf.capacity() < 1024 * 1024,
+            "scratch buffer must shrink after a large-then-small sequence, got {}",
+            reader.record_buf.capacity()
+        );
     }
 
     #[test]
