@@ -564,6 +564,10 @@ fn main() -> Result<()> {
             .context("spawning mavlink reader thread")?
     };
 
+    // Set if a `send_output` failure ends the loop, so the reader is still
+    // shut down cleanly below but the failure is preserved as a non-zero exit
+    // status (see the end of `main`).
+    let mut send_failure: Option<eyre::Error> = None;
     'run: loop {
         while let Ok((id, arr)) = rx.try_recv() {
             if let Err(e) = node.send_output(id, MetadataParameters::default(), arr) {
@@ -571,9 +575,10 @@ fn main() -> Result<()> {
                 // daemon went away). Returning `?` here would skip the
                 // deliberate three-layer reader shutdown below and leak the
                 // reader thread blocked in `conn.recv()` — reaped only at
-                // process exit. Wind down cleanly instead, matching the
-                // best-effort final drain that already ignores this error.
-                tracing::error!("send_output failed, shutting down: {e:#}");
+                // process exit. Break out so we still run that shutdown, and
+                // remember the error so `main` still exits non-zero.
+                tracing::error!("send_output failed, shutting down: {e}");
+                send_failure = Some(eyre!("send_output: {e}"));
                 break 'run;
             }
         }
@@ -672,11 +677,11 @@ fn main() -> Result<()> {
         std::thread::sleep(READER_SHUTDOWN_POLL);
     }
 
-    if reader_handle.is_finished() {
+    let reader_result: Result<()> = if reader_handle.is_finished() {
         match reader_handle.join() {
             Ok(Ok(())) => Ok(()),
-            Ok(Err(e)) => bail!("reader thread error: {e:#}"),
-            Err(panic) => bail!("reader thread panicked: {panic:?}"),
+            Ok(Err(e)) => Err(eyre!("reader thread error: {e:#}")),
+            Err(panic) => Err(eyre!("reader thread panicked: {panic:?}")),
         }
     } else {
         // Reader is still blocked in `conn.recv()` with no inbound
@@ -691,7 +696,22 @@ fn main() -> Result<()> {
         );
         drop(reader_handle);
         Ok(())
+    };
+
+    // A `send_output` failure is why we broke out of the loop; surface it as a
+    // non-zero exit (the behavior before the graceful-shutdown refactor, which
+    // used `?`) rather than masking it as a clean stop. It takes precedence
+    // over the reader result, but only after the reader has been shut down.
+    if let Some(e) = send_failure {
+        // The send failure is the exit reason we return, but the reader may
+        // also have errored or panicked during shutdown; log that rather than
+        // dropping `reader_result` silently when the send error takes over.
+        if let Err(reader_err) = &reader_result {
+            tracing::error!("mavlink reader also failed during shutdown: {reader_err:#}");
+        }
+        return Err(e).wrap_err("mavlink bridge exiting after send_output failure");
     }
+    reader_result
 }
 
 #[cfg(test)]
