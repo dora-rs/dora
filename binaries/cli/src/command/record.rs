@@ -168,6 +168,31 @@ fn extend_prefixed_outputs(
     }
 }
 
+/// Build the record node's `{ input_id: topic }` map from the selected
+/// `(topic, input_id)` pairs.
+///
+/// Input ids can't contain `/`, so each `node/output` topic is re-encoded as
+/// `node___output`. That encoding is not injective: node `x` with output
+/// `y___z` and node `x___y` with output `z` both encode to `x___y___z`.
+/// Collecting straight into a map keyed by input id would let the second entry
+/// silently overwrite the first, dropping one topic from the recording with no
+/// error. Detect the collision and fail loudly instead.
+fn build_input_id_map<'a>(
+    topics: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> eyre::Result<BTreeMap<&'a str, &'a str>> {
+    let mut map: BTreeMap<&str, &str> = BTreeMap::new();
+    for (topic, input_id) in topics {
+        if let Some(existing) = map.insert(input_id, topic) {
+            bail!(
+                "record: topics `{existing}` and `{topic}` both map to the record-node \
+                 input id `{input_id}`; the `/` -> `___` encoding cannot tell them apart. \
+                 Rename one of the colliding node/output ids, or select only one with --topics."
+            );
+        }
+    }
+    Ok(map)
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -216,10 +241,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     let record_node_bin = find_record_node_binary()?;
 
     // Build topic map JSON: { "input_id": "node/output" }
-    let topic_map: BTreeMap<&str, &str> = topics
-        .iter()
-        .map(|(topic, input_id)| (input_id.as_str(), topic.as_str()))
-        .collect();
+    let topic_map = build_input_id_map(topics.iter().map(|(t, i)| (t.as_str(), i.as_str())))?;
     let topics_json =
         serde_json::to_string(&topic_map).wrap_err("failed to serialize topic map")?;
 
@@ -721,6 +743,32 @@ mod tests {
             topics,
             vec!["standard/status", "single/image", "runtime/op/status"]
         );
+    }
+
+    #[test]
+    fn build_input_id_map_detects_encoding_collision() {
+        // Node `x` with output `y___z` and node `x___y` with output `z` both
+        // encode to the record-node input id `x___y___z`. Recording both must
+        // fail loudly rather than silently drop one.
+        let err = build_input_id_map([("x/y___z", "x___y___z"), ("x___y/z", "x___y___z")])
+            .expect_err("colliding input ids must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("x___y___z") && msg.contains("x/y___z") && msg.contains("x___y/z"),
+            "error must name the colliding topics and input id: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_input_id_map_accepts_distinct_input_ids() {
+        let map = build_input_id_map([
+            ("cam/frame", "cam___frame"),
+            ("lidar/points", "lidar___points"),
+        ])
+        .expect("distinct input ids must be accepted");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["cam___frame"], "cam/frame");
+        assert_eq!(map["lidar___points"], "lidar/points");
     }
 
     #[test]
