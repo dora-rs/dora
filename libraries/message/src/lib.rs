@@ -26,13 +26,6 @@ pub fn encode<T: serde::Serialize>(value: &T) -> postcard::Result<Vec<u8>> {
     encode_presized(value, 0)
 }
 
-/// [`encode`], for a message carrying `bulk_bytes` bytes of bulk payload.
-///
-/// The encoder writes into a `Vec` that would otherwise start empty and
-/// reallocate as it grows — 10–80% of the encode cost on dora's messages, worst
-/// on the small control messages that dominate the daemon↔node TCP path. Pass
-/// `encode_size_hint()`, which the message types that carry a payload provide;
-/// the envelope slack is added here so that policy lives in one place.
 /// Exact length `value` takes in the binary wire format, computed without
 /// producing the encoding (bulk payloads are counted, not copied). Lets a
 /// sender size a frame before committing to it.
@@ -40,6 +33,13 @@ pub fn serialized_size<T: serde::Serialize>(value: &T) -> postcard::Result<usize
     postcard::experimental::serialized_size(value)
 }
 
+/// [`encode`], for a message carrying `bulk_bytes` bytes of bulk payload.
+///
+/// The encoder writes into a `Vec` that would otherwise start empty and
+/// reallocate as it grows — 10–80% of the encode cost on dora's messages, worst
+/// on the small control messages that dominate the daemon↔node TCP path. Pass
+/// `encode_size_hint()`, which the message types that carry a payload provide;
+/// the envelope slack is added here so that policy lives in one place.
 pub fn encode_presized<T: serde::Serialize>(
     value: &T,
     bulk_bytes: usize,
