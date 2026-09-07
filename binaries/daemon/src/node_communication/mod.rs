@@ -74,15 +74,23 @@ pub async fn spawn_listener_loop(
     Ok(DaemonCommunication::Tcp { socket_addr })
 }
 
-/// Upper bound on the encoded size of one `NextEvents` reply.
+/// What a `NextEvents` reply adds around its events: the reply's enum
+/// discriminant and the vector's length prefix, two varints of at most ten
+/// bytes each. Rounded up.
+const NEXT_EVENTS_FRAME_OVERHEAD: usize = 32;
+
+/// Upper bound on the encoded size of the events in one `NextEvents` reply.
 ///
 /// A node that stalls and then asks for events used to get its *whole*
 /// backlog in a single reply. Past `MAX_MESSAGE_BYTES` the frame sender
 /// refuses to write it, and the events — already taken off the queue — were
-/// lost with nothing but a warning. Half the frame limit leaves room for the
-/// size hint being an estimate (payload plus a rounded per-event envelope,
-/// not the exact encoding).
-const NEXT_EVENTS_REPLY_BUDGET: usize = dora_message::MAX_MESSAGE_BYTES / 2;
+/// lost with nothing but a warning. Sizes are the exact wire lengths
+/// (`dora_message::serialized_size`), computed once when an event is queued,
+/// so metadata parameters and variable-length control fields count too — a
+/// per-event estimate that ignored them let a metadata-heavy backlog
+/// overshoot the frame (PR #3429 review).
+const NEXT_EVENTS_REPLY_BUDGET: usize =
+    dora_message::MAX_MESSAGE_BYTES - NEXT_EVENTS_FRAME_OVERHEAD;
 
 /// Bounds on what the listener holds for a node that is not asking for
 /// events. Without them the listener kept draining the node's (bounded)
@@ -95,10 +103,35 @@ const NEXT_EVENTS_REPLY_BUDGET: usize = dora_message::MAX_MESSAGE_BYTES / 2;
 const LISTENER_QUEUE_MAX_EVENTS: usize = NODE_EVENT_CHANNEL_CAPACITY;
 const LISTENER_QUEUE_MAX_BYTES: usize = 4 * dora_message::MAX_MESSAGE_BYTES;
 
-/// Whether a listener queue of `events` events carrying `bytes` of payload
-/// (per `NodeEvent::encode_size_hint`) may take no more from the channel.
+/// Whether a listener queue of `events` events whose encodings total `bytes`
+/// may take no more from the channel.
 fn queue_saturated(events: usize, bytes: usize) -> bool {
     events >= LISTENER_QUEUE_MAX_EVENTS || bytes >= LISTENER_QUEUE_MAX_BYTES
+}
+
+/// A queued event with its exact wire length, measured once at enqueue.
+struct SizedEvent {
+    size: usize,
+    event: Timestamped<NodeEvent>,
+}
+
+impl SizedEvent {
+    fn new(event: Timestamped<NodeEvent>) -> Self {
+        let size = dora_message::serialized_size(&event).unwrap_or_else(|err| {
+            // Serializing these types cannot fail in practice; if it ever
+            // does, the reply itself fails the same way, so any size will do.
+            tracing::warn!("cannot size queued node event ({err}); using the size hint");
+            event.inner.encode_size_hint()
+        });
+        Self { size, event }
+    }
+
+    fn describe(&self) -> String {
+        match &self.event.inner {
+            NodeEvent::Input { id, .. } => format!("input `{id}`"),
+            other => format!("{other:?}"),
+        }
+    }
 }
 
 struct Listener {
@@ -111,8 +144,8 @@ struct Listener {
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
     pending_counter: Option<Arc<AtomicU64>>,
-    queue: VecDeque<Timestamped<NodeEvent>>,
-    /// Sum of `encode_size_hint` over `queue`, kept incrementally.
+    queue: VecDeque<SizedEvent>,
+    /// Sum of the exact wire lengths over `queue`, kept incrementally.
     queued_bytes: usize,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
@@ -264,30 +297,51 @@ impl Listener {
     }
 
     fn enqueue(&mut self, event: Timestamped<NodeEvent>) {
-        self.queued_bytes = self
-            .queued_bytes
-            .saturating_add(event.inner.encode_size_hint());
-        self.queue.push_back(event);
+        let sized = SizedEvent::new(event);
+        self.queued_bytes = self.queued_bytes.saturating_add(sized.size);
+        self.queue.push_back(sized);
     }
 
-    /// Takes queued events from the front, in order, while their combined
-    /// size hint stays within [`NEXT_EVENTS_REPLY_BUDGET`]. Always takes at
-    /// least the first event, so a single oversized event cannot wedge the
-    /// queue; whatever does not fit stays queued for the next request.
+    fn pop_front(&mut self) -> Option<SizedEvent> {
+        let sized = self.queue.pop_front()?;
+        self.queued_bytes = self.queued_bytes.saturating_sub(sized.size);
+        Some(sized)
+    }
+
+    /// Takes queued events from the front, in order, while their exact wire
+    /// lengths stay within [`NEXT_EVENTS_REPLY_BUDGET`]; whatever does not
+    /// fit stays queued for the next request. An event that alone exceeds the
+    /// budget can never be framed — the node-side send caps a payload at the
+    /// frame limit, but not payload plus metadata — so it is dropped with an
+    /// error rather than left to wedge the queue forever.
     fn take_queued_events_within_budget(&mut self) -> Vec<Timestamped<NodeEvent>> {
         let mut batch = Vec::new();
         let mut batch_bytes = 0usize;
         while let Some(front) = self.queue.front() {
-            let size = front.inner.encode_size_hint();
-            if !batch.is_empty() && batch_bytes.saturating_add(size) > NEXT_EVENTS_REPLY_BUDGET {
+            if front.size > NEXT_EVENTS_REPLY_BUDGET {
+                let Some(dropped) = self.pop_front() else {
+                    break;
+                };
+                tracing::error!(
+                    node = %self.node_id,
+                    size = dropped.size,
+                    "dropping {}: its encoding exceeds the {}-byte daemon frame limit and can \
+                     never be delivered",
+                    dropped.describe(),
+                    dora_message::MAX_MESSAGE_BYTES,
+                );
+                continue;
+            }
+            if !batch.is_empty()
+                && batch_bytes.saturating_add(front.size) > NEXT_EVENTS_REPLY_BUDGET
+            {
                 break;
             }
-            let Some(event) = self.queue.pop_front() else {
+            let Some(sized) = self.pop_front() else {
                 break;
             };
-            batch_bytes = batch_bytes.saturating_add(size);
-            self.queued_bytes = self.queued_bytes.saturating_sub(size);
-            batch.push(event);
+            batch_bytes = batch_bytes.saturating_add(sized.size);
+            batch.push(sized.event);
         }
         batch
     }
@@ -579,10 +633,38 @@ mod tests {
     use super::*;
     use aligned_vec::AVec;
     use dora_core::config::DataId;
-    use dora_message::{common::DataMessage, metadata::Metadata};
+    use dora_message::{
+        common::DataMessage,
+        metadata::{Metadata, Parameter},
+    };
     use uuid::Uuid;
 
     const MIB: usize = 1024 * 1024;
+
+    /// The frame `TcpConnection::send_reply` would write for `batch`.
+    fn encoded_reply_len(batch: Vec<Timestamped<NodeEvent>>) -> usize {
+        let reply = DaemonReply::NextEvents(batch);
+        dora_message::encode_presized(&reply, reply.encode_size_hint())
+            .expect("encode NextEvents reply")
+            .len()
+    }
+
+    /// An input with no payload but `param_len` bytes of metadata — the part
+    /// `encode_size_hint` does not count.
+    fn metadata_heavy_input(clock: &uhlc::HLC, param_len: usize) -> Timestamped<NodeEvent> {
+        let mut metadata = Metadata::new(clock.new_timestamp());
+        metadata
+            .parameters
+            .insert("blob".to_string(), Parameter::String("x".repeat(param_len)));
+        Timestamped {
+            inner: NodeEvent::Input {
+                id: DataId::from("in".to_string()),
+                metadata: Arc::new(metadata),
+                data: None,
+            },
+            timestamp: clock.new_timestamp(),
+        }
+    }
 
     fn listener() -> (Listener, mpsc::Sender<Timestamped<NodeEvent>>) {
         let (daemon_tx, _daemon_rx) = mpsc::channel(1);
@@ -626,19 +708,19 @@ mod tests {
     fn next_events_reply_is_cut_at_the_frame_budget() {
         let (mut listener, _tx) = listener();
         let clock = listener.clock.clone();
-        for _ in 0..3 {
+        for _ in 0..5 {
             listener.enqueue(input(&clock, 20 * MIB));
         }
-        const { assert!(20 * MIB < NEXT_EVENTS_REPLY_BUDGET && 40 * MIB > NEXT_EVENTS_REPLY_BUDGET) };
-
+        // 3 x 20 MiB fit a 64 MiB frame; the 4th does not.
         let mut delivered = 0;
-        for remaining in [2, 1, 0] {
+        for (expected, remaining) in [(3, 2), (2, 0)] {
             let batch = listener.take_queued_events_within_budget();
-            assert_eq!(batch.len(), 1, "one 20 MiB event per reply");
+            assert_eq!(batch.len(), expected);
             assert_eq!(listener.queue.len(), remaining);
             delivered += batch.len();
+            assert!(encoded_reply_len(batch) <= dora_message::MAX_MESSAGE_BYTES);
         }
-        assert_eq!(delivered, 3, "nothing is dropped, only deferred");
+        assert_eq!(delivered, 5, "nothing is dropped, only deferred");
         assert!(listener.take_queued_events_within_budget().is_empty());
         assert_eq!(listener.queued_bytes, 0, "byte accounting returns to zero");
     }
@@ -653,17 +735,76 @@ mod tests {
         assert_eq!(listener.take_queued_events_within_budget().len(), 500);
     }
 
-    /// A single event over the budget must still go out (the node-side send
-    /// already caps individual payloads at the frame limit); otherwise it
-    /// would wedge the queue forever.
+    /// PR #3429 review: 80 inputs with no payload and a 1 MiB metadata
+    /// parameter each. The size hint saw 80 x 128 bytes and batched them all
+    /// into an 84 MB frame that the transport refused, losing the backlog.
+    /// Exact sizing must cut the batch so every reply fits, and lose nothing.
     #[test]
-    fn an_oversized_single_event_is_still_delivered() {
+    fn a_metadata_heavy_backlog_is_cut_so_every_reply_fits_the_frame() {
         let (mut listener, _tx) = listener();
         let clock = listener.clock.clone();
-        listener.enqueue(input(&clock, NEXT_EVENTS_REPLY_BUDGET + MIB));
+        for _ in 0..80 {
+            listener.enqueue(metadata_heavy_input(&clock, MIB));
+        }
+        let mut delivered = 0;
+        let mut replies = 0;
+        loop {
+            let batch = listener.take_queued_events_within_budget();
+            if batch.is_empty() {
+                break;
+            }
+            delivered += batch.len();
+            replies += 1;
+            assert!(
+                encoded_reply_len(batch) <= dora_message::MAX_MESSAGE_BYTES,
+                "reply {replies} exceeds the frame limit"
+            );
+        }
+        assert_eq!(delivered, 80, "nothing is dropped, only deferred");
+        assert!(replies >= 2, "80 MiB of metadata cannot be one frame");
+        assert_eq!(listener.queued_bytes, 0);
+    }
+
+    /// Payload and metadata are both counted: events that each fit the
+    /// transport, together within the hint's view but not in reality, are
+    /// still framed correctly.
+    #[test]
+    fn payload_plus_metadata_is_sized_exactly() {
+        let (mut listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        for _ in 0..4 {
+            listener.enqueue(input(&clock, 20 * MIB));
+            listener.enqueue(metadata_heavy_input(&clock, 12 * MIB));
+        }
+        let mut delivered = 0;
+        loop {
+            let batch = listener.take_queued_events_within_budget();
+            if batch.is_empty() {
+                break;
+            }
+            delivered += batch.len();
+            assert!(encoded_reply_len(batch) <= dora_message::MAX_MESSAGE_BYTES);
+        }
+        assert_eq!(delivered, 8);
+    }
+
+    /// An event that alone exceeds the frame limit can never be delivered
+    /// (the node-side cap covers the payload, not payload plus metadata). It
+    /// is dropped with an error and the queue keeps flowing.
+    #[test]
+    fn an_undeliverable_event_is_dropped_and_the_queue_keeps_flowing() {
+        let (mut listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        listener.enqueue(metadata_heavy_input(
+            &clock,
+            dora_message::MAX_MESSAGE_BYTES,
+        ));
         listener.enqueue(input(&clock, 0));
-        assert_eq!(listener.take_queued_events_within_budget().len(), 1);
-        assert_eq!(listener.take_queued_events_within_budget().len(), 1);
+        let batch = listener.take_queued_events_within_budget();
+        assert_eq!(batch.len(), 1);
+        assert!(encoded_reply_len(batch) < MIB, "the small event went out");
+        assert!(listener.queue.is_empty());
+        assert_eq!(listener.queued_bytes, 0);
     }
 
     #[test]
