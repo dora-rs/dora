@@ -202,9 +202,12 @@ type ZenohPublishers = HashMap<DataId, DirectOutput>;
 ///
 /// Outputs the daemon pinned `daemon_only` — a consumer only inter-daemon
 /// forwarding can reach (a dynamic node on another daemon, or a remote static
-/// one with no dialable endpoint for this node), and forwarding is fed solely
-/// by daemon-path sends (#2738) — get no publisher and no markers: they stay on
-/// the daemon path for the node's lifetime. Every other output gets a publisher declared eagerly
+/// one with no dialable endpoint for this node; forwarding is fed solely by
+/// daemon-path sends, #2738), or a consumer declaring `queue_policy:
+/// backpressure`, which the lossy direct-zenoh ingress cannot honor — get no
+/// publisher and no markers: they stay on the daemon path for the node's
+/// lifetime (see the daemon's `output_routing` module for the full policy).
+/// Every other output gets a publisher declared eagerly
 /// at init (rather than on first send) for two reasons: zenoh starts wiring
 /// routes immediately, and [`StartupHandshake`] needs the publishers to probe
 /// those routes before the node's first real send. An output with no required
@@ -1785,8 +1788,10 @@ impl DoraNode {
         // routes — every required consumer acked a marker (see
         // `StartupHandshake`). Everything else takes the reliable daemon path:
         // no zenoh session (interactive/testing mode), an output the daemon
-        // pinned there (a consumer on another daemon needs inter-daemon
-        // forwarding, which only daemon-path sends feed — #2738), or an output
+        // pinned there (see `OutputRouting::daemon_only`: a consumer on another
+        // daemon needs inter-daemon forwarding, which only daemon-path sends
+        // feed — #2738 — or a consumer's `queue_policy: backpressure` needs the
+        // lossless daemon ingress), or an output
         // whose handshake did not complete before `init` returned and is
         // therefore frozen there for the run. An SHM-backed sample is moved
         // straight into zenoh's `put` (no extra copy); only the daemon path
@@ -1857,9 +1862,9 @@ impl DoraNode {
                     return Err(NodeError::Output(format!(
                         "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
                          the {}-byte daemon transport limit (the output is on the daemon \
-                         path: pinned for a consumer only forwarding can reach, its \
-                         startup handshake did not complete, or no zenoh route is \
-                         available)",
+                         path: pinned for a consumer only forwarding can reach or one \
+                         declaring `queue_policy: backpressure`, its startup handshake \
+                         did not complete, or no zenoh route is available)",
                         v.len(),
                         dora_message::MAX_MESSAGE_BYTES,
                     )));

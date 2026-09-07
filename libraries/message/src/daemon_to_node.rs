@@ -51,10 +51,15 @@ pub struct NodeConfig {
 /// [`NodeConfig::output_routing`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutputRouting {
-    /// Some consumer of this output runs under another daemon. All sends must
-    /// then go through this node's daemon so its inter-daemon forwarding can
-    /// reach them (dora #2738) — the direct node-to-node zenoh mesh is
-    /// same-machine only.
+    /// This output must stay on the reliable daemon path for the node's
+    /// lifetime; it gets no direct zenoh publisher. The daemon sets it when
+    /// some consumer runs under another daemon (only this node's daemon can
+    /// feed inter-daemon forwarding, dora #2738 — the direct node-to-node
+    /// zenoh mesh is same-machine only), when a remote static consumer has no
+    /// dialable endpoint or watches `input_timeout`, or when any consumer
+    /// declares `queue_policy: backpressure` (the direct zenoh ingress can
+    /// drop before the per-input policy applies). The full policy lives in
+    /// the daemon's `output_routing` module.
     #[serde(default)]
     pub daemon_only: bool,
     /// The static same-daemon consumers whose startup acks the producer must
