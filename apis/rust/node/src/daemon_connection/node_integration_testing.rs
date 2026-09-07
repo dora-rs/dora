@@ -386,6 +386,19 @@ fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
                 Some(ty) => data_type_to_schema(ty)?,
                 None => arrow_json::reader::infer_json_schema_from_iterator(array.iter().map(Ok))?,
             };
+            // A recorded zero-length output serializes to `"data": []`, which the
+            // JSON reader turns into no record batch at all ("no record batch in
+            // JSON"). A zero-length array is a legitimate value, so build an empty
+            // array of the declared type directly instead of routing it through
+            // the decoder (dora-rs/dora#3427).
+            if array.is_empty() {
+                let data_type = schema
+                    .fields()
+                    .first()
+                    .map(|f| f.data_type().clone())
+                    .unwrap_or(DataType::Null);
+                return Ok(arrow::array::new_empty_array(&data_type).to_data());
+            }
             let schema = Arc::new(schema);
             read_json_value_as_arrow(&array, schema.clone()).with_context(|| {
                 format!(
@@ -458,4 +471,47 @@ fn wrap_value_into_object(value: serde_json::Value) -> serde_json::Value {
     map.insert("inner".into(), value);
 
     serde_json::Value::Object(map)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use arrow::array::{ArrayRef, Int32Array, make_array};
+
+    /// Record an array via the recorder's encoder, then replay it back through
+    /// the reader — the property record/replay rests on.
+    fn roundtrip(array: ArrayRef) -> eyre::Result<arrow::array::ArrayData> {
+        let mut json = serde_json::Map::new();
+        append_arrow_array_json(&mut json, array)?;
+        read_input_data(InputData::JsonObject {
+            data: json.remove("data").expect("encoder always writes `data`"),
+            data_type: Some(
+                json.remove("data_type")
+                    .expect("encoder always writes `data_type`"),
+            ),
+        })
+    }
+
+    #[test]
+    fn empty_array_round_trips() {
+        // A zero-length output serializes to `"data": []`. Previously the reader
+        // failed with "no record batch in JSON" and the value could not be
+        // replayed at all (dora-rs/dora#3427).
+        let array: ArrayRef = Arc::new(Int32Array::from(Vec::<i32>::new()));
+        let back = make_array(roundtrip(array).expect("empty array should replay"));
+        assert_eq!(back.len(), 0);
+        assert_eq!(back.data_type(), &DataType::Int32);
+    }
+
+    #[test]
+    fn non_empty_array_still_round_trips() {
+        // Guard against the empty-array short-circuit affecting the normal path.
+        let array: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let back = make_array(roundtrip(array).expect("array should replay"));
+        let back = back
+            .as_any()
+            .downcast_ref::<Int32Array>()
+            .expect("expected an Int32 array");
+        assert_eq!(back.values(), &[1, 2, 3]);
+    }
 }
