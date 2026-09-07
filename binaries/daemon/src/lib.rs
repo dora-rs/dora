@@ -3100,6 +3100,7 @@ impl Daemon {
                     // routing/deadline/pending state behind.
                     let inputs = node_inputs(&node);
                     let is_dynamic = node.kind.dynamic();
+                    reject_unpinnable_backpressure_inputs(dataflow, &node_id, &inputs)?;
 
                     // Startup-handshake routing for the added node, from the
                     // *live* dataflow state rather than the (stale) descriptor
@@ -3107,12 +3108,20 @@ impl Daemon {
                     // (existing receivers on a re-added id handshake as usual;
                     // receiver-less outputs are pinned to the daemon path so
                     // `dora node connect` edges can deliver).
-                    let output_routing = output_routing::added_node_output_routing(
+                    let mut output_routing = output_routing::added_node_output_routing(
                         &node_id,
                         node.kind.run_config().outputs,
                         &dataflow.mappings,
                         &dataflow.open_external_mappings,
                         &dataflow.dynamic_nodes,
+                        |receiver, input_id| {
+                            dataflow.input_requires_backpressure(receiver, input_id)
+                        },
+                    );
+                    output_routing::pin_backpressure_self_loops(
+                        &node_id,
+                        &inputs,
+                        &mut output_routing,
                     );
 
                     // Prepare stderr buffer (harmless — just an empty
@@ -3526,6 +3535,7 @@ impl Daemon {
                     // the live maps are uniformly keyed and already
                     // reflect `dora node connect`/`disconnect` edits.
                     let new_inputs = node_inputs(&node);
+                    reject_unpinnable_backpressure_inputs(dataflow, &node_id, &new_inputs)?;
                     let mut current_edges: BTreeMap<DataId, InputMapping> = BTreeMap::new();
                     for (output_id, receivers) in &dataflow.mappings {
                         for (receiver, input_id) in receivers {
@@ -3601,12 +3611,20 @@ impl Daemon {
                         .cloned()
                         .unwrap_or_else(|| std::path::PathBuf::from("."));
                     let is_dynamic = node.kind.dynamic();
-                    let output_routing = output_routing::added_node_output_routing(
+                    let mut output_routing = output_routing::added_node_output_routing(
                         &node_id,
                         node.kind.run_config().outputs,
                         &dataflow.mappings,
                         &dataflow.open_external_mappings,
                         &dataflow.dynamic_nodes,
+                        |receiver, input_id| {
+                            dataflow.input_requires_backpressure(receiver, input_id)
+                        },
+                    );
+                    output_routing::pin_backpressure_self_loops(
+                        &node_id,
+                        &new_inputs,
+                        &mut output_routing,
                     );
                     // Fresh stderr buffer for the new incarnation; installed
                     // into the map only after the spawn succeeds.
@@ -7349,6 +7367,30 @@ async fn send_output_to_local_receivers(
     Ok(data_bytes)
 }
 
+/// Refuses a node entering a running dataflow (`dora node add`/`replace`)
+/// whose `queue_policy: backpressure` input cannot be honored because its
+/// producer already runs here with the output on the direct zenoh path — see
+/// `RunningDataflow::unpinnable_backpressure_input` for why nothing can re-pin
+/// it (dora-rs/dora#3428).
+fn reject_unpinnable_backpressure_inputs(
+    dataflow: &RunningDataflow,
+    node_id: &NodeId,
+    inputs: &BTreeMap<DataId, Input>,
+) -> eyre::Result<()> {
+    if let Some((input_id, OutputId(source, output))) =
+        dataflow.unpinnable_backpressure_input(node_id, inputs)
+    {
+        eyre::bail!(
+            "input `{input_id}` declares `queue_policy: backpressure`, but its producer \
+             `{source}` is already running with output `{output}` on the direct zenoh path, \
+             which cannot honor that policy (a producer learns its routing only when it \
+             starts); start or `dora node replace` the producer after this consumer is in the \
+             dataflow, or use `queue_policy: drop_oldest`"
+        );
+    }
+    Ok(())
+}
+
 fn node_inputs(node: &ResolvedNode) -> BTreeMap<DataId, Input> {
     match &node.kind {
         CoreNodeKind::Custom(n) => n.run_config.inputs.clone(),
@@ -8319,6 +8361,135 @@ mod fault_tolerance_tests {
             health_check_timeout: None,
             finish_grace_secs: None,
         }
+    }
+
+    fn user_input(
+        source: &str,
+        output: &str,
+        policy: Option<dora_message::config::QueuePolicy>,
+    ) -> Input {
+        Input {
+            mapping: InputMapping::User(dora_message::config::UserInputMapping {
+                source: NodeId::from(source.to_string()),
+                output: DataId::from(output.to_string()),
+            }),
+            queue_size: None,
+            input_timeout: None,
+            queue_policy: policy,
+        }
+    }
+
+    fn running_node_with(
+        inputs: BTreeMap<DataId, Input>,
+        output_routing: Option<BTreeMap<DataId, dora_message::daemon_to_node::OutputRouting>>,
+    ) -> RunningNode {
+        let mut node = test_running_node();
+        node.node_config.run_config.inputs = inputs;
+        node.node_config.output_routing = output_routing;
+        node
+    }
+
+    /// The live predicate behind `added_node_output_routing`'s
+    /// `requires_backpressure` argument (dora-rs/dora#3428): it reads the
+    /// receiver's registered config, and a receiver with no entry counts as
+    /// not requiring anything.
+    #[test]
+    fn input_requires_backpressure_reads_the_live_node_config() {
+        use dora_message::config::QueuePolicy;
+        let mut df = test_dataflow();
+        let sink = NodeId::from("sink".to_string());
+        let camera = DataId::from("camera".to_string());
+        assert!(
+            !df.input_requires_backpressure(&sink, &camera),
+            "no entry (exited or never here)"
+        );
+        for (policy, expected) in [
+            (None, false),
+            (Some(QueuePolicy::DropOldest), false),
+            (Some(QueuePolicy::Backpressure), true),
+        ] {
+            let inputs = BTreeMap::from([(camera.clone(), user_input("src", "image", policy))]);
+            df.running_nodes
+                .insert(sink.clone(), running_node_with(inputs, None));
+            assert_eq!(df.input_requires_backpressure(&sink, &camera), expected);
+        }
+        assert!(!df.input_requires_backpressure(&sink, &DataId::from("other".to_string())));
+    }
+
+    /// `dora node add`/`replace` refuse a backpressure input only when its
+    /// producer runs here with the output already on the direct path — the
+    /// one case nothing can re-pin (dora-rs/dora#3428 review).
+    #[test]
+    fn backpressure_consumer_is_refused_only_for_an_unpinned_running_producer() {
+        use dora_message::{config::QueuePolicy, daemon_to_node::OutputRouting};
+        let mut df = test_dataflow();
+        let sink = NodeId::from("sink".to_string());
+        let src = NodeId::from("src".to_string());
+        let image = DataId::from("image".to_string());
+        let camera = DataId::from("camera".to_string());
+        let wants = BTreeMap::from([(
+            camera.clone(),
+            user_input("src", "image", Some(QueuePolicy::Backpressure)),
+        )]);
+
+        assert_eq!(
+            df.unpinnable_backpressure_input(&sink, &wants),
+            None,
+            "producer not on this daemon: its own daemon decides"
+        );
+
+        let pinned = BTreeMap::from([(
+            image.clone(),
+            OutputRouting {
+                daemon_only: true,
+                ..Default::default()
+            },
+        )]);
+        df.running_nodes.insert(
+            src.clone(),
+            running_node_with(BTreeMap::new(), Some(pinned)),
+        );
+        assert_eq!(df.unpinnable_backpressure_input(&sink, &wants), None);
+
+        df.running_nodes
+            .insert(src.clone(), running_node_with(BTreeMap::new(), None));
+        assert_eq!(
+            df.unpinnable_backpressure_input(&sink, &wants),
+            None,
+            "no routing at all keeps every output on the daemon path"
+        );
+
+        let direct = BTreeMap::from([(image.clone(), OutputRouting::default())]);
+        df.running_nodes.insert(
+            src.clone(),
+            running_node_with(BTreeMap::new(), Some(direct)),
+        );
+        assert_eq!(
+            df.unpinnable_backpressure_input(&sink, &wants),
+            Some((camera.clone(), OutputId(src.clone(), image.clone())))
+        );
+
+        let lossy = BTreeMap::from([(
+            camera.clone(),
+            user_input("src", "image", Some(QueuePolicy::DropOldest)),
+        )]);
+        assert_eq!(df.unpinnable_backpressure_input(&sink, &lossy), None);
+
+        let self_loop = BTreeMap::from([(
+            DataId::from("again".to_string()),
+            user_input("sink", "out", Some(QueuePolicy::Backpressure)),
+        )]);
+        let own_direct =
+            BTreeMap::from([(DataId::from("out".to_string()), OutputRouting::default())]);
+        df.running_nodes.insert(
+            sink.clone(),
+            running_node_with(BTreeMap::new(), Some(own_direct)),
+        );
+        assert_eq!(
+            df.unpinnable_backpressure_input(&sink, &self_loop),
+            None,
+            "a self-loop is the entering node's own routing"
+        );
     }
 
     /// dora-rs/dora#2988 review, finding 1 (still upheld) and dora-rs/dora#2997:

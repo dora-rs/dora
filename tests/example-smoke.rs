@@ -2268,3 +2268,31 @@ fn smoke_memory_pool_cuda2cuda() {
 //
 // "Covered" rows are listed so future refactors don't assume the examples
 // are entirely unexercised — they run in other CI jobs, just not this file.
+
+/// The shared ingress channel must not let timer pressure discard an input
+/// whose declared policy requires backpressure, before the scheduler sees it.
+#[test]
+fn contract_backpressure_commit_survives_timer_pressure() {
+    ensure_cli_built();
+    let status = Command::new("cargo")
+        .args([
+            "test",
+            "--locked",
+            "-p",
+            "dora-node-api",
+            "--test",
+            "backpressure_timer",
+            "slow_consumer_keeps_backpressure_commit",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("DORA_BACKPRESSURE_TEST_CLI", dora_bin())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("run backpressure dataflow regression");
+    assert!(
+        status.success(),
+        "backpressure commit was lost under timer pressure"
+    );
+}
