@@ -766,6 +766,29 @@ fn rotation_index(path: &Path) -> u32 {
     0 // current file
 }
 
+/// Whether the remainder left after stripping `log_<node>` from a filename is a
+/// valid log-file suffix: exactly `.jsonl`/`.txt`, or a rotated
+/// `.<index>.jsonl`/`.<index>.txt`.
+///
+/// A bare `starts_with('.') && ends_with(".jsonl")` check is not enough: a node
+/// id may contain non-leading dots (`validate_node_id` allows `cam.left`), so
+/// stripping `log_cam` from `log_cam.left.jsonl` yields `.left.jsonl`, which
+/// would otherwise be wrongly attributed to node `cam`. Requiring the remainder
+/// to be an exact suffix keeps a dot-prefix sibling's logs from leaking through.
+fn is_node_log_suffix(rest: &str) -> bool {
+    let Some(inner) = rest
+        .strip_suffix(".jsonl")
+        .or_else(|| rest.strip_suffix(".txt"))
+    else {
+        return false;
+    };
+    // `inner` is now "" for the current file, or ".<index>" for a rotated one.
+    inner.is_empty()
+        || inner
+            .strip_prefix('.')
+            .is_some_and(|idx| !idx.is_empty() && idx.bytes().all(|b| b.is_ascii_digit()))
+}
+
 /// Find all log files for a node (including rotated), oldest first.
 fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
@@ -782,7 +805,7 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
             Some(rest) => rest,
             None => continue,
         };
-        if rest.starts_with('.') && (rest.ends_with(".jsonl") || rest.ends_with(".txt")) {
+        if is_node_log_suffix(rest) {
             files.push(entry.path());
         }
     }
@@ -1495,12 +1518,42 @@ mod tests {
         let dir = tempdir().unwrap();
         File::create(dir.path().join("log_cam.jsonl")).unwrap();
         File::create(dir.path().join("log_cam_left.jsonl")).unwrap();
+        // A node id may contain a non-leading dot, so `cam.left` is a valid,
+        // distinct node whose log file must NOT be attributed to `cam`.
+        File::create(dir.path().join("log_cam.left.jsonl")).unwrap();
+        // A rotated file for the queried node still belongs to it.
+        File::create(dir.path().join("log_cam.1.jsonl")).unwrap();
 
         let node_id = NodeId::from("cam".to_string());
         let files = find_node_log_files(dir.path(), &node_id).unwrap();
 
-        assert_eq!(files.len(), 1);
-        assert!(files[0].file_name().unwrap() == "log_cam.jsonl");
+        let names: std::collections::HashSet<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["log_cam.jsonl", "log_cam.1.jsonl"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+    }
+
+    #[test]
+    fn is_node_log_suffix_accepts_only_exact_suffixes() {
+        // Current file and rotated variants for the queried node.
+        assert!(is_node_log_suffix(".jsonl"));
+        assert!(is_node_log_suffix(".txt"));
+        assert!(is_node_log_suffix(".1.jsonl"));
+        assert!(is_node_log_suffix(".42.txt"));
+        // A dot-prefix sibling (`log_cam.left.jsonl` stripped of `log_cam`).
+        assert!(!is_node_log_suffix(".left.jsonl"));
+        assert!(!is_node_log_suffix(".left.txt"));
+        // Non-numeric rotation segment and unrelated extensions.
+        assert!(!is_node_log_suffix(".x.jsonl"));
+        assert!(!is_node_log_suffix(".jsonl.bak"));
+        assert!(!is_node_log_suffix(""));
     }
 
     // --- follow-mode rotation planning (plan_follow_reads / same_log_file) ---
