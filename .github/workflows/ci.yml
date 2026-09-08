@@ -828,7 +828,7 @@ jobs:
       # small — a depth-1 checkout of one branch is 3.6 MB, all of `main`'s
       # history is 5.9 MB, and every branch and tag together is 45 MB — so
       # the tag-fetching machinery it would save was not worth its own bugs.
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
       # Resolved once and shared with the semver step below: both halves must
