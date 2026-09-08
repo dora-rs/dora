@@ -488,6 +488,23 @@ fn resolve_log_daemon_id(
     }
 }
 
+/// Validate an untrusted `node` string from a [`ControlRequest::Logs`] into a
+/// [`NodeId`].
+///
+/// The wire field is a raw `String` (unlike every other node-id-bearing
+/// control request, which is typed as `NodeId` and validated at deserialize
+/// time), so it may be any bytes. Using the panicking `String -> NodeId`
+/// conversion here would unwind the coordinator's single event loop and drop
+/// every daemon/CLI connection — a control-plane DoS. Parsing returns a normal
+/// error the client receives instead. See #3450 (the node-id sub-case that
+/// #650's fix for #648 missed).
+///
+/// [`ControlRequest::Logs`]: dora_message::cli_to_coordinator::ControlRequest::Logs
+pub(crate) fn parse_logs_node_id(node: &str) -> eyre::Result<NodeId> {
+    node.parse::<NodeId>()
+        .map_err(|err| eyre!("invalid node id `{node}`: {err}"))
+}
+
 pub(crate) async fn retrieve_logs(
     running_dataflows: &HashMap<Uuid, RunningDataflow>,
     archived_dataflows: &indexmap::IndexMap<Uuid, ArchivedDataflow>,
@@ -777,6 +794,24 @@ mod tests {
             std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
             BTreeMap::new(),
         )
+    }
+
+    #[test]
+    fn parse_logs_node_id_rejects_invalid_ids_without_panicking() {
+        // A raw wire `node` string may be anything; the panicking `.into()`
+        // conversion here would take down the coordinator event loop (#3450).
+        // These must all come back as graceful errors instead.
+        for bad in ["bad name", "", ".hidden", "dora", "a/b", "node\0"] {
+            let err = parse_logs_node_id(bad)
+                .expect_err(&format!("invalid node id {bad:?} must error, not panic"));
+            assert!(err.to_string().contains("invalid node id"), "got: {err}");
+        }
+    }
+
+    #[test]
+    fn parse_logs_node_id_accepts_valid_ids() {
+        let node = parse_logs_node_id("cam.left").expect("a valid node id must parse");
+        assert_eq!(node, NodeId::from("cam.left".to_string()));
     }
 
     #[test]
