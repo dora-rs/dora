@@ -159,6 +159,31 @@ pub fn dora_read_input_id(input: &Input) -> char_p_boxed {
 #[ffi_export]
 pub fn dora_free_input_id(_input_id: char_p_boxed) {}
 
+/// Read an input's data payload as a freshly-owned byte vector.
+///
+/// # Consume-on-read
+///
+/// This **mutates** `input`: the first successful call moves the payload out of
+/// `input`, so a second call on the same `input` returns `None` (and logs a
+/// "double read?" note to stderr) rather than the same bytes again. Read the
+/// data at most once per event.
+///
+/// # `None` cases
+///
+/// `None` is returned — never an error type — in every non-success case:
+/// - the data was already taken by a previous call (see above);
+/// - the Arrow FFI import of the payload failed;
+/// - the payload's Arrow type is unsupported by this raw-byte API, which
+///   exposes only `UInt8` (and empty) payloads. A payload of any other Arrow
+///   type (e.g. an `Int32`/`Float` array from another node) yields `None`, so a
+///   `None` result is not by itself proof that the message carried no data.
+///
+/// Each of these logs a diagnostic to stderr.
+///
+/// # Ownership
+///
+/// The returned vector is an owned copy of the payload; free it with
+/// [`dora_free_data`] when it is no longer needed.
 #[ffi_export]
 pub fn dora_read_data(input: &mut Input) -> Option<safer_ffi::Vec<u8>> {
     // `eprintln!`, not `tracing::error!`: this function is compiled into the
