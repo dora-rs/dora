@@ -611,6 +611,36 @@ fn expand_module_node(
         );
     }
 
+    // Reject traversing `..` back over any symlinked directory component
+    let mut current = base_dir.to_path_buf();
+    let mut symlink_target_root: Option<PathBuf> = None;
+    for component in Path::new(module_path_str).components() {
+        match component {
+            std::path::Component::Normal(c) => {
+                current.push(c);
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.is_symlink()
+                    && symlink_target_root.is_none()
+                {
+                    symlink_target_root = dunce::canonicalize(&current).ok();
+                }
+            }
+            std::path::Component::ParentDir => {
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.is_symlink()
+                {
+                    bail!(
+                        "module path `{}` escapes the project directory (node `{}`)",
+                        module_path_str,
+                        node.id
+                    );
+                }
+                current.pop();
+            }
+            _ => {}
+        }
+    }
+
     let module_path = base_dir.join(module_path_str);
     let canonical = dunce::canonicalize(&module_path)
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
@@ -624,6 +654,24 @@ fn expand_module_node(
         })?,
     ));
     if !absolute_module.starts_with(project_root) {
+        bail!(
+            "module path `{}` escapes the project directory (node `{}`)",
+            module_path_str,
+            node.id
+        );
+    }
+
+    // Confinement: the loaded physical file must either reside within the
+    // canonical project root, or within the canonical target of a symlink
+    // located inside the project directory.
+    let canonical_project_root = dunce::canonicalize(project_root)
+        .with_context(|| format!("failed to resolve project root: {}", project_root.display()))?;
+    let in_project = canonical.starts_with(&canonical_project_root);
+    let in_symlink = symlink_target_root
+        .as_ref()
+        .is_some_and(|target| canonical.starts_with(target));
+
+    if !in_project && !in_symlink {
         bail!(
             "module path `{}` escapes the project directory (node `{}`)",
             module_path_str,
@@ -3763,6 +3811,10 @@ nodes:
         );
     }
 
+    // Note: `expand_modules_accepts_symlinked_module_dir` above guards the fix
+    // for #3341 (where an in-tree module directory is a symlink pointing outside).
+    // This test ensures the case where the entire project root itself is accessed
+    // via a symlink continues to expand modules and strip inner-node paths properly.
     #[test]
     #[cfg(any(unix, windows))]
     fn expand_modules_accepts_symlinked_project_root() {
@@ -3829,19 +3881,15 @@ nodes:
             "module:\n  name: shared\n  inputs: []\n  outputs: []\nnodes: []",
         );
 
-        let parent = tmp.path().join("parent");
-        let project_dir = parent.join("project");
+        // Place escape.yml outside the symlink target (in shared_base)
+        write_file(
+            &shared_base,
+            "escape.yml",
+            "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        let project_dir = tmp.path().join("project");
         std::fs::create_dir_all(&project_dir).unwrap();
-        write_file(
-            &parent,
-            "escape.yml",
-            "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
-        );
-        write_file(
-            tmp.path(),
-            "escape.yml",
-            "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
-        );
 
         let symlink_path = project_dir.join("modules");
         #[cfg(unix)]
@@ -3852,16 +3900,22 @@ nodes:
             return;
         }
 
+        // `modules/../escape.yml` uses a single `..`.
+        // Lexically, `project/modules/..` collapses to `project/`, which
+        // would pass a purely lexical containment check.
+        // Physically, `modules` dereferences to `shared_modules`, and `..`
+        // escapes into `shared_base/escape.yml`.
+        // This must be rejected as an escape.
         let desc = parse_descriptor(
             r#"
 nodes:
   - id: m
-    module: modules/../../escape.yml
+    module: modules/../escape.yml
 "#,
         );
 
         let result = expand_modules(&desc, &project_dir);
-        assert!(result.is_err());
+        assert!(result.is_err(), "expected error but succeeded");
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("escapes"), "got: {msg}");
     }
