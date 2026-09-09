@@ -63,11 +63,13 @@ make qa-fast
 Runs:
 
 - `cargo fmt --all -- --check`
-- `cargo clippy --all -- -D warnings` with Python crates excluded
+- `cargo clippy --all --all-targets -- -D warnings` with Python crates excluded
 - supply-chain audit
 - unwrap-budget check
+- committed-credential check
 - typo check
 - crates.io publish-graph check
+- build-time include check (every `include_str!` target ships with its crate)
 
 ### Before push
 
@@ -93,7 +95,9 @@ they're too slow for every PR (see `docs/plan-agentic-qa-strategy.md` §5):
 - coverage (already in `qa-full`)
 - adversarial LLM review (already in `qa-full`; skipped if tools missing)
 - mutation testing (diff-scoped)
-- semver checks
+- the compile half of the compatibility gate (`cargo-semver-checks`, plus a
+  rebuild proving the CLI and schema snapshots are current). Its no-compile
+  half already ran in `qa-fast`
 
 ### Overnight run on a powerful machine (full CI nightly parity)
 
@@ -199,7 +203,7 @@ could silently break without failing any unit/integration test.
 ```bash
 cargo fmt --all -- --check
 
-cargo clippy --all \
+cargo clippy --all --all-targets \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \

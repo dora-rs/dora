@@ -150,17 +150,17 @@ pub fn expand_modules_with_boundaries(
         }
     }
 
+    // Expansion rewrites `nodes` and nothing else, so clone the source
+    // descriptor and swap that one field. Listing the dataflow-level options
+    // individually would silently drop any option added later — `Descriptor` is
+    // `#[non_exhaustive]`, so a missing field is no longer a compile error. This
+    // also keeps the with-modules path structurally identical to the early
+    // return above, which already clones.
+    let mut expanded = descriptor.clone();
+    expanded.nodes = flat_nodes;
+
     Ok(ExpandedDescriptor {
-        descriptor: Descriptor {
-            nodes: flat_nodes,
-            deploy: descriptor.deploy.clone(),
-            debug: descriptor.debug.clone(),
-            health_check_interval: descriptor.health_check_interval,
-            strict_types: descriptor.strict_types,
-            exit_when_nodes_finish: descriptor.exit_when_nodes_finish,
-            type_rules: descriptor.type_rules.clone(),
-            env: descriptor.env.clone(),
-        },
+        descriptor: expanded,
         boundaries,
     })
 }
@@ -796,11 +796,23 @@ fn expand_module_node(
             final_nodes.extend(nested);
         } else {
             for (name, output_ref) in node_output_refs(&inner_node) {
+                // `output_ref` may be an operator-qualified `<op_id>/<output>`
+                // form, and `OperatorId` is unvalidated, so parse fallibly
+                // instead of `output_ref.into()` — `DataId::from` panics on
+                // characters outside `[a-zA-Z0-9_./-]`, which would abort
+                // expansion on an otherwise-parseable descriptor. Mirrors
+                // `prefix_output_with_operator_id` in `descriptor/mod.rs`.
+                let output: DataId = output_ref.parse().map_err(|e| {
+                    eyre::eyre!(
+                        "node `{}` produces an invalid output id `{output_ref}`: {e}",
+                        inner_node.id
+                    )
+                })?;
                 direct_output_targets.entry(name).or_default().push((
-                    format!("{}/{}", inner_node.id, output_ref),
+                    format!("{}/{output}", inner_node.id),
                     UserInputMapping {
                         source: inner_node.id.clone(),
-                        output: output_ref.into(),
+                        output,
                     },
                 ));
             }
@@ -1290,15 +1302,15 @@ mod tests {
         serde_yaml::from_str(yaml).unwrap()
     }
 
-    /// dora-rs/dora#2920: expansion rebuilds the `Descriptor` field by
-    /// field, so any dataflow-level setting it forgets to copy is
-    /// silently dropped for every dataflow that uses modules. The
-    /// completion policy decides whether the graph can ever end, so
-    /// losing it turns a batch run into a hang.
+    /// dora-rs/dora#2920: a dataflow-level setting that expansion drops is
+    /// silently lost for every dataflow that uses modules. The completion
+    /// policy decides whether the graph can ever end, so losing it turns a
+    /// batch run into a hang.
     ///
-    /// The descriptor MUST contain a module: without one,
-    /// `expand_modules_with_boundaries` short-circuits to a whole-struct
-    /// clone and never reaches the field-by-field rebuild this guards.
+    /// Both paths now clone the source descriptor, so this is a regression
+    /// guard rather than the primary defense. The descriptor MUST still
+    /// contain a module: without one, `expand_modules_with_boundaries`
+    /// short-circuits before the expansion path this exercises.
     #[test]
     fn expand_preserves_exit_when_nodes_finish() {
         let tmp = TempDir::new().unwrap();
@@ -1368,6 +1380,46 @@ nodes:
         assert_eq!(descriptor.exit_when_nodes_finish, None);
         let expanded = expand_modules(&descriptor, tmp.path()).unwrap();
         assert_eq!(expanded.exit_when_nodes_finish, None);
+    }
+
+    /// A module whose inner runtime node declares an operator with an id
+    /// containing characters outside `[a-zA-Z0-9_./-]` must surface a clean
+    /// descriptor error, not panic. `OperatorId` is unvalidated, so its id
+    /// flows verbatim into the `<op_id>/<output>` qualified output id, which
+    /// used to be built with `DataId::from` (panics) rather than a fallible
+    /// parse.
+    #[test]
+    fn expand_rejects_invalid_operator_output_id_without_panicking() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            base,
+            "bad_module.yml",
+            r#"
+module:
+  name: bad
+  outputs: [data_out]
+
+nodes:
+  - id: runtime_node
+    operators:
+      - id: "bad id"
+        shared-library: op
+        outputs:
+          - data_out
+"#,
+        );
+        let descriptor = parse_descriptor(
+            r#"
+nodes:
+  - id: my_mod
+    module: bad_module.yml
+"#,
+        );
+        let err = expand_modules(&descriptor, base)
+            .expect_err("an invalid operator output id must be a clean error, not a panic");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid output id"), "unexpected error: {msg}");
     }
 
     #[test]

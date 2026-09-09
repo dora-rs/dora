@@ -2035,16 +2035,18 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     // Daemon A (listens on the zenoh peer port) and daemon B (dials it).
     // Each daemon also gets an explicit local listen port: two daemons on
     // one host would otherwise pick the same default and collide.
-    let mut local_listen_port = TcpListener::bind("127.0.0.1:0")
+    let base_listen_port = TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .map(|a| a.port())
         .expect("pick local listen port");
-    for (machine, dial) in [
+    for (offset, (machine, dial)) in [
         ("A", format!("tcp/0.0.0.0:{zenoh_port}")),
         ("B", format!("tcp/127.0.0.1:{zenoh_port}")),
-    ] {
-        let listen_port = local_listen_port;
-        local_listen_port += 1;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let listen_port = base_listen_port + offset as u16;
         let log = tmp.join(format!("daemon-{machine}.log"));
         // The yml's `working_dir: .` is relative to
         // the daemon's cwd (the repo root, per the multiple-daemons
@@ -2266,3 +2268,31 @@ fn smoke_memory_pool_cuda2cuda() {
 //
 // "Covered" rows are listed so future refactors don't assume the examples
 // are entirely unexercised — they run in other CI jobs, just not this file.
+
+/// The shared ingress channel must not let timer pressure discard an input
+/// whose declared policy requires backpressure, before the scheduler sees it.
+#[test]
+fn contract_backpressure_commit_survives_timer_pressure() {
+    ensure_cli_built();
+    let status = Command::new("cargo")
+        .args([
+            "test",
+            "--locked",
+            "-p",
+            "dora-node-api",
+            "--test",
+            "backpressure_timer",
+            "slow_consumer_keeps_backpressure_commit",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("DORA_BACKPRESSURE_TEST_CLI", dora_bin())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("run backpressure dataflow regression");
+    assert!(
+        status.success(),
+        "backpressure commit was lost under timer pressure"
+    );
+}
