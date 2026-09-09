@@ -743,10 +743,12 @@ Return the dictionary representation for YAML serialization.
 
 ---
 
-## CUDA Module
+## CUDA Module (opt-in extension)
+
+> **Not part of the 1.0 API.** These helpers moved out of the `dora` package into the `dora_tensor_pool` extension before 1.0 — they exist to serve the tensor-pool transport, which sits behind the extension seam, and are not covered by dora's 1.0 compatibility guarantees. Install from `libraries/extensions/tensor-pool/python`.
 
 ```python
-from dora.cuda import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora_tensor_pool import torch_to_ipc_buffer, ipc_buffer_to_ipc_handle, open_ipc_handle
 ```
 
 Utilities for zero-copy GPU tensor sharing between nodes via CUDA IPC. Requires PyTorch with CUDA and Numba with CUDA support.
@@ -759,7 +761,7 @@ Convert a PyTorch CUDA tensor into an Arrow array containing the CUDA IPC handle
 import torch
 import pyarrow as pa
 from dora import Node
-from dora.cuda import torch_to_ipc_buffer
+from dora_tensor_pool import torch_to_ipc_buffer
 
 node = Node()
 tensor = torch.randn(1024, 768, device="cuda")
@@ -779,7 +781,7 @@ node.send_output("gpu_data", ipc_buffer, metadata)
 Reconstruct a CUDA IPC handle from a received Arrow buffer and metadata.
 
 ```python
-from dora.cuda import ipc_buffer_to_ipc_handle
+from dora_tensor_pool import ipc_buffer_to_ipc_handle
 
 event = node.next()
 ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
@@ -789,7 +791,7 @@ ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
 - `handle_buffer` (pyarrow.Array) -- The Arrow array from `event["value"]`.
 - `metadata` (dict) -- The metadata from `event["metadata"]`.
 
-**Returns:** `dora.cuda.IpcHandle` (a lightweight wrapper around `cudaIpcMemHandle_t`; call `.open()` to map the handle into the current process and get a device pointer, `.close()` to release it).
+**Returns:** `dora_tensor_pool.IpcHandle` (a lightweight wrapper around `cudaIpcMemHandle_t`; call `.open()` to map the handle into the current process and get a device pointer, `.close()` to release it).
 
 ---
 
@@ -798,7 +800,7 @@ ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])
 Open a CUDA IPC handle and yield a PyTorch tensor. Use as a context manager to ensure proper cleanup.
 
 ```python
-from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora_tensor_pool import ipc_buffer_to_ipc_handle, open_ipc_handle
 
 event = node.next()
 ipc_handle = ipc_buffer_to_ipc_handle(event["value"], event["metadata"])

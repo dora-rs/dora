@@ -1,0 +1,5 @@
+nodes:
+  - id: standard
+    path: ./standard-node
+    params:
+      speed: "2.0"

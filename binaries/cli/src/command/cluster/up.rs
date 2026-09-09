@@ -1,7 +1,6 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
     time::{Duration, Instant},
 };
 
@@ -9,14 +8,11 @@ use clap::Args;
 use eyre::Context;
 
 use crate::{
-    command::{
-        Executable, default_tracing,
-        up::{detach_process, dora_executable_path},
-    },
-    common::{connect_to_coordinator, connect_with_retry},
+    command::{Executable, default_tracing, up},
+    common::connect_to_coordinator,
 };
 
-use super::config::ClusterConfig;
+use super::config::{ClusterConfig, ZenohMesh};
 use super::{
     format_daemon_port_arg, format_labels_arg, format_zenoh_peer_arg, query_connected_daemons,
     run_ssh, ssh_target,
@@ -52,22 +48,50 @@ impl Executable for Up {
                 s
             }
             Err(_) => {
-                start_coordinator(config.coordinator.port)?;
-                connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
-                    eyre::eyre!("timed out waiting for coordinator at {coordinator_addr}: {err}")
-                })?
+                // Shared with `dora up` so the two cannot drift apart again;
+                // the wildcard bind is what makes the coordinator reachable
+                // from the machines we are about to ssh into.
+                let startup = up::spawn_coordinator(up::CoordinatorSpawn {
+                    interface: Some(std::net::Ipv4Addr::UNSPECIFIED.into()),
+                    port: Some(config.coordinator.port),
+                    auth: false,
+                })
+                .wrap_err("failed to start dora coordinator")?;
+                up::wait_for_coordinator_start(coordinator_addr, config.coordinator.port, startup)?
             }
         };
 
         // 2. SSH into each machine to start a daemon
         let zenoh_peer_arg = format_zenoh_peer_arg(config.zenoh_peer.as_deref());
+        // Wire the daemons into an explicit zenoh mesh where the config allows
+        // it. Falling back is deliberate: a partial mesh is worse than none,
+        // since explicit connect endpoints turn multicast scouting off for the
+        // daemons that have them while the rest still depend on it.
+        let zenoh_mesh_args = match config.zenoh_mesh_args() {
+            ZenohMesh::Derived(args) => Some(args),
+            ZenohMesh::NotNeeded => None,
+            ZenohMesh::Unavailable(reason) => {
+                eprintln!(
+                    "WARNING: {reason}, so the daemons are left to discover each other \
+                     by multicast. On a network without multicast — a mesh VPN carries \
+                     none — they will not find each other. Fix the field named above, \
+                     or configure a shared `zenoh_peer` rendezvous."
+                );
+                None
+            }
+        };
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);
             let labels_arg = format_labels_arg(&machine.labels);
             let daemon_port_arg = format_daemon_port_arg(machine.daemon_port);
+            let mesh_arg = zenoh_mesh_args
+                .as_ref()
+                .and_then(|args| args.get(machine.id.as_str()))
+                .map(String::as_str)
+                .unwrap_or_default();
             let remote_cmd = format!(
-                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{zenoh_peer_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
+                "nohup dora daemon --machine-id {id} --coordinator-addr {addr} --coordinator-port {port}{daemon_port_arg}{zenoh_peer_arg}{mesh_arg}{labels} --quiet > /tmp/dora-daemon-{id}.log 2>&1 &",
                 id = machine.id,
                 addr = config.coordinator.addr,
                 port = config.coordinator.port,
@@ -133,6 +157,7 @@ impl Executable for Up {
                         "WARNING: timed out waiting for daemon(s): {}",
                         missing_daemons.join(", ")
                     );
+                    report_missing_daemon_logs(&config, &missing_daemons);
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(500));
@@ -167,19 +192,30 @@ impl Executable for Up {
     }
 }
 
-fn start_coordinator(port: u16) -> eyre::Result<()> {
-    let path = dora_executable_path()?;
-    let mut cmd = Command::new(path);
-    cmd.args([
-        "coordinator",
-        "--interface",
-        "0.0.0.0",
-        "--port",
-        &port.to_string(),
-        "--quiet",
-    ]);
-    detach_process(&mut cmd);
-    cmd.spawn().wrap_err("failed to start dora coordinator")?;
-    println!("Started coordinator on 0.0.0.0:{port}");
-    Ok(())
+/// Print the tail of each unreachable daemon's log.
+///
+/// A daemon that dies during startup writes the reason to
+/// `/tmp/dora-daemon-<id>.log` on its own host and never registers, so without
+/// this the operator sees only "timed out waiting for daemon(s)" and has to go
+/// find the file themselves. The common causes are diagnosable from the log and
+/// nowhere else: a `--zenoh-listen` address that is not on the machine (a NAT
+/// or VIP `host:` in cluster.yml), or its port already held by a stale daemon —
+/// both fatal by design for an explicitly named listener, since a daemon that
+/// silently fails to bind is undialable.
+///
+/// Best-effort: a machine we cannot ssh back into is skipped quietly, because
+/// this runs on a path that has already failed and must not fail differently.
+fn report_missing_daemon_logs(config: &ClusterConfig, missing: &[String]) {
+    for machine_id in missing {
+        let Some(machine) = config.machines.iter().find(|m| &m.id == machine_id) else {
+            continue;
+        };
+        // `machine.id` is charset-validated by `ClusterConfig::validate`, so it
+        // cannot break out of the remote command.
+        let cmd = format!("tail -n 20 /tmp/dora-daemon-{machine_id}.log 2>/dev/null");
+        eprintln!("  --- last log lines from `{machine_id}` ---");
+        if run_ssh(&ssh_target(machine), machine.port, &cmd).is_err() {
+            eprintln!("  (could not read the log — ssh to `{machine_id}` failed)");
+        }
+    }
 }

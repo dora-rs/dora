@@ -378,6 +378,8 @@ mod callback_impl {
             // The encode inside needs no GIL, so run detached: it is the same
             // single copy the node used to make, just on this side of the
             // channel, and other Python threads stay runnable meanwhile.
+            let arrow_array =
+                dora_node_api::DoraArray::from_array(arrow::array::make_array(arrow_array));
             py.detach(|| {
                 self.handle
                     .send_output(output.to_owned().into(), parameters, &arrow_array)

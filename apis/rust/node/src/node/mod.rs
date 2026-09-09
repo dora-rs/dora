@@ -11,6 +11,7 @@ use self::{arrow_utils::ipc_encode, control_channel::ControlChannel};
 use aligned_vec::{AVec, ConstAlign};
 use arrow::array::{Array, ArrayData};
 use colored::Colorize;
+use dora_arrow_convert::{DoraArray, IntoArrow};
 use dora_core::{
     config::{DataId, NodeId, NodeRunConfig},
     descriptor::Descriptor,
@@ -128,12 +129,17 @@ mod runtime_type_check_tests {
 ///
 /// Using shared memory for messages smaller than the page size still requires
 /// sharing a full page, so we have some memory overhead. We also have some
-/// performance overhead because we need to issue multiple syscalls. For small
-/// messages it is faster to send them over a traditional TCP stream (or similar).
+/// performance overhead because setting up a shared segment is not free. For
+/// small messages it is cheaper to copy them into a heap-buffered publish.
 ///
-/// This hardcoded threshold value specifies which messages are sent through
-/// shared memory. Messages that are smaller than this threshold are sent through
-/// TCP.
+/// On the zenoh data plane this threshold selects *how* an output is
+/// published: payloads at or above it go through zenoh shared memory
+/// (zero-copy for local subscribers), while smaller payloads are published via
+/// zenoh with a heap-buffered `put`. A large payload that did not get a
+/// shared-memory buffer takes the reliable daemon path instead of the zenoh
+/// one, because a fragmented express publish would be silently dropped
+/// (dora-rs/dora#2366). See [`DoraNode::zero_copy_threshold`] for the runtime
+/// value (overridable via `DORA_ZERO_COPY_THRESHOLD`).
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 
 /// How many large outbound sends are traced hop-by-hop
@@ -194,10 +200,14 @@ type ZenohPublishers = HashMap<DataId, DirectOutput>;
 /// Declare a direct-zenoh data publisher for every output that may ever take
 /// the direct path, plus the per-output ack state the startup handshake needs.
 ///
-/// Outputs the daemon pinned `daemon_only` (some consumer runs under another
-/// daemon, so delivery must go through this daemon's inter-daemon forwarding —
-/// #2738) get no publisher and no markers: they stay on the daemon path for
-/// the node's lifetime. Every other output gets a publisher declared eagerly
+/// Outputs the daemon pinned `daemon_only` — a consumer only inter-daemon
+/// forwarding can reach (a dynamic node on another daemon, or a remote static
+/// one with no dialable endpoint for this node; forwarding is fed solely by
+/// daemon-path sends, #2738), or a consumer declaring `queue_policy:
+/// backpressure`, which the lossy direct-zenoh ingress cannot honor — get no
+/// publisher and no markers: they stay on the daemon path for the node's
+/// lifetime (see the daemon's `output_routing` module for the full policy).
+/// Every other output gets a publisher declared eagerly
 /// at init (rather than on first send) for two reasons: zenoh starts wiring
 /// routes immediately, and [`StartupHandshake`] needs the publishers to probe
 /// those routes before the node's first real send. An output with no required
@@ -234,7 +244,7 @@ fn declare_output_publishers(
         if output_routing.daemon_only {
             debug!(
                 output = %output_id,
-                "output pinned to the daemon path (a consumer runs under another daemon)"
+                "output pinned to the daemon path by consumer routing requirements"
             );
             continue;
         }
@@ -629,7 +639,7 @@ fn wait_for_grace(ack_states: &[Arc<AckState>], grace: Duration) {
             .iter()
             .all(|state| state.ready.load(Ordering::Relaxed))
         {
-            return;
+            break;
         }
         if Instant::now() >= grace_deadline {
             break;
@@ -648,6 +658,15 @@ fn wait_for_grace(ack_states: &[Arc<AckState>], grace: Duration) {
                 "startup handshake incomplete after {}ms; output stays on the \
                  reliable daemon path for the rest of the run",
                 grace.as_millis()
+            );
+        } else {
+            // The positive half of the same decision, and the only signal that
+            // an output is *off* the daemon path — which for a consumer on
+            // another machine means its data no longer crosses two daemons.
+            // Logged per output, once, at the moment it is settled for the run.
+            debug!(
+                output = %state.output_id,
+                "startup handshake complete; output takes the direct zenoh path"
             );
         }
     }
@@ -759,8 +778,6 @@ pub struct DoraNode {
     /// the schema is only re-published when it changes or a publish failed) and
     /// the time of the last full-stream send (for the periodic in-band refresh).
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
-    /// Threshold for using zenoh SHM vs inline bytes (default 4096).
-
     /// Diagnostic (dora-rs/dora#2742): how many large sends have already been
     /// traced hop-by-hop. The Windows nightly wedges the *runtime's* main loop
     /// inside `send_output` on the very first large output, so tracing only the
@@ -1072,14 +1089,7 @@ impl DoraNode {
             node_id: "test-node"
                 .parse()
                 .map_err(|e| NodeError::Init(format!("{e}")))?,
-            run_config: NodeRunConfig {
-                inputs: Default::default(),
-                outputs: Default::default(),
-                output_types: Default::default(),
-                output_framing: Default::default(),
-                input_types: Default::default(),
-                shared_memory_pool_size: None,
-            },
+            run_config: NodeRunConfig::default(),
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -1109,14 +1119,7 @@ impl DoraNode {
             node_id: "test-node"
                 .parse()
                 .map_err(|e| NodeError::Init(format!("{e}")))?,
-            run_config: NodeRunConfig {
-                inputs: Default::default(),
-                outputs: Default::default(),
-                output_types: Default::default(),
-                output_framing: Default::default(),
-                input_types: Default::default(),
-                shared_memory_pool_size: None,
-            },
+            run_config: NodeRunConfig::default(),
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -1540,28 +1543,53 @@ impl DoraNode {
         self.send_output_sample(output_id, parameters, Some(sample))
     }
 
-    /// Sends the give Arrow array as an output message.
+    /// Sends the given Arrow array as an output message.
     ///
-    /// Uses shared memory for efficient data transfer if suitable.
+    /// This is the recommended way to emit data from a node: pass any value that
+    /// implements [`IntoArrow`] (primitives, `Vec<T>`, `&str`, an Arrow array,
+    /// …) and dora moves it into shared memory for an efficient, near-zero-copy
+    /// transfer to downstream nodes.
     ///
-    /// This method might copy the message once to move it to shared memory.
+    /// Uses shared memory for efficient data transfer if suitable. This method
+    /// might copy the message once to move it to shared memory.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if the payload cannot be Arrow-IPC encoded, or if runtime type
+    /// checking is enabled in error mode (`DORA_RUNTIME_TYPE_CHECK=error`) and the array's Arrow
+    /// type does not match the output's declared type. An `output_id` that is not declared as an
+    /// output is *not* an error — the call is ignored and returns `Ok`.
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, _events) = DoraNode::init_from_env()?;
+    ///
+    /// let output = DataId::from("output_id".to_owned());
+    /// let parameters = MetadataParameters::default();
+    ///
+    /// node.send_output(output, parameters, vec![1.0f32, 2.0, 3.0])?;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn send_output(
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         if !self.validate_output(&output_id) {
             return Ok(());
         };
 
-        let arrow_array = data.to_data();
+        let data = data.into_arrow();
+        let arrow_array = dora_arrow_convert::internal::array_ref(&data).to_data();
         self.check_output_type(&output_id, arrow_array.data_type(), &parameters)?;
 
-        let encoded = self.sample_allocator.encode_arrow(&arrow_array)?;
+        let encoded = self.sample_allocator.encode_arrow_data(&arrow_array)?;
         self.send_encoded_unchecked(output_id, parameters, encoded.sample)
     }
 
@@ -1572,6 +1600,15 @@ impl DoraNode {
     /// operator thread does the encoding so that no memory owned by the
     /// operator's language runtime is ever released on the node's thread — see
     /// [`SampleAllocator`] (dora-rs/dora#2742).
+    ///
+    /// Like [`send_output`](Self::send_output), an `output_id` that is not a
+    /// declared output is ignored (returns `Ok`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if runtime type checking is enabled in error mode
+    /// (`DORA_RUNTIME_TYPE_CHECK=error`) and the sample's Arrow type does not match the output's
+    /// declared type.
     pub fn send_output_encoded(
         &mut self,
         output_id: DataId,
@@ -1641,10 +1678,16 @@ impl DoraNode {
 
     /// Send the given raw byte data as output.
     ///
-    /// Might copy the data once to move it into shared memory.
+    /// Might copy the data once to move it into shared memory. `data_len` must equal `data.len()`;
+    /// the allocated sample is sized from `data_len` and the payload is copied from `data`.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if `data_len` does not equal `data.len()` (which would
+    /// otherwise panic in the internal `copy_from_slice`).
     pub fn send_output_bytes(
         &mut self,
         output_id: DataId,
@@ -1745,8 +1788,10 @@ impl DoraNode {
         // routes — every required consumer acked a marker (see
         // `StartupHandshake`). Everything else takes the reliable daemon path:
         // no zenoh session (interactive/testing mode), an output the daemon
-        // pinned there (a consumer on another daemon needs inter-daemon
-        // forwarding, which only daemon-path sends feed — #2738), or an output
+        // pinned there (see `OutputRouting::daemon_only`: a consumer on another
+        // daemon needs inter-daemon forwarding, which only daemon-path sends
+        // feed — #2738 — or a consumer's `queue_policy: backpressure` needs the
+        // lossless daemon ingress), or an output
         // whose handshake did not complete before `init` returned and is
         // therefore frozen there for the run. An SHM-backed sample is moved
         // straight into zenoh's `put` (no extra copy); only the daemon path
@@ -1817,8 +1862,9 @@ impl DoraNode {
                     return Err(NodeError::Output(format!(
                         "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
                          the {}-byte daemon transport limit (the output is on the daemon \
-                         path: pinned for a consumer on another daemon, its startup \
-                         handshake did not complete, or no zenoh route is available)",
+                         path: pinned for a consumer only forwarding can reach or one \
+                         declaring `queue_policy: backpressure`, its startup handshake \
+                         did not complete, or no zenoh route is available)",
                         v.len(),
                         dora_message::MAX_MESSAGE_BYTES,
                     )));
@@ -1843,6 +1889,12 @@ impl DoraNode {
     /// The node is not allowed to send more outputs with the closed IDs.
     ///
     /// Closing outputs early can be helpful to receivers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if any id is not a declared output of this node. Unlike
+    /// [`send_output`](Self::send_output), which silently ignores unknown outputs, this validates
+    /// the whole batch *before* closing any output, so on error none of them are closed.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
         // Validate the whole batch before mutating any local state. Removing
         // outputs eagerly would leave the node's local output set out of sync
@@ -2300,11 +2352,15 @@ impl DoraNode {
     /// metadata parameters. Returns the generated request ID.
     ///
     /// Any existing `request_id` key in `parameters` is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_output`](Self::send_output).
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<String> {
         if parameters.contains_key(dora_message::metadata::REQUEST_ID) {
             tracing::warn!("send_service_request: caller-provided request_id will be overwritten");
@@ -2326,7 +2382,7 @@ impl DoraNode {
         &mut self,
         output_id: DataId,
         parameters: MetadataParameters,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         self.send_output(output_id, parameters, data)
     }
@@ -2338,12 +2394,16 @@ impl DoraNode {
     /// Send a streaming segment chunk. Convenience wrapper around
     /// [`send_output`](Self::send_output) that builds metadata from the
     /// [`StreamSegment`] builder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_output`](Self::send_output).
     pub fn send_stream_chunk(
         &mut self,
         output_id: DataId,
         segment: &mut StreamSegment,
         fin: bool,
-        data: impl Array,
+        data: impl IntoArrow,
     ) -> NodeResult<()> {
         self.send_output(output_id, segment.chunk(fin), data)
     }
@@ -2421,63 +2481,21 @@ impl DoraNode {
         self.control_channel
             .extension_drop(namespace.into(), key.into())
     }
-    /// Write tensor bytes to a pinned memory pool via the daemon. The
-    /// daemon forwards the payload to remote daemons so the mirror pool
-    /// is updated in place.
-    pub fn write_pinned_memory(
+
+    /// Send an opaque request to the extension registered under
+    /// `namespace` on this node's daemon, and return its opaque reply.
+    ///
+    /// Companion to [`DoraNode::extension_store`] / [`DoraNode::extension_load`]:
+    /// those broker a descriptor's lifetime, this one carries a call the
+    /// extension's daemon half must service. dora interprets neither the
+    /// namespace nor the bytes — see `docs/extensions.md`.
+    pub fn extension_request(
         &mut self,
-        shared_memory_id: String,
-        tensor_data: Vec<u8>,
-        size: usize,
-    ) -> Result<(), eyre::Error> {
+        namespace: impl Into<String>,
+        payload: Vec<u8>,
+    ) -> Result<Vec<u8>, eyre::Error> {
         self.control_channel
-            .write_pinned_memory(shared_memory_id, tensor_data, size)
-    }
-
-    /// Read a memory pool's metadata from the daemon (soft miss on
-    /// daemons that no longer serve the pool table — see
-    /// [`ControlChannel::read_pinned_memory`]).
-    pub fn read_pinned_memory(
-        &mut self,
-        shared_memory_id: String,
-        free: bool,
-    ) -> Result<Metadata, eyre::Error> {
-        self.control_channel
-            .read_pinned_memory(shared_memory_id, free)
-    }
-
-    /// Register a memory pool on a remote machine via the daemon. The
-    /// daemon resolves the machine through the coordinator and mirrors
-    /// the pool there with a synchronous confirmation, returning
-    /// `Ok(Ok(()))` on success or `Ok(Err(msg))` when the mirror failed
-    /// (unresolved machine, remote pool creation failure, or ack
-    /// timeout).
-    #[allow(clippy::too_many_arguments)]
-    pub fn register_cross_machine_pool(
-        &mut self,
-        shared_memory_id: String,
-        shmem_name: String,
-        size: usize,
-        dtype: String,
-        shape: Vec<i64>,
-        device: String,
-        machine_id: String,
-    ) -> Result<(Result<(), String>, bool), eyre::Error> {
-        self.control_channel.register_cross_machine_pool(
-            shared_memory_id,
-            shmem_name,
-            size,
-            dtype,
-            shape,
-            device,
-            machine_id,
-        )
-    }
-
-    /// Release a memory pool through the daemon (see
-    /// [`ControlChannel::free_pinned_memory`]).
-    pub fn free_pinned_memory(&mut self, shared_memory_id: String) -> Result<(), eyre::Error> {
-        self.control_channel.free_pinned_memory(shared_memory_id)
+            .extension_request(namespace.into(), payload)
     }
 }
 
@@ -2741,7 +2759,28 @@ pub struct EncodedSample {
 }
 
 impl EncodedSample {
+    /// A human-readable name for the Arrow type the payload was encoded from,
+    /// e.g. `"UInt8"`.
+    ///
+    /// Returned as a `String` rather than an `arrow_schema::DataType` because
+    /// `arrow-schema` is the one non-umbrella Arrow crate dora's public API
+    /// used to name, and naming it would pin 1.x to a single Arrow major.
+    /// For the real type, enable `arrow-v59` and use
+    /// [`data_type`](Self::data_type).
+    pub fn type_name(&self) -> String {
+        format!("{:?}", self.data_type)
+    }
+
     /// The Arrow type the payload was encoded from.
+    ///
+    /// Gated on `arrow-v59` — dora's current internal Arrow major — because
+    /// `arrow_schema::DataType` is an Arrow type. It is not returned as a
+    /// dora-owned type-URN (`dora_core::types::TypeRegistry`) because the URN
+    /// catalog only covers the standard scalar/struct types: nested lists,
+    /// dictionaries, timestamps-with-timezone and unions have no URN, so a
+    /// URN-returning accessor would be lossy for exactly the outputs whose
+    /// type a caller most needs to inspect.
+    #[cfg(feature = "arrow-v59")]
     pub fn data_type(&self) -> &arrow_schema::DataType {
         &self.data_type
     }
@@ -2836,8 +2875,13 @@ impl SampleAllocator {
     /// The returned sample shares no memory with `array`, so the caller may —
     /// and, when the payload is owned by a foreign runtime, **must** — drop
     /// `array` on its own thread rather than let it travel to the node.
-    pub fn encode_arrow(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
-        let sample = match ipc_encode::PreparedIpc::new(array) {
+    pub fn encode_arrow(&self, array: &DoraArray) -> NodeResult<EncodedSample> {
+        self.encode_arrow_data(&dora_arrow_convert::internal::array_ref(array).to_data())
+    }
+
+    /// Same, for dora-internal callers that already hold an [`ArrayData`].
+    pub(crate) fn encode_arrow_data(&self, array: &ArrayData) -> NodeResult<EncodedSample> {
+        let sample = match ipc_encode::PreparedIpc::from_data(array) {
             Some(prepared) => {
                 // Prepare once: size the sample from the prepared layout, then
                 // encode into it — avoids rebuilding the layout + IPC headers.
@@ -2848,7 +2892,7 @@ impl SampleAllocator {
                 sample
             }
             None => {
-                let bytes = ipc_encode::encode_ipc_to_vec(array)
+                let bytes = ipc_encode::encode_ipc_to_vec_data(array)
                     .map_err(|e| NodeError::Output(format!("Arrow IPC encode: {e}")))?;
                 let mut sample = self.allocate(bytes.len())?;
                 sample.copy_from_slice(&bytes);
@@ -3250,12 +3294,12 @@ pub fn init_tracing(
     // attempt to connect to `localhost:4317` on every node startup. Mirrors
     // the gating applied to tracing above.
     #[cfg(feature = "metrics")]
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
+    if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         let id = format!("{dataflow_id}/{node_id}");
         let monitor_task = async move {
             use dora_metrics::run_metrics_monitor;
 
-            if let Err(e) = run_metrics_monitor(id.clone())
+            if let Err(e) = run_metrics_monitor(id.clone(), &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {
@@ -3401,7 +3445,6 @@ mod tests {
         IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
         integration_testing_format::{IncomingEvent, TimedIncomingEvent},
     };
-    use arrow::array::NullArray;
 
     fn required_acker(node: &str, input: &str) -> dora_message::daemon_to_node::RequiredAcker {
         dora_message::daemon_to_node::RequiredAcker {
@@ -3645,10 +3688,10 @@ mod tests {
         drop(events);
     }
 
-    use crate::integration_testing::{OutputJson, UnboundedReceiver, drain_outputs};
+    use crate::integration_testing::{OutputReceiver, drain_outputs};
 
     /// Helper: create a minimal test node with a channel output.
-    fn test_node() -> (DoraNode, crate::EventStream, UnboundedReceiver<OutputJson>) {
+    fn test_node() -> (DoraNode, crate::EventStream, OutputReceiver) {
         let events = vec![TimedIncomingEvent {
             time_offset_secs: 0.1,
             event: IncomingEvent::Stop,
@@ -3657,7 +3700,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, rx) = crate::integration_testing::unbounded_channel();
+        let (tx, rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -3681,7 +3724,7 @@ mod tests {
             "drop-hang-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = crate::integration_testing::unbounded_channel();
+        let (tx, _rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let (node, event_stream) =
             DoraNode::init_testing(inputs, outputs, TestingOptions::default()).unwrap();
@@ -3729,7 +3772,7 @@ mod tests {
         let (mut node, events, mut rx) = test_node();
 
         let request_id = node
-            .send_service_request("request".into(), Default::default(), NullArray::new(0))
+            .send_service_request("request".into(), Default::default(), ())
             .unwrap();
 
         // Returned ID should be a valid UUID
@@ -3748,10 +3791,10 @@ mod tests {
         let (mut node, events, _rx) = test_node();
 
         let id1 = node
-            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .send_service_request("out".into(), Default::default(), ())
             .unwrap();
         let id2 = node
-            .send_service_request("out".into(), Default::default(), NullArray::new(0))
+            .send_service_request("out".into(), Default::default(), ())
             .unwrap();
 
         assert_ne!(id1, id2, "successive request IDs should differ");
@@ -3770,7 +3813,7 @@ mod tests {
             dora_message::metadata::REQUEST_ID.to_string(),
             dora_message::metadata::Parameter::String("test-req-id".into()),
         );
-        node.send_service_response("response".into(), params, NullArray::new(0))
+        node.send_service_response("response".into(), params, ())
             .unwrap();
 
         drop(node);
@@ -3823,16 +3866,16 @@ mod tests {
     /// plane relies on (zenoh can't be smoke-tested here, so this stands in).
     #[test]
     fn send_output_ipc_roundtrip() {
-        use crate::arrow_utils::decode_arrow_ipc_zero_copy;
-        use crate::arrow_utils::ipc_encode::{encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
+        use crate::arrow_utils::ipc_encode::{encode_ipc_into_data, ipc_fast_path_len_data};
         use arrow::array::{ArrayRef, Float32Array, StringArray, StructArray, UInt64Array};
         use arrow_schema::{DataType, Field};
         use std::ptr::NonNull;
 
         fn roundtrip(data: ArrayData) {
-            let len = ipc_fast_path_len(&data).expect("array should be fast-path eligible");
+            let len = ipc_fast_path_len_data(&data).expect("array should be fast-path eligible");
             let mut buf: AVec<u8, ConstAlign<128>> = AVec::__from_elem(128, 0, len);
-            encode_ipc_into(&data, &mut buf).expect("fast-path IPC encode");
+            encode_ipc_into_data(&data, &mut buf).expect("fast-path IPC encode");
 
             // Wrap the aligned sample as an Arrow Buffer (no copy), mirroring the
             // receive path, then decode.
@@ -3841,7 +3884,7 @@ mod tests {
             // SAFETY: ptr/len describe `buf`; the Arc keeps it alive.
             let buffer =
                 unsafe { arrow::buffer::Buffer::from_custom_allocation(ptr, blen, Arc::new(buf)) };
-            let decoded = decode_arrow_ipc_zero_copy(buffer).expect("zero-copy IPC decode");
+            let decoded = decode_arrow_ipc_zero_copy_raw(buffer).expect("zero-copy IPC decode");
             assert_eq!(
                 data, decoded,
                 "IPC send->receive round-trip must preserve the array"
@@ -4106,7 +4149,7 @@ mod tests {
         let (mut node, events, mut rx) = test_node();
         let mut seg = StreamSegment::with_session_id("s1".into());
 
-        node.send_stream_chunk("audio".into(), &mut seg, false, NullArray::new(0))
+        node.send_stream_chunk("audio".into(), &mut seg, false, ())
             .unwrap();
 
         drop(node);
@@ -4237,7 +4280,7 @@ mod operator_boundary_tests {
         let (array, released) = foreign_owned_array(8192);
 
         let sample = allocator
-            .encode_arrow(&array)
+            .encode_arrow_data(&array)
             .expect("encoding a UInt8 array must succeed");
 
         assert!(
@@ -4260,9 +4303,9 @@ mod operator_boundary_tests {
         let allocator = SampleAllocator::heap();
         let (array, _released) = foreign_owned_array(1024);
 
-        let encoded = allocator.encode_arrow(&array).expect("encode");
-        assert_eq!(encoded.data_type(), array.data_type());
-        let decoded = crate::node::arrow_utils::decode_arrow_ipc(encoded.as_bytes())
+        let encoded = allocator.encode_arrow_data(&array).expect("encode");
+        assert_eq!(encoded.type_name(), format!("{:?}", array.data_type()));
+        let decoded = crate::node::arrow_utils::decode_arrow_ipc_data(encoded.as_bytes())
             .expect("the sample must be a well-formed Arrow IPC stream");
 
         assert_eq!(decoded, array);

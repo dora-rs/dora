@@ -376,8 +376,8 @@ def build_translations():
     t["Operator Nodes"] = "算子节点"
     t["Operators run in-process inside a shared runtime (no separate process):"] = \
         "算子在共享运行时中进程内运行（无独立进程）："
-    t["Assign nodes to specific machines using `_unstable_deploy`:"] = \
-        "使用 `_unstable_deploy` 将节点分配到特定机器："
+    t["Assign nodes to specific machines using `deploy`:"] = \
+        "使用 `deploy` 将节点分配到特定机器："
     t["When nodes are on different machines, communication automatically switches from shared memory to Zenoh pub/sub."] = \
         "当节点位于不同机器时，通信自动从共享内存切换到 Zenoh 发布/订阅。"
 

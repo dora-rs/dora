@@ -1,3 +1,13 @@
+//! **Internal to dora — not a public API.**
+//!
+//! This crate is published to crates.io only because cargo requires every
+//! dependency of a published crate to be published; `dora-node-api` and
+//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! guarantee and may change in any release, including a patch.
+//!
+//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
+//! section of `docs/api-rust.md`.
+//!
 use dora_message::common::LogMessage;
 use eyre::{Context, Result, bail};
 
@@ -25,7 +35,7 @@ pub fn parse_log(json: &str) -> Result<LogMessage> {
 /// Convenience wrapper for node event handlers. The daemon sends one log
 /// entry per Arrow message, so this extracts the first string element and
 /// parses it as JSON. Additional elements (if any) are ignored.
-pub fn parse_log_from_arrow(data: &dora_arrow_convert::ArrowData) -> Result<LogMessage> {
+pub fn parse_log_from_arrow(data: &dora_arrow_convert::DoraArray) -> Result<LogMessage> {
     let json: &str = data.try_into().context("expected string arrow data")?;
     parse_log(json)
 }

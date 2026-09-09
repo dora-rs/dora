@@ -18,7 +18,7 @@ use dora_message::{
     descriptor::RestartPolicy,
     id::NodeId,
 };
-use dora_node_api::{Metadata, arrow::array::ArrayData, arrow_utils::encode_arrow_ipc};
+use dora_node_api::{DoraArray, Metadata, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::CommandWrap;
 use std::{
@@ -40,7 +40,7 @@ use tokio::{
 /// parameter (so the node-side receive path decodes it). Returns `None` if
 /// encoding fails (logged by the caller).
 fn ipc_log_payload(
-    array: &ArrayData,
+    array: &DoraArray,
     clock: &dora_core::uhlc::HLC,
 ) -> Option<(DataMessage, Metadata)> {
     let ipc_bytes = encode_arrow_ipc(array)
@@ -149,6 +149,20 @@ where
         }
     }
     Ok(false)
+}
+
+/// The forward-or-skip decision shared by the stdout/stderr reader tasks and
+/// their tests: given the `raw` bytes [`read_capped_line`] just produced,
+/// return the line to forward downstream, or `None` to skip it.
+///
+/// `read_capped_line` leaves `raw` empty **only** on the final EOF read — a
+/// real blank line is `"\n"`, which is non-empty — so an empty `raw` is that
+/// EOF marker and is dropped. Forwarding it would emit a spurious empty log
+/// line, and under `send_stdout_as` a spurious empty-string Arrow output the
+/// node never produced (dora-rs/dora#3228). Keeping this in one function means
+/// the tasks and the regression test exercise the same guard.
+fn line_to_forward(raw: Vec<u8>) -> Option<Vec<u8>> {
+    (!raw.is_empty()).then_some(raw)
 }
 
 #[derive(Clone, Default)]
@@ -758,6 +772,12 @@ impl PreparedNode {
                     }
                 };
 
+                // Drop the empty final EOF read rather than forwarding a
+                // spurious empty log line — see `line_to_forward`.
+                let Some(raw) = line_to_forward(raw) else {
+                    continue;
+                };
+
                 let mut content = match String::from_utf8(raw) {
                     Ok(s) => s,
                     Err(err) => {
@@ -817,6 +837,12 @@ impl PreparedNode {
                         tracing::warn!("{err:?}");
                         true
                     }
+                };
+
+                // Drop the empty final EOF read rather than forwarding a
+                // spurious empty log line — see `line_to_forward`.
+                let Some(raw) = line_to_forward(raw) else {
+                    continue;
                 };
 
                 let mut content = match String::from_utf8(raw) {
@@ -939,7 +965,6 @@ impl PreparedNode {
                 if let Some(stdout_output_name) = &send_stdout_to {
                     // Convert logs to a self-describing Arrow IPC DataMessage.
                     let array = content.as_str().into_arrow();
-                    let array: ArrayData = array.into();
                     if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
                         let output_id = OutputId(
                             node_id.clone(),
@@ -1024,7 +1049,6 @@ impl PreparedNode {
                     && let Ok(json) = serde_json::to_string(&log_message)
                 {
                     let array = json.as_str().into_arrow();
-                    let array: ArrayData = array.into();
                     if let Some((message, metadata)) = ipc_log_payload(&array, &uhlc) {
                         let output_id =
                             OutputId(node_id.clone(), DataId::from(logs_output_name.to_string()));
@@ -1459,6 +1483,39 @@ mod tests {
             read_all_lines(b"a\nno-newline").await,
             vec![b"a\n".to_vec(), b"no-newline".to_vec()]
         );
+    }
+
+    /// Drive the reader loop through the **same** `line_to_forward` guard the
+    /// production stdout/stderr tasks use, collecting whatever it forwards.
+    /// Because it calls the production function (not a private copy), removing
+    /// the guard there fails the assertions below.
+    async fn forwarded_lines(input: &[u8]) -> Vec<Vec<u8>> {
+        let mut reader = tokio::io::BufReader::new(input).take(MAX_LOG_LINE_BYTES as u64);
+        let mut forwarded = Vec::new();
+        let mut finished = false;
+        while !finished {
+            let mut raw = Vec::new();
+            finished = read_capped_line(&mut reader, &mut raw).await.unwrap();
+            if let Some(raw) = super::line_to_forward(raw) {
+                forwarded.push(raw);
+            }
+        }
+        forwarded
+    }
+
+    #[tokio::test]
+    async fn empty_eof_read_is_not_forwarded() {
+        // Normal case: output ends in a newline. The trailing EOF read is
+        // empty and must not be forwarded as a spurious empty log line
+        // (dora-rs/dora#3228).
+        assert_eq!(
+            forwarded_lines(b"line1\nline2\n").await,
+            vec![b"line1\n".to_vec(), b"line2\n".to_vec()]
+        );
+        // A node that prints nothing at all forwards no line.
+        assert!(forwarded_lines(b"").await.is_empty());
+        // A genuine blank line ("\n") is non-empty `raw`, so it is preserved.
+        assert_eq!(forwarded_lines(b"\n").await, vec![b"\n".to_vec()]);
     }
 
     #[tokio::test]

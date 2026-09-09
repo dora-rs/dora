@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use dora_node_api::{
     DoraNode, Event, MetadataParameters, REQUEST_ID,
-    arrow::array::{Array, Int64Array, StructArray},
+    arrow_v59::array::{Array, Int64Array, StructArray},
     get_string_param,
 };
 use eyre::Context;
@@ -53,7 +53,7 @@ fn main() -> eyre::Result<()> {
                     let rid = get_string_param(&metadata.parameters, REQUEST_ID);
 
                     if let Some(rid) = rid {
-                        let struct_array = StructArray::from(data.to_data());
+                        let struct_array = StructArray::from(data.as_array().to_data());
                         let sum_col = struct_array
                             .column_by_name("sum")
                             .and_then(|c| c.as_any().downcast_ref::<Int64Array>())

@@ -11,7 +11,7 @@ pub(crate) struct TopicSubscriber {
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     >,
     sender: Option<tokio::sync::mpsc::Sender<TopicFrame>>,
-    consecutive_timeouts: usize,
+    timeouts: crate::timeout_streak::TimeoutStreak,
 }
 
 impl TopicSubscriber {
@@ -25,7 +25,7 @@ impl TopicSubscriber {
         Self {
             outputs_by_daemon,
             sender: Some(sender),
-            consecutive_timeouts: 0,
+            timeouts: crate::timeout_streak::TimeoutStreak::default(),
         }
     }
 
@@ -51,12 +51,11 @@ impl TopicSubscriber {
     }
 
     pub(crate) fn reset_timeout_streak(&mut self) {
-        self.consecutive_timeouts = 0;
+        self.timeouts.reset();
     }
 
     pub(crate) fn record_timeout(&mut self) -> usize {
-        self.consecutive_timeouts += 1;
-        self.consecutive_timeouts
+        self.timeouts.record()
     }
 
     pub(crate) fn is_closed(&self) -> bool {

@@ -4,7 +4,8 @@ pub use crate::common::{
     DataMessage, LogLevel, LogMessage, NodeError, NodeErrorCause, NodeExitStatus, Timestamped,
 };
 use crate::{
-    BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, versions_compatible,
+    BuildId, DataflowId, common::DaemonId, current_crate_version, id::NodeId, metadata::Metadata,
+    versions_compatible,
 };
 
 /// Per-dataflow status reported by a daemon after (re-)registration.
@@ -46,16 +47,77 @@ pub struct DaemonRegisterRequest {
     /// distinguish them — an explicit flag can.
     #[serde(default)]
     supports_hub_sources: bool,
+
+    /// Layout version of [`Metadata`], which every `InterDaemonEvent::Output`
+    /// carries between daemons over zenoh.
+    ///
+    /// The coordinator is the only chokepoint that sees every daemon: there is
+    /// no daemon-to-daemon connection to handshake on, because that path is
+    /// zenoh pub/sub. Gating registration therefore gates the daemon-to-daemon
+    /// wire transitively — any two daemons routing a dataflow have both passed
+    /// this check, so they agree on the `Metadata` layout.
+    ///
+    /// `dora_version` alone does not cover this: #2366 dropped a `Metadata`
+    /// field without changing the version, and the resulting mid-stream desync
+    /// was #2742. The node-to-daemon path already gates this
+    /// ([`crate::node_to_daemon::NodeRegisterRequest::check_version`]); this is
+    /// the same gate one hop out.
+    ///
+    /// `#[serde(default)]` makes a pre-field daemon report 0 and fail the check
+    /// with a legible message. That works because this frame is JSON over the
+    /// coordinator WebSocket — a non-self-describing encoding would fail while
+    /// decoding the frame that carries the field, never reaching the check.
+    #[serde(default)]
+    metadata_version: u16,
+
+    /// The zenoh endpoint this daemon is about to bind, so the coordinator can
+    /// hand it to daemons that register after this one.
+    ///
+    /// Carried *in the registration* rather than reported once the session is
+    /// open, and that timing is the whole point. The coordinator handles
+    /// registrations one at a time on its event loop, so an endpoint that
+    /// arrives with the registration is already on record before the next
+    /// daemon's reply is built — two daemons starting simultaneously are
+    /// ordered by that loop and the later one always learns about the earlier.
+    /// Reporting after the session opened instead left a window (register →
+    /// listener bound) in which both daemons could register, each be handed a
+    /// list without the other, and stay partitioned: zenoh reads
+    /// `connect/endpoints` once at session open, so neither could act on the
+    /// other's later report.
+    ///
+    /// The port is reserved before registering, so this is the endpoint the
+    /// daemon *will* bind rather than one it has bound. A bind that then fails
+    /// verification is withdrawn with
+    /// [`DaemonEvent::ZenohListenEndpoint`]`(None)`, so the coordinator never
+    /// keeps handing out an endpoint with nothing behind it for long.
+    ///
+    /// `None` for a daemon with no dialable listener — a single-machine
+    /// deployment (loopback, which would point a remote peer at its own host)
+    /// or a failed reservation.
+    #[serde(default)]
+    pub zenoh_listen_endpoint: Option<String>,
 }
 
 impl DaemonRegisterRequest {
     pub fn new(machine_id: Option<String>, labels: BTreeMap<String, String>) -> Self {
+        Self::with_zenoh_endpoint(machine_id, labels, None)
+    }
+
+    /// [`Self::new`] plus the zenoh endpoint this daemon will bind; see
+    /// [`Self::zenoh_listen_endpoint`].
+    pub fn with_zenoh_endpoint(
+        machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
+        zenoh_listen_endpoint: Option<String>,
+    ) -> Self {
         Self {
             dora_version: current_crate_version(),
             machine_id,
             labels,
             // a daemon built from this crate understands hub git sources
             supports_hub_sources: true,
+            metadata_version: Metadata::CURRENT_VERSION,
+            zenoh_listen_endpoint,
         }
     }
 
@@ -70,6 +132,20 @@ impl DaemonRegisterRequest {
         let specified_version = &self.dora_version;
 
         if versions_compatible(&crate_version, specified_version)? {
+            // Even when semver matches, the payload layout can differ within a
+            // release series (#2366). Reject here so the failure is a legible
+            // registration error rather than a mid-stream desync between
+            // daemons routing the same dataflow (#2742).
+            if self.metadata_version != Metadata::CURRENT_VERSION {
+                return Err(format!(
+                    "message wire-format mismatch: this daemon speaks metadata format v{} \
+                     but the coordinator speaks v{}. The daemon and coordinator were built \
+                     from dora revisions with incompatible message formats; rebuild both \
+                     from the same revision.",
+                    self.metadata_version,
+                    Metadata::CURRENT_VERSION
+                ));
+            }
             Ok(())
         } else {
             // Direction-aware remediation: `versions_compatible` rejects both
@@ -115,7 +191,53 @@ mod register_version_tests {
             machine_id: None,
             labels: Default::default(),
             supports_hub_sources: true,
+            metadata_version: Metadata::CURRENT_VERSION,
+            zenoh_listen_endpoint: None,
         }
+    }
+
+    #[test]
+    fn same_version_daemon_with_a_different_metadata_layout_is_rejected() {
+        // The gap this closes: semver alone let #2366 through, where a
+        // `Metadata` field was dropped without a version bump. Two daemons
+        // routing one dataflow exchange `InterDaemonEvent::Output` over zenoh,
+        // which carries `Metadata` — and zenoh pub/sub has no connection to
+        // handshake on, so the coordinator is the only place this can be
+        // caught. A same-version daemon with a stale layout must be rejected
+        // here rather than desyncing mid-stream (#2742).
+        let mut req = DaemonRegisterRequest::new(None, Default::default());
+        req.metadata_version = Metadata::CURRENT_VERSION.wrapping_add(1);
+
+        let err = req
+            .check_version()
+            .expect_err("a metadata layout mismatch must be rejected");
+        assert!(err.contains("wire-format mismatch"), "{err}");
+        assert!(
+            err.contains("rebuild both"),
+            "the error should say how to fix it: {err}"
+        );
+    }
+
+    #[test]
+    fn a_daemon_predating_the_field_is_rejected_with_a_legible_error() {
+        // The frame is JSON over the coordinator WebSocket, so a daemon built
+        // before `metadata_version` existed simply omits it and `serde(default)`
+        // yields 0. That must fail the gate with a real message rather than
+        // being silently treated as compatible.
+        let json = serde_json::to_string(&DaemonRegisterRequest::new(None, Default::default()))
+            .expect("serialize");
+        let stripped: serde_json::Value = {
+            let mut v: serde_json::Value = serde_json::from_str(&json).unwrap();
+            v.as_object_mut().unwrap().remove("metadata_version");
+            v
+        };
+        let old: DaemonRegisterRequest =
+            serde_json::from_value(stripped).expect("a pre-field daemon must still deserialize");
+        assert_eq!(old.metadata_version, 0);
+        assert!(
+            old.check_version().is_err(),
+            "a pre-field daemon must not be treated as compatible"
+        );
     }
 
     #[test]
@@ -183,6 +305,28 @@ pub enum DaemonEvent {
     Heartbeat {
         #[serde(default)]
         ft_stats: Option<FaultToleranceSnapshot>,
+    },
+    /// The zenoh endpoint this daemon actually bound and is reachable at,
+    /// sent once its session is open.
+    ///
+    /// The coordinator records it and hands it to daemons that register later
+    /// (see `RegisterResult::Ok::peer_zenoh_endpoints`), which is what lets a
+    /// multi-machine deployment wire itself without every daemon being told
+    /// every other daemon's address.
+    ///
+    /// Confirms or withdraws the endpoint this daemon advertised in its
+    /// registration, once its zenoh session is open and the listener has been
+    /// verified against `info().locators()`.
+    ///
+    /// `Some(endpoint)` confirms (and would correct a differing one);
+    /// `None` withdraws, which is what a daemon whose listener did not bind
+    /// must do so the coordinator stops handing out a dead endpoint.
+    ///
+    /// The registration carries the endpoint in the first place — see
+    /// [`DaemonRegisterRequest::zenoh_listen_endpoint`] for why it cannot wait
+    /// until here. This is the correction, not the announcement.
+    ZenohListenEndpoint {
+        endpoint: Option<String>,
     },
     /// Sent by the daemon after registration to report its current state.
     /// Enables coordinator-daemon reconciliation on reconnect.

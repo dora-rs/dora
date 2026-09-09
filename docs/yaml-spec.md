@@ -41,8 +41,8 @@ nodes:
 | `type_rules` | list | `[]` | User-defined type compatibility rules (see [Type Annotations](types.md#user-defined-compatibility-rules)) |
 | `health_check_interval` | float | `5.0` | Seconds between daemon health check sweeps. For each node with `health_check_timeout` set, the daemon checks whether the node has communicated within its timeout; if not, the node is killed and its `restart_policy` is evaluated |
 | `exit_when_nodes_finish` | bool | `false` | Finish the dataflow once every node has, treating `dora/timer/...` inputs as a clock rather than as work. A timer input has no upstream node, so it never closes: by default a node consuming one is never told its inputs are done and the graph cannot end on its own. Overridden by `--exit-when-nodes-finish[=BOOL]` on `dora run` and `dora start` (see [Completion](#completion)) |
-| `_unstable_deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
-| `_unstable_debug` | object | -- | Debug options (see [Debug](#debug)) |
+| `deploy` | object | -- | Root-level deployment config (see [Deployment](#deployment)) |
+| `debug` | object | -- | Debug options (see [Debug](#debug)) |
 
 ## Completion
 
@@ -165,6 +165,22 @@ inputs:
 | `queue_size` | integer | `10` | Input buffer size |
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
+
+A `backpressure` input keeps its producer's output on the daemon path instead
+of the direct zenoh path. The direct path's callback drops at the receiver's
+shared ingress channel when that channel is full, so a timer or a busier input
+can discard the message before the per-input policy ever applies; the daemon
+path feeds the same channel with a blocking send. That is a much deeper buffer,
+not a delivery guarantee: the daemon still drops data, with a warning, for a
+receiver whose per-node channel (1000 events) and daemon-side queue (1000 events
+or 256 MiB of payload) are both full, and cross-daemon forwarding is bounded as
+well. The routing applies to the producer's entire output, so every consumer of
+that output leaves the zero-copy path, and the daemon path carries the 64 MiB
+per-message limit. A producer learns its routing when it starts, so
+`dora node add` and `dora node replace` refuse a `backpressure` input whose
+producer is already running with that output on the direct path. `dora replay`
+sets `backpressure` on every input without a policy, so replay dataflows run
+entirely on the daemon path. The scheduler's documented hard cap still applies.
 
 #### Built-in Timers
 
@@ -379,18 +395,18 @@ The daemon applies `sched_setaffinity` before exec. Core indices must be less th
 
 ### Deployment
 
-Assign nodes to specific machines using `_unstable_deploy`:
+Assign nodes to specific machines using `deploy`:
 
 ```yaml
 - id: camera-driver
-  _unstable_deploy:
+  deploy:
     machine: robot-arm
   path: ./target/debug/camera
   outputs:
     - frames
 
 - id: ml-inference
-  _unstable_deploy:
+  deploy:
     machine: gpu-server
     labels:
       gpu: "true"
@@ -550,7 +566,7 @@ QoS can be set at the bridge level (applies to all topics) or per-topic:
 ## Debug
 
 ```yaml
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 ```
 
@@ -572,7 +588,7 @@ See [Communication Patterns](../../../docs/patterns.md) for details and examples
 ```yaml
 health_check_interval: 10.0
 
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 
 nodes:

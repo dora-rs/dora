@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::descriptor::normalize_path;
 
-use dora_message::{descriptor::Descriptor, id::NodeId};
+use dora_message::{config::InputMapping, descriptor::Descriptor, id::NodeId};
 
 use super::{
     MANIFEST_FILENAME, NodeManifest,
@@ -261,8 +261,15 @@ pub fn apply_manifest_contracts(
         return;
     }
 
-    // the dataflow's wiring must stay within the declared ports (spec §10.1)
-    for input in node.inputs.keys() {
+    // the dataflow's wiring must stay within the declared ports (spec §10.1).
+    // Only user data-port subscriptions are governed by the manifest; built-in
+    // `dora/timer/*` and `dora/logs/*` subscriptions are dataflow-level wiring,
+    // not node contract ports, so they must not be flagged as "not declared"
+    // (which is fatal under `strict_types`).
+    for (input, def) in &node.inputs {
+        if !matches!(def.mapping, InputMapping::User(_)) {
+            continue;
+        }
         if !manifest.inputs.contains_key(input.as_str()) {
             result.warnings.push(sanitize(&format!(
                 "node \"{}\": input `{input}` is not declared in {}",
@@ -446,6 +453,38 @@ nodes:
         assert!(all.contains("input `depth` is not declared"), "{all}");
         assert!(all.contains("output `points` is not declared"), "{all}");
         assert!(all.contains("required input `image` is not wired"), "{all}");
+    }
+
+    #[test]
+    fn timer_and_log_inputs_do_not_warn_as_undeclared() {
+        // A node commonly subscribes to a built-in timer/log stream alongside
+        // its manifest data ports. Those subscriptions are dataflow wiring, not
+        // node contract ports, so they must not be reported as "not declared"
+        // (which is fatal under `strict_types`).
+        let tmp = tempfile::tempdir().unwrap();
+        write_manifest(&tmp.path().join("yolo"), MANIFEST);
+        let mut df = dataflow(
+            r#"
+nodes:
+  - id: camera
+    path: cam
+    outputs: [image]
+  - id: detector
+    path: yolo/target/release/dora-yolo
+    inputs:
+      image: camera/image
+      tick: dora/timer/millis/100
+      logs: dora/logs
+    outputs: [bbox]
+"#,
+        );
+        let mut registry = TypeRegistry::new();
+        let result = inject_adjacent_manifests(&mut df, tmp.path(), &mut registry);
+        assert_eq!(
+            result.warnings,
+            Vec::<String>::new(),
+            "timer/log subscriptions must not be flagged as undeclared inputs"
+        );
     }
 
     #[test]

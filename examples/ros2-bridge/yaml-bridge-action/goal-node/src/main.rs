@@ -28,6 +28,7 @@ fn main() -> eyre::Result<()> {
                 }
                 "feedback" => {
                     let struct_array = data
+                        .as_array()
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expected struct array for feedback");
@@ -53,6 +54,7 @@ fn main() -> eyre::Result<()> {
                 }
                 "result" => {
                     let struct_array = data
+                        .as_array()
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expected struct array for result");

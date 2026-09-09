@@ -32,8 +32,85 @@ use shared_memory_extended::ShmemConf;
 static CUDA_HELPERS: LazyLock<std::sync::Mutex<Option<Py<PyModule>>>> =
     LazyLock::new(|| std::sync::Mutex::new(None));
 
+/// A random `u64` seed derived from the standard library's `RandomState`,
+/// which is seeded from the OS once per process. Used to make process-local
+/// counters unique across process restarts without pulling in a new
+/// dependency (dora-rs/dora#3015).
+fn random_u64_seed() -> u64 {
+    use std::hash::{BuildHasher, Hasher};
+    // `RandomState::new()` picks fresh random keys from the OS; hashing no
+    // input and finishing yields a value derived from those keys, so the
+    // result differs from process to process.
+    std::hash::RandomState::new().build_hasher().finish()
+}
+
+/// Build a memory pool's shared-memory name from the
+/// `(machine_id, dataflow_id, node_id, counter)` tuple.
+///
+/// This is the single source of truth for the on-wire pool-id format *within
+/// this crate*; the daemon half derives the same names independently in
+/// `TensorPoolManager::cross_pool_shmem_name` and `cleanup_orphans`.
+///
+/// [`parse_pool_counter`] recovers the counter from it. Keeping the two
+/// together means a change to the format can only be made in one place
+/// (dora-rs/dora#3015).
+///
+/// A known machine id is prefixed (`dora_pool_{machine_id}_{dataflow_id}_
+/// {node_id}_{counter}`) so multi-machine deployments cannot collide and
+/// leftover segments are attributable to their owner; an empty machine id
+/// yields the unqualified `dora_pool_{dataflow_id}_{node_id}_{counter}`.
+/// The counter stays the final `_`-separated component either way, so
+/// `parse_pool_counter` handles both.
+fn pool_shmem_name(
+    machine_id: &str,
+    dataflow_id: impl std::fmt::Display,
+    node_id: impl std::fmt::Display,
+    counter: u64,
+) -> String {
+    if machine_id.is_empty() {
+        format!("dora_pool_{dataflow_id}_{node_id}_{counter}")
+    } else {
+        format!("dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}")
+    }
+}
+
+/// Recover the pool counter from a pool id of the form
+/// `dora_pool_{dataflow_id}_{node_id}_{counter}` or `pool_{node_id}_{counter}`.
+///
+/// The counter is always the final `_`-separated component — node ids may
+/// themselves contain `_` (legal in dora node ids) — so the last segment is
+/// taken and parsed as a `u64`. Returns `None` when the last segment is not a
+/// `u64`. Inverse of [`pool_shmem_name`]'s counter component.
+fn parse_pool_counter(pool_id: &str) -> Option<u64> {
+    pool_id
+        .rsplit_once('_')
+        .and_then(|(_, counter)| counter.parse::<u64>().ok())
+}
+
 /// Counter to make pinned memory buffer IDs unique across registrations.
-static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> = LazyLock::new(|| std::sync::Mutex::new(0));
+///
+/// Seeded with a random value per process rather than `0` (dora-rs/dora#3015).
+/// The counter is combined with the `(dataflow_id, node_id)` pair — both of
+/// which are stable across a crash-restart — into the pool's shared-memory
+/// name, so a deterministic `0` seed makes a restarted node re-derive the
+/// exact name its previous incarnation used. The old segment is still there:
+/// the daemon's pool sweeps run only at daemon start, dataflow spawn and
+/// dataflow finish, so a crash-restart inside a live dataflow unlinks nothing.
+/// `ShmemConf::create()` is `O_EXCL`, so it collides and the restarted node can
+/// never register its pool -- a crash-restart loop that never recovers. A random per-incarnation
+/// seed keeps the id unique across restarts while the component stays a plain
+/// `u64`, so both existing name parsers keep working unchanged.
+///
+/// Trade-off (dora-rs/dora#3015 review): with the collision gone, a repeatedly
+/// crashing node whose receiver never calls `free_memory_pool` now leaks the
+/// previous incarnation's registry entry and `/dev/shm` segment on each
+/// restart, instead of failing fast on the first. `cleanup_orphans` only runs
+/// at dataflow spawn, and the daemon registry is capped, so a pathological
+/// crash loop can eventually exhaust it. The complete fix is an owner-death
+/// pool reclaim (tracked as follow-up); this change trades fail-fast for
+/// recover-on-transient-crash, which is the common case.
+static PINNED_COUNTER: LazyLock<std::sync::Mutex<u64>> =
+    LazyLock::new(|| std::sync::Mutex::new(random_u64_seed()));
 
 /// Maximum number of freed pool buffer IDs to remember at once. This is a
 /// single budget shared across every peer the process reads from, not a
@@ -190,6 +267,32 @@ static PINNED_POOL: LazyLock<std::sync::Mutex<HashMap<u64, PoolSlot>>> =
 static TRANSIT_META: LazyLock<std::sync::Mutex<HashMap<u64, (u64, i32)>>> =
     LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
 
+/// Persistent map of pool counter → the exact `/dev/shm` segment name chosen
+/// at registration.
+///
+/// The read side resolves each pool's segment name from the daemon, but the
+/// per-frame write fast path reconstructs the name locally on a `PINNED_POOL`
+/// cache-miss (slot eviction). Reconstructing via `pool_shmem_name` is correct
+/// for the auto-named case, but wrong for a pool registered with an explicit
+/// `name=` (added in #3079), where the name is used verbatim and does not
+/// follow the auto format. Without this record the cache-miss reopen would
+/// target a segment that does not exist, `ShmemConf::open()` would fail, and
+/// the write would be silently dropped (#3207).
+///
+/// Keyed by the bare per-process counter (matching `PINNED_POOL` /
+/// `TRANSIT_META`); populated in `register_tensor_pool`, cleared in every free
+/// path (`rollback_local_pool`, `free_tensor_pool`, and the GC drain in
+/// `process_pending_tensor_pool_frees`). The free-time removal is
+/// ownership-guarded via `owned_pool_counter`, and the write-side lookup runs
+/// under the same guard by construction: it fires only after
+/// `PINNED_POOL.remove(&counter)` returns `None`, i.e. only for a counter this
+/// process itself registered (nothing else could have inserted into
+/// `PINNED_POOL` under that counter). A cross-process pool id with an aliased
+/// bare counter has no `PINNED_POOL` entry here, so this path is not reached
+/// for it.
+static POOL_NAMES: LazyLock<std::sync::Mutex<HashMap<u64, String>>> =
+    LazyLock::new(|| std::sync::Mutex::new(HashMap::new()));
+
 /// Receiver-side GPU cache per pool.
 /// Keeps Shmem alive to prevent munmap, preserving stable mmap addresses
 /// and valid GPU VAs for zero-copy reads across iterations.
@@ -316,6 +419,10 @@ fn rollback_local_pool(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&pool_counter);
+    POOL_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&pool_counter);
     FREED_POOL_IDS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -397,6 +504,129 @@ mod pin_tests {
     fn pin_zero_size_cpu() {
         // Zero-size CPU tensor → below threshold, don't pin
         assert!(!should_pin(false, 0));
+    }
+}
+
+#[cfg(test)]
+mod pool_id_tests {
+    use super::*;
+
+    /// dora-rs/dora#3015: the per-process pool counter is now seeded from
+    /// `random_u64_seed()` so a restarted node does not re-derive its previous
+    /// incarnation's shared-memory name and collide on a still-live segment.
+    /// The seed must vary from call to call. This is a *weak* proxy for the
+    /// property #3015 actually needs (variation from process to process):
+    /// `RandomState::new()` bumps its cached `k0` on every call within a
+    /// thread, so successive draws would differ even if the OS seeding were
+    /// removed. Only a literal-constant implementation turns this RED; a real
+    /// cross-process check would need a spawned subprocess.
+    #[test]
+    fn random_seed_is_not_constant() {
+        let seeds: std::collections::HashSet<u64> = (0..8).map(|_| random_u64_seed()).collect();
+        assert!(
+            seeds.len() > 1,
+            "random_u64_seed() must not return a constant value"
+        );
+    }
+
+    /// The on-wire pool-id format is a contract shared with the daemon
+    /// (`tensor-pool` derives the same name). Pin the exact literal so a change
+    /// to `pool_shmem_name` that both in-process halves would still agree on,
+    /// yet breaks that cross-process contract, is caught here.
+    #[test]
+    fn pool_shmem_name_has_the_expected_wire_format() {
+        assert_eq!(
+            pool_shmem_name("", "dataflow-uuid", "cam", 7),
+            "dora_pool_dataflow-uuid_cam_7"
+        );
+        // A known machine id is prefixed, and the counter stays last.
+        assert_eq!(
+            pool_shmem_name("m1", "dataflow-uuid", "cam", 7),
+            "dora_pool_m1_dataflow-uuid_cam_7"
+        );
+    }
+
+    /// A pool name built from a large, random-seeded counter must round-trip
+    /// back through the *production* parser — including for a `node_id` that
+    /// itself contains underscores, where only taking the last segment as the
+    /// counter is correct. Exercising the real `pool_shmem_name` /
+    /// `parse_pool_counter` pair means a regression in either can turn this
+    /// RED (dora-rs/dora#3015).
+    #[test]
+    fn large_counter_round_trips_through_the_production_parser() {
+        for (node_id, counter) in [("my_node", u64::MAX - 3), ("cam_left", 1), ("plain", 0)] {
+            let shmem_name = pool_shmem_name("", "dataflow-uuid", node_id, counter);
+            assert_eq!(
+                parse_pool_counter(&shmem_name),
+                Some(counter),
+                "counter must round-trip for node id {node_id:?}"
+            );
+        }
+    }
+
+    /// A pool id whose final segment is not a `u64` yields `None` rather than a
+    /// wrong counter — the fall-back-to-daemon path relies on this.
+    #[test]
+    fn parse_pool_counter_rejects_a_non_numeric_tail() {
+        assert_eq!(parse_pool_counter("dora_pool_df_node_notanumber"), None);
+    }
+
+    /// dora-rs/dora#3207: a pool registered with an explicit `name=` (that
+    /// deliberately does not follow the auto-name format) must have its
+    /// segment name stored in `POOL_NAMES` so the write cache-miss branch can
+    /// reopen the correct segment. Reconstructing via `pool_shmem_name` would
+    /// yield a name that does not exist for it and the write would be dropped.
+    #[test]
+    fn pool_names_stores_the_registered_segment_name() {
+        // Reserve a counter high enough that no other test collides with it.
+        let counter = 9_876_543_210_u64;
+        let name = "dora_pool_myapp_frames".to_string();
+        POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(counter, name.clone());
+
+        let looked_up = POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&counter)
+            .cloned();
+        assert_eq!(looked_up, Some(name));
+
+        POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&counter);
+    }
+
+    /// dora-rs/dora#3207: the free-time removal of `POOL_NAMES` runs even
+    /// when `PINNED_POOL` was already evicted (register → evict → free),
+    /// so a long-running node cannot grow `POOL_NAMES` for the process
+    /// lifetime. Exercises the removal path directly, matching the
+    /// unconditional `.remove` now placed in every free site.
+    #[test]
+    fn pool_names_removal_is_unconditional() {
+        let counter = 9_876_543_211_u64;
+        POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(counter, "dora_pool_x".to_string());
+
+        // Simulate the "PINNED_POOL evicted" state: no PINNED_POOL entry to
+        // remove. POOL_NAMES.remove must still run — see the `free_tensor_pool`
+        // / `process_pending_tensor_pool_frees` / `rollback_local_pool`
+        // sites.
+        POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .remove(&counter);
+
+        let looked_up = POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .get(&counter)
+            .cloned();
+        assert_eq!(looked_up, None);
     }
 }
 
@@ -532,6 +762,10 @@ fn check_capacity_gpu_pool(
 mod transport_tests {
     use super::*;
 
+    /// One row of the exhaustive `classify_transport` matrix:
+    /// `(src_dev, dst_dev, p2p, is_cuda)` paired with the expected path.
+    type TransportCase = ((i32, i32, bool, bool), TransportPath);
+
     // -- classify_transport -------------------------------------------------
 
     #[test]
@@ -584,7 +818,7 @@ mod transport_tests {
 
     #[test]
     fn classify_transport_full_8_case_matrix() {
-        let cases: &[((i32, i32, bool, bool), TransportPath)] = &[
+        let cases: &[TransportCase] = &[
             // (src_dev, dst_dev, p2p, is_cuda) → expected
             ((0, 0, false, false), TransportPath::SameDeviceDtoD),
             ((0, 0, false, true), TransportPath::SameDeviceDtoD),
@@ -1114,8 +1348,11 @@ fn warn_missing_tensor_pool(node_id: &NodeId, action: &str, buffer_id: &str) {
 /// `pool_{node_id}_{counter}` buffer id, but only when `node_id` owns the pool.
 ///
 /// The sender-side `PINNED_POOL`/`TRANSIT_META` maps are keyed by the bare
-/// per-process counter, *not* namespaced by node id, and every process's
-/// counters restart at 1. So a node that frees a *peer's* pool (a receiver
+/// per-process counter, *not* namespaced by node id. Before #3015 every
+/// process's counters started at 1, so two processes' low counters aliased
+/// outright; the random seed makes that collision improbable rather than
+/// certain, and this guard stays the actual defense rather than becoming
+/// redundant. So a node that frees a *peer's* pool (a receiver
 /// releasing a pool it read) would otherwise reclaim its *own* same-counter
 /// slot — freeing a live GPU buffer whose IPC handle is still exported to a
 /// downstream node (dora-rs/dora#3168). Guarding on the owner segment keeps the
@@ -1178,7 +1415,7 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
     unsafe {
         let cur = std::ptr::read_volatile(gen_ptr);
         if cur.is_multiple_of(2) {
-            std::ptr::write_volatile(gen_ptr, cur + 1);
+            std::ptr::write_volatile(gen_ptr, cur.wrapping_add(1));
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
         cur & !1 // always return the even baseline
@@ -1196,12 +1433,16 @@ unsafe fn seqlock_begin_if_even(gen_ptr: *mut u64) -> u64 {
 /// in `write_tensor_pool`.
 unsafe fn seqlock_end(gen_ptr: *mut u64, pre_write_gen: u64, copy_ok: bool) {
     unsafe {
+        // Release fence BEFORE the completion store, so the writer's payload
+        // writes are ordered before the even ("complete") generation becomes
+        // visible. A fence placed *after* the store orders nothing on a
+        // weakly-ordered CPU (dora-rs/dora#3288).
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         if copy_ok {
             std::ptr::write_volatile(gen_ptr, pre_write_gen.wrapping_add(2));
         } else {
             std::ptr::write_volatile(gen_ptr, pre_write_gen);
         }
-        std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1355,21 +1596,29 @@ impl Pool<'_> {
             // Sender-side cleanup (PINNED_POOL, GPU/transit buffers).
             // `owned_pool_counter` guards against cross-process counter aliasing:
             // it yields the bare counter only when this node owns the pool.
-            if let Some(c) = owned_pool_counter(&buffer_id, self.node_id.as_ref())
-                && let Some(slot) = PINNED_POOL
+            if let Some(c) = owned_pool_counter(&buffer_id, self.node_id.as_ref()) {
+                if let Some(slot) = PINNED_POOL
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&c)
-            {
-                if let Ok(helpers) = get_cuda_helpers(py) {
-                    let bound = helpers.bind(py);
-                    let _ = bound.call_method1("_unregister_host", (slot.base,));
-                    let _ = bound.call_method1("_free_gpu_buf", (c,));
-                    if slot.transit_ptr != 0 {
-                        let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                {
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (slot.base,));
+                        let _ = bound.call_method1("_free_gpu_buf", (c,));
+                        if slot.transit_ptr != 0 {
+                            let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                        }
                     }
+                    TRANSIT_META
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&c);
                 }
-                TRANSIT_META
+                // Drop the segment-name record on every GC pass — must run
+                // even when `PINNED_POOL` was evicted between register and
+                // free, else `POOL_NAMES` grows for the process lifetime.
+                POOL_NAMES
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&c);
@@ -1465,10 +1714,12 @@ impl Pool<'_> {
             );
         }
 
-        // Generate unique pool counter for this registration
+        // Generate unique pool counter for this registration. `wrapping_add`
+        // guards the (astronomically unlikely) overflow now that the counter
+        // starts from a random seed rather than 0 (dora-rs/dora#3015).
         let pool_counter = {
             let mut c = PINNED_COUNTER.lock().unwrap_or_else(|e| e.into_inner());
-            *c += 1;
+            *c = c.wrapping_add(1);
             *c
         };
         // Segment name: an explicit `name` is used verbatim (after the
@@ -1494,17 +1745,7 @@ impl Pool<'_> {
             }
             None => {
                 let machine_id = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
-                if machine_id.is_empty() {
-                    format!(
-                        "dora_pool_{}_{}_{}",
-                        self.dataflow_id, self.node_id, pool_counter
-                    )
-                } else {
-                    format!(
-                        "dora_pool_{}_{}_{}_{}",
-                        machine_id, self.dataflow_id, self.node_id, pool_counter
-                    )
-                }
+                pool_shmem_name(&machine_id, self.dataflow_id, &self.node_id, pool_counter)
             }
         };
 
@@ -1588,7 +1829,7 @@ impl Pool<'_> {
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
-            std::ptr::write_volatile(gen_ptr, old_gen + 1);
+            std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
         }
 
@@ -1674,28 +1915,25 @@ impl Pool<'_> {
         }
         if let Some(target_machine) = machine {
             let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
-            // register_cross_machine_pool returns `Result<Result<(), String>,
-            // eyre::Error>`: the outer Err is a transport failure (daemon
+            // `register_cross_machine` returns `Result<(Result<(), String>,
+            // bool), String>`: the outer Err is a call failure (daemon
             // channel closed, interactive / integration-testing mock mode),
-            // the inner Err the daemon-reported mirror failure.  Map the
-            // transport Err to the same String type so the two failure
-            // channels merge below.
-            let result = self
-                .node
-                .register_cross_machine_pool(
-                    buffer_id.clone(),
-                    shmem_name.clone(),
-                    size,
-                    dtype.clone(),
-                    shape_list.clone(),
-                    // The mirror's consumer is the receiver — relay the
-                    // RECEIVER device, not the source device, so the
-                    // mirror's pinned_type matches how the receiver reads
-                    // it (cpu = data region, cuda = HtoD staging).
-                    device.clone(),
-                    target_machine,
-                )
-                .map_err(|e| format!("{e:?}"));
+            // the inner Err the daemon-reported mirror failure.  Both are
+            // Strings already, so the two failure channels merge below.
+            let result = crate::seam::register_cross_machine(
+                self.node,
+                buffer_id.clone(),
+                shmem_name.clone(),
+                size,
+                dtype.clone(),
+                shape_list.clone(),
+                // The mirror's consumer is the receiver — relay the
+                // RECEIVER device, not the source device, so the mirror's
+                // pinned_type matches how the receiver reads it
+                // (cpu = data region, cuda = HtoD staging).
+                device.clone(),
+                target_machine,
+            );
             match result {
                 Ok((Ok(()), direct)) => {
                     if direct {
@@ -1805,10 +2043,10 @@ impl Pool<'_> {
                     // cap, leftover-segment EEXIST) otherwise leaves a
                     // phantom descriptor poisoning receiver lookups until
                     // dataflow finish. Tell the daemon to tear the
-                    // registration down — FreePinnedMemory now drops the
+                    // registration down — the free request drops the
                     // descriptor, both write locks, and any table entry
                     // (self-review, 2026-08-16).
-                    let _ = self.node.free_pinned_memory(buffer_id.clone());
+                    let _ = crate::seam::free(self.node, buffer_id.clone());
                     rollback_local_pool(
                         &mut shmem,
                         shmem_ptr as u64,
@@ -2041,8 +2279,11 @@ impl Pool<'_> {
         unsafe {
             let gen_ptr = shmem_ptr.add(96) as *mut u64;
             let old_gen = std::ptr::read_volatile(gen_ptr);
-            std::ptr::write_volatile(gen_ptr, old_gen + 1);
+            // Release fence BEFORE the completion store (dora-rs/dora#3288):
+            // it orders the preceding payload writes before the "complete"
+            // generation is published; a fence after the store is inert.
             std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
+            std::ptr::write_volatile(gen_ptr, old_gen.wrapping_add(1));
         }
 
         // Store shmem in pool (keep alive)
@@ -2069,6 +2310,15 @@ impl Pool<'_> {
                 .unwrap_or_else(|e| e.into_inner())
                 .insert(pool_counter, (transit_ptr, pool_device));
         }
+
+        // Persist the exact segment name so the write fast path reopens this
+        // pool's segment on a PINNED_POOL cache-miss instead of reconstructing
+        // the auto-name format, which would be wrong for an explicit-`name=`
+        // pool and silently drop the write (#3207).
+        POOL_NAMES
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(pool_counter, shmem_name.clone());
 
         let buffer_id = format!("pool_{}_{}", self.node_id, pool_counter);
 
@@ -2120,6 +2370,69 @@ impl Pool<'_> {
         let buffer_id_array = arrow::array::StringArray::from(vec![buffer_id]);
         let buf_py: Py<PyAny> = buffer_id_array.to_data().to_pyarrow(py)?.unbind();
         Ok(buf_py)
+    }
+
+    /// Open a pool's `/dev/shm` segment on a `PINNED_POOL` cache-miss and wrap
+    /// it in a `PoolSlot` for the write fast path.
+    ///
+    /// Segment name: `pool_shmem_name` reconstructs the auto-name format,
+    /// which is wrong for a pool registered with an explicit `name=` (#3207).
+    /// Prefer the exact name recorded in `POOL_NAMES` when this counter names
+    /// one of *our own* pools — ownership is gated via `owned_pool_counter`,
+    /// matching the free sites, so a peer pool id with an aliased bare
+    /// counter cannot resolve to our own segment name here. Fall through to
+    /// `pool_shmem_name` otherwise, which preserves the pre-fix behaviour for
+    /// a foreign or unrecorded counter.
+    ///
+    /// Returns the raw write target tuple `(ptr, capacity, slot, is_pinned)`;
+    /// on `ShmemConf::open` failure it warns (a missing segment on this path
+    /// is a real routing fault, not an expected miss) and returns a null
+    /// pointer so the caller drops the frame.
+    fn open_pool_segment_on_miss(
+        &self,
+        buffer_id: &str,
+        counter: u64,
+        auto_pin: bool,
+    ) -> (*mut u8, usize, Option<PoolSlot>, bool) {
+        let shmem_name = {
+            let owned_name = owned_pool_counter(buffer_id, self.node_id.as_ref())
+                .filter(|c| *c == counter)
+                .and_then(|c| {
+                    POOL_NAMES
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .get(&c)
+                        .cloned()
+                });
+            owned_name.unwrap_or_else(|| {
+                let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
+                pool_shmem_name(&machine, self.dataflow_id, &self.node_id, counter)
+            })
+        };
+        match ShmemConf::new().os_id(&shmem_name).open() {
+            Ok(shmem) => {
+                let cap = shmem.len();
+                let base = shmem.as_ptr() as u64;
+                let slot = PoolSlot {
+                    _shmem: shmem,
+                    base,
+                    size: cap,
+                    is_pinned: auto_pin,
+                    transit_ptr: 0,
+                    pool_device: 0,
+                };
+                (base as *mut u8, cap, Some(slot), auto_pin)
+            }
+            Err(err) => {
+                tracing::warn!(
+                    "[{}] write_tensor_pool: failed to open pool segment `{}` on cache-miss: {} — frame dropped",
+                    self.node_id,
+                    shmem_name,
+                    err
+                );
+                (std::ptr::null_mut(), 0, None, false)
+            }
+        }
     }
 
     /// Write tensor data to an existing tensor pool.
@@ -2182,9 +2495,7 @@ impl Pool<'_> {
         if buffer_id.starts_with("pool_") {
             // Extract counter from the last underscore segment — node_id
             // may legitimately contain underscores.
-            if let Some((_, counter_str)) = buffer_id.rsplit_once('_')
-                && let Ok(counter) = counter_str.parse::<u64>()
-            {
+            if let Some(counter) = parse_pool_counter(&buffer_id) {
                 // Try PINNED_POOL cache first to avoid per-iteration mmap/munmap.
                 // register_tensor_pool already stored the Shmem here; taking it
                 // prevents munmap, and storing it back keeps the mapping alive.
@@ -2208,38 +2519,8 @@ impl Pool<'_> {
                         let pinned = auto_pin;
                         (slot_data.base as *mut u8, cap, Some(slot_data), pinned)
                     } else {
-                        // Cache miss: open via ShmemConf, wrap immediately
-                        // so the mapping stays alive until post-write re-insert.
-                        let shmem_name = {
-                            let machine = std::env::var("DORA_MACHINE_ID").unwrap_or_default();
-                            if machine.is_empty() {
-                                format!(
-                                    "dora_pool_{}_{}_{}",
-                                    self.dataflow_id, self.node_id, counter
-                                )
-                            } else {
-                                format!(
-                                    "dora_pool_{}_{}_{}_{}",
-                                    machine, self.dataflow_id, self.node_id, counter
-                                )
-                            }
-                        };
-                        match ShmemConf::new().os_id(&shmem_name).open() {
-                            Ok(shmem) => {
-                                let cap = shmem.len();
-                                let base = shmem.as_ptr() as u64;
-                                let slot = PoolSlot {
-                                    _shmem: shmem,
-                                    base,
-                                    size: cap,
-                                    is_pinned: auto_pin,
-                                    transit_ptr: 0,
-                                    pool_device: 0,
-                                };
-                                (base as *mut u8, cap, Some(slot), auto_pin)
-                            }
-                            Err(_) => (std::ptr::null_mut(), 0, None, false),
-                        }
+                        // Cache miss: reopen the segment (see helper).
+                        self.open_pool_segment_on_miss(&buffer_id, counter, auto_pin)
                     };
 
                 if !shmem_ptr.is_null() {
@@ -2557,9 +2838,7 @@ impl Pool<'_> {
 
                         if ipc_present == 1 && !is_cuda {
                             // Extract counter for the DMA slot from buffer_id.
-                            let slow_counter = buffer_id
-                                .rsplit_once('_')
-                                .and_then(|(_, c)| c.parse::<u64>().ok());
+                            let slow_counter = parse_pool_counter(&buffer_id);
                             let gen_ptr = unsafe { shmem_ptr.add(96) as *mut u64 };
                             let pre_write_gen = unsafe { seqlock_begin_if_even(gen_ptr) };
                             let mut copy_ok = true;
@@ -2604,19 +2883,17 @@ impl Pool<'_> {
                                 let bound = helpers.bind(py);
                                 // Slow path transit look-up: PINNED_POOL
                                 // (contrast fast path which uses store_back).
-                                let (transit_ptr, pool_device) = if let Some((_, counter_str)) =
-                                    buffer_id.rsplit_once('_')
-                                    && let Ok(c) = counter_str.parse::<u64>()
-                                {
-                                    PINNED_POOL
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .get(&c)
-                                        .map(|s| (s.transit_ptr, s.pool_device))
-                                        .unwrap_or((0, 0))
-                                } else {
-                                    (0, 0)
-                                };
+                                let (transit_ptr, pool_device) =
+                                    if let Some(c) = parse_pool_counter(&buffer_id) {
+                                        PINNED_POOL
+                                            .lock()
+                                            .unwrap_or_else(|e| e.into_inner())
+                                            .get(&c)
+                                            .map(|s| (s.transit_ptr, s.pool_device))
+                                            .unwrap_or((0, 0))
+                                    } else {
+                                        (0, 0)
+                                    };
                                 let write_path = classify_write_path(
                                     ipc_present,
                                     /*is_cuda=*/ true,
@@ -2633,10 +2910,7 @@ impl Pool<'_> {
                                             .call_method1(
                                                 "_transit_copy_gpu_buf",
                                                 (
-                                                    buffer_id
-                                                        .rsplit_once('_')
-                                                        .and_then(|(_, cs)| cs.parse::<u64>().ok())
-                                                        .unwrap_or(0),
+                                                    parse_pool_counter(&buffer_id).unwrap_or(0),
                                                     ptr_val,
                                                     sender_dev,
                                                     transit_ptr,
@@ -2650,10 +2924,7 @@ impl Pool<'_> {
                                         .call_method1(
                                             "_cuda_memcpy_gpu_buf",
                                             (
-                                                buffer_id
-                                                    .rsplit_once('_')
-                                                    .and_then(|(_, cs)| cs.parse::<u64>().ok())
-                                                    .unwrap_or(0),
+                                                parse_pool_counter(&buffer_id).unwrap_or(0),
                                                 ptr_val,
                                                 size,
                                             ),
@@ -2974,7 +3245,7 @@ impl Pool<'_> {
         // the target machine (no-op for local pools — the daemon logs the
         // missing entry and returns an error we absorb below).  The local
         // metadata is removed by the `drop_key` seam right after.
-        if let Err(e) = self.node.free_pinned_memory(buffer_id.clone()) {
+        if let Err(e) = crate::seam::free(self.node, buffer_id.clone()) {
             tracing::debug!(
                 "[{}] free_tensor_pool: daemon release failed for {}: {e}",
                 self.node_id,
@@ -2997,24 +3268,32 @@ impl Pool<'_> {
         // enforces that guard, matching `process_pending_tensor_pool_frees`.
         {
             let counter = owned_pool_counter(&buffer_id, self.node_id.as_ref());
-            if let Some(c) = counter
-                && let Some(slot) = PINNED_POOL
+            if let Some(c) = counter {
+                if let Some(slot) = PINNED_POOL
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&c)
-            {
-                if let Ok(helpers) = get_cuda_helpers(py) {
-                    let bound = helpers.bind(py);
-                    let _ = bound.call_method1("_unregister_host", (slot.base,));
-                    let _ = bound.call_method1("_free_gpu_buf", (c,));
-                    if slot.transit_ptr != 0 {
-                        let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                {
+                    if let Ok(helpers) = get_cuda_helpers(py) {
+                        let bound = helpers.bind(py);
+                        let _ = bound.call_method1("_unregister_host", (slot.base,));
+                        let _ = bound.call_method1("_free_gpu_buf", (c,));
+                        if slot.transit_ptr != 0 {
+                            let _ = bound.call_method1("_free_transit", (slot.transit_ptr,));
+                        }
                     }
+                    // Remove transit metadata regardless of whether CUDA helpers
+                    // are available — a missing _free_transit is a leak, but a stale
+                    // TRANSIT_META entry is a correctness bug on re-registration.
+                    TRANSIT_META
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .remove(&c);
                 }
-                // Remove transit metadata regardless of whether CUDA helpers
-                // are available — a missing _free_transit is a leak, but a stale
-                // TRANSIT_META entry is a correctness bug on re-registration.
-                TRANSIT_META
+                // Drop the segment-name record whenever the pool is ours —
+                // must run even when `PINNED_POOL` was already evicted, else
+                // `POOL_NAMES` grows for the process lifetime.
+                POOL_NAMES
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove(&c);
@@ -3105,10 +3384,7 @@ impl Pool<'_> {
     /// and forwards the frame to the mirror pool on the target machine.
     /// Used by the cross-machine register (initial frame) and write paths.
     fn push_mirror_update(&mut self, buffer_id: &str, size: usize, caller: &str) {
-        if let Err(e) = self
-            .node
-            .write_pinned_memory(buffer_id.to_string(), Vec::new(), size)
-        {
+        if let Err(e) = crate::seam::write(self.node, buffer_id.to_string(), size) {
             tracing::error!(
                 "[{}] {caller}: daemon push failed for {}: {e}",
                 self.node_id,
@@ -3149,12 +3425,8 @@ impl Pool<'_> {
         // Format: "pool_{node_id}_{counter}".
         // Use rsplit to extract the counter from the end — the node_id
         // portion may itself contain underscores (legal in dora node ids).
-        let counter: u64 = match buffer_id.rsplit_once('_') {
-            Some((_, c)) => match c.parse() {
-                Ok(c) => c,
-                Err(_) => return Ok(None),
-            },
-            None => return Ok(None),
+        let Some(counter) = parse_pool_counter(buffer_id) else {
+            return Ok(None);
         };
         let pool_node_id = buffer_id
             .strip_prefix("pool_")
@@ -3176,22 +3448,21 @@ impl Pool<'_> {
 
         // Candidate segment names, tried in order: the machine-qualified
         // mirror name first (cross-machine pools resolve to a mirror
-        // segment on this host, named `dora_pool_{machine}_{df}_{node}_
-        // {counter}`), then the unqualified local name (single-daemon and
-        // same-machine pools, and nodes spawned without DORA_MACHINE_ID).
+        // segment on this host), then the unqualified local name
+        // (single-daemon and same-machine pools, and nodes spawned without
+        // DORA_MACHINE_ID).
         let mut candidates: Vec<String> = Vec::new();
         if let Ok(machine) = std::env::var("DORA_MACHINE_ID")
             && !machine.is_empty()
         {
-            candidates.push(format!(
-                "dora_pool_{machine}_{}_{}_{}",
-                self.dataflow_id, pool_node_id, counter
+            candidates.push(pool_shmem_name(
+                &machine,
+                self.dataflow_id,
+                pool_node_id,
+                counter,
             ));
         }
-        candidates.push(format!(
-            "dora_pool_{}_{}_{}",
-            self.dataflow_id, pool_node_id, counter
-        ));
+        candidates.push(pool_shmem_name("", self.dataflow_id, pool_node_id, counter));
 
         // Open the first readable candidate.
         let mut shmem = None;
@@ -3514,7 +3785,12 @@ impl Pool<'_> {
             };
         }
 
-        // Seqlock: re-read generation — mismatch means data changed during read
+        // Seqlock: re-read generation — mismatch means data changed during read.
+        // Acquire fence BEFORE the re-read so the payload loads above cannot be
+        // reordered past this load; otherwise a concurrent write that bumps the
+        // generation mid-read is not detected on a weakly-ordered CPU
+        // (dora-rs/dora#3288).
+        std::sync::atomic::fence(std::sync::atomic::Ordering::Acquire);
         let read_gen2 = unsafe { std::ptr::read_volatile(shmem_ptr.add(96) as *const u64) };
         if read_gen2 != read_gen {
             return Ok(None);

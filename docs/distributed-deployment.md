@@ -1,6 +1,6 @@
 # Distributed Deployment Guide
 
-Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices.
+Dora supports deploying dataflows across multiple machines for multi-robot fleets, edge AI pipelines, and distributed robotics systems. This guide covers cluster management, node scheduling, binary distribution, auto-recovery, and operational best practices. For the network between the machines — how the daemons find each other on a LAN, on a VPN mesh, or across NAT with zenoh routers — start with the [Multi-machine Guide](multi-machine.md).
 
 ## Table of Contents
 
@@ -8,6 +8,8 @@ Dora supports deploying dataflows across multiple machines for multi-robot fleet
 - [Quick Start](#quick-start)
 - [Features at a Glance](#features-at-a-glance)
 - [Cluster Configuration Reference](#cluster-configuration-reference)
+- [Cross-Machine Node Communication](#cross-machine-node-communication)
+- [Custom Zenoh Configuration](#custom-zenoh-configuration)
 - [Cluster Commands Reference](#cluster-commands-reference)
   - [dora cluster up](#dora-cluster-up)
   - [dora cluster status](#dora-cluster-status)
@@ -100,8 +102,8 @@ dora cluster down
 | Feature | Command / Config | Description |
 |---------|-----------------|-------------|
 | Cluster lifecycle | `dora cluster up/status/down` | SSH-based daemon management from a single machine |
-| Label scheduling | `_unstable_deploy.labels` | Route nodes to daemons by key-value labels |
-| Binary distribution | `_unstable_deploy.distribute` | local, scp, or http strategies |
+| Label scheduling | `deploy.labels` | Route nodes to daemons by key-value labels |
+| Binary distribution | `deploy.distribute` | local, scp, or http strategies |
 | systemd services | `dora cluster install/uninstall` | Persistent daemon services that survive reboots |
 | Auto-recovery | Automatic | Re-spawn nodes when a daemon reconnects |
 | Rolling upgrade | `dora cluster upgrade` | SCP binary + restart per-machine sequentially |
@@ -120,7 +122,8 @@ coordinator:
   addr: 10.0.0.1            # IP address the coordinator binds to (required)
   port: 6013                 # WebSocket port (default: 6013)
 
-zenoh_peer: tcp/10.0.0.1:5456  # Shared inter-daemon Zenoh rendezvous (optional)
+zenoh_peer: tcp/10.0.0.1:5456  # Shared inter-daemon Zenoh rendezvous (optional;
+                               # mutually exclusive with the mesh below)
 
 machines:
   - id: edge-01              # Unique machine identifier (required)
@@ -128,6 +131,8 @@ machines:
     user: ubuntu              # SSH user (optional, defaults to current user)
     port: 2222                # SSH port (optional, defaults to 22)
     daemon_port: 53291        # Daemon local-listen port (optional, defaults to 53291)
+    zenoh_addr: 10.0.0.2      # Address peers dial (optional, defaults to `host`)
+    zenoh_port: 5456          # Zenoh listen port (optional, defaults to 5456)
     labels:                   # Key-value labels for scheduling (optional)
       gpu: "true"
       arch: arm64
@@ -151,18 +156,78 @@ machines:
 > **Every daemon must be dialable by every other daemon.** Zenoh advertises the
 > address a daemon binds, and remote daemons dial exactly that; since zenoh 1.9
 > peers do not relay for each other, a pair that cannot form a direct link has no
-> fallback and silently exchanges nothing. By default a daemon binds the local
-> address that routes toward `coordinator.addr` — the LAN address on a LAN, the
-> tunnel address on a mesh VPN such as Tailscale — which is correct without
-> configuration. On a multi-homed machine that would otherwise advertise an
-> interface the other daemons cannot reach, override it with
-> `dora daemon --zenoh-listen <IP>`. A daemon whose coordinator is loopback stays
-> on loopback and is not reachable from the network at all.
+> fallback and silently exchanges nothing.
 >
-> `--zenoh-listen` must be a concrete address: a wildcard (`0.0.0.0`) is rejected
-> because zenoh would bind every interface but advertise a concrete one. An
-> address given explicitly must bind, or the daemon exits rather than starting
-> without a listener.
+> **The coordinator wires this automatically.** Each daemon derives the address
+> its peers should dial from `--coordinator-addr` (the local address that routes
+> toward the coordinator — the LAN address on a LAN, the tunnel address on a mesh
+> VPN), sends it along with its registration, and receives in return the
+> endpoints of the daemons that registered before it. (It confirms the endpoint
+> once its listener is verified, and withdraws it if the bind failed, so a dead
+> endpoint is not handed out for long.) Each daemon
+> dialing the ones that preceded it builds the full clique, so a deployment where
+> every daemon can reach the coordinator needs no zenoh configuration at all —
+> not even on a network without multicast.
+>
+> Only a *routable* listener is distributed: a daemon that bound loopback (which
+> is what a coordinator on `127.0.0.1` yields) reports nothing, because handing
+> `127.0.0.1` to another machine would point it at its own loopback. That is why
+> a coordinator meant to serve remote daemons must bind a routable address —
+> `dora up --interface <IP>`, or `dora cluster up`, which does it for you.
+>
+> Daemons may start in any order and all at once: each advertises its endpoint
+> in its own registration, and the coordinator processes registrations serially,
+> so the one that registers second is always handed the first one's address.
+>
+> Three residual gaps, all covered by multicast where it is available, which is
+> why it stays on by default:
+>
+> * The registry lives in the coordinator's memory, so a coordinator restart
+>   empties it until the daemons re-register (which they do automatically,
+>   re-advertising as they go). A *new* daemon registering during that gap can
+>   be handed an incomplete list. Existing daemons are unaffected — their zenoh
+>   links do not run through the coordinator and survive its restart.
+> * A daemon is handed endpoints once, at registration. If one of them is stale,
+>   that daemon has no way to recover: zenoh reads `connect/endpoints` at session
+>   open and never again. The advertising daemon withdraws a listener that failed
+>   to bind, which bounds the exposure for daemons registering *later*, but not
+>   for one that already has it.
+> * Discovery is one-directional by construction — only the joiner dials. Where
+>   a firewall permits connections in one direction only, the explicit
+>   `--zenoh-connect` mesh could still form the link from the reachable side,
+>   because both ends dial; this cannot. Name the endpoints explicitly for such
+>   a topology.
+>
+> The flags below remain for the cases the automatic path cannot cover: a
+> multi-homed host that would advertise the wrong interface (`--zenoh-listen`), a
+> deployment that must be wired before the coordinator is reachable, or a
+> topology with your own routers (`--zenoh-config-overlay`).
+>
+> When every machine has a dialable address, `dora cluster up` wires the daemons
+> into an explicit mesh: each one gets
+> `--zenoh-listen <its addr>:<its port> --zenoh-connect <every other machine>`.
+> That needs no multicast and no gossip, which is what makes it the right shape
+> for a mesh VPN — a tailnet carries no multicast. The addresses come from `host`
+> when it is an IP, so the common case needs no extra configuration.
+>
+> If any machine has no dialable address (a hostname in `host` and no
+> `zenoh_addr`), `dora cluster up` warns and derives **nothing**, leaving the
+> whole cluster on the old discovery path. A partial mesh would be worse than
+> none: explicit connect endpoints turn multicast scouting off for the daemons
+> that have them, so the unmeshed remainder is left with no way to be found.
+>
+> `zenoh_peer` selects the older rendezvous shape instead — one shared endpoint
+> every daemon binds and dials, with the daemon-to-daemon links left to gossip.
+> Setting it *and* per-machine addresses is rejected rather than silently
+> resolved.
+>
+> Running daemons by hand, the same applies via `dora daemon --zenoh-listen
+> <IP>[:<PORT>]` and `--zenoh-connect <endpoint>,...`. Naming a port is what lets
+> peers dial a daemon before it has announced anything; without one the OS picks
+> the port and peers can only learn it by discovery. `--zenoh-listen` must be a
+> concrete address — a wildcard (`0.0.0.0`) is rejected because zenoh would bind
+> every interface but advertise a concrete one — and an address given explicitly
+> must bind, or the daemon exits rather than starting without a listener.
 
 **coordinator**
 
@@ -175,11 +240,13 @@ machines:
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `id` | string | (required) | Unique machine identifier, used in `_unstable_deploy.machine` |
+| `id` | string | (required) | Unique machine identifier, used in `deploy.machine` |
 | `host` | string | (required) | SSH-reachable hostname or IP address |
 | `user` | string | current user | SSH username |
 | `port` | u16 | `22` | SSH port. Set when sshd listens on a non-standard port (e.g., containerized or hardened deployments). Applied to both `ssh` (`-p`) and `scp` (`-P`). |
 | `daemon_port` | u16 | `53291` | Daemon local-listen port (passed to `dora daemon --local-listen-port`). Set when running multiple `dora daemon` instances on the same host so each daemon binds a unique port. See [`examples/multiple-daemons/`](../examples/multiple-daemons/). |
+| `zenoh_addr` | IP address | `host` | Address the *other daemons* dial to reach this machine. Defaults to `host` when that is an IP, which is the common case: on a mesh VPN the tunnel address is both how you SSH in and how peers dial. Set it when the two differ — an SSH-only jump address, a hostname rather than an IP, or a multi-homed machine whose SSH interface is not the one other daemons can reach. Must be an address, not a hostname: only the remote machine could resolve a name, and the daemon has to *bind* it. |
+| `zenoh_port` | u16 | `5456` | Port this machine's Zenoh listener binds. Per-machine like `daemon_port`, so two daemons on one host stay expressible. |
 | `labels` | map | empty | Key-value pairs for label-based scheduling |
 
 ### Validation Rules
@@ -187,6 +254,8 @@ machines:
 - At least one machine must be defined.
 - Machine IDs must be non-empty and unique.
 - Machine hosts must be non-empty.
+- `zenoh_addr` must be an IP address; `zenoh_port` and `daemon_port` must not be 0.
+- `zenoh_peer` and per-machine zenoh addresses are mutually exclusive.
 - Unknown fields are rejected (`deny_unknown_fields`).
 
 ### Example: 3-Machine GPU Cluster
@@ -217,6 +286,68 @@ machines:
 ```
 
 ---
+
+## Cross-Machine Node Communication
+
+Once the daemons can reach each other, the nodes do too. A node whose output is
+consumed on another machine listens on an address that machine can dial, the
+daemons trade those endpoints before spawning anything, and the consumer dials
+the producer directly. The daemon is then out of the data path entirely:
+producer node → consumer node, one Zenoh hop, instead of node → daemon → daemon
+→ node.
+
+The switch is proven, not assumed. The producer keeps every output on the
+lossless daemon path until the consumer's startup ack comes back over the
+direct link, so an edge that fails to wire up degrades to the old path rather
+than losing messages. Edges that stay on the daemon path:
+
+- a **dynamic** consumer on another machine — it joins at an arbitrary time, so
+  no endpoint can be planned for it;
+- a producer with **no dialable address** — a daemon bound to loopback has
+  nothing a remote consumer could dial;
+- an endpoint exchange that **timed out** (default 1.5s; set
+  `DORA_ZENOH_ENDPOINT_EXCHANGE_TIMEOUT_MS` to allow longer, or `0` to keep
+  every cross-machine edge on the daemon path);
+- a remote consumer that declares **`input_timeout`**. Its deadline is refreshed
+  only when the consumer's own daemon sees the message, and a direct
+  cross-machine send bypasses that daemon entirely — so the deadline would never
+  fire and `input_timeout` (plus the circuit breaker built on it) would silently
+  stop working on exactly the edges most likely to need it. The direct path is
+  not worth losing a liveness guarantee the descriptor asked for. Remove
+  `input_timeout` from that input if you would rather have the fast path.
+
+Node processes therefore accept connections on the cluster network wherever a
+dataflow spans machines. That is intended to sit inside a tailnet or behind
+ACLs; where it must be hardened further, Zenoh's TLS and authentication
+settings can be layered on with the config overlay below.
+
+## Custom Zenoh Configuration
+
+Two ways to change the Zenoh configuration dora computes, for the daemon and
+every node it spawns:
+
+| | `--zenoh-config-overlay <PATH>` / `DORA_ZENOH_CONFIG_OVERLAY` | `ZENOH_CONFIG` |
+|---|---|---|
+| Effect | Layers a JSON5 file **onto** dora's config | Builds the session **entirely** from the file |
+| `connect.endpoints` / `listen.endpoints` | Added to dora's | Replace dora's |
+| Other keys | Replace dora's value for that key | — |
+| Per-node links | Kept | **Discarded** |
+
+Prefer the overlay. Because `ZENOH_CONFIG` discards the per-node connect/listen
+plan, a router named there ends up relaying same-machine traffic too — off the
+host and back, if the router runs elsewhere — and the direct zero-copy path is
+lost. Setting both is an error.
+
+```json5
+// routers.json5 — also reach these routers, keep everything dora planned
+{
+  connect: { endpoints: ["tcp/10.0.0.1:7447"] },
+}
+```
+
+```bash
+dora daemon --machine-id edge-01 --coordinator-addr 10.0.0.1   --zenoh-config-overlay routers.json5
+```
 
 ## Cluster Commands Reference
 
@@ -249,9 +380,10 @@ dora cluster up <PATH>
 
 ```bash
 $ dora cluster up cluster.yml
-Starting coordinator on 10.0.0.1:6013...
-Starting daemon on robot (ubuntu@10.0.0.2)... OK
-Starting daemon on gpu-server (ubuntu@10.0.0.3)... OK
+started dora coordinator on 0.0.0.0 (reachable from other machines)
+Starting daemon on robot (ubuntu@10.0.0.2)
+Starting daemon on gpu-server (ubuntu@10.0.0.3)
+Waiting for 2 daemon(s) to connect...
 All 2 daemons connected.
 ```
 
@@ -412,7 +544,7 @@ dataflow restarted: a1b2c3d4-... -> e5f6a7b8-...
 
 ## Node Scheduling
 
-When the coordinator receives a dataflow, it decides which daemon runs each node based on the `_unstable_deploy` section in the dataflow YAML. Resolution priority: **machine > labels > unnamed**.
+When the coordinator receives a dataflow, it decides which daemon runs each node based on the `deploy` section in the dataflow YAML. Resolution priority: **machine > labels > unnamed**.
 
 ### Machine-based scheduling
 
@@ -421,7 +553,7 @@ Assign a node to a specific machine by its `id` from `cluster.yml`:
 ```yaml
 nodes:
   - id: camera
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./camera-driver
     outputs:
@@ -437,7 +569,7 @@ Assign a node by requiring specific labels on the target daemon:
 ```yaml
 nodes:
   - id: inference
-    _unstable_deploy:
+    deploy:
       labels:
         gpu: "true"
     path: ./ml-model
@@ -451,7 +583,7 @@ The coordinator finds the first connected daemon whose labels are a **superset**
 
 ### Unassigned nodes
 
-Nodes without an `_unstable_deploy` section (or with an empty one) are assigned to the first unnamed daemon -- one that connected without a `--machine-id` flag.
+Nodes without an `deploy` section (or with an empty one) are assigned to the first unnamed daemon -- one that connected without a `--machine-id` flag.
 
 ### How resolve_daemon() works internally
 
@@ -482,7 +614,7 @@ Each daemon builds from source on its own machine. This is the current default b
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01
       distribute: local
     path: ./my-node
@@ -495,7 +627,7 @@ The CLI pushes the locally-built binary to the target machine via SSH/SCP before
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01
       distribute: scp
     path: ./my-node
@@ -508,7 +640,7 @@ The coordinator runs an artifact store. Daemons pull binaries from the coordinat
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01
       distribute: http
     path: ./my-node
@@ -643,14 +775,14 @@ machines:
 ```yaml
 nodes:
   - id: camera
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./camera-driver
     outputs:
       - frames
 
   - id: inference
-    _unstable_deploy:
+    deploy:
       labels:
         gpu: "true"
     path: ./ml-model
@@ -660,7 +792,7 @@ nodes:
       - predictions
 
   - id: actuator
-    _unstable_deploy:
+    deploy:
       machine: robot
     path: ./actuator-driver
     inputs:
@@ -706,7 +838,7 @@ machines:
 ```yaml
 nodes:
   - id: lidar-driver
-    _unstable_deploy:
+    deploy:
       labels:
         lidar: "true"
     path: ./lidar-driver
@@ -714,7 +846,7 @@ nodes:
       - scans
 
   - id: camera-driver
-    _unstable_deploy:
+    deploy:
       labels:
         camera: rgbd
     path: ./camera-driver
@@ -824,12 +956,12 @@ dora cluster status
 
 ## Deployment YAML Reference
 
-The `_unstable_deploy` section on each node controls placement and distribution. All fields are optional.
+The `deploy` section on each node controls placement and distribution. All fields are optional.
 
 ```yaml
 nodes:
   - id: my-node
-    _unstable_deploy:
+    deploy:
       machine: edge-01                # Target machine ID from cluster.yml
       labels:                          # Label requirements (superset match)
         gpu: "true"
@@ -863,6 +995,6 @@ nodes:
 - **Use coordinator persistence** (`dora coordinator --store redb`) with clusters so the coordinator survives restarts. See [Coordinator State Persistence](fault-tolerance.md#coordinator-state-persistence).
 - **Set restart policies on nodes** for per-node resilience. Combine with auto-recovery for defense in depth. See [Restart Policies](fault-tolerance.md#restart-policies).
 - **Monitor with multiple tools**: `dora cluster status` for daemon health, `dora top` for resource usage, `dora logs` for node output.
-- **Test locally first**. Develop with `dora run dataflow.yml`, then deploy to a cluster. The same dataflow YAML works in both modes -- `_unstable_deploy` fields are ignored in local mode.
+- **Test locally first**. Develop with `dora run dataflow.yml`, then deploy to a cluster. The same dataflow YAML works in both modes -- `deploy` fields are ignored in local mode.
 - **Use rolling upgrades** instead of stopping the entire cluster. `dora cluster upgrade` processes one machine at a time to maintain availability.
 - **Keep cluster.yml in version control** alongside your dataflow definitions.

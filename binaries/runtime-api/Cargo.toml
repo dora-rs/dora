@@ -14,7 +14,7 @@ repository.workspace = true
 # (`dora-runtime-shared-lib`, `dora-runtime-python`) build on top of this.
 
 [dependencies]
-dora-node-api = { workspace = true, default-features = false }
+dora-node-api = { workspace = true, default-features = false, features = ["arrow-v59"] }
 dora-core = { workspace = true }
 dora-message = { workspace = true }
 dora-tracing = { workspace = true, optional = true }

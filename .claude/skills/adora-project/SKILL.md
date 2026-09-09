@@ -98,7 +98,7 @@ nodes:
     args: "-v --some-flag foo"       # String, not a list
     restart_policy: on-failure       # never | on-failure | always
     health_check_timeout: 2.0        # seconds (per node)
-    _unstable_deploy:                # unstable, may change
+    deploy:                # unstable, may change
       machine: gpu-server
 ```
 
@@ -196,7 +196,7 @@ cargo clippy --all --exclude dora-node-api-python --exclude dora-operator-api-py
 - Python Node API: `apis/python/node/` -- `#[pyclass] Node` with iterator protocol
 - Python Operator API: `apis/python/operator/` -- type conversion utilities
 - Python CLI API: `apis/python/cli/` -- `build()`, `run()`, `start_runtime()`
-- Uses PyO3 0.28 with `eyre`, `abi3-py37`, `multiple-pymethods` features
+- Uses PyO3 0.29 with `eyre`, `abi3-py311`, `multiple-pymethods` features
 - Arrow arrays passed zero-copy via `arrow::pyarrow` FFI
 - GIL released during blocking Rust ops (`py.detach()`)
 

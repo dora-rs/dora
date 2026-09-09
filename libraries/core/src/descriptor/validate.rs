@@ -424,9 +424,10 @@ impl ResolvedNodeExt for ResolvedNode {
             CoreNodeKind::Custom(n) => n.max_rotated_files,
         };
         if let Some(n) = value {
-            if n == 0 {
-                bail!("`max_rotated_files` must be at least 1");
-            }
+            // 0 is meaningful: keep the active log only, rotating the previous
+            // one away rather than retaining it. That matches the documented
+            // disk bound `max_log_size * (1 + max_rotated_files)`, which at 0
+            // is one active file.
             if n > 100 {
                 bail!("`max_rotated_files` must not exceed 100");
             }
@@ -1452,27 +1453,7 @@ operators:
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {
-        dora_message::descriptor::CustomNode {
-            path: "node".to_string(),
-            source: dora_message::descriptor::NodeSource::Local,
-            path_sha256: None,
-            args: None,
-            envs: None,
-            build: None,
-            send_stdout_as: None,
-            send_logs_as: None,
-            min_log_level: None,
-            max_log_size: None,
-            max_rotated_files: None,
-            restart_policy: Default::default(),
-            max_restarts: 0,
-            restart_delay: None,
-            max_restart_delay: None,
-            restart_window: None,
-            health_check_timeout: None,
-            finish_grace_secs: None,
-            run_config: serde_yaml::from_str("{}").unwrap(),
-        }
+        dora_message::descriptor::CustomNode::new("node".to_string())
     }
 
     #[test]
@@ -2687,24 +2668,40 @@ nodes:
         check_wiring(&descriptor).unwrap();
     }
 
+    /// Reads a fixture that lives outside this crate, or `None` when this is
+    /// not a repository checkout. `include_str!` would be the obvious choice,
+    /// but a path that leaves the crate directory is not in the published
+    /// `.crate`, so the crate would fail to *compile* its tests for anyone
+    /// building from crates.io (#3400).
+    ///
+    /// The workspace manifest is the marker for "we are in the repo". Only
+    /// its absence skips: inside a checkout a missing fixture is a stale
+    /// path and panics, so this keeps the one property `include_str!` had
+    /// that a plain `.ok()` would throw away.
+    fn repo_fixture(relative: &str) -> Option<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("Cargo.toml").is_file() {
+            return None;
+        }
+        let path = root.join(relative);
+        Some(
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("fixture {} is missing: {e}", path.display())),
+        )
+    }
+
     #[test]
     fn ros2_zenoh_documentation_examples_parse_with_explicit_profiles() {
         let examples = [
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml"
-            )),
+            "examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml",
         ];
-        for yaml in examples {
-            let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        for relative in examples {
+            let Some(yaml) = repo_fixture(relative) else {
+                continue; // packaged crate: the examples tree is not shipped
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
             let ros2 = descriptor
                 .nodes
                 .iter()
@@ -2722,10 +2719,9 @@ nodes:
 
     #[test]
     fn ros2_zenoh_documentation_links_upstream_wire_contract() {
-        let guide = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../guide/src/advanced/ros2-bridge.md"
-        ));
+        let Some(guide) = repo_fixture("guide/src/advanced/ros2-bridge.md") else {
+            return; // packaged crate: the guide is not shipped
+        };
         assert!(guide.contains("https://github.com/ros2/rmw_zenoh/blob/rolling/docs/design.md"));
         assert!(guide.contains("https://www.ros.org/reps/rep-2016.html"));
     }
@@ -3119,6 +3115,23 @@ nodes:
                 "expected '{expected}' to be mentioned in error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn max_rotated_files_accepts_zero_and_still_caps_at_100() {
+        let node = |n: u32| -> ResolvedNode {
+            let mut custom = custom_node();
+            custom.max_rotated_files = Some(n);
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
+        };
+
+        // 0 is a real configuration: keep the active log only, rotating the
+        // previous one away. The documented disk bound
+        // `max_log_size * (1 + max_rotated_files)` is one file at 0.
+        assert_eq!(node(0).max_rotated_files().unwrap(), Some(0));
+        // The upper bound is unchanged.
+        assert_eq!(node(100).max_rotated_files().unwrap(), Some(100));
+        assert!(node(101).max_rotated_files().is_err());
     }
 }
 

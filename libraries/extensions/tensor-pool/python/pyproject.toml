@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dora-tensor-pool"
+version = "0.1.0"
+description = "Python helpers for dora's tensor-pool transport. Opt-in extension — NOT covered by dora's 1.0 compatibility guarantees."
+readme = "../README.md"
+requires-python = ">=3.9"
+# torch, numpy and pyarrow are imported lazily by the CUDA helpers; a consumer
+# that only needs `get_tensor_info` still needs torch, so they are not optional
+# here. Left unpinned so this tracks whatever the consuming node already has.
+dependencies = ["numpy", "pyarrow", "torch"]
+
+[tool.setuptools]
+packages = ["dora_tensor_pool"]

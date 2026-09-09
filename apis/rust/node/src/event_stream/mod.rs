@@ -787,6 +787,28 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
+    ///
+    /// The canonical node loop drains this stream until it closes, reacting to
+    /// the events the node cares about (typically [`Event::Input`]) and ignoring
+    /// the rest:
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, Event};
+    ///
+    /// let (_node, mut events) = DoraNode::init_from_env()?;
+    ///
+    /// while let Some(event) = events.recv() {
+    ///     match event {
+    ///         Event::Input { id, metadata: _, data } => {
+    ///             // react to the input `id`, reading the Arrow `data`
+    ///             println!("received input `{id}` with {} element(s)", data.len());
+    ///         }
+    ///         Event::Stop(_) => break,
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
     }
@@ -940,7 +962,8 @@ impl EventStream {
             && !crate::node::carries_pattern_correlation(&metadata.parameters)
             && let Some(expected) = self.input_type_checks.remove(id)
         {
-            let actual = data.data_type();
+            let raw = dora_arrow_convert::internal::array_ref(data);
+            let actual = raw.data_type();
             // Skip check for Null type (timer ticks, empty payloads)
             // to avoid spurious warnings on annotated timer inputs.
             if *actual != arrow_schema::DataType::Null && *actual != expected {
@@ -966,9 +989,12 @@ impl EventStream {
 
     /// Returns and resets the accumulated drop counts per input ID.
     ///
-    /// When inputs overflow their queue limits, the oldest messages are discarded.
-    /// For `drop_oldest` inputs this happens at `queue_size`. For `backpressure`
-    /// inputs this happens at a hard safety cap of 10x `queue_size`.
+    /// When inputs overflow their queue limits, events are discarded to keep memory bounded. For
+    /// `drop_oldest` inputs the cap is `queue_size` (clamped to at least 1); an overflow normally
+    /// evicts the oldest queued event, but correlated service/action messages and the `Stop` event
+    /// are preserved where possible, so the evicted event may instead be a newer one (or the
+    /// incoming event itself). For `backpressure` inputs the hard safety cap is
+    /// `max(10 × queue_size, 100)`.
     /// This method returns a map from input ID to the number of messages dropped
     /// since the last call.
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
@@ -1003,17 +1029,12 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "Stop",
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
+                    NodeEvent::Stop => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "Stop",
+                        None,
+                    )),
                     NodeEvent::Reload { .. } => None,
                     NodeEvent::Input { id, metadata, data } => {
                         let mut event_json = convert_output_to_json(
@@ -1026,53 +1047,30 @@ impl EventStream {
                         event_json.insert("type".into(), "Input".into());
                         Some(event_json.into())
                     }
-                    NodeEvent::InputClosed { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "InputClosed",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::InputRecovered { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "InputRecovered",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::NodeRestarted { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "NodeRestarted",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::AllInputsClosed => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "AllInputsClosed",
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
+                    NodeEvent::InputClosed { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "InputClosed",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::InputRecovered { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "InputRecovered",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::NodeRestarted { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "NodeRestarted",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::AllInputsClosed => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "AllInputsClosed",
+                        None,
+                    )),
                     _ => None,
                 },
                 // Zenoh-delivered inputs surface to the user as `Event::Input`
@@ -1354,6 +1352,37 @@ impl EventStream {
     }
 }
 
+/// Build the JSON for a "control" event that carries only a type tag, an
+/// optional input/node id, and the elapsed time offset since the node started.
+///
+/// Shared by the `Stop` / `InputClosed` / `InputRecovered` / `NodeRestarted` /
+/// `AllInputsClosed` arms of [`EventStream::record_event`], which differ only in
+/// the `"type"` string and whether an `"id"` field is present. A free function
+/// (rather than a `&self` method) so it can take the `clock` and
+/// `start_timestamp` fields by reference while `record_event` holds a mutable
+/// borrow of the sibling `write_events_to` field.
+fn control_event_json(
+    clock: &uhlc::HLC,
+    start_timestamp: &uhlc::Timestamp,
+    ty: &str,
+    id: Option<String>,
+) -> serde_json::Value {
+    let time_offset = clock.new_timestamp().get_diff_duration(start_timestamp);
+    // Build the map explicitly (rather than via `json!`) so the key order
+    // matches the previous per-arm literals byte-for-byte under serde_json's
+    // `preserve_order`: `type`, then the optional `id`, then `time_offset_secs`.
+    let mut event_json = serde_json::Map::new();
+    event_json.insert("type".to_owned(), ty.into());
+    if let Some(id) = id {
+        event_json.insert("id".to_owned(), serde_json::Value::String(id));
+    }
+    event_json.insert(
+        "time_offset_secs".to_owned(),
+        time_offset.as_secs_f64().into(),
+    );
+    serde_json::Value::Object(event_json)
+}
+
 /// Outcome of classifying a single event during a pattern-aware wait.
 /// Separated from `wait_for_correlation` so the decision logic can be
 /// unit-tested without a live `EventStream`.
@@ -1411,7 +1440,7 @@ impl EventStream {
                             Event::Input {
                                 id,
                                 metadata,
-                                data: data.into(),
+                                data: dora_arrow_convert::internal::from_array_ref(data),
                             }
                         }
                         Err(err) => Event::Error(format!("{err:?}")),
@@ -1449,7 +1478,7 @@ impl EventStream {
                     id,
                     metadata,
                     // Already decoded in the subscriber callback (receipt order).
-                    data: arrow::array::make_array(data).into(),
+                    data: dora_arrow_convert::internal::from_array_data(data),
                 }
             }
 
@@ -1571,7 +1600,7 @@ fn declare_schema_subscriber(
                     guard.reset();
                     guard
                 });
-                if let Err(e) = decoder.set_schema(hash, buffer) {
+                if let Err(e) = decoder.set_schema_raw(hash, buffer) {
                     tracing::warn!(input = %input_id_cb, "failed to prime decoder from @schema sample: {e}");
                 }
             }));
@@ -1621,17 +1650,19 @@ fn decode_zenoh_sample(
     metadata: &dora_message::metadata::Metadata,
     payload: zenoh::bytes::ZBytes,
 ) -> eyre::Result<Option<arrow::array::ArrayData>> {
-    use crate::arrow_utils::decode_arrow_ipc_zero_copy;
+    use crate::arrow_utils::decode_arrow_ipc_zero_copy_raw;
     use dora_message::metadata::{SCHEMA_HASH, get_integer_param};
 
     if payload.is_empty() {
-        return Ok(Some(().into_arrow().into()));
+        return Ok(Some(
+            dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+        ));
     }
     let buffer = zenoh_payload_to_buffer(payload);
     match get_integer_param(&metadata.parameters, SCHEMA_HASH) {
         Some(hash) => {
             tracing::debug!("received schema-less batch with SCHEMA_HASH={}", hash);
-            decoder.decode_batch(buffer, hash as u64)
+            decoder.decode_batch_raw(buffer, hash as u64)
         }
         None => {
             tracing::debug!("received full IPC stream (no SCHEMA_HASH)");
@@ -1641,7 +1672,7 @@ fn decode_zenoh_sample(
             if !crate::node::carries_pattern_correlation(&metadata.parameters) {
                 prime_in_band(decoder, &buffer);
             }
-            decode_arrow_ipc_zero_copy(buffer).map(Some)
+            decode_arrow_ipc_zero_copy_raw(buffer).map(Some)
         }
     }
 }
@@ -1675,7 +1706,7 @@ fn prime_in_band(
     // Copy the schema block out of the payload: retaining a slice of an
     // SHM-backed buffer would pin the whole segment for the decoder's lifetime.
     let schema = arrow::buffer::Buffer::from(schema);
-    if let Err(e) = decoder.set_schema(hash, schema) {
+    if let Err(e) = decoder.set_schema_raw(hash, schema) {
         tracing::debug!("in-band schema priming failed: {e}");
     }
 }
@@ -1685,15 +1716,10 @@ fn prime_in_band(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    let data: eyre::Result<Option<RawData>> = match data {
-        None => Ok(None),
-        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-    };
-
-    data.and_then(|data| {
-        let raw_data = data.unwrap_or(RawData::Empty);
-        raw_data.into_arrow_array().map(arrow::array::make_array)
-    })
+    // `DataMessage` has a single infallible variant, so the conversion cannot
+    // fail; the only fallible step is `into_arrow_array`.
+    let raw_data = data.map_or(RawData::Empty, |DataMessage::Vec(v)| RawData::Vec(v));
+    raw_data.into_arrow_array().map(arrow::array::make_array)
 }
 
 impl Stream for EventStream {
@@ -1943,6 +1969,33 @@ mod tests {
     use super::*;
 
     #[test]
+    fn control_event_json_shape_and_key_order() {
+        let clock = uhlc::HLC::default();
+        let start = clock.new_timestamp();
+
+        // An id-bearing control event: keys in `type`, `id`, `time_offset_secs`
+        // order (serde_json's `preserve_order` makes the order observable).
+        let with_id = control_event_json(&clock, &start, "InputClosed", Some("cam".to_owned()));
+        let obj = with_id.as_object().expect("object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["type", "id", "time_offset_secs"]
+        );
+        assert_eq!(obj["type"], serde_json::json!("InputClosed"));
+        assert_eq!(obj["id"], serde_json::json!("cam"));
+        assert!(obj["time_offset_secs"].is_f64());
+
+        // A control event without an id omits the `id` field entirely.
+        let without_id = control_event_json(&clock, &start, "AllInputsClosed", None);
+        let obj = without_id.as_object().expect("object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["type", "time_offset_secs"]
+        );
+        assert_eq!(obj["type"], serde_json::json!("AllInputsClosed"));
+    }
+
+    #[test]
     fn convert_param_update() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::ParamUpdate {
@@ -2150,7 +2203,7 @@ mod tests {
 
     use arrow::array::new_empty_array;
     use arrow::datatypes::DataType as ArrowDataType;
-    use dora_arrow_convert::ArrowData;
+    use dora_arrow_convert::internal::from_array_ref;
     use dora_message::metadata::{
         GOAL_ID, GOAL_STATUS, GOAL_STATUS_ABORTED, GOAL_STATUS_SUCCEEDED, Metadata,
         MetadataParameters, Parameter, REQUEST_ID,
@@ -2164,7 +2217,7 @@ mod tests {
         Event::Input {
             id: id.into(),
             metadata: make_metadata(params),
-            data: ArrowData(new_empty_array(&ArrowDataType::Null)),
+            data: from_array_ref(new_empty_array(&ArrowDataType::Null)),
         }
     }
 
@@ -2354,7 +2407,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2382,7 +2435,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, mut rx) = crate::integration_testing::unbounded_channel();
+        let (tx, mut rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2393,7 +2446,9 @@ mod tests {
             node.send_output(
                 "out".parse().unwrap(),
                 Default::default(),
-                Int32Array::from(vec![i]),
+                dora_arrow_convert::internal::from_array_ref(std::sync::Arc::new(
+                    Int32Array::from(vec![i]),
+                )),
             )
             .unwrap();
         }
@@ -2519,7 +2574,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2586,7 +2641,7 @@ mod tests {
             "test-node".parse().unwrap(),
             events,
         ));
-        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        let (tx, _rx) = crate::integration_testing::output_channel();
         let outputs = TestingOutput::ToChannel(tx);
         let options = TestingOptions {
             skip_output_time_offsets: true,
@@ -2708,7 +2763,9 @@ mod tests {
     /// no type sidecar involved).
     #[test]
     fn zenoh_payload_ipc_roundtrip_and_empty_is_unit() {
-        use crate::arrow_utils::ipc_encode::{InputDecoder, encode_ipc_into, ipc_fast_path_len};
+        use crate::arrow_utils::ipc_encode::{
+            InputDecoder, encode_ipc_into_data, ipc_fast_path_len_data,
+        };
         use arrow::array::{Array, Int32Array};
 
         // A standalone full stream (no SCHEMA_HASH parameter) decodes directly.
@@ -2728,9 +2785,9 @@ mod tests {
 
         // Non-empty IPC payload round-trips to the original array.
         let data = Int32Array::from(vec![10, 20, 30]).into_data();
-        let len = ipc_fast_path_len(&data).expect("primitive is fast-path eligible");
+        let len = ipc_fast_path_len_data(&data).expect("primitive is fast-path eligible");
         let mut buf = vec![0u8; len];
-        encode_ipc_into(&data, &mut buf).unwrap();
+        encode_ipc_into_data(&data, &mut buf).unwrap();
 
         let decoded = decode_zenoh_sample(&mut decoder, &metadata, zenoh::bytes::ZBytes::from(buf))
             .unwrap()
@@ -2749,8 +2806,8 @@ mod tests {
     #[test]
     fn full_stream_primes_decoder_in_band_for_schema_less_batches() {
         use crate::arrow_utils::ipc_encode::{
-            InputDecoder, batch_fast_path_len, encode_batch_into, encode_ipc_into,
-            ipc_fast_path_len, schema_block_len,
+            InputDecoder, batch_fast_path_len_data, encode_batch_into_data, encode_ipc_into_data,
+            ipc_fast_path_len_data, schema_block_len,
         };
         use arrow::array::{Array, Int32Array};
         use dora_message::metadata::{Metadata, Parameter, SCHEMA_HASH};
@@ -2761,8 +2818,8 @@ mod tests {
         // Message 1: full stream (no SCHEMA_HASH), as the producer sends while
         // the schema is not yet confirmed published on the `@schema` plane.
         let first = Int32Array::from(vec![1, 2]).into_data();
-        let mut full = vec![0u8; ipc_fast_path_len(&first).unwrap()];
-        encode_ipc_into(&first, &mut full).unwrap();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&first).unwrap()];
+        encode_ipc_into_data(&first, &mut full).unwrap();
         let block = schema_block_len(&full).unwrap();
         let hash = dora_message::metadata::fnv1a(&full[..block]);
 
@@ -2776,8 +2833,8 @@ mod tests {
         // `set_schema` call happened — decoding must succeed purely from the
         // in-band priming above.
         let second = Int32Array::from(vec![3]).into_data();
-        let mut batch = vec![0u8; batch_fast_path_len(&second).unwrap()];
-        encode_batch_into(&second, &mut batch).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&second).unwrap()];
+        encode_batch_into_data(&second, &mut batch).unwrap();
         let mut tagged = Metadata::new(hlc.new_timestamp());
         tagged
             .parameters
@@ -2796,8 +2853,8 @@ mod tests {
     #[test]
     fn pattern_correlated_full_stream_does_not_prime_in_band() {
         use crate::arrow_utils::ipc_encode::{
-            InputDecoder, batch_fast_path_len, encode_batch_into, encode_ipc_into,
-            ipc_fast_path_len, schema_block_len,
+            InputDecoder, batch_fast_path_len_data, encode_batch_into_data, encode_ipc_into_data,
+            ipc_fast_path_len_data, schema_block_len,
         };
         use arrow::array::{Array, Int32Array};
         use dora_message::metadata::{Metadata, Parameter, REQUEST_ID, SCHEMA_HASH};
@@ -2806,8 +2863,8 @@ mod tests {
         let mut decoder = InputDecoder::new();
 
         let reply = Int32Array::from(vec![7]).into_data();
-        let mut full = vec![0u8; ipc_fast_path_len(&reply).unwrap()];
-        encode_ipc_into(&reply, &mut full).unwrap();
+        let mut full = vec![0u8; ipc_fast_path_len_data(&reply).unwrap()];
+        encode_ipc_into_data(&reply, &mut full).unwrap();
         let block = schema_block_len(&full).unwrap();
         let hash = dora_message::metadata::fnv1a(&full[..block]);
 
@@ -2823,8 +2880,8 @@ mod tests {
 
         // …but must not have primed the decoder for its schema hash.
         let batch_array = Int32Array::from(vec![8]).into_data();
-        let mut batch = vec![0u8; batch_fast_path_len(&batch_array).unwrap()];
-        encode_batch_into(&batch_array, &mut batch).unwrap();
+        let mut batch = vec![0u8; batch_fast_path_len_data(&batch_array).unwrap()];
+        encode_batch_into_data(&batch_array, &mut batch).unwrap();
         let mut tagged = Metadata::new(hlc.new_timestamp());
         tagged
             .parameters

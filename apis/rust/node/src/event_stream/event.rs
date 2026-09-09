@@ -1,4 +1,4 @@
-use dora_arrow_convert::ArrowData;
+use dora_arrow_convert::DoraArray;
 use dora_core::config::{DataId, NodeId, OperatorId};
 use dora_message::metadata::Metadata;
 
@@ -28,7 +28,7 @@ pub enum Event {
         /// Meta information about this input, e.g. the timestamp.
         metadata: Metadata,
         /// The actual data in the Apache Arrow data format.
-        data: ArrowData,
+        data: DoraArray,
     },
     /// An input was closed by the sender.
     ///
@@ -73,7 +73,10 @@ pub enum Event {
     Reload {
         /// The ID of the operator that should be reloaded.
         ///
-        /// There is currently no case where `operator_id` is `None`.
+        /// `Some(id)` targets a single operator (the Python-operator reload
+        /// path always sets this). `None` requests reloading the whole runtime
+        /// node, which the runtime currently rejects with a warning rather than
+        /// acting on ("Reloading runtime nodes is not supported").
         operator_id: Option<OperatorId>,
     },
     /// A runtime parameter has been updated via `dora param set`.

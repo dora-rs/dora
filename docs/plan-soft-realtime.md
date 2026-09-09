@@ -149,7 +149,7 @@ YAML option:
 nodes:
   - id: controller
     path: controller
-    _unstable_deploy:
+    deploy:
       cpu_affinity: [4, 5]  # pin to cores 4-5
 ```
 

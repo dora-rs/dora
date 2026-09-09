@@ -40,7 +40,7 @@ impl Extractor for MetadataMap<'_> {
 /// docker run -d -p 4317:4317 -p 4318:4318 -p 16686:16686 jaegertracing/all-in-one:latest
 /// ```
 ///
-pub fn init_tracing(_name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTracerProvider> {
+pub fn init_tracing(name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTracerProvider> {
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
         .with_endpoint(endpoint)
@@ -48,8 +48,18 @@ pub fn init_tracing(_name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTr
         .wrap_err("failed to build OTLP span exporter")?;
 
     Ok(SdkTracerProvider::builder()
+        .with_resource(service_resource(name))
         .with_batch_exporter(exporter)
         .build())
+}
+
+/// Resource tagging every exported span with the dora service name (the node
+/// id). Without it OTel backends fall back to the SDK default
+/// `unknown_service:<binary>` and cannot attribute spans per node.
+pub(crate) fn service_resource(name: &str) -> opentelemetry_sdk::Resource {
+    opentelemetry_sdk::Resource::builder()
+        .with_service_name(name.to_string())
+        .build()
 }
 
 /// Separator between entries in the serialized trace context.
@@ -105,6 +115,19 @@ pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
 
 #[cfg(test)]
 mod tests {
+    use super::service_resource;
+    use opentelemetry::Key;
+
+    #[test]
+    fn service_resource_sets_service_name() {
+        let resource = service_resource("planner_node");
+        let value = resource
+            .get(&Key::from_static_str("service.name"))
+            .expect("service.name is set")
+            .clone();
+        assert_eq!(value.as_str(), "planner_node");
+    }
+
     use super::{deserialize_context, deserialize_to_hashmap, serialize_context};
 
     #[test]

@@ -147,7 +147,7 @@ impl SharedLibraryOperator<'_> {
             );
 
             let arrow_array = match unsafe { arrow::ffi::from_ffi(data_array, &schema) } {
-                Ok(a) => a,
+                Ok(a) => dora_node_api::DoraArray::from_array(arrow::array::make_array(a)),
                 Err(err) => return DoraResult::from_error(err.to_string()),
             };
 
@@ -155,11 +155,18 @@ impl SharedLibraryOperator<'_> {
             // sample here and dropped at the end of this closure, on the
             // operator thread, so its `.so`-resident release callback never runs
             // on the runtime's event loop (dora-rs/dora#2742).
-            match self.handle.send_output(
-                DataId::from(String::from(output_id)),
-                parameters,
-                &arrow_array,
-            ) {
+            // Parse the operator-supplied output id fallibly. `DataId::from`
+            // panics on an invalid id (empty, a space, an empty path segment,
+            // any char outside `[a-zA-Z0-9_./-]`), and this closure runs inside
+            // the `extern "C"` send-output trampoline the operator calls — a
+            // panic here would unwind across the FFI boundary and abort the
+            // whole runtime process. An ordinary typo in an operator's
+            // `send_output` id must surface as a returned error instead.
+            let output_id = match String::from(output_id).parse::<DataId>() {
+                Ok(id) => id,
+                Err(err) => return DoraResult::from_error(format!("invalid output id: {err}")),
+            };
+            match self.handle.send_output(output_id, parameters, &arrow_array) {
                 Ok(()) => DoraResult::SUCCESS,
                 Err(err) => DoraResult::from_error(format!("{err}")),
             }
@@ -223,7 +230,7 @@ impl SharedLibraryOperator<'_> {
                     metadata,
                     data,
                 } => {
-                    let (data_array, schema) = arrow::ffi::to_ffi(&data.to_data())?;
+                    let (data_array, schema) = arrow::ffi::to_ffi(&data.as_array().to_data())?;
                     let otel = metadata.open_telemetry_context();
                     let operator_input = dora_operator_api_types::Input {
                         id: String::from(input_id).into(),

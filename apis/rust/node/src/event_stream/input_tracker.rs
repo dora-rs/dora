@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use dora_arrow_convert::ArrowData;
+use dora_arrow_convert::DoraArray;
 use dora_core::config::{DataId, NodeId};
 
 use super::event::Event;
@@ -8,7 +8,7 @@ use super::event::Event;
 /// Tracks the health state and last known value of each input.
 ///
 /// Use this helper to implement graceful degradation when upstream nodes
-/// time out (via `input_timeout`). It caches the last received [`ArrowData`]
+/// time out (via `input_timeout`). It caches the last received [`DoraArray`]
 /// per input so your node can fall back to stale data instead of crashing.
 ///
 /// The cache is bounded by the number of distinct input IDs declared in the
@@ -35,7 +35,7 @@ use super::event::Event;
 ///     tracker.process_event(event);
 ///     for id in tracker.closed_inputs() {
 ///         if let Some(_stale) = tracker.last_value(id) {
-///             // degrade gracefully using the cached `ArrowData`
+///             // degrade gracefully using the cached `DoraArray`
 ///         }
 ///     }
 /// }
@@ -43,7 +43,7 @@ use super::event::Event;
 /// ```
 pub struct InputTracker {
     states: HashMap<DataId, InputState>,
-    cache: HashMap<DataId, ArrowData>,
+    cache: HashMap<DataId, DoraArray>,
     /// Optional input → source node map. When provided, `NodeRestarted`
     /// events transition any `Closed` inputs sourced from the restarted
     /// node back to `Healthy`. Without it the tracker has no way to know
@@ -100,7 +100,7 @@ impl InputTracker {
         match event {
             Event::Input { id, data, .. } => {
                 self.states.insert(id.clone(), InputState::Healthy);
-                self.cache.insert(id.clone(), ArrowData(data.0.clone()));
+                self.cache.insert(id.clone(), data.clone());
                 true
             }
             Event::InputClosed { id } => {
@@ -143,7 +143,7 @@ impl InputTracker {
     }
 
     /// Get the last received value for an input. Available even when closed.
-    pub fn last_value(&self, id: &DataId) -> Option<&ArrowData> {
+    pub fn last_value(&self, id: &DataId) -> Option<&DoraArray> {
         self.cache.get(id)
     }
 
@@ -175,15 +175,15 @@ mod tests {
     use arrow::datatypes::DataType;
     use dora_message::metadata::Metadata;
 
-    fn empty_data() -> ArrowData {
-        ArrowData(new_empty_array(&DataType::Null))
+    fn empty_data() -> DoraArray {
+        dora_arrow_convert::internal::from_array_ref(new_empty_array(&DataType::Null))
     }
 
     fn test_metadata() -> Metadata {
         Metadata::new(dora_core::uhlc::HLC::default().new_timestamp())
     }
 
-    fn make_input(id: &str, data: ArrowData) -> Event {
+    fn make_input(id: &str, data: DoraArray) -> Event {
         Event::Input {
             id: id.into(),
             metadata: test_metadata(),

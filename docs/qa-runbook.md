@@ -51,22 +51,24 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 
 | Target | Runs | Budget | When to use |
 |---|---|---|---|
-| `make qa-fast` | fmt + clippy + audit + unwrap-budget + typos | ~15 s | Pre-commit |
+| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph + package-includes + breaking-changes | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
-| `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) + example-smoke (in scratch venv with `-e apis/python/node`) + hub-smoke + ci-nightly-jobs | ~3-4 hours | Full parity with `.github/workflows/nightly.yml` after the #1716 rebalance: **19 test jobs total**. example-smoke covers the **4 example-backed** GHA jobs (smoke-suite, log-sinks, service-action, streaming); hub-smoke covers the **Hub e2e** job (tests/hub-smoke.rs); `scripts/qa/ci-nightly-jobs.sh` drives the **14 remaining** with platform-aware dispatch (record-replay, cluster-smoke, topic-and-top, cpu-affinity [Linux], redb-backend, daemon-reconnect [Linux], state-reconstruction, test-cross-platform [macOS+Windows], examples, cli-tests, bench-example, cross-check, ros2-bridge [Linux+ROS2], msrv). Requires **both `uv` and Python 3.12** — both preflighted; fails fast with a specific install hint for whichever is missing (`curl -LsSf https://astral.sh/uv/install.sh \| sh` for uv, `uv python install 3.12` for the interpreter). example-smoke installs workspace Python bindings into the scratch venv to match the GHA Python setup (avoids PyPI drift, #1710). Green local run on platform X predicts a green CI nightly for platform X's jobs; jobs that can't run on the dev's OS SKIP cleanly. Does NOT include full-repo mutation testing (see `qa-mutation-audit`). |
+| `make qa-nightly` | `qa-deep` + proptest@1000 + miri (if installed) + example-smoke (in scratch venv with `-e apis/python/node`) + hub-smoke + ci-nightly-jobs | ~3-4 hours | Full parity with `.github/workflows/nightly.yml` after the #1716 rebalance: **27 test jobs total** (source of truth is `nightly.yml`; see the "Nightly CI" section of `CLAUDE.md` for the running tally). example-smoke covers the **4 example-backed** GHA jobs (smoke-suite, log-sinks, service-action, streaming); hub-smoke covers the **Hub e2e** job (tests/hub-smoke.rs); `scripts/qa/ci-nightly-jobs.sh` drives **21 more** with platform-aware dispatch (record-replay, cluster-smoke, cluster-e2e [Linux], cluster-record-replay [Linux], topic-and-top, cpu-affinity [Linux], redb-backend, daemon-reconnect [Linux], state-reconstruction, multi-daemon-late-subscriber [Linux], test-cross-platform [macOS+Windows], examples, cli-tests (+cli-tests-python), bench-example, cross-check, ros2-bridge [Linux], ros2-zenoh-humble, ros2-zenoh-kilted, msrv, kani-proofs); **wheel-smoke** has no local driver at all (needs maturin plus two interpreters — build the wheels by hand if you need it). Requires **both `uv` and Python 3.12** — both preflighted; fails fast with a specific install hint for whichever is missing (`curl -LsSf https://astral.sh/uv/install.sh \| sh` for uv, `uv python install 3.12` for the interpreter). example-smoke installs workspace Python bindings into the scratch venv to match the GHA Python setup (avoids PyPI drift, #1710). Green local run on platform X predicts a green CI nightly for platform X's jobs; jobs that can't run on the dev's OS SKIP cleanly. Does NOT include full-repo mutation testing (see `qa-mutation-audit`). |
 | `make qa-release-gate` | `qa-deep` + semver | ~15 min | The automatable subset of Tier 3. Non-automatable: security audit + dogfood + migration validation (see strategy doc §7) |
 | `make qa-mutation-audit` | `cargo-mutants --full` on 6 critical crates | ~10-18 hrs | Deliberate test-quality audit, not every nightly |
 | `make qa-examples` | `scripts/smoke-all.sh` -- all smoke-eligible example dataflows end-to-end (skips CUDA/ROS2/webcam/C++/interactive) | ~15-20 min | When you want actual dataflows exercised. Orthogonal to ladder -- qa-fast/full/deep all `--exclude dora-examples`. Pass `ARGS="--rust-only"` etc. |
 | `make qa-fmt` | `cargo fmt --all -- --check` | ~2 s | Spot-check |
-| `make qa-clippy` | `cargo clippy --all -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
+| `make qa-clippy` | `cargo clippy --all --all-targets -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
 | `make qa-audit` | `cargo audit` + `cargo deny check` | ~10 s | After bumping deps |
 | `make qa-unwrap` | count `.unwrap()` / `.expect(` in production code | ~2 s | After adding unwraps |
 | `make qa-test` | `cargo test --all` (excluding Python) | ~3-5 min | After code changes |
 | `make qa-coverage` | `cargo llvm-cov` (writes `lcov.info`) | ~5 min | To see coverage locally |
 | `make qa-mutants` | `cargo mutants --in-diff origin/main` on critical crates | ~5-30 min | To verify tests actually detect bugs |
 | `make qa-semver` | `cargo semver-checks` vs last tag | ~1-2 min | Before bumping published crate versions |
+| `make qa-breaking` | every surface dora 1.x freezes, vs the last release tag | ~2 s (`ARGS="--fast"`) / ~2-5 min (full) | The `--fast` half runs in `qa-fast` and in PR CI; run the full one when you touched the CLI, the descriptor, `dora-message`, or a node API |
+| `make qa-breaking-update` | re-record the CLI snapshot and the JSON schemas | ~1-2 min | After *adding* a command, flag or descriptor field — commit the diff |
 
 All targets call scripts under `scripts/qa/`. The scripts are the source of truth — if something looks wrong, read the script.
 
@@ -148,7 +150,39 @@ Compare against `git diff` to see which ones are yours.
 
 Note: the budget ratchet is intentionally asymmetric. You can reduce the number freely; any increase needs justification.
 
-### 3.5 `test` failed
+### 3.5 `secret-files` failed
+
+**Cause**: git is tracking a file that either matches a `.gitignore` rule or carries a name that claims to hold a credential.
+
+**If it is a real credential**: deleting the file is not the fix. The value stays readable in history (`git show <commit>^:<path>`) and in every clone and fork that already pulled — which is why `.adora-token` (#2194) needed rotation, not just removal. Rotate the credential first, then remove the file.
+
+**If it is a fixture or a template**: rename it so the name no longer claims to be live — `.env.example`, `test-key.pem.template`. The gate anchors its patterns at the end of the name, so those suffixed forms pass.
+
+**If the `.gitignore` half is what flagged it**: a tracked file matching an ignore rule is worth a human look even when it holds no secret. It means the file was force-added or arrived through an import that bypassed the ignore rules — exactly how `.adora-token` got in.
+
+Reproduce locally with `make qa-secret-files`; the rationale is documented at the top of [`scripts/qa/secret-files.sh`](../scripts/qa/secret-files.sh).
+
+### 3.6 `publish-graph` failed
+
+**Cause**: a change to the publish graph that `cargo publish` would reject — but only at release time, once crates.io already holds whatever the release uploaded before the failure. The gate reports one of three things.
+
+**"X depends on Y, which is `publish = false`"**: cargo resolves every dependency of a published crate against the registry, so Y has to be on crates.io for X to publish. Either publish Y (drop `publish = false`, add it to both publish lists, and place it in a tier in [`api-rust.md`](api-rust.md#stability-scope-at-10)), or stop X from naming it. Optional dependencies are not an escape: they are in the published manifest whether or not the feature is on. That is #3304, and it is why `dora-tensor-pool` is published.
+
+**"which the publish lists publish after it" / "missing from the publish lists"**: the lists are consumed in order, and a crate cannot publish before its dependencies exist in the index. Move the dependency earlier, or add it.
+
+Reproduce locally with `make qa-publish-graph`; the rules and what each protects are documented at the top of [`scripts/qa/publish-graph.sh`](../scripts/qa/publish-graph.sh).
+
+### 3.7 `package-includes` failed
+
+**Cause**: a publishable crate reads a file at build time that its published `.crate` would not contain. `cargo package` ships the git-tracked files under one crate directory and nothing else, so the workspace build stays green and the failure lands on whoever runs `cargo install` — after the version is on crates.io and can no longer be replaced.
+
+**"resolves to X, outside crate Y"**: the path leaves the crate directory, usually a `../` into a sibling crate. Keep a crate-local copy of the file and include that; if two crates need the same file, add a test that keeps the copies identical, as [`tests/cmake-template-sync.rs`](../tests/cmake-template-sync.rs) does for the cmake templates. That test lives in `dora-examples`, which every bulk `cargo test` excludes, so no `make qa-*` target runs it — drift in the copies is caught by the `contract-tests` CI job, or locally by naming it: `cargo test -p dora-examples --test cmake-template-sync`. This is #3400: `dora-operator-api-c/build.rs` read `../node/cmake/*.cmake.in`, and `cargo install dora-cli` failed for every 1.0.0 user.
+
+**"which git does not track"**: the path is inside the crate but the file is generated or ignored, so packaging drops it. Commit the file, or have the build script write it into `OUT_DIR` and include it from there.
+
+Reproduce locally with `make qa-package-includes`, and confirm a fix end to end with `cargo package -p <crate>` — that builds the crate from its own tarball, which is exactly what the gate approximates statically.
+
+### 3.8 `test` failed
 
 **Cause**: you broke a test.
 
@@ -160,7 +194,7 @@ cargo test -p <crate> <test_name> -- --nocapture
 
 If the test was wrong and the code is right, fix the test. If the code was wrong, fix the code. Don't fix the test to match broken code.
 
-### 3.6 `coverage` (soft) flagged
+### 3.9 `coverage` (soft) flagged
 
 **Cause**: the diff coverage gate (if running on a PR) found less than 70% of your new/changed lines are covered by tests.
 
@@ -171,7 +205,7 @@ make qa-coverage
 open target/llvm-cov/html/index.html   # if you also run `cargo llvm-cov --html`
 ```
 
-### 3.7 `mutation` escaped
+### 3.10 `mutation` escaped
 
 **Cause**: `cargo-mutants` found a mutation that no test detected — meaning your tests are incomplete for the mutated code path.
 
@@ -192,15 +226,30 @@ Construct an input where the mutated version produces a different output from th
 
 **Do not** waive mutations just to make the gate pass. The point of the gate is to surface weak tests.
 
-### 3.8 `semver` (soft) flagged
+### 3.11 `semver` flagged
 
 **Cause**: `cargo-semver-checks` found a breaking change in a publishable crate's public API since the last tag.
 
 **Fix**:
-- If the change is intentional: make sure the crate's version is bumped to a new major or minor (per SemVer rules) before release.
 - If unintentional: revert the breaking change.
+- If intentional: it needs a 2.0. Inside 1.x there is no version bump that makes it acceptable — that is what the 1.0 guarantee says (`docs/api-rust.md`).
 
-The gate is soft during 0.x development — it only warns. It becomes a hard gate after the 1.0 release per `plan-dora-1.0-consolidation.md`.
+Soft during 0.x, hard from 1.0 on. It runs as a step of the `breaking-changes` gate below, which passes `--release-type minor` so the lints run whatever the version numbers say.
+
+### 3.12 `breaking-changes` failed
+
+**Cause**: a surface dora 1.x freezes changed. The report names the surface and the item — a removed `dora` flag, a reordered postcard field, a YAML property that became required, a raised `requires-python`.
+
+**Fix**, in the order worth trying:
+
+1. **Unintentional** (the common case): revert that part. The report quotes the old and new form, so the diff to undo is usually one line.
+2. **You added something, and the gate is complaining that a generated snapshot is stale.** Run `make qa-breaking-update` and commit the result. Additions are fine; the snapshot diff is how they get reviewed.
+3. **The change is genuinely needed and genuinely breaking.** Keep the old surface working alongside the new one — a deprecated alias, an added variant rather than a changed one, a new optional field rather than a required one. Removing the old form waits for 2.0.
+
+Two failures that read oddly:
+
+- **"major version bump ..."** — a 2.0 withdraws the promises the gate measures against, so it stops there rather than reporting a green or a red that means nothing. When the bump is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking` (and set the same variable on the `breaking-changes` job for the PR that carries it).
+- **"the generated surface files are stale"** — regenerating changed the tree, so the comparison ran against an out-of-date snapshot and its "ok" meant nothing. Commit the regenerated files and read the report again.
 
 ---
 

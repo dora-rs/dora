@@ -1,7 +1,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 use arrow_array::UInt8Array;
-use dora_node_api::{DoraNode, Event, EventStream, arrow::array::AsArray};
+use dora_node_api::{DoraNode, Event, EventStream, arrow_v59::array::AsArray};
 use eyre::Context;
 use std::{
     ffi::{c_int, c_void},
@@ -184,9 +184,9 @@ pub unsafe extern "C" fn read_dora_input_data(
     match event {
         // The payload is decoded from a self-describing Arrow IPC stream, so the
         // type is read from the array itself.
-        Event::Input { data, .. } => match data.data_type() {
-            dora_node_api::arrow::datatypes::DataType::UInt8 => {
-                let array: &UInt8Array = data.as_primitive();
+        Event::Input { data, .. } => match data.as_array().data_type() {
+            dora_node_api::arrow_v59::datatypes::DataType::UInt8 => {
+                let array: &UInt8Array = data.as_array().as_primitive();
                 let values = array.values();
                 // A zero-length payload carries no data. `values().as_ptr()`
                 // returns a non-null, dangling-but-aligned pointer for an empty
@@ -203,7 +203,7 @@ pub unsafe extern "C" fn read_dora_input_data(
                     *out_len = len;
                 }
             }
-            dora_node_api::arrow::datatypes::DataType::Null => unsafe {
+            dora_node_api::arrow_v59::datatypes::DataType::Null => unsafe {
                 *out_ptr = ptr::null();
                 *out_len = 0;
             },
@@ -400,8 +400,8 @@ unsafe fn try_log(
 mod tests {
     use super::*;
     use dora_node_api::{
-        ArrowData, Metadata,
-        arrow::array::{ArrayRef, Int32Array},
+        DoraArray, Metadata,
+        arrow_v59::array::{ArrayRef, Int32Array},
         uhlc::HLC,
     };
     use std::sync::Arc;
@@ -415,7 +415,7 @@ mod tests {
         let event = Event::Input {
             id: "my_input".into(),
             metadata: Metadata::new(HLC::default().new_timestamp()),
-            data: ArrowData(array),
+            data: DoraArray::from(array),
         };
         let event_ptr: *const () = (&event as *const Event).cast();
 
@@ -447,7 +447,7 @@ mod tests {
         let event = Event::Input {
             id: "my_input".into(),
             metadata: Metadata::new(HLC::default().new_timestamp()),
-            data: ArrowData(array),
+            data: DoraArray::from(array),
         };
         let event_ptr: *const () = (&event as *const Event).cast();
 

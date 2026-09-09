@@ -1,0 +1,14 @@
+module:
+  name: nav
+  inputs:
+    - pose
+  outputs:
+    - command
+
+nodes:
+  - id: controller
+    path: ./controller
+    inputs:
+      pose: _mod/pose
+    outputs:
+      - command

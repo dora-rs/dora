@@ -51,10 +51,15 @@ pub struct NodeConfig {
 /// [`NodeConfig::output_routing`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutputRouting {
-    /// Some consumer of this output runs under another daemon. All sends must
-    /// then go through this node's daemon so its inter-daemon forwarding can
-    /// reach them (dora #2738) — the direct node-to-node zenoh mesh is
-    /// same-machine only.
+    /// This output must stay on the reliable daemon path for the node's
+    /// lifetime; it gets no direct zenoh publisher. The daemon sets it when
+    /// some consumer runs under another daemon (only this node's daemon can
+    /// feed inter-daemon forwarding, dora #2738 — the direct node-to-node
+    /// zenoh mesh is same-machine only), when a remote static consumer has no
+    /// dialable endpoint or watches `input_timeout`, or when any consumer
+    /// declares `queue_policy: backpressure` (the direct zenoh ingress can
+    /// drop before the per-input policy applies). The full policy lives in
+    /// the daemon's `output_routing` module.
     #[serde(default)]
     pub daemon_only: bool,
     /// The static same-daemon consumers whose startup acks the producer must
@@ -101,26 +106,15 @@ pub enum DaemonReply {
         value: Option<Vec<u8>>,
     },
     Empty,
-    /// Result of a cross-machine pool registration. `Err` carries the
-    /// warning message (resolution failure or remote creation failure) —
-    /// the register is a warn-and-no-op in both cases. `direct` tells the
-    /// node whether the remote daemon can open its segment directly
-    /// (same host): when true, the per-frame data push is skipped.
+    /// Opaque reply to [`crate::node_to_daemon::DaemonRequest::ExtensionRequest`],
+    /// produced by the extension's daemon half. dora does not interpret it.
     ///
-    /// Appended last so existing variants keep their bincode indices: the
+    /// Appended last so existing variants keep their postcard indices: the
     /// Python node API ships separately (PyPI) from the daemon, so a
     /// mixed-version pair must not misdecode older replies.
-    CrossMachinePoolRegistered {
-        result: Result<(), String>,
-        direct: bool,
-    },
-    /// Reply to [`DaemonRequest::ReadPinnedMemory`]. Appended last for the
-    /// same reason as [`DaemonReply::CrossMachinePoolRegistered`]: the
-    /// enum is encoded by variant index, and a mid-enum insertion would
-    /// shift the wire indices of `ExtensionValue`/`Empty` for version-
-    /// skewed node/daemon pairs (the Python node API ships separately).
-    PinnedMemoryMetadata {
-        metadata: Metadata,
+    ExtensionReply {
+        #[serde(with = "crate::bulk_bytes::vec")]
+        payload: Vec<u8>,
     },
 }
 
@@ -142,8 +136,7 @@ impl DaemonReply {
             // its own length is the whole hint.
             DaemonReply::ExtensionValue { value } => value.as_ref().map_or(0, |bytes| bytes.len()),
             DaemonReply::Result(_) | DaemonReply::NodeConfig { .. } | DaemonReply::Empty => 0,
-            DaemonReply::PinnedMemoryMetadata { metadata } => metadata.parameters.len(),
-            DaemonReply::CrossMachinePoolRegistered { .. } => 0,
+            DaemonReply::ExtensionReply { payload } => payload.len(),
         }
     }
 }

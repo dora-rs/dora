@@ -123,6 +123,15 @@ side refuses the subscription on mismatch:
 | 1 | bincode |
 | 2 | postcard (current, `dora_message::TOPIC_DATA_PROTOCOL_VERSION`) |
 
+> **Output ids: request vs. frame.** `TopicSubscribe` accepts the *public* output
+> id -- the one a descriptor's `inputs:` mapping would use, which for a node with
+> a single `operator:` block is the bare name (`image`, not `op/image`). The
+> coordinator translates it to the resolved id the daemon keys its watchers by,
+> and `InterDaemonEvent::Output` frames report **that** resolved id. A subscriber
+> matching frames against the ids it asked for must undo the translation: strip
+> the leading `<operator_id>/` for single-`operator:` nodes. Nodes with an
+> `operators:` list, and plain nodes, use the same id in both directions.
+
 `TopicSubscribe` carries the client's version and `TopicSubscribed` carries the
 coordinator's:
 
@@ -133,11 +142,12 @@ coordinator's:
 
 Both fields are `#[serde(default)]`, so a peer that predates the handshake
 simply omits them — which deserializes to `None` and is rejected for the same
-reason a wrong number is. The rejection names both versions, so an operator can
-tell which side is old:
+reason a wrong number is. The rejection names both sides, so an operator can
+tell which one is old:
 
 ```
-topic data protocol mismatch: client speaks version 1, coordinator speaks 2.
+topic data protocol mismatch: client predates the topic data protocol handshake
+(bincode-era frames), this side speaks 2.
 Binary frames are positionally encoded, so subscribing would silently misparse
 rather than fail. Upgrade whichever side is older.
 ```
@@ -200,7 +210,7 @@ State maintained in `session_loop`:
 The dataflow descriptor must enable debug message publishing:
 
 ```yaml
-_unstable_debug:
+debug:
   enable_debug_inspection: true
 ```
 

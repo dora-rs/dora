@@ -93,8 +93,8 @@ dora daemon --machine-id A --coordinator-addr <rendezvous-ip> --coordinator-port
 **The YAML needs three things** (all present in the `*_cross*.yml` files):
 
 1. `env: cross_machine: "B"` — the sender registers with `register_tensor_pool(machine="B")`; without it the pool stays local and the receiver never sees a mirror.
-2. `_unstable_deploy: machine: A|B` per node — which daemon spawns which node.
-3. `_unstable_deploy: working_dir: .` (relative to the yml's directory) — relative to the daemon's cwd (repo root), per the multiple-daemons convention. Absolute paths are NOT portable.
+2. `deploy: machine: A|B` per node — which daemon spawns which node.
+3. `deploy: working_dir: .` (relative to the yml's directory) — relative to the daemon's cwd (repo root), per the multiple-daemons convention. Absolute paths are NOT portable.
 
 **True-WAN zenoh config** (`ZENOH_CONFIG` env on the dialing daemon) — three points, all required on a real WAN link (default multicast discovery does not work across routed networks):
 

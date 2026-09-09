@@ -26,3 +26,7 @@ arrow-array = { workspace = true }
 
 [dependencies.dora-node-api]
 workspace = true
+# The C API hands raw Arrow arrays across the FFI boundary, so it names
+# Arrow types directly and needs the internal-major re-export plus the
+# borrowing `DoraArray::as_array` accessor it gates.
+features = ["arrow-v59"]

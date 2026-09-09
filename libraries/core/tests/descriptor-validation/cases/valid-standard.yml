@@ -1,0 +1,9 @@
+nodes:
+  - id: standard
+    path: ./standard-node
+    outputs:
+      - result
+    output_metadata:
+      result:
+        - request_id
+    pattern: service-server

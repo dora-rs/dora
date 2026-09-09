@@ -822,7 +822,7 @@ mod tests {
         EventItem::ZenohInput {
             id: DataId::from(id.to_string()),
             metadata: std::sync::Arc::new(metadata),
-            data: ().into_arrow().into(),
+            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
         }
     }
 

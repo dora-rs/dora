@@ -79,17 +79,17 @@ jobs:
     # when the timeout fired. 60 min gives margin without being wasteful.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -126,8 +126,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -137,6 +137,68 @@ jobs:
         # --test-threads=1: the run sub-tests share coordinator ports.
         run: cargo test -p dora-examples --test hub-smoke -- --test-threads=1
 
+  # Nothing else in CI builds a wheel, which is how the `dora-rs-cli` console
+  # script came to point at a `dora_cli:py_main` that no longer existed. The
+  # unit test in `dora-cli-api-python` pins the entry point itself; this job
+  # covers the rest of the path -- that the manifests `pip-release.yml`
+  # publishes from actually produce installable wheels.
+  wheel-smoke:
+    name: Python wheel smoke (dora-rs + dora-rs-cli)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+          # Without a shared-key this keys on the job name, which nothing ever
+          # writes, so the restore is a guaranteed miss and the job rebuilds the
+          # whole graph. `workspace` is the key ci.yml's test job writes on main.
+          shared-key: workspace
+      # Build on the abi3 floor, the same interpreter `pip-release.yml` uses.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Install maturin
+        run: pip install maturin
+      # Same working directories as the `pip-release.yml` build matrix, so a
+      # manifest that moves without the workflow following it fails here
+      # instead of at release time.
+      - name: Build dora-rs wheel
+        run: maturin build --out "$GITHUB_WORKSPACE/dist"
+        working-directory: apis/python/node
+      - name: Build dora-rs-cli wheel
+        run: maturin build --out "$GITHUB_WORKSPACE/dist"
+        working-directory: apis/python/cli
+      # Install the built artifacts by path: `--pre` alone would still let pip
+      # prefer a released dora-rs from PyPI over the pre-release built here.
+      - name: Install and smoke the wheels (3.11)
+        run: |
+          pip install --pre dist/*.whl
+          python -c "import dora; print('dora', dora.__file__)"
+          dora --version
+          # A usage error must exit non-zero. The console script previously
+          # printed clap's error and returned success, so `dora typo && ...`
+          # silently continued.
+          if dora definitely-not-a-subcommand; then
+            echo "expected a usage error to exit non-zero" >&2
+            exit 1
+          fi
+      # abi3 promises one wheel works on every later CPython, and `docs/api-rust.md`
+      # states that as a 1.0 guarantee. Reinstall the *same* wheels on a newer
+      # interpreter to keep that promise tested rather than assumed.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Install and smoke the same wheels (3.13)
+        run: |
+          pip install --pre dist/*.whl
+          python -c "import dora; print('dora', dora.__file__)"
+          dora --version
+
   # Build the dora CLI once and upload as artifact for downstream jobs.
   # Saves ~15 min × 4 downstream jobs = ~60 runner-minutes per nightly run.
   build-cli:
@@ -144,8 +206,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -166,17 +228,17 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -212,8 +274,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -246,11 +308,11 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -283,8 +345,8 @@ jobs:
     # exit 124 during `Compiling pin-project-internal` on rc.1 (145ccce04).
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -354,8 +416,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -444,8 +506,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -486,8 +548,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -520,7 +582,7 @@ jobs:
     # list/info/echo/hz/pub`. Each has a non-interactive mode (--once /
     # built-in exit / --duration / --count). Topic inspection (echo/hz/info)
     # streams over the coordinator WebSocket (PR #238) — requires
-    # `_unstable_debug.enable_debug_inspection: true` in the fixture.
+    # `debug.enable_debug_inspection: true` in the fixture.
     #
     # Uses Python source nodes (ticker.py / sink.py) so the dataflow runs
     # indefinitely until stopped (rust-dataflow nodes hit tick limits).
@@ -535,17 +597,17 @@ jobs:
     # build step's own 25-minute cap somehow does not.
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: astral-sh/setup-uv@v8.1.0
+      - uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -769,8 +831,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -823,8 +885,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -922,8 +984,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1011,8 +1073,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1038,8 +1100,8 @@ jobs:
     needs: build-cli
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1121,8 +1183,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1148,8 +1210,8 @@ jobs:
         platform: [macos-latest, windows-latest]
       fail-fast: false
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1271,15 +1333,15 @@ jobs:
     # cold Windows runner (#2742).
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         if: runner.os == 'Linux'
         with:
           tool-cache: true
@@ -1389,15 +1451,15 @@ jobs:
     # `close-issue-on-success` from ever firing.
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         if: runner.os == 'Linux'
         with:
           tool-cache: true
@@ -1541,17 +1603,20 @@ jobs:
       matrix:
         platform: [ubuntu-latest, macos-latest, windows-latest]
       fail-fast: false
-    timeout-minutes: 90
+    # Headroom for the raised `Test Python Dynamic Node example` cap below:
+    # the last green macos-latest run of this job took 64m with that step at
+    # 14m, so a step allowed to reach 40m would sit right on a 90m job cap.
+    timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         if: runner.os == 'Linux'
         with:
           tool-cache: true
@@ -1580,11 +1645,11 @@ jobs:
           echo '${{ github.workspace }}/cli-bin' >> "$GITHUB_PATH"
       - name: Check the downloaded CLI runs
         run: dora --version
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Set up Python venv
@@ -1623,7 +1688,16 @@ jobs:
           dora run examples/python-dataflow/dataflow.yml --uv --stop-after 10s
 
       - name: Test Python Dynamic Node example
-        timeout-minutes: 20
+        # 40, not 20: the `uv pip install` below is a second from-scratch
+        # build of the PyO3 extension (uv builds it in an isolated env, so
+        # the `Set up Python venv` build above is not reused), and on macOS
+        # that build alone dominates the step. The last green nightly before
+        # dora-rs/dora#3372 spent 14m01s here on macos-latest against the
+        # 20-minute cap -- 70% of budget -- and the next one crossed it while
+        # still on `Building dora-rs`. Linux and Windows run this in ~40s.
+        # Reusing the first build instead of redoing it would be the real
+        # fix; until then the cap has to reflect what the step actually costs.
+        timeout-minutes: 40
         shell: bash
         run: |
           dora build examples/python-dataflow/dataflow_dynamic.yml --uv
@@ -1740,8 +1814,8 @@ jobs:
       fail-fast: false
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1761,9 +1835,9 @@ jobs:
     # (PR-CI gate removed; runs independently in nightly)
     env:
       # The workspace pins `abi3-py311` in pyo3 features (workspace
-      # Cargo.toml:123 + apis/python/operator + ros2-bridge/python +
-      # binaries/runtime). pyo3-build-config 0.28+ asserts the build-
-      # time Python interpreter version is >= the abi3 minimum, but
+      # Cargo.toml + apis/python/operator + ros2-bridge/python +
+      # binaries/runtime-python). pyo3-ffi's build script asserts the
+      # build-time Python interpreter is >= the abi3 minimum, but
       # `cross` runs the build inside Docker images that ship Python
       # 3.10. abi3 builds don't actually need a runtime Python at
       # compile time — they bake the minimum into the binary — so
@@ -1801,8 +1875,8 @@ jobs:
             target: x86_64-apple-darwin
       fail-fast: false
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
@@ -1849,15 +1923,15 @@ jobs:
     # (PR-CI gate removed; runs independently in nightly)
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
         with:
           tool-cache: false
           android: true
@@ -1868,18 +1942,18 @@ jobs:
           swap-storage: false
       # Provision Python 3.12 BEFORE the first cargo invocation. The
       # workspace pins `abi3-py311` in pyo3 features (workspace
-      # Cargo.toml:123) and pyo3-build-config 0.28+ rejects build-time
+      # Cargo.toml) and pyo3-ffi's build script rejects build-time
       # interpreters older than the abi3 minimum. ubuntu-22.04 ships
       # Python 3.10 by default, which would make `cargo test -p
       # dora-ros2-bridge-python` below fail with "cannot set a minimum
       # Python version 3.11 higher than the interpreter version 3.10".
       # Previously this step lived AFTER the cargo steps below, so it
       # only protected the Python example, not the build. Fixes #1866.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install uv
-        uses: astral-sh/setup-uv@v8.1.0
+        uses: astral-sh/setup-uv@v10.0.1
         with:
           enable-cache: true
       - name: Install pyarrow + numpy
@@ -1911,8 +1985,8 @@ jobs:
     timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       # `ros2-zenoh-interop.sh` builds the ROS2 bridge wheel with maturin
@@ -1920,7 +1994,7 @@ jobs:
       # and maturin on PATH. Without them the script died on
       # `maturin: command not found` (exit 127) before running a single
       # case.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install maturin
@@ -1939,11 +2013,11 @@ jobs:
     timeout-minutes: 60
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - name: Install maturin
@@ -1963,15 +2037,15 @@ jobs:
     runs-on: ubuntu-latest
     # (PR-CI gate removed; runs independently in nightly)
     steps:
-      - uses: actions/checkout@v6
-      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       # PyO3's abi3-py311 floor still needs a real interpreter when checking
       # publishable Python helper crates that embed/link Python. Without this,
       # pyo3-ffi falls back to an abi3 config without lib_name and the MSRV
       # check fails before reaching crate code.
-      - uses: actions/setup-python@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - uses: Swatinem/rust-cache@v2
@@ -1990,6 +2064,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - wheel-smoke
       - smoke-suite
       - log-sinks
       - service-action
@@ -2030,7 +2105,7 @@ jobs:
     # out to be a supersede.
     if: always() && github.event_name == 'schedule' && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled'))
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Create or update regression issue
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -2060,6 +2135,9 @@ jobs:
             case "$1" in
               build-cli)
                 echo 'cargo install --path binaries/cli --locked --root ./dist'
+                ;;
+              wheel-smoke)
+                printf 'maturin build --out dist -m apis/python/node/Cargo.toml\nmaturin build --out dist -m apis/python/cli/Cargo.toml\npip install --pre dist/*.whl\ndora --version\n'
                 ;;
               smoke-suite)
                 echo 'cargo test -p dora-examples --test example-smoke -- --test-threads=1'
@@ -2548,6 +2626,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - build-cli
+      - wheel-smoke
       - smoke-suite
       - log-sinks
       - service-action

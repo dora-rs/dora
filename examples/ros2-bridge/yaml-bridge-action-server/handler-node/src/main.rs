@@ -25,7 +25,8 @@ fn main() -> eyre::Result<()> {
                     // correlate feedback/result to the correct goal.
                     let params = metadata.parameters;
 
-                    let Some(struct_array) = data.as_any().downcast_ref::<StructArray>() else {
+                    let Some(struct_array) = data.as_array().as_any().downcast_ref::<StructArray>()
+                    else {
                         eprintln!("Warning: expected struct array for goal, skipping");
                         continue;
                     };

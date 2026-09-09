@@ -1,3 +1,13 @@
+//! **Internal to dora — not a public API.**
+//!
+//! This crate is published to crates.io only because cargo requires every
+//! dependency of a published crate to be published; `dora-node-api` and
+//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! guarantee and may change in any release, including a patch.
+//!
+//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
+//! section of `docs/api-rust.md`.
+//!
 #![warn(unsafe_op_in_unsafe_fn)]
 
 use dora_core::{
@@ -171,12 +181,12 @@ async fn run(
     // so it must be spawned rather than awaited inline. Mirrors the gating and
     // spawning used by the node API (`apis/rust/node/src/node/mod.rs`).
     #[cfg(feature = "metrics")]
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
+    if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         use dora_metrics::run_metrics_monitor;
 
         let meter_id = config.node_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = run_metrics_monitor(meter_id)
+            if let Err(e) = run_metrics_monitor(meter_id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {

@@ -7,7 +7,7 @@ use crate::{
     send_with_timestamp,
 };
 use dora_core::{
-    config::{DataId, NodeId},
+    config::{DataId, Input, InputMapping, NodeId},
     descriptor::Descriptor,
     uhlc::HLC,
 };
@@ -297,8 +297,12 @@ pub struct RunningDataflow {
     pub(crate) descriptor: Descriptor,
     /// Per-node zenoh listener + dial-list, so the node↔node links this dataflow
     /// needs are established deterministically rather than left to gossip.
-    /// Populated when the dataflow is spawned; see `plan_zenoh_peering`.
+    /// Populated when the dataflow is spawned; see `spawn::build_peering_plan`.
     pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
+    /// Keeps this daemon answering other daemons' node-endpoint queries for as
+    /// long as the dataflow runs. Dropped with the dataflow; see
+    /// `spawn::endpoint_exchange`.
+    pub(crate) endpoint_queryable: Option<crate::spawn::endpoint_exchange::EndpointQueryable>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
@@ -404,6 +408,7 @@ impl RunningDataflow {
         Self {
             id: dataflow_id,
             zenoh_peering: Arc::new(BTreeMap::new()),
+            endpoint_queryable: None,
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
@@ -1048,6 +1053,62 @@ impl RunningDataflow {
     /// consumer, so their remote consumers would never receive the
     /// `OutputClosed` event when the producing node finishes (dora-rs/dora#2152
     /// region — graceful cross-daemon shutdown).
+    /// Whether `receiver`'s `input_id` declares `queue_policy: backpressure`,
+    /// judged from the live node config. Static and dynamic nodes alike have
+    /// an entry from spawn time (a dynamic node's config is served from it
+    /// when the node connects), so a consumer that has not joined yet still
+    /// counts. A receiver with no entry has exited; its edge is judged again
+    /// when it is added back.
+    pub(crate) fn input_requires_backpressure(&self, receiver: &NodeId, input_id: &DataId) -> bool {
+        self.running_nodes
+            .get(receiver)
+            .and_then(|node| node.node_config.run_config.inputs.get(input_id))
+            .is_some_and(crate::output_routing::input_is_backpressure)
+    }
+
+    /// The first `queue_policy: backpressure` input of a node entering this
+    /// running dataflow whose local producer is already running with that
+    /// output on the direct zenoh path.
+    ///
+    /// A producer learns its routing once, in its `NodeConfig`; nothing
+    /// re-pins a running producer when a consumer is added or replaced. Such
+    /// an edge would silently run over the lossy direct ingress the policy
+    /// exists to avoid, so the add/replace is refused instead. Self-loops are
+    /// the entering node's own routing (`pin_backpressure_self_loops`), a
+    /// producer without an entry runs on another daemon (its daemon owns that
+    /// call), and a producer without routing keeps every output on the
+    /// daemon path already.
+    pub(crate) fn unpinnable_backpressure_input(
+        &self,
+        node_id: &NodeId,
+        inputs: &BTreeMap<DataId, Input>,
+    ) -> Option<(DataId, OutputId)> {
+        inputs.iter().find_map(|(input_id, input)| {
+            if !crate::output_routing::input_is_backpressure(input) {
+                return None;
+            }
+            let InputMapping::User(mapping) = &input.mapping else {
+                return None;
+            };
+            if &mapping.source == node_id {
+                return None;
+            }
+            let producer = self.running_nodes.get(&mapping.source)?;
+            let pinned = match &producer.node_config.output_routing {
+                None => true,
+                Some(routing) => routing
+                    .get(&mapping.output)
+                    .is_some_and(|routing| routing.daemon_only),
+            };
+            (!pinned).then(|| {
+                (
+                    input_id.clone(),
+                    OutputId(mapping.source.clone(), mapping.output.clone()),
+                )
+            })
+        })
+    }
+
     pub(crate) fn node_output_ids(&self, node_id: &NodeId) -> BTreeSet<DataId> {
         node_output_ids(&self.mappings, &self.open_external_mappings, node_id)
     }
@@ -1678,17 +1739,7 @@ mod tests {
     }
 
     fn empty_descriptor() -> Descriptor {
-        use dora_message::descriptor::Debug as DescriptorDebug;
-        Descriptor {
-            nodes: vec![],
-            deploy: None,
-            debug: DescriptorDebug::default(),
-            health_check_interval: None,
-            strict_types: None,
-            exit_when_nodes_finish: None,
-            type_rules: vec![],
-            env: None,
-        }
+        Descriptor::new(vec![])
     }
 
     #[test]

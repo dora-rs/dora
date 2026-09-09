@@ -1,3 +1,13 @@
+//! **Internal to dora — not a public API.**
+//!
+//! This crate is published to crates.io only because cargo requires every
+//! dependency of a published crate to be published; `dora-node-api` and
+//! `dora-cli` depend on it. It is not covered by dora's 1.0 stability
+//! guarantee and may change in any release, including a patch.
+//!
+//! Depend on it directly at your own risk. See the "Stability scope at 1.0"
+//! section of `docs/api-rust.md`.
+//!
 use eyre::{Context, ContextCompat};
 use sha2::{Digest, Sha256};
 #[cfg(unix)]
@@ -28,24 +38,70 @@ fn parse_content_disposition_filename(header: &str) -> Option<String> {
         }
         let value = value.trim();
         let name = if let Some(after_quote) = value.strip_prefix('"') {
-            // Quoted form: the value runs up to the closing quote.
-            after_quote.split('"').next().unwrap_or(after_quote)
+            // Quoted form: the value runs up to the first quote that is not a
+            // `\"` escape.
+            unquote_disposition_value(after_quote)
         } else {
-            value
+            value.to_string()
         };
-        (!name.is_empty()).then(|| name.to_string())
+        (!name.is_empty()).then_some(name)
     })
+}
+
+/// Decode a `Content-Disposition` quoted-string body (the text after the
+/// opening `"`): return everything up to the first *unescaped* closing quote,
+/// with a `\"` escape collapsed to a literal `"`. Without honoring the escape,
+/// a header like `filename="my \"weird\" name.bin"` is truncated at the first
+/// inner `\"` to `my \` instead of `my "weird" name.bin`.
+///
+/// Only `\"` is treated as an escape. A backslash that is *not* followed by a
+/// quote is kept verbatim, because real-world (non-RFC-compliant) servers
+/// routinely send unescaped Windows paths such as
+/// `filename="C:\dir\file.bin"`, and decoding those backslashes as quoted-pairs
+/// would silently corrupt the name. If no closing quote is present the whole
+/// remainder is returned (best-effort).
+fn unquote_disposition_value(body: &str) -> String {
+    let mut out = String::with_capacity(body.len());
+    let mut chars = body.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            // `\"` -> literal `"`. Any other backslash stays literal.
+            '\\' if chars.peek() == Some(&'"') => {
+                out.push('"');
+                chars.next();
+            }
+            '"' => break,
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 /// Split a `Content-Disposition` header value into its `;`-separated
 /// parameters, treating a `;` inside a double-quoted value as literal so that
 /// `filename="a;b.bin"` stays a single parameter.
+///
+/// An escaped quote (`\"`) does not open or close a quoted value, so the split
+/// agrees with [`unquote_disposition_value`] on where a value ends. Without
+/// this, an escaped quote in one parameter would flip the quote state and merge
+/// the following `;`-separated parameter (e.g. the real `filename=`) into it.
+///
+/// The escape policy is deliberately identical to [`unquote_disposition_value`]:
+/// *only* `\"` is an escape — any other backslash is literal (so unescaped
+/// Windows paths survive). Keeping the two in lockstep is what prevents the
+/// splitter and the decoder from disagreeing on where a value ends.
 fn split_disposition_params(header: &str) -> impl Iterator<Item = &str> {
     let mut params = Vec::new();
     let mut start = 0;
     let mut in_quotes = false;
-    for (i, c) in header.char_indices() {
+    let mut chars = header.char_indices().peekable();
+    while let Some((i, c)) = chars.next() {
         match c {
+            // `\"` inside a quoted value is an escaped quote: consume the `"` so
+            // it does not close the value. Any other backslash is literal.
+            '\\' if in_quotes && chars.peek().is_some_and(|&(_, c)| c == '"') => {
+                chars.next();
+            }
             '"' => in_quotes = !in_quotes,
             ';' if !in_quotes => {
                 params.push(&header[start..i]);
@@ -64,34 +120,102 @@ fn split_disposition_params(header: &str) -> impl Iterator<Item = &str> {
 /// query string and fragment (e.g. the long presigned-URL parameters that S3
 /// and GitHub-release redirects append) never leak into the name. Returns
 /// `None` when the URL has no non-empty path segment.
+///
+/// `Url::path_segments` yields segments in their percent-*encoded* form, so the
+/// chosen segment is decoded before use: a download from `.../my%20model.bin`
+/// must land on disk as `my model.bin`, not the literal `my%20model.bin`. Bytes
+/// that do not form valid UTF-8 after decoding become the Unicode replacement
+/// character (`decode_utf8_lossy`) rather than dropping the name; the result is
+/// still vetted by `sanitize_filename`.
 fn filename_from_url(url: &reqwest::Url) -> Option<String> {
-    url.path_segments()?
-        .rfind(|segment| !segment.is_empty())
-        .map(|segment| segment.to_string())
+    let segment = url.path_segments()?.rfind(|segment| !segment.is_empty())?;
+    Some(
+        percent_encoding::percent_decode_str(segment)
+            .decode_utf8_lossy()
+            .into_owned(),
+    )
+}
+
+/// Sanitize a candidate filename: strip path components to prevent traversal,
+/// reject null bytes and overly long names, trim trailing dots/spaces, and
+/// reject Windows reserved device names. Returns `None` when nothing usable
+/// survives — e.g. `".."` or `"."` (which `Path::file_name` maps to `None`),
+/// a name over 255 bytes / containing a NUL, a name that is only dots and
+/// spaces, or a reserved device name such as `NUL`. (A trailing slash such as
+/// `"dir/"` keeps its last component: `Path::file_name` returns `"dir"`.)
+///
+/// The `Content-Disposition` header is attacker-influenced, so the returned
+/// name is a name a hostile server could pick. The two hardening steps below
+/// are applied on **every** platform — not gated to Windows — both so the
+/// returned name always matches the file that is actually created and so the
+/// checks are exercised by the Linux PR gate. Rejecting a download literally
+/// named `NUL`/`CON`/… is acceptable: such names are exceedingly rare as real
+/// artifact filenames.
+fn sanitize_filename(name: &str) -> Option<String> {
+    let sanitized = Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string())?;
+    if sanitized.contains('\0') || sanitized.len() > 255 {
+        return None;
+    }
+    // Windows silently strips trailing dots and spaces when creating a file, so
+    // a name like `evil.` would land at a different path than the one returned.
+    // Trim them and reject a name that trims away to nothing.
+    let sanitized = sanitized.trim_end_matches(['.', ' ']);
+    if sanitized.is_empty() {
+        return None;
+    }
+    // `tokio::fs::File::create(dir/NUL)` opens the *null device* on Windows
+    // rather than a file: the write and `sync_all` both "succeed" and the
+    // caller goes on to spawn/`dlopen` something with no content. Reject the
+    // reserved device names so a hostile header cannot redirect the download.
+    if is_windows_reserved_name(sanitized) {
+        return None;
+    }
+    Some(sanitized.to_string())
+}
+
+/// Whether `name` is a Windows reserved device name (`CON`, `PRN`, `AUX`,
+/// `NUL`, `COM0`–`COM9`, `LPT0`–`LPT9`), compared case-insensitively and
+/// ignoring any extension — `NUL`, `NUL.bin`, and `NUL.tar.gz` are all
+/// reserved. Windows also ignores trailing spaces in the device stem, so
+/// `NUL .txt` is matched too.
+fn is_windows_reserved_name(name: &str) -> bool {
+    // The reserved status is decided by the stem before the first `.`.
+    let stem = name.split('.').next().unwrap_or(name).trim_end_matches(' ');
+    let upper = stem.to_ascii_uppercase();
+    if matches!(upper.as_str(), "CON" | "PRN" | "AUX" | "NUL") {
+        return true;
+    }
+    // `COM0`–`COM9` and `LPT0`–`LPT9`.
+    matches!(
+        upper.strip_prefix("COM").or_else(|| upper.strip_prefix("LPT")),
+        Some(rest) if rest.len() == 1 && rest.as_bytes()[0].is_ascii_digit()
+    )
+}
+
+/// Pick a sanitized filename from the `Content-Disposition` header (if any),
+/// falling back to the URL's last path segment.
+///
+/// Each source is sanitized *independently* and then chained: a
+/// `Content-Disposition` filename that sanitizes away (e.g. a
+/// hostile/degenerate `filename=".."`, which `Path::file_name` maps to `None`)
+/// must not suppress the URL fallback that would otherwise name the download
+/// fine.
+fn resolve_filename(content_disposition: Option<&str>, url: &reqwest::Url) -> Option<String> {
+    content_disposition
+        .and_then(parse_content_disposition_filename)
+        .and_then(|name| sanitize_filename(&name))
+        .or_else(|| filename_from_url(url).and_then(|name| sanitize_filename(&name)))
 }
 
 fn get_filename(response: &reqwest::Response) -> Option<String> {
-    let raw_name = response
+    let content_disposition = response
         .headers()
         .get("content-disposition")
-        .and_then(|value| value.to_str().ok())
-        .and_then(parse_content_disposition_filename);
-
-    // If Content-Disposition header is not available, extract from the URL.
-    let raw_name = raw_name.or_else(|| filename_from_url(response.url()));
-
-    // Sanitize: strip path components to prevent traversal,
-    // reject null bytes and overly long names
-    raw_name.and_then(|name| {
-        let sanitized = Path::new(&name)
-            .file_name()
-            .and_then(|n| n.to_str())
-            .map(|s| s.to_string())?;
-        if sanitized.contains('\0') || sanitized.len() > 255 {
-            return None;
-        }
-        Some(sanitized)
-    })
+        .and_then(|value| value.to_str().ok());
+    resolve_filename(content_disposition, response.url())
 }
 
 /// Download a file from a URL into `target_dir`.
@@ -171,7 +295,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{filename_from_url, parse_content_disposition_filename};
+    use super::{filename_from_url, parse_content_disposition_filename, sanitize_filename};
 
     fn name_from(url: &str) -> Option<String> {
         filename_from_url(&reqwest::Url::parse(url).unwrap())
@@ -211,6 +335,17 @@ mod tests {
         assert_eq!(
             name_from("https://example.com/a/b/weights.safetensors"),
             Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn url_filename_percent_decoded() {
+        // Regression: `Url::path_segments` returns percent-encoded segments, so
+        // a URL ending in `my%20model.bin` must be decoded to `my model.bin`
+        // rather than saved as the literal `my%20model.bin`.
+        assert_eq!(
+            name_from("https://example.com/models/my%20model.bin"),
+            Some("my model.bin".to_string())
         );
     }
 
@@ -256,6 +391,54 @@ mod tests {
         assert_eq!(
             parse_content_disposition_filename("attachment; filename=\"a;b.bin\""),
             Some("a;b.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quotes_inside_quoted_filename_are_unescaped() {
+        // RFC 6266 / RFC 2616 quoted-pairs: an escaped `\"` inside the value is
+        // literal, not the terminator. A substring split on the first `"` would
+        // truncate this to `my \`.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; filename=\"my \\\"weird\\\" name.bin\""
+            ),
+            Some("my \"weird\" name.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quote_before_trailing_param_ends_the_value() {
+        // The escaped `\"` is not the terminator; the value ends at the real
+        // closing quote and the trailing `; size=...` parameter is ignored.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; filename=\"a \\\"b\\\".bin\"; size=1000"
+            ),
+            Some("a \"b\".bin".to_string())
+        );
+    }
+
+    #[test]
+    fn escaped_quote_in_earlier_param_does_not_swallow_filename() {
+        // An escaped quote in a *preceding* parameter must not desync the
+        // splitter from the value decoder and hide the real filename: the `;`
+        // after the earlier value is still a parameter boundary.
+        assert_eq!(
+            parse_content_disposition_filename(
+                "attachment; title=\"a \\\"b\"; filename=\"doc.bin\""
+            ),
+            Some("doc.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn unescaped_backslashes_are_kept_verbatim() {
+        // Real-world (non-RFC-compliant) servers send unescaped Windows paths;
+        // a `\` that does not escape a quote must be preserved, not dropped.
+        assert_eq!(
+            parse_content_disposition_filename("attachment; filename=\"C:\\Users\\file.bin\""),
+            Some("C:\\Users\\file.bin".to_string())
         );
     }
 
@@ -320,5 +503,126 @@ mod tests {
             parse_content_disposition_filename("attachment; filename*=UTF-8''model.bin"),
             None
         );
+    }
+
+    // --- resolve_filename (Content-Disposition + URL fallback) ---
+
+    fn resolve(cd: Option<&str>, url: &str) -> Option<String> {
+        super::resolve_filename(cd, &reqwest::Url::parse(url).unwrap())
+    }
+
+    #[test]
+    fn resolve_prefers_content_disposition() {
+        assert_eq!(
+            resolve(
+                Some("attachment; filename=\"model.bin\""),
+                "https://example.com/other.bin"
+            ),
+            Some("model.bin".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_no_header() {
+        assert_eq!(
+            resolve(None, "https://example.com/dir/weights.safetensors"),
+            Some("weights.safetensors".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_falls_back_to_url_when_header_sanitizes_away() {
+        // Regression: a degenerate/hostile `Content-Disposition` filename that
+        // `Path::file_name` maps to `None` (`..`, `.`, a trailing slash) must
+        // not suppress the perfectly good URL fallback — previously
+        // `get_filename` returned `None` and aborted the download.
+        for cd in ["attachment; filename=\"..\"", "attachment; filename=\".\""] {
+            assert_eq!(
+                resolve(Some(cd), "https://example.com/model.bin"),
+                Some("model.bin".to_string()),
+                "header {cd:?} should fall back to the URL name"
+            );
+        }
+    }
+
+    #[test]
+    fn resolve_returns_none_when_both_sources_are_unusable() {
+        assert_eq!(
+            resolve(Some("attachment; filename=\"..\""), "https://example.com/"),
+            None
+        );
+    }
+
+    // --- sanitize_filename (traversal, NUL, length, reserved names, dots) ---
+
+    #[test]
+    fn sanitize_strips_path_components_and_rejects_degenerate() {
+        // Traversal is defeated by `Path::file_name`, which keeps only the last
+        // component and maps `.`/`..` to `None`.
+        assert_eq!(
+            sanitize_filename("../../etc/passwd"),
+            Some("passwd".to_string())
+        );
+        assert_eq!(sanitize_filename("/etc/passwd"), Some("passwd".to_string()));
+        assert_eq!(sanitize_filename(".."), None);
+        assert_eq!(sanitize_filename("."), None);
+        // An embedded NUL and an over-long (256-byte) name are rejected; a
+        // 255-byte name is the largest that is kept.
+        assert_eq!(sanitize_filename("a\0b"), None);
+        assert_eq!(sanitize_filename(&"a".repeat(256)), None);
+        assert_eq!(sanitize_filename(&"a".repeat(255)), Some("a".repeat(255)));
+    }
+
+    #[test]
+    fn sanitize_rejects_windows_reserved_names() {
+        // Case-insensitive, with or without an extension, and ignoring a
+        // trailing space in the stem — all forms open a device on Windows.
+        for name in [
+            "NUL",
+            "nul",
+            "CON",
+            "aux",
+            "PRN",
+            "COM0",
+            "COM1",
+            "com9",
+            "LPT1",
+            "lpt9",
+            "NUL.bin",
+            "con.txt",
+            "COM1.tar.gz",
+            "NUL.",
+            "nul ",
+            "NUL .txt",
+        ] {
+            assert_eq!(
+                sanitize_filename(name),
+                None,
+                "reserved name {name:?} must be rejected"
+            );
+        }
+        // Names that merely start like a device but are not one stay valid.
+        for name in ["NULls", "console.log", "COM10", "LPT", "com.bin"] {
+            assert_eq!(
+                sanitize_filename(name),
+                Some(name.to_string()),
+                "non-reserved name {name:?} must be kept"
+            );
+        }
+    }
+
+    #[test]
+    fn sanitize_trims_trailing_dots_and_spaces() {
+        // Windows strips these on create, so the returned name must match the
+        // file that actually lands on disk.
+        assert_eq!(sanitize_filename("evil."), Some("evil".to_string()));
+        assert_eq!(
+            sanitize_filename("model.bin "),
+            Some("model.bin".to_string())
+        );
+        assert_eq!(sanitize_filename("data.. "), Some("data".to_string()));
+        // A name that is nothing but dots/spaces trims to empty and is rejected.
+        assert_eq!(sanitize_filename("..."), None);
+        assert_eq!(sanitize_filename("   "), None);
     }
 }

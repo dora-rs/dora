@@ -30,7 +30,10 @@ use super::super::{Executable, default_tracing};
 /// so this works for distributed dataflows across multiple machines.
 ///
 /// Note:
-/// - Values are averaged over the last refresh period
+/// - Columns report over different time bases: CPU% is averaged over the last
+///   refresh interval and I/O READ and I/O WRITE are per-interval rates; MEMORY
+///   and QUEUE are instantaneous snapshots; NET TX, NET RX and RESTARTS are
+///   cumulative totals since the dataflow started
 /// - CPU percentage is of a single core (values can add to more than 100% if multiple cores are used)
 /// - Nodes can run on different machines with potentially different CPUs, so percentages are not comparable across machines
 #[derive(Debug, Args)]
@@ -296,8 +299,7 @@ fn run_app<B: Backend>(
 
     // Query node info once initially
     let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
-    let mut node_infos = expect_reply!(reply, NodeInfoList(infos))?;
-    app.update_stats(node_infos.clone());
+    app.update_stats(expect_reply!(reply, NodeInfoList(infos))?);
 
     loop {
         terminal
@@ -343,10 +345,9 @@ fn run_app<B: Backend>(
         if should_refresh(force_refresh, last_update.elapsed(), refresh_duration) {
             // Query node info every refresh interval to get updated metrics
             let reply = send_control_request(&session, &ControlRequest::GetNodeInfo)?;
-            node_infos = expect_reply!(reply, NodeInfoList(infos))?;
 
             // Update stats with current node info
-            app.update_stats(node_infos.clone());
+            app.update_stats(expect_reply!(reply, NodeInfoList(infos))?);
             last_update = Instant::now();
             force_refresh = false;
         }

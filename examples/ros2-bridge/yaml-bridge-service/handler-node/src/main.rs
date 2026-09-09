@@ -20,6 +20,7 @@ fn main() -> eyre::Result<()> {
                 "request" => {
                     // Parse Arrow struct matching AddTwoInts_Request: {a: i64, b: i64}
                     let struct_array = data
+                        .as_array()
                         .as_any()
                         .downcast_ref::<StructArray>()
                         .expect("expected struct array for request");

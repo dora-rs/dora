@@ -3213,7 +3213,7 @@ msgstr ""
 #: src/operations/distributed.md:623 src/operations/distributed.md:633
 #: src/operations/distributed.md:679 src/operations/distributed.md:687
 #: src/operations/distributed.md:802
-msgid "_unstable_deploy"
+msgid "deploy"
 msgstr ""
 
 #: src/concepts/architecture.md:673 src/concepts/dataflow-yaml.md:316
@@ -4041,7 +4041,7 @@ msgid ""
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:43
-msgid "`_unstable_deploy`"
+msgid "`deploy`"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:43 src/concepts/dataflow-yaml.md:44
@@ -4068,7 +4068,7 @@ msgid "Root-level deployment config (see [Deployment](#deployment))"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:44
-msgid "`_unstable_debug`"
+msgid "`debug`"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:44
@@ -4943,7 +4943,7 @@ msgid "Deployment"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:303 src/operations/cli.md:236
-msgid "Assign nodes to specific machines using `_unstable_deploy`:"
+msgid "Assign nodes to specific machines using `deploy`:"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:306 src/operations/cli.md:240
@@ -5472,7 +5472,7 @@ msgstr ""
 #: src/concepts/dataflow-yaml.md:488 src/concepts/dataflow-yaml.md:509
 #: src/operations/cli.md:185 src/operations/cli.md:1566
 #: src/operations/debugging.md:57 src/advanced/ws-topic.md:168
-msgid "_unstable_debug"
+msgid "debug"
 msgstr ""
 
 #: src/concepts/dataflow-yaml.md:489 src/concepts/dataflow-yaml.md:511
@@ -11847,7 +11847,7 @@ msgid "# number of rotated files to keep (1-100)\n"
 msgstr ""
 
 #: src/operations/cli.md:181
-msgid "# --- Deployment ---\n    _unstable_deploy"
+msgid "# --- Deployment ---\n    deploy"
 msgstr ""
 
 #: src/operations/cli.md:183
@@ -12236,7 +12236,7 @@ msgstr ""
 
 #: src/operations/cli.md:354
 msgid ""
-"**Build strategy:** If nodes have `_unstable_deploy` sections and a "
+"**Build strategy:** If nodes have `deploy` sections and a "
 "coordinator is reachable, builds are distributed to target machines. "
 "Otherwise, builds run locally."
 msgstr ""
@@ -13017,7 +13017,7 @@ msgstr ""
 
 #: src/operations/cli.md:650
 msgid ""
-"Requires `_unstable_debug.enable_debug_inspection: true` in the descriptor."
+"Requires `debug.enable_debug_inspection: true` in the descriptor."
 msgstr ""
 
 #: src/operations/cli.md:652 src/advanced/ws-topic.md:198
@@ -20403,7 +20403,7 @@ msgid "Label scheduling"
 msgstr ""
 
 #: src/operations/distributed.md:103
-msgid "`_unstable_deploy.labels`"
+msgid "`deploy.labels`"
 msgstr ""
 
 #: src/operations/distributed.md:103
@@ -20415,7 +20415,7 @@ msgid "Binary distribution"
 msgstr ""
 
 #: src/operations/distributed.md:104
-msgid "`_unstable_deploy.distribute`"
+msgid "`deploy.distribute`"
 msgstr ""
 
 #: src/operations/distributed.md:104
@@ -20549,7 +20549,7 @@ msgid "**machines\\[\\]**"
 msgstr ""
 
 #: src/operations/distributed.md:150
-msgid "Unique machine identifier, used in `_unstable_deploy.machine`"
+msgid "Unique machine identifier, used in `deploy.machine`"
 msgstr ""
 
 #: src/operations/distributed.md:151
@@ -20833,7 +20833,7 @@ msgstr ""
 #: src/operations/distributed.md:384
 msgid ""
 "When the coordinator receives a dataflow, it decides which daemon runs each "
-"node based on the `_unstable_deploy` section in the dataflow YAML. "
+"node based on the `deploy` section in the dataflow YAML. "
 "Resolution priority: **machine > labels > unnamed**."
 msgstr ""
 
@@ -20874,7 +20874,7 @@ msgstr ""
 
 #: src/operations/distributed.md:423
 msgid ""
-"Nodes without an `_unstable_deploy` section (or with an empty one) are "
+"Nodes without an `deploy` section (or with an empty one) are "
 "assigned to the first unnamed daemon -- one that connected without a "
 "`--machine-id` flag."
 msgstr ""
@@ -21519,7 +21519,7 @@ msgstr ""
 
 #: src/operations/distributed.md:797
 msgid ""
-"The `_unstable_deploy` section on each node controls placement and "
+"The `deploy` section on each node controls placement and "
 "distribution. All fields are optional."
 msgstr ""
 
@@ -21613,7 +21613,7 @@ msgstr ""
 #: src/operations/distributed.md:836
 msgid ""
 "**Test locally first**. Develop with `dora run dataflow.yml`, then deploy to "
-"a cluster. The same dataflow YAML works in both modes -- `_unstable_deploy` "
+"a cluster. The same dataflow YAML works in both modes -- `deploy` "
 "fields are ignored in local mode."
 msgstr ""
 

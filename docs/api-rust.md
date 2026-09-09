@@ -16,6 +16,10 @@ Add to your `Cargo.toml`:
 dora-node-api = { workspace = true }
 ```
 
+See [Arrow version policy](#arrow-version-policy) if your node needs to name
+Arrow types directly (e.g. to build a `StructArray` or share arrays with
+polars/datafusion/parquet).
+
 ### DoraNode
 
 The primary struct for sending outputs and retrieving node information. Obtained through one of the initialization functions below.
@@ -63,7 +67,7 @@ pub fn send_output(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<()>
 
 // Send raw bytes. Copies into shared memory when beneficial.
@@ -86,23 +90,11 @@ pub fn send_output_raw<F>(
 where
     F: FnOnce(&mut [u8])
 
-// Send raw bytes with explicit Arrow type information.
-pub fn send_typed_output<F>(
-    &mut self,
-    output_id: DataId,
-    type_info: ArrowTypeInfo,
-    parameters: MetadataParameters,
-    data_len: usize,
-    data: F,
-) -> NodeResult<()>
-where
-    F: FnOnce(&mut [u8])
-
-// Send a pre-allocated DataSample with type information.
+// Send a pre-allocated DataSample. The sample must already hold a
+// self-describing Arrow IPC stream; prefer send_output, which encodes for you.
 pub fn send_output_sample(
     &mut self,
     output_id: DataId,
-    type_info: ArrowTypeInfo,
     parameters: MetadataParameters,
     sample: Option<DataSample>,
 ) -> NodeResult<()>
@@ -125,7 +117,7 @@ pub fn send_service_request(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<String>
 
 // Send a service response. Semantic alias for send_output.
@@ -134,7 +126,7 @@ pub fn send_service_response(
     &mut self,
     output_id: DataId,
     parameters: MetadataParameters,
-    data: impl Array,
+    data: impl IntoArrow,
 ) -> NodeResult<()>
 ```
 
@@ -309,7 +301,7 @@ pub enum Event {
     Input {
         id: DataId,           // input ID from the YAML (not the sender's output ID)
         metadata: Metadata,   // timestamp and type information
-        data: ArrowData,      // Apache Arrow data
+        data: DoraArray,      // Apache Arrow data, owned by dora
     },
 
     // The sender mapped to this input exited; no more data will arrive.
@@ -442,16 +434,121 @@ pub enum TryRecvError {
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 ```
 
-Messages smaller than this threshold are sent via TCP. Messages at or above this size use shared memory for zero-copy transfer.
+Messages at or above this threshold are published through zenoh shared memory for zero-copy transfer; smaller messages are published through zenoh with a heap-buffered `put`. Outputs that cannot take the direct zenoh path — an output whose consumer lives on another daemon, or one with a consumer declaring `queue_policy: backpressure`, for example — fall back to the daemon path (TCP) regardless of size, and that path enforces the 64 MiB daemon message limit.
 
-#### ArrowData
+#### DoraArray
 
 ```rust
-// Wrapper around arrow::array::ArrayRef. Implements Deref to the inner ArrayRef.
-pub struct ArrowData(pub arrow::array::ArrayRef);
+// A dora-owned Apache Arrow array. The inner array is private.
+pub struct DoraArray { /* private */ }
+
+impl DoraArray {
+    pub fn len(&self) -> usize;
+    pub fn is_empty(&self) -> bool;
+    pub fn null_count(&self) -> usize;
+    pub fn type_name(&self) -> String;   // e.g. "UInt64"
+}
 ```
 
-Data from `Event::Input` arrives as `ArrowData`. Use `TryFrom` conversions or Arrow APIs to extract typed values.
+Data from `Event::Input` arrives as `DoraArray`. Use the `TryFrom<&DoraArray>`
+conversions (`bool`, the primitive integer/float types, `String`, `&str`, the
+`chrono` date/time types, `&[T]`, `Vec<T>`) or `into_vec::<T>()` to extract
+typed values without naming an Arrow type.
+
+To reach the Arrow array itself, enable the feature naming your Arrow major —
+see [Arrow version policy](#arrow-version-policy).
+
+`IntoArrow` is the other direction, and what `send_output` takes:
+
+```rust
+pub trait IntoArrow {
+    fn into_arrow(self) -> DoraArray;
+}
+```
+
+It is implemented for booleans, strings, the primitive integer/float types,
+`Vec`s of those, a few `chrono` types, `()` (an empty null array, for
+metadata-only outputs), and `DoraArray` itself.
+
+---
+
+### Arrow version policy
+
+`dora-node-api`'s public API is frozen for the life of 1.x, and Arrow ships a
+major roughly every 6–8 weeks. If an Arrow type appeared in that frozen API,
+dora 1.x would be pinned to one Arrow major for its whole life and users would
+have to choose between current dora and current polars/datafusion/parquet.
+
+So it does not. Every ungated signature uses the dora-owned `DoraArray` /
+`IntoArrow`, and Arrow is reachable only through **explicitly versioned,
+opt-in features**:
+
+```toml
+[dependencies]
+# Nothing extra needed if your node never names an Arrow type.
+dora-node-api = "1"
+
+# Naming Arrow 59 — dora's current internal major. Free: no conversion, and
+# no extra copy of Arrow in your build.
+dora-node-api = { version = "1", features = ["arrow-v59"] }
+```
+
+| Feature | Re-export | `DoraArray` accessors | Cost |
+|---|---|---|---|
+| *(none)* | — | `len`, `is_empty`, `null_count`, `type_name`, `TryFrom`, `into_vec` | — |
+| `arrow-v59` | `dora_node_api::arrow_v59` | `as_array`, `into_inner`, `from_array`, `From<ArrayRef>` | free (borrow) |
+| `arrow-v58` | `dora_node_api::arrow_v58` | `TryFrom`/`TryInto` in both directions | one Arrow C Data Interface hop; no buffer copy |
+
+Conversions to and from a non-internal major are **fallible** — the Arrow C
+Data Interface cannot represent every array layout, and arrow-rs surfaces that
+as a `Result` — so they are `TryFrom`/`TryInto`, never `From`/`Into`:
+
+```rust
+use dora_node_api::{DoraArray, arrow_v58};
+use arrow_v58::array::{Array, ArrayRef};
+
+// Arrow 58 -> dora. `&dyn Array` (or `&ArrayRef`) is the source type; a
+// generic `&A: Array` impl is not possible, see below.
+let payload = DoraArray::try_from(&my_arrow58_array as &dyn Array)?;
+
+// dora -> Arrow 58.
+let back: ArrayRef = (&payload).try_into()?;
+```
+
+The source types are concrete rather than generic because coherence forbids
+`impl<A: Array> TryFrom<&A> for DoraArray`: it overlaps core's
+`impl<T, U: Into<T>> TryFrom<U> for T`, since a downstream crate may add
+`impl From<&TheirType> for DoraArray` and `A` could be instantiated at
+`TheirType`.
+
+There is deliberately no `pub use arrow;`. A bare `arrow` re-export changes
+meaning silently when dora bumps its internal major. `arrow_v59` cannot: it
+either exists and means Arrow 59, or it is visibly gone.
+
+Cargo unifies semver-compatible versions, so if you declare `arrow = "59"`
+yourself you get *the same crate instance* as `dora_node_api::arrow_v59` — the
+types are interchangeable, not merely similar. Two different Arrow majors also
+coexist fine (distinct crates, distinct symbols, pure Rust).
+
+#### Support window
+
+- **Adding an `arrow-vN` feature is additive** and can land in any minor.
+- **Removing one is breaking** and waits for a major, after at least one
+  release carrying `#[deprecated]`.
+- At ~8 Arrow majors a year dora carries **two or three** at a time: the
+  current internal major plus one or two older ones.
+- When dora moves its internal major (say 59 → 60), `arrow-v60` is added and
+  becomes the free/borrowing one; `arrow-v59` keeps working but demotes to a
+  *converting* `TryFrom` pair over the C Data Interface, exactly like
+  `arrow-v58` today. Nothing silently changes meaning.
+
+#### Not covered by the guarantee
+
+`dora_arrow_convert::internal` is an Arrow-typed seam for dora's own crates
+(the C/C++/Python bindings, the record/replay nodes). It is not re-exported
+from `dora-node-api`, it names dora's internal Arrow major, and it is
+**exempt from the semver guarantee** — it changes whenever the internal major
+does. Use the version-gated accessors instead.
 
 ---
 
@@ -475,7 +572,7 @@ impl InputTracker {
     pub fn is_closed(&self, id: &DataId) -> bool
 
     // Last received value for an input. Available even when closed.
-    pub fn last_value(&self, id: &DataId) -> Option<&ArrowData>
+    pub fn last_value(&self, id: &DataId) -> Option<&DoraArray>
 
     // All inputs currently in Closed state.
     pub fn closed_inputs(&self) -> Vec<&DataId>
@@ -596,7 +693,7 @@ The operator `Event` enum is simpler than the node `Event` and uses `&str` for I
 #[non_exhaustive]
 pub enum Event<'a> {
     // An input was received.
-    Input { id: &'a str, data: ArrowData },
+    Input { id: &'a str, data: DoraArray },
 
     // Failed to parse the input data as an Arrow array.
     InputParseError { id: &'a str, error: String },
@@ -616,7 +713,7 @@ pub struct DoraOutputSender<'a>(/* ... */);
 
 impl DoraOutputSender<'_> {
     // Send an output. `id` is the output ID from your dataflow YAML.
-    pub fn send(&mut self, id: String, data: impl Array) -> Result<(), String>
+    pub fn send(&mut self, id: &str, data: impl IntoArrow) -> Result<(), String>
 }
 ```
 
@@ -645,6 +742,183 @@ register_operator!(MyOperator);
 This must be called exactly once per crate, at the top level, with the type that implements `DoraOperator`.
 
 ---
+
+## Stability scope at 1.0
+
+dora 1.0 freezes a public API for the life of the 1.x series. This section
+states exactly what that covers, because several parts of the tree are
+shipped deliberately *outside* it and a docstring saying "unstable" is not by
+itself a mechanism.
+
+**The membership of these three lists is the reviewable decision.** The
+mechanism (below) is straightforward; which crate belongs in which tier is a
+judgement call.
+
+### Covered by the 1.0 guarantee
+
+| Crate | Why |
+|---|---|
+| `dora-node-api` | The API nodes are written against |
+| `dora-node-api-c` | The C node API and its checked-in header, `apis/c/node/node_api.h` |
+| `dora-node-api-cxx` | The C++ node API, via the `cxx` bridge |
+| `dora-node-api-python` | The Python node API, shipped as the `dora-rs` wheel |
+| `dora-arrow-convert` | `DoraArray` / `IntoArrow` appear in `dora-node-api` signatures |
+| `dora-message` | The wire protocol; a break here desynchronizes deployed components |
+| `dora-cli` | The `dora` command, its subcommands, and the dataflow YAML schema |
+
+Breaking any of these requires a 2.0. The four node APIs are covered on equal
+terms: dora advertises Rust, C, C++ and Python as first-class node languages,
+so freezing only the Rust one would leave the majority of the user-facing
+surface unstated.
+
+Two consequences worth naming, because the covered tier is what a 2.0 is
+measured against:
+
+- **`dora-node-api-python` is `publish = false`.** It reaches users as the
+  `dora-rs` wheel on PyPI rather than as a crate, so the guarantee attaches to
+  the Python module surface — the names importable from `dora` — not to a
+  crates.io API. The CUDA helpers moved out to `dora_tensor_pool` in #3249,
+  which keeps the exempt tensor-pool surface out of the frozen module.
+- **The C and C++ APIs name Arrow types across the FFI boundary** and both
+  depend on `dora-node-api` with the `arrow-v59` feature, while the Arrow major
+  version is itself outside the guarantee (below). These do not conflict: what
+  crosses the boundary is the Arrow **C Data Interface** (`ArrowArray` /
+  `ArrowSchema`), a stable ABI specified by Arrow independently of any arrow-rs
+  release. The frozen contract is the C header and that ABI; the arrow-rs major
+  version behind it stays exempt.
+
+`dora-node-api-cxx`'s optional `ros2-bridge` feature is not covered — it is
+off by default and pulls in the exempt `dora-ros2-bridge`.
+
+### Shipped, but outside the guarantee
+
+These are usable and supported, but may change or be removed in a **minor**
+release. Each is opt-in: you do not encounter one without writing it into a
+dataflow or a `Cargo.toml`.
+
+| Surface | Signal |
+|---|---|
+| `hub:` descriptor field, `dora hub`, `dora-hub-client` | `dora build` / `dora validate` print a warning on every use |
+| `operators:` / `operator:`, `dora-operator-api`(+`-types`, `-macros`, `-c`, `-cxx`, `-python`), `dora-runtime-shared-lib`, `dora-runtime-python` | Documented experimental; `StopAll` is not implemented |
+| `ros2:` descriptor field, `dora-ros2-bridge`(+`-msg-gen`, `-arrow`) | Crate docs state it may change at any point |
+| `dora-mavlink2-bridge`, `dora-mavlink2-bridge-node` | Domain-specific protocol bridge |
+| tensor-pool (`dora-tensor-pool`) | Behind a generic extension seam, opt-in (#3152) |
+| `dora_arrow_convert::internal` | `pub` only because Rust has no cross-crate `pub(crate)`; never re-exported from `dora-node-api` |
+| The Arrow major version | See the Arrow version policy above |
+| The pyo3 version | `pyo3-ffi` declares `links = "python"`, so a build graph can hold exactly one; dora's is an implementation detail behind the wheels. See the Python version policy below |
+| `dora-cli`'s `python` feature | Internal wheel plumbing — it marks a build hosted by the `dora-rs-cli` wheel, not a supported knob |
+
+Two of those crates are not on crates.io at all: `dora-operator-api-python`
+and `dora-runtime-python` are `publish = false`, and reach users compiled into
+the `dora-rs` wheel. Both link `pyo3`, and `pyo3-ffi` declares
+`links = "python"`, so cargo refuses two pyo3 versions in a single build graph.
+Published, they would force anyone building their own PyO3 extension onto
+dora's exact pyo3 minor and freeze that minor for the life of 1.x — for a
+delivery channel nobody uses, since writing a Python operator needs no Rust
+dependency. Unpublished, dora's pyo3 version stays an implementation detail
+that can move in a minor.
+
+One goes the other way: `dora-tensor-pool` is exempt and *is* on crates.io, for the reason the internal crates below are. `dora-daemon` names it in an optional dependency, cargo resolves every dependency of a published crate against the registry, and so leaving it `publish = false` would have blocked `dora-daemon`'s own release ([#3304](https://github.com/dora-rs/dora/issues/3304)). Reaching crates.io is not a promotion: the crate's description and its README both carry the exemption, and they are what its crates.io page shows.
+
+### Internal
+
+Crates that exist only to build the above. They are published to crates.io
+because cargo requires every dependency of a published crate to be published
+— not because they are an API. Depending on one directly is unsupported.
+
+`dora-core`, `dora-daemon`, `dora-coordinator`, `dora-coordinator-store`,
+`dora-recording`, `dora-download`, `dora-tracing`, `dora-metrics`,
+`dora-runtime-api`.
+
+`dora-log-utils` is not in this list: it is `publish = false` and no published
+crate depends on it, so it never reaches crates.io at all.
+
+### How this is enforced
+
+Documentation alone would not survive contact with cargo, so five mechanisms
+back it:
+
+1. **Exact version pins.** Workspace crates depend on each other with `=`
+   requirements. Without them, a breaking change in an internal crate would
+   break *already published* versions of the public ones: `dora-node-api`
+   1.0.0 asking for `^1.0.0` would resolve to a later, incompatible
+   `dora-core`. Exact pins keep every published version building forever.
+2. **Feature gates.** Where a surface can be gated it is, with
+   `default = []`, so using it is an affirmative act recorded in the
+   consumer's `Cargo.toml` rather than a warning they can tune out.
+   `arrow-v58` / `arrow-v59` are the pattern.
+3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish list in `.github/workflows/release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
+4. **A pinned wheel surface.** The Python API ships as the `dora-rs` wheel,
+   not as a crate, so none of the mechanisms above reach it — a rename would
+   arrive on PyPI with nothing having failed first.
+   `apis/python/node/tests/test_public_surface.py` pins the names importable
+   from `dora` and the public members of the classes behind them. CI runs it
+   (`make qa-test-python-node`) in the one job that installs the module. A
+   name that disappears fails; a new one fails until it is filed as either
+   covered or exempt, so the choice is made deliberately rather than by
+   whatever the module happened to export.
+
+5. **A compatibility gate on every PR.** `make qa-breaking`, run as the
+   `Breaking changes` job in `ci.yml`, checks each surface above against the
+   last released tag. (1)-(3) are cargo mechanisms and (4) covers one wheel,
+   which between them left most of this list unguarded: the `dora` command,
+   the dataflow YAML schema, the C header, the cxx bridge and the postcard
+   wire format are all invisible to rustdoc, and a change to any of them could
+   reach users with every check green.
+
+   | Surface | Checked by |
+   |---|---|
+   | `dora-node-api`, `dora-message`, `dora-arrow-convert` | `cargo-semver-checks` against the tag |
+   | `dora-node-api-c` | declaration diff of `apis/c/node/node_api.h`, enum ordinals included |
+   | `dora-node-api-cxx` | item diff of the `#[cxx::bridge]` block |
+   | `dora-node-api-python` | mechanism (4) above |
+   | `dora-cli` — the `dora` command | `binaries/cli/cli-surface.txt`, a clap-generated snapshot |
+   | `dora-cli` — the YAML schema | JSON-Schema-aware diff: removed property, newly required property, removed enum value, `additionalProperties` closing |
+   | the wire protocol | field and variant *order* of every serde type in `dora-message` — what postcard actually encodes |
+   | the Python floor | `requires-python` and the abi3 tag in both wheels |
+
+   Everything but the first row is read out of source text or a checked-in
+   snapshot, so that half needs no compilation and runs in seconds.
+
+   Two behaviours are worth knowing before they surprise someone. It fails a
+   **major version bump**, because a 2.0 withdraws the promises every check
+   is measuring against — green and red would both be misleading, so the bump
+   has to be stated (`ALLOW_MAJOR_BUMP=1`). Separately, `cargo-semver-checks`
+   runs with `--release-type minor`: left to infer the release type from an
+   rc-to-release version move it concluded breakage was already permitted,
+   skipped all 254 lints, and reported "no semver update required" having
+   checked nothing.
+
+A consequence of (1): a patch fix in an internal crate requires re-releasing
+its dependents. With `shared-version = true` in `release.toml` that already
+happens on every release, so the extra cost is close to zero.
+
+### Python version policy
+
+Both wheels are built `abi3-py311`, so **dora 1.x supports CPython 3.11 and
+later**. That floor is part of the 1.0 guarantee: raising it inside 1.x would
+uninstall dora for users on a Python it used to support, and no crates.io
+semver check would ever see it.
+
+abi3 makes the two directions asymmetric, in dora's favour:
+
+- **Newer CPython** — one `cp311-abi3` wheel loads on 3.12, 3.13 and later with
+  no rebuild, so a new interpreter release does not require a new dora release.
+  This is also the direction a pyo3 bump would otherwise threaten, which is why
+  the pyo3 version can stay exempt.
+- **Older CPython** — `requires-python = ">=3.11"` in both `pyproject.toml`s
+  makes pip refuse to install. This is the direction that breaks users, and it
+  moves only if dora deliberately moves it.
+
+Two limits stated rather than left implied:
+
+- **Free-threaded builds are not supported.** abi3 does not cover
+  `Py_GIL_DISABLED`; those interpreters need their own wheels and the release
+  matrix builds none, so there is no dora wheel for `python3.13t` or `3.14t`.
+- **CPython 3.11 reaches end of life in October 2027**, inside 1.x's expected
+  life. pyo3 drops old interpreters over time, so dora will eventually have to
+  either raise the floor — breaking users — or hold pyo3 back. Better decided
+  deliberately than under a deadline.
 
 ## Quick Start Example: Node
 

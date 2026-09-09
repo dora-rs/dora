@@ -1,41 +1,155 @@
-# Posts a *new* comment on a PR when Trunk's sticky merge-status comment
-# transitions into a failed state. Trunk edits one sticky comment as the
-# batch moves through queued/testing/failed/merged states; GitHub does
-# not send email on comment edits, so authors silently miss merge
-# failures. Reacting to the edit and posting a fresh @-mention restores
-# the email notification.
+# Keeps exactly one visible "Trunk merge queue failed" notification per PR,
+# and refreshes it once per failing run.
+#
+# Trunk edits a single sticky comment as the batch moves through
+# queued/testing/failed/merged. GitHub sends no email on comment edits, so
+# authors silently miss merge failures — hence this workflow posts a fresh
+# @-mention (which does email) for each failing run, and collapses the
+# notification it posted for the previous run so only the newest is visible.
+#
+# Observed sticky-comment renders on this repo (2026-08-18):
+#
+#   unqueued  "Merging to `main` in this repository is managed by Trunk. ...
+#              If the PR fails, failure details will also be posted here"
+#   testing   "🧪 Running tests on this pull request ([test branch](.../
+#              trunk-merge/pr-3213/605d4cad-...) and [its SHA](.../commit/
+#              9cb743b4...)) - [details](https://app.trunk.io/...)"
+#   merged    "😎 Merged successfully - [details](https://app.trunk.io/...)"
+#
+# Two things follow from those renders:
+#
+#   * "failed" is a usable state test. The unqueued boilerplate says
+#     "fails"/"failure" and the merged render says "Merged successfully",
+#     so neither trips it. It is a substring match on prose, though — if
+#     Trunk reworks its wording, this is the line that breaks.
+#   * A run is identified by the UUID/SHA pair Trunk embeds per attempt.
+#     A new attempt gets a new test branch and SHA, which is what lets us
+#     tell "this run failed too" from "the same failure, re-rendered".
+#     The UUID in the `app.trunk.io` details link is the *queue* id, the
+#     same on every PR, so it must be stripped before comparing: left in,
+#     it makes the id set non-empty for a render that carries no attempt
+#     id, and the "unidentifiable run" fallback below would never engage.
 name: Trunk merge failure notification
 
 on:
   issue_comment:
     types: [edited]
 
+# A PR's conversation comments are issue comments under the hood, so the
+# minimizeComment mutation is granted through `issues: write` as well as
+# `pull-requests: write`. Both are scoped to this workflow only.
 permissions:
   pull-requests: write
+  issues: write
+
+env:
+  # Machine-readable handle so the hide step can find the comments this
+  # workflow posted without matching on prose.
+  NOTIFY_MARKER: "<!-- trunk-merge-failure-notify -->"
 
 jobs:
+  # Runs whenever an edit involves the failed state at all, in either
+  # direction. Deciding *which* kind of failed-state edit this is needs
+  # the run ids out of both bodies, which is more than an `if:` can do,
+  # so the script makes that call.
+  #
+  # This repeats the "failed" test that `isFailed` does below. It is worth
+  # the duplication: without it every sticky-comment edit would start a
+  # runner (~180 per 4h on this repo, against ~20 that do anything). It
+  # cannot be hoisted into `env` either — a job-level `if:` has no `env`
+  # context. Keep the two in sync by hand.
   notify:
     if: >
       github.event.issue.pull_request != null &&
       startsWith(github.event.comment.user.login, 'trunk-io') &&
-      contains(github.event.comment.body, 'failed')
+      github.event.changes.body != null &&
+      (contains(github.event.comment.body, 'failed') ||
+      contains(github.event.changes.body.from, 'failed'))
     runs-on: ubuntu-latest
     steps:
-      - name: Comment on PR
+      - name: Refresh merge-failure notification
         uses: actions/github-script@v9
         with:
           script: |
-            // Only fire on the transition into a failed state — skip
-            // subsequent edits that happen while the comment is already
-            // failed, otherwise every Trunk re-render would re-notify.
-            const prev = context.payload.changes?.body?.from ?? '';
-            if (prev.includes('failed')) {
-              core.info('Previous comment body already contained "failed"; skipping.');
-              return;
-            }
+            const marker = process.env.NOTIFY_MARKER;
+            // Matches notifications posted before the marker existed, so
+            // the ones already piled up on open PRs still get collapsed.
+            // Deletable once no open PR predates this workflow change.
+            const legacy = 'the Trunk merge queue failed for this PR.';
+
+            const isFailed = (body) => body.includes('failed');
+
+            // Attempt-specific ids Trunk embeds in the render: the test
+            // branch UUID and the head SHA. Sorted so a reordered render
+            // still compares equal. Matching any UUID/SHA rather than
+            // specific URL shapes keeps this working if Trunk rewords the
+            // render, so the one constant id has to be dropped by hand.
+            const runIds = (body) => [...new Set(
+              body.replace(/https:\/\/app\.trunk\.io\/[^\s)]*/gi, '')
+                  .match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{40}\b/gi) ?? []
+            )].sort().join(',');
 
             const { owner, repo } = context.repo;
             const prNumber = context.payload.issue.number;
+            const prev = context.payload.changes?.body?.from ?? '';
+            const next = context.payload.comment.body;
+
+            // Same run, re-rendered — Trunk touches the comment when other
+            // PRs in the batch move, or to add failure detail. The standing
+            // notification still applies, so leave it alone rather than
+            // emailing the author again for one failure.
+            //
+            // An empty id set means we could not identify the run, so this
+            // deliberately falls through to notifying: a duplicate email
+            // beats a silently missed failure.
+            const ids = runIds(next);
+            if (isFailed(next) && isFailed(prev) && ids !== '' && ids === runIds(prev)) {
+              core.info(`Same run (${ids}) re-rendered while failed; nothing to do.`);
+              return;
+            }
+
+            // --- 1. Hide the notifications posted for earlier runs -----
+            // Unconditional, and done before posting, so whichever
+            // notification this run leaves behind is the only visible
+            // one. No need to exclude the new comment's id.
+            const { repository } = await github.graphql(`
+              query($owner: String!, $repo: String!, $pr: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  pullRequest(number: $pr) {
+                    comments(last: 100) {
+                      nodes { id isMinimized viewerDidAuthor body }
+                    }
+                  }
+                }
+              }
+            `, { owner, repo, pr: prNumber });
+
+            // `viewerDidAuthor` keeps this to comments posted by this
+            // workflow's own token, so a human quoting the text above
+            // never gets collapsed.
+            const stale = repository.pullRequest.comments.nodes.filter(
+              (c) => c.viewerDidAuthor &&
+                     !c.isMinimized &&
+                     (c.body.includes(marker) || c.body.includes(legacy)),
+            );
+
+            for (const comment of stale) {
+              await github.graphql(`
+                mutation($id: ID!) {
+                  minimizeComment(input: { subjectId: $id, classifier: OUTDATED }) {
+                    minimizedComment { isMinimized }
+                  }
+                }
+              `, { id: comment.id });
+            }
+            core.info(`Hid ${stale.length} stale merge-failure notification(s).`);
+
+            // --- 2. Post a fresh notification, if still failed ---------
+            if (!isFailed(next)) {
+              core.info('Sticky comment left the failed state; nothing to post.');
+              return;
+            }
+
             const author = context.payload.issue.user.login;
             const stickyUrl = context.payload.comment.html_url;
 
@@ -45,6 +159,7 @@ jobs:
               `See the [Trunk merge-status comment](${stickyUrl}) for details.`,
               ``,
               `_Posted as a new comment so GitHub sends an email — Trunk's sticky comment is edited in place and won't trigger a notification._`,
+              marker,
             ].join('\n');
 
             await github.rest.issues.createComment({
@@ -53,3 +168,4 @@ jobs:
               issue_number: prNumber,
               body,
             });
+            core.info('Posted a fresh merge-failure notification.');

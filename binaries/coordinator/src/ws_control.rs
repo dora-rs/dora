@@ -341,7 +341,7 @@ pub(crate) async fn handle_control_ws(
                             let resp = WsResponse::err(
                                 req.id,
                                 format!(
-                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `_unstable_debug.enable_debug_inspection: true`"
+                                    "dataflow {dataflow_id} not found, output unavailable, or topic publish requires `debug.enable_debug_inspection: true`"
                                 ),
                             );
                             let _ = send_ws_response(&mut ws_tx, &resp).await;

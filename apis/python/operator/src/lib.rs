@@ -210,7 +210,7 @@ impl PyEvent {
                 // creates an FFI_ArrowArray with a release callback. PyArrow's
                 // _import_from_c takes ownership and calls release when the Python
                 // object is GC'd, which drops the cloned Arcs. No leak.
-                let array_data = data.to_data().to_pyarrow(py)?.unbind();
+                let array_data = data.as_array().to_data().to_pyarrow(py)?.unbind();
                 Ok(Some(array_data))
             }
             MergedEvent::Dora(Event::ParamUpdate { value, .. }) => {
@@ -429,7 +429,7 @@ pub fn metadata_to_pydict<'a>(
 
 #[cfg(test)]
 mod tests {
-    use std::{ptr::NonNull, sync::Arc};
+    use std::sync::Arc;
 
     use aligned_vec::{AVec, ConstAlign};
     use arrow::{
@@ -441,27 +441,25 @@ mod tests {
     };
 
     use arrow_schema::{DataType, Field};
-    use dora_node_api::arrow_utils::{decode_arrow_ipc_zero_copy, encode_arrow_ipc};
+    use dora_node_api::DoraArray;
+    use dora_node_api::arrow_utils::{IpcPayload, decode_arrow_ipc_zero_copy, encode_arrow_ipc};
     use eyre::{Context, Result};
 
     fn assert_roundtrip(arrow_array: &ArrayData) -> Result<()> {
         // The data plane is Arrow-IPC-only: encode to a self-describing IPC
         // stream, then decode it back from a 128-byte-aligned buffer (as the
         // receive path does).
-        let ipc_bytes = encode_arrow_ipc(arrow_array)?;
-        let mut sample: AVec<u8, ConstAlign<128>> = AVec::from_slice(128, &ipc_bytes);
+        let payload = DoraArray::from_array(arrow::array::make_array(arrow_array.clone()));
+        let ipc_bytes = encode_arrow_ipc(&payload)?;
+        let sample: AVec<u8, ConstAlign<128>> = AVec::from_slice(128, &ipc_bytes);
 
-        let serialized_deserialized_arrow_array = {
-            let ptr = NonNull::new(sample.as_mut_ptr() as *mut _).unwrap();
-            let len = sample.len();
+        let serialized_deserialized_arrow_array =
+            decode_arrow_ipc_zero_copy(IpcPayload::from_aligned_vec(sample))?;
 
-            let raw_buffer = unsafe {
-                arrow::buffer::Buffer::from_custom_allocation(ptr, len, Arc::new(sample))
-            };
-            decode_arrow_ipc_zero_copy(raw_buffer)?
-        };
-
-        assert_eq!(arrow_array, &serialized_deserialized_arrow_array);
+        assert_eq!(
+            arrow_array,
+            &serialized_deserialized_arrow_array.as_array().to_data()
+        );
 
         Ok(())
     }

@@ -7,7 +7,7 @@
 
 use arrow::array::{AsArray, RecordBatch};
 use dora_mavlink2_bridge::{MavlinkArrow, mavlink::dialects::common::HEARTBEAT_DATA};
-use dora_node_api::{DoraNode, Event, arrow::array::ArrayRef};
+use dora_node_api::{DoraNode, Event, arrow_v59::array::ArrayRef};
 use eyre::{Result, bail, eyre};
 use std::time::{Duration, Instant};
 

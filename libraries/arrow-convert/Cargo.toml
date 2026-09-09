@@ -11,8 +11,24 @@ repository.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[features]
+# Empty by default, deliberately: if a blessed Arrow major sat in `default` and
+# `default` later changed, that would be a breaking change for anyone relying
+# on it — the silent-drift problem this design exists to remove, reinvented one
+# level up. See docs/plan-arrow-version-decoupling.md.
+default = []
+# Arrow 58 compat: adds an aliased dependency plus the C-Data-Interface bridge.
+arrow-v58 = ["dep:arrow58", "arrow/ffi"]
+# dora's *internal* Arrow major. Pulls no extra dependency — it re-exports the
+# copy of Arrow 59 dora already links, so exactly one copy of Arrow 59 is in
+# the build. The feature exists so that naming the internal major is an
+# explicit opt-in like every other, and so the gating survives unchanged when
+# 59 stops being internal.
+arrow-v59 = []
+
 [dependencies]
 arrow = { workspace = true }
+arrow58 = { package = "arrow", version = "58", optional = true, default-features = false, features = ["ffi"] }
 eyre = { workspace = true }
 tracing = { workspace = true }
 half = "2.7.1"
