@@ -1,4 +1,4 @@
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -39,15 +39,9 @@ fn create_custom_node(
     path: Option<PathBuf>,
     main: &str,
 ) -> Result<(), eyre::ErrReport> {
-    // Reject names that would turn into path separators or non-ASCII module
-    // directories, mirroring the validation in `create_dataflow`. Spaces are
-    // fine — they are normalized to `-`/`_` below.
-    if name.contains('/') {
-        bail!("node name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("node name must be ASCII");
-    }
+    // Spaces are fine here -- they are normalized to `-`/`_` below before the
+    // name is used as a path component, and this backend never emits CMake.
+    super::validate_name(&name, true)?;
 
     // create directories
     let root = path.unwrap_or_else(|| PathBuf::from(name.replace(" ", "-")));
@@ -126,12 +120,7 @@ fn create_dataflow(
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
     const WORKSPACE_README: &str = include_str!("README.md");
 
-    if name.contains('/') {
-        bail!("dataflow name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("dataflow name must be ASCII");
-    }
+    super::validate_name(&name, true)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));

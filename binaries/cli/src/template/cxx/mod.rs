@@ -1,4 +1,4 @@
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -30,12 +30,7 @@ fn create_dataflow(
 ) -> Result<(), eyre::ErrReport> {
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
 
-    if name.contains('/') {
-        bail!("dataflow name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("dataflow name must be ASCII");
-    }
+    super::validate_name(&name, false)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
@@ -98,12 +93,7 @@ fn create_custom_node(
     template_scripts: &str,
     use_path_deps: bool,
 ) -> Result<(), eyre::ErrReport> {
-    if name.contains('/') {
-        bail!("node name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("node name must be ASCII");
-    }
+    super::validate_name(&name, false)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
