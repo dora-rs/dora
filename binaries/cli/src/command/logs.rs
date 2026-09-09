@@ -392,19 +392,45 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
         follow_state = next_state;
 
         new_messages.sort_by_key(|a| a.timestamp);
-        // Apply the same `--since`/`--until` window the initial batch (via
-        // `filter_and_tail`) and the coordinator-backed follow path already
-        // apply, so `--until` (show only logs older than the cutoff) suppresses
-        // freshly appended lines here too instead of streaming them. `now` is
-        // the fixed reference captured at follow start, matching
-        // `stream_logs_from_coordinator`.
-        let new_messages = apply_time_filters(new_messages, args.since, args.until, now);
-        for msg in new_messages {
-            if matches_grep(&msg, args.grep.as_deref()) {
-                print_log_message(msg, &config);
-            }
+        // Select the lines to print through the shared helper, so this poll
+        // applies the same `--since`/`--until` window as the initial batch and
+        // the coordinator follow path (see `select_follow_messages`).
+        for msg in select_follow_messages(
+            new_messages,
+            args.since,
+            args.until,
+            args.grep.as_deref(),
+            now,
+        ) {
+            print_log_message(msg, &config);
         }
     }
+}
+
+/// Select which of a follow poll's newly appended lines to print.
+///
+/// Mirrors the initial batch (`filter_and_tail`) and the coordinator follow
+/// path (`stream_logs_from_coordinator`): apply the `--since`/`--until` time
+/// window against `now` — the fixed reference captured at follow start — so
+/// `--until` (show only logs older than the cutoff) suppresses freshly appended
+/// lines instead of streaming them, then apply the `--grep` filter.
+///
+/// Extracted from [`follow_local_logs`] so the wiring is unit-testable: because
+/// the loop only *calls* `apply_time_filters` (which is itself unchanged), a
+/// regression that dropped the time window from the loop would otherwise pass
+/// every existing test. Testing this helper guards the actual selection the
+/// loop performs.
+fn select_follow_messages(
+    new_messages: Vec<LogMessage>,
+    since: Option<std::time::Duration>,
+    until: Option<std::time::Duration>,
+    grep: Option<&str>,
+    now: DateTime<Utc>,
+) -> Vec<LogMessage> {
+    apply_time_filters(new_messages, since, until, now)
+        .into_iter()
+        .filter(|msg| matches_grep(msg, grep))
+        .collect()
 }
 
 /// Number of leading bytes of a log file used as a rename/replacement
@@ -1362,23 +1388,37 @@ mod tests {
         assert_eq!(result[0].message, "mid");
     }
 
-    // Regression: the local `--follow` loop feeds each poll's newly appended
-    // lines through `apply_time_filters` before printing. A line appended
-    // "now" is newer than the `--until` cutoff, so `--until` must suppress it —
-    // otherwise `dora logs --local --follow --until <dur>` would stream fresh
-    // lines that the same flag excludes from the initial batch and from the
-    // coordinator follow path.
+    // Regression for the local `--follow` wiring (not just `apply_time_filters`
+    // in isolation): `follow_local_logs` selects each poll's lines through
+    // `select_follow_messages`, which must apply the `--since`/`--until` window —
+    // like the initial batch and the coordinator follow path — in addition to
+    // `--grep`. A line appended "now" is newer than the `--until` cutoff and must
+    // be dropped while an older line survives; if the loop regressed to
+    // grep-only, the fresh line would leak and this test would fail.
     #[test]
-    fn until_suppresses_freshly_appended_follow_line() {
+    fn follow_selection_applies_until_window_and_grep() {
         let now = Utc::now();
         let just_appended = now - chrono::TimeDelta::seconds(1);
-        let msgs = vec![make_msg("live", None, None, just_appended)];
-        // until=5m -> only lines older than 5 minutes ago; a line from 1s ago
-        // is dropped.
-        let result = apply_time_filters(msgs, None, Some(std::time::Duration::from_secs(300)), now);
+        let old = now - chrono::TimeDelta::hours(2);
+        let msgs = vec![
+            make_msg("live", None, None, just_appended),
+            make_msg("old", None, None, old),
+        ];
+        // until=5m -> only lines older than 5 minutes survive.
+        let until = Some(std::time::Duration::from_secs(300));
+        let result = select_follow_messages(msgs.clone(), None, until, None, now);
+        assert_eq!(
+            result.len(),
+            1,
+            "a fresh follow line must be suppressed by --until, the old line kept"
+        );
+        assert_eq!(result[0].message, "old");
+
+        // `--grep` is applied on top of the time window.
+        let result = select_follow_messages(msgs, None, until, Some("nomatch"), now);
         assert!(
             result.is_empty(),
-            "a fresh follow line must be suppressed by --until"
+            "grep must further filter the time-windowed selection"
         );
     }
 
