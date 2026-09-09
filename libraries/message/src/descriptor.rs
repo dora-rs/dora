@@ -1418,18 +1418,57 @@ pub struct Ros2TopicConfig {
     pub qos: Option<Ros2QosConfig>,
 }
 
+/// Strip the leading `/` of a ROS2 topic name, then map any remaining `/` to
+/// `_` (e.g. `/robot/scan` -> `robot_scan`).
+pub fn derive_port_id(topic: &str) -> String {
+    topic.trim_start_matches('/').replace('/', "_")
+}
+
 impl Ros2TopicConfig {
-    /// The dora port id the bridge binds this topic to when the explicit
-    /// `input`/`output` mapping is not set: strip the leading `/`, then map any
-    /// remaining `/` to `_` (e.g. `/robot/scan` -> `robot_scan`).
+    /// The dora output a `subscribe` topic feeds: the explicit `output:`
+    /// mapping, or the topic-derived id when that is unset.
     ///
     /// Both the descriptor validator (`dora-core`) and the ros2 bridge node
     /// depend on producing the *same* id — the validator rejects configs whose
-    /// derived port is not declared precisely because the bridge would otherwise
+    /// port is not declared precisely because the bridge would otherwise
     /// silently drop the data — so the rule lives here in the shared message
     /// crate rather than being duplicated at each call site.
-    pub fn derived_port_id(&self) -> String {
-        self.topic.trim_start_matches('/').replace('/', "_")
+    pub fn output_port_id(&self) -> String {
+        self.output
+            .clone()
+            .unwrap_or_else(|| derive_port_id(&self.topic))
+    }
+
+    /// The dora input a `publish` topic consumes; the counterpart of
+    /// [`Self::output_port_id`].
+    pub fn input_port_id(&self) -> String {
+        self.input
+            .clone()
+            .unwrap_or_else(|| derive_port_id(&self.topic))
+    }
+}
+
+/// The dora port a **single-topic** (`topic:`) ros2 bridge binds to, or `None`
+/// when `declared_ports` leaves the choice ambiguous.
+///
+/// Single-topic mode has no explicit `output:`/`input:` field, so the port comes
+/// from the node's declaration — `docs/ros2-bridge.md`: "In single-topic mode,
+/// the node's declared `outputs` or `inputs` are used directly". Preferring the
+/// topic-derived id when it *is* declared keeps a node that declares an extra
+/// port (a `send_stdout_as` output, say) resolvable instead of ambiguous.
+///
+/// Both the descriptor resolver, which bakes the resolved id into the bridge
+/// config, and the validator, which rejects the ambiguous case, call this — a
+/// wrong choice here binds the bridge to a port nothing is wired to and drops
+/// every message silently.
+pub fn single_topic_port_id(topic: &str, declared_ports: &[&str]) -> Option<String> {
+    let derived = derive_port_id(topic);
+    if declared_ports.contains(&derived.as_str()) {
+        return Some(derived);
+    }
+    match declared_ports {
+        [sole_port] => Some((*sole_port).to_owned()),
+        _ => None,
     }
 }
 
@@ -1512,6 +1551,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.to_string().contains("unknown variant `automatic`"));
+    }
+
+    #[test]
+    fn single_topic_port_uses_the_sole_declared_port() {
+        // `docs/ros2-bridge.md`: single-topic mode uses the declared port
+        // directly, so `/turtle1/pose` binds to `pose` and not to the
+        // topic-derived `turtle1_pose`.
+        assert_eq!(
+            single_topic_port_id("/turtle1/pose", &["pose"]),
+            Some("pose".to_owned())
+        );
+    }
+
+    #[test]
+    fn single_topic_port_prefers_a_declared_topic_derived_id() {
+        // A second declared port (here a `send_stdout_as` output) would make the
+        // choice ambiguous, but the topic-derived id is itself declared.
+        assert_eq!(
+            single_topic_port_id("/turtle1/pose", &["log", "turtle1_pose"]),
+            Some("turtle1_pose".to_owned())
+        );
+    }
+
+    #[test]
+    fn single_topic_port_is_ambiguous_with_several_unrelated_ports() {
+        assert_eq!(
+            single_topic_port_id("/turtle1/pose", &["pose", "log"]),
+            None
+        );
+    }
+
+    #[test]
+    fn single_topic_port_needs_a_declared_port() {
+        assert_eq!(single_topic_port_id("/turtle1/pose", &[]), None);
     }
 
     #[test]

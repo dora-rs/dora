@@ -644,18 +644,12 @@ fn validate_ros2_config(
         })?;
         validate_ros2_type_format(node_id, topic, message_type)?;
 
-        match &config.direction {
-            Ros2Direction::Subscribe => {
-                if node_outputs.is_empty() {
-                    bail!("node `{node_id}`: ros2 subscribe bridge requires at least one output");
-                }
-            }
-            Ros2Direction::Publish => {
-                if node_inputs.is_empty() {
-                    bail!("node `{node_id}`: ros2 publish bridge requires at least one input");
-                }
-            }
-        }
+        // Single-topic mode has no explicit `output:`/`input:` field, so the
+        // bridge binds to the node's declared port. Resolution is what picks
+        // that port and what rejects a node whose declarations leave the choice
+        // ambiguous, so call it here rather than restating the rule: the two
+        // must not be able to disagree.
+        super::resolve_ros2_single_topic(node_id, config, node_inputs, node_outputs)?;
     } else if let Some(topics) = &config.topics {
         if topics.is_empty() {
             bail!("node `{node_id}`: ros2 `topics` list must not be empty");
@@ -672,14 +666,14 @@ fn validate_ros2_config(
             // The bridge routes each topic to a dora port: a subscribe topic
             // feeds an output, a publish topic consumes an input. When the
             // mapping is not set explicitly the bridge derives the port id from
-            // the topic name (`Ros2TopicConfig::derived_port_id`). Either way,
+            // the topic name (`Ros2TopicConfig::output_port_id`). Either way,
             // the resulting id must be a declared port — otherwise data is
             // silently dropped at runtime with no diagnostic: a subscribe
             // `send_output` to an unknown id is ignored, and a publish topic
             // bound to an unknown input never receives any data to publish.
             match &t.direction {
                 Ros2Direction::Subscribe => {
-                    let output = t.output.clone().unwrap_or_else(|| t.derived_port_id());
+                    let output = t.output_port_id();
                     if !node_outputs.contains(output.as_str()) {
                         bail!(
                             "node `{node_id}`: ros2 subscribe topic `{}` maps to output \
@@ -689,7 +683,7 @@ fn validate_ros2_config(
                     }
                 }
                 Ros2Direction::Publish => {
-                    let input = t.input.clone().unwrap_or_else(|| t.derived_port_id());
+                    let input = t.input_port_id();
                     if !node_inputs.contains_key(input.as_str()) {
                         bail!(
                             "node `{node_id}`: ros2 publish topic `{}` maps to input \
@@ -1839,6 +1833,54 @@ nodes:
         assert!(err.to_string().contains("config_uri must not be empty"));
     }
 
+    fn single_topic_config(topic: &str, direction: Ros2Direction) -> Ros2BridgeConfig {
+        Ros2BridgeConfig {
+            topic: Some(topic.into()),
+            message_type: Some("turtlesim/Pose".into()),
+            direction,
+            ..Default::default()
+        }
+    }
+
+    /// Single-topic mode binds to the node's declared port, so a name that has
+    /// nothing to do with the topic is correct and must be accepted.
+    #[test]
+    fn validate_single_topic_accepts_the_sole_declared_port() {
+        let config = single_topic_config("/turtle1/pose", Ros2Direction::Subscribe);
+        validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([DataId::from("pose".to_owned())]),
+        )
+        .unwrap();
+    }
+
+    /// Several declared outputs leave the binding ambiguous, which the bridge
+    /// would resolve by silently dropping every message.
+    #[test]
+    fn validate_single_topic_rejects_ambiguous_subscribe_output() {
+        let config = single_topic_config("/turtle1/pose", Ros2Direction::Subscribe);
+        let err = validate_ros2_config(
+            &NodeId::from("n".to_owned()),
+            &config,
+            &BTreeMap::new(),
+            &BTreeSet::from([
+                DataId::from("pose".to_owned()),
+                DataId::from("log".to_owned()),
+            ]),
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("no unambiguous output")
+                && err.contains("`pose`")
+                && err.contains("`log`")
+                && err.contains("turtle1_pose"),
+            "error should list the candidates and the topic-derived id, got: {err}"
+        );
+    }
+
     #[test]
     fn validate_multi_topic_rejects_undeclared_subscribe_output() {
         // A subscribe topic mapped to an output the node never declares would
@@ -2840,6 +2882,43 @@ nodes:
 "#;
         let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
         check_wiring(&descriptor).unwrap();
+    }
+
+    /// Every shipped `ros2:` example must satisfy the port-mapping rule the
+    /// bridge binds by. The docs present these as working dataflows, and a
+    /// mismatch is silent data loss at runtime rather than a startup error, so
+    /// parsing them is not enough — they have to be validated.
+    #[test]
+    fn ros2_example_dataflows_have_valid_port_mappings() {
+        macro_rules! example {
+            ($path:literal) => {
+                (
+                    $path,
+                    include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../../examples/",
+                        $path
+                    )),
+                )
+            };
+        }
+        let examples = [
+            example!("ros2-bridge/yaml-bridge/dataflow.yml"),
+            example!("ros2-bridge/yaml-bridge/dataflow-zenoh.yml"),
+            example!("ros2-bridge/yaml-bridge-service/dataflow-client.yml"),
+            example!("ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml"),
+            example!("ros2-bridge/yaml-bridge-service/dataflow-server.yml"),
+            example!("ros2-bridge/yaml-bridge-service/dataflow-server-zenoh.yml"),
+            example!("ros2-bridge/yaml-bridge-action/dataflow.yml"),
+            example!("ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml"),
+            example!("ros2-bridge/yaml-bridge-action-server/dataflow.yml"),
+        ];
+        for (path, yaml) in examples {
+            let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+            if let Err(err) = validate_ros2_configs(&descriptor) {
+                panic!("shipped example `{path}` has an invalid ros2 config: {err}");
+            }
+        }
     }
 
     #[test]
