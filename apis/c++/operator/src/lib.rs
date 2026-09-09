@@ -102,18 +102,25 @@ impl Default for OperatorWrapper {
     }
 }
 
+impl OperatorWrapper {
+    /// The C++ operator instance, or an error if `new_operator()` returned
+    /// null. Acquired lazily so events without an operator-side callback do
+    /// not depend on it.
+    fn operator(&mut self) -> Result<std::pin::Pin<&mut ffi::Operator>, std::string::String> {
+        self.operator
+            .as_mut()
+            .ok_or_else(|| "C++ new_operator() returned a null operator".to_string())
+    }
+}
+
 impl DoraOperator for OperatorWrapper {
     fn on_event(
         &mut self,
         event: &Event,
         output_sender: &mut DoraOutputSender,
     ) -> Result<DoraStatus, std::string::String> {
-        let operator = self
-            .operator
-            .as_mut()
-            .ok_or_else(|| "C++ new_operator() returned a null operator".to_string())?;
         let mut output_sender = OutputSender(output_sender);
-        match event {
+        let result = match event {
             Event::Input {
                 id,
                 metadata: _,
@@ -122,23 +129,22 @@ impl DoraOperator for OperatorWrapper {
                 let data: &[u8] = data
                     .try_into()
                     .map_err(|err| format!("expected byte array: {err}"))?;
-                finish(ffi::on_input(operator, id, data, &mut output_sender))
+                ffi::on_input(self.operator()?, id, data, &mut output_sender)
             }
             Event::InputClosed { id } => {
-                finish(ffi::on_input_closed(operator, id, &mut output_sender))
+                ffi::on_input_closed(self.operator()?, id, &mut output_sender)
             }
-            Event::Stop => finish(ffi::on_stop(operator, &mut output_sender)),
-            Event::InputParseError { id, error } => finish(ffi::on_input_parse_error(
-                operator,
-                id,
-                error,
-                &mut output_sender,
-            )),
-            // Other events (NodeFailed, Reload, Error, …) currently
-            // have no operator-side callback. Operators that need to
-            // react to them should subscribe via the node API instead.
-            _ => Ok(DoraStatus::Continue),
-        }
+            Event::Stop => ffi::on_stop(self.operator()?, &mut output_sender),
+            Event::InputParseError { id, error } => {
+                ffi::on_input_parse_error(self.operator()?, id, error, &mut output_sender)
+            }
+            // Other events (NodeFailed, Reload, Error, …) currently have no
+            // operator-side callback, so they return `Continue` without
+            // requiring the operator. Operators that need to react to them
+            // should subscribe via the node API instead.
+            _ => return Ok(DoraStatus::Continue),
+        };
+        finish(result)
     }
 }
 
