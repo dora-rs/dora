@@ -160,7 +160,11 @@ impl TypeDescriptionResolver {
 
 fn parse_hash(value: &str) -> Option<[u8; 32]> {
     let hex = value.strip_prefix("RIHS01_")?;
-    if hex.len() != 64 {
+    // `hex.len()` counts bytes, and the loop below slices `hex` by byte
+    // offsets. Reject anything that isn't 64 ASCII bytes so a multi-byte
+    // UTF-8 character can never land a slice boundary inside a `char`
+    // (which would panic instead of failing closed to `InvalidHash`).
+    if hex.len() != 64 || !hex.is_ascii() {
         return None;
     }
     let mut result = [0; 32];
@@ -192,7 +196,7 @@ struct HashEntry {
 
 #[cfg(test)]
 mod tests {
-    use super::{InterfaceKind, TypeDescriptionError, TypeDescriptionResolver};
+    use super::{InterfaceKind, TypeDescriptionError, TypeDescriptionResolver, parse_hash};
     use std::{
         fs,
         time::{SystemTime, UNIX_EPOCH},
@@ -281,6 +285,23 @@ mod tests {
             TypeDescriptionError::TypeNameMismatch { .. }
         ));
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn parse_hash_rejects_non_ascii_without_panicking() {
+        // 64 bytes total, but a 2-byte `é` (0xC3 0xA9) at an odd byte offset
+        // means a `hex[i*2..i*2+2]` window straddles the char boundary.
+        // Before the `is_ascii()` guard this panicked instead of returning
+        // `None` (which the caller maps to `TypeDescriptionError::InvalidHash`).
+        let hash = format!("RIHS01_a{}", "é".to_string() + &"0".repeat(61));
+        assert_eq!(hash.len(), "RIHS01_".len() + 64);
+        assert!(parse_hash(&hash).is_none());
+    }
+
+    #[test]
+    fn parse_hash_accepts_valid_official_hash() {
+        let hash = parse_hash(&format!("RIHS01_{}", "ab".repeat(32))).unwrap();
+        assert_eq!(hash, [0xab; 32]);
     }
 
     fn scratch(label: &str) -> std::path::PathBuf {
