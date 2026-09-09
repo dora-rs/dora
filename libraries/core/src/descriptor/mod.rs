@@ -654,6 +654,35 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("uv-resolved path {resolved} is not usable"))
 }
 
+/// Canonicalize the working dir for a dataflow, preferring an explicit
+/// override over the dataflow file's parent directory.
+///
+/// When falling back to the dataflow's parent directory, returns the lexical parent
+/// directory of the dataflow path as given, canonicalized — symlinks in the file
+/// are not resolved, so the project root matches where the entrypoint was invoked
+/// rather than the target's location.
+pub fn canonicalize_working_dir(
+    override_: Option<&Path>,
+    dataflow_path: &Path,
+) -> eyre::Result<PathBuf> {
+    match override_ {
+        Some(p) => dunce::canonicalize(p)
+            .with_context(|| format!("failed to canonicalize working_dir `{}`", p.display())),
+        None => {
+            let parent = dataflow_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            dunce::canonicalize(parent).with_context(|| {
+                format!(
+                    "failed to canonicalize dataflow parent directory `{}`",
+                    parent.display()
+                )
+            })
+        }
+    }
+}
+
 /// Classification of a [`Node`] by which of its mutually exclusive
 /// implementation fields is set.
 pub trait NodeExt {

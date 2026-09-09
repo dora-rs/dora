@@ -531,7 +531,7 @@ pub fn build(cfg: BuildConfig) -> eyre::Result<()> {
         BuildKind::Local => {
             log::info!("running local build");
             let local_working_dir =
-                canonicalize_working_dir(working_dir_override.as_deref(), &dataflow_path)?;
+                canonicalize_build_working_dir(working_dir_override.as_deref(), &dataflow_path)?;
             let build_info = build_dataflow_locally(
                 dataflow_descriptor,
                 &git_sources,
@@ -615,6 +615,30 @@ fn connect_to_coordinator_with_defaults(
     let coordinator_addr = coordinator_addr.unwrap_or(LOCALHOST);
     let coordinator_port = coordinator_port.unwrap_or(DORA_COORDINATOR_PORT_WS_DEFAULT);
     connect_to_coordinator((coordinator_addr, coordinator_port).into())
+}
+
+/// Canonicalize the working directory for a local build.
+///
+/// Cargo invocations for `build:` directives need a physical path
+/// (symlinks in the dataflow file resolved) so the workspace walk-up
+/// lands on the right `Cargo.toml` even when the entrypoint is a symlink
+/// located outside the Cargo workspace.
+pub(crate) fn canonicalize_build_working_dir(
+    working_dir_override: Option<&Path>,
+    dataflow_path: &Path,
+) -> eyre::Result<PathBuf> {
+    match working_dir_override {
+        Some(p) => dunce::canonicalize(p)
+            .with_context(|| format!("failed to canonicalize working_dir `{}`", p.display())),
+        None => {
+            let canonical_file = dunce::canonicalize(dataflow_path)
+                .context("failed to canonicalize dataflow file path")?;
+            let parent = canonical_file
+                .parent()
+                .ok_or_else(|| eyre::eyre!("dataflow path has no parent dir"))?;
+            Ok(parent.to_owned())
+        }
+    }
 }
 
 fn select_distributed_working_dir(
@@ -862,5 +886,27 @@ mod tests {
             persisted.build_fingerprint.as_deref(),
             Some("new-fingerprint")
         );
+    }
+
+    #[test]
+    fn canonicalize_build_working_dir_resolves_symlinks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("target");
+        let symlink_dir = tmp.path().join("symlink_holder");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let target_file = target_dir.join("dataflow.yml");
+        std::fs::write(&target_file, "").unwrap();
+        let symlink_file = symlink_dir.join("entrypoint.yml");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_file, &symlink_file).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&target_file, &symlink_file).is_err() {
+            return;
+        }
+
+        let got = canonicalize_build_working_dir(None, &symlink_file).unwrap();
+        assert_eq!(got, dunce::canonicalize(&target_dir).unwrap());
     }
 }
