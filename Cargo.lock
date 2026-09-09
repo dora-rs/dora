@@ -2342,6 +2342,7 @@ dependencies = [
  "serde_yaml",
  "tempfile",
  "toml 1.1.4+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
