@@ -251,6 +251,19 @@ Two failures that read oddly:
 - **"major version bump ..."** — a 2.0 withdraws the promises the gate measures against, so it stops there rather than reporting a green or a red that means nothing. When the bump is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking` (and set the same variable on the `breaking-changes` job for the PR that carries it).
 - **"the generated surface files are stale"** — regenerating changed the tree, so the comparison ran against an out-of-date snapshot and its "ok" meant nothing. Commit the regenerated files and read the report again.
 
+### 3.14 `Docker Image CI/CD` failed
+
+**Cause**: `.github/workflows/docker-image.yml` builds `docker/slim/Dockerfile` and runs a dataflow inside the image (`docker/slim/smoke.sh`). It only fires on `docker/**` and on the workflow file itself.
+
+Read the failure carefully before assuming your diff caused it. The Dockerfile installs `dora-rs-cli` from **PyPI**, not from this workspace, so the subject is the published CLI plus the image — what `docker pull` gives a user. It can go red for a bad `dora-rs-cli` release, a moved `python:3.12-slim` base, or a PyPI outage, none of which any PR here introduced.
+
+**Fix**, by which half failed:
+
+- **`docker build`** — a layer stopped resolving. Check whether `python:3.12-slim` moved or an apt/PyPI package disappeared. Reproduce with `make qa-docker-slim`.
+- **`Smoke -- documented entry point`** — `docker run --rm <image> dora --help` no longer works, i.e. the image's own entry point is broken. That is a real user-facing break.
+- **`Smoke -- run a dataflow inside the image`** — the CLI is present but cannot host a dataflow. The step prints the shipped `dora-rs-cli` / `dora-rs` pair first; if those two versions differ, suspect a 1.x compatibility break between the CLI and the Python bindings, which the smoke deliberately does not paper over.
+- **A platform you did not touch** — the published set is `linux/amd64,linux/arm64` (see `docker/slim/README.md`). 32-bit arm is absent because it cannot be built, not because it was forgotten; re-adding it needs an armv7l `pyarrow` wheel to exist first.
+
 ---
 
 ## 4. Running the adversarial LLM review (local only today)
@@ -384,7 +397,7 @@ If you want to add a new QA check:
 1. Write the check as a shell script under `scripts/qa/<name>.sh`.
 2. Make it executable, runnable standalone, and fail-fast.
 3. Add a target to `Makefile` (`qa-<name>`).
-4. Add it to `scripts/qa/all.sh` in the appropriate tier (fast / full / tier1).
+4. Add it to `scripts/qa/all.sh` in the appropriate tier (fast / full / tier1) — unless it needs infrastructure the ladder cannot assume (a Docker daemon, an sshd), in which case leave it out and say so in the Makefile target, as `qa-docker-slim` and `qa-cluster-e2e` do.
 5. Add a CI job to `.github/workflows/ci.yml` that calls `make qa-<name>`.
 6. Document it in this runbook (Section 3).
 

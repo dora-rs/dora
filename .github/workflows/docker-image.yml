@@ -1,10 +1,21 @@
+# Builds `docker/slim/Dockerfile`, runs a dataflow inside the result, and
+# publishes it to ghcr.io/dora-rs/dora-slim:latest on merges to main.
+#
+# This job's subject is the *published* `dora-rs-cli` plus the image, not the
+# diff that triggered it -- the Dockerfile installs from PyPI, not from this
+# workspace. It can therefore go red over things no PR here caused. See
+# "3.14 `Docker Image CI/CD` failed" in docs/qa-runbook.md before bisecting.
+
 name: Docker Image CI/CD
 
 on:
   push:
     branches: ["main"]
     paths:
+      # This file is in the filter so edits to it are exercised by the very
+      # runs they change.
       - "docker/**"
+      - ".github/workflows/docker-image.yml"
   pull_request:
     types:
       - opened
@@ -13,56 +24,138 @@ on:
       - ready_for_review
     paths:
       - "docker/**"
+      - ".github/workflows/docker-image.yml"
+  # Nothing above reruns unless one of those paths changes, but what the image
+  # installs comes from PyPI and moves on its own. A manual trigger re-checks
+  # the image against today's PyPI without an empty commit under `docker/`.
+  workflow_dispatch:
+
+concurrency:
+  # Two merges to `docker/**` in quick succession would otherwise race in
+  # `publish`, and whichever finished last would win -- leaving `:latest`
+  # pointing at the older Dockerfile with both runs green.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  # Superseded PR runs are worth cancelling; a run that is mid-publish is not.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # 32-bit arm is not here because this image cannot be built for it: there is
+  # no arm/v6 `python:3.12-slim` (the 32-bit variants are v5 and v7), and on
+  # arm/v7 `pip install dora-rs-cli` needs `pyarrow`, which has never published
+  # an armv7l wheel and whose sdist wants Arrow C++. Documented for users in
+  # docker/slim/README.md; keep the two in step.
+  PLATFORMS: linux/amd64,linux/arm64
+
+# No `cache-from`/`cache-to: type=gha` on any build below, deliberately.
+# The Actions cache is capped at 10 GB per repo and LRU-evicts; this repo
+# already sits at ~9 GB of Rust caches that every PR restores from, and
+# `mode=max` over a layer stack containing a full rustup toolchain, once per
+# platform, would evict them wholesale (the same budget that made nightly.yml
+# restore-only). This workflow fires only on the paths above, so it pays a cold
+# build a handful of times a year -- far cheaper than making every PR recompile
+# the workspace. Within a run the buildx builder still caches, so the platform
+# sweep reuses the amd64 layers built for the smoke.
 
 jobs:
-  build_and_push:
+  build-and-smoke:
+    name: Build and smoke the slim image
     runs-on: ubuntu-latest
+    # arm64 builds under QEMU, which is slow enough that the ceiling has to be
+    # generous; it is here to cap a wedged emulator, not to pace a healthy run.
+    timeout-minutes: 60
     permissions:
       contents: read
-      # Only the publish step below needs this, and it is gated to `push`.
-      # `permissions:` accepts no expressions, so the scope cannot be
-      # narrowed per event from here — genuinely withholding it on PR runs
-      # means splitting publish into its own job, which is only coherent
-      # once the build is fixed (see the FIXME below).
-      packages: write
     env:
-      IMAGE: ghcr.io/dora-rs/dora-slim:latest
+      # Local tag only. The published name lives in the `publish` job.
+      IMAGE: dora-slim:ci
     steps:
       - uses: actions/checkout@v7
 
-      # Registry credentials and the publish step are gated on `push`, i.e.
-      # a merge to main. This job also runs on `pull_request`, where the
-      # point is to prove the Dockerfile still builds -- not to publish it.
-      #
-      # Without the gate, a PR touching `docker/**` would overwrite the
-      # public `:latest` tag with its own unreviewed Dockerfile. Fork PRs
-      # could not (GitHub downgrades GITHUB_TOKEN to read-only there
-      # regardless of the `permissions:` block above), but PRs from branches
-      # in this repo -- how most work here lands -- carry the real write
-      # token. The hole was latent rather than exploited: the build step has
-      # failed on every run since at least 2026-03, so the push was never
-      # reached.
-      #
-      # FIXME: that failure is `Multi-platform build is not supported for
-      # the docker driver` -- plain `docker build` cannot do the four
-      # platforms this asks for. The fix is `docker/setup-buildx-action` +
-      # `docker/build-push-action` with `push: ${{ github.event_name ==
-      # 'push' }}`, which also makes the multi-arch manifest publishable at
-      # all (a buildx multi-platform build cannot be `--load`ed locally, so
-      # the build/push split below could not work even once buildx is set
-      # up). Deliberately left for a separate change: this one closes the
-      # publish hole without touching what the workflow builds.
-      - name: "Login to GitHub Container Registry"
-        if: github.event_name == 'push'
+      # Only the platform sweep needs emulation, and that is skipped on `push`.
+      - uses: docker/setup-qemu-action@v4
+        if: github.event_name != 'push'
+      # buildx is what can target a platform other than the runner's own.
+      - uses: docker/setup-buildx-action@v4
+
+      # Single-platform, and `load: true` so the image lands in the local
+      # daemon where the smoke steps can `docker run` it. A multi-platform
+      # build cannot be loaded -- there is no single image to load -- which is
+      # why the sweep is a separate step further down.
+      - name: Build the linux/amd64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/slim
+          platforms: linux/amd64
+          load: true
+          tags: ${{ env.IMAGE }}
+
+      # The non-interactive entry point docker/slim/README.md documents. Worth
+      # its own step because it is the one invocation shape the smoke below
+      # cannot cover: that one is `docker run ... bash /smoke.sh`, so it never
+      # exercises overriding CMD with `dora` itself.
+      - name: Smoke -- documented entry point
+        run: docker run --rm "$IMAGE" dora --help
+
+      # The difference between "the binary is present" and "the image can
+      # actually host a dataflow". See docker/slim/smoke.sh.
+      - name: Smoke -- run a dataflow inside the image
+        timeout-minutes: 10
+        run: |
+          docker run --rm \
+            -v "$PWD/docker/slim/smoke.sh:/smoke.sh:ro" \
+            "$IMAGE" bash /smoke.sh
+
+      # Proves the manifest `publish` will push still builds for every platform.
+      # Skipped on `push`, where `publish` builds the same thing for real.
+      - name: Build every target platform (no push)
+        if: github.event_name != 'push'
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/slim
+          platforms: ${{ env.PLATFORMS }}
+          push: false
+
+  # The only job holding `packages: write`, and it cannot run on a
+  # `pull_request` at all: a skipped job is never handed a token, so a PR run
+  # carries no scope that could overwrite the public `:latest` tag.
+  #
+  # `needs:` means a Dockerfile that fails its smoke is never published. Note
+  # what that does and does not promise: this job builds again rather than
+  # pushing the bits smoked above, because a multi-platform manifest cannot be
+  # `--load`ed into a daemon to be run. It costs a second cold amd64 build (a
+  # few minutes, a few times a year); the alternative is carrying ~2 GB of
+  # layers between jobs, which is slower than rebuilding. Nothing about this
+  # image was reproducible anyway -- every layer below `FROM` resolves
+  # `apt-get update`, rustup and PyPI afresh. The gate is on the Dockerfile,
+  # not on a digest.
+  publish:
+    name: Publish to ghcr.io
+    needs: build-and-smoke
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Log in to the GitHub Container Registry
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
-          username: ${{github.actor}}
-          password: ${{secrets.GITHUB_TOKEN}}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build the Docker image
-        run: docker build docker/slim --platform linux/amd64,linux/arm64,linux/arm32v6,linux/arm32v7 -t multi-platform --tag "$IMAGE"
-
-      - name: Push the Docker image
-        if: github.event_name == 'push'
-        run: docker push "$IMAGE"
+      # A multi-platform manifest can only be produced by buildx and can only
+      # leave it by being pushed, so build and push are one step.
+      - name: Build and push the multi-platform image
+        uses: docker/build-push-action@v7
+        with:
+          context: docker/slim
+          platforms: ${{ env.PLATFORMS }}
+          push: true
+          tags: ghcr.io/dora-rs/dora-slim:latest
