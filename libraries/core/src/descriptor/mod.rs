@@ -657,10 +657,10 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
 /// Canonicalize the working dir for a dataflow, preferring an explicit
 /// override over the dataflow file's parent directory.
 ///
-/// When falling back to the dataflow's parent directory, the parent directory
-/// itself is canonicalized (preserving the symlink container if the dataflow
-/// entrypoint file is a symlink, so the project root matches where the entrypoint
-/// was invoked rather than the target's location).
+/// When falling back to the dataflow's parent directory, returns the lexical parent
+/// directory of the dataflow path as given, canonicalized — symlinks in the file
+/// are not resolved, so the project root matches where the entrypoint was invoked
+/// rather than the target's location.
 pub fn canonicalize_working_dir(
     override_: Option<&Path>,
     dataflow_path: &Path,
