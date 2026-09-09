@@ -252,28 +252,48 @@ fn check_timing_fields(
 /// probe the exact same boundary with its non-panicking twin
 /// `try_from_secs_f64`, so a value accepted here can never panic the daemon.
 ///
-/// When `allow_zero` is `false`, `0.0` is also rejected. This is required for
-/// fields that reach `tokio::time::interval` (e.g. `health_check_interval`),
-/// which panics on a zero period.
+/// When `allow_zero` is `false`, any value that produces a zero-length
+/// `Duration` is also rejected. This is required for fields that reach
+/// `tokio::time::interval` (e.g. `health_check_interval`), which panics on a
+/// zero period. Checking the resulting `Duration` -- not just the literal
+/// `0.0` -- also rejects a tiny-but-positive value such as `1e-10`, which
+/// `Duration::from_secs_f64` rounds down to `Duration::ZERO`. This mirrors the
+/// timer parser's `interval.is_zero()` guard in `dora-message`.
 fn check_seconds_field(
     owner: &str,
     field: &str,
     value: Option<f64>,
     allow_zero: bool,
 ) -> eyre::Result<()> {
-    if let Some(value) = value
-        && (std::time::Duration::try_from_secs_f64(value).is_err() || (!allow_zero && value == 0.0))
-    {
-        let requirement = if allow_zero {
-            "non-negative"
-        } else {
-            "positive"
-        };
-        bail!(
-            "{owner} has invalid `{field}`: {value} \
-             (must be a finite, {requirement} number of seconds smaller than {})",
-            std::time::Duration::MAX.as_secs_f64()
-        );
+    if let Some(value) = value {
+        // A negative / non-finite / overflowing value fails to convert; a
+        // tiny-but-positive value (e.g. `1e-10`) converts to `Duration::ZERO`,
+        // which must also be rejected for interval fields (`allow_zero ==
+        // false`). Inspect the resulting `Duration`, not the literal `0.0`.
+        let duration = std::time::Duration::try_from_secs_f64(value);
+        let is_zero = duration.as_ref().is_ok_and(|d| d.is_zero());
+        if !allow_zero && is_zero {
+            // Distinct message: a value like `1e-10` *is* positive, so calling it
+            // "not positive" would misdirect the user -- the real reason is that
+            // it rounds down to a zero-length duration.
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a positive number of seconds; this value is zero or \
+                 rounds down to a zero-length duration)"
+            );
+        }
+        if duration.is_err() {
+            let requirement = if allow_zero {
+                "non-negative"
+            } else {
+                "positive"
+            };
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a finite, {requirement} number of seconds smaller than {})",
+                std::time::Duration::MAX.as_secs_f64()
+            );
+        }
     }
     Ok(())
 }
@@ -1548,7 +1568,10 @@ operators:
     fn seconds_field_rejects_zero_when_positive_required() {
         check_seconds_field("owner", "field", None, false).unwrap();
         check_seconds_field("owner", "field", Some(3600.0), false).unwrap();
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        // `1e-10` is finite and positive but `Duration::from_secs_f64` rounds
+        // it down to `Duration::ZERO`, which would panic `tokio::time::interval`
+        // just like a literal `0.0`, so it must be rejected too.
+        for bad in [0.0, 1e-10, -1.0, f64::NAN, f64::INFINITY] {
             let err = check_seconds_field("owner", "field", Some(bad), false)
                 .unwrap_err()
                 .to_string();
@@ -1557,6 +1580,9 @@ operators:
                 "{bad} should be rejected with a field/constraint message, got: {err}"
             );
         }
+        // A tiny-but-positive value is fine when zero is allowed (it does not
+        // reach `tokio::time::interval`).
+        check_seconds_field("owner", "field", Some(1e-10), true).unwrap();
     }
 
     // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
@@ -1594,6 +1620,33 @@ nodes:
         let dataflow = parse_dataflow(
             "\
 health_check_interval: 0.0
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("health_check_interval") && err.contains("positive"),
+            "error should name the field and constraint, got: {err}"
+        );
+    }
+
+    // A tiny-but-positive `health_check_interval` (e.g. `1e-10`) is finite and
+    // non-zero as an `f64`, so a literal `value == 0.0` check would let it
+    // through -- but `Duration::from_secs_f64` rounds it down to
+    // `Duration::ZERO`, which panics `tokio::time::interval`. It must be
+    // rejected up front just like `0.0`.
+    #[test]
+    fn check_dataflow_rejects_subnanosecond_health_check_interval() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: 0.0000000001
 nodes:
   - id: a
     path: node_a
