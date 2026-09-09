@@ -130,6 +130,10 @@ impl PoolState {
         }
     }
 
+    pub fn has_subscriber(&self, dataflow_id: &DataflowId) -> bool {
+        self.subscribers.contains_key(dataflow_id)
+    }
+
     /// Release bookkeeping on daemon exit. Mirror segments are deliberately
     /// NOT unlinked: they may still be open by a peer daemon's readers on a
     /// shared host, and [`Self::sweep_orphans_at_startup`] sweeps this
