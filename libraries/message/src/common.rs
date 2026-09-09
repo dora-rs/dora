@@ -47,33 +47,49 @@ pub struct LogMessageHelper {
 impl From<LogMessageHelper> for LogMessage {
     fn from(helper: LogMessageHelper) -> Self {
         let fields = helper.fields.as_ref();
+        // Use `or_else` throughout so each fallback (a `BTreeMap` lookup plus a
+        // `String` clone, and sometimes a parse) is computed only when the
+        // typed field is absent. `or` would evaluate every fallback eagerly and
+        // discard it whenever the typed field is already `Some`.
         LogMessage {
-            build_id: helper.build_id.or(fields
-                .and_then(|f| f.get("build_id").cloned())
-                .and_then(|id| BuildId::from_display_str(&id))),
-            dataflow_id: helper.dataflow_id.or(fields
-                .and_then(|f| f.get("dataflow_id").cloned())
-                .and_then(|id| Uuid::parse_str(&id).ok())),
-            node_id: helper.node_id.or(fields
-                .and_then(|f| f.get("node_id").cloned())
-                .and_then(|id| id.parse::<NodeId>().ok())),
-            daemon_id: helper.daemon_id.or(fields
-                .and_then(|f| f.get("daemon_id").cloned())
-                .and_then(|id| DaemonId::from_display_str(&id))),
+            build_id: helper.build_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("build_id").cloned())
+                    .and_then(|id| BuildId::from_display_str(&id))
+            }),
+            dataflow_id: helper.dataflow_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("dataflow_id").cloned())
+                    .and_then(|id| Uuid::parse_str(&id).ok())
+            }),
+            node_id: helper.node_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("node_id").cloned())
+                    .and_then(|id| id.parse::<NodeId>().ok())
+            }),
+            daemon_id: helper.daemon_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("daemon_id").cloned())
+                    .and_then(|id| DaemonId::from_display_str(&id))
+            }),
             level: helper.level,
             target: helper
                 .target
-                .or(fields.and_then(|f| f.get("target").cloned())),
+                .or_else(|| fields.and_then(|f| f.get("target").cloned())),
             module_path: helper
                 .module_path
-                .or(fields.and_then(|f| f.get("module_path").cloned())),
-            file: helper.file.or(fields.and_then(|f| f.get("file").cloned())),
-            line: helper.line.or(fields
-                .and_then(|f| f.get("line").cloned())
-                .and_then(|s| s.parse().ok())),
+                .or_else(|| fields.and_then(|f| f.get("module_path").cloned())),
+            file: helper
+                .file
+                .or_else(|| fields.and_then(|f| f.get("file").cloned())),
+            line: helper.line.or_else(|| {
+                fields
+                    .and_then(|f| f.get("line").cloned())
+                    .and_then(|s| s.parse().ok())
+            }),
             message: helper
                 .message
-                .or(fields.and_then(|f| f.get("message").cloned()))
+                .or_else(|| fields.and_then(|f| f.get("message").cloned()))
                 .unwrap_or_default(),
             fields: helper.fields,
             timestamp: helper.timestamp,
