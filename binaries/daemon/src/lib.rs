@@ -1661,17 +1661,10 @@ impl Daemon {
         let RunDataflowOptions {
             exit_when_nodes_finish,
         } = options;
-        let working_dir = match working_dir_override {
-            Some(p) => p
-                .canonicalize()
-                .context("failed to canonicalize working_dir override")?,
-            None => dataflow_path
-                .canonicalize()
-                .context("failed to canonicalize dataflow path")?
-                .parent()
-                .ok_or_else(|| eyre::eyre!("canonicalized dataflow path has no parent"))?
-                .to_owned(),
-        };
+        let working_dir = dora_core::descriptor::canonicalize_working_dir(
+            working_dir_override.as_deref(),
+            dataflow_path,
+        )?;
 
         // `hub:` dataflows are desugared in memory by `dora build` — the
         // on-disk YAML still contains unresolved references, so the caller
