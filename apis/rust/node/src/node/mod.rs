@@ -1981,12 +1981,20 @@ impl DoraNode {
             .as_ref()
             .expect("a declared publisher implies a zenoh session");
 
-        // Serialize metadata as zenoh attachment.
-        let metadata_bytes = match dora_message::encode(metadata) {
-            Ok(bytes) => bytes,
+        // Serialize metadata as the zenoh attachment. Encode it lazily: the
+        // sub-threshold schema-once fast path below carries its own
+        // schema-tagged attachment (built in `publish_schema_once`) and never
+        // uses this blob, so encoding it eagerly would postcard-serialize the
+        // metadata twice per message on the highest-rate streaming/small-message
+        // path (the exact case schema-once exists to speed up). Compute it only
+        // on the paths that actually attach the full metadata. Returns `None`
+        // (after logging) on an encode failure so the caller can fall back to
+        // the daemon path.
+        let encode_metadata = || match dora_message::encode(metadata) {
+            Ok(bytes) => Some(bytes),
             Err(e) => {
                 tracing::warn!(output = %output_id, "failed to serialize metadata ({e}); falling back to daemon path");
-                return Ok(PublishOutcome::NotPublished(finalized));
+                None
             }
         };
 
@@ -2006,6 +2014,9 @@ impl DoraNode {
             // the deliberate, accepted trade-off for the zero-copy large-output
             // path, not an oversight.
             FinalizedSample::Shm(sbuf) => {
+                let Some(metadata_bytes) = encode_metadata() else {
+                    return Ok(PublishOutcome::NotPublished(FinalizedSample::Shm(sbuf)));
+                };
                 if diag {
                     tracing::warn!(
                         "output `{output_id}`: entering zenoh put of an SHM buffer \
@@ -2059,6 +2070,11 @@ impl DoraNode {
                             // over-allocated. Fall through to the reliable
                             // daemon path instead of risking that panic.
                             if sbuf.as_mut().len() == avec.len() {
+                                let Some(metadata_bytes) = encode_metadata() else {
+                                    return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(
+                                        avec,
+                                    )));
+                                };
                                 sbuf.as_mut().copy_from_slice(&avec);
                                 if diag {
                                     tracing::warn!(
@@ -2164,14 +2180,33 @@ impl DoraNode {
                 } else {
                     None
                 };
-                // Fall back to a full standalone stream if the batch slice can't
-                // be taken (a real IPC stream always can — defensive).
-                let (payload, attachment): (&[u8], &[u8]) = match schema_once.as_ref() {
-                    Some(att) => match arrow_utils::ipc_encode::batch_slice(&avec) {
-                        Some(slice) => (slice, att.as_slice()),
-                        None => (&avec[..], &metadata_bytes[..]),
-                    },
-                    None => (&avec[..], &metadata_bytes[..]),
+                // Schema-once fast path: send just the schema-less batch slice
+                // tagged with the schema attachment — no metadata encode. Fall
+                // back to a full standalone stream (with the metadata blob as
+                // attachment) when schema-once is not primed or the batch slice
+                // can't be taken (a real IPC stream always can — defensive). The
+                // metadata is encoded only on that fallback, keeping the fast
+                // path free of a redundant serialization. The payload/attachment
+                // pairing is chosen by `select_zenoh_put` (unit-tested pure
+                // decision) — mispairing here silently drops messages at the
+                // receiver (dora-rs/dora#2366).
+                let choice = select_zenoh_put(
+                    schema_once.as_deref(),
+                    arrow_utils::ipc_encode::batch_slice(&avec),
+                );
+                let fallback_meta;
+                let (payload, attachment): (&[u8], &[u8]) = match choice {
+                    ZenohPutChoice::SchemaOnce {
+                        payload,
+                        attachment,
+                    } => (payload, attachment),
+                    ZenohPutChoice::FullStream => {
+                        let Some(bytes) = encode_metadata() else {
+                            return Ok(PublishOutcome::NotPublished(FinalizedSample::Vec(avec)));
+                        };
+                        fallback_meta = bytes;
+                        (&avec[..], &fallback_meta[..])
+                    }
                 };
                 match publisher.put(payload).attachment(attachment).wait() {
                     Ok(()) => Ok(PublishOutcome::Published),
@@ -3256,6 +3291,50 @@ fn schema_once_eligible(
     payload_len < zero_copy_threshold && !carries_pattern_correlation(params)
 }
 
+/// Which payload and attachment a sub-threshold zenoh `put` carries.
+///
+/// Split out of [`DoraNode::zenoh_publish`] as a pure decision so the
+/// attachment-selection logic is unit-testable without a live zenoh session.
+/// Pairing the wrong payload with the wrong attachment here is exactly the
+/// silent wire corruption of dora-rs/dora#2366: a schema-less batch delivered
+/// to a receiver that was never primed decodes to nothing and is dropped.
+#[derive(Debug, PartialEq, Eq)]
+enum ZenohPutChoice<'a> {
+    /// Schema-once fast path: the schema-less batch `payload` paired with the
+    /// schema-tagged `attachment` from [`publish_schema_once`]. No metadata is
+    /// re-encoded — the receiver primes its decoder from the `@schema` subtopic
+    /// and matches this batch by the schema hash carried in the attachment.
+    SchemaOnce {
+        payload: &'a [u8],
+        attachment: &'a [u8],
+    },
+    /// Fallback: send the whole IPC payload as a self-describing stream, with
+    /// the caller-encoded [`Metadata`] blob as the attachment, so the message
+    /// decodes standalone. Chosen whenever the output is not primed for
+    /// schema-once or a schema-less batch slice could not be taken.
+    FullStream,
+}
+
+/// Choose the [`ZenohPutChoice`] for a sub-threshold payload.
+///
+/// The schema-once fast path is taken only when both a schema attachment is
+/// primed (`schema_att` is `Some` — i.e. [`publish_schema_once`] emitted a
+/// schema-tagged blob for this message) and a schema-less `batch_slice` could
+/// be taken. If either is absent the message must go out as a full
+/// self-describing stream so it decodes standalone at the receiver.
+fn select_zenoh_put<'a>(
+    schema_att: Option<&'a [u8]>,
+    batch_slice: Option<&'a [u8]>,
+) -> ZenohPutChoice<'a> {
+    match (schema_att, batch_slice) {
+        (Some(attachment), Some(payload)) => ZenohPutChoice::SchemaOnce {
+            payload,
+            attachment,
+        },
+        _ => ZenohPutChoice::FullStream,
+    }
+}
+
 /// Whether a send-side runtime output type check should flag this payload.
 ///
 /// A message is *not* flagged when:
@@ -4207,6 +4286,41 @@ mod tests {
             schema_once_decision(Some(&state), 7, later),
             SchemaOnceDecision::SendFullStreamRefresh
         ));
+    }
+
+    #[test]
+    fn select_zenoh_put_takes_fast_path_only_when_primed_and_sliceable() {
+        let schema_att: &[u8] = b"schema-tagged-attachment";
+        let batch: &[u8] = b"schema-less-batch";
+
+        // Primed (schema attachment present) AND a batch slice could be taken →
+        // schema-once fast path. The batch is the payload and the schema blob is
+        // the attachment; pinning this pairing guards against the silent-drop
+        // swap of dora-rs/dora#2366.
+        assert_eq!(
+            select_zenoh_put(Some(schema_att), Some(batch)),
+            ZenohPutChoice::SchemaOnce {
+                payload: batch,
+                attachment: schema_att,
+            }
+        );
+
+        // Not primed (no schema attachment) → full self-describing stream, even
+        // though a batch slice is available. The caller encodes metadata here.
+        assert_eq!(
+            select_zenoh_put(None, Some(batch)),
+            ZenohPutChoice::FullStream
+        );
+
+        // Primed but no batch slice could be taken → full stream (defensive: a
+        // real IPC stream always yields a slice).
+        assert_eq!(
+            select_zenoh_put(Some(schema_att), None),
+            ZenohPutChoice::FullStream
+        );
+
+        // Neither primed nor sliceable → full stream.
+        assert_eq!(select_zenoh_put(None, None), ZenohPutChoice::FullStream);
     }
 
     #[test]
