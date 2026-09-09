@@ -178,9 +178,7 @@ fn run_zenoh_topic_mode(
                     &qos,
                 ))?;
                 publishers.push(ZenohTopicPublisher {
-                    input: topic
-                        .input
-                        .unwrap_or_else(|| topic.topic.trim_start_matches('/').replace('/', "_")),
+                    input: topic.input_port_id(),
                     type_info,
                     publisher,
                 });
@@ -200,12 +198,7 @@ fn run_zenoh_topic_mode(
                     64 * 1024 * 1024,
                     decoder,
                 ))?;
-                subscribers.push((
-                    topic
-                        .output
-                        .unwrap_or_else(|| topic.topic.trim_start_matches('/').replace('/', "_")),
-                    subscription,
-                ));
+                subscribers.push((topic.output_port_id(), subscription));
             }
         }
     }
@@ -1052,9 +1045,7 @@ fn run_topic_mode(
 
         match &topic_config.direction {
             Ros2Direction::Subscribe => {
-                let output_id = topic_config.output.clone().unwrap_or_else(|| {
-                    topic_config.topic.trim_start_matches('/').replace('/', "_")
-                });
+                let output_id = topic_config.output_port_id();
                 let subscription: ros2_client::Subscription<ArrayData> = ros_node
                     .create_subscription(&ros_topic, None)
                     .context("failed to create ROS2 subscription")?;
@@ -1068,9 +1059,7 @@ fn run_topic_mode(
                 ));
             }
             Ros2Direction::Publish => {
-                let input_id = topic_config.input.clone().unwrap_or_else(|| {
-                    topic_config.topic.trim_start_matches('/').replace('/', "_")
-                });
+                let input_id = topic_config.input_port_id();
                 let publisher = ros_node
                     .create_publisher::<TypedValue<'static>>(&ros_topic, None)
                     .context("failed to create ROS2 publisher")?;
@@ -2100,6 +2089,13 @@ fn parse_type_str(type_str: &str) -> eyre::Result<(String, String)> {
     Ok((pkg.to_string(), type_name.to_string()))
 }
 
+/// Flatten either topic mode into the per-topic list the bridge binds from.
+///
+/// A config from a current dora descriptor never takes the single-topic arm:
+/// the resolver rewrites `topic:` into a one-entry `topics:` list carrying the
+/// node's declared port. The arm is kept rather than rejected so this binary
+/// still runs against a resolver that predates that rewrite, but note it binds
+/// by the topic-derived id there, not by the declared port.
 fn resolve_topics(config: &Ros2BridgeConfig) -> eyre::Result<Vec<Ros2TopicConfig>> {
     match (&config.topic, &config.topics) {
         (Some(topic), None) => {

@@ -1,11 +1,12 @@
 use dora_message::{
-    config::InputMapping,
-    descriptor::EnvValue,
+    config::{Input, InputMapping},
+    descriptor::{EnvValue, derive_port_id, single_topic_port_id},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
 use std::{
-    collections::{BTreeMap, HashMap},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -275,6 +276,8 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             }
             classify::NodeClass::Ros2Bridge => {
                 let config = node.ros2.as_ref().ok_or_eyre("no ros2")?;
+                let config =
+                    resolve_ros2_single_topic(&node.id, config, &node.inputs, &node.outputs)?;
                 let bridge_config_json = serde_json::to_string(&config)
                     .context("failed to serialize ROS2 bridge config")?;
 
@@ -310,6 +313,85 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
     }
 
     Ok(resolved)
+}
+
+/// Fill a single-topic (`topic:`) ros2 bridge config's port mapping in, by
+/// rewriting it into the equivalent one-entry `topics:` form.
+///
+/// Single-topic mode has no `output:`/`input:` field, so without this the
+/// bridge falls back to the topic-derived id and binds to a port the node never
+/// declared — `/turtle1/pose` to `turtle1_pose` rather than to the documented
+/// `pose` (`docs/ros2-bridge.md`: "the node's declared `outputs` or `inputs` are
+/// used directly"), silently dropping every message.
+///
+/// This is also where an unresolvable mapping is *reported*, rather than in
+/// [`validate`] alone: `dora run` and `dora check` validate first, but the
+/// coordinator's `dora start` path resolves without validating, and there the
+/// only alternative to an error is the silent drop.
+pub(crate) fn resolve_ros2_single_topic<'a>(
+    node_id: &NodeId,
+    config: &'a Ros2BridgeConfig,
+    node_inputs: &BTreeMap<DataId, Input>,
+    node_outputs: &BTreeSet<DataId>,
+) -> eyre::Result<Cow<'a, Ros2BridgeConfig>> {
+    // A config that also sets `topics:` is rejected by the bridge itself
+    // ("exactly one of `topic` or `topics`"); overwriting the list here would
+    // turn that loud failure into a silent one.
+    let (Some(topic), Some(message_type), None) =
+        (&config.topic, &config.message_type, &config.topics)
+    else {
+        return Ok(Cow::Borrowed(config));
+    };
+    let (direction, port_kind, declared) = match config.direction {
+        Ros2Direction::Subscribe => (
+            "subscribe",
+            "output",
+            node_outputs
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Ros2Direction::Publish => (
+            "publish",
+            "input",
+            node_inputs.keys().map(|id| id.as_str()).collect(),
+        ),
+    };
+    let Some(port) = single_topic_port_id(topic, &declared) else {
+        if declared.is_empty() {
+            bail!("node `{node_id}`: ros2 {direction} bridge requires at least one {port_kind}");
+        }
+        bail!(
+            "node `{node_id}`: ros2 {direction} topic `{topic}` has no unambiguous {port_kind} \
+             — single-topic mode binds to the node's declared {port_kind}, but it declares \
+             several: {}. Declare a single {port_kind}, name one of them after the topic \
+             (`{}`), or use `topics:` with an explicit `{port_kind}:`",
+            declared
+                .iter()
+                .map(|port| format!("`{port}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            derive_port_id(topic),
+        );
+    };
+    let (output, input) = match config.direction {
+        Ros2Direction::Subscribe => (Some(port), None),
+        Ros2Direction::Publish => (None, Some(port)),
+    };
+    let mut resolved = config.clone();
+    resolved.topic = None;
+    resolved.message_type = None;
+    resolved.topics = Some(vec![Ros2TopicConfig {
+        topic: topic.clone(),
+        message_type: message_type.clone(),
+        direction: config.direction.clone(),
+        output,
+        input,
+        // Per-topic QoS unset, so the topic inherits the bridge-level `qos`
+        // the single-topic form already carries.
+        qos: None,
+    }]);
+    Ok(Cow::Owned(resolved))
 }
 
 impl DescriptorExt for Descriptor {
@@ -645,6 +727,151 @@ pub enum NodeKind<'a> {
 
 #[cfg(test)]
 mod tests {
+    /// The `DORA_ROS2_BRIDGE_CONFIG` a resolved bridge node is spawned with.
+    fn resolved_bridge_config(yaml: &str) -> Ros2BridgeConfig {
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve");
+        let node = resolved.values().next().expect("one node");
+        let CoreNodeKind::Custom(custom) = &node.kind else {
+            panic!("ros2 bridge must resolve to a custom node");
+        };
+        let Some(EnvValue::String(json)) = custom
+            .envs
+            .as_ref()
+            .and_then(|envs| envs.get("DORA_ROS2_BRIDGE_CONFIG"))
+        else {
+            panic!("bridge node must carry DORA_ROS2_BRIDGE_CONFIG");
+        };
+        serde_json::from_str(json).expect("bridge config round-trips")
+    }
+
+    /// A single-topic subscribe bridge must bind to the declared `pose`, not to
+    /// the topic-derived `turtle1_pose` the bridge would otherwise fall back to
+    /// — nothing is wired to that id, so every message would be dropped.
+    #[test]
+    fn single_topic_subscribe_binds_the_declared_output() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: pose_bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+    outputs:
+      - pose
+",
+        );
+        let topics = config
+            .topics
+            .expect("single topic is resolved to a mapping");
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].topic, "/turtle1/pose");
+        assert_eq!(topics[0].output.as_deref(), Some("pose"));
+        assert_eq!(config.topic, None, "the unresolved form must not survive");
+    }
+
+    #[test]
+    fn single_topic_publish_binds_the_declared_input() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: cmd_bridge
+    ros2:
+      topic: /turtle1/cmd_vel
+      message_type: geometry_msgs/Twist
+      direction: publish
+    inputs:
+      cmd_vel: planner/cmd_vel
+",
+        );
+        let topics = config
+            .topics
+            .expect("single topic is resolved to a mapping");
+        assert_eq!(topics[0].input.as_deref(), Some("cmd_vel"));
+    }
+
+    /// Multi-topic configs already carry their mapping and must pass through.
+    #[test]
+    fn multi_topic_config_is_left_alone() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: turtle_bridge
+    ros2:
+      topics:
+        - topic: /turtle1/pose
+          message_type: turtlesim/Pose
+          direction: subscribe
+          output: pose
+    outputs:
+      - pose
+",
+        );
+        let topics = config.topics.expect("topics survive resolution");
+        assert_eq!(topics[0].output.as_deref(), Some("pose"));
+    }
+
+    /// Resolution, not just validation, has to reject an unresolvable mapping:
+    /// `dora start` resolves through the coordinator without running
+    /// `check_dataflow`, so a guard that lives only in the validator would let
+    /// the bridge bind to a port nothing is wired to.
+    #[test]
+    fn ambiguous_single_topic_is_rejected_during_resolution() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: pose_bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+    outputs:
+      - pose
+      - log
+",
+        )
+        .expect("parse");
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect_err("an ambiguous port mapping must not resolve")
+            .to_string();
+        assert!(
+            err.contains("no unambiguous output") && err.contains("turtle1_pose"),
+            "error should explain the ambiguity, got: {err}"
+        );
+    }
+
+    /// Setting both `topic:` and `topics:` is rejected downstream by the bridge
+    /// ("exactly one of `topic` or `topics`"). Resolution must leave the list
+    /// alone rather than overwrite it and turn that into a silent drop.
+    #[test]
+    fn single_topic_rewrite_never_overwrites_an_explicit_topics_list() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+      topics:
+        - topic: /turtle1/other
+          message_type: turtlesim/Pose
+          direction: subscribe
+          output: pose
+    outputs:
+      - pose
+",
+        );
+        assert_eq!(config.topic.as_deref(), Some("/turtle1/pose"));
+        let topics = config.topics.expect("the explicit list survives");
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].topic, "/turtle1/other");
+    }
+
     /// dora-rs/dora#2920: the command-line flag beats the descriptor in
     /// BOTH directions, and its absence beats neither.
     ///
