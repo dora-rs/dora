@@ -9,8 +9,9 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
-uuid = { workspace = true }
 eyre = { workspace = true }
-
-[dev-dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+sha2 = "0.11"
 tempfile = { workspace = true }
+uuid = { workspace = true }

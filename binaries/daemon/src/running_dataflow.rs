@@ -1,7 +1,9 @@
 //! Running dataflow state and associated types.
 
+#[cfg(test)]
+use crate::node_event_channel;
 use crate::{
-    DoraEvent, OutputId, coordinator,
+    DoraEvent, NodeEventSender, OutputId, coordinator,
     fault_tolerance::CascadingErrorCauses,
     pending::{DataflowStatus, PendingNodes},
     send_with_timestamp,
@@ -39,11 +41,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::sync::{
-    broadcast,
-    mpsc::{self, Sender},
-    oneshot,
-};
+use tokio::sync::{broadcast, mpsc, oneshot};
 use tracing::warn;
 
 #[cfg(feature = "telemetry")]
@@ -305,7 +303,7 @@ pub struct RunningDataflow {
     pub(crate) endpoint_queryable: Option<crate::spawn::endpoint_exchange::EndpointQueryable>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
-    pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
+    pub(crate) subscribe_channels: HashMap<NodeId, NodeEventSender>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
@@ -1813,7 +1811,7 @@ mod tests {
         );
 
         // The receiver is subscribed and idle: its pending counter starts at 0.
-        let (tx, mut rx) = mpsc::channel(16);
+        let (tx, mut rx) = node_event_channel(16);
         df.subscribe_channels.insert(receiver.clone(), tx);
         let counter = Arc::new(AtomicU64::new(0));
         df.pending_messages

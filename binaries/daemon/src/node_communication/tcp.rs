@@ -15,16 +15,40 @@ use dora_message::{
 use eyre::Context;
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::mpsc,
+    sync::{Semaphore, mpsc},
 };
 
-#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
-pub async fn listener_loop(
-    listener: TcpListener,
+#[derive(Clone)]
+pub(super) struct ListenerContext {
     generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    replay_ingress_budget: Option<Arc<Semaphore>>,
+}
+
+impl ListenerContext {
+    pub(super) fn new(
+        generation: Arc<AtomicU64>,
+        daemon_tx: mpsc::Sender<Timestamped<Event>>,
+        clock: Arc<HLC>,
+        last_activity: Arc<AtomicU64>,
+        replay_ingress_budget: Option<Arc<Semaphore>>,
+    ) -> Self {
+        Self {
+            generation,
+            daemon_tx,
+            clock,
+            last_activity,
+            replay_ingress_budget,
+        }
+    }
+}
+
+#[tracing::instrument(skip(listener, context), level = "trace")]
+pub(super) async fn listener_loop(
+    listener: TcpListener,
+    context: ListenerContext,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     mut node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -36,10 +60,7 @@ pub async fn listener_loop(
                     Ok((connection, _)) => {
                         tokio::spawn(handle_connection_loop(
                             connection,
-                            generation.clone(),
-                            daemon_tx.clone(),
-                            clock.clone(),
-                            last_activity.clone(),
+                            context.clone(),
                         ));
                     }
                 }
@@ -65,24 +86,19 @@ pub async fn listener_loop(
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
-async fn handle_connection_loop(
-    connection: TcpStream,
-    generation: Arc<AtomicU64>,
-    daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    clock: Arc<HLC>,
-    last_activity: Arc<AtomicU64>,
-) {
+#[tracing::instrument(skip(connection, context), level = "trace")]
+async fn handle_connection_loop(connection: TcpStream, context: ListenerContext) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
     }
 
     Listener::run(
         TcpConnection(connection),
-        generation,
-        daemon_tx,
-        clock,
-        last_activity,
+        context.generation,
+        context.daemon_tx,
+        context.clock,
+        context.last_activity,
+        context.replay_ingress_budget,
     )
     .await
 }

@@ -59,7 +59,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{self, AtomicU32, AtomicU64},
+        atomic::{self, AtomicBool, AtomicU32, AtomicU64},
     },
     time::{Duration, Instant},
 };
@@ -89,13 +89,7 @@ pub mod bench_support {
 
     /// Create a minimal `RunningDataflow` with the given sender->receiver mapping.
     /// Returns the dataflow and a vec of receivers (one per subscriber).
-    pub fn setup_routing(
-        fan_out: usize,
-    ) -> (
-        RunningDataflow,
-        HLC,
-        Vec<mpsc::Receiver<Timestamped<NodeEvent>>>,
-    ) {
+    pub fn setup_routing(fan_out: usize) -> (RunningDataflow, HLC, Vec<NodeEventReceiver>) {
         let descriptor = dora_message::descriptor::Descriptor::new(vec![]);
         let mut df = RunningDataflow::new(Uuid::nil(), DaemonId::new(None), descriptor);
 
@@ -108,7 +102,7 @@ pub mod bench_support {
         let input_id: DataId = "input".to_string().into();
         for i in 0..fan_out {
             let receiver_id: NodeId = format!("receiver_{i}").into();
-            let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            let (tx, rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
             df.subscribe_channels.insert(receiver_id.clone(), tx);
             df.pending_messages
                 .insert(receiver_id.clone(), Arc::new(AtomicU64::new(0)));
@@ -172,9 +166,13 @@ mod shutdown;
 mod socket_stream_utils;
 mod spawn;
 
+#[doc(hidden)]
+pub use event_types::NodeEventReceiver;
 pub(crate) use event_types::{
     CONTROL_EVENT_HEADROOM, DaemonNodeEvent, DoraEvent, Event, InterDaemonEvent,
-    NODE_EVENT_CHANNEL_CAPACITY, OutputId, RunStatus, ZenohOutbound, send_with_timestamp,
+    NODE_EVENT_CHANNEL_CAPACITY, NodeEventSender, OutputId, QueuedNodeEvent,
+    REPLAY_NODE_EVENT_BYTE_LIMIT, RunStatus, ZenohOutbound, node_event_channel,
+    send_with_timestamp,
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use running_dataflow::{
@@ -383,6 +381,12 @@ pub struct RunDataflowOptions {
     /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
     /// timer is exactly what keeps it alive.
     pub exit_when_nodes_finish: Option<bool>,
+    /// Return an error after cleanup when a local stop source ends the run.
+    ///
+    /// This applies to Ctrl-C, termination signals, and `stop_after`. Natural
+    /// node completion is unaffected. The default preserves normal `dora run`
+    /// behavior, where a requested stop is successful.
+    pub fail_on_stop: bool,
 }
 
 impl RunDataflowOptions {
@@ -395,6 +399,21 @@ impl RunDataflowOptions {
     pub fn exit_when_nodes_finish(mut self, exit_when_nodes_finish: bool) -> Self {
         self.exit_when_nodes_finish = Some(exit_when_nodes_finish);
         self
+    }
+
+    /// Sets [`Self::fail_on_stop`].
+    pub fn fail_on_stop(mut self, fail_on_stop: bool) -> Self {
+        self.fail_on_stop = fail_on_stop;
+        self
+    }
+}
+
+fn mark_stop_requested(
+    requested: Arc<AtomicBool>,
+) -> impl FnMut(Timestamped<Event>) -> Timestamped<Event> + Send + 'static {
+    move |event| {
+        requested.store(true, atomic::Ordering::Release);
+        event
     }
 }
 
@@ -1660,6 +1679,7 @@ impl Daemon {
     ) -> eyre::Result<DataflowResult> {
         let RunDataflowOptions {
             exit_when_nodes_finish,
+            fail_on_stop,
         } = options;
         let working_dir = match working_dir_override {
             Some(p) => p
@@ -1744,8 +1764,11 @@ impl Daemon {
 
         let clock = Arc::new(HLC::default());
 
-        let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?);
-        let termination_events = ReceiverStream::new(set_up_termination_handler(clock.clone()));
+        let stop_requested = Arc::new(AtomicBool::new(false));
+        let ctrlc_events = ReceiverStream::new(set_up_ctrlc_handler(clock.clone())?)
+            .map(mark_stop_requested(stop_requested.clone()));
+        let termination_events = ReceiverStream::new(set_up_termination_handler(clock.clone()))
+            .map(mark_stop_requested(stop_requested.clone()));
 
         // Set up optional timeout for --stop-after
         let timeout_events = if let Some(duration) = stop_after {
@@ -1761,10 +1784,11 @@ impl Daemon {
                     })
                     .await;
             });
-            ReceiverStream::new(rx)
+            ReceiverStream::new(rx).map(mark_stop_requested(stop_requested.clone()))
         } else {
             // Create an empty stream that never emits events
             ReceiverStream::new(tokio::sync::mpsc::channel(1).1)
+                .map(mark_stop_requested(stop_requested.clone()))
         };
 
         let all_nodes_dynamic = spawn_command.nodes.values().all(|n| n.kind.dynamic());
@@ -1841,6 +1865,10 @@ impl Daemon {
             });
 
         let (mut dataflow_results, ()) = future::try_join(run_result, spawn_result).await?;
+
+        if fail_on_stop && stop_requested.load(atomic::Ordering::Acquire) {
+            bail!("dataflow stopped before verified completion")
+        }
 
         let node_results = match dataflow_results.remove(&dataflow_id) {
             Some(results) => results,
@@ -5330,10 +5358,14 @@ impl Daemon {
                 output_id,
                 metadata,
                 data,
-            } => self
-                .send_out(dataflow_id, node_id, output_id, metadata, data)
-                .await
-                .context("failed to send out")?,
+                replay_ingress_permit,
+            } => {
+                let send_result = self
+                    .send_out(dataflow_id, node_id, output_id, metadata, data)
+                    .await;
+                drop(replay_ingress_permit);
+                send_result.context("failed to send out")?;
+            }
             DaemonNodeEvent::OutputSent {
                 output_id,
                 metadata,
@@ -5808,9 +5840,19 @@ impl Daemon {
     async fn subscribe(
         dataflow: &mut RunningDataflow,
         node_id: NodeId,
-        event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
+        event_sender: NodeEventSender,
         clock: &HLC,
     ) {
+        if dataflow
+            .descriptor
+            .nodes
+            .iter()
+            .find(|node| node.id == node_id)
+            .and_then(|node| node.env.as_ref())
+            .is_some_and(|env| env.contains_key("DORA_REPLAY_INPUT_RECEIPT"))
+        {
+            event_sender.enable_data_byte_limit(REPLAY_NODE_EVENT_BYTE_LIMIT);
+        }
         // record that this node has connected — it stays a finish-straggler
         // candidate even if it later drops its event stream (dora#2270).
         dataflow.connected_nodes.insert(node_id.clone());
@@ -7358,8 +7400,8 @@ async fn send_output_to_local_receivers(
                 Err(mpsc::error::TrySendError::Full(_)) => {
                     tracing::warn!(
                         node = %receiver_id,
-                        "event channel full (capacity {}), dropping message (node is too slow)",
-                        NODE_EVENT_CHANNEL_CAPACITY,
+                        input = %input_id,
+                        "receiver queue rejected input; message was dropped",
                     );
                 }
             }
@@ -8773,7 +8815,7 @@ mod fault_tolerance_tests {
         HLC::default()
     }
 
-    fn drain_events(rx: &mut mpsc::Receiver<Timestamped<NodeEvent>>) -> Vec<NodeEvent> {
+    fn drain_events(rx: &mut NodeEventReceiver) -> Vec<NodeEvent> {
         let mut events = Vec::new();
         while let Ok(timestamped) = rx.try_recv() {
             events.push(timestamped.inner);
@@ -8859,7 +8901,7 @@ mod fault_tolerance_tests {
             .or_default()
             .insert(input_y.clone());
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Act: permanently close input_x
@@ -8885,7 +8927,7 @@ mod fault_tolerance_tests {
         running.last_activity.store(1, atomic::Ordering::Release);
         df.running_nodes.insert(node.clone(), running);
         // a real running node has subscribed (can receive finish events)
-        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, _rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node.clone(), tx);
         df.connected_nodes.insert(node.clone());
     }
@@ -9138,7 +9180,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         close_input(&mut df, &node_a, &input_x, &clock);
@@ -9185,7 +9227,7 @@ mod fault_tolerance_tests {
         let running = test_running_node();
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         close_input(&mut df, &node_a, &data_in, &clock);
@@ -9228,7 +9270,7 @@ mod fault_tolerance_tests {
         let running = test_running_node();
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
-        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, _rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         close_input(&mut df, &node_a, &input_x, &clock);
@@ -9349,7 +9391,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Close last open input — but broken input still exists
@@ -9379,7 +9421,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         // Permanently close the broken input (upstream exited)
@@ -9463,7 +9505,7 @@ mod fault_tolerance_tests {
 
         let running = test_running_node();
         df.running_nodes.insert(node_c.clone(), running);
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_c.clone(), tx);
 
         // 1. Producer of input_a exits.
@@ -9505,7 +9547,7 @@ mod fault_tolerance_tests {
         DataId,
         NodeId,
         DataId,
-        mpsc::Receiver<Timestamped<NodeEvent>>,
+        NodeEventReceiver,
     ) {
         let mut df = test_dataflow();
         let sender: NodeId = "sender".to_string().into();
@@ -9518,7 +9560,7 @@ mod fault_tolerance_tests {
         df.mappings
             .insert(OutputId(sender.clone(), output.clone()), mapping);
 
-        let (tx, rx) = mpsc::channel(channel_capacity);
+        let (tx, rx) = node_event_channel(channel_capacity);
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Input is currently broken (circuit breaker open).
@@ -9608,7 +9650,7 @@ mod fault_tolerance_tests {
         df.broken_inputs
             .insert((node_a.clone(), input_x.clone()), Duration::from_secs(5));
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         break_input(&mut df, &node_a, &input_x, &clock);
@@ -9644,7 +9686,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(node_a.clone(), running);
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_a.clone(), tx);
 
         break_input(&mut df, &node_a, &input_x, &clock);
@@ -9678,7 +9720,7 @@ mod fault_tolerance_tests {
         df.broken_inputs
             .insert((receiver.clone(), input.clone()), timeout);
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Send data from upstream
@@ -9753,7 +9795,7 @@ mod fault_tolerance_tests {
             .entry(OutputId(sender.clone(), output.clone()))
             .or_default()
             .insert((receiver.clone(), input.clone()));
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
         let metadata = metadata::Metadata::new(clock.new_timestamp());
         let data = DataMessage::Vec(AVec::from_slice(128, &payload));
@@ -9810,7 +9852,7 @@ mod fault_tolerance_tests {
         let disable_restart = running.disable_restart.clone();
         df.running_nodes.insert(receiver.clone(), running);
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         // Step 1: Simulate timeout — insert into broken_inputs then break
@@ -9895,7 +9937,7 @@ mod fault_tolerance_tests {
 
         // Saturate the receiver's channel so it has no headroom left —
         // a proxy for "the node is dropping zenoh inputs".
-        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, _rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
             tx.try_send(Timestamped {
                 inner: NodeEvent::AllInputsClosed,
@@ -9947,7 +9989,7 @@ mod fault_tolerance_tests {
         );
 
         // Empty channel: full headroom available.
-        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, _rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(receiver.clone(), tx);
 
         note_output_sent_to_local_receivers(sender, output, &mut df, &clock, None);
@@ -10015,7 +10057,7 @@ mod fault_tolerance_tests {
         let clock = test_clock();
         let _node_id: NodeId = "node_a".to_string().into();
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
 
         // Simulate sending a ParamUpdate
         let result = send_with_timestamp(
@@ -10043,7 +10085,7 @@ mod fault_tolerance_tests {
     #[test]
     fn param_update_fails_on_closed_channel() {
         let clock = test_clock();
-        let (tx, rx) = mpsc::channel::<Timestamped<NodeEvent>>(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         drop(rx); // close the receiver
 
         let result = send_with_timestamp(
@@ -10077,7 +10119,7 @@ mod fault_tolerance_tests {
     #[test]
     fn param_delete_delivered_to_node() {
         let clock = test_clock();
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
 
         let result = send_with_timestamp(
             &tx,
@@ -10101,7 +10143,7 @@ mod fault_tolerance_tests {
     #[test]
     fn param_delete_fails_on_closed_channel() {
         let clock = test_clock();
-        let (tx, rx) = mpsc::channel::<Timestamped<NodeEvent>>(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         drop(rx); // close the receiver
 
         let result =
@@ -10116,8 +10158,8 @@ mod fault_tolerance_tests {
         let node_a: NodeId = "node_a".to_string().into();
         let node_b: NodeId = "node_b".to_string().into();
 
-        let (tx_a, mut rx_a) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
-        let (tx_b, _rx_b) = mpsc::channel::<Timestamped<NodeEvent>>(1);
+        let (tx_a, mut rx_a) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx_b, _rx_b) = node_event_channel(1);
         tx_b.try_send(Timestamped {
             inner: NodeEvent::Stop,
             timestamp: clock.new_timestamp(),
@@ -10190,7 +10232,7 @@ mod fault_tolerance_tests {
         let mut df = test_dataflow();
         let clock = test_clock();
         let node_id: NodeId = "node_a".to_string().into();
-        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, _rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(node_id.clone(), tx.clone());
 
         // Saturate channel so strict delivery observes a dropped send.
@@ -10297,7 +10339,7 @@ mod fault_tolerance_tests {
             .unwrap();
         extensions.load(&ext_key("pool_owner_1"), &reader).unwrap();
 
-        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, mut rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         df.subscribe_channels.insert(reader.clone(), tx);
 
         reclaim_extensions_of_exited_node(&mut extensions, Some(&df), Uuid::nil(), &owner, &clock);

@@ -401,12 +401,14 @@ mod tests {
                 metadata: std::sync::Arc::new(metadata),
                 data: None,
             },
+            _byte_permit: None,
         }
     }
 
     fn make_stop() -> EventItem {
         EventItem::NodeEvent {
             event: NodeEvent::Stop,
+            _byte_permit: None,
         }
     }
 
@@ -415,6 +417,7 @@ mod tests {
             event: NodeEvent::InputClosed {
                 id: DataId::from(id.to_string()),
             },
+            _byte_permit: None,
         }
     }
 

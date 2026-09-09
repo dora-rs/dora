@@ -249,6 +249,7 @@ dora record | --topics <value>
 dora record | -o/--output <value>
 dora record | <file> (required)
 dora replay
+dora replay | --delivery-timeout <value>
 dora replay | --loop
 dora replay | --output-yaml <value>
 dora replay | --replace <value>
