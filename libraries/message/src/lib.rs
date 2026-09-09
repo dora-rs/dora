@@ -22,6 +22,21 @@ const ENVELOPE_SIZE_HINT: usize = 512;
 ///
 /// This and [`encode_presized`] are the only encode entry points; call sites do
 /// not name the underlying codec, so it stays swappable from one file.
+///
+/// # Example
+///
+/// A value round-trips through [`encode`] and [`decode`]:
+///
+/// ```
+/// # fn main() -> eyre::Result<()> {
+/// use dora_message::common::NodeExitStatus;
+///
+/// let bytes = dora_message::encode(&NodeExitStatus::ExitCode(1))?;
+/// let decoded: NodeExitStatus = dora_message::decode(&bytes)?;
+/// assert!(!decoded.is_success());
+/// # Ok(())
+/// # }
+/// ```
 pub fn encode<T: serde::Serialize>(value: &T) -> postcard::Result<Vec<u8>> {
     encode_presized(value, 0)
 }
