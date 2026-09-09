@@ -517,41 +517,48 @@ impl RunningDataflow {
                     interval_stream.tick().await;
 
                     let span = tracing::span!(tracing::Level::TRACE, "tick");
-                    // Bind the guard so the span stays entered for the tick body
-                    // below; `let _ = span.enter()` drops the guard immediately,
-                    // leaving the span inactive. No `.await` runs while it is held.
-                    let _guard = span.enter();
 
-                    // Build metadata with minimal allocations.
-                    // Use shared daemon clock (not per-timer HLC) for causality.
-                    #[cfg(feature = "telemetry")]
-                    let parameters = {
-                        let ctx = dora_tracing::telemetry::serialize_context(&span.context());
-                        if ctx.is_empty() {
-                            BTreeMap::new()
-                        } else {
-                            let mut m = BTreeMap::new();
-                            m.insert(
-                                dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
-                                dora_node_api::Parameter::String(ctx),
-                            );
-                            m
+                    // Enter the span only for the synchronous metadata/event
+                    // build, and drop the guard (end of this block) before the
+                    // `events_tx.send(...).await` below. Holding a span guard
+                    // across an await point would keep the span entered on the
+                    // worker thread while the task is parked, misattributing
+                    // whatever the runtime polls next on that thread to this
+                    // span on a multi-threaded runtime.
+                    let event = {
+                        let _guard = span.enter();
+
+                        // Build metadata with minimal allocations.
+                        // Use shared daemon clock (not per-timer HLC) for causality.
+                        #[cfg(feature = "telemetry")]
+                        let parameters = {
+                            let ctx = dora_tracing::telemetry::serialize_context(&span.context());
+                            if ctx.is_empty() {
+                                BTreeMap::new()
+                            } else {
+                                let mut m = BTreeMap::new();
+                                m.insert(
+                                    dora_node_api::metadata::OPEN_TELEMETRY_CONTEXT.to_string(),
+                                    dora_node_api::Parameter::String(ctx),
+                                );
+                                m
+                            }
+                        };
+                        #[cfg(not(feature = "telemetry"))]
+                        let parameters = BTreeMap::new();
+
+                        let metadata =
+                            metadata::Metadata::from_parameters(clock.new_timestamp(), parameters);
+
+                        Timestamped {
+                            inner: DoraEvent::Timer {
+                                dataflow_id,
+                                interval,
+                                metadata,
+                            }
+                            .into(),
+                            timestamp: clock.new_timestamp(),
                         }
-                    };
-                    #[cfg(not(feature = "telemetry"))]
-                    let parameters = BTreeMap::new();
-
-                    let metadata =
-                        metadata::Metadata::from_parameters(clock.new_timestamp(), parameters);
-
-                    let event = Timestamped {
-                        inner: DoraEvent::Timer {
-                            dataflow_id,
-                            interval,
-                            metadata,
-                        }
-                        .into(),
-                        timestamp: clock.new_timestamp(),
                     };
                     if events_tx.send(event).await.is_err() {
                         break;
