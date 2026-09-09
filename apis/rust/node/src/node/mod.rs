@@ -2923,6 +2923,27 @@ impl SampleAllocator {
     /// The returned sample shares no memory with `array`, so the caller may —
     /// and, when the payload is owned by a foreign runtime, **must** — drop
     /// `array` on its own thread rather than let it travel to the node.
+    ///
+    /// # Example
+    ///
+    /// The encoding needs no live node or zenoh session, so a heap allocator
+    /// ([`SampleAllocator::heap`]) is enough to encode an array and decode it
+    /// back — the sample carries a complete, self-describing Arrow IPC stream:
+    ///
+    /// ```
+    /// # fn main() -> eyre::Result<()> {
+    /// use dora_node_api::{IntoArrow, SampleAllocator};
+    /// use dora_node_api::arrow_utils::decode_arrow_ipc;
+    ///
+    /// let alloc = SampleAllocator::heap();
+    /// let encoded = alloc.encode_arrow(&vec![1u64, 2, 3].into_arrow())?;
+    ///
+    /// let decoded = decode_arrow_ipc(encoded.as_bytes())?;
+    /// let values: Vec<u64> = (&decoded).try_into()?;
+    /// assert_eq!(values, vec![1, 2, 3]);
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn encode_arrow(&self, array: &DoraArray) -> NodeResult<EncodedSample> {
         self.encode_arrow_data(&dora_arrow_convert::internal::array_ref(array).to_data())
     }
