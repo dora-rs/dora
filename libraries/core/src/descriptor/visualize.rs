@@ -159,7 +159,16 @@ fn visualize_runtime_node(
             writeln!(flowchart, "  {node_id}/{operator_id}[{node_id}]").unwrap();
         }
     } else {
-        writeln!(flowchart, "subgraph {node_id}").unwrap();
+        // Sanitize the id for Mermaid the same way the module-subgraph path
+        // above does (dots are invalid in subgraph IDs) and keep the original
+        // id as the readable label. Node ids legally contain `.`, and any
+        // runtime node inside a module is prefixed with `{module_id}.` during
+        // expansion, so an unsanitized `subgraph {node_id}` here emits an
+        // invalid Mermaid document for those nodes. The contained operator
+        // nodes keep their raw `{node_id}/{operator_id}` ids (dots are valid in
+        // node ids, only subgraph ids), so edges still line up.
+        let safe_id = node_id.as_ref().replace('.', "_");
+        writeln!(flowchart, "subgraph {safe_id} [{node_id}]").unwrap();
         for operator in operators {
             let operator_id = &operator.id;
             if operator.config.inputs.is_empty() {

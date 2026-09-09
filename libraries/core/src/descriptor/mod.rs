@@ -1353,4 +1353,44 @@ nodes:
             Some("gpu-box")
         );
     }
+
+    /// A multi-operator runtime node whose id contains a `.` must emit a
+    /// Mermaid `subgraph` with a sanitized id (dots are invalid in subgraph
+    /// ids), mirroring the module-subgraph path. Node ids legally contain `.`,
+    /// and module expansion prefixes inner node ids with `{module_id}.`, so the
+    /// unsanitized `subgraph camera.front` this used to emit was an invalid
+    /// Mermaid document.
+    #[test]
+    fn runtime_node_subgraph_id_is_sanitized_for_dotted_ids() {
+        let yaml = r#"
+nodes:
+  - id: camera.front
+    operators:
+      - id: detect
+        python: detect.py
+        inputs:
+          tick: dora/timer/millis/100
+        outputs:
+          - bbox
+      - id: track
+        python: track.py
+        inputs:
+          bbox: camera.front/detect/bbox
+        outputs:
+          - tracks
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart =
+            visualize::visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("subgraph camera_front [camera.front]"),
+            "runtime-node subgraph id must be sanitized and labelled; got:\n{flowchart}"
+        );
+        assert!(
+            !flowchart.contains("subgraph camera.front"),
+            "an unsanitized dotted subgraph id is invalid Mermaid; got:\n{flowchart}"
+        );
+    }
 }
