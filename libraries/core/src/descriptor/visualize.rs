@@ -108,12 +108,22 @@ fn collect_dora_nodes(
 /// otherwise corrupt the generated diagram. Mermaid accepts HTML entity codes
 /// written with a leading `#` in place of `&`, so we emit those. `#` is escaped
 /// first so the entities we introduce are not re-processed.
+///
+/// A raw newline is escaped last: the label is written into a single-line
+/// Mermaid statement, so a newline (e.g. from a YAML block-scalar
+/// `description`) would split the statement across lines and make the whole
+/// document invalid. It becomes a `<br/>` line break — inserted *after* the
+/// `<`/`>` escaping above so this markup is not itself escaped. A `\r` is
+/// dropped first so a CRLF source does not leave a stray carriage return
+/// (nor produce a doubled break).
 fn escape_mermaid_label(text: &str) -> String {
     text.replace('#', "#35;")
         .replace('&', "#amp;")
         .replace('"', "#quot;")
         .replace('<', "#lt;")
         .replace('>', "#gt;")
+        .replace('\r', "")
+        .replace('\n', "<br/>")
 }
 
 fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
@@ -298,7 +308,73 @@ fn format_type_label(urn: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::escape_mermaid_label;
+    use super::{escape_mermaid_label, visualize_nodes_with_boundaries};
+    use crate::descriptor::{Descriptor, DescriptorExt, ModuleBoundaries};
+
+    /// End-to-end guard through `visualize_nodes_with_boundaries`: a `"` in a
+    /// node `description` must reach the emitted Mermaid label as the entity
+    /// `#quot;`, never as a bare `"` that would prematurely close the quoted
+    /// label. Reverting the `escape_mermaid_label` call in `visualize_node`
+    /// to interpolate the raw `desc` fails this test (the unit tests above,
+    /// which call the helper directly, would not catch that regression).
+    #[test]
+    fn description_with_double_quote_is_escaped_in_output() {
+        let yaml = r#"
+nodes:
+  - id: camera
+    path: ./camera
+    description: 'Captures "raw" frames'
+    outputs:
+      - image
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("Captures #quot;raw#quot; frames"),
+            "description `\"` must be escaped to `#quot;`; got:\n{flowchart}"
+        );
+        assert!(
+            !flowchart.contains(r#""raw""#),
+            "a bare quoted substring corrupts the Mermaid label; got:\n{flowchart}"
+        );
+    }
+
+    /// A YAML block-scalar `description` carries raw newlines. The label is
+    /// written into a single-line Mermaid statement, so a raw `\n` would split
+    /// the statement and invalidate the document; it must become a `<br/>`
+    /// break and the node's statement must stay on one line.
+    #[test]
+    fn multiline_description_becomes_single_line_with_br() {
+        let yaml = "
+nodes:
+  - id: camera
+    path: ./camera
+    description: |
+      Captures frames
+      from the front camera
+    outputs:
+      - image
+";
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("Captures frames<br/>from the front camera"),
+            "a newline in the description must become a `<br/>`; got:\n{flowchart}"
+        );
+        // Every node statement must be a single line: no statement line may
+        // contain the mid-description text without also closing the label.
+        let split_line = flowchart
+            .lines()
+            .any(|l| l.trim() == "from the front camera");
+        assert!(
+            !split_line,
+            "the description must not split the Mermaid statement across lines; got:\n{flowchart}"
+        );
+    }
 
     #[test]
     fn escape_mermaid_label_passes_plain_text_through() {
