@@ -434,7 +434,7 @@ pub enum TryRecvError {
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 ```
 
-Messages at or above this threshold are published through zenoh shared memory for zero-copy transfer; smaller messages are published through zenoh with a heap-buffered `put`. Outputs that cannot take the direct zenoh path — an output whose consumer lives on another daemon, for example — fall back to the daemon path (TCP) regardless of size.
+Messages at or above this threshold are published through zenoh shared memory for zero-copy transfer; smaller messages are published through zenoh with a heap-buffered `put`. Outputs that cannot take the direct zenoh path — an output whose consumer lives on another daemon, or one with a consumer declaring `queue_policy: backpressure`, for example — fall back to the daemon path (TCP) regardless of size, and that path enforces the 64 MiB daemon message limit.
 
 #### DoraArray
 
