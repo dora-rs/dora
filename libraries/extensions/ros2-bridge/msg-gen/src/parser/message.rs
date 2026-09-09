@@ -41,9 +41,27 @@ pub fn parse_message_string(
 
         let (_, rest) = split_once(line, ' ');
 
-        // rest is None when the line has no space (e.g. tab-separated or single-token);
-        // treat absence of '=' as a member definition rather than panicking.
-        if rest.is_some_and(|r| r.contains('=')) {
+        // A constant line is `TYPE NAME = VALUE`: the `=` binds the name
+        // (optionally with surrounding spaces, which `constant_def` accepts). A
+        // member line is `TYPE name [default]`, and a *string* default may
+        // itself contain `=` (e.g. `string url "http://h?a=b"`). Classifying by
+        // "does the remainder contain `=` anywhere" misroutes such a member to
+        // `constant_def`, which then rejects the lowercase field name and fails
+        // the whole message file. Instead, look only at the name position: the
+        // first non-space, non-`=` run after the type is the name, so the line
+        // is a constant iff the first character after that name (skipping
+        // spaces) is `=`.
+        //
+        // rest is None when the line has no space (e.g. tab-separated or
+        // single-token); that is never a constant, so it falls through to
+        // `member_def` rather than panicking.
+        let is_constant = rest.is_some_and(|r| {
+            r.trim_start()
+                .trim_start_matches(|c: char| !c.is_whitespace() && c != '=')
+                .trim_start()
+                .starts_with('=')
+        });
+        if is_constant {
             constants.push(constant_def(line)?);
         } else {
             members.push(member_def(line)?);
@@ -176,5 +194,35 @@ mod test {
         // error, not a panic.
         let result = parse_message_string("pkg", "Msg", "garbage");
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn string_member_default_containing_eq_is_a_member_not_a_constant() {
+        // A string field whose default value contains `=` (e.g. a URL query
+        // string) must be parsed as a member. Classifying it as a constant
+        // (because the line contains `=` anywhere) rejects the lowercase field
+        // name and fails the whole message.
+        let msg = parse_message_string("pkg", "Msg", "string url \"http://h?a=b\"").unwrap();
+        assert_eq!(msg.members.len(), 1, "expected a member, got {msg:?}");
+        assert!(msg.constants.is_empty());
+        assert_eq!(msg.members[0].name, "url");
+    }
+
+    #[test]
+    fn constant_line_is_still_a_constant() {
+        // Regression guard the other way: a genuine constant must still be
+        // classified as one, both tightly written and with spaces around `=`.
+        let msg = parse_message_string("pkg", "Msg", "int32 X=5").unwrap();
+        assert_eq!(msg.constants.len(), 1, "expected a constant, got {msg:?}");
+        assert!(msg.members.is_empty());
+        assert_eq!(msg.constants[0].name, "X");
+
+        let spaced = parse_message_string("pkg", "Msg", "int32 Y = 7").unwrap();
+        assert_eq!(
+            spaced.constants.len(),
+            1,
+            "expected a constant, got {spaced:?}"
+        );
+        assert_eq!(spaced.constants[0].name, "Y");
     }
 }
