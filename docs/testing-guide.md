@@ -219,10 +219,11 @@ Topics covered: health check, list/stop/destroy requests, invalid JSON/params, c
 
 ## CI Pipeline
 
-Two workflows split by cadence (#1716):
+Two workflows split by cadence (#1716), plus one gated on a path:
 
 - **`.github/workflows/ci.yml`** — runs on every PR and push to `main`. Linux-only. **Blocks merge.** Target ~30-45 min critical path.
 - **`.github/workflows/nightly.yml`** — daily 06:40 UTC cron + manual dispatch. Cross-platform. **Does NOT block PRs**; auto-files `nightly-regression` issue on failure. ~3-4 hours wall-clock.
+- **`.github/workflows/docker-image.yml`** — only on `docker/**` changes, so most PRs never see it. Builds the `dora-slim` image, runs a dataflow inside it (`docker/slim/smoke.sh`), and publishes to `ghcr.io` on merges to `main`. Locally: `make qa-docker-slim`. It smokes the *published* `dora-rs-cli`, not the workspace — see `qa-runbook.md` §3.14 before reading a failure as yours.
 
 ### PR CI (`ci.yml`) — fast Linux-only gate
 

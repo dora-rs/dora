@@ -237,6 +237,7 @@ All new features and bug fixes must follow the RED-GREEN-IMPROVE cycle:
 | New dataflow feature | Smoke test (both modes) | `tests/example-smoke.rs` using both `run_smoke_test()` and `run_smoke_test_local()` |
 | Bug fix | Regression test | Whichever tier reproduces the bug |
 | New example dataflow | Smoke test entry | Add to `tests/example-smoke.rs` and `scripts/smoke-all.sh` |
+| Change to `docker/slim/Dockerfile` | Container deployment smoke | `docker/slim/smoke.sh`, run via `make qa-docker-slim` |
 
 ### Workflow
 

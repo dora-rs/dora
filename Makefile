@@ -60,7 +60,8 @@
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
-        qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
+        qa-examples qa-cluster-e2e qa-cluster-record-replay qa-docker-slim \
+        ros2-zenoh-humble ros2-zenoh-kilted \
         qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph qa-package-includes \
         qa-clippy qa-test qa-test-python \
         qa-test-python-node qa-coverage qa-mutants qa-semver qa-breaking qa-breaking-update \
@@ -104,6 +105,15 @@ qa-mutation-audit:
 #   make qa-examples ARGS="-v"    # stream dora output live
 qa-examples:
 	@scripts/smoke-all.sh $(ARGS)
+
+# Build the `dora-slim` container image and run a dataflow inside it, the
+# same two steps `.github/workflows/docker-image.yml` gates on. Needs a working
+# Docker daemon; deliberately NOT in the qa-fast/full/deep ladder, since it
+# costs minutes and a daemon the ladder does not assume. Run it when you touch
+# `docker/`.
+qa-docker-slim:
+	@docker build docker/slim -t dora-slim:local
+	@docker run --rm -v "$$PWD/docker/slim/smoke.sh:/smoke.sh:ro" dora-slim:local bash /smoke.sh
 
 # Real-sshd end-to-end test of `dora cluster up/status/down`. Linux-only.
 # Hard-fails if openssh-server is not installed (install via
