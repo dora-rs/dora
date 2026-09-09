@@ -163,13 +163,10 @@ mod ros2 {
     use std::path::{Path, PathBuf};
 
     pub fn generate() -> Vec<PathBuf> {
-        use rust_format::Formatter;
         let paths = ament_prefix_paths();
         let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
         let generated = dora_ros2_bridge_msg_gen::generate(paths.as_slice(), &out_dir, true);
-        let generated_string = rust_format::PrettyPlease::default()
-            .format_tokens(generated)
-            .unwrap();
+        let generated_string = dora_ros2_bridge_msg_gen::format_token_stream(generated);
         let target_file = out_dir.join("messages.rs");
         std::fs::write(&target_file, generated_string).unwrap();
         println!(

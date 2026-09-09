@@ -2459,8 +2459,6 @@ dependencies = [
  "eyre",
  "futures-lite",
  "futures-timer",
- "prettyplease",
- "rust-format",
  "serde",
  "serde-big-array",
  "serde_json",
@@ -2609,7 +2607,6 @@ dependencies = [
  "process-wrap",
  "rand 0.10.2",
  "ros2-client",
- "rust-format",
  "rustdds",
  "serde",
  "serde-big-array",
@@ -2643,11 +2640,11 @@ dependencies = [
  "glob",
  "heck",
  "nom 8.0.0",
+ "prettyplease 0.2.37",
  "proc-macro2",
  "quick-xml 0.41.0",
  "quote",
  "regex",
- "rust-format",
  "serde",
  "serde_json",
  "syn 2.0.119",
@@ -5967,6 +5964,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
+
+[[package]]
 name = "proc-macro-crate"
 version = "3.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6769,17 +6776,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rust-format"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60e7c00b6c3bf5e38a880eec01d7e829d12ca682079f8238a464def3c4b31627"
-dependencies = [
- "prettyplease",
- "proc-macro2",
- "syn 1.0.109",
-]
-
-[[package]]
 name = "rust-operator-teardown-example-operator"
 version = "1.0.1"
 dependencies = [
@@ -7017,7 +7013,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f0f25be5ba5f319542edb31925517e0380245ae37df50a9752cdbc05ef948156"
 dependencies = [
  "macro_rules_attribute",
- "prettyplease",
+ "prettyplease 0.1.25",
  "proc-macro2",
  "quote",
  "syn 1.0.109",
