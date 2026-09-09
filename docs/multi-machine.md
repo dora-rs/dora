@@ -173,7 +173,7 @@ There are two ways to give each network its own region. Both delivered 100 of 10
 
 ### Setting it up
 
-Install [`zenohd`](https://zenoh.io/docs/getting-started/installation/) on a cloud machine, for example on the coordinator machine. Use a 1.9 release, because dora is built with zenoh 1.9. If there is no package for your platform, `cargo install zenohd --version "~1.9"` builds it from source.
+Install [`zenohd`](https://zenoh.io/docs/getting-started/installation/) on a cloud machine, for example on the coordinator machine. Use a 1.10 release, because dora is built with zenoh 1.10. If there is no package for your platform, `cargo install zenohd --version "~1.10"` builds it from source.
 
 **Router.** Create a config file with one subregion per network. Each subregion matches a region name:
 
