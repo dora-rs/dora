@@ -2203,9 +2203,8 @@ async fn start_inner(
                         clock.new_timestamp(),
                     ));
                 }
-                for (machine_id, result) in join_all(heartbeats).await {
-                    if let Err(err) = result {
-                        tracing::warn!("{err:?}");
+                for (machine_id, disconnect) in join_all(heartbeats).await {
+                    if disconnect {
                         disconnected.insert(machine_id);
                     }
                 }
@@ -3349,23 +3348,110 @@ fn handle_spawn_result_ok(
     }
 }
 
-/// Send one heartbeat to `connection` with a 500 ms deadline, tagging the
-/// result with `machine_id` so the watchdog can act on failures after awaiting
-/// many of these concurrently via `join_all`.
+/// Consecutive heartbeat-send timeouts after which a daemon is disconnected.
+///
+/// A heartbeat send is a write to the daemon's *bounded* command channel — the
+/// same channel every coordinator→daemon command uses. A single send timeout is
+/// transient backpressure (a large spawn, a burst of control commands) and must
+/// not disconnect a daemon that is otherwise alive and still sending its own
+/// inbound heartbeats; disconnecting on one timeout tears down all of its
+/// dataflows over momentary congestion.
+///
+/// This backstop bounds only the **no-traffic** wedge: a daemon whose command
+/// channel stays full while *no* command is routed to it is disconnected after
+/// this many consecutive heartbeat ticks (~30 s at the 3 s interval, matching
+/// the 30 s inbound-heartbeat liveness horizon). It does **not** bound the case
+/// where a command *is* routed to a wedged daemon first: `send_and_receive`
+/// awaits the same channel with no timeout, so that send blocks the
+/// single-threaded coordinator event loop before any further heartbeat tick can
+/// advance this counter. Bounding that enqueue is a separate change (it alters
+/// command-dispatch failure semantics); see the PR discussion.
+const MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS: u32 = 10;
+
+/// Classification of one heartbeat-send attempt.
+enum HeartbeatSendOutcome {
+    /// The heartbeat was enqueued for delivery.
+    Delivered,
+    /// The send returned an error: the command channel's receiver has been
+    /// dropped (the daemon's WS writer task is gone) or — cosmetically — the
+    /// heartbeat could not be serialized. Either way the send cannot succeed,
+    /// so disconnect immediately.
+    SendFailed,
+    /// The 500 ms deadline elapsed while the bounded command channel was full
+    /// (backpressure), which does not by itself mean the daemon is dead.
+    TimedOut,
+}
+
+/// Fold a heartbeat-send outcome and the running count of consecutive timeouts
+/// into the next count and whether to disconnect the daemon.
+///
+/// - `Delivered` clears the timeout streak and keeps the daemon.
+/// - `SendFailed` disconnects immediately and clears the streak.
+/// - `TimedOut` increments the streak and disconnects only once it reaches
+///   [`MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS`], so transient backpressure is
+///   tolerated while a persistently wedged channel is still torn down.
+fn heartbeat_disconnect_decision(
+    outcome: HeartbeatSendOutcome,
+    consecutive_timeouts: u32,
+) -> (u32, bool) {
+    match outcome {
+        HeartbeatSendOutcome::Delivered => (0, false),
+        HeartbeatSendOutcome::SendFailed => (0, true),
+        HeartbeatSendOutcome::TimedOut => {
+            let streak = consecutive_timeouts.saturating_add(1);
+            (streak, streak >= MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS)
+        }
+    }
+}
+
+/// Send one heartbeat to `connection` with a 500 ms deadline and return, tagged
+/// with `machine_id`, whether the watchdog should disconnect the daemon.
+///
+/// A send *timeout* means the bounded command channel is momentarily full, not
+/// that the daemon is dead — so a single timeout no longer disconnects a live
+/// daemon (which would fail all of its dataflows over transient congestion).
+/// Only a failed send disconnects immediately; a persistent timeout streak
+/// escalates via [`heartbeat_disconnect_decision`]. The counter lives on
+/// `connection`, and each future here holds a distinct `&mut` (one per daemon),
+/// so updating it from inside the concurrent `join_all` is sound.
 async fn send_heartbeat_with_timeout(
     machine_id: DaemonId,
     connection: &mut crate::state::DaemonConnection,
     timestamp: dora_core::uhlc::Timestamp,
-) -> (DaemonId, eyre::Result<()>) {
-    let result = tokio::time::timeout(
+) -> (DaemonId, bool) {
+    let outcome = match tokio::time::timeout(
         Duration::from_millis(500),
         send_heartbeat_message(connection, timestamp),
     )
     .await
-    .wrap_err("timeout")
-    .and_then(|r| r)
-    .wrap_err_with(|| format!("failed to send heartbeat message to daemon at `{machine_id}`"));
-    (machine_id, result)
+    {
+        Ok(Ok(())) => HeartbeatSendOutcome::Delivered,
+        Ok(Err(err)) => {
+            tracing::warn!("heartbeat send to daemon at `{machine_id}` failed: {err:?}");
+            HeartbeatSendOutcome::SendFailed
+        }
+        Err(_elapsed) => HeartbeatSendOutcome::TimedOut,
+    };
+    let (streak, disconnect) =
+        heartbeat_disconnect_decision(outcome, connection.consecutive_heartbeat_send_timeouts);
+    connection.consecutive_heartbeat_send_timeouts = streak;
+    // `streak > 0` only for a `TimedOut` outcome.
+    if streak > 0 {
+        if disconnect {
+            tracing::error!(
+                "heartbeat send to daemon at `{machine_id}` timed out {streak} times in a row \
+                 (command channel persistently full); disconnecting"
+            );
+        } else {
+            tracing::warn!(
+                "heartbeat send to daemon at `{machine_id}` timed out (command channel full, \
+                 streak {streak}/{MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS}); not disconnecting a \
+                 live daemon (last inbound heartbeat {:?} ago)",
+                connection.last_heartbeat.elapsed()
+            );
+        }
+    }
+    (machine_id, disconnect)
 }
 
 /// Handle the failure arm of `Event::DataflowSpawnResult`.
@@ -5544,6 +5630,108 @@ mod tests {
     use std::collections::HashMap;
     use tokio::time::{Duration as TokioDuration, timeout};
     use uuid::Uuid;
+
+    // ---- heartbeat-send backpressure classification (#2886) ----
+
+    // A failed send disconnects immediately; a delivered heartbeat never does
+    // and clears any timeout streak.
+    #[test]
+    fn heartbeat_send_failed_disconnects_delivered_resets() {
+        assert_eq!(
+            heartbeat_disconnect_decision(HeartbeatSendOutcome::SendFailed, 0),
+            (0, true),
+            "a failed heartbeat send must disconnect the daemon"
+        );
+        assert_eq!(
+            heartbeat_disconnect_decision(HeartbeatSendOutcome::Delivered, 7),
+            (0, false),
+            "a delivered heartbeat must not disconnect and must clear the timeout streak"
+        );
+    }
+
+    // A *transient* command-channel backpressure timeout must NOT disconnect a
+    // live daemon (regression for a control-command burst tearing down a live
+    // daemon's dataflows), but a *persistent* streak must escalate.
+    #[test]
+    fn heartbeat_timeout_tolerates_transient_but_escalates_persistent() {
+        assert_eq!(
+            heartbeat_disconnect_decision(HeartbeatSendOutcome::TimedOut, 0),
+            (1, false),
+            "a single timeout must not disconnect a live daemon"
+        );
+        assert_eq!(
+            heartbeat_disconnect_decision(
+                HeartbeatSendOutcome::TimedOut,
+                MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS - 2,
+            ),
+            (MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS - 1, false),
+            "timeouts below the threshold must not disconnect"
+        );
+        let (streak, disconnect) = heartbeat_disconnect_decision(
+            HeartbeatSendOutcome::TimedOut,
+            MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS - 1,
+        );
+        assert_eq!(streak, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS);
+        assert!(
+            disconnect,
+            "a persistently full command channel must escalate to a disconnect"
+        );
+    }
+
+    // Wiring guard: `send_heartbeat_with_timeout` must map a closed send channel
+    // (dropped receiver) to an immediate disconnect, so re-flattening the
+    // outcome back into "disconnect on any failure" is the only green state.
+    #[tokio::test(flavor = "current_thread")]
+    async fn send_heartbeat_with_timeout_disconnects_on_closed_channel() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<String>(1);
+        drop(rx); // closing the channel makes every send return Err immediately
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut connection =
+            crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+
+        let (_id, disconnect) = send_heartbeat_with_timeout(
+            DaemonId::new(Some("dead".to_string())),
+            &mut connection,
+            HLC::default().new_timestamp(),
+        )
+        .await;
+
+        assert!(
+            disconnect,
+            "a closed send channel must disconnect the daemon"
+        );
+    }
+
+    // Wiring guard: `send_heartbeat_with_timeout` must map a full command
+    // channel (send never completes) to a *non*-disconnecting timeout that only
+    // bumps the streak. `start_paused` auto-advances through the 500 ms deadline
+    // without real delay (mirrors the topic-frame timeout test in handlers.rs).
+    #[tokio::test(flavor = "current_thread", start_paused = true)]
+    async fn send_heartbeat_with_timeout_tolerates_a_full_channel() {
+        // Capacity 1, pre-filled, receiver kept alive (so the channel is full,
+        // not closed) and never drained => the heartbeat send blocks and times out.
+        let (tx, _rx_never_drained) = tokio::sync::mpsc::channel::<String>(1);
+        tx.send("prefill".to_string()).await.unwrap();
+        let pending_replies = Arc::new(tokio::sync::Mutex::new(HashMap::new()));
+        let mut connection =
+            crate::state::DaemonConnection::new(tx, pending_replies, BTreeMap::new());
+
+        let (_id, disconnect) = send_heartbeat_with_timeout(
+            DaemonId::new(Some("wedged".to_string())),
+            &mut connection,
+            HLC::default().new_timestamp(),
+        )
+        .await;
+
+        assert!(
+            !disconnect,
+            "a single backpressure timeout must not disconnect a live daemon"
+        );
+        assert_eq!(
+            connection.consecutive_heartbeat_send_timeouts, 1,
+            "the timeout must advance the consecutive-timeout streak"
+        );
+    }
 
     /// The single input mapping of a resolved custom node.
     fn only_input_mapping(

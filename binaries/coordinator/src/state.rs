@@ -148,6 +148,12 @@ pub(crate) struct DaemonConnection {
     /// the connection: a daemon that dropped must not keep being advertised,
     /// and a restarted one replaces its own stale entry on re-register.
     pub(crate) zenoh_listen_endpoint: Option<String>,
+    /// Consecutive coordinator→daemon heartbeat-send timeouts (the bounded
+    /// command channel was full when the 500 ms heartbeat deadline elapsed).
+    /// Reset to 0 on any completed send. A transient streak is tolerated as
+    /// backpressure; a persistent one escalates to a disconnect (see
+    /// `MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS`).
+    pub(crate) consecutive_heartbeat_send_timeouts: u32,
 }
 
 /// The envelope `handle_daemon_response` (see `ws_daemon.rs`) produces when a
@@ -177,6 +183,7 @@ impl DaemonConnection {
             supports_hub_sources: false,
             connection_id: Uuid::new_v4(),
             zenoh_listen_endpoint: None,
+            consecutive_heartbeat_send_timeouts: 0,
         }
     }
 
