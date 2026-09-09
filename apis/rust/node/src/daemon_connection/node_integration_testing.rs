@@ -382,23 +382,28 @@ fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
         InputData::JsonObject { data, data_type } => {
             // input is JSON data
             let array = json_value_to_list(data);
-            let schema = match data_type {
-                Some(ty) => data_type_to_schema(ty)?,
-                None => arrow_json::reader::infer_json_schema_from_iterator(array.iter().map(Ok))?,
-            };
+            // Resolve the declared element type up front, if the recording
+            // carried one. The recorder always writes `data_type`; only
+            // hand-authored fixtures may omit it.
+            let declared_schema = data_type.map(data_type_to_schema).transpose()?;
             // A recorded zero-length output serializes to `"data": []`, which the
             // JSON reader turns into no record batch at all ("no record batch in
             // JSON"). A zero-length array is a legitimate value, so build an empty
             // array of the declared type directly instead of routing it through
-            // the decoder (dora-rs/dora#3427).
+            // the decoder (dora-rs/dora#3427). Handling it before schema inference
+            // also avoids inferring from an empty iterator on the untyped path.
             if array.is_empty() {
-                let data_type = schema
-                    .fields()
-                    .first()
+                let data_type = declared_schema
+                    .as_ref()
+                    .and_then(|schema| schema.fields().first())
                     .map(|f| f.data_type().clone())
                     .unwrap_or(DataType::Null);
                 return Ok(arrow::array::new_empty_array(&data_type).to_data());
             }
+            let schema = match declared_schema {
+                Some(schema) => schema,
+                None => arrow_json::reader::infer_json_schema_from_iterator(array.iter().map(Ok))?,
+            };
             let schema = Arc::new(schema);
             read_json_value_as_arrow(&array, schema.clone()).with_context(|| {
                 format!(
