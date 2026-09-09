@@ -103,7 +103,24 @@ impl FFIToRust for FFIString {
     type Target = String;
 
     unsafe fn to_rust(&self) -> Self::Target {
-        unsafe { self.to_str().expect("CStr::to_str failed").to_string() }
+        // `to_str` already bounds the read by `size` and returns the borrowed
+        // `&str` for valid UTF-8 (and `""` when empty). A ROS2 `string` field
+        // is nominally UTF-8, but the bytes come off the wire / out of the C
+        // typesupport layer, so a buggy or hostile peer can deliver arbitrary
+        // bytes. `to_str` was deliberately made fallible precisely to handle
+        // that; discarding its `Err` with `expect` re-introduced a whole-process
+        // abort on a single malformed field. Fall back to lossy decoding
+        // instead, so an invalid field degrades to replacement characters —
+        // matching the sibling `FFIWString::to_rust`, which likewise never
+        // panics.
+        match unsafe { self.to_str() } {
+            Ok(s) => s.to_string(),
+            Err(_) => {
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(self.data as *const u8, self.size) };
+                String::from_utf8_lossy(bytes).into_owned()
+            }
+        }
     }
 }
 
@@ -280,5 +297,43 @@ mod test {
         assert_eq!(result, U16String::from(vec![b'a'.into(), 0, b'b'.into()]));
         // Keep `data` alive until after the read above; `FFIWString` borrows it.
         drop(data);
+    }
+
+    #[test]
+    fn ffi_string_to_rust_is_lossy_on_invalid_utf8() {
+        // A `string` field is nominally UTF-8, but the bytes come off the wire
+        // / out of the C typesupport layer, so `to_rust` must degrade on
+        // invalid UTF-8 rather than abort the whole process. We construct the
+        // `FFIString` by hand to inject non-UTF-8 bytes (a Rust `String` could
+        // not hold them).
+        let mut data: Vec<u8> = vec![b'a', 0xFF, 0xFE, b'b'];
+        let native_string = FFIString {
+            data: data.as_mut_ptr() as *mut c_char,
+            size: data.len(),
+            capacity: data.len(),
+        };
+
+        // Must not panic; the invalid bytes become replacement chars while the
+        // surrounding valid ASCII survives.
+        let result = unsafe { native_string.to_rust() };
+        assert!(result.starts_with('a'), "unexpected result: {result:?}");
+        assert!(result.ends_with('b'), "unexpected result: {result:?}");
+        assert!(
+            result.contains('\u{FFFD}'),
+            "expected a replacement char: {result:?}"
+        );
+
+        // Keep `data` alive until after the read above; `FFIString` borrows it.
+        drop(data);
+    }
+
+    #[test]
+    fn ffi_string_to_rust_empty() {
+        let native_string = FFIString {
+            data: std::ptr::null_mut(),
+            size: 0,
+            capacity: 0,
+        };
+        assert_eq!(unsafe { native_string.to_rust() }, "");
     }
 }

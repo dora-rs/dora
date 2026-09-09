@@ -1,5 +1,6 @@
 use aligned_vec::AVec;
-use criterion::{BenchmarkId, Criterion, black_box, criterion_group, criterion_main};
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use std::hint::black_box;
 
 use dora_message::{
     common::DataMessage, id::DataId, metadata::Metadata, node_to_daemon::DaemonRequest,

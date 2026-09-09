@@ -202,9 +202,12 @@ type ZenohPublishers = HashMap<DataId, DirectOutput>;
 ///
 /// Outputs the daemon pinned `daemon_only` — a consumer only inter-daemon
 /// forwarding can reach (a dynamic node on another daemon, or a remote static
-/// one with no dialable endpoint for this node), and forwarding is fed solely
-/// by daemon-path sends (#2738) — get no publisher and no markers: they stay on
-/// the daemon path for the node's lifetime. Every other output gets a publisher declared eagerly
+/// one with no dialable endpoint for this node; forwarding is fed solely by
+/// daemon-path sends, #2738), or a consumer declaring `queue_policy:
+/// backpressure`, which the lossy direct-zenoh ingress cannot honor — get no
+/// publisher and no markers: they stay on the daemon path for the node's
+/// lifetime (see the daemon's `output_routing` module for the full policy).
+/// Every other output gets a publisher declared eagerly
 /// at init (rather than on first send) for two reasons: zenoh starts wiring
 /// routes immediately, and [`StartupHandshake`] needs the publishers to probe
 /// those routes before the node's first real send. An output with no required
@@ -241,8 +244,7 @@ fn declare_output_publishers(
         if output_routing.daemon_only {
             debug!(
                 output = %output_id,
-                "output pinned to the daemon path (a consumer is reachable only by \
-                 inter-daemon forwarding)"
+                "output pinned to the daemon path by consumer routing requirements"
             );
             continue;
         }
@@ -776,8 +778,6 @@ pub struct DoraNode {
     /// the schema is only re-published when it changes or a publish failed) and
     /// the time of the last full-stream send (for the periodic in-band refresh).
     zenoh_schema_state: HashMap<DataId, SchemaOnceState>,
-    /// Threshold for using zenoh SHM vs inline bytes (default 4096).
-
     /// Diagnostic (dora-rs/dora#2742): how many large sends have already been
     /// traced hop-by-hop. The Windows nightly wedges the *runtime's* main loop
     /// inside `send_output` on the very first large output, so tracing only the
@@ -1089,14 +1089,7 @@ impl DoraNode {
             node_id: "test-node"
                 .parse()
                 .map_err(|e| NodeError::Init(format!("{e}")))?,
-            run_config: NodeRunConfig {
-                inputs: Default::default(),
-                outputs: Default::default(),
-                output_types: Default::default(),
-                output_framing: Default::default(),
-                input_types: Default::default(),
-                shared_memory_pool_size: None,
-            },
+            run_config: NodeRunConfig::default(),
             daemon_communication: Some(DaemonCommunication::Interactive),
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -1126,14 +1119,7 @@ impl DoraNode {
             node_id: "test-node"
                 .parse()
                 .map_err(|e| NodeError::Init(format!("{e}")))?,
-            run_config: NodeRunConfig {
-                inputs: Default::default(),
-                outputs: Default::default(),
-                output_types: Default::default(),
-                output_framing: Default::default(),
-                input_types: Default::default(),
-                shared_memory_pool_size: None,
-            },
+            run_config: NodeRunConfig::default(),
             daemon_communication: None,
             dataflow_descriptor: serde_yaml::Value::Null,
             dynamic: false,
@@ -1570,6 +1556,13 @@ impl DoraNode {
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if the payload cannot be Arrow-IPC encoded, or if runtime type
+    /// checking is enabled in error mode (`DORA_RUNTIME_TYPE_CHECK=error`) and the array's Arrow
+    /// type does not match the output's declared type. An `output_id` that is not declared as an
+    /// output is *not* an error — the call is ignored and returns `Ok`.
+    ///
     /// ```no_run
     /// use dora_node_api::{DoraNode, MetadataParameters};
     /// use dora_core::config::DataId;
@@ -1607,6 +1600,15 @@ impl DoraNode {
     /// operator thread does the encoding so that no memory owned by the
     /// operator's language runtime is ever released on the node's thread — see
     /// [`SampleAllocator`] (dora-rs/dora#2742).
+    ///
+    /// Like [`send_output`](Self::send_output), an `output_id` that is not a
+    /// declared output is ignored (returns `Ok`).
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if runtime type checking is enabled in error mode
+    /// (`DORA_RUNTIME_TYPE_CHECK=error`) and the sample's Arrow type does not match the output's
+    /// declared type.
     pub fn send_output_encoded(
         &mut self,
         output_id: DataId,
@@ -1654,21 +1656,34 @@ impl DoraNode {
         actual: &arrow_schema::DataType,
         parameters: &MetadataParameters,
     ) -> NodeResult<()> {
+        // `is_output_type_mismatch` decides whether to flag; the `mode` here
+        // decides whether a flagged mismatch errors or only warns.
         if let Some((mode, checks)) = &self.runtime_type_checks
             && let Some(expected) = checks.get(output_id)
-            && !carries_pattern_correlation(parameters)
-            && actual != expected
         {
-            let msg =
-                format!("output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}");
-            match mode {
-                RuntimeTypeCheck::Error => {
-                    return Err(NodeError::Output(msg));
+            if is_output_type_mismatch(actual, expected, parameters) {
+                let msg = format!(
+                    "output \"{output_id}\": expected Arrow type {expected:?}, got {actual:?}"
+                );
+                match mode {
+                    RuntimeTypeCheck::Error => {
+                        return Err(NodeError::Output(msg));
+                    }
+                    RuntimeTypeCheck::Warn => {
+                        warn!("type mismatch: {msg}");
+                    }
+                    RuntimeTypeCheck::Off => unreachable!(),
                 }
-                RuntimeTypeCheck::Warn => {
-                    warn!("type mismatch: {msg}");
-                }
-                RuntimeTypeCheck::Off => unreachable!(),
+            } else if *actual == arrow_schema::DataType::Null
+                && *expected != arrow_schema::DataType::Null
+            {
+                // The `Null` carve-out is intentional (timer ticks, empty
+                // metadata-only sends, stream flushes), but log it so relaxing
+                // an `=error` check for this send is not entirely silent.
+                debug!(
+                    "output \"{output_id}\": skipping runtime type check for Null \
+                     payload on a typed output (expected {expected:?})"
+                );
             }
         }
         Ok(())
@@ -1676,10 +1691,16 @@ impl DoraNode {
 
     /// Send the given raw byte data as output.
     ///
-    /// Might copy the data once to move it into shared memory.
+    /// Might copy the data once to move it into shared memory. `data_len` must equal `data.len()`;
+    /// the allocated sample is sized from `data_len` and the payload is copied from `data`.
     ///
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if `data_len` does not equal `data.len()` (which would
+    /// otherwise panic in the internal `copy_from_slice`).
     pub fn send_output_bytes(
         &mut self,
         output_id: DataId,
@@ -1780,8 +1801,10 @@ impl DoraNode {
         // routes — every required consumer acked a marker (see
         // `StartupHandshake`). Everything else takes the reliable daemon path:
         // no zenoh session (interactive/testing mode), an output the daemon
-        // pinned there (a consumer on another daemon needs inter-daemon
-        // forwarding, which only daemon-path sends feed — #2738), or an output
+        // pinned there (see `OutputRouting::daemon_only`: a consumer on another
+        // daemon needs inter-daemon forwarding, which only daemon-path sends
+        // feed — #2738 — or a consumer's `queue_policy: backpressure` needs the
+        // lossless daemon ingress), or an output
         // whose handshake did not complete before `init` returned and is
         // therefore frozen there for the run. An SHM-backed sample is moved
         // straight into zenoh's `put` (no extra copy); only the daemon path
@@ -1852,9 +1875,9 @@ impl DoraNode {
                     return Err(NodeError::Output(format!(
                         "output \"{output_id}\": IPC-encoded message is {} bytes, exceeding \
                          the {}-byte daemon transport limit (the output is on the daemon \
-                         path: pinned for a consumer only forwarding can reach, its \
-                         startup handshake did not complete, or no zenoh route is \
-                         available)",
+                         path: pinned for a consumer only forwarding can reach or one \
+                         declaring `queue_policy: backpressure`, its startup handshake \
+                         did not complete, or no zenoh route is available)",
                         v.len(),
                         dora_message::MAX_MESSAGE_BYTES,
                     )));
@@ -1879,6 +1902,12 @@ impl DoraNode {
     /// The node is not allowed to send more outputs with the closed IDs.
     ///
     /// Closing outputs early can be helpful to receivers.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`NodeError::Output`] if any id is not a declared output of this node. Unlike
+    /// [`send_output`](Self::send_output), which silently ignores unknown outputs, this validates
+    /// the whole batch *before* closing any output, so on error none of them are closed.
     pub fn close_outputs(&mut self, outputs_ids: Vec<DataId>) -> NodeResult<()> {
         // Validate the whole batch before mutating any local state. Removing
         // outputs eagerly would leave the node's local output set out of sync
@@ -2336,6 +2365,10 @@ impl DoraNode {
     /// metadata parameters. Returns the generated request ID.
     ///
     /// Any existing `request_id` key in `parameters` is replaced.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_output`](Self::send_output).
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
@@ -2374,6 +2407,10 @@ impl DoraNode {
     /// Send a streaming segment chunk. Convenience wrapper around
     /// [`send_output`](Self::send_output) that builds metadata from the
     /// [`StreamSegment`] builder.
+    ///
+    /// # Errors
+    ///
+    /// Propagates any error from [`send_output`](Self::send_output).
     pub fn send_stream_chunk(
         &mut self,
         output_id: DataId,
@@ -3219,6 +3256,36 @@ fn schema_once_eligible(
     payload_len < zero_copy_threshold && !carries_pattern_correlation(params)
 }
 
+/// Whether a send-side runtime output type check should flag this payload.
+///
+/// A message is *not* flagged when:
+/// - it carries pattern-correlation metadata (`request_id`/`goal_id`/
+///   `goal_status`): such an output is polymorphic by design and a single
+///   declared Arrow type cannot cover every reply/feedback shape
+///   (dora-rs/adora#150); or
+/// - its payload is a `Null` array (timer ticks, metadata-only sends such as
+///   `send_output(id, params, ())`, and the documented stream flush
+///   `send_output(id, seg.flush(), empty)` in `docs/patterns.md`, whose
+///   `flush`/`session_id`/`seq` metadata is not pattern-correlation).
+///
+/// The `Null` carve-out keeps the send side consistent with the receive-side
+/// first-message check in [`EventStream::note_produced_event`], which already
+/// skips `Null`. Without it, a node emitting an empty tick on a typed output
+/// would fail under `DORA_RUNTIME_TYPE_CHECK=error` even though the identical
+/// message is accepted on the consuming node.
+fn is_output_type_mismatch(
+    actual: &arrow_schema::DataType,
+    expected: &arrow_schema::DataType,
+    parameters: &MetadataParameters,
+) -> bool {
+    // Ordered cheapest-first for short-circuiting: a matching type (the common
+    // case) and a `Null` payload are single discriminant compares, so both bail
+    // before `carries_pattern_correlation`'s three `BTreeMap` lookups.
+    actual != expected
+        && *actual != arrow_schema::DataType::Null
+        && !carries_pattern_correlation(parameters)
+}
+
 /// Init Opentelemetry Tracing
 ///
 /// This requires a tokio runtime spawning this function to be functional
@@ -4010,6 +4077,97 @@ mod tests {
         assert!(
             schema_once_eligible(100, THRESHOLD, &stream),
             "small streaming chunk (stable schema) stays eligible for schema-once"
+        );
+    }
+
+    /// End-to-end through `check_output_type` (the send path's actual gate)
+    /// under `DORA_RUNTIME_TYPE_CHECK=error`: a `Null` payload on a typed output
+    /// is accepted, everything else keeps its prior behavior. This is the
+    /// user-visible contract — `send_output` calls `check_output_type`, and
+    /// before this change a `Null` payload (an empty tick, or the documented
+    /// stream flush `send_output(id, seg.flush(), empty)`) returned `Err`.
+    #[test]
+    fn check_output_type_accepts_null_payload_on_typed_output() {
+        use arrow_schema::DataType;
+
+        let (mut node, events, _rx) = test_node();
+        node.runtime_type_checks = Some((
+            RuntimeTypeCheck::Error,
+            HashMap::from([(DataId::from("out".to_string()), DataType::Float32)]),
+        ));
+        let out: DataId = "out".into();
+        let plain = MetadataParameters::default();
+
+        // Null payload on a typed output → accepted (the fix): mirrors the
+        // receive-side carve-out in `EventStream::note_produced_event`.
+        assert!(
+            node.check_output_type(&out, &DataType::Null, &plain)
+                .is_ok(),
+            "a Null payload must not be rejected under =error"
+        );
+        // Matching type → accepted.
+        assert!(
+            node.check_output_type(&out, &DataType::Float32, &plain)
+                .is_ok(),
+            "a matching type must be accepted"
+        );
+        // Genuinely wrong non-null type → still an error.
+        assert!(
+            node.check_output_type(&out, &DataType::Int64, &plain)
+                .is_err(),
+            "a mismatched non-null type must still error under =error"
+        );
+        // Pattern-correlation output stays exempt regardless of type.
+        let mut pattern = MetadataParameters::default();
+        pattern.insert(
+            dora_message::metadata::REQUEST_ID.to_string(),
+            dora_message::metadata::Parameter::String("req-1".into()),
+        );
+        assert!(
+            node.check_output_type(&out, &DataType::Int64, &pattern)
+                .is_ok(),
+            "a pattern-correlation message stays exempt from the type check"
+        );
+        // An untyped output (not in the map) is never checked.
+        assert!(
+            node.check_output_type(&"other".into(), &DataType::Int64, &plain)
+                .is_ok(),
+            "an output with no declared type must not be checked"
+        );
+
+        drop(node);
+        drop(events);
+    }
+
+    /// Unit-level coverage of the `is_output_type_mismatch` predicate itself,
+    /// including the ordering-independent cases the end-to-end test above does
+    /// not separately isolate.
+    #[test]
+    fn is_output_type_mismatch_predicate() {
+        use arrow_schema::DataType;
+        let plain = MetadataParameters::default();
+
+        assert!(
+            !is_output_type_mismatch(&DataType::Null, &DataType::Float32, &plain),
+            "a Null payload must never be flagged as a type mismatch"
+        );
+        assert!(
+            is_output_type_mismatch(&DataType::Int64, &DataType::Float32, &plain),
+            "a mismatched non-null type must be flagged"
+        );
+        assert!(
+            !is_output_type_mismatch(&DataType::Float32, &DataType::Float32, &plain),
+            "a matching type must not be flagged"
+        );
+
+        let mut pattern = MetadataParameters::default();
+        pattern.insert(
+            dora_message::metadata::REQUEST_ID.to_string(),
+            dora_message::metadata::Parameter::String("req-1".into()),
+        );
+        assert!(
+            !is_output_type_mismatch(&DataType::Int64, &DataType::Float32, &pattern),
+            "a pattern-correlation message stays exempt from the type check"
         );
     }
 

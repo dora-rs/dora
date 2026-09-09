@@ -166,6 +166,22 @@ inputs:
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
+A `backpressure` input keeps its producer's output on the daemon path instead
+of the direct zenoh path. The direct path's callback drops at the receiver's
+shared ingress channel when that channel is full, so a timer or a busier input
+can discard the message before the per-input policy ever applies; the daemon
+path feeds the same channel with a blocking send. That is a much deeper buffer,
+not a delivery guarantee: the daemon still drops data, with a warning, for a
+receiver whose per-node channel (1000 events) and daemon-side queue (1000 events
+or 256 MiB of payload) are both full, and cross-daemon forwarding is bounded as
+well. The routing applies to the producer's entire output, so every consumer of
+that output leaves the zero-copy path, and the daemon path carries the 64 MiB
+per-message limit. A producer learns its routing when it starts, so
+`dora node add` and `dora node replace` refuse a `backpressure` input whose
+producer is already running with that output on the direct path. `dora replay`
+sets `backpressure` on every input without a policy, so replay dataflows run
+entirely on the daemon path. The scheduler's documented hard cap still applies.
+
 #### Built-in Timers
 
 Timers are virtual nodes that emit ticks at fixed intervals:

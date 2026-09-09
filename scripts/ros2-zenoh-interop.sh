@@ -47,16 +47,35 @@ container="${PROJECT}-${service}-1"
 # The router installs its rmw_zenoh packages on boot, so "still booting" and
 # "the apt install failed" look identical from out here — both are just an
 # unhealthy container. Dump the log when the wait runs out, or the whole
-# failure is a bare `exit 124` three minutes in: that is how a pinned
-# `ros-humble-rmw-zenoh-cpp` version aging out of packages.ros.org read as a
-# docker hiccup for a month of nightlies.
+# failure is a bare `exit 124` three minutes in: that is how a month of
+# nightlies read an unresolvable apt pin as a docker hiccup (#3263). The
+# pins are gone now, but a mirror or network hiccup lands here the same way.
 if ! timeout -k 30s 180 bash -c 'until [[ $(docker inspect -f "{{.State.Health.Status}}" "$1" 2>/dev/null) == healthy ]]; do sleep 2; done' _ "$container"; then
   echo "$service never became healthy within 180s; container log follows:" >&2
   "${compose[@]}" logs --tail 100 "$service" >&2 || true
   exit 1
 fi
+# The compose file installs rmw_zenoh unpinned, because an exact `=<version>`
+# apt pin stops resolving as soon as upstream publishes a new build and takes
+# the whole job down with it — that rot, not any interop bug, is every failure
+# these jobs have ever had (#3263, #2987). What the pin was actually good for
+# is caught here instead: record the version that landed, so a future breakage
+# names it, and floor it, so a build too old to interop fails by name rather
+# than as ten confusing case failures.
+case "$DISTRO" in
+  humble) rmw_floor=0.1.9 ;;
+  kilted) rmw_floor=0.6.7 ;;
+esac
+rmw_installed=$("${compose[@]}" exec -T "$service" \
+  dpkg-query -W -f '${Version}' "ros-${DISTRO}-rmw-zenoh-cpp" | tr -d '\r')
+echo "ros-${DISTRO}-rmw-zenoh-cpp=$rmw_installed (floor $rmw_floor)"
+if ! "${compose[@]}" exec -T "$service" \
+  dpkg --compare-versions "$rmw_installed" ge "$rmw_floor"; then
+  echo "rmw_zenoh_cpp $rmw_installed is older than the $rmw_floor floor" >&2
+  exit 1
+fi
 "${compose[@]}" exec -T "$service" bash -lc \
-  "source /opt/ros/$DISTRO/setup.bash; dpkg-query -W 'ros-${DISTRO}-rmw-zenoh-cpp'; ros2 pkg executables rmw_zenoh_cpp"
+  "source /opt/ros/$DISTRO/setup.bash; ros2 pkg executables rmw_zenoh_cpp"
 
 export DORA_ROS2_ZENOH_ARTIFACTS="$TARGET_DIR/ros2-zenoh-logs/$PROJECT"
 export DORA_ROS2_ZENOH_PYTHON="$DORA_ROS2_ZENOH_ARTIFACTS/python"

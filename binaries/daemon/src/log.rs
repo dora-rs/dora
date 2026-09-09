@@ -52,6 +52,21 @@ pub fn rotate_log_files(
         std::fs::remove_file(&oldest)?;
     }
 
+    // Prune anything above the current limit. Rotation only ever deletes index
+    // `max_files`, so lowering `max_rotated_files` between runs of the same
+    // dataflow id would otherwise strand every file above the new limit and
+    // break the documented `max_log_size * (1 + max_rotated_files)` bound.
+    // Indices are contiguous, so stopping at the first gap is sufficient.
+    let mut stale = max_files + 1;
+    loop {
+        let path = log_path_rotated(working_dir, dataflow_id, node_id, stale);
+        if !path.exists() {
+            break;
+        }
+        std::fs::remove_file(&path)?;
+        stale += 1;
+    }
+
     // Shift .N -> .N+1 (from max_files-1 down to 1)
     for i in (1..max_files).rev() {
         let from = log_path_rotated(working_dir, dataflow_id, node_id, i);
@@ -61,11 +76,17 @@ pub fn rotate_log_files(
         }
     }
 
-    // Rename current -> .1
+    // Rename current -> .1 (unless the config asked for zero rotated files)
     let current = log_path(working_dir, dataflow_id, node_id);
-    let first = log_path_rotated(working_dir, dataflow_id, node_id, 1);
-    if current.exists() {
-        std::fs::rename(&current, &first)?;
+    if max_files >= 1 {
+        let first = log_path_rotated(working_dir, dataflow_id, node_id, 1);
+        if current.exists() {
+            std::fs::rename(&current, &first)?;
+        }
+    } else if current.exists() {
+        // max_files == 0: keep no rotated files — drop the current one
+        // instead of renaming it to a .1 that would never get cleaned up.
+        std::fs::remove_file(&current)?;
     }
 
     Ok(())
@@ -347,7 +368,7 @@ impl Logger {
                 let message = Timestamped {
                     inner: CoordinatorRequest::Event {
                         daemon_id,
-                        event: DaemonEvent::Log(message.clone()),
+                        event: DaemonEvent::Log(message),
                     },
                     timestamp: self.clock.new_timestamp(),
                 };
@@ -425,7 +446,26 @@ impl Logger {
                                 Indent(&message.message)
                             );
                         }
-                        _ => {}
+                        // Exhaustive on purpose: without an explicit `Trace` arm
+                        // these messages fell through a `_ => {}` and were
+                        // silently dropped, while every other level (including
+                        // `Debug`) was forwarded (#3348). Keeping the match
+                        // exhaustive also turns any future `log::Level` addition
+                        // into a compile error here rather than another silent
+                        // drop.
+                        LogLevel::Trace => {
+                            tracing::trace!(
+                                build_id = ?message.build_id.map(|id| id.to_string()),
+                                dataflow_id = ?message.dataflow_id.map(|id| id.to_string()),
+                                node_id = ?message.node_id.map(|id| id.to_string()),
+                                target = message.target,
+                                module_path = message.module_path,
+                                file = message.file,
+                                line = message.line,
+                                "{}",
+                                Indent(&message.message)
+                            );
+                        }
                     },
                 }
             }
@@ -690,6 +730,82 @@ mod tests {
     }
 
     #[test]
+    fn rotate_keeps_no_files_when_max_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+        let current = log_path(tmp.path(), &uuid, &node);
+        std::fs::write(&current, "line1\n").unwrap();
+
+        rotate_log_files(tmp.path(), &uuid, &node, 0).unwrap();
+
+        // max_rotated_files: 0 means "keep no rotated files" — the current
+        // log must be gone, and no .1 should have been created in its place.
+        assert!(!current.exists());
+        let rotated = log_path_rotated(tmp.path(), &uuid, &node, 1);
+        assert!(!rotated.exists());
+    }
+
+    #[test]
+    fn rotate_prunes_down_to_a_lowered_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        // A directory previously rotated under `max_rotated_files: 5`.
+        std::fs::write(log_path(tmp.path(), &uuid, &node), "current\n").unwrap();
+        for i in 1..=5 {
+            std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, i), "old\n").unwrap();
+        }
+
+        rotate_log_files(tmp.path(), &uuid, &node, 2).unwrap();
+
+        // The documented bound is `max_log_size * (1 + max_rotated_files)`, so
+        // files above the new limit must not be stranded.
+        assert!(log_path_rotated(tmp.path(), &uuid, &node, 1).exists());
+        assert!(log_path_rotated(tmp.path(), &uuid, &node, 2).exists());
+        for i in 3..=5 {
+            assert!(
+                !log_path_rotated(tmp.path(), &uuid, &node, i).exists(),
+                ".{i} should have been pruned"
+            );
+        }
+    }
+
+    #[test]
+    fn rotate_at_zero_prunes_files_left_by_an_earlier_limit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let uuid = Uuid::nil();
+        let node = NodeId::from("n".to_string());
+
+        let dataflow_dir = tmp.path().join("out").join(uuid.to_string());
+        std::fs::create_dir_all(&dataflow_dir).unwrap();
+
+        std::fs::write(log_path(tmp.path(), &uuid, &node), "current\n").unwrap();
+        for i in 1..=3 {
+            std::fs::write(log_path_rotated(tmp.path(), &uuid, &node, i), "old\n").unwrap();
+        }
+
+        rotate_log_files(tmp.path(), &uuid, &node, 0).unwrap();
+
+        // "keep no rotated files" has to mean none, including any left by an
+        // earlier non-zero configuration.
+        assert!(!log_path(tmp.path(), &uuid, &node).exists());
+        for i in 1..=3 {
+            assert!(
+                !log_path_rotated(tmp.path(), &uuid, &node, i).exists(),
+                ".{i} should have been pruned"
+            );
+        }
+    }
+
+    #[test]
     fn rotate_noop_when_no_files() {
         let tmp = tempfile::tempdir().unwrap();
         let uuid = Uuid::nil();
@@ -720,5 +836,84 @@ mod tests {
     fn indent_empty_string_produces_empty() {
         let out = Indent("").to_string();
         assert_eq!(out, "");
+    }
+
+    /// Minimal `tracing::Subscriber` that records the level of every event it
+    /// receives, so a test can assert which severities the `Tracing` log
+    /// destination actually forwards.
+    #[derive(Clone, Default)]
+    struct LevelCapture {
+        levels: Arc<Mutex<Vec<tracing::Level>>>,
+    }
+
+    impl tracing::Subscriber for LevelCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            self.levels.lock().unwrap().push(*event.metadata().level());
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    fn log_message_at(level: LogLevel, message: &str) -> LogMessage {
+        LogMessage {
+            build_id: None,
+            dataflow_id: None,
+            node_id: None,
+            daemon_id: None,
+            level: LogLevelOrStdout::LogLevel(level),
+            target: None,
+            module_path: None,
+            file: None,
+            line: None,
+            message: message.to_string(),
+            timestamp: chrono::Utc::now(),
+            fields: None,
+        }
+    }
+
+    /// Regression for #3348: the `Tracing` destination forwarded every level
+    /// except `Trace`, which fell through a `_ => {}` wildcard and was silently
+    /// dropped. Assert that a `Trace` message now reaches `tracing::trace!`,
+    /// just like `Debug` and above.
+    #[test]
+    fn tracing_destination_forwards_trace_level() {
+        let capture = LevelCapture::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        tracing::subscriber::with_default(capture.clone(), || {
+            rt.block_on(async {
+                let mut logger = Logger {
+                    destination: LogDestination::Tracing,
+                    daemon_id: DaemonId::new(None),
+                    clock: Arc::new(uhlc::HLC::default()),
+                };
+                logger
+                    .log(log_message_at(LogLevel::Trace, "trace line"))
+                    .await;
+                logger
+                    .log(log_message_at(LogLevel::Debug, "debug line"))
+                    .await;
+            });
+        });
+
+        let levels = capture.levels.lock().unwrap();
+        assert!(
+            levels.contains(&tracing::Level::TRACE),
+            "Trace-level message must be forwarded, got {levels:?}"
+        );
+        assert!(
+            levels.contains(&tracing::Level::DEBUG),
+            "Debug-level message must be forwarded, got {levels:?}"
+        );
     }
 }

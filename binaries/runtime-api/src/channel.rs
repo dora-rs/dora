@@ -1,5 +1,5 @@
 use dora_core::config::DataId;
-use dora_message::config::QueuePolicy;
+use dora_message::config::{DEFAULT_QUEUE_SIZE, QueuePolicy};
 use dora_node_api::Event;
 use futures::{
     FutureExt,
@@ -120,8 +120,21 @@ impl InputBuffer {
         let (cap, policy) = match self.effective_caps.get(id) {
             Some((cap, policy)) => (*cap, *policy),
             None => {
-                tracing::warn!("no queue size known for received operator input `{id}`");
-                return;
+                // An input the operator never declared a queue size for (e.g. a
+                // routing/`dora node connect` edge delivering an undeclared
+                // input). Fall back to the default cap so drop-oldest still
+                // bounds this input's memory, mirroring the node-side scheduler
+                // (`Scheduler::add_event`). Without a cap here, a stalled
+                // `on_event` lets this input's queue grow without bound (OOM).
+                // Record it so the warning fires once, not per message.
+                let policy = QueuePolicy::default();
+                let cap = policy.effective_cap(DEFAULT_QUEUE_SIZE);
+                tracing::warn!(
+                    "no queue size configured for operator input `{id}`; \
+                     using default size {DEFAULT_QUEUE_SIZE}"
+                );
+                self.effective_caps.insert(id.clone(), (cap, policy));
+                (cap, policy)
             }
         };
 
@@ -320,6 +333,39 @@ mod tests {
             ids,
             ["b", "a", "b"],
             "each input must be capped independently, keeping the newest in FIFO order"
+        );
+    }
+
+    // An input with no configured queue size (not present in `config.inputs`,
+    // e.g. delivered by a routing/`dora node connect` edge) must still be
+    // bounded: `drop_oldest_inputs` falls back to `DEFAULT_QUEUE_SIZE` instead
+    // of returning uncapped. Without the fallback, a stalled consumer accretes
+    // this input's events without bound (OOM). Mirrors the node-side scheduler.
+    #[test]
+    fn unconfigured_input_falls_back_to_default_cap_under_stall() {
+        // No caps configured at all.
+        let mut buffer = InputBuffer::new(BTreeMap::new());
+
+        // Feed far more than the default cap without ever draining the queue.
+        for _ in 0..(DEFAULT_QUEUE_SIZE + 50) {
+            buffer.add_event(input_event("undeclared"));
+        }
+
+        assert_eq!(
+            buffer.queue.len(),
+            DEFAULT_QUEUE_SIZE,
+            "an unconfigured input must be bounded to the default cap, not grow unbounded"
+        );
+        assert!(
+            buffer.queue.iter().all(Option::is_some),
+            "no `None` tombstones may remain after compaction"
+        );
+        // The fallback is recorded so it is computed once, not per message.
+        assert!(
+            buffer
+                .effective_caps
+                .contains_key(&DataId::from("undeclared".to_string())),
+            "the default cap must be recorded for the unconfigured input"
         );
     }
 }

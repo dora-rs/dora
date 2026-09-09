@@ -182,7 +182,7 @@ nodes:
     send_stdout_as: raw_output    # route raw stdout as data output
     send_logs_as: log_entries     # route structured logs as data output
     max_log_size: "50MB"          # rotate log files at this size
-    max_rotated_files: 5          # number of rotated files to keep (1-100)
+    max_rotated_files: 5          # number of rotated files to keep (0-100)
 
     # --- Deployment ---
     deploy:
@@ -1480,14 +1480,15 @@ struct NodeId(String);      // [a-zA-Z0-9_.-], no leading `.`, not `dora`
 struct DataId(String);      // same validation
 type DataflowId = uuid::Uuid;
 
-// Data metadata
+// Data metadata. The payload is a self-describing Arrow IPC stream,
+// so no separate type descriptor is carried.
 struct Metadata {
-    timestamp: uhlc::Timestamp,    // hybrid logical clock
-    type_info: ArrowTypeInfo,      // Arrow schema
+    metadata_version: u16,          // Metadata::CURRENT_VERSION
+    timestamp: uhlc::Timestamp,     // hybrid logical clock
     parameters: MetadataParameters, // custom key-value pairs
 }
 
-// Node events (daemon -> node)
+// Node events (daemon -> node). `#[non_exhaustive]`, so match with a `_` arm.
 enum NodeEvent {
     Stop,
     Reload { operator_id },
@@ -1496,6 +1497,10 @@ enum NodeEvent {
     InputRecovered { id },
     NodeRestarted { id },
     AllInputsClosed,
+    ParamUpdate { key, value_json },
+    ParamDeleted { key },
+    NodeFailed { affected_input_ids, error, source_node_id },
+    ExtensionDropped { namespace, key },
 }
 ```
 
@@ -1699,18 +1704,57 @@ class Operator:
 
 ## Distributed Deployments
 
+The commands below set up one LAN. The [Multi-machine Guide](multi-machine.md) covers that case, VPN meshes, and isolated subnets joined by zenoh routers.
+
 ### Setup
 
 ```bash
-# Machine A (coordinator + daemon)
-dora up
+# The coordinator binds loopback by default, which no other machine can reach,
+# so bind the address the daemons will dial. Without this, machines B and C only
+# report a connection timeout.
+#
+# `dora list`/`logs`/`stop`/`start`/`down` all default to loopback, so set the
+# address once for them — on machine A and on any machine you drive the dataflow
+# from.
+export DORA_COORDINATOR_ADDR=192.168.1.10
 
-# Machine B (daemon only, pointing to coordinator on Machine A)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
+# Machine A: coordinator, plus its own *named* daemon.
+#
+# `dora up` would start an unnamed daemon, which `deploy: {machine: A}` can
+# never place a node on — so start the two separately whenever machine A is
+# itself a deploy target. Name the concrete address rather than `0.0.0.0`: each
+# daemon derives its zenoh listener from the coordinator address, and a wildcard
+# leaves A's daemon on loopback and undialable by B and C.
+dora coordinator --interface 192.168.1.10
+dora daemon --coordinator-addr 192.168.1.10 --machine-id A
+
+# Machine B (daemon only, pointing to the coordinator on Machine A)
+dora daemon --coordinator-addr 192.168.1.10 --machine-id B
 
 # Machine C (same)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
+dora daemon --coordinator-addr 192.168.1.10 --machine-id C
 ```
+
+`dora up --interface 192.168.1.10` remains the shortcut for a machine that only
+hosts the coordinator and runs no deployed nodes of its own: it starts both, but
+its daemon is unnamed.
+
+Each daemon derives the address its peers should dial from `--coordinator-addr`
+(the local address that routes toward the coordinator, which is the LAN address
+on a LAN and the tunnel address on a mesh VPN), sends it along with its
+registration, and receives in return the addresses of the daemons that
+registered before it. Each daemon dialing the ones that
+preceded it builds the full mesh, so nothing else has to be configured for the
+daemons to reach each other — including on a network without multicast, such as
+a mesh VPN.
+
+Override the derived address with `--zenoh-listen <IP>` on a multi-homed host
+that would otherwise advertise an interface the other machines cannot reach.
+
+The daemons can be started in any order, and simultaneously: each advertises
+its endpoint in its own registration, and the coordinator handles registrations
+one at a time, so whichever registers second is always handed the first one's
+address.
 
 ### Dataflow with Machine Assignment
 

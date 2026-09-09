@@ -16,6 +16,17 @@ use eyre::{Context, bail};
 
 use crate::command::{Executable, Run, default_tracing, topic::selector::public_topic_output_id};
 
+/// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
+/// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
+/// before NTP sync) rather than panicking. Using the same fallback for both the
+/// recording base and each entry keeps `timestamp_offset_nanos` consistent.
+fn epoch_nanos() -> u64 {
+    SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos() as u64
+}
+
 /// Record dataflow messages to a file for offline replay.
 ///
 /// Injects a record node into the dataflow that captures all (or filtered)
@@ -157,6 +168,31 @@ fn extend_prefixed_outputs(
     }
 }
 
+/// Build the record node's `{ input_id: topic }` map from the selected
+/// `(topic, input_id)` pairs.
+///
+/// Input ids can't contain `/`, so each `node/output` topic is re-encoded as
+/// `node___output`. That encoding is not injective: node `x` with output
+/// `y___z` and node `x___y` with output `z` both encode to `x___y___z`.
+/// Collecting straight into a map keyed by input id would let the second entry
+/// silently overwrite the first, dropping one topic from the recording with no
+/// error. Detect the collision and fail loudly instead.
+fn build_input_id_map<'a>(
+    topics: impl IntoIterator<Item = (&'a str, &'a str)>,
+) -> eyre::Result<BTreeMap<&'a str, &'a str>> {
+    let mut map: BTreeMap<&str, &str> = BTreeMap::new();
+    for (topic, input_id) in topics {
+        if let Some(existing) = map.insert(input_id, topic) {
+            bail!(
+                "record: topics `{existing}` and `{topic}` both map to the record-node \
+                 input id `{input_id}`; the `/` -> `___` encoding cannot tell them apart. \
+                 Rename one of the colliding node/output ids, or select only one with --topics."
+            );
+        }
+    }
+    Ok(map)
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -201,25 +237,28 @@ fn run_record(args: Record) -> eyre::Result<()> {
     let cwd = std::env::current_dir().wrap_err("failed to get current directory")?;
     let output_path = dunce::canonicalize(&cwd).unwrap_or(cwd).join(&output_file);
 
-    // Find record node binary
-    let record_node_bin = find_record_node_binary()?;
-
     // Build topic map JSON: { "input_id": "node/output" }
-    let topic_map: BTreeMap<&str, &str> = topics
-        .iter()
-        .map(|(topic, input_id)| (input_id.as_str(), topic.as_str()))
-        .collect();
+    //
+    // Validate the input-id encoding *before* `find_record_node_binary` below,
+    // which can trigger a multi-minute `cargo build`/`cargo install`: a
+    // colliding topic set must fail fast, not after that build completes.
+    let topic_map = build_input_id_map(topics.iter().map(|(t, i)| (t.as_str(), i.as_str())))?;
     let topics_json =
         serde_json::to_string(&topic_map).wrap_err("failed to serialize topic map")?;
 
-    // Build inputs mapping for the record node YAML entry
+    // Build the record node's YAML inputs from the validated map, so this
+    // second `input_id`-keyed structure cannot reintroduce a collision
+    // independently of `topic_map` (it would otherwise silently overwrite).
     let mut inputs_mapping = serde_yaml::Mapping::new();
-    for (topic, input_id) in &topics {
+    for (input_id, topic) in &topic_map {
         inputs_mapping.insert(
-            serde_yaml::Value::String(input_id.clone()),
-            serde_yaml::Value::String(topic.clone()),
+            serde_yaml::Value::String((*input_id).to_owned()),
+            serde_yaml::Value::String((*topic).to_owned()),
         );
     }
+
+    // Find record node binary
+    let record_node_bin = find_record_node_binary()?;
 
     // Build env vars
     let mut env_mapping = serde_yaml::Mapping::new();
@@ -365,11 +404,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
     };
 
     let output_file = match &args.output {
-        Some(p) => {
-            // Resolve to filename only if user provided a bare name, otherwise use as-is
-            let path = PathBuf::from(p);
-            path.to_string_lossy().to_string()
-        }
+        Some(p) => p.clone(),
         None => {
             let ts = chrono::Local::now().format("%Y%m%d_%H%M%S");
             format!("recording_{ts}.drec")
@@ -445,11 +480,10 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
         .collect::<eyre::Result<Vec<_>>>()?;
     let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
 
-    // Set up recording writer
-    let start_nanos = SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos() as u64;
+    // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
+    // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
+    // rather than panicking the recorder (see its doc).
+    let start_nanos = epoch_nanos();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -559,10 +593,7 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     }
                 };
 
-                let now_nanos = SystemTime::now()
-                    .duration_since(SystemTime::UNIX_EPOCH)
-                    .unwrap()
-                    .as_nanos() as u64;
+                let now_nanos = epoch_nanos();
 
                 let entry = RecordEntry {
                     node_id,
@@ -714,6 +745,32 @@ mod tests {
             topics,
             vec!["standard/status", "single/image", "runtime/op/status"]
         );
+    }
+
+    #[test]
+    fn build_input_id_map_detects_encoding_collision() {
+        // Node `x` with output `y___z` and node `x___y` with output `z` both
+        // encode to the record-node input id `x___y___z`. Recording both must
+        // fail loudly rather than silently drop one.
+        let err = build_input_id_map([("x/y___z", "x___y___z"), ("x___y/z", "x___y___z")])
+            .expect_err("colliding input ids must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("x___y___z") && msg.contains("x/y___z") && msg.contains("x___y/z"),
+            "error must name the colliding topics and input id: {msg}"
+        );
+    }
+
+    #[test]
+    fn build_input_id_map_accepts_distinct_input_ids() {
+        let map = build_input_id_map([
+            ("cam/frame", "cam___frame"),
+            ("lidar/points", "lidar___points"),
+        ])
+        .expect("distinct input ids must be accepted");
+        assert_eq!(map.len(), 2);
+        assert_eq!(map["cam___frame"], "cam/frame");
+        assert_eq!(map["lidar___points"], "lidar/points");
     }
 
     #[test]

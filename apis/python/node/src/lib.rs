@@ -14,7 +14,9 @@ use dora_operator_api_python::{
 use dora_ros2_bridge_python::Ros2Subscription;
 use eyre::{Context, ContextCompat};
 
+use futures::future::{Either, select};
 use futures::{Stream, StreamExt};
+use futures_timer::Delay;
 use pyo3::prelude::*;
 use pyo3::types::{PyBytes, PyDict};
 use tokio::runtime::{Builder, Runtime};
@@ -368,7 +370,8 @@ impl Node {
     ///                 case "image":
     /// ```
     ///
-    /// Default behaviour is to timeout after 2 seconds.
+    /// Iterating blocks until the next event is available; it does not time
+    /// out. Use `node.next(timeout=..)` if you need a bounded wait.
     ///
     /// :rtype: dict
     pub fn __next__(&self, py: Python) -> PyResult<Option<Py<PyDict>>> {
@@ -973,6 +976,33 @@ struct Events {
     _cleanup_handle: NodeCleanupHandle,
 }
 
+/// Await the next event from a merged (external/ROS2) stream, honoring an
+/// optional timeout.
+///
+/// The `timeout` was previously ignored on merged streams, so
+/// `node.next(timeout=..)` / `recv_async(timeout=..)` blocked forever once the
+/// upstream went quiet. Race the next event against a `Delay`, mirroring the
+/// Rust node API's own `EventStream::recv_async_timeout`.
+/// `Delay` needs no reactor, so this works both under `block_on` and in an
+/// async context. The event is polled first so a ready/buffered event wins over
+/// an already-elapsed (e.g. zero) timer, matching the `Dora` arm's
+/// `recv_timeout(ZERO)`.
+async fn recv_merged_with_timeout<S>(
+    events: &mut S,
+    timeout: Option<Duration>,
+) -> Option<MergedEvent<Py<PyAny>>>
+where
+    S: Stream<Item = MergedEvent<Py<PyAny>>> + Unpin,
+{
+    match timeout {
+        Some(timeout) => match select(events.next(), Delay::new(timeout)).await {
+            Either::Left((event, _)) => event,
+            Either::Right((_, _)) => None,
+        },
+        None => events.next().await,
+    }
+}
+
 impl Events {
     fn recv(&self, timeout: Option<Duration>) -> Option<PyEvent> {
         let mut inner = self.inner.blocking_lock();
@@ -981,7 +1011,9 @@ impl Events {
                 Some(timeout) => events.recv_timeout(timeout).map(MergedEvent::Dora),
                 None => events.recv().map(MergedEvent::Dora),
             },
-            EventsInner::Merged(events) => futures::executor::block_on(events.next()),
+            EventsInner::Merged(events) => {
+                futures::executor::block_on(recv_merged_with_timeout(events, timeout))
+            }
         };
         event.map(|event| PyEvent { event })
     }
@@ -1009,7 +1041,7 @@ impl Events {
                     .map(MergedEvent::Dora),
                 None => events.recv_async().await.map(MergedEvent::Dora),
             },
-            EventsInner::Merged(events) => events.next().await,
+            EventsInner::Merged(events) => recv_merged_with_timeout(events, timeout).await,
         };
         event.map(|event| PyEvent { event })
     }
@@ -1213,6 +1245,46 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 // `libraries/extensions/tensor-pool/python/src/transport.rs` (pure
 // decision logic, exercised without a GPU — see the `#[cfg(test)]` module
 // there). The `transport_tests` scaffolding that used to live here was
-// removed: it was empty, and this crate's test binary is excluded from
-// CI (`cargo test --all` skips the PyO3 crates), so the stub advertised
-// coverage that did not exist (bot review 5306582566).
+// removed: it was empty, and the stub advertised coverage that did not
+// exist (bot review 5306582566). `cargo test --all` skips this crate (its
+// test binary links libpython), but the module below still runs in CI via
+// the `contract-tests` job's `make qa-test-python`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use dora_node_api::{Event, StopCause};
+    use futures::executor::block_on;
+
+    // A merged stream that never yields must time out (return `None`) rather
+    // than block forever — the bug this change fixes. No ROS2 or GIL needed:
+    // the helper is generic over the stream and the pending stream yields no
+    // `Py<PyAny>`.
+    #[test]
+    fn merged_timeout_returns_none_when_stream_is_idle() {
+        let mut stream = futures::stream::pending::<MergedEvent<Py<PyAny>>>();
+        let event = block_on(recv_merged_with_timeout(
+            &mut stream,
+            Some(Duration::from_millis(10)),
+        ));
+        assert!(event.is_none());
+    }
+
+    // A ready event must win over an already-elapsed (zero) timer, matching the
+    // `Dora` arm's `recv_timeout(ZERO)` so `node.next(timeout=0)` can still
+    // drain a buffered event.
+    #[test]
+    fn merged_ready_event_wins_over_zero_timeout() {
+        let mut stream = futures::stream::iter([MergedEvent::Dora(Event::Stop(StopCause::Manual))]);
+        let event = block_on(recv_merged_with_timeout(&mut stream, Some(Duration::ZERO)));
+        assert!(matches!(event, Some(MergedEvent::Dora(Event::Stop(_)))));
+    }
+
+    // Without a timeout the helper simply awaits the next event.
+    #[test]
+    fn merged_no_timeout_yields_event() {
+        let mut stream = futures::stream::iter([MergedEvent::Dora(Event::Stop(StopCause::Manual))]);
+        let event = block_on(recv_merged_with_timeout(&mut stream, None));
+        assert!(matches!(event, Some(MergedEvent::Dora(Event::Stop(_)))));
+    }
+}

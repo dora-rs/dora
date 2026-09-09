@@ -20,8 +20,6 @@ tracing = ["dora-node-api/tracing"]
 ros2-bridge = [
     "dep:dora-ros2-bridge",
     "dep:dora-ros2-bridge-msg-gen",
-    "dep:rust-format",
-    "dep:prettyplease",
     "dep:serde-big-array",
     "rmw-zenoh",
 ]
@@ -33,6 +31,7 @@ dora-node-api = { workspace = true , features = ["arrow-v59"] }
 eyre = { workspace = true }
 dora-ros2-bridge = { workspace = true, optional = true }
 futures-lite = { version = "2.6" }
+futures-timer = "3.0.4"
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde-big-array = { version = "0.5.1", optional = true }
@@ -41,12 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
 cxx-build = "1.0.194"
+# ROS2 message formatting goes through `dora_ros2_bridge_msg_gen::format_token_stream`
+# (prettyplease + syn 2, verbatim-enabled), so this crate no longer needs its own
+# `rust-format` / `prettyplease` build-dependency. See dora-rs/dora#2452.
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
-rust-format = { version = "0.3.4", features = [
-    "pretty_please",
-], optional = true }
-# Deliberately 0.1, NOT the latest 0.2: this dep exists only to enable the
-# `verbatim` feature on the prettyplease 0.1 copy that `rust-format` uses
-# internally (version unification). Bumping to 0.2 would make it inert and
-# silently drop `verbatim` from rust-format's formatter.
-prettyplease = { version = "0.1", features = ["verbatim"], optional = true }

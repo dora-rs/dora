@@ -150,11 +150,7 @@ fn main() -> eyre::Result<()> {
         let mut skipped = 0u64;
         let mut stopped = false;
 
-        while let Some(entry) = reader.next_entry()? {
-            if entry.node_id != replay_node {
-                continue;
-            }
-
+        while let Some(entry) = reader.next_entry_for_node(&replay_node)? {
             // Wait out the pacing gap, watching for `Stop` while we do.
             let sleep_nanos = pacing_sleep_nanos(prev_offset, entry.timestamp_offset_nanos, speed);
             if wait_out_gap(&mut events, Duration::from_nanos(sleep_nanos)) == Replay::Stop {

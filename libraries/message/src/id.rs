@@ -84,8 +84,19 @@ fn validate_data_id(id: &str) -> Result<(), InvalidId> {
     Ok(())
 }
 
+/// Error returned when a string fails validation as a [`NodeId`] or
+/// [`DataId`].
+///
+/// Produced by their [`FromStr`](std::str::FromStr) implementations. The
+/// wrapped `String` is a human-readable explanation of why the id was
+/// rejected (empty, a reserved name, a disallowed character, an empty path
+/// segment, …); its [`Display`](std::fmt::Display) forwards to that message.
+/// ([`OperatorId`] parsing is infallible and does not produce this error.)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct InvalidId(pub String);
+pub struct InvalidId(
+    /// Human-readable reason the id was rejected.
+    pub String,
+);
 
 impl std::fmt::Display for InvalidId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -192,6 +203,32 @@ impl AsRef<str> for NodeId {
     }
 }
 
+/// The identifier of an operator running inside a `dora runtime` node.
+///
+/// An operator is addressed as `<node_id>/<operator_id>/<output_id>`, so an
+/// `OperatorId` is the middle segment of a runtime output's fully-qualified
+/// name.
+///
+/// Unlike [`NodeId`] and [`DataId`], an `OperatorId` is **not** validated:
+/// [`FromStr`] is [`Infallible`] and [`From<String>`] accepts any string
+/// verbatim (this is why it derives `Deserialize` directly rather than through
+/// a validating deserializer). Callers are responsible for not embedding a `/`
+/// in an operator id — a `/` collides with the `<node>/<operator>/<output>`
+/// addressing separator and makes the operator unaddressable (it would resolve
+/// to a different operator/output split).
+///
+/// ```
+/// use dora_message::id::OperatorId;
+///
+/// // Construction is infallible from both `&str` and `String`:
+/// let from_str: OperatorId = "detector".parse().unwrap(); // FromStr is Infallible
+/// let from_string = OperatorId::from("detector".to_string());
+/// assert_eq!(from_str, from_string);
+///
+/// // Display and AsRef expose the underlying id:
+/// assert_eq!(from_str.to_string(), "detector");
+/// assert_eq!(from_str.as_ref(), "detector");
+/// ```
 #[derive(
     Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize, JsonSchema,
 )]
@@ -285,7 +322,11 @@ impl From<DataId> for String {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters (not in `[a-zA-Z0-9_./-]`).
+/// Panics if `id` is not a valid data id: if it is empty, contains
+/// characters outside `[a-zA-Z0-9_./-]`, or has an empty path segment (a
+/// leading, trailing, or consecutive `/`). Pre-validating against the
+/// character set alone is *not* sufficient to make this conversion
+/// infallible.
 ///
 /// **For untrusted input, use `id.parse::<DataId>()`** which calls
 /// `FromStr::from_str` and returns `Result<Self, InvalidId>`.
@@ -294,6 +335,13 @@ impl From<DataId> for String {
 /// auto-derived blanket impl that delegates to this `From` impl, so it
 /// panics exactly like `.into()`. Only `parse::<DataId>()` / `from_str`
 /// is fallible.
+///
+/// ```should_panic
+/// use dora_message::id::DataId;
+/// // A trailing '/' contains only valid characters but is still rejected
+/// // (empty path segment), so this conversion panics.
+/// let _ = DataId::from("op/".to_string());
+/// ```
 impl From<String> for DataId {
     fn from(id: String) -> Self {
         if let Err(e) = validate_data_id(&id) {
@@ -305,7 +353,9 @@ impl From<String> for DataId {
 
 /// # Panics
 ///
-/// Panics if `id` contains invalid characters. Prefer `id.parse::<DataId>()`
+/// Panics if `id` is not a valid data id: if it is empty, contains
+/// characters outside `[a-zA-Z0-9_./-]`, or has an empty path segment (a
+/// leading, trailing, or consecutive `/`). Prefer `id.parse::<DataId>()`
 /// when handling untrusted input.
 impl From<&str> for DataId {
     fn from(id: &str) -> Self {

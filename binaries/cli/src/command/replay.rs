@@ -45,7 +45,7 @@ pub struct Replay {
     replace: Vec<String>,
 
     /// Playback speed multiplier (default: 1.0, 0 = fast as possible)
-    #[clap(long, default_value = "1.0")]
+    #[clap(long, default_value = "1.0", value_parser = parse_speed)]
     speed: f64,
 
     /// Loop the recording
@@ -62,6 +62,46 @@ impl Executable for Replay {
         // Run::execute() sets up its own tracing subscriber.
         run_replay(self)
     }
+}
+
+/// Smallest positive `--speed` we accept. Below this the pacing math
+/// (`(delta as f64 / speed) as u64` nanoseconds) saturates to a sleep of many
+/// years, which is never intended; `1e-6` still permits extreme slow-motion (a
+/// 1 s recorded gap stretched to ~11.6 days), so it rejects only pathological
+/// denormal-ish values, not any plausible debugging speed.
+const MIN_SPEED: f64 = 1e-6;
+
+/// clap `value_parser` for `--speed`.
+///
+/// A bare `f64` parse accepts `-1`, `nan`, and `inf`. The pacing math
+/// (`replay-node::pacing_sleep_nanos`) treats anything `<= 0.0` as "as fast as
+/// possible", a `NaN` slips through that guard (`NaN <= 0.0` is false) only to
+/// yield `0` from the `as u64` cast, and a tiny positive value saturates that
+/// cast to a multi-year sleep — so negatives, `NaN`, and absurdly small values
+/// all silently misbehave. Validate here, at parse time, before `run_replay`
+/// opens the recording:
+///
+/// - `0` and `inf` both mean "as fast as possible"; `inf` is normalized to
+///   `0.0` rather than rejected because `dora replay` already accepts and acts
+///   on it, and `dora-cli` is inside the 1.0 stability guarantee (an
+///   overflowing literal like `1e400` parses to `inf` and lands here too).
+/// - any finite multiplier `>= MIN_SPEED` is accepted;
+/// - everything else (negative, `NaN`, `-inf`, `0 < speed < MIN_SPEED`) is a
+///   clean clap usage error that echoes what the user typed.
+fn parse_speed(s: &str) -> Result<f64, String> {
+    let speed: f64 = s
+        .parse()
+        .map_err(|e| format!("`{s}` is not a number: {e}"))?;
+    if speed == f64::INFINITY || speed == 0.0 {
+        return Ok(0.0);
+    }
+    if speed.is_finite() && speed >= MIN_SPEED {
+        return Ok(speed);
+    }
+    Err(format!(
+        "`{s}` is not a valid --speed: use 0 or `inf` for as-fast-as-possible, \
+         or a finite multiplier >= {MIN_SPEED}"
+    ))
 }
 
 fn run_replay(args: Replay) -> eyre::Result<()> {
@@ -84,7 +124,9 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     // Discover which nodes produced recorded data and how many messages each
     // output carries (used to size receiver queues below).
     let mut recorded_counts: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-    while let Some(entry) = reader.next_entry()? {
+    // Only the ids are needed here; `next_entry_header` skips copying each
+    // entry's event payload out of the record buffer.
+    while let Some(entry) = reader.next_entry_header()? {
         *recorded_counts
             .entry(entry.node_id)
             .or_default()
@@ -204,30 +246,10 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     run.execute()
 }
 
-/// Sizes receiver queues so a full-speed replay cannot silently drop messages.
-///
-/// Replay can outpace receivers — especially with `--speed 0` — and dora's
-/// real-time defaults drop under pressure: each input queue holds
-/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
-/// sized from the queue sizes. For every input fed by a replayed node, this
-/// sets `queue_size` to the recorded message count for that output and
-/// `queue_policy: backpressure`, so one pass of the recording fits entirely
-/// and any residual overflow is logged loudly instead of dropped silently
-/// (#2144).
-///
-/// Scope and limits:
-/// - Inputs with an explicit `queue_size` are left untouched: an explicit
-///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
-///   which replay should reproduce, not override.
-/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
-///   partial `--replace`, live intermediate nodes can re-emit at full speed
-///   into their own downstream consumers' default queues (warned at the call
-///   site).
-/// - The sizing bounds one pass of the recording; `--loop` can still
-///   overflow, at which point the backpressure policy logs errors at its
-///   hard cap instead of dropping silently.
-/// - Drops below this layer (zenoh congestion on multi-daemon replay) are
-///   not addressed here.
+/// Rewrites each recorded node in the descriptor into a replay node: swaps its
+/// `path` for the `dora-replay-node` binary, strips the build/source/operator
+/// keys and its `inputs`, republishes its recorded `outputs`, and injects the
+/// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -335,6 +357,36 @@ fn append_prefixed_outputs(
     }
 }
 
+/// Raises replayed inputs' node-level queue sizes so a full-speed replay does
+/// not drop messages *at the node input-queue layer*.
+///
+/// Replay can outpace receivers — especially with `--speed 0` — and dora's
+/// real-time defaults drop under pressure: each input queue holds
+/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
+/// sized from the queue sizes. For every input fed by a replayed node, this
+/// sets `queue_size` to the recorded message count for that output and
+/// `queue_policy: backpressure`, so one pass of the recording fits entirely
+/// and any residual overflow is logged loudly instead of dropped silently
+/// (#2144).
+///
+/// Scope and limits:
+/// - Inputs with an explicit `queue_size` are left untouched: an explicit
+///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
+///   which replay should reproduce, not override.
+/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
+///   partial `--replace`, live intermediate nodes can re-emit at full speed
+///   into their own downstream consumers' default queues (warned at the call
+///   site).
+/// - The sizing bounds one pass of the recording; `--loop` can still
+///   overflow, at which point the backpressure policy logs errors at its
+///   hard cap instead of dropping silently.
+/// - This addresses only the node input-queue layer. The layer beneath it —
+///   the direct node-to-node zenoh data plane, whose output publishers use
+///   `CongestionControl::Drop` (`apis/rust/node/src/node/mod.rs`) — can still
+///   drop an unpaced `--speed 0` burst while `send` reports success. That
+///   holds for single-daemon replay too, since same-machine nodes exchange
+///   outputs over the same direct path, so this is not a multi-daemon-only
+///   gap. Not addressed here (dora-rs/dora#3397).
 fn raise_replayed_input_queue_sizes(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -477,6 +529,57 @@ mod tests {
             false,
         );
         serde_yaml::to_string(&descriptor).unwrap()
+    }
+
+    #[test]
+    fn parse_speed_accepts_valid_and_rejects_invalid() {
+        // Valid: 0 (as fast as possible) and any finite positive multiplier.
+        assert_eq!(parse_speed("0").unwrap(), 0.0);
+        assert_eq!(parse_speed("1.0").unwrap(), 1.0);
+        assert_eq!(parse_speed("0.25").unwrap(), 0.25);
+        assert_eq!(parse_speed("1000").unwrap(), 1000.0);
+
+        // `inf` — and an overflowing literal, which parses to `inf` — mean
+        // "as fast as possible" and normalize to 0.0 rather than erroring
+        // (`dora replay` already accepts them; dora-cli is 1.0-stable).
+        assert_eq!(parse_speed("inf").unwrap(), 0.0);
+        assert_eq!(parse_speed("1e400").unwrap(), 0.0);
+
+        // Invalid: negative, NaN, -inf, and an absurdly small value that would
+        // saturate the pacing cast to a multi-year sleep — all previously
+        // silent misbehavior — plus non-numbers.
+        assert!(parse_speed("-1").is_err());
+        assert!(parse_speed("nan").is_err());
+        assert!(parse_speed("-inf").is_err());
+        assert!(parse_speed("1e-300").is_err());
+        assert!(parse_speed("fast").is_err());
+
+        // The error echoes what the user typed, not the parsed f64.
+        let err = parse_speed("1e-300").unwrap_err();
+        assert!(err.contains("1e-300"), "error should name the input: {err}");
+    }
+
+    /// Guards that `value_parser = parse_speed` is actually wired onto the
+    /// `--speed` arg: without it these would parse as a bare `f64` and the
+    /// invalid values would slip through, so this fails if the attribute is
+    /// dropped even though `parse_speed_accepts_valid_and_rejects_invalid`
+    /// would still pass.
+    #[test]
+    fn speed_value_parser_is_wired_onto_the_arg() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            replay: Replay,
+        }
+
+        // Rejected at parse time (use `=` so the leading `-` isn't read as a flag).
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--speed=-1"]).is_err());
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--speed=nan"]).is_err());
+        // `inf` is accepted and normalized to as-fast-as-possible (0.0).
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--speed=inf"]).unwrap();
+        assert_eq!(cli.replay.speed, 0.0);
     }
 
     #[test]

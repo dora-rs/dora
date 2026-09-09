@@ -201,12 +201,23 @@ macro_rules! register_array_handlers {
         /// so the source and target types need not match (e.g. a `UInt64Array`
         /// into a `Vec<f64>`).
         ///
+        /// # Precision
+        ///
+        /// The per-element cast goes through [`num::NumCast`]/[`num::ToPrimitive`],
+        /// so it is **lossy exactly where an `as` cast is**: a float source with a
+        /// fractional part is truncated toward zero into an integer target — it is
+        /// **not** rounded, and it does **not** error. Converting between integer
+        /// types that both hold the value, or widening an integer to a float, is
+        /// exact.
+        ///
         /// # Errors
         ///
         /// Returns an error if the array contains any null values (consistent
         /// with every other [`TryFrom<&DoraArray>`] impl in this crate), if the
         /// array's data type is not a supported integer or float type, or if any
-        /// element cannot be represented in `T` (an out-of-range cast).
+        /// element is out of `T`'s range (e.g. a negative float into an unsigned
+        /// target, or a magnitude the target cannot hold). A merely fractional
+        /// float is *in range* and is truncated, per **Precision** above.
         ///
         /// ```
         /// use dora_arrow_convert::{IntoArrow, into_vec};
@@ -215,6 +226,10 @@ macro_rules! register_array_handlers {
         /// let data = vec![1u64, 2, 3].into_arrow();
         /// assert_eq!(into_vec::<u64>(&data).ok(), Some(vec![1, 2, 3]));
         /// assert_eq!(into_vec::<f64>(&data).ok(), Some(vec![1.0, 2.0, 3.0]));
+        ///
+        /// // Float -> integer truncates toward zero (it does not round or error).
+        /// let floats = vec![1.9f64, -2.9].into_arrow();
+        /// assert_eq!(into_vec::<i64>(&floats).ok(), Some(vec![1, -2]));
         ///
         /// // Unsupported (non-numeric) array types are rejected.
         /// let strings = vec!["a".to_string(), "b".to_string()].into_arrow();

@@ -21,7 +21,7 @@ Fast gates. Must pass for every PR.
 | Area | Where | How |
 |---|---|---|
 | Format | `.github/workflows/ci.yml` `fmt` | `cargo fmt --all -- --check` |
-| Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all -- -D warnings` |
+| Clippy | `.github/workflows/ci.yml` `clippy` | `cargo clippy --all --all-targets -- -D warnings` |
 | Core tests (Linux) | `.github/workflows/ci.yml` `test` | `cargo test --all` (Python crates excluded) on ubuntu-latest |
 | CLI smoke (argparse, `validate`, `expand`, `graph`) | `.github/workflows/ci.yml` `test` | Per-subcommand `--help` + validate/expand/graph on representative YAMLs (ubuntu-latest) |
 | Core tests (macOS + Windows) | `.github/workflows/nightly.yml` `test-cross-platform` | same steps as PR `test`, nightly-gated (#1716) |

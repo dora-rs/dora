@@ -467,7 +467,7 @@ fn encode_matches_declared_schema() {
         assert_eq!(batch.num_rows(), 1, "expected exactly one row");
         assert_eq!(
             batch.schema().as_ref(),
-            &T::schema(),
+            T::schema().as_ref(),
             "to_record_batch() schema drifted from schema()"
         );
     }
