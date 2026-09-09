@@ -29,6 +29,10 @@ split-into-two-nodes approach).
 
 ## Run
 
+This is a **manual measurement tool, not a smoke test**: it is deliberately not
+run in CI, because latency percentiles measured on a shared runner say nothing
+useful. Run it locally on an otherwise idle machine.
+
 ```bash
 cargo run --example cxx-thread-safe-output-bench
 ```

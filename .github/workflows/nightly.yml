@@ -1333,6 +1333,13 @@ jobs:
       - name: C++ Service and Action example
         timeout-minutes: 15
         run: cargo run --example cxx-service-action
+      # Worker threads sending through `SafeOutputSender` (#1915). Byte
+      # payloads only, so it also needs no Arrow C++. The companion
+      # `cxx-thread-safe-output-bench` example is a manual measurement tool —
+      # its numbers are meaningless on a shared runner, so it is not run here.
+      - name: C++ Thread-Safe Output example
+        timeout-minutes: 15
+        run: cargo run --example cxx-thread-safe-output
       - name: Install Arrow C++ Library
         timeout-minutes: 10
         shell: bash
