@@ -2,7 +2,7 @@ use std::{
     collections::HashMap,
     fs::File,
     io::Write,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 use aligned_vec::{AVec, ConstAlign};
@@ -45,51 +45,78 @@ fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId,
     Ok(reverse_map)
 }
 
-/// Flush the recording's `BufWriter` after this many records even if the node
-/// never idles (a busy, high-rate stream). Bounds crash loss by record *count*.
+/// Flush the recording's `BufWriter` after this many records. Bounds crash
+/// loss by record *count* on a high-rate stream.
 const FLUSH_EVERY_N_RECORDS: u64 = 100;
 
-/// Poll interval for the event loop. When no event arrives within this window
-/// the loop flushes any buffered records, bounding crash loss by wall-clock
-/// *time* — the count bound alone lets a low-rate stream sit unflushed for
-/// (100 / rate) seconds (a 1 Hz stream ≈ 100 s), which a SIGKILL would lose.
+/// Flush the recording's `BufWriter` at least this often. Bounds crash loss by
+/// wall-clock *time*: the count bound alone lets a stream below
+/// `FLUSH_EVERY_N_RECORDS / FLUSH_INTERVAL` (~100 Hz) sit unflushed for up to
+/// `FLUSH_EVERY_N_RECORDS / rate` seconds (a 2 Hz stream ≈ 50 s), which a
+/// SIGKILL would lose. Also used as the event loop's idle poll interval so a
+/// stream that goes quiet still gets its tail flushed.
 const FLUSH_INTERVAL: Duration = Duration::from_secs(1);
 
 /// Decides when to flush buffered records to disk so an abrupt termination
-/// (SIGKILL / Ctrl-C without a clean `Stop`) can only lose the records written
-/// since the last flush, keeping the on-disk file within the reader's torn-tail
-/// recovery model (see `dora_recording::RecordingReader`). Two independent
-/// bounds cap the loss window: a record *count* bound and a wall-clock *time*
-/// bound driven by the event loop's idle ticks.
+/// (SIGKILL, or SIGINT/Ctrl-C without a clean `Stop`) can only lose the records
+/// written since the last flush, keeping the on-disk file within the reader's
+/// torn-tail recovery model (see `dora_recording::RecordingReader`). Two
+/// independent bounds cap the loss window: a record *count* bound and a
+/// wall-clock *time* bound. Both are enforced on the write path (in
+/// [`after_write`](Self::after_write)) so the time bound actually binds on an
+/// active stream — an idle-only timeout never fires while events keep arriving.
+/// [`on_idle`](Self::on_idle) additionally flushes the tail of a stream that has
+/// gone quiet without closing.
+///
+/// (`flush()` reaches the OS page cache, not the platter, so this bounds loss on
+/// process death — SIGKILL/SIGINT — not on power loss, which would need
+/// `sync_data`.)
 struct FlushPolicy {
     records_since_flush: u64,
+    last_flush: Instant,
 }
 
 impl FlushPolicy {
     fn new() -> Self {
         Self {
             records_since_flush: 0,
+            last_flush: Instant::now(),
         }
     }
 
-    /// Call after each record is written: flush once `FLUSH_EVERY_N_RECORDS`
-    /// have accumulated.
+    /// Whether any records are buffered that a crash right now would lose.
+    fn has_buffered(&self) -> bool {
+        self.records_since_flush > 0
+    }
+
+    /// Call after each record is written. Flushes when *either* bound trips:
+    /// `FLUSH_EVERY_N_RECORDS` records have accumulated, or `FLUSH_INTERVAL` has
+    /// elapsed since the last flush. Checking the time bound here, on the write
+    /// path, is what makes it bind on an active stream.
     fn after_write<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
         self.records_since_flush += 1;
-        if self.records_since_flush >= FLUSH_EVERY_N_RECORDS {
-            writer.flush()?;
-            self.records_since_flush = 0;
+        if self.records_since_flush >= FLUSH_EVERY_N_RECORDS
+            || self.last_flush.elapsed() >= FLUSH_INTERVAL
+        {
+            self.flush(writer)?;
         }
         Ok(())
     }
 
     /// Call on an idle tick (no event within `FLUSH_INTERVAL`): flush anything
-    /// still buffered so a slow stream can't sit unflushed indefinitely.
+    /// still buffered so a stream that goes quiet doesn't leave its last few
+    /// records unflushed indefinitely.
     fn on_idle<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
-        if self.records_since_flush > 0 {
-            writer.flush()?;
-            self.records_since_flush = 0;
+        if self.has_buffered() {
+            self.flush(writer)?;
         }
+        Ok(())
+    }
+
+    fn flush<W: Write>(&mut self, writer: &mut RecordingWriter<W>) -> eyre::Result<()> {
+        writer.flush()?;
+        self.records_since_flush = 0;
+        self.last_flush = Instant::now();
         Ok(())
     }
 }
@@ -138,10 +165,19 @@ fn main() -> eyre::Result<()> {
 
     eprintln!("dora-record-node: recording to {output_file}");
 
-    // `recv_timeout` returns `None` only when the stream is closed; on an idle
-    // timeout it yields `Event::Error`, which (like any other non-input event)
-    // falls through to the `_` arm and drives a time-based flush.
-    while let Some(event) = events.recv_timeout(FLUSH_INTERVAL) {
+    loop {
+        // Only arm the idle-flush timer when records are buffered that a crash
+        // would lose; when everything is already flushed there is nothing to
+        // rescue on a timeout, so block on `recv()` and pay no per-event timer
+        // setup. `recv_timeout` returns `None` only on stream close and yields
+        // `Event::Error` on an idle timeout, which falls through to the `_` arm
+        // and drives a time-based flush of the buffered tail.
+        let event = if flush_policy.has_buffered() {
+            events.recv_timeout(FLUSH_INTERVAL)
+        } else {
+            events.recv()
+        };
+        let Some(event) = event else { break };
         match event {
             Event::Input { id, metadata, data } => {
                 let (source_node, source_output) = match reverse_map.get(&*id) {
@@ -221,10 +257,19 @@ fn main() -> eyre::Result<()> {
                 msg_count += 1;
                 flush_policy.after_write(&mut writer)?;
             }
-            Event::Stop(_) => break,
-            // Idle-timeout tick (or any other ignored event): flush buffered
-            // records so the durability window is time-bounded, not just
-            // count-bounded.
+            // `Event::Stop` is deliberately NOT a `break`. The node API gives
+            // `Stop` strict priority over inputs that were already queued behind
+            // it and re-delivers those inputs on the following `recv()`s before
+            // closing (see `EventStream` docs and the
+            // `recv_drains_buffered_scheduler_inputs_after_stop` test). Breaking
+            // here would drop that tail of already-produced messages — exactly
+            // what a recorder must not do. Falling through records nothing for
+            // the Stop itself but flushes the buffered tail; the stream then
+            // drains its queued inputs and returns `None`, ending the loop.
+            //
+            // The same `_` arm handles an idle-timeout tick and any other
+            // ignored control event: flush the buffered records so the
+            // durability window stays time-bounded.
             _ => flush_policy.on_idle(&mut writer)?,
         }
     }
@@ -318,7 +363,7 @@ mod tests {
     fn test_writer() -> (ProbeSink, RecordingWriter<ProbeSink>) {
         let sink = ProbeSink::default();
         let header = RecordingHeader {
-            version: 1,
+            version: dora_recording::FORMAT_VERSION,
             start_nanos: 0,
             dataflow_id: uuid::Uuid::nil(),
             descriptor_yaml: Vec::new(),
@@ -337,10 +382,12 @@ mod tests {
     }
 
     #[test]
-    fn records_below_the_count_bound_stay_buffered() {
-        // A handful of records, far below the count bound and with no idle tick:
-        // nothing reaches the sink, so a SIGKILL here would lose them. This is
-        // the durability gap the wall-clock bound closes.
+    fn records_below_both_bounds_stay_buffered() {
+        // A handful of records written back-to-back: below the count bound, and
+        // `last_flush.elapsed()` is far below `FLUSH_INTERVAL`, so neither bound
+        // trips and nothing reaches the sink yet. (This is the lower edge the
+        // count bound is supposed to hold; the time-bound and idle tests below
+        // pin what rescues these records before a crash.)
         let (sink, mut writer) = test_writer();
         let mut policy = FlushPolicy::new();
         for _ in 0..3 {
@@ -350,7 +397,34 @@ mod tests {
         assert_eq!(
             sink.flushed_len(),
             0,
-            "records below the count bound must remain buffered (unflushed)"
+            "records below both bounds must remain buffered (unflushed)"
+        );
+    }
+
+    #[test]
+    fn time_bound_flushes_on_the_write_path_below_the_count_bound() {
+        // The core of the fix: on a stream faster than 1 Hz the idle timeout
+        // never fires, so the time bound must bind on the *write* path. Backdate
+        // `last_flush` past `FLUSH_INTERVAL`, then write a single record (well
+        // under the count bound): `after_write` must flush it. Without the
+        // write-path time check (count bound only) this record would sit
+        // buffered and a SIGKILL would lose it.
+        let (sink, mut writer) = test_writer();
+        let mut policy = FlushPolicy::new();
+        policy.last_flush = Instant::now()
+            .checked_sub(FLUSH_INTERVAL + Duration::from_millis(50))
+            .expect("monotonic clock is younger than FLUSH_INTERVAL");
+
+        writer.write_entry(&sample_entry()).unwrap();
+        policy.after_write(&mut writer).unwrap();
+
+        assert!(
+            sink.flushed_len() > 0,
+            "the elapsed time bound must flush on the write path, below the count bound"
+        );
+        assert_eq!(
+            policy.records_since_flush, 0,
+            "flush must reset the record counter"
         );
     }
 
@@ -387,11 +461,19 @@ mod tests {
         let (sink, mut writer) = test_writer();
         let mut policy = FlushPolicy::new();
 
-        // One short of the count bound: nothing flushed yet.
+        // One short of the count bound. The writes run back-to-back, so
+        // `last_flush.elapsed()` stays far below `FLUSH_INTERVAL` and the time
+        // bound does not fire; the 99 × ~30-byte records also stay well under
+        // `BufWriter`'s 8 KiB default, so none reach the sink on their own.
         for _ in 0..(FLUSH_EVERY_N_RECORDS - 1) {
             writer.write_entry(&sample_entry()).unwrap();
             policy.after_write(&mut writer).unwrap();
         }
+        assert_eq!(
+            policy.records_since_flush,
+            FLUSH_EVERY_N_RECORDS - 1,
+            "no flush before {FLUSH_EVERY_N_RECORDS} records"
+        );
         assert_eq!(
             sink.flushed_len(),
             0,
@@ -401,6 +483,10 @@ mod tests {
         // The Nth record trips the count bound.
         writer.write_entry(&sample_entry()).unwrap();
         policy.after_write(&mut writer).unwrap();
+        assert_eq!(
+            policy.records_since_flush, 0,
+            "count bound must reset the counter on the {FLUSH_EVERY_N_RECORDS}th record"
+        );
         assert!(
             sink.flushed_len() > 0,
             "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
