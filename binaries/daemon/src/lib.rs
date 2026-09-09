@@ -3738,8 +3738,11 @@ impl Daemon {
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
-                    // `forget_node_bookkeeping` also drops the recorded
-                    // cascading-error cause for this id (see its doc comment).
+                    // Also drops the cascading-error cause and the id's
+                    // `OutputId`-keyed remote publishers (re-declared on the
+                    // replacement's next remote send); `debug_topic_watchers`
+                    // is left intact on every path. See the method's doc
+                    // comment for the full rationale.
                     dataflow.forget_node_bookkeeping(&node_id);
                     dataflow
                         .node_stderr_most_recent
@@ -9245,6 +9248,7 @@ mod fault_tolerance_tests {
         let node_a: NodeId = "node_a".to_string().into();
         let node_b: NodeId = "node_b".to_string().into();
         let input_x: DataId = "input_x".to_string().into();
+        let output_m: DataId = "message".to_string().into();
         let timeout = Duration::from_secs(1);
 
         let upstream: NodeId = "upstream".to_string().into();
@@ -9263,6 +9267,11 @@ mod fault_tolerance_tests {
             // Both nodes were recorded as cascading victims of `upstream`.
             df.cascading_error_causes
                 .report_cascading_error(upstream.clone(), node.clone());
+            // Both nodes have a debug-topic watcher on their `message` output.
+            df.debug_topic_watchers.insert(
+                OutputId(node.clone(), output_m.clone()),
+                BTreeSet::from([uuid::Uuid::new_v4()]),
+            );
         }
 
         df.forget_node_bookkeeping(&node_a);
@@ -9281,6 +9290,20 @@ mod fault_tolerance_tests {
         // `node_a` incarnation is classified by its own failure, not a stale
         // upstream cause (dora-rs/dora#2927).
         assert_eq!(df.cascading_error_causes.error_caused_by(&node_a), None);
+        // … but NOT its debug-topic watchers. This cleanup runs on both the
+        // `RemoveNode` and `ReplaceNode` paths, and neither re-registers a
+        // watcher afterwards (only a fresh `StartTopicDebugStream` does). Since
+        // remove + re-add and replace both resume under the same
+        // `OutputId(node_id, output)`, purging here would silently kill an
+        // active `dora topic` stream across the cycle. Watchers are never
+        // purged by node-id churn anywhere; this pins that.
+        assert!(
+            df.debug_topic_watchers
+                .contains_key(&OutputId(node_a.clone(), output_m.clone())),
+            "debug-topic watchers must survive `forget_node_bookkeeping` on \
+             every path, so a remove+re-add or ReplaceNode keeps an active \
+             debug stream alive"
+        );
 
         // … while node_b's are untouched.
         assert!(
@@ -9295,6 +9318,10 @@ mod fault_tolerance_tests {
         assert_eq!(
             df.cascading_error_causes.error_caused_by(&node_b),
             Some(&upstream)
+        );
+        assert!(
+            df.debug_topic_watchers
+                .contains_key(&OutputId(node_b.clone(), output_m.clone()))
         );
     }
 

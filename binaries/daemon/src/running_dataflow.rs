@@ -468,11 +468,36 @@ impl RunningDataflow {
     /// failure of the *new* incarnation misattributed to the stale cause and
     /// classified as `NodeErrorCause::Cascading`, suppressing its real stderr
     /// capture.
+    ///
+    /// The lazily-declared remote `publishers` — an `OutputId`-keyed
+    /// (`(node id, output)`) map that the `RemoveNode` / `ReplaceNode` routing
+    /// cleanup never touched — are dropped too. They are created on demand in
+    /// `send_to_remote_receivers`, so without this a removed node's zenoh
+    /// `Publisher` (and its retained session clone) would stay declared for the
+    /// life of the dataflow, accumulating unboundedly across repeated dynamic
+    /// add/remove cycles that use fresh node ids or output names. Dropping them
+    /// is safe on both call sites because the next remote send re-declares the
+    /// publisher.
+    ///
+    /// The sibling `debug_topic_watchers` map is deliberately *not* purged —
+    /// not here and not on any other path. A watcher is only ever (re)created
+    /// by a fresh `StartTopicDebugStream` from the coordinator, and neither the
+    /// `AddNode` re-add path nor the `ReplaceNode` restart re-sends one — only
+    /// a full daemon reconnect does, via the coordinator's
+    /// `restore_topic_debug_streams_for_daemon`. Remove + re-add of the same
+    /// node id is a supported flow (see `added_node_output_routing`) that
+    /// resumes under the same `OutputId(node_id, output)`, exactly like a
+    /// `ReplaceNode`, so purging the watcher would silently kill an active
+    /// `dora topic` stream across that cycle, never to recover. The map only
+    /// grows while a user holds a `dora topic` subscription, and
+    /// `StopTopicDebugStream` already reaps its entries on unsubscribe, so it is
+    /// bounded by live subscriptions rather than by add/remove churn.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
+        retain_other_nodes(&mut self.publishers, node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
@@ -1299,6 +1324,15 @@ fn select_finish_stragglers<'a>(
         .collect()
 }
 
+/// Drops every entry of an `OutputId`-keyed map whose output belongs to
+/// `node_id`, keeping all others. Extracted so the keying can be unit-tested:
+/// its one production caller purges [`RunningDataflow::publishers`], whose value
+/// type (`Arc<zenoh::pubsub::Publisher>`) can't be constructed in-process, so a
+/// direct map-shape test of that field isn't possible.
+fn retain_other_nodes<V>(map: &mut BTreeMap<OutputId, V>, node_id: &NodeId) {
+    map.retain(|output_id, _| &output_id.0 != node_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1311,6 +1345,29 @@ mod tests {
 
     fn data_id(name: &str) -> DataId {
         DataId::from(name.to_string())
+    }
+
+    #[test]
+    fn retain_other_nodes_drops_only_that_nodes_outputs() {
+        // Covers the `OutputId` keying of the `publishers` purge in
+        // `forget_node_bookkeeping`, whose real value type
+        // (`Arc<zenoh::pubsub::Publisher>`) can't be built in a unit test — a
+        // dummy value stands in for the map shape. Guards against the purge
+        // being keyed on the wrong `OutputId` field, which would silently
+        // reintroduce the per-dataflow publisher leak across add/remove cycles.
+        let node_a = node_id("node_a");
+        let node_b = node_id("node_b");
+        let mut map: BTreeMap<OutputId, u32> = BTreeMap::new();
+        map.insert(OutputId(node_a.clone(), data_id("x")), 1);
+        map.insert(OutputId(node_a.clone(), data_id("y")), 2);
+        map.insert(OutputId(node_b.clone(), data_id("x")), 3);
+
+        retain_other_nodes(&mut map, &node_a);
+
+        // Every output of node_a is gone, regardless of output name …
+        assert!(!map.keys().any(|OutputId(n, _)| n == &node_a));
+        // … while node_b keeps its entry untouched.
+        assert_eq!(map.get(&OutputId(node_b.clone(), data_id("x"))), Some(&3));
     }
 
     // ---- node_output_ids: remote-only outputs must be included ----
