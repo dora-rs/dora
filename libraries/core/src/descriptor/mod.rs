@@ -254,15 +254,22 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 CoreNodeKind::Custom(custom)
             }
             classify::NodeClass::Runtime => {
-                let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
-                CoreNodeKind::Runtime(runtime.clone())
+                // `node` is already an owned copy (see `desc.nodes.clone()`
+                // above) and `ResolvedNode::from_node` never reads
+                // `operators`, so move the operator subtree out instead of
+                // deep-cloning it a second time.
+                let runtime = node.operators.take().ok_or_eyre("no operators")?;
+                CoreNodeKind::Runtime(runtime)
             }
             classify::NodeClass::Operator => {
-                let op = node.operator.as_ref().ok_or_eyre("no operator")?;
+                // Move the operator out of the owned `node` rather than
+                // cloning its (potentially large) config; `from_node` does
+                // not read `operator`.
+                let op = node.operator.take().ok_or_eyre("no operator")?;
                 CoreNodeKind::Runtime(RuntimeNode {
                     operators: vec![OperatorDefinition {
-                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config.clone(),
+                        id: op.id.unwrap_or_else(|| default_op_id.clone()),
+                        config: op.config,
                     }],
                 })
             }
@@ -811,6 +818,59 @@ nodes:
                 assert_eq!(m.output, DataId::from("result".to_string()));
             }
             other => panic!("expected user mapping, got {other:?}"),
+        }
+    }
+
+    /// The operator subtree must survive resolution. The `Runtime`/`Operator`
+    /// arms move `node.operators` / `node.operator` out with `take()`, which
+    /// is only sound because `ResolvedNode::from_node` never reads those
+    /// fields. Pin that invariant: a regression that consumed the subtree
+    /// before building the `CoreNodeKind`, or a new `ResolvedNode` field
+    /// sourced from `node.operator` after the take (which would compile and
+    /// silently read `None`), surfaces here as a missing operator.
+    #[test]
+    fn resolve_preserves_operator_subtree() {
+        let desc: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: runtime_node
+    operators:
+      - id: op_a
+        python: a.py
+        outputs:
+          - out_a
+  - id: operator_node
+    operator:
+      python: b.py
+      outputs:
+        - out_b
+",
+        )
+        .expect("parse");
+
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+
+        // A `runtime:` (operators) node keeps every declared operator.
+        match &resolved[&NodeId::from("runtime_node".to_string())].kind {
+            CoreNodeKind::Runtime(rt) => {
+                let ids: Vec<_> = rt.operators.iter().map(|o| o.id.to_string()).collect();
+                assert_eq!(ids, ["op_a"], "runtime operators must survive resolution");
+            }
+            other => panic!("expected Runtime kind, got {other:?}"),
+        }
+
+        // A single-`operator:` node resolves to a one-operator runtime,
+        // defaulting the operator id to `op`.
+        match &resolved[&NodeId::from("operator_node".to_string())].kind {
+            CoreNodeKind::Runtime(rt) => {
+                assert_eq!(
+                    rt.operators.len(),
+                    1,
+                    "the operator must survive resolution"
+                );
+                assert_eq!(rt.operators[0].id.to_string(), SINGLE_OPERATOR_DEFAULT_ID);
+            }
+            other => panic!("expected Runtime kind, got {other:?}"),
         }
     }
 
