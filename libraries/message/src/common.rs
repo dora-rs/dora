@@ -11,20 +11,38 @@ use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId}
 
 pub use log::Level as LogLevel;
 
+/// A single log record delivered to `dora/logs` subscribers.
+///
+/// One of these is produced for every captured log line — a `tracing` event
+/// from a dora component or a line a node wrote to stdout/stderr — and carries
+/// both the message and the routing/provenance context a log consumer needs to
+/// attribute it (which dataflow, node, and daemon it came from).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[must_use]
 pub struct LogMessage {
+    /// The build this record belongs to, when it originated during a build.
     pub build_id: Option<BuildId>,
+    /// The dataflow the emitting component was part of, if any.
     pub dataflow_id: Option<DataflowId>,
+    /// The node that emitted the record, if it came from a node.
     pub node_id: Option<NodeId>,
+    /// The daemon that captured and forwarded the record.
     pub daemon_id: Option<DaemonId>,
+    /// The severity, or [`LogLevelOrStdout::Stdout`] for a captured stdout line.
     pub level: LogLevelOrStdout,
+    /// The `tracing` target (typically the emitting module path), when known.
     pub target: Option<String>,
+    /// Source module path of the emitting code, when known.
     pub module_path: Option<String>,
+    /// Source file of the emitting code, when known.
     pub file: Option<String>,
+    /// Line within [`file`](Self::file) of the emitting code, when known.
     pub line: Option<u32>,
+    /// The log text itself.
     pub message: String,
+    /// When the record was produced.
     pub timestamp: DateTime<Utc>,
+    /// Structured key/value fields attached to a `tracing` event, if any.
     pub fields: Option<BTreeMap<String, String>>,
 }
 
@@ -212,16 +230,35 @@ pub enum NodeErrorCause {
     },
 }
 
+/// How a node process ended.
+///
+/// Built from the node process's [`ExitStatus`](std::process::ExitStatus) (see
+/// the [`From`] impl), so it distinguishes a clean exit, a non-zero exit code,
+/// a killing signal (Unix), and the case where the daemon could not even wait
+/// on the process ([`IoError`](Self::IoError)).
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum NodeExitStatus {
+    /// The process exited successfully (exit code 0).
     Success,
+    /// The daemon failed to launch or wait on the process.
     IoError(String),
+    /// The process exited with this non-zero code.
     ExitCode(i32),
+    /// The process was terminated by this signal (Unix only).
     Signal(i32),
+    /// The process ended in a way that is neither a code nor a signal.
     Unknown,
 }
 
 impl NodeExitStatus {
+    /// Whether the node exited cleanly (i.e. this is [`Success`](Self::Success)).
+    ///
+    /// ```
+    /// use dora_message::common::NodeExitStatus;
+    ///
+    /// assert!(NodeExitStatus::Success.is_success());
+    /// assert!(!NodeExitStatus::ExitCode(1).is_success());
+    /// ```
     pub fn is_success(&self) -> bool {
         matches!(self, NodeExitStatus::Success)
     }
@@ -284,6 +321,7 @@ impl DataMessage {
         }
     }
 
+    /// Whether the carried payload is empty (zero bytes).
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
