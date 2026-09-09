@@ -143,13 +143,19 @@ async fn handle_connection_loop(
                 break;
             }
             // `DaemonRequest` is `#[non_exhaustive]` and this listener only
-            // implements `NodeConfig`. A version-skewed or misbehaving client
-            // may send some other request and then block on the request/reply
-            // it expects. Mirror the node TCP listener
+            // implements `NodeConfig`. A same-version client can still send a
+            // known-but-unhandled request to this port — a hand-rolled or
+            // misconfigured client — and then block on the request/reply it
+            // expects. Mirror the node TCP listener
             // (`node_communication::tcp::send_reply`): answer with an explicit
             // error so the client fails loudly instead of hanging forever, and
             // — like the `NodeConfig` arm above and `node_communication` — keep
             // serving the connection afterwards rather than tearing it down.
+            //
+            // A *newer* variant this daemon predates cannot reach here: its
+            // postcard discriminant fails to decode in `receive_message`, so
+            // that path takes the `Err(err) => break` arm above and closes the
+            // connection (the client sees EOF, not a hang).
             //
             // The reply codec is dictated by the *request*, not by this
             // listener: `apis/rust/node/src/daemon_connection/tcp.rs` decodes
@@ -161,14 +167,19 @@ async fn handle_connection_loop(
             // no-reply requests (`SendMessage`, `OutputSent`), where an
             // unsolicited frame would be left buffered and desync the next
             // request/reply on this connection.
+            //
+            // Log and report the request *kind* only, never `{other:?}`:
+            // `ExtensionStore`/`ExtensionRequest` carry multi-MB byte payloads,
+            // so Debug-formatting the whole request would amplify one such
+            // request into a huge log line and an equally huge reply body.
             Ok(Some(Timestamped { inner: other, .. })) => {
-                tracing::warn!("unsupported request on local listener: {other:?}");
+                let kind = request_kind(&other);
+                tracing::warn!("unsupported request on local listener: {kind}");
                 if !other.expects_tcp_binary_reply() {
                     continue;
                 }
                 let reply = DaemonReply::Result(Err(format!(
-                    "unsupported request on local listener (client is likely \
-                     newer than this daemon): {other:?}"
+                    "unsupported request `{kind}` on local listener"
                 )));
                 match dora_message::encode_presized(&reply, reply.encode_size_hint())
                     .wrap_err("failed to serialize DaemonReply")
@@ -182,6 +193,32 @@ async fn handle_connection_loop(
                 }
             }
         }
+    }
+}
+
+/// A short, static label for a `DaemonRequest` variant, for logs and error
+/// replies. Deliberately excludes the payload: `ExtensionStore` and
+/// `ExtensionRequest` carry multi-MB byte vectors, so Debug-formatting the
+/// whole request (`{req:?}`) would amplify one request into a huge string —
+/// both in the log and in the reply body that is then written back.
+fn request_kind(request: &DaemonRequest) -> &'static str {
+    match request {
+        DaemonRequest::Register(_) => "Register",
+        DaemonRequest::Subscribe => "Subscribe",
+        DaemonRequest::SendMessage { .. } => "SendMessage",
+        DaemonRequest::OutputSent { .. } => "OutputSent",
+        DaemonRequest::CloseOutputs(_) => "CloseOutputs",
+        DaemonRequest::OutputsDone => "OutputsDone",
+        DaemonRequest::NextEvent => "NextEvent",
+        DaemonRequest::EventStreamDropped => "EventStreamDropped",
+        DaemonRequest::NodeConfig { .. } => "NodeConfig",
+        DaemonRequest::ExtensionStore { .. } => "ExtensionStore",
+        DaemonRequest::ExtensionLoad { .. } => "ExtensionLoad",
+        DaemonRequest::ExtensionDrop { .. } => "ExtensionDrop",
+        DaemonRequest::ExtensionRequest { .. } => "ExtensionRequest",
+        // `DaemonRequest` is `#[non_exhaustive]`; a variant added later that
+        // this map has not been taught still gets a safe generic label.
+        _ => "unknown",
     }
 }
 
@@ -333,6 +370,49 @@ mod tests {
         assert!(
             matches!(reply, DaemonReply::Result(Err(ref msg)) if msg.contains("unsupported request")),
             "unexpected reply: {reply:?}"
+        );
+    }
+
+    /// The error reply must name only the request *kind*, never echo the
+    /// payload: `ExtensionRequest` carries an arbitrarily large byte vector, so
+    /// Debug-formatting the whole request would amplify a multi-MB request into
+    /// an equally large reply. Send a request with a recognizable payload and
+    /// assert the reply is the fixed kind-based string that does not contain it.
+    #[tokio::test]
+    async fn unsupported_request_reply_does_not_echo_payload() {
+        let (mut client, _events_rx) = connect_to_listener().await;
+
+        let payload = vec![0xABu8; 4096];
+        let request = DaemonRequest::ExtensionRequest {
+            namespace: "test-ns".to_string(),
+            payload: payload.clone(),
+        };
+        assert!(
+            request.expects_tcp_binary_reply(),
+            "test premise: ExtensionRequest gets a reply"
+        );
+        send_request(&mut client, request).await;
+
+        let raw =
+            socket_stream_receive_with_header_timeout(&mut client, Some(Duration::from_secs(5)))
+                .await
+                .expect("expected an error reply, not a hang");
+        let reply: DaemonReply = dora_message::decode(&raw).expect("failed to decode reply");
+        let msg = match reply {
+            DaemonReply::Result(Err(msg)) => msg,
+            other => panic!("expected DaemonReply::Result(Err(_)), got {other:?}"),
+        };
+        assert_eq!(
+            msg,
+            "unsupported request `ExtensionRequest` on local listener"
+        );
+        // The whole encoded reply frame must stay small — proof the payload was
+        // not folded into the reply body.
+        assert!(
+            raw.len() < payload.len(),
+            "reply frame ({} bytes) must not carry the {}-byte payload",
+            raw.len(),
+            payload.len()
         );
     }
 }
