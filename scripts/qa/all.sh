@@ -14,12 +14,12 @@
 #   --nightly         ~3-4 hours   Full parity with .github/workflows/nightly.yml
 #                                (deep + proptest@1000 + miri + example-smoke +
 #                                hub-smoke + ci-nightly-jobs). nightly.yml has
-#                                26 test jobs (source of truth; see CLAUDE.md
+#                                27 test jobs (source of truth; see CLAUDE.md
 #                                "Nightly CI"): example-smoke covers 4
 #                                (smoke-suite, log-sinks, service-action,
 #                                streaming); hub-smoke covers 1 (the Hub e2e);
-#                                ci-nightly-jobs.sh drives the 21
-#                                remaining with platform-aware dispatch
+#                                ci-nightly-jobs.sh drives 21 more
+#                                with platform-aware dispatch
 #                                (record-replay, cluster-smoke, cluster-e2e [Linux],
 #                                cluster-record-replay [Linux], topic-and-top-smoke,
 #                                cpu-affinity-smoke [Linux], redb-backend-smoke,
@@ -29,7 +29,10 @@
 #                                test-cross-platform, examples, cli-tests
 #                                (+cli-tests-python), bench-example, cross-check,
 #                                ros2-bridge [Linux], ros2-zenoh-humble,
-#                                ros2-zenoh-kilted, msrv, kani-proofs). Green local
+#                                ros2-zenoh-kilted, msrv, kani-proofs); wheel-smoke
+#                                has no local driver (needs maturin plus two
+#                                interpreters -- build the wheels by hand if
+#                                you need it). Green local
 #                                qa-nightly on platform X predicts a green CI
 #                                nightly for platform X's jobs.
 #                                Requires BOTH `uv` AND Python 3.12 (preflighted
@@ -189,8 +192,9 @@ For overnight runs on a powerful machine. Will run:
                                                    kani-proofs, cross-check, ros2-bridge [Linux],
                                                    ros2-zenoh-humble, ros2-zenoh-kilted.
 
-example-smoke + hub-smoke + ci-nightly-jobs together cover all 26 GHA
-nightly test jobs. A green
+example-smoke + hub-smoke + ci-nightly-jobs together cover 26 of the 27 GHA
+nightly test jobs; wheel-smoke has no local driver (needs maturin plus two
+interpreters -- build the wheels by hand if you need it). A green
 local qa-nightly on platform X predicts a green CI nightly schedule
 for platform X's jobs. (Cross-platform jobs that the dev's OS can't
 run -- e.g. ros2-bridge on macOS -- SKIP locally with a clear note.)
