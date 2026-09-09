@@ -1,0 +1,26 @@
+nodes:
+  - id: source
+    path: build/source
+    inputs:
+      fast: dora/timer/millis/10
+      slow: dora/timer/millis/1000
+    outputs:
+      - tick
+      - image
+
+  # Contestant 3 (idiomatic Dora): two separate nodes. The tick handler is
+  # never blocked because the slow image work lives in a different node that
+  # the daemon schedules independently.
+  - id: tick-handler
+    path: build/bench_node
+    inputs:
+      tick: source/tick
+    env:
+      BENCH_MODE: measure
+
+  - id: image-handler
+    path: build/bench_node
+    inputs:
+      image: source/image
+    env:
+      BENCH_MODE: slow

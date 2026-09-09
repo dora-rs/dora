@@ -194,6 +194,14 @@ struct DoraResult {
 
 Opaque Rust type. All methods take `rust::Box<OutputSender>&` as the first argument (the sender from `DoraNode::send_output`).
 
+#### Threading contract
+
+`OutputSender` is **not** shareable across threads. Most functions below take it by mutable reference, and handing two threads a mutable reference to the same box is undefined behavior on the Rust side no matter what the box contains. Keep the `rust::Box<OutputSender>` on the thread that owns the event loop.
+
+To send from other threads, clone a [`SafeOutputSender`](#safeoutputsender) handle. Both handles share one node behind one lock, so a worker's send and a main-thread send can never overlap — they serialize instead.
+
+`DoraNode::events` is independent: draining events on the main thread while workers send through a `SafeOutputSender` is safe and is the intended pattern. `Events` itself is single-threaded, exactly like `OutputSender`.
+
 #### send_output
 
 Send raw bytes on a named output.
@@ -281,6 +289,41 @@ DoraResult log_message(
     rust::String level,    // e.g. "info", "warn", "error"
     rust::String message);
 ```
+
+### SafeOutputSender
+
+Opaque Rust type: a sending handle that may be moved into, or shared by reference across, worker threads. It exposes only [`safe_send_output`](#safe_send_output) — for anything else, use the `OutputSender` on the main thread.
+
+See `examples/cxx-thread-safe-output` for a worked example, and its README for when this pattern is the right choice (usually it is not — splitting the work into a second node is both faster and more idiomatic; reach for a worker thread when the work must share in-process state).
+
+#### clone_output_sender
+
+Clone the node handle into a `SafeOutputSender`.
+
+```cpp
+rust::Box<SafeOutputSender> clone_output_sender(
+    const rust::Box<OutputSender>& sender);
+```
+
+This *borrows* the sender — `dora_node.send_output` stays valid and keeps the full API listed above. Call it as often as needed, e.g. once per worker thread.
+
+Because the handles share one node, the node is only torn down (and its outputs reported as finished to the daemon) when the **last** handle is dropped. Join your workers, or otherwise drop their handles, before letting the node go out of scope; a handle parked in a detached thread keeps the node alive indefinitely.
+
+#### safe_send_output
+
+Send raw bytes on a named output from any thread.
+
+```cpp
+DoraResult safe_send_output(
+    const SafeOutputSender& sender,
+    rust::String id,
+    rust::Slice<const uint8_t> data,
+    rust::Box<Metadata> metadata);
+```
+
+Blocks until the shared node lock is free, so concurrent callers serialize rather than race. Since the whole send happens under the lock, a send is as long as the underlying publish — do the expensive work *before* calling this, not while holding it.
+
+**Fail-stop on poison.** If a previous operation panicked while holding the lock, the daemon control channel may be mid-frame (a request written, its reply not yet consumed). Reusing it would desynchronize the framing and silently corrupt every later send, so instead the node is left poisoned and *every* subsequent operation — through either handle — returns a `DoraResult` whose `error` mentions `poisoned`. There is no recovery; the node must be restarted.
 
 ### Metadata
 
