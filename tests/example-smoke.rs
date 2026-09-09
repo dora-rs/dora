@@ -351,6 +351,50 @@ fn smoke_rust_dataflow() {
     );
 }
 
+/// Regression test for the `dora run` log-flush fix: the printer thread that
+/// drains the log channel is joined (with a bounded wait) before `dora run`
+/// returns, so a short dataflow's final node output is not lost when the
+/// process exits out from under the previously-detached printer. Runs the
+/// rust-dataflow example locally, captures stdout, and asserts the sink's
+/// output line survived to exit. A hang here (rather than the missing-line
+/// assertion) would mean the bounded join regressed into an unbounded one.
+#[test]
+fn smoke_rust_dataflow_run_flushes_logs() {
+    ensure_cli_built();
+    ensure_rust_nodes_built();
+
+    let dora = dora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let full_yaml = Path::new(manifest_dir).join("examples/rust-dataflow/dataflow.yml");
+
+    let build_status = Command::new(&dora)
+        .args(["build", full_yaml.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to run dora build");
+    assert!(build_status.success(), "dora build failed");
+
+    let output = Command::new(&dora)
+        .args(["run", full_yaml.to_str().unwrap(), "--stop-after", "10s"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run dora run");
+
+    assert!(
+        output.status.success(),
+        "dora run failed\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("sink received message:"),
+        "expected the sink's buffered stdout to be flushed by `dora run` before \
+         it returned, but the line was missing.\nstdout:\n{stdout}"
+    );
+}
+
 #[test]
 fn smoke_rust_dataflow_dynamic() {
     ensure_rust_nodes_built();

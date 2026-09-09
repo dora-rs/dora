@@ -263,10 +263,16 @@ impl Executable for Run {
         };
 
         let (log_tx, log_rx) = flume::bounded(100);
-        std::thread::spawn(move || {
+        // `printer_done` lets us wait for the printer to finish draining with a
+        // timeout (see the flush after `shutdown_timeout` below) instead of
+        // blocking on its `JoinHandle`, which could hang forever if a leaked
+        // tokio worker still holds a `Sender<LogMessage>` clone.
+        let (printer_done_tx, printer_done_rx) = std::sync::mpsc::channel();
+        let printer = std::thread::spawn(move || {
             for message in log_rx {
                 print_log_message(message, &log_config);
             }
+            let _ = printer_done_tx.send(());
         });
 
         // Drive `Daemon::run_dataflow` on a tokio worker thread, not the
@@ -311,14 +317,29 @@ impl Executable for Run {
             )
             .await
         });
-        let result = rt
-            .block_on(handle)
-            .context("dora-run daemon task panicked")??;
+        let result = rt.block_on(handle);
         // Bound runtime shutdown to prevent hanging on blocking Drop impls
         // (e.g. zenoh::Session::drop blocks tokio workers on macOS during
         // TCP teardown). Without this, `rt` drops implicitly at end of scope
         // and waits indefinitely for all worker threads to exit (#2287).
         rt.shutdown_timeout(Duration::from_secs(10));
+        // Flush the buffered log lines before returning (on both the success
+        // and daemon-error paths — a failing run's final lines are the ones the
+        // user needs most). In the normal case the daemon task has finished and
+        // the runtime is shut down, so every `Sender` clone has been dropped,
+        // the channel is closed, and the printer drains and exits. Bound the
+        // wait, though: if `shutdown_timeout` leaked a tokio worker wedged in a
+        // blocking `Drop` (the #2287 case it exists for), that worker's task —
+        // and thus a `Sender<LogMessage>` clone — is never dropped, the channel
+        // never closes, and joining the printer would hang forever. Wait at most
+        // 5s for the drain to signal; if it does, `join` returns immediately,
+        // otherwise give up the last few lines rather than hang the CLI.
+        if printer_done_rx.recv_timeout(Duration::from_secs(5)).is_ok()
+            && let Err(panic) = printer.join()
+        {
+            std::panic::resume_unwind(panic);
+        }
+        let result = result.context("dora-run daemon task panicked")??;
         handle_dataflow_result(result, None)
     }
 }
