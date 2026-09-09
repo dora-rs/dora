@@ -3238,10 +3238,6 @@ impl Daemon {
                     // every tick forever and the stderr queue leaks across
                     // repeated dynamic add/remove cycles.
                     dataflow.forget_node_bookkeeping(&node_id);
-                    // The node is gone for good and emits no more frames, so
-                    // its debug-topic watchers can go too. `ReplaceNode` must
-                    // NOT do this — see the method's doc comment.
-                    dataflow.forget_debug_topic_watchers(&node_id);
 
                     // Remove from stored descriptor (inverse of AddNode
                     // push) so descriptor-based lookups stay consistent.
@@ -3601,17 +3597,11 @@ impl Daemon {
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);
-                    // `forget_node_bookkeeping` also drops the recorded
-                    // cascading-error cause and the id's `OutputId`-keyed
-                    // remote publishers (see its doc comment). The replacement
-                    // re-declares any publisher on its next remote send.
-                    //
-                    // A fourth deliberate NON-reset belongs with the three
-                    // above: `debug_topic_watchers` is node-id-keyed
-                    // subscription state that only a fresh
-                    // `StartTopicDebugStream` can recreate, so purging it here
-                    // would silently kill an active `dora topic` stream across
-                    // the restart. It is dropped on `RemoveNode` only.
+                    // Also drops the cascading-error cause and the id's
+                    // `OutputId`-keyed remote publishers (re-declared on the
+                    // replacement's next remote send); `debug_topic_watchers`
+                    // is left intact on every path. See the method's doc
+                    // comment for the full rationale.
                     dataflow.forget_node_bookkeeping(&node_id);
                     dataflow
                         .node_stderr_most_recent
@@ -8985,17 +8975,19 @@ mod fault_tolerance_tests {
         // `node_a` incarnation is classified by its own failure, not a stale
         // upstream cause (dora-rs/dora#2927).
         assert_eq!(df.cascading_error_causes.error_caused_by(&node_a), None);
-        // … but NOT its debug-topic watchers. `ReplaceNode` calls only this
-        // method, and a replacement resumes under the same
-        // `OutputId(node_id, output)` with nothing to re-register watchers, so
-        // purging them here would silently kill an active `dora topic` stream
-        // across a fault-tolerant restart. `RemoveNode` drops them separately
-        // via `forget_debug_topic_watchers`.
+        // … but NOT its debug-topic watchers. This cleanup runs on both the
+        // `RemoveNode` and `ReplaceNode` paths, and neither re-registers a
+        // watcher afterwards (only a fresh `StartTopicDebugStream` does). Since
+        // remove + re-add and replace both resume under the same
+        // `OutputId(node_id, output)`, purging here would silently kill an
+        // active `dora topic` stream across the cycle. Watchers are never
+        // purged by node-id churn anywhere; this pins that.
         assert!(
             df.debug_topic_watchers
                 .contains_key(&OutputId(node_a.clone(), output_m.clone())),
-            "debug-topic watchers must survive `forget_node_bookkeeping`, so a \
-             ReplaceNode restart keeps an active debug stream alive"
+            "debug-topic watchers must survive `forget_node_bookkeeping` on \
+             every path, so a remove+re-add or ReplaceNode keeps an active \
+             debug stream alive"
         );
 
         // … while node_b's are untouched.
@@ -9015,46 +9007,6 @@ mod fault_tolerance_tests {
         assert!(
             df.debug_topic_watchers
                 .contains_key(&OutputId(node_b.clone(), output_m.clone()))
-        );
-    }
-
-    #[test]
-    fn forget_debug_topic_watchers_purges_only_that_node() {
-        // The `RemoveNode`-only half of the purge: a removed node emits no more
-        // frames, so its `OutputId`-keyed watchers must go, otherwise they are
-        // reaped only by an explicit unsubscribe and leak across repeated
-        // dynamic add/remove cycles. Other nodes' watchers must be untouched.
-        let mut df = test_dataflow();
-        let node_a: NodeId = "node_a".to_string().into();
-        let node_b: NodeId = "node_b".to_string().into();
-        let output_m: DataId = "message".to_string().into();
-        let output_n: DataId = "status".to_string().into();
-
-        for node in [&node_a, &node_b] {
-            for output in [&output_m, &output_n] {
-                df.debug_topic_watchers.insert(
-                    OutputId(node.clone(), output.clone()),
-                    BTreeSet::from([uuid::Uuid::new_v4()]),
-                );
-            }
-        }
-
-        df.forget_debug_topic_watchers(&node_a);
-
-        // Every output of node_a is gone, regardless of output name …
-        assert!(
-            !df.debug_topic_watchers
-                .keys()
-                .any(|OutputId(node, _)| node == &node_a)
-        );
-        // … while node_b keeps all of its watchers.
-        assert!(
-            df.debug_topic_watchers
-                .contains_key(&OutputId(node_b.clone(), output_m.clone()))
-        );
-        assert!(
-            df.debug_topic_watchers
-                .contains_key(&OutputId(node_b.clone(), output_n.clone()))
         );
     }
 

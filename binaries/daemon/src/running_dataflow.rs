@@ -479,38 +479,25 @@ impl RunningDataflow {
     /// is safe on both call sites because the next remote send re-declares the
     /// publisher.
     ///
-    /// The sibling `debug_topic_watchers` map is deliberately *not* purged here
-    /// — see [`Self::forget_debug_topic_watchers`], which the `RemoveNode` call
-    /// site invokes separately.
+    /// The sibling `debug_topic_watchers` map is deliberately *not* purged —
+    /// not here and not on any other path. A watcher is only ever (re)created
+    /// by a fresh `StartTopicDebugStream` from the coordinator, and neither the
+    /// `AddNode` re-add path nor the `ReplaceNode` restart re-sends one — only
+    /// a full daemon reconnect does, via the coordinator's
+    /// `restore_topic_debug_streams_for_daemon`. Remove + re-add of the same
+    /// node id is a supported flow (see `added_node_output_routing`) that
+    /// resumes under the same `OutputId(node_id, output)`, exactly like a
+    /// `ReplaceNode`, so purging the watcher would silently kill an active
+    /// `dora topic` stream across that cycle, never to recover. The map only
+    /// grows while a user holds a `dora topic` subscription, and
+    /// `StopTopicDebugStream` already reaps its entries on unsubscribe, so it is
+    /// bounded by live subscriptions rather than by add/remove churn.
     pub(crate) fn forget_node_bookkeeping(&mut self, node_id: &NodeId) {
         self.input_deadlines.retain(|(n, _), _| n != node_id);
         self.broken_inputs.retain(|(n, _), _| n != node_id);
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
-        self.publishers
-            .retain(|output_id, _| &output_id.0 != node_id);
-    }
-
-    /// Drops the `OutputId`-keyed debug-topic watchers registered for `node_id`
-    /// when the coordinator forwarded a `StartTopicDebugStream`.
-    ///
-    /// Otherwise they are only reaped on an explicit unsubscribe, so a
-    /// debug-watched output of a since-removed node lingers for the life of the
-    /// dataflow. A dead source produces no frames, so dropping its watchers is
-    /// safe (a later unsubscribe simply finds nothing for that output).
-    ///
-    /// This is **`RemoveNode`-only**, and deliberately not folded into
-    /// [`Self::forget_node_bookkeeping`]. A `ReplaceNode` resumes under the
-    /// *same* `OutputId(node_id, output)` and nothing on that path
-    /// re-registers watchers — they are only ever (re)created by a fresh
-    /// `StartTopicDebugStream` from the coordinator. Purging them on replace
-    /// would silently drop an active `dora topic` / debug-inspection stream
-    /// across a fault-tolerant restart, never to recover, which is exactly the
-    /// class of node-id-keyed subscription state that path preserves on
-    /// purpose.
-    pub(crate) fn forget_debug_topic_watchers(&mut self, node_id: &NodeId) {
-        self.debug_topic_watchers
-            .retain(|output_id, _| &output_id.0 != node_id);
+        retain_other_nodes(&mut self.publishers, node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
@@ -1281,6 +1268,15 @@ fn select_finish_stragglers<'a>(
         .collect()
 }
 
+/// Drops every entry of an `OutputId`-keyed map whose output belongs to
+/// `node_id`, keeping all others. Extracted so the keying can be unit-tested:
+/// its one production caller purges [`RunningDataflow::publishers`], whose value
+/// type (`Arc<zenoh::pubsub::Publisher>`) can't be constructed in-process, so a
+/// direct map-shape test of that field isn't possible.
+fn retain_other_nodes<V>(map: &mut BTreeMap<OutputId, V>, node_id: &NodeId) {
+    map.retain(|output_id, _| &output_id.0 != node_id);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1293,6 +1289,29 @@ mod tests {
 
     fn data_id(name: &str) -> DataId {
         DataId::from(name.to_string())
+    }
+
+    #[test]
+    fn retain_other_nodes_drops_only_that_nodes_outputs() {
+        // Covers the `OutputId` keying of the `publishers` purge in
+        // `forget_node_bookkeeping`, whose real value type
+        // (`Arc<zenoh::pubsub::Publisher>`) can't be built in a unit test — a
+        // dummy value stands in for the map shape. Guards against the purge
+        // being keyed on the wrong `OutputId` field, which would silently
+        // reintroduce the per-dataflow publisher leak across add/remove cycles.
+        let node_a = node_id("node_a");
+        let node_b = node_id("node_b");
+        let mut map: BTreeMap<OutputId, u32> = BTreeMap::new();
+        map.insert(OutputId(node_a.clone(), data_id("x")), 1);
+        map.insert(OutputId(node_a.clone(), data_id("y")), 2);
+        map.insert(OutputId(node_b.clone(), data_id("x")), 3);
+
+        retain_other_nodes(&mut map, &node_a);
+
+        // Every output of node_a is gone, regardless of output name …
+        assert!(!map.keys().any(|OutputId(n, _)| n == &node_a));
+        // … while node_b keeps its entry untouched.
+        assert_eq!(map.get(&OutputId(node_b.clone(), data_id("x"))), Some(&3));
     }
 
     // ---- node_output_ids: remote-only outputs must be included ----
