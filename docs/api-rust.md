@@ -434,7 +434,7 @@ pub enum TryRecvError {
 pub const ZERO_COPY_THRESHOLD: usize = 4096;
 ```
 
-Messages at or above this threshold are published through zenoh shared memory for zero-copy transfer; smaller messages are published through zenoh with a heap-buffered `put`. Outputs that cannot take the direct zenoh path — an output whose consumer lives on another daemon, for example — fall back to the daemon path (TCP) regardless of size.
+Messages at or above this threshold are published through zenoh shared memory for zero-copy transfer; smaller messages are published through zenoh with a heap-buffered `put`. Outputs that cannot take the direct zenoh path — an output whose consumer lives on another daemon, or one with a consumer declaring `queue_policy: backpressure`, for example — fall back to the daemon path (TCP) regardless of size, and that path enforces the 64 MiB daemon message limit.
 
 #### DoraArray
 
@@ -835,7 +835,7 @@ crate depends on it, so it never reaches crates.io at all.
 
 ### How this is enforced
 
-Documentation alone would not survive contact with cargo, so four mechanisms
+Documentation alone would not survive contact with cargo, so five mechanisms
 back it:
 
 1. **Exact version pins.** Workspace crates depend on each other with `=`
@@ -847,7 +847,7 @@ back it:
    `default = []`, so using it is an affirmative act recorded in the
    consumer's `Cargo.toml` rather than a warning they can tune out.
    `arrow-v58` / `arrow-v59` are the pattern.
-3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish lists in `.github/workflows/release.yml` and `.github/workflows/cargo-release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
+3. **A publish-graph gate.** `make qa-publish-graph`, also run in PR CI, fails if a published crate depends on a `publish = false` one, or if the ordered publish list in `.github/workflows/release.yml` would publish a crate before something it depends on. Which tier a crate sits in is only a document until something checks the manifests against it: #3304 was a published crate depending on an unpublished one, and nothing would have said so until a release had already uploaded half the workspace.
 4. **A pinned wheel surface.** The Python API ships as the `dora-rs` wheel,
    not as a crate, so none of the mechanisms above reach it — a rename would
    arrive on PyPI with nothing having failed first.
@@ -857,6 +857,37 @@ back it:
    name that disappears fails; a new one fails until it is filed as either
    covered or exempt, so the choice is made deliberately rather than by
    whatever the module happened to export.
+
+5. **A compatibility gate on every PR.** `make qa-breaking`, run as the
+   `Breaking changes` job in `ci.yml`, checks each surface above against the
+   last released tag. (1)-(3) are cargo mechanisms and (4) covers one wheel,
+   which between them left most of this list unguarded: the `dora` command,
+   the dataflow YAML schema, the C header, the cxx bridge and the postcard
+   wire format are all invisible to rustdoc, and a change to any of them could
+   reach users with every check green.
+
+   | Surface | Checked by |
+   |---|---|
+   | `dora-node-api`, `dora-message`, `dora-arrow-convert` | `cargo-semver-checks` against the tag |
+   | `dora-node-api-c` | declaration diff of `apis/c/node/node_api.h`, enum ordinals included |
+   | `dora-node-api-cxx` | item diff of the `#[cxx::bridge]` block |
+   | `dora-node-api-python` | mechanism (4) above |
+   | `dora-cli` — the `dora` command | `binaries/cli/cli-surface.txt`, a clap-generated snapshot |
+   | `dora-cli` — the YAML schema | JSON-Schema-aware diff: removed property, newly required property, removed enum value, `additionalProperties` closing |
+   | the wire protocol | field and variant *order* of every serde type in `dora-message` — what postcard actually encodes |
+   | the Python floor | `requires-python` and the abi3 tag in both wheels |
+
+   Everything but the first row is read out of source text or a checked-in
+   snapshot, so that half needs no compilation and runs in seconds.
+
+   Two behaviours are worth knowing before they surprise someone. It fails a
+   **major version bump**, because a 2.0 withdraws the promises every check
+   is measuring against — green and red would both be misleading, so the bump
+   has to be stated (`ALLOW_MAJOR_BUMP=1`). Separately, `cargo-semver-checks`
+   runs with `--release-type minor`: left to infer the release type from an
+   rc-to-release version move it concluded breakage was already permitted,
+   skipped all 254 lints, and reported "no semver update required" having
+   checked nothing.
 
 A consequence of (1): a patch fix in an internal crate requires re-releasing
 its dependents. With `shared-version = true` in `release.toml` that already

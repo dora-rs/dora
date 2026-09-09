@@ -1,7 +1,6 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
     time::{Duration, Instant},
 };
 
@@ -9,11 +8,8 @@ use clap::Args;
 use eyre::Context;
 
 use crate::{
-    command::{
-        Executable, default_tracing,
-        up::{detach_process, dora_executable_path},
-    },
-    common::{connect_to_coordinator, connect_with_retry},
+    command::{Executable, default_tracing, up},
+    common::connect_to_coordinator,
 };
 
 use super::config::{ClusterConfig, ZenohMesh};
@@ -52,10 +48,16 @@ impl Executable for Up {
                 s
             }
             Err(_) => {
-                start_coordinator(config.coordinator.port)?;
-                connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
-                    eyre::eyre!("timed out waiting for coordinator at {coordinator_addr}: {err}")
-                })?
+                // Shared with `dora up` so the two cannot drift apart again;
+                // the wildcard bind is what makes the coordinator reachable
+                // from the machines we are about to ssh into.
+                let startup = up::spawn_coordinator(up::CoordinatorSpawn {
+                    interface: Some(std::net::Ipv4Addr::UNSPECIFIED.into()),
+                    port: Some(config.coordinator.port),
+                    auth: false,
+                })
+                .wrap_err("failed to start dora coordinator")?;
+                up::wait_for_coordinator_start(coordinator_addr, config.coordinator.port, startup)?
             }
         };
 
@@ -188,23 +190,6 @@ impl Executable for Up {
             )
         }
     }
-}
-
-fn start_coordinator(port: u16) -> eyre::Result<()> {
-    let path = dora_executable_path()?;
-    let mut cmd = Command::new(path);
-    cmd.args([
-        "coordinator",
-        "--interface",
-        "0.0.0.0",
-        "--port",
-        &port.to_string(),
-        "--quiet",
-    ]);
-    detach_process(&mut cmd);
-    cmd.spawn().wrap_err("failed to start dora coordinator")?;
-    println!("Started coordinator on 0.0.0.0:{port}");
-    Ok(())
 }
 
 /// Print the tail of each unreachable daemon's log.

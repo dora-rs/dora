@@ -2,23 +2,42 @@ pub fn extract_err_from_stderr(stderr: Vec<String>) -> String {
     const FALLBACK_LINES: usize = 10;
     let mut matcher = StderrMatcher::default();
 
-    // try to find the start of the error message by looking for known markers
-    let mut start_line_idx_from_end = None;
+    // Try to find the start of the error message by scanning the captured
+    // lines in reverse for known markers.
+    //
+    // A positive marker (`Error:`, a panic line, a Python traceback, …) is
+    // always preferred: it points at where the error actually begins. A
+    // negative marker (`Warning:`) is *not* part of an error message; it only
+    // bounds the error region, so the error — if any — is the text that follows
+    // it. We therefore remember the closest-to-end negative marker as a
+    // fallback boundary but keep scanning further back for a positive marker,
+    // so a warning printed *after* a panic (e.g. during shutdown/unwind) can no
+    // longer swallow the panic that preceded it (#3411).
+    let mut positive_idx_from_end = None;
+    let mut negative_idx_from_end = None;
     for (idx, line) in stderr.iter().rev().enumerate() {
         if matcher.is_error_start_marker(line) {
-            start_line_idx_from_end = Some(idx);
+            positive_idx_from_end = Some(idx);
             break;
         }
-        // check if the line is a negative marker, i.e. definitely not part of an error message
-        if matcher.is_negative_marker(line) {
-            // we found a line that is definitely not part of an error message
-            // -> take the line of the previous iteration as the start of the error message
-            start_line_idx_from_end = Some(idx.saturating_sub(1));
-            break;
+        // Only the first (closest-to-end) negative marker matters as a boundary;
+        // record it but keep looking for a real error marker further back.
+        if negative_idx_from_end.is_none() && matcher.is_negative_marker(line) {
+            negative_idx_from_end = Some(idx);
         }
     }
-    // default to last FALLBACK_LINES lines if no start marker was found
-    let start_line_idx_from_end = start_line_idx_from_end.unwrap_or(FALLBACK_LINES - 1);
+
+    let start_line_idx_from_end = match (positive_idx_from_end, negative_idx_from_end) {
+        // A real error marker wins, wherever it sits relative to the warning.
+        (Some(idx), _) => idx,
+        // No positive marker: the error is the text *after* the warning line, so
+        // start one line closer to the end and exclude the warning itself. If
+        // the warning is the very last line there is no such text, so fall back.
+        (None, Some(0)) => FALLBACK_LINES - 1,
+        (None, Some(idx)) => idx - 1,
+        // Default to the last FALLBACK_LINES lines if no marker was found.
+        (None, None) => FALLBACK_LINES - 1,
+    };
 
     let start_line_idx = stderr
         .len()
@@ -126,12 +145,13 @@ mod tests {
         assert_eq!(result, "Error: crash\ntrace\n");
     }
 
-    // T5: Negative marker boundary — Warning is the last line (idx==0)
+    // T5: Positive marker followed by a trailing Warning — the earlier `Error:`
+    // wins over the closer negative marker instead of being swallowed by it.
     #[test]
     fn test_negative_marker_last_line() {
         let input = lines("Error: something\nWarning: done");
         let result = extract_err_from_stderr(input);
-        assert_eq!(result, "Warning: done\n");
+        assert_eq!(result, "Error: something\nWarning: done\n");
     }
 
     // T6: Python SyntaxError with File line — real Python output order
@@ -208,5 +228,34 @@ mod tests {
         ];
         let result = extract_err_from_stderr(input);
         assert_eq!(result, "Error: crash\ntrace\n");
+    }
+
+    // T14: Panic followed by a trailing `Warning:` — the panic must win over the
+    // later negative marker, not be discarded by it (regression for #3411).
+    #[test]
+    fn test_panic_then_trailing_warning() {
+        let input = lines(
+            "thread 'main' panicked at src/lib.rs:10:5:\n\
+             called `Option::unwrap()` on a `None` value\n\
+             note: run with RUST_BACKTRACE=1 environment variable to display a backtrace\n\
+             Warning: dropping connection during shutdown",
+        );
+        let result = extract_err_from_stderr(input);
+        assert_eq!(
+            result,
+            "thread 'main' panicked at src/lib.rs:10:5:\n\
+             called `Option::unwrap()` on a `None` value\n\
+             note: run with RUST_BACKTRACE=1 environment variable to display a backtrace\n\
+             Warning: dropping connection during shutdown\n"
+        );
+    }
+
+    // T15: Negative marker with no positive marker — the error is the text that
+    // follows the warning, and the warning line itself is excluded.
+    #[test]
+    fn test_negative_marker_only_excludes_warning() {
+        let input = lines("startup ok\nWarning: retrying\nconnection refused\naborting");
+        let result = extract_err_from_stderr(input);
+        assert_eq!(result, "connection refused\naborting\n");
     }
 }

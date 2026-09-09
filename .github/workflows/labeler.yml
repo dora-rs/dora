@@ -9,7 +9,7 @@ jobs:
     permissions:
       issues: write
     steps:
-      - uses: github/issue-labeler@v3.1 #May not be the latest version
+      - uses: github/issue-labeler@ccca1e16fcb66762200e616fc29b57b940c1cb67 # v3.1 (not the latest; pinned to preserve current behavior)
         with:
           repo-token: "${{ github.token }}"
           configuration-path: .github/labeler.yml

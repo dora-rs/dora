@@ -1,7 +1,6 @@
 use dora_cli::{BuildConfig, build, run};
 use eyre::Context;
 use std::{path::Path, sync::mpsc};
-use tokio;
 
 use process_wrap::tokio::{ChildWrapper, CommandWrap};
 

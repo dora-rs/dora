@@ -26,6 +26,13 @@ pub fn encode<T: serde::Serialize>(value: &T) -> postcard::Result<Vec<u8>> {
     encode_presized(value, 0)
 }
 
+/// Exact length `value` takes in the binary wire format, computed without
+/// producing the encoding (bulk payloads are counted, not copied). Lets a
+/// sender size a frame before committing to it.
+pub fn serialized_size<T: serde::Serialize>(value: &T) -> postcard::Result<usize> {
+    postcard::experimental::serialized_size(value)
+}
+
 /// [`encode`], for a message carrying `bulk_bytes` bytes of bulk payload.
 ///
 /// The encoder writes into a `Vec` that would otherwise start empty and

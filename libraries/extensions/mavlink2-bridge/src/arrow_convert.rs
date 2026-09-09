@@ -19,11 +19,11 @@ use arrow::array::{
 };
 use arrow::datatypes::{
     ArrowPrimitiveType, DataType, Field, Float32Type, Int8Type, Int16Type, Int32Type, Schema,
-    UInt8Type, UInt16Type, UInt32Type, UInt64Type,
+    SchemaRef, UInt8Type, UInt16Type, UInt32Type, UInt64Type,
 };
 use mavlink::dialects::common;
 use num_traits::FromPrimitive;
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 /// Bidirectional conversion between a MAVLink 2 message struct and a 1-row
 /// Apache Arrow `RecordBatch`. Each impl is symmetric: the schema returned
@@ -62,7 +62,16 @@ use std::sync::Arc;
 /// [`to_record_batch`]: MavlinkArrow::to_record_batch
 /// [`from_record_batch`]: MavlinkArrow::from_record_batch
 pub trait MavlinkArrow: Sized {
-    fn schema() -> Schema;
+    /// The Arrow schema for this message type.
+    ///
+    /// Each impl caches its schema in a per-type `LazyLock<SchemaRef>` and
+    /// returns a clone of the `Arc`, which is just a refcount bump: no `Field`
+    /// (and no owned name `String`) is rebuilt, and — because the cached value
+    /// is already a `SchemaRef` — `to_record_batch` hands it straight to
+    /// `RecordBatch::try_new` without a fresh `Arc<Schema>` allocation.
+    /// `to_record_batch` runs once per decoded MAVLink frame on the telemetry
+    /// read path, so rebuilding the schema there was pure per-frame allocation.
+    fn schema() -> SchemaRef;
     fn to_record_batch(&self) -> BridgeResult<RecordBatch>;
     fn from_record_batch(batch: &RecordBatch) -> BridgeResult<Self>;
 }
@@ -75,8 +84,8 @@ fn missing(name: &str) -> BridgeError {
     BridgeError::Config(format!("missing column: {name}"))
 }
 
-fn build(schema: Schema, columns: Vec<ArrayRef>) -> BridgeResult<RecordBatch> {
-    Ok(RecordBatch::try_new(Arc::new(schema), columns)?)
+fn build(schema: SchemaRef, columns: Vec<ArrayRef>) -> BridgeResult<RecordBatch> {
+    Ok(RecordBatch::try_new(schema, columns)?)
 }
 
 // readers
@@ -187,15 +196,20 @@ fn decode_enum<E: FromPrimitive>(v: u32, name: &str) -> BridgeResult<E> {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::HEARTBEAT_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("custom_mode", DataType::UInt32, false),
-            Field::new("mavtype", DataType::UInt32, false),
-            Field::new("autopilot", DataType::UInt32, false),
-            Field::new("base_mode", DataType::UInt8, false),
-            Field::new("system_status", DataType::UInt32, false),
-            Field::new("mavlink_version", DataType::UInt8, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("custom_mode", DataType::UInt32, false),
+                    Field::new("mavtype", DataType::UInt32, false),
+                    Field::new("autopilot", DataType::UInt32, false),
+                    Field::new("base_mode", DataType::UInt8, false),
+                    Field::new("system_status", DataType::UInt32, false),
+                    Field::new("mavlink_version", DataType::UInt8, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -229,22 +243,27 @@ impl MavlinkArrow for common::HEARTBEAT_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::SYS_STATUS_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("onboard_control_sensors_present", DataType::UInt32, false),
-            Field::new("onboard_control_sensors_enabled", DataType::UInt32, false),
-            Field::new("onboard_control_sensors_health", DataType::UInt32, false),
-            Field::new("load", DataType::UInt16, false),
-            Field::new("voltage_battery", DataType::UInt16, false),
-            Field::new("current_battery", DataType::Int16, false),
-            Field::new("drop_rate_comm", DataType::UInt16, false),
-            Field::new("errors_comm", DataType::UInt16, false),
-            Field::new("errors_count1", DataType::UInt16, false),
-            Field::new("errors_count2", DataType::UInt16, false),
-            Field::new("errors_count3", DataType::UInt16, false),
-            Field::new("errors_count4", DataType::UInt16, false),
-            Field::new("battery_remaining", DataType::Int8, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("onboard_control_sensors_present", DataType::UInt32, false),
+                    Field::new("onboard_control_sensors_enabled", DataType::UInt32, false),
+                    Field::new("onboard_control_sensors_health", DataType::UInt32, false),
+                    Field::new("load", DataType::UInt16, false),
+                    Field::new("voltage_battery", DataType::UInt16, false),
+                    Field::new("current_battery", DataType::Int16, false),
+                    Field::new("drop_rate_comm", DataType::UInt16, false),
+                    Field::new("errors_comm", DataType::UInt16, false),
+                    Field::new("errors_count1", DataType::UInt16, false),
+                    Field::new("errors_count2", DataType::UInt16, false),
+                    Field::new("errors_count3", DataType::UInt16, false),
+                    Field::new("errors_count4", DataType::UInt16, false),
+                    Field::new("battery_remaining", DataType::Int8, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -298,11 +317,16 @@ impl MavlinkArrow for common::SYS_STATUS_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::SYSTEM_TIME_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_unix_usec", DataType::UInt64, false),
-            Field::new("time_boot_ms", DataType::UInt32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_unix_usec", DataType::UInt64, false),
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -325,16 +349,21 @@ impl MavlinkArrow for common::SYSTEM_TIME_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::ATTITUDE_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_boot_ms", DataType::UInt32, false),
-            Field::new("roll", DataType::Float32, false),
-            Field::new("pitch", DataType::Float32, false),
-            Field::new("yaw", DataType::Float32, false),
-            Field::new("rollspeed", DataType::Float32, false),
-            Field::new("pitchspeed", DataType::Float32, false),
-            Field::new("yawspeed", DataType::Float32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                    Field::new("roll", DataType::Float32, false),
+                    Field::new("pitch", DataType::Float32, false),
+                    Field::new("yaw", DataType::Float32, false),
+                    Field::new("rollspeed", DataType::Float32, false),
+                    Field::new("pitchspeed", DataType::Float32, false),
+                    Field::new("yawspeed", DataType::Float32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -370,17 +399,22 @@ impl MavlinkArrow for common::ATTITUDE_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::ATTITUDE_QUATERNION_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_boot_ms", DataType::UInt32, false),
-            Field::new("q1", DataType::Float32, false),
-            Field::new("q2", DataType::Float32, false),
-            Field::new("q3", DataType::Float32, false),
-            Field::new("q4", DataType::Float32, false),
-            Field::new("rollspeed", DataType::Float32, false),
-            Field::new("pitchspeed", DataType::Float32, false),
-            Field::new("yawspeed", DataType::Float32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                    Field::new("q1", DataType::Float32, false),
+                    Field::new("q2", DataType::Float32, false),
+                    Field::new("q3", DataType::Float32, false),
+                    Field::new("q4", DataType::Float32, false),
+                    Field::new("rollspeed", DataType::Float32, false),
+                    Field::new("pitchspeed", DataType::Float32, false),
+                    Field::new("yawspeed", DataType::Float32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -418,16 +452,21 @@ impl MavlinkArrow for common::ATTITUDE_QUATERNION_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::LOCAL_POSITION_NED_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_boot_ms", DataType::UInt32, false),
-            Field::new("x", DataType::Float32, false),
-            Field::new("y", DataType::Float32, false),
-            Field::new("z", DataType::Float32, false),
-            Field::new("vx", DataType::Float32, false),
-            Field::new("vy", DataType::Float32, false),
-            Field::new("vz", DataType::Float32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                    Field::new("x", DataType::Float32, false),
+                    Field::new("y", DataType::Float32, false),
+                    Field::new("z", DataType::Float32, false),
+                    Field::new("vx", DataType::Float32, false),
+                    Field::new("vy", DataType::Float32, false),
+                    Field::new("vz", DataType::Float32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -463,18 +502,23 @@ impl MavlinkArrow for common::LOCAL_POSITION_NED_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::GLOBAL_POSITION_INT_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_boot_ms", DataType::UInt32, false),
-            Field::new("lat", DataType::Int32, false),
-            Field::new("lon", DataType::Int32, false),
-            Field::new("alt", DataType::Int32, false),
-            Field::new("relative_alt", DataType::Int32, false),
-            Field::new("vx", DataType::Int16, false),
-            Field::new("vy", DataType::Int16, false),
-            Field::new("vz", DataType::Int16, false),
-            Field::new("hdg", DataType::UInt16, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                    Field::new("lat", DataType::Int32, false),
+                    Field::new("lon", DataType::Int32, false),
+                    Field::new("alt", DataType::Int32, false),
+                    Field::new("relative_alt", DataType::Int32, false),
+                    Field::new("vx", DataType::Int16, false),
+                    Field::new("vy", DataType::Int16, false),
+                    Field::new("vz", DataType::Int16, false),
+                    Field::new("hdg", DataType::UInt16, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -514,19 +558,24 @@ impl MavlinkArrow for common::GLOBAL_POSITION_INT_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::GPS_RAW_INT_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_usec", DataType::UInt64, false),
-            Field::new("lat", DataType::Int32, false),
-            Field::new("lon", DataType::Int32, false),
-            Field::new("alt", DataType::Int32, false),
-            Field::new("eph", DataType::UInt16, false),
-            Field::new("epv", DataType::UInt16, false),
-            Field::new("vel", DataType::UInt16, false),
-            Field::new("cog", DataType::UInt16, false),
-            Field::new("fix_type", DataType::UInt32, false),
-            Field::new("satellites_visible", DataType::UInt8, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_usec", DataType::UInt64, false),
+                    Field::new("lat", DataType::Int32, false),
+                    Field::new("lon", DataType::Int32, false),
+                    Field::new("alt", DataType::Int32, false),
+                    Field::new("eph", DataType::UInt16, false),
+                    Field::new("epv", DataType::UInt16, false),
+                    Field::new("vel", DataType::UInt16, false),
+                    Field::new("cog", DataType::UInt16, false),
+                    Field::new("fix_type", DataType::UInt32, false),
+                    Field::new("satellites_visible", DataType::UInt8, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -568,14 +617,19 @@ impl MavlinkArrow for common::GPS_RAW_INT_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::RC_CHANNELS_DATA {
-    fn schema() -> Schema {
-        let mut fields = vec![Field::new("time_boot_ms", DataType::UInt32, false)];
-        for n in 1..=18 {
-            fields.push(Field::new(format!("chan{n}_raw"), DataType::UInt16, false));
-        }
-        fields.push(Field::new("chancount", DataType::UInt8, false));
-        fields.push(Field::new("rssi", DataType::UInt8, false));
-        Schema::new(fields)
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                let mut fields = vec![Field::new("time_boot_ms", DataType::UInt32, false)];
+                for n in 1..=18 {
+                    fields.push(Field::new(format!("chan{n}_raw"), DataType::UInt16, false));
+                }
+                fields.push(Field::new("chancount", DataType::UInt8, false));
+                fields.push(Field::new("rssi", DataType::UInt8, false));
+                Schema::new(fields)
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -641,15 +695,20 @@ impl MavlinkArrow for common::RC_CHANNELS_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::RC_CHANNELS_OVERRIDE_DATA {
-    fn schema() -> Schema {
-        let mut fields = vec![
-            Field::new("target_system", DataType::UInt8, false),
-            Field::new("target_component", DataType::UInt8, false),
-        ];
-        for n in 1..=8 {
-            fields.push(Field::new(format!("chan{n}_raw"), DataType::UInt16, false));
-        }
-        Schema::new(fields)
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                let mut fields = vec![
+                    Field::new("target_system", DataType::UInt8, false),
+                    Field::new("target_component", DataType::UInt8, false),
+                ];
+                for n in 1..=8 {
+                    fields.push(Field::new(format!("chan{n}_raw"), DataType::UInt16, false));
+                }
+                Schema::new(fields)
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -691,13 +750,18 @@ impl MavlinkArrow for common::RC_CHANNELS_OVERRIDE_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::SERVO_OUTPUT_RAW_DATA {
-    fn schema() -> Schema {
-        let mut fields = vec![Field::new("time_usec", DataType::UInt32, false)];
-        for n in 1..=8 {
-            fields.push(Field::new(format!("servo{n}_raw"), DataType::UInt16, false));
-        }
-        fields.push(Field::new("port", DataType::UInt8, false));
-        Schema::new(fields)
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                let mut fields = vec![Field::new("time_usec", DataType::UInt32, false)];
+                for n in 1..=8 {
+                    fields.push(Field::new(format!("servo{n}_raw"), DataType::UInt16, false));
+                }
+                fields.push(Field::new("port", DataType::UInt8, false));
+                Schema::new(fields)
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -739,20 +803,25 @@ impl MavlinkArrow for common::SERVO_OUTPUT_RAW_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::COMMAND_LONG_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("param1", DataType::Float32, false),
-            Field::new("param2", DataType::Float32, false),
-            Field::new("param3", DataType::Float32, false),
-            Field::new("param4", DataType::Float32, false),
-            Field::new("param5", DataType::Float32, false),
-            Field::new("param6", DataType::Float32, false),
-            Field::new("param7", DataType::Float32, false),
-            Field::new("command", DataType::UInt32, false),
-            Field::new("target_system", DataType::UInt8, false),
-            Field::new("target_component", DataType::UInt8, false),
-            Field::new("confirmation", DataType::UInt8, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("param1", DataType::Float32, false),
+                    Field::new("param2", DataType::Float32, false),
+                    Field::new("param3", DataType::Float32, false),
+                    Field::new("param4", DataType::Float32, false),
+                    Field::new("param5", DataType::Float32, false),
+                    Field::new("param6", DataType::Float32, false),
+                    Field::new("param7", DataType::Float32, false),
+                    Field::new("command", DataType::UInt32, false),
+                    Field::new("target_system", DataType::UInt8, false),
+                    Field::new("target_component", DataType::UInt8, false),
+                    Field::new("confirmation", DataType::UInt8, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -796,11 +865,16 @@ impl MavlinkArrow for common::COMMAND_LONG_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::COMMAND_ACK_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("command", DataType::UInt32, false),
-            Field::new("result", DataType::UInt32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("command", DataType::UInt32, false),
+                    Field::new("result", DataType::UInt32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -839,12 +913,17 @@ impl MavlinkArrow for common::COMMAND_ACK_DATA {
 // deliberately supported by the bridge for the legacy autopilots above.
 #[allow(deprecated)]
 impl MavlinkArrow for common::SET_MODE_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("custom_mode", DataType::UInt32, false),
-            Field::new("target_system", DataType::UInt8, false),
-            Field::new("base_mode", DataType::UInt8, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("custom_mode", DataType::UInt32, false),
+                    Field::new("target_system", DataType::UInt8, false),
+                    Field::new("base_mode", DataType::UInt8, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -891,25 +970,30 @@ impl MavlinkArrow for common::SET_MODE_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::SET_POSITION_TARGET_GLOBAL_INT_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_boot_ms", DataType::UInt32, false),
-            Field::new("lat_int", DataType::Int32, false),
-            Field::new("lon_int", DataType::Int32, false),
-            Field::new("alt", DataType::Float32, false),
-            Field::new("vx", DataType::Float32, false),
-            Field::new("vy", DataType::Float32, false),
-            Field::new("vz", DataType::Float32, false),
-            Field::new("afx", DataType::Float32, false),
-            Field::new("afy", DataType::Float32, false),
-            Field::new("afz", DataType::Float32, false),
-            Field::new("yaw", DataType::Float32, false),
-            Field::new("yaw_rate", DataType::Float32, false),
-            Field::new("type_mask", DataType::UInt16, false),
-            Field::new("target_system", DataType::UInt8, false),
-            Field::new("target_component", DataType::UInt8, false),
-            Field::new("coordinate_frame", DataType::UInt32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                    Field::new("lat_int", DataType::Int32, false),
+                    Field::new("lon_int", DataType::Int32, false),
+                    Field::new("alt", DataType::Float32, false),
+                    Field::new("vx", DataType::Float32, false),
+                    Field::new("vy", DataType::Float32, false),
+                    Field::new("vz", DataType::Float32, false),
+                    Field::new("afx", DataType::Float32, false),
+                    Field::new("afy", DataType::Float32, false),
+                    Field::new("afz", DataType::Float32, false),
+                    Field::new("yaw", DataType::Float32, false),
+                    Field::new("yaw_rate", DataType::Float32, false),
+                    Field::new("type_mask", DataType::UInt16, false),
+                    Field::new("target_system", DataType::UInt8, false),
+                    Field::new("target_component", DataType::UInt8, false),
+                    Field::new("coordinate_frame", DataType::UInt32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -971,25 +1055,30 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_GLOBAL_INT_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::SET_POSITION_TARGET_LOCAL_NED_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![
-            Field::new("time_boot_ms", DataType::UInt32, false),
-            Field::new("x", DataType::Float32, false),
-            Field::new("y", DataType::Float32, false),
-            Field::new("z", DataType::Float32, false),
-            Field::new("vx", DataType::Float32, false),
-            Field::new("vy", DataType::Float32, false),
-            Field::new("vz", DataType::Float32, false),
-            Field::new("afx", DataType::Float32, false),
-            Field::new("afy", DataType::Float32, false),
-            Field::new("afz", DataType::Float32, false),
-            Field::new("yaw", DataType::Float32, false),
-            Field::new("yaw_rate", DataType::Float32, false),
-            Field::new("type_mask", DataType::UInt16, false),
-            Field::new("target_system", DataType::UInt8, false),
-            Field::new("target_component", DataType::UInt8, false),
-            Field::new("coordinate_frame", DataType::UInt32, false),
-        ])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from({
+                Schema::new(vec![
+                    Field::new("time_boot_ms", DataType::UInt32, false),
+                    Field::new("x", DataType::Float32, false),
+                    Field::new("y", DataType::Float32, false),
+                    Field::new("z", DataType::Float32, false),
+                    Field::new("vx", DataType::Float32, false),
+                    Field::new("vy", DataType::Float32, false),
+                    Field::new("vz", DataType::Float32, false),
+                    Field::new("afx", DataType::Float32, false),
+                    Field::new("afy", DataType::Float32, false),
+                    Field::new("afz", DataType::Float32, false),
+                    Field::new("yaw", DataType::Float32, false),
+                    Field::new("yaw_rate", DataType::Float32, false),
+                    Field::new("type_mask", DataType::UInt16, false),
+                    Field::new("target_system", DataType::UInt8, false),
+                    Field::new("target_component", DataType::UInt8, false),
+                    Field::new("coordinate_frame", DataType::UInt32, false),
+                ])
+            })
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {
@@ -1049,8 +1138,15 @@ impl MavlinkArrow for common::SET_POSITION_TARGET_LOCAL_NED_DATA {
 // -----------------------------------------------------------------------------
 
 impl MavlinkArrow for common::MISSION_CURRENT_DATA {
-    fn schema() -> Schema {
-        Schema::new(vec![Field::new("seq", DataType::UInt16, false)])
+    fn schema() -> SchemaRef {
+        static SCHEMA: LazyLock<SchemaRef> = LazyLock::new(|| {
+            SchemaRef::from(Schema::new(vec![Field::new(
+                "seq",
+                DataType::UInt16,
+                false,
+            )]))
+        });
+        SCHEMA.clone()
     }
 
     fn to_record_batch(&self) -> BridgeResult<RecordBatch> {

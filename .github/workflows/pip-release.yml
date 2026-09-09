@@ -95,8 +95,8 @@ jobs:
           - path: apis/python/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: rustup default ${{ env.RUST_VERSION }}
@@ -169,8 +169,8 @@ jobs:
           - path: apis/python/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
@@ -211,8 +211,8 @@ jobs:
       env:
         CFLAGS_armv7_unknown_linux_musleabihf: "-mfpu=vfpv3-d16"
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build Wheels
@@ -244,8 +244,8 @@ jobs:
           - path: apis/python/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           architecture: ${{ matrix.platform.target }}
@@ -280,8 +280,8 @@ jobs:
           - path: apis/python/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build wheels
@@ -311,7 +311,7 @@ jobs:
           - path: apis/python/cli
             name: dora-rs-cli
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Build sdist
         uses: PyO3/maturin-action@v1
         with:

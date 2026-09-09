@@ -702,6 +702,7 @@
       ]
     },
     "OperatorId": {
+      "description": "The identifier of an operator running inside a `dora runtime` node.\n\nAn operator is addressed as `<node_id>/<operator_id>/<output_id>`, so an\n`OperatorId` is the middle segment of a runtime output's fully-qualified\nname.\n\nUnlike [`NodeId`] and [`DataId`], an `OperatorId` is **not** validated:\n[`FromStr`] is [`Infallible`] and [`From<String>`] accepts any string\nverbatim (this is why it derives `Deserialize` directly rather than through\na validating deserializer). Callers are responsible for not embedding a `/`\nin an operator id — a `/` collides with the `<node>/<operator>/<output>`\naddressing separator and makes the operator unaddressable (it would resolve\nto a different operator/output split).\n\n```\nuse dora_message::id::OperatorId;\n\n// Construction is infallible from both `&str` and `String`:\nlet from_str: OperatorId = \"detector\".parse().unwrap(); // FromStr is Infallible\nlet from_string = OperatorId::from(\"detector\".to_string());\nassert_eq!(from_str, from_string);\n\n// Display and AsRef expose the underlying id:\nassert_eq!(from_str.to_string(), \"detector\");\nassert_eq!(from_str.as_ref(), \"detector\");\n```",
       "type": "string"
     },
     "OutputFraming": {

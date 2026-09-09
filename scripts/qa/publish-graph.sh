@@ -11,13 +11,9 @@
 #      had an optional dependency on `dora-tensor-pool` (`publish = false`).
 #
 #   2. A published crate's workspace dependency is missing from — or comes
-#      *after* it in — the ordered publish lists in `release.yml` /
-#      `cargo-release.yml`. Marking a crate publishable is only half the
-#      fix; if the lists are not updated in the same change, CI stays
-#      green and the failure moves to release time.
-#
-# Both lists are maintained by hand and each carries a "keep in sync with
-# the other" comment, so this script also checks they are identical.
+#      *after* it in — the ordered publish list in `release.yml`. Marking a
+#      crate publishable is only half the fix; if the list is not updated in
+#      the same change, CI stays green and the failure moves to release time.
 #
 # Which dependencies count: all of them, in every kind. `cargo package`
 # strips only dev-dependencies declared without a version requirement
@@ -43,13 +39,12 @@ cargo metadata --format-version 1 --no-deps >"$META"
 python3 - \
   "$META" \
   .github/workflows/release.yml \
-  .github/workflows/cargo-release.yml \
   <<'PY'
 import json
 import re
 import sys
 
-meta_path, release_yml, cargo_release_yml = sys.argv[1:4]
+meta_path, release_yml = sys.argv[1:3]
 
 with open(meta_path, encoding="utf-8") as f:
     meta = json.load(f)
@@ -89,39 +84,22 @@ for name, pkg in sorted(packages.items()):
             )
 
 
-# --- 2. the two ordered publish lists must agree --------------------------
+# --- 2. the ordered publish list must be well formed ----------------------
 def read_release_yml(path):
     with open(path, encoding="utf-8") as f:
         block = re.search(r"^\s*CRATES=\((.*?)^\s*\)", f.read(), re.S | re.M)
     if block is None:
         sys.exit(f"could not find the CRATES=(...) list in {path}")
     # Drop shell comments, so a comment inside the array is not read as a
-    # crate name (`cargo-release.yml`'s list is already comment-tolerant:
-    # only `publish_if_not_exists` lines are matched there).
+    # crate name.
     lines = [ln.split("#", 1)[0] for ln in block.group(1).splitlines()]
     return " ".join(lines).split()
 
 
-def read_cargo_release_yml(path):
-    with open(path, encoding="utf-8") as f:
-        return re.findall(r"^\s*publish_if_not_exists\s+(\S+)", f.read(), re.M)
-
-
 release_list = read_release_yml(release_yml)
-cargo_release_list = read_cargo_release_yml(cargo_release_yml)
 
 if not release_list:
     sys.exit(f"{release_yml}: publish list is empty")
-
-if release_list != cargo_release_list:
-    errors.append(
-        f"{release_yml} and {cargo_release_yml} publish lists differ "
-        "(they must list the same crates in the same order):\n"
-        f"      only in {release_yml}: "
-        f"{sorted(set(release_list) - set(cargo_release_list)) or 'none'}\n"
-        f"      only in {cargo_release_yml}: "
-        f"{sorted(set(cargo_release_list) - set(release_list)) or 'none'}"
-    )
 
 seen = set()
 for name in release_list:

@@ -51,10 +51,15 @@ pub struct NodeConfig {
 /// [`NodeConfig::output_routing`].
 #[derive(Debug, Default, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OutputRouting {
-    /// Some consumer of this output runs under another daemon. All sends must
-    /// then go through this node's daemon so its inter-daemon forwarding can
-    /// reach them (dora #2738) — the direct node-to-node zenoh mesh is
-    /// same-machine only.
+    /// This output must stay on the reliable daemon path for the node's
+    /// lifetime; it gets no direct zenoh publisher. The daemon sets it when
+    /// some consumer runs under another daemon (only this node's daemon can
+    /// feed inter-daemon forwarding, dora #2738 — the direct node-to-node
+    /// zenoh mesh is same-machine only), when a remote static consumer has no
+    /// dialable endpoint or watches `input_timeout`, or when any consumer
+    /// declares `queue_policy: backpressure` (the direct zenoh ingress can
+    /// drop before the per-input policy applies). The full policy lives in
+    /// the daemon's `output_routing` module.
     #[serde(default)]
     pub daemon_only: bool,
     /// The static same-daemon consumers whose startup acks the producer must
@@ -227,11 +232,53 @@ impl NodeEvent {
             | NodeEvent::InputRecovered { .. }
             | NodeEvent::NodeRestarted { .. }
             | NodeEvent::AllInputsClosed
-            | NodeEvent::ParamUpdate { .. }
-            | NodeEvent::ParamDeleted { .. }
-            | NodeEvent::NodeFailed { .. } => 0,
+            | NodeEvent::ParamDeleted { .. } => 0,
+            // Payload-carrying variants: count the variable-length field so the
+            // pre-sized buffer does not realloc on encode (matches the sibling
+            // `DaemonRequest::encode_size_hint`, which counts its own payloads).
+            NodeEvent::ParamUpdate { value_json, .. } => value_json.len(),
+            NodeEvent::NodeFailed { error, .. } => error.len(),
             NodeEvent::ExtensionDropped { namespace, key } => namespace.len() + key.len(),
         };
         payload.saturating_add(PER_EVENT_ENVELOPE)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn encode_size_hint_counts_param_update_payload() {
+        let value_json = vec![0u8; 10_000];
+        let event = NodeEvent::ParamUpdate {
+            key: "some_param".to_string(),
+            value_json: value_json.clone(),
+        };
+        // The hint feeds `encode_presized`, so it must cover the payload or the
+        // pre-sized buffer reallocates while encoding — the exact cost the hint
+        // exists to avoid. Before the fix, ParamUpdate reported a flat envelope.
+        assert!(
+            event.encode_size_hint() >= value_json.len(),
+            "ParamUpdate hint ({}) must include its {}-byte value_json",
+            event.encode_size_hint(),
+            value_json.len()
+        );
+    }
+
+    #[test]
+    fn encode_size_hint_counts_node_failed_error() {
+        let error = "e".repeat(4096);
+        let event = NodeEvent::NodeFailed {
+            affected_input_ids: Vec::new(),
+            error: error.clone(),
+            source_node_id: NodeId::from("upstream".to_string()),
+        };
+        assert!(
+            event.encode_size_hint() >= error.len(),
+            "NodeFailed hint ({}) must include its {}-byte error string",
+            event.encode_size_hint(),
+            error.len()
+        );
     }
 }

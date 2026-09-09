@@ -27,8 +27,9 @@ pub(crate) fn cross_data_auth_token() -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
-/// Handshake frame: `[8-byte magic][u32 token_len][token]`, answered with
-/// a single byte (1 = accepted, 0 = rejected + connection close).
+/// Handshake frame: `[9-byte magic][u32 token_len][token]`, answered with
+/// a single byte (1 = accepted, 0 = rejected + connection close). The magic
+/// is the 9 bytes `DORA_AUTH`.
 pub(crate) const CROSS_DATA_AUTH_MAGIC: [u8; 9] = *b"DORA_AUTH";
 pub(crate) const AUTH_OK: u8 = 1;
 pub(crate) const AUTH_FAIL: u8 = 0;

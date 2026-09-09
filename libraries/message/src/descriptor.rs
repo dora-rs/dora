@@ -71,6 +71,11 @@ pub const DYNAMIC_SOURCE: &str = "dynamic";
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 #[schemars(title = "dora-rs specification")]
+// Same rationale as `Node`: keeps a new *dataflow-level* key a minor release.
+// This is where `exit_when_nodes_finish`, `health_check_interval`, `type_rules`
+// and `strict_types` landed, so it grows at least as often as `Node` does.
+// Construct with `Descriptor::new`; the fields remain `pub`.
+#[non_exhaustive]
 pub struct Descriptor {
     /// List of nodes in the dataflow
     ///
@@ -184,9 +189,35 @@ pub struct Descriptor {
     pub env: Option<BTreeMap<String, EnvValue>>,
 }
 
+impl Descriptor {
+    /// A dataflow of `nodes` with every dataflow-level option left at its
+    /// default (the state a YAML file with only a `nodes:` key deserializes
+    /// to).
+    ///
+    /// `Descriptor` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign the options you need — the
+    /// fields are all still `pub`.
+    pub fn new(nodes: Vec<Node>) -> Self {
+        Self {
+            nodes,
+            deploy: None,
+            debug: Default::default(),
+            health_check_interval: None,
+            strict_types: None,
+            exit_when_nodes_finish: None,
+            type_rules: Default::default(),
+            env: None,
+        }
+    }
+}
+
 /// A type compatibility rule declared in the dataflow YAML.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// See the note on `Node`: `type_rules:` is a dataflow-level YAML surface, so a
+// per-rule option added later (a direction flag, a coercion mode) must stay a
+// minor release. Construct with `TypeRuleDef::new`; the fields remain `pub`.
+#[non_exhaustive]
 pub struct TypeRuleDef {
     /// Source type URN
     pub from: String,
@@ -194,9 +225,43 @@ pub struct TypeRuleDef {
     pub to: String,
 }
 
+impl TypeRuleDef {
+    /// A rule declaring that `from` is compatible with `to`.
+    ///
+    /// `TypeRuleDef` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign any further options — the
+    /// fields are all still `pub`.
+    pub fn new(from: String, to: String) -> Self {
+        Self { from, to }
+    }
+}
+
 /// Specifies when a node should be restarted.
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
+// The descriptor *enums* — this one, `OutputFraming`, `DistributeStrategy`,
+// `NodeSource`, `GitRepoRev`, `EnvValue`, `OperatorSource`, `PythonSourceDef`,
+// the four `Ros2*` enums and `config::QueuePolicy` — are deliberately NOT
+// `#[non_exhaustive]`, unlike the descriptor structs.
+//
+// The cost of that is real and known: adding a variant (`restart-policy:
+// unless-stopped`, a third `output_framing`, an rsync `distribute` strategy) is
+// `enum_variant_added` — a semver-major break — so it cannot land until 2.0.
+//
+// It is deliberate because the alternative is worse here. `#[non_exhaustive]`
+// forces a `_ =>` arm in every downstream match. Marking all of them stops the
+// build with 11 such matches in `dora-core` and the ROS2 bridge alone, before
+// it even reaches the ones in `dora-daemon` and `dora-cli` — restart decisions,
+// git-ref resolution, lockfile cache keys, operator-runtime dispatch, ROS2
+// transport selection. Those crates ship in lockstep with this one, so today a
+// new variant is a compile error naming every site that must handle it; behind
+// a catch-all it becomes a silent wrong answer (a new `GitRepoRev` colliding in
+// the build lockfile key, a new `RestartPolicy` reading as "never restart").
+// Exhaustive matching is the thing actually preventing those bugs, and no
+// external consumer gets a comparable guarantee back.
+//
+// The structs have no such tension: a new field breaks only struct literals,
+// which the `::new` constructors already replace.
 pub enum RestartPolicy {
     /// Never restart the node (default)
     #[default]
@@ -213,8 +278,13 @@ pub enum RestartPolicy {
 }
 
 /// Deployment configuration for distributing nodes across machines.
-#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// Same rationale as `Node`: keeps a new deployment key a minor release.
+// Every field has a meaningful default, so `Deploy::default()` is the
+// construction entry point rather than a bespoke `new`; the fields remain
+// `pub`.
+#[non_exhaustive]
 pub struct Deploy {
     /// Target machine for deployment
     pub machine: Option<String>,
@@ -245,6 +315,11 @@ pub enum DistributeStrategy {
 /// Debug options for dataflow development and troubleshooting.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// See the note on `Node`: `debug:` is a dataflow-level YAML surface and a
+// second debug option must stay a minor release. Every field has a meaningful
+// default, so `Debug::default()` is the construction entry point; the fields
+// remain `pub`.
+#[non_exhaustive]
 pub struct Debug {
     /// When true, daemons mirror every node output to the coordinator WebSocket
     /// so that `dora topic echo`, `dora topic hz`, and `dora topic info` can
@@ -259,6 +334,22 @@ pub struct Debug {
 /// separate process and can communicate with other nodes through inputs and outputs.
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+// Adding a descriptor key must stay a *minor* release. Without this, every new
+// per-node field is `constructible_struct_adds_field` — a semver-major break
+// for `dora-message` — which turns routine feature work into a "land it before
+// the next major or wait" scramble. `Node::new` is the construction entry point
+// for other crates; the fields stay `pub`, so they are still freely readable
+// and assignable. The *wire-protocol* enums in this crate (`daemon_to_node.rs`,
+// `node_to_daemon.rs`, `daemon_to_coordinator.rs`, `daemon_to_daemon.rs`) were
+// marked for the same reason in #3151, and `RunDataflowOptions` in the daemon
+// is the existing struct-shaped precedent. The descriptor *enums* are a
+// separate axis and are not covered — see the note on `RestartPolicy`.
+//
+// The construction advice lives here and on `Node::new`, not in the `///`
+// doc: that doc is the description schemars writes into `dora-schema.json`,
+// which YAML editors show to dataflow authors, and rustdoc already flags
+// `#[non_exhaustive]` types on its own.
+#[non_exhaustive]
 pub struct Node {
     /// Unique node identifier. Must not contain `/` characters.
     ///
@@ -916,8 +1007,79 @@ pub struct Node {
     pub deploy: Option<Deploy>,
 }
 
+impl Node {
+    /// A node with the given ID and every other field left at its descriptor
+    /// default (the state a YAML node with only an `id:` key deserializes to).
+    ///
+    /// `Node` is `#[non_exhaustive]`, so other crates cannot build one with a
+    /// struct literal. Start here and assign the fields you need — they are all
+    /// still `pub`:
+    ///
+    /// ```
+    /// use dora_message::descriptor::Node;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let mut node = Node::new("camera".parse()?);
+    /// node.path = Some("./camera".to_owned());
+    /// # Ok(())
+    /// # }
+    /// ```
+    pub fn new(id: NodeId) -> Self {
+        Self {
+            id,
+            name: None,
+            description: None,
+            path: None,
+            path_sha256: None,
+            args: None,
+            env: None,
+            operators: None,
+            operator: None,
+            ros2: None,
+            outputs: Default::default(),
+            output_types: Default::default(),
+            output_framing: Default::default(),
+            inputs: Default::default(),
+            input_types: Default::default(),
+            shared_memory_pool_size: None,
+            output_metadata: Default::default(),
+            pattern: None,
+            send_stdout_as: None,
+            send_logs_as: None,
+            min_log_level: None,
+            max_log_size: None,
+            max_rotated_files: None,
+            build: None,
+            git: None,
+            hub: None,
+            branch: None,
+            tag: None,
+            rev: None,
+            restart_policy: Default::default(),
+            max_restarts: 0,
+            restart_delay: None,
+            max_restart_delay: None,
+            restart_window: None,
+            health_check_timeout: None,
+            finish_grace_secs: None,
+            module: None,
+            params: Default::default(),
+            cpu_affinity: None,
+            deploy: None,
+        }
+    }
+}
+
+/// A [`Node`] after alias resolution and defaulting, as the daemon runs it.
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
+// Same rationale as `Node`: keeps a new per-node key a minor release. This is
+// where keys that are not custom-node-specific land — `cpu_affinity` and
+// `deploy` are threaded `Node` -> `ResolvedNode` without passing through
+// `CustomNode`. Construct with `ResolvedNode::new`; the fields remain `pub`.
+// Resolution itself goes through `ResolvedNode::from_node`, the in-crate
+// literal that keeps a new field a compile error.
+#[non_exhaustive]
 pub struct ResolvedNode {
     pub id: NodeId,
     pub name: Option<String>,
@@ -936,6 +1098,51 @@ pub struct ResolvedNode {
 
 #[allow(missing_docs)]
 impl ResolvedNode {
+    /// A resolved node with the given ID and kind, and every other field left
+    /// at its default.
+    ///
+    /// `ResolvedNode` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign the fields you need — they
+    /// are all still `pub`.
+    pub fn new(id: NodeId, kind: CoreNodeKind) -> Self {
+        Self {
+            id,
+            name: None,
+            description: None,
+            env: None,
+            cpu_affinity: None,
+            deploy: None,
+            kind,
+        }
+    }
+
+    /// The resolved node for `node`'s node-level keys — `id`, `name`,
+    /// `description`, `env`, `cpu_affinity`, `deploy` — around an already
+    /// resolved `kind`. `env` is carried as declared; merging the
+    /// dataflow-level `env` into it is the caller's job.
+    ///
+    /// The kind-level keys are dropped: for a custom node
+    /// [`CustomNode::from_node`] has already moved them out, and a runtime
+    /// node's live in its `operators`.
+    ///
+    /// This is a struct literal on purpose. `ResolvedNode` is
+    /// `#[non_exhaustive]`, so a literal only compiles here, inside the
+    /// defining crate — exactly where the compiler still insists that every
+    /// field is accounted for. A field added to `ResolvedNode` is a build
+    /// error on this line, not a key that resolution silently leaves at its
+    /// default.
+    pub fn from_node(node: Node, kind: CoreNodeKind) -> Self {
+        Self {
+            id: node.id,
+            name: node.name,
+            description: node.description,
+            env: node.env,
+            cpu_affinity: node.cpu_affinity,
+            deploy: node.deploy,
+            kind,
+        }
+    }
+
     pub fn has_git_source(&self) -> bool {
         self.kind
             .as_custom()
@@ -984,6 +1191,12 @@ pub struct OperatorDefinition {
 
 #[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+// Same rationale as `Node`: keeps a new operator-level descriptor key a minor
+// release. No constructor yet because nothing constructs one outside this crate
+// — every instance comes from deserialization. Adding a constructor later is
+// itself a minor change, so only the `#[non_exhaustive]` half is time-critical;
+// open an issue if you need to build one programmatically.
+#[non_exhaustive]
 pub struct SingleOperatorDefinition {
     /// Operator identifier (optional for single operators)
     pub id: Option<OperatorId>,
@@ -993,6 +1206,16 @@ pub struct SingleOperatorDefinition {
 
 #[allow(missing_docs)]
 #[derive(Debug, Serialize, Deserialize, JsonSchema, Clone)]
+// Same rationale as `Node`: keeps a new operator-level descriptor key a minor
+// release. No constructor yet because nothing constructs one outside this crate
+// — every instance comes from deserialization. Adding a constructor later is
+// itself a minor change, so only the `#[non_exhaustive]` half is time-critical;
+// open an issue if you need to build one programmatically.
+//
+// Kept as a `//` comment deliberately: a `///` doc here is `#[serde(flatten)]`ed
+// by schemars onto `OperatorDefinition`'s entry in `dora-schema.json`, which
+// YAML editors show to dataflow authors.
+#[non_exhaustive]
 pub struct OperatorConfig {
     /// Human-readable operator name
     pub name: Option<String>,
@@ -1128,6 +1351,11 @@ impl OperatorSource {
 
 #[allow(missing_docs)]
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+// See the note on `Node`: keeps a new resolved-node field a minor release.
+// Construct with `CustomNode::new`; the fields remain `pub`. Resolution goes
+// through `CustomNode::from_node`, the in-crate literal that keeps a new field
+// a compile error rather than a silently dropped descriptor key.
+#[non_exhaustive]
 pub struct CustomNode {
     /// Path of the source code
     ///
@@ -1217,6 +1445,90 @@ pub struct CustomNode {
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
+}
+
+impl CustomNode {
+    /// A local-source node at `path` with every other field left at its
+    /// default.
+    ///
+    /// `CustomNode` is `#[non_exhaustive]`, so other crates cannot build one
+    /// with a struct literal. Start here and assign the fields you need — they
+    /// are all still `pub`.
+    pub fn new(path: String) -> Self {
+        Self {
+            path,
+            source: NodeSource::Local,
+            path_sha256: None,
+            args: None,
+            envs: None,
+            build: None,
+            send_stdout_as: None,
+            send_logs_as: None,
+            min_log_level: None,
+            max_log_size: None,
+            max_rotated_files: None,
+            restart_policy: Default::default(),
+            max_restarts: 0,
+            restart_delay: None,
+            max_restart_delay: None,
+            restart_window: None,
+            health_check_timeout: None,
+            finish_grace_secs: None,
+            run_config: NodeRunConfig::default(),
+        }
+    }
+
+    /// Move the custom-node keys out of `node` into a `CustomNode` at `path`.
+    ///
+    /// Every key that all custom-node kinds resolve identically is taken from
+    /// `node`, leaving its `Option`s empty and its collections cleared. What
+    /// stays behind are the node-level keys — `id`, `name`, `description`,
+    /// `env`, `cpu_affinity`, `deploy` — for [`ResolvedNode::from_node`] to
+    /// consume next, plus the kind-selection keys (`git`, `hub`, `operators`,
+    /// `ros2`, …) that classification has already read.
+    ///
+    /// `source` and `envs` stay at their defaults: they are the two keys whose
+    /// value depends on the node kind, so the caller sets them — `source` from
+    /// classification for a `path:` node, `envs` for the ROS2 bridge, whose
+    /// `path` is its fixed binary.
+    ///
+    /// This is a struct literal on purpose. `CustomNode` and `NodeRunConfig`
+    /// are `#[non_exhaustive]`, so a literal only compiles here, inside the
+    /// defining crate — exactly where the compiler still insists that every
+    /// field is accounted for. A key added to either struct is a build error
+    /// on this line, not a descriptor key that parses and is then silently
+    /// dropped. `dora-core`'s `every_custom_node_field_is_carried_through`
+    /// checks the values on top.
+    pub fn from_node(node: &mut Node, path: String) -> Self {
+        Self {
+            path,
+            source: NodeSource::Local,
+            path_sha256: node.path_sha256.take(),
+            args: node.args.take(),
+            envs: None,
+            build: node.build.take(),
+            send_stdout_as: node.send_stdout_as.take(),
+            send_logs_as: node.send_logs_as.take(),
+            min_log_level: node.min_log_level.take(),
+            max_log_size: node.max_log_size.take(),
+            max_rotated_files: node.max_rotated_files.take(),
+            restart_policy: node.restart_policy,
+            max_restarts: node.max_restarts,
+            restart_delay: node.restart_delay.take(),
+            max_restart_delay: node.max_restart_delay.take(),
+            restart_window: node.restart_window.take(),
+            health_check_timeout: node.health_check_timeout.take(),
+            finish_grace_secs: node.finish_grace_secs.take(),
+            run_config: NodeRunConfig {
+                inputs: std::mem::take(&mut node.inputs),
+                outputs: std::mem::take(&mut node.outputs),
+                output_types: std::mem::take(&mut node.output_types),
+                output_framing: std::mem::take(&mut node.output_framing),
+                input_types: std::mem::take(&mut node.input_types),
+                shared_memory_pool_size: node.shared_memory_pool_size.take(),
+            },
+        }
+    }
 }
 
 #[allow(missing_docs)]
@@ -1477,6 +1789,71 @@ pub struct Ros2QosConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Assert that `constructed` serializes to exactly what `yaml`
+    /// deserializes to — that a hand-written constructor agrees with the
+    /// per-field `#[serde(default)]`s.
+    ///
+    /// The two are independent sources of the same defaults, and both are
+    /// used in production: the daemon builds dynamically registered nodes
+    /// through `Node::new` (`Daemon::handle_add_node`) and declared nodes
+    /// through serde, so a divergence — say a field that later grows a
+    /// `#[serde(default = "…")]` custom default — would silently give the two
+    /// kinds different configuration.
+    fn assert_matches_yaml_defaults<T: Serialize + serde::de::DeserializeOwned>(
+        yaml: &str,
+        constructed: T,
+        what: &str,
+    ) {
+        let from_yaml: T = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(
+            serde_yaml::to_value(&from_yaml).unwrap(),
+            serde_yaml::to_value(&constructed).unwrap(),
+            "`{what}` drifted from the defaults serde applies"
+        );
+    }
+
+    /// `Node::new` must agree with what serde produces for a YAML node that
+    /// sets nothing but `id`.
+    #[test]
+    fn node_new_matches_yaml_defaults() {
+        assert_matches_yaml_defaults(
+            "id: some-node\n",
+            Node::new("some-node".to_owned().into()),
+            "Node::new",
+        );
+    }
+
+    /// The same contract for the other constructors this crate hands out.
+    ///
+    /// `Descriptor::new` is what the coordinator's `AddNode` resolution and the
+    /// daemon's bench support build from; `Deploy::default()` and
+    /// `Debug::default()` are the documented entry points for `deploy:` and
+    /// `debug:`; `NodeRunConfig::default()` is the runtime node's I/O config in
+    /// the daemon while custom nodes deserialize theirs.
+    ///
+    /// `CustomNode::new` is not covered here: `source` and `envs` have no serde
+    /// default, so there is no "nothing set" YAML for it. Its guard is
+    /// `CustomNode::from_node` — a struct literal in this crate, so a new field
+    /// is a compile error — plus
+    /// `dora_core::descriptor::tests::every_custom_node_field_is_carried_through`
+    /// for the values.
+    #[test]
+    fn constructors_match_yaml_defaults() {
+        assert_matches_yaml_defaults(
+            "nodes: []\n",
+            Descriptor::new(Vec::new()),
+            "Descriptor::new",
+        );
+        assert_matches_yaml_defaults("{}\n", Deploy::default(), "Deploy::default");
+        assert_matches_yaml_defaults("{}\n", Debug::default(), "Debug::default");
+        assert_matches_yaml_defaults("{}\n", NodeRunConfig::default(), "NodeRunConfig::default");
+        assert_matches_yaml_defaults(
+            "from: a\nto: b\n",
+            TypeRuleDef::new("a".to_owned(), "b".to_owned()),
+            "TypeRuleDef::new",
+        );
+    }
 
     #[test]
     fn ros2_transport_defaults_to_dds() {

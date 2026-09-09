@@ -1,0 +1,374 @@
+# The `dora` command surface, frozen for dora 1.x (docs/api-rust.md).
+#
+# Generated -- do not edit by hand:
+#     UPDATE_CLI_SURFACE=1 cargo test -p dora-cli --test cli_surface
+#
+# One line per command, then one per argument. Hidden commands are included:
+# `dora daemon` and `dora coordinator` are undocumented but scripted against.
+# Removing any line is a breaking change; adding one is not.
+
+dora
+dora build
+dora build | --coordinator-addr <value>
+dora build | --coordinator-port <value>
+dora build | --hub-override <value>
+dora build | --local
+dora build | --locked
+dora build | --lockfile <value>
+dora build | --offline
+dora build | --parallel
+dora build | --strict-types
+dora build | --uv
+dora build | --write-lockfile
+dora build | <dataflow> (required)
+dora clean
+dora clean | --coordinator-addr <value>
+dora clean | --coordinator-port <value>
+dora clean | -f/--format <value>
+dora clean | -q/--quiet
+dora cluster
+dora cluster down
+dora cluster down | --coordinator-addr <value>
+dora cluster down | --coordinator-port <value>
+dora cluster install
+dora cluster install | <config> (required)
+dora cluster restart
+dora cluster restart | <config> (required)
+dora cluster restart | <dataflow> (required)
+dora cluster status
+dora cluster status | --coordinator-addr <value>
+dora cluster status | --coordinator-port <value>
+dora cluster uninstall
+dora cluster uninstall | <config> (required)
+dora cluster up
+dora cluster up | <config> (required)
+dora cluster upgrade
+dora cluster upgrade | <config> (required)
+dora completion
+dora completion | <shell>
+dora coordinator
+dora coordinator | --auth
+dora coordinator | --interface <value>
+dora coordinator | --port <value>
+dora coordinator | --quiet
+dora coordinator | --store <value>
+dora daemon
+dora daemon | --allow-shell-nodes
+dora daemon | --coordinator-port <value>
+dora daemon | --labels <value>
+dora daemon | --local-listen-port <value>
+dora daemon | --machine-id <value>
+dora daemon | --quiet
+dora daemon | --rt
+dora daemon | --run-dataflow <value>
+dora daemon | --worker-threads <value>
+dora daemon | --zenoh-config-overlay <value>
+dora daemon | --zenoh-connect <value>
+dora daemon | --zenoh-listen <value>
+dora daemon | --zenoh-no-multicast
+dora daemon | --zenoh-peer <value>
+dora daemon | -c/--coordinator-addr <value>
+dora doctor
+dora doctor | --coordinator-addr <value>
+dora doctor | --coordinator-port <value>
+dora doctor | --dataflow <value>
+dora down
+dora down | --config <value>
+dora down | --coordinator-addr <value>
+dora down | --coordinator-port <value>
+dora down | --force
+dora down | alias: destroy
+dora expand
+dora expand | --module
+dora expand | <dataflow> (required)
+dora graph
+dora graph | --mermaid
+dora graph | --open
+dora graph | <dataflow> (required)
+dora hub
+dora hub fetch
+dora hub fetch | --target-dir <value>
+dora hub fetch | <target> (required)
+dora hub info
+dora hub info | --offline
+dora hub info | <package> (required)
+dora hub init
+dora hub init | <path>
+dora hub install
+dora hub install | <_args>
+dora hub list
+dora hub list | <dataflow> (required)
+dora hub outdated
+dora hub outdated | --offline
+dora hub outdated | <dataflow> (required)
+dora hub publish
+dora hub publish | --dry-run
+dora hub publish | --index <value>
+dora hub publish | --repo <value>
+dora hub publish | --rev <value>
+dora hub publish | --version <value>
+dora hub publish | <path>
+dora hub search
+dora hub search | --category <value>
+dora hub search | --offline
+dora hub search | --platform <value>
+dora hub search | <query>
+dora hub update
+dora hub update | --dry-run
+dora hub update | --offline
+dora hub update | <dataflow> (required)
+dora hub yank
+dora hub yank | --reason <value>
+dora hub yank | --undo
+dora hub yank | <package> (required)
+dora inspect
+dora inspect top
+dora inspect top | --coordinator-addr <value>
+dora inspect top | --coordinator-port <value>
+dora inspect top | --once
+dora inspect top | --refresh-interval <value>
+dora list
+dora list | --coordinator-addr <value>
+dora list | --coordinator-port <value>
+dora list | --name <value>
+dora list | --sort-by <value>
+dora list | --status <value>
+dora list | -f/--format <value>
+dora list | -q/--quiet
+dora list | alias: ps
+dora logs
+dora logs | --all-nodes
+dora logs | --coordinator-addr <value>
+dora logs | --coordinator-port <value>
+dora logs | --grep <value>
+dora logs | --level <value>
+dora logs | --local
+dora logs | --log-filter <value>
+dora logs | --log-format <value>
+dora logs | --since <value>
+dora logs | --tail <value>
+dora logs | --until <value>
+dora logs | -f/--follow
+dora logs | -n/--node <value>
+dora logs | <dataflow>
+dora logs | <legacy_node>
+dora new
+dora new | --internal-create-with-path-dependencies
+dora new | --kind <value>
+dora new | --lang <value>
+dora new | <name> (required)
+dora new | <path>
+dora node
+dora node add
+dora node add | --coordinator-addr <value>
+dora node add | --coordinator-port <value>
+dora node add | --from-yaml <value> (required)
+dora node add | -d/--dataflow <value>
+dora node connect
+dora node connect | --coordinator-addr <value>
+dora node connect | --coordinator-port <value>
+dora node connect | -d/--dataflow <value>
+dora node connect | <source> (required)
+dora node connect | <target> (required)
+dora node disconnect
+dora node disconnect | --coordinator-addr <value>
+dora node disconnect | --coordinator-port <value>
+dora node disconnect | -d/--dataflow <value>
+dora node disconnect | <source> (required)
+dora node disconnect | <target> (required)
+dora node info
+dora node info | --coordinator-addr <value>
+dora node info | --coordinator-port <value>
+dora node info | -d/--dataflow <value>
+dora node info | -f/--format <value>
+dora node info | <node> (required)
+dora node list
+dora node list | --coordinator-addr <value>
+dora node list | --coordinator-port <value>
+dora node list | -d/--dataflow <value>
+dora node list | -f/--format <value>
+dora node list | -q/--quiet
+dora node remove
+dora node remove | --coordinator-addr <value>
+dora node remove | --coordinator-port <value>
+dora node remove | --grace <value>
+dora node remove | -d/--dataflow <value>
+dora node remove | <node> (required)
+dora node replace
+dora node replace | --coordinator-addr <value>
+dora node replace | --coordinator-port <value>
+dora node replace | --from-yaml <value> (required)
+dora node replace | --grace <value>
+dora node replace | -d/--dataflow <value>
+dora node replace | <node> (required)
+dora node restart
+dora node restart | --coordinator-addr <value>
+dora node restart | --coordinator-port <value>
+dora node restart | --grace <value>
+dora node restart | -d/--dataflow <value>
+dora node restart | <node> (required)
+dora node stop
+dora node stop | --coordinator-addr <value>
+dora node stop | --coordinator-port <value>
+dora node stop | --grace <value>
+dora node stop | -d/--dataflow <value>
+dora node stop | <node> (required)
+dora param
+dora param delete
+dora param delete | --coordinator-addr <value>
+dora param delete | --coordinator-port <value>
+dora param delete | -d/--dataflow <value>
+dora param delete | <key> (required)
+dora param delete | <node> (required)
+dora param get
+dora param get | --coordinator-addr <value>
+dora param get | --coordinator-port <value>
+dora param get | -d/--dataflow <value>
+dora param get | <key> (required)
+dora param get | <node> (required)
+dora param list
+dora param list | --coordinator-addr <value>
+dora param list | --coordinator-port <value>
+dora param list | --format <value>
+dora param list | -d/--dataflow <value>
+dora param list | <node> (required)
+dora param set
+dora param set | --coordinator-addr <value>
+dora param set | --coordinator-port <value>
+dora param set | -d/--dataflow <value>
+dora param set | <key> (required)
+dora param set | <node> (required)
+dora param set | <value> (required)
+dora record
+dora record | --coordinator-addr <value>
+dora record | --coordinator-port <value>
+dora record | --name <value>
+dora record | --output-yaml <value>
+dora record | --proxy
+dora record | --topics <value>
+dora record | -o/--output <value>
+dora record | <file> (required)
+dora replay
+dora replay | --loop
+dora replay | --output-yaml <value>
+dora replay | --replace <value>
+dora replay | --speed <value>
+dora replay | <file> (required)
+dora restart
+dora restart | --coordinator-addr <value>
+dora restart | --coordinator-port <value>
+dora restart | --grace-duration <value>
+dora restart | -f/--force
+dora restart | -n/--name <value>
+dora restart | <identifier>
+dora run
+dora run | --allow-shell-nodes
+dora run | --debug
+dora run | --env <value>
+dora run | --exit-when-nodes-finish <value>
+dora run | --hub-override <value>
+dora run | --locked
+dora run | --lockfile <value>
+dora run | --log-filter <value>
+dora run | --log-format <value>
+dora run | --log-level <value>
+dora run | --stop-after <value>
+dora run | --uv
+dora run | --write-lockfile
+dora run | <dataflow> (required)
+dora runtime
+dora self
+dora self uninstall
+dora self uninstall | --force
+dora self update
+dora self update | --check-only
+dora start
+dora start | --attach
+dora start | --coordinator-addr <value>
+dora start | --coordinator-port <value>
+dora start | --debug
+dora start | --detach
+dora start | --env <value>
+dora start | --exit-when-nodes-finish <value>
+dora start | --hot-reload
+dora start | --uv
+dora start | -n/--name <value>
+dora start | <dataflow> (required)
+dora status
+dora status | --coordinator-addr <value>
+dora status | --coordinator-port <value>
+dora status | --dataflow <value>
+dora status | -f/--format <value>
+dora status | alias: check
+dora stop
+dora stop | --all
+dora stop | --coordinator-addr <value>
+dora stop | --coordinator-port <value>
+dora stop | --grace-duration <value>
+dora stop | -f/--force
+dora stop | -n/--name <value>
+dora stop | <identifier>
+dora system
+dora system status
+dora system status | --coordinator-addr <value>
+dora system status | --coordinator-port <value>
+dora system status | --dataflow <value>
+dora system status | -f/--format <value>
+dora top
+dora top | --coordinator-addr <value>
+dora top | --coordinator-port <value>
+dora top | --once
+dora top | --refresh-interval <value>
+dora topic
+dora topic echo
+dora topic echo | --coordinator-addr <value>
+dora topic echo | --coordinator-port <value>
+dora topic echo | --count <value>
+dora topic echo | --duration <value>
+dora topic echo | --format <value>
+dora topic echo | -d/--dataflow <value>
+dora topic echo | <data>
+dora topic hz
+dora topic hz | --coordinator-addr <value>
+dora topic hz | --coordinator-port <value>
+dora topic hz | --duration <value>
+dora topic hz | --window <value>
+dora topic hz | -d/--dataflow <value>
+dora topic hz | <data>
+dora topic info
+dora topic info | --coordinator-addr <value>
+dora topic info | --coordinator-port <value>
+dora topic info | --duration <value>
+dora topic info | -d/--dataflow <value>
+dora topic info | <data>
+dora topic list
+dora topic list | --coordinator-addr <value>
+dora topic list | --coordinator-port <value>
+dora topic list | --format <value>
+dora topic list | -d/--dataflow <value>
+dora topic pub
+dora topic pub | --coordinator-addr <value>
+dora topic pub | --coordinator-port <value>
+dora topic pub | --count <value>
+dora topic pub | --file <value>
+dora topic pub | -d/--dataflow <value>
+dora topic pub | <data>
+dora topic pub | <topic> (required)
+dora trace
+dora trace list
+dora trace list | --coordinator-addr <value>
+dora trace list | --coordinator-port <value>
+dora trace view
+dora trace view | --coordinator-addr <value>
+dora trace view | --coordinator-port <value>
+dora trace view | <trace_id> (required)
+dora up
+dora up | --auth
+dora up | --config <value>
+dora up | --interface <value>
+dora up | --recreate-store
+dora validate
+dora validate | --node-manifest <value>
+dora validate | --offline
+dora validate | --strict-types
+dora validate | <dataflow>
