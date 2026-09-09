@@ -2458,11 +2458,9 @@ dependencies = [
  "eyre",
  "futures-lite",
  "futures-timer",
- "prettyplease 0.2.37",
  "serde",
  "serde-big-array",
  "serde_json",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -2607,7 +2605,6 @@ dependencies = [
  "process-wrap",
  "rand 0.10.2",
  "ros2-client",
- "rust-format",
  "rustdds",
  "serde",
  "serde-big-array",
@@ -2641,11 +2638,11 @@ dependencies = [
  "glob",
  "heck",
  "nom 8.0.0",
+ "prettyplease 0.2.37",
  "proc-macro2",
  "quick-xml 0.41.0",
  "quote",
  "regex",
- "rust-format",
  "serde",
  "serde_json",
  "syn 2.0.119",
@@ -6774,17 +6771,6 @@ version = "1.0.1"
 dependencies = [
  "dora-node-api",
  "eyre",
-]
-
-[[package]]
-name = "rust-format"
-version = "0.3.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "60e7c00b6c3bf5e38a880eec01d7e829d12ca682079f8238a464def3c4b31627"
-dependencies = [
- "prettyplease 0.1.25",
- "proc-macro2",
- "syn 1.0.109",
 ]
 
 [[package]]

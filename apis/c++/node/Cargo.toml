@@ -20,8 +20,6 @@ tracing = ["dora-node-api/tracing"]
 ros2-bridge = [
     "dep:dora-ros2-bridge",
     "dep:dora-ros2-bridge-msg-gen",
-    "dep:prettyplease",
-    "dep:syn",
     "dep:serde-big-array",
     "rmw-zenoh",
 ]
@@ -42,10 +40,7 @@ chrono = { version = "0.4", features = ["serde"] }
 
 [build-dependencies]
 cxx-build = "1.0.194"
+# ROS2 message formatting goes through `dora_ros2_bridge_msg_gen::format_token_stream`
+# (prettyplease + syn 2, verbatim-enabled), so this crate no longer needs its own
+# `rust-format` / `prettyplease` build-dependency. See dora-rs/dora#2452.
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
-# Format the generated cxx-bridge messages with prettyplease + syn 2 directly,
-# instead of going through `rust-format` (which pins an internal prettyplease
-# 0.1 and needed a fragile `verbatim`-feature version-unification hack). See
-# dora-rs/dora#2452.
-prettyplease = { version = "0.2", optional = true }
-syn = { version = "2", features = ["full", "parsing"], optional = true }

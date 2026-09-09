@@ -13,7 +13,7 @@ links = "dora-ros2-bridge"
 
 [features]
 default = ["generate-messages"]
-generate-messages = ["dep:dora-ros2-bridge-msg-gen", "dep:rust-format"]
+generate-messages = ["dep:dora-ros2-bridge-msg-gen"]
 ros2-examples = []
 rmw-zenoh = ["dep:zenoh", "dep:zenoh-ext"]
 
@@ -55,9 +55,6 @@ process-wrap = { version = "9.1.0", features = ["std", "tokio1"] }
 
 [build-dependencies]
 dora-ros2-bridge-msg-gen = { workspace = true, optional = true }
-rust-format = { version = "0.3.4", features = [
-    "pretty_please",
-], optional = true }
 
 [[example]]
 name = "rust-ros2-dataflow"
