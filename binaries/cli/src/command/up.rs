@@ -707,8 +707,14 @@ pub(crate) fn down(
 }
 
 fn parse_dora_config(config_path: Option<&Path>) -> Result<UpConfig, eyre::ErrReport> {
-    let path = config_path.or_else(|| Some(Path::new("dora-config.yml")).filter(|p| p.exists()));
-    let config = match path {
+    // Only read a config file when one is passed explicitly via `--config`.
+    // We deliberately do *not* auto-detect a `dora-config.yml` in the current
+    // directory: `UpConfig` has no fields yet and uses `deny_unknown_fields`,
+    // so any non-empty `dora-config.yml` that happened to sit in the working
+    // directory (e.g. left by an unrelated tool) would fail to parse and make
+    // `dora up` / `dora down` unusable there. An explicit path still surfaces a
+    // parse error, which is what the user asked for by passing `--config`.
+    let config = match config_path {
         Some(path) => {
             let raw = fs::read_to_string(path)
                 .with_context(|| format!("failed to read `{}`", path.display()))?;
