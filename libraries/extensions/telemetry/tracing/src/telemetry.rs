@@ -1,5 +1,6 @@
 use eyre::Context as _;
 use opentelemetry::propagation::Extractor;
+use opentelemetry::trace::TraceContextExt as _;
 use opentelemetry::{Context, global};
 use opentelemetry_otlp::WithExportConfig;
 
@@ -78,6 +79,22 @@ const CONTEXT_ENTRY_SEP: char = '\n';
 /// OTel Baggage keys are stripped to prevent sensitive data from leaking
 /// across node boundaries in the dataflow.
 pub fn serialize_context(context: &Context) -> String {
+    // Fast path: with no valid active span there is nothing to propagate.
+    // Every standard text-map propagator (W3C TraceContext, B3, Jaeger,
+    // X-Ray) injects nothing when the span context is invalid, and dora
+    // installs no propagator by default, so the process-global is
+    // OpenTelemetry's no-op propagator. Either way the map below would stay
+    // empty and this returns "". Nodes commonly enable telemetry for logging
+    // without ever opening an OTel span, and `serialize_context` runs on the
+    // per-message send path (`DoraNode::send_output`) and per-event in the
+    // operator runtimes; short-circuiting here skips the
+    // `global::get_text_map_propagator` lock acquisition and dynamic dispatch
+    // on every such call. The only behavior this would change is a custom
+    // third-party propagator that chose to inject on an invalid context —
+    // none is installed.
+    if !context.span().span_context().is_valid() {
+        return String::new();
+    }
     let mut map = HashMap::new();
     global::get_text_map_propagator(|propagator| propagator.inject_context(context, &mut map));
     // Strip baggage to avoid propagating sensitive data across nodes
@@ -117,6 +134,12 @@ pub fn deserialize_to_hashmap(string_context: &str) -> HashMap<&str, &str> {
 mod tests {
     use super::service_resource;
     use opentelemetry::Key;
+    use std::sync::Mutex;
+
+    /// Serializes the tests that mutate the process-global text-map propagator
+    /// (`set_text_map_propagator` sets a single shared global with no restore),
+    /// so they don't race when the test binary runs them on separate threads.
+    static PROPAGATOR_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn service_resource_sets_service_name() {
@@ -138,9 +161,12 @@ mod tests {
         };
         use opentelemetry_sdk::propagation::TraceContextPropagator;
 
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
         // `serialize_context`/`deserialize_context` route through the process-global
-        // text-map propagator, exactly as production does; install the same W3C
-        // TraceContext propagator the daemon/runtime rely on.
+        // text-map propagator. dora installs none by default (the global is then a
+        // no-op), so this test installs the W3C TraceContext propagator to exercise
+        // the non-empty encode/decode path an embedding application would see.
         opentelemetry::global::set_text_map_propagator(TraceContextPropagator::new());
 
         // A realistic multi-member W3C `tracestate`. Members are joined with `,`
@@ -192,6 +218,72 @@ mod tests {
         assert_eq!(recovered.trace_id(), span_context.trace_id());
         assert_eq!(recovered.span_id(), span_context.span_id());
         assert_eq!(recovered.trace_state().header(), trace_state.header());
+    }
+
+    #[test]
+    fn serialize_skips_propagator_when_span_invalid() {
+        use opentelemetry::Context;
+        use opentelemetry::propagation::text_map_propagator::FieldIter;
+        use opentelemetry::propagation::{Extractor, Injector, TextMapPropagator};
+        use opentelemetry::trace::{
+            SpanContext, SpanId, TraceContextExt, TraceFlags, TraceId, TraceState,
+        };
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        // Counts how often the installed propagator's `inject_context` runs, so
+        // the test can observe whether `serialize_context` consulted it at all.
+        static INJECT_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+        #[derive(Debug)]
+        struct CountingPropagator {
+            fields: Vec<String>,
+        }
+
+        impl TextMapPropagator for CountingPropagator {
+            fn inject_context(&self, _cx: &Context, _injector: &mut dyn Injector) {
+                INJECT_CALLS.fetch_add(1, Ordering::SeqCst);
+            }
+
+            fn extract_with_context(&self, cx: &Context, _extractor: &dyn Extractor) -> Context {
+                cx.clone()
+            }
+
+            fn fields(&self) -> FieldIter<'_> {
+                FieldIter::new(&self.fields)
+            }
+        }
+
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        opentelemetry::global::set_text_map_propagator(CountingPropagator { fields: Vec::new() });
+
+        // Invalid (default) context: the fast path must return "" WITHOUT
+        // consulting the propagator. Before the fast path existed,
+        // `serialize_context` reached `global::get_text_map_propagator` here, so
+        // this assertion fails on the pre-change code — it pins the change.
+        INJECT_CALLS.store(0, Ordering::SeqCst);
+        assert_eq!(serialize_context(&Context::new()), "");
+        assert_eq!(
+            INJECT_CALLS.load(Ordering::SeqCst),
+            0,
+            "propagator must not be consulted for an invalid span context",
+        );
+
+        // A valid span context: the propagator IS consulted (the fast path is
+        // not taken), confirming the guard only short-circuits the invalid case.
+        let span_context = SpanContext::new(
+            TraceId::from_hex("0af7651916cd43dd8448eb211c80319c").unwrap(),
+            SpanId::from_hex("b7ad6b7169203331").unwrap(),
+            TraceFlags::SAMPLED,
+            true,
+            TraceState::default(),
+        );
+        let cx = Context::new().with_remote_span_context(span_context);
+        let _ = serialize_context(&cx);
+        assert_eq!(
+            INJECT_CALLS.load(Ordering::SeqCst),
+            1,
+            "propagator must be consulted when a valid span is active",
+        );
     }
 
     #[test]
