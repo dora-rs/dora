@@ -372,10 +372,23 @@ impl IndexCatalog {
             // surface the parse error if nothing else satisfies the
             // requirement. This also matches the "available versions" hint
             // below, which already tolerates a per-entry parse error.
+            //
+            // Warn on every skip, though: when a lower version then resolves we
+            // `return` before the post-loop error block, so without this log a
+            // corrupt highest entry would silently downgrade the user to an
+            // older version with no indication of why. `get_or_insert` keeps the
+            // *first* error seen — the highest matching version, since the loop
+            // walks highest-first — which is the one someone asking "why didn't
+            // I get the newest?" actually needs, rather than overwriting it with
+            // a lower version's error.
             let entry = match self.entry(&reference.namespace, &reference.name, version) {
                 Ok(entry) => entry,
                 Err(err) => {
-                    unreadable = Some(err);
+                    tracing::warn!(
+                        "skipping unreadable index entry for `{}` {version}: {err:#}",
+                        reference.key()
+                    );
+                    unreadable.get_or_insert(err);
                     continue;
                 }
             };
@@ -612,6 +625,30 @@ mod tests {
         assert!(
             format!("{err:#}").contains("could not read an index entry"),
             "unexpected error: {err:#}"
+        );
+    }
+
+    #[test]
+    fn resolve_surfaces_the_highest_unreadable_entry_when_several_are_corrupt() {
+        // When more than one matching version is unreadable (and none is
+        // installable), the surfaced error must name the *highest* corrupt
+        // version — the one a user asking "why didn't I get the newest?" cares
+        // about — not a lower one. Guards the `get_or_insert` (keep-first, since
+        // the loop walks highest-first) over a plain overwrite.
+        let (tmp, _catalog) = fixture();
+        let pkg = tmp.path().join("dora-rs/dora-yolo");
+        std::fs::write(pkg.join("0.7.0.yml"), "bogus: true\n").unwrap();
+        std::fs::write(pkg.join("0.7.1.yml"), "bogus: true\n").unwrap();
+        let catalog = IndexCatalog::open(tmp.path()).unwrap();
+        let err = catalog.resolve(&parse_ref("dora-yolo@^0.7")).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("0.7.1.yml"),
+            "expected the highest corrupt version in the error, got: {msg}"
+        );
+        assert!(
+            !msg.contains("0.7.0.yml"),
+            "the lower corrupt version's error should not be the surfaced one: {msg}"
         );
     }
 
