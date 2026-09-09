@@ -1,7 +1,7 @@
 use std::{
     any::Any,
     collections::{BTreeMap, VecDeque},
-    sync::Mutex,
+    sync::{Arc, Mutex, MutexGuard},
     time::{Duration, Instant},
     vec,
 };
@@ -356,8 +356,22 @@ mod ffi {
         fn is_dora(self: &CombinedEvent) -> bool;
         fn downcast_dora(event: CombinedEvent) -> Result<Box<DoraEvent>>;
 
-        fn create_safe_output_sender(output_sender: Box<OutputSender>) -> Box<SafeOutputSender>;
+        /// Clone the node handle into a `SafeOutputSender` that worker
+        /// threads may hold. The original `OutputSender` stays valid and
+        /// keeps the full API — this borrows it, it does not consume it.
+        ///
+        /// `SafeOutputSender` is `Send + Sync`, so one handle can be moved
+        /// into a thread or shared across several by reference. Every send
+        /// through either handle takes the same lock, so the main thread and
+        /// the workers never touch the node concurrently.
+        fn clone_output_sender(output_sender: &Box<OutputSender>) -> Box<SafeOutputSender>;
 
+        /// Send raw bytes on a named output from any thread.
+        ///
+        /// Blocks until the node lock is free. If a previous send panicked
+        /// while holding the lock, the node is poisoned and every later call
+        /// fails with an error rather than reusing a possibly torn daemon
+        /// connection.
         fn safe_send_output(
             sender: &SafeOutputSender,
             id: String,
@@ -440,7 +454,7 @@ pub mod ros2 {
 fn init_dora_node() -> eyre::Result<ffi::DoraNode> {
     let (node, events) = dora_node_api::DoraNode::init_from_env()?;
     let events = Events(events);
-    let send_output = OutputSender(node);
+    let send_output = OutputSender(Arc::new(Mutex::new(node)));
 
     Ok(ffi::DoraNode {
         events: Box::new(events),
@@ -694,7 +708,11 @@ fn close_outputs(
             Err(err) => return err,
         }
     }
-    match output_sender.0.close_outputs(ids) {
+    let mut node = match lock_node(&output_sender.0, "close_outputs") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    match node.close_outputs(ids) {
         Ok(()) => ffi::DoraResult {
             error: String::new(),
         },
@@ -706,13 +724,15 @@ fn close_outputs(
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn node_config_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
-    serde_json::to_string(output_sender.0.node_config())
+    let node = lock_node(&output_sender.0, "node_config_json").map_err(|e| eyre!(e))?;
+    serde_json::to_string(node.node_config())
         .map_err(|e| eyre!("failed to serialize node config: {e}"))
 }
 
 #[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
 fn dataflow_descriptor_json(output_sender: &Box<OutputSender>) -> eyre::Result<String> {
-    let desc = output_sender.0.dataflow_descriptor()?;
+    let node = lock_node(&output_sender.0, "dataflow_descriptor_json").map_err(|e| eyre!(e))?;
+    let desc = node.dataflow_descriptor()?;
     serde_json::to_string(desc).map_err(|e| eyre!("failed to serialize dataflow descriptor: {e}"))
 }
 
@@ -1101,45 +1121,71 @@ unsafe fn event_as_arrow_input_with_info(
     }
 }
 
-pub struct OutputSender(dora_node_api::DoraNode);
-/// Thread-safe wrapper around `OutputSender`.
+/// The node, shared between the main thread's [`OutputSender`] and every
+/// [`SafeOutputSender`] handed to a worker thread.
 ///
-/// The `Mutex` serializes access to the inner `DoraNode`, so multiple
-/// worker threads can call `safe_send_output` concurrently and the FFI
-/// layer still sees the `&mut DoraNode` exclusivity it requires. The
-/// wrapper is shared across threads by reference (`&SafeOutputSender`),
-/// so no `Arc` is needed — `SafeOutputSender` is `Sync`.
+/// The `Mutex` serializes access so each FFI call still sees the
+/// `&mut DoraNode` exclusivity it requires; the `Arc` is what lets the main
+/// thread keep the full API while workers hold a sending handle. Both are
+/// needed: a bare `Mutex` behind one handle would force callers to give up
+/// the original sender, which on the C++ side means a null `Box` and a
+/// segfault on the next `close_outputs` / `node_config_json` / `log_message`.
 ///
-/// **Ownership:** `create_safe_output_sender` takes the `Box<OutputSender>`
-/// by value, consuming it. After calling it, the original `DoraNode.send_output`
-/// on the C++ side is invalidated — any subsequent use (e.g. `node_config_json`,
-/// `close_outputs`, `log_message`) is use-after-move. This is the intended
-/// opt-in behavior: users who want thread-safe output give up the old API.
-pub struct SafeOutputSender {
-    inner: Mutex<OutputSender>,
+/// The node is dropped — and its outputs reported as finished to the daemon —
+/// only when the last handle goes away, so C++ callers must join their workers
+/// before letting the node leave scope.
+type SharedNode = Arc<Mutex<dora_node_api::DoraNode>>;
+
+pub struct OutputSender(SharedNode);
+
+/// Thread-safe sending handle, cloned from an [`OutputSender`] by
+/// [`clone_output_sender`].
+///
+/// `SharedNode` is `Send + Sync` (`DoraNode: Send`), so C++ can move one
+/// handle into a worker thread or share a single handle across several by
+/// reference (`&SafeOutputSender`).
+pub struct SafeOutputSender(SharedNode);
+
+/// Clones the shared node handle into a `SafeOutputSender`.
+///
+/// This *borrows* the `OutputSender`: the caller keeps it and the full
+/// single-threaded API stays usable on the main thread. Sends through either
+/// handle contend on the same lock, so they can never overlap.
+#[allow(clippy::borrowed_box)] // signature dictated by cxx::bridge
+fn clone_output_sender(sender: &Box<OutputSender>) -> Box<SafeOutputSender> {
+    Box::new(SafeOutputSender(Arc::clone(&sender.0)))
 }
 
-/// Creates a `SafeOutputSender` from an existing `OutputSender`.
+/// The error a poisoned node lock reports to C++.
 ///
-/// **Warning:** this consumes the `Box<OutputSender>`, invalidating the
-/// original `DoraNode.send_output` on the C++ side. Only call this if
-/// you intend to exclusively use `safe_send_output` from worker threads.
-#[allow(clippy::boxed_local)] // signature dictated by cxx::bridge
-fn create_safe_output_sender(sender: Box<OutputSender>) -> Box<SafeOutputSender> {
-    Box::new(SafeOutputSender {
-        inner: Mutex::new(*sender),
-    })
+/// A panic while the lock was held can leave the daemon control channel
+/// mid-frame — a request written but its reply not yet consumed. Handing that
+/// connection to the next caller would desynchronize the framing and corrupt
+/// every subsequent send, so instead every operation fails from then on.
+fn poisoned_node_error(operation: &str) -> String {
+    format!(
+        "{operation}: the dora node is poisoned because a previous operation panicked \
+         while holding the lock; the daemon connection may be in an inconsistent state, \
+         so all further node operations fail-stop"
+    )
+}
+
+/// Locks the shared node, mapping a poisoned lock to a fail-stop error.
+///
+/// Deliberately never calls `into_inner` / `clear_poison`: see
+/// [`poisoned_node_error`].
+fn lock_node<'a>(
+    node: &'a SharedNode,
+    operation: &str,
+) -> Result<MutexGuard<'a, dora_node_api::DoraNode>, String> {
+    node.lock().map_err(|_| poisoned_node_error(operation))
 }
 
 /// Thread-safe output send. Can be called from any worker thread.
 ///
-/// Locks the `Mutex`, calls `send_output_raw` on the inner `DoraNode`,
-/// then releases the lock. Other threads block on the `Mutex` while
-/// this call is in progress.
-///
-/// If the `Mutex` is poisoned (a previous send panicked), this returns
-/// an error instead of reusing the sender: the underlying daemon
-/// connection may be desynchronized, so all further sends fail-stop.
+/// Locks the shared node, sends, then releases the lock. Other threads —
+/// including the main thread's `send_output` — block while this call is in
+/// progress.
 #[allow(clippy::boxed_local)] // metadata signature dictated by cxx::bridge
 fn safe_send_output(
     sender: &SafeOutputSender,
@@ -1149,28 +1195,20 @@ fn safe_send_output(
 ) -> ffi::DoraResult {
     let metadata = *metadata;
     let parameters = metadata.into_parameters();
-    let mut guard = match sender.inner.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            return ffi::DoraResult {
-                error: format!(
-                    "safe_send_output: output sender is poisoned because a previous \
-                     send panicked; the daemon connection may be in an inconsistent \
-                     state, refusing to send output `{id}`"
-                ),
-            };
-        }
-    };
-    send_output_internal(&mut guard, id, data, parameters)
+    send_output_locked(&sender.0, "safe_send_output", id, data, parameters)
 }
 
 fn send_output(sender: &mut Box<OutputSender>, id: String, data: &[u8]) -> ffi::DoraResult {
-    send_output_internal(sender, id, data, Default::default())
+    send_output_locked(&sender.0, "send_output", id, data, Default::default())
 }
 
 #[allow(clippy::borrowed_box)]
 fn log_message(sender: &Box<OutputSender>, level: String, message: String) -> ffi::DoraResult {
-    sender.0.log(&level, &message, None);
+    let node = match lock_node(&sender.0, "log_message") {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    node.log(&level, &message, None);
     ffi::DoraResult {
         error: String::new(),
     }
@@ -1185,13 +1223,29 @@ fn send_output_with_metadata(
 ) -> ffi::DoraResult {
     let metadata = *metadata;
     let parameters = metadata.into_parameters();
-    send_output_internal(sender, id, data, parameters)
+    send_output_locked(&sender.0, "send_output_with_metadata", id, data, parameters)
 }
 
-/// Common send path. Takes `&mut OutputSender` (not `&mut Box`) so a `Box` or
-/// a `MutexGuard<OutputSender>` both coerce to it.
+/// Locks the shared node and sends. Every send — from the main thread or a
+/// worker — funnels through here, which is what makes the lock the single
+/// serialization point.
+fn send_output_locked(
+    node: &SharedNode,
+    operation: &str,
+    id: String,
+    data: &[u8],
+    metadata: DoraMetadataParameters,
+) -> ffi::DoraResult {
+    let mut node = match lock_node(node, operation) {
+        Ok(node) => node,
+        Err(error) => return ffi::DoraResult { error },
+    };
+    send_output_internal(&mut node, id, data, metadata)
+}
+
+/// Common send path, on an already-locked node.
 fn send_output_internal(
-    sender: &mut OutputSender,
+    node: &mut dora_node_api::DoraNode,
     id: String,
     data: &[u8],
     metadata: DoraMetadataParameters,
@@ -1200,11 +1254,9 @@ fn send_output_internal(
         Ok(parsed) => parsed,
         Err(err) => return err,
     };
-    let result = sender
-        .0
-        .send_output_raw(output_id, metadata, data.len(), |out| {
-            out.copy_from_slice(data)
-        });
+    let result = node.send_output_raw(output_id, metadata, data.len(), |out| {
+        out.copy_from_slice(data)
+    });
     let error = match result {
         Ok(()) => String::new(),
         Err(err) => format!("{err:?}"),
@@ -1246,7 +1298,13 @@ fn send_service_request(
     let mut parameters = (*metadata).into_parameters();
     let request_id = insert_request_id(&mut parameters);
 
-    let result = send_output_internal(sender, output_id, data, parameters);
+    let result = send_output_locked(
+        &sender.0,
+        "send_service_request",
+        output_id,
+        data,
+        parameters,
+    );
     finish_request(request_id, result)
 }
 
@@ -1485,7 +1543,11 @@ unsafe fn send_arrow_output_impl(
                 Ok(parsed) => parsed,
                 Err(err) => return err,
             };
-            let result = sender.0.send_output(output_id, parameters, arrow_array);
+            let mut node = match lock_node(&sender.0, "send_arrow_output") {
+                Ok(node) => node,
+                Err(error) => return ffi::DoraResult { error },
+            };
+            let result = node.send_output(output_id, parameters, arrow_array);
             match result {
                 Ok(()) => ffi::DoraResult {
                     error: String::new(),
@@ -1907,15 +1969,175 @@ mod tests {
         }
     }
 
-    /// `safe_send_output` is sound only if `&SafeOutputSender` can cross
+    /// `safe_send_output` is sound only if a `SafeOutputSender` can cross
     /// thread boundaries, i.e. `SafeOutputSender: Send + Sync`. The C++ side
-    /// shares the wrapper by reference across worker threads, so this is the
-    /// load-bearing guarantee for the whole thread-safety story. A full
-    /// concurrent-send test needs a live `DoraNode`/daemon and lives in the
-    /// example smoke tests; this is the cheap compile-time backstop.
+    /// either moves a handle into a worker or shares one by reference, so
+    /// this is the load-bearing guarantee for the whole thread-safety story
+    /// — and a cheap compile-time backstop for the runtime test below.
     #[test]
     fn safe_output_sender_is_send_and_sync() {
         fn assert_send_sync<T: Send + Sync>() {}
         assert_send_sync::<SafeOutputSender>();
+    }
+
+    /// Builds a daemon-less node over `TestingOutput::ToChannel`, so a test
+    /// can drive the real send path and read back what was emitted.
+    ///
+    /// Plain `#[test]`, never `#[tokio::test]`: the testing bridge uses
+    /// `blocking_send`/`blocking_recv`, which panic inside a tokio runtime.
+    fn testing_output_sender() -> (
+        Box<OutputSender>,
+        dora_node_api::integration_testing::UnboundedReceiver<
+            dora_node_api::integration_testing::OutputJson,
+        >,
+        EventStream,
+    ) {
+        use dora_node_api::integration_testing::{
+            IntegrationTestInput, TestingInput, TestingOptions, TestingOutput,
+            integration_testing_format::{IncomingEvent, TimedIncomingEvent},
+            unbounded_channel,
+        };
+
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            vec![TimedIncomingEvent {
+                time_offset_secs: 0.0,
+                event: IncomingEvent::Stop,
+            }],
+        ));
+        let (tx, rx) = unbounded_channel();
+        let (node, events) = dora_node_api::DoraNode::init_testing(
+            inputs,
+            TestingOutput::ToChannel(tx),
+            TestingOptions {
+                skip_output_time_offsets: true,
+            },
+        )
+        .expect("failed to init testing node");
+        // The stream is not exercised here, but the caller must keep it alive
+        // for the lifetime of the node.
+        (
+            Box::new(OutputSender(Arc::new(Mutex::new(node)))),
+            rx,
+            events,
+        )
+    }
+
+    /// The property the whole wrapper exists for: several threads inside
+    /// `safe_send_output` *at the same time* must each succeed, with every
+    /// message delivered exactly once.
+    ///
+    /// The `Barrier` is what makes the overlap real. Neither example
+    /// contends on the lock (a 300 ms tick against 200 ms of work means
+    /// worker N finishes before worker N+1 starts), so without this test
+    /// nothing in the tree would fail if the send path were not actually
+    /// concurrency-safe.
+    #[test]
+    fn concurrent_safe_send_output_delivers_every_message_exactly_once() {
+        use dora_node_api::integration_testing::drain_outputs;
+        use std::{collections::HashSet, sync::Barrier, thread};
+
+        const THREADS: usize = 8;
+        const SENDS_PER_THREAD: usize = 16;
+
+        let (sender, mut rx, _events) = testing_output_sender();
+        let barrier = Barrier::new(THREADS);
+
+        thread::scope(|scope| {
+            for worker in 0..THREADS {
+                let handle = clone_output_sender(&sender);
+                let barrier = &barrier;
+                scope.spawn(move || {
+                    // Release all workers at once so the sends genuinely race.
+                    barrier.wait();
+                    for seq in 0..SENDS_PER_THREAD {
+                        let result = safe_send_output(
+                            &handle,
+                            "out".to_string(),
+                            &[worker as u8, seq as u8],
+                            new_metadata(),
+                        );
+                        assert!(
+                            result.error.is_empty(),
+                            "concurrent send {worker}/{seq} failed: {}",
+                            result.error
+                        );
+                    }
+                });
+            }
+        });
+
+        // The original sender is still usable: `clone_output_sender` borrows.
+        assert!(
+            send_output(&mut { sender }, "out".to_string(), &[u8::MAX, u8::MAX])
+                .error
+                .is_empty(),
+            "the main-thread sender must survive being cloned"
+        );
+
+        let received = drain_outputs(&mut rx);
+        assert_eq!(
+            received.len(),
+            THREADS * SENDS_PER_THREAD + 1,
+            "every concurrent send must be delivered, with no loss"
+        );
+
+        let mut seen = HashSet::new();
+        for output in &received {
+            assert_eq!(output.get("id").and_then(|v| v.as_str()), Some("out"));
+            let data = output.get("data").expect("output carries data");
+            assert!(
+                seen.insert(data.clone()),
+                "payload {data} was delivered more than once"
+            );
+        }
+        for worker in 0..THREADS {
+            for seq in 0..SENDS_PER_THREAD {
+                let expected = serde_json::json!([worker, seq]);
+                assert!(
+                    seen.contains(&expected),
+                    "payload {expected} was never delivered"
+                );
+            }
+        }
+    }
+
+    /// A poisoned node must fail-stop rather than hand the next caller a
+    /// daemon connection that may be mid-frame — and it must do so for the
+    /// main-thread API too, not just for `safe_send_output`.
+    #[test]
+    fn a_poisoned_node_fails_stop_on_every_handle() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let (mut sender, _rx, _events) = testing_output_sender();
+        let handle = clone_output_sender(&sender);
+
+        let node = Arc::clone(&sender.0);
+        let panicked = catch_unwind(AssertUnwindSafe(|| {
+            let _guard = node.lock().expect("lock is not yet poisoned");
+            panic!("simulated panic while holding the node lock");
+        }));
+        assert!(panicked.is_err(), "the helper must actually panic");
+
+        let worker = safe_send_output(&handle, "out".to_string(), &[1], new_metadata());
+        assert!(
+            worker.error.contains("poisoned"),
+            "a worker send must fail-stop on a poisoned node: {}",
+            worker.error
+        );
+
+        let main = send_output(&mut sender, "out".to_string(), &[1]);
+        assert!(
+            main.error.contains("poisoned"),
+            "the main-thread send must fail-stop too: {}",
+            main.error
+        );
+
+        let log = log_message(&sender, "info".to_string(), "hello".to_string());
+        assert!(
+            log.error.contains("poisoned"),
+            "non-send node operations must fail-stop as well: {}",
+            log.error
+        );
     }
 }

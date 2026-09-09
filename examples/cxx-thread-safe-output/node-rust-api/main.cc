@@ -5,15 +5,24 @@
 #include <thread>
 #include <vector>
 
-// Sends output from worker threads via SafeOutputSender while the main loop
-// keeps draining events. create_safe_output_sender consumes send_output, so
-// the original sender is unusable afterward.
+// Sends output from worker threads while the main loop keeps draining events.
+//
+// `clone_output_sender` *borrows* the node's sender, so `dora_node.send_output`
+// stays valid and the main thread keeps the full single-threaded API. The
+// clone is Send + Sync, so worker threads share it by reference.
+//
+// The tick interval (100 ms) is deliberately shorter than the simulated work
+// (300 ms), so several workers are in flight at once and genuinely contend for
+// the node lock — the property this API exists to make safe.
 int main()
 {
     std::cout << "HELLO FROM C++ (thread-safe output)" << std::endl;
 
     auto dora_node = init_dora_node();
-    auto safe_sender = create_safe_output_sender(std::move(dora_node.send_output));
+    auto safe_sender = clone_output_sender(dora_node.send_output);
+
+    // The original sender is untouched by the clone.
+    log_message(dora_node.send_output, "info", "worker pool ready");
 
     std::vector<std::thread> workers;
 
@@ -35,7 +44,7 @@ int main()
 
             workers.emplace_back([&safe_sender, i]()
             {
-                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+                std::this_thread::sleep_for(std::chrono::milliseconds(300));
 
                 std::vector<uint8_t> out_vec{static_cast<uint8_t>(i)};
                 rust::Slice<const uint8_t> out_slice{out_vec.data(), out_vec.size()};
@@ -58,6 +67,9 @@ int main()
     {
         w.join();
     }
+
+    // Still usable after the workers are done — the clone never took it away.
+    close_outputs(dora_node.send_output, {"result"});
 
     std::cout << "GOODBYE FROM C++ (thread-safe output)" << std::endl;
     return 0;

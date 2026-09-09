@@ -73,7 +73,7 @@ int main()
     std::optional<rust::Box<SafeOutputSender>> safe_holder;
     if (mode == "worker")
     {
-        safe_holder.emplace(create_safe_output_sender(std::move(dora_node.send_output)));
+        safe_holder.emplace(clone_output_sender(dora_node.send_output));
     }
 
     std::vector<double> latencies_ms;

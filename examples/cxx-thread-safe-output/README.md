@@ -19,19 +19,28 @@ behavior. This example demonstrates the supported alternative.
 ## How it works
 
 1. `init_dora_node()` returns the node, including its `send_output`.
-2. `create_safe_output_sender(std::move(dora_node.send_output))` moves
-   that sender behind a `Mutex`, producing a `SafeOutputSender`.
-   **This consumes the original sender** — after this call you send
-   output exclusively through the safe wrapper.
-3. On every `tick`, the main loop spawns a worker thread that simulates
-   a slow task (200 ms sleep) and then calls
-   `safe_send_output(*safe_sender, "result", ...)`. Because the wrapper
-   is `Sync`, many workers can call it concurrently; the inner `Mutex`
-   serializes the actual send.
+2. `clone_output_sender(dora_node.send_output)` clones the shared node
+   handle into a `SafeOutputSender`. It **borrows** the original sender
+   rather than consuming it, so `dora_node.send_output` stays valid and
+   keeps the full single-threaded API (`log_message`, `close_outputs`,
+   `node_config_json`, …) on the main thread. The example calls both to
+   show that.
+3. On every `tick` (100 ms), the main loop spawns a worker thread that
+   simulates a slow task (300 ms sleep) and then calls
+   `safe_send_output(*safe_sender, "result", ...)`. Because the work is
+   three times the tick interval, several workers are in flight at once
+   and genuinely contend for the node lock.
 4. The main loop returns to `events->next()` immediately instead of
    blocking, so it stays responsive while workers run.
 
-Workers are joined before `safe_sender` is dropped, since they borrow it.
+Both handles point at the same node behind the same lock, so a worker's
+send and a main-thread send serialize instead of racing. Workers are
+joined before `safe_sender` is dropped, since they borrow it.
+
+If a send ever panics while holding the lock, the node is left poisoned
+and every later operation through *either* handle fails with an error
+mentioning `poisoned`, rather than reusing a daemon connection that may
+be mid-frame. There is no recovery: the node has to be restarted.
 
 ## Run
 
@@ -42,7 +51,7 @@ cargo run --example cxx-thread-safe-output
 ## Expected output
 
 Note how the main loop dispatches new ticks *before* earlier workers
-finish — the loop never blocks on the 200 ms work:
+finish — the loop never blocks on the 300 ms work:
 
 ```
 HELLO FROM C++ (thread-safe output)

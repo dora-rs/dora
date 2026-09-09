@@ -12,7 +12,7 @@ fn main() -> eyre::Result<()> {
     let build_dir = Path::new("build");
 
     // 1. Build the Dora C++ node library. This compiles `apis/c++/node/src/lib.rs`
-    //    (which now contains `create_safe_output_sender` / `safe_send_output`) and
+    //    (which now contains `clone_output_sender` / `safe_send_output`) and
     //    generates the C++ glue files `lib.rs.cc` / `lib.rs.h`.
     build_package("dora-node-api-cxx")?;
     let node_cxxbridge = target
