@@ -11,9 +11,9 @@
 use crate::{
     events::set_up_ctrlc_handler,
     handlers::{
-        build_dataflow, dataflow_result, handle_destroy, reload_dataflow, resolve_name,
-        restart_node, retrieve_logs, send_heartbeat_message, send_log_message, send_topic_frames,
-        start_dataflow, stop_dataflow, stop_node,
+        build_dataflow, dataflow_result, handle_destroy, parse_logs_node_id, reload_dataflow,
+        resolve_name, restart_node, retrieve_logs, send_heartbeat_message, send_log_message,
+        send_topic_frames, start_dataflow, stop_dataflow, stop_node,
     },
     state::{
         ArchivedDataflow, CachedResult, ParamTarget, PendingRestart, RunningBuild, RunningDataflow,
@@ -1127,17 +1127,26 @@ async fn start_inner(
 
                             match dataflow_uuid {
                                 Ok(uuid) => {
-                                    let reply = retrieve_logs(
-                                        &running_dataflows,
-                                        &archived_dataflows,
-                                        uuid,
-                                        node.into(),
-                                        &mut daemon_connections,
-                                        clock.new_timestamp(),
-                                        tail,
-                                    )
-                                    .await
-                                    .map(ControlRequestReply::Logs);
+                                    // `node` arrives as a raw wire `String`, so it may be an
+                                    // invalid node id. Validate it instead of using the panicking
+                                    // `String -> NodeId` conversion, which would unwind the
+                                    // coordinator's single event loop and take down every
+                                    // daemon/CLI connection (control-plane DoS). See #3450 — the
+                                    // node-id sub-case that #650's fix for #648 missed.
+                                    let reply = match parse_logs_node_id(&node) {
+                                        Ok(node_id) => retrieve_logs(
+                                            &running_dataflows,
+                                            &archived_dataflows,
+                                            uuid,
+                                            node_id,
+                                            &mut daemon_connections,
+                                            clock.new_timestamp(),
+                                            tail,
+                                        )
+                                        .await
+                                        .map(ControlRequestReply::Logs),
+                                        Err(err) => Err(err),
+                                    };
                                     let _ = reply_sender.send(reply);
                                 }
                                 Err(err) => {
