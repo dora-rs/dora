@@ -49,7 +49,14 @@ fn runtime() -> PyResult<&'static Runtime> {
 /// to avoid holding an `Entered` guard across thread boundaries.
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
-    let level = record.getattr("levelno")?.extract::<u8>()?;
+    // Python logging levels are arbitrary ints (`logging.addLevelName` /
+    // `logging.log(n, ..)` accept any value), so the previous `extract::<u8>()`
+    // raised `OverflowError` for any level > 255 and turned a benign log call
+    // into an error. Widen to `i64`, which covers the full range of a real
+    // level (any custom int, including one well above ERROR, buckets
+    // correctly). Keep the `?`: a non-integer `levelno` is malformed input and
+    // should surface at the call site, not be silently coerced to a level.
+    let level = record.getattr("levelno")?.extract::<i64>()?;
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.extract::<u32>().unwrap_or(0);
@@ -1253,8 +1260,43 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ffi::CString;
+
     use dora_node_api::{Event, StopCause};
     use futures::executor::block_on;
+
+    // Build a stub object shaped like a `logging.LogRecord` with the given
+    // `levelno` expression (e.g. `"300"` for an int, `"'x'"` for a non-int).
+    fn make_record<'py>(py: Python<'py>, levelno: &str) -> Bound<'py, PyAny> {
+        let locals = PyDict::new(py);
+        let code = CString::new(format!(
+            "import types\n\
+             record = types.SimpleNamespace(\
+             levelno={levelno}, getMessage=lambda: 'msg', \
+             pathname='f.py', lineno=1, name='t')"
+        ))
+        .unwrap();
+        py.run(&code, None, Some(&locals)).unwrap();
+        locals.get_item("record").unwrap().unwrap()
+    }
+
+    // A large custom level (> 255) must be accepted, not rejected with
+    // `OverflowError` as the old `extract::<u8>()` did.
+    #[test]
+    fn host_log_accepts_level_above_255() {
+        Python::attach(|py| {
+            assert!(host_log(make_record(py, "300")).is_ok());
+        });
+    }
+
+    // A non-integer `levelno` is malformed and must surface as an error rather
+    // than be silently coerced to a level.
+    #[test]
+    fn host_log_rejects_non_integer_level() {
+        Python::attach(|py| {
+            assert!(host_log(make_record(py, "'x'")).is_err());
+        });
+    }
 
     // A merged stream that never yields must time out (return `None`) rather
     // than block forever — the bug this change fixes. No ROS2 or GIL needed:
