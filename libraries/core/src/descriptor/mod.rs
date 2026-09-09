@@ -254,15 +254,22 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 CoreNodeKind::Custom(custom)
             }
             classify::NodeClass::Runtime => {
-                let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
-                CoreNodeKind::Runtime(runtime.clone())
+                // `node` is already an owned copy (see `desc.nodes.clone()`
+                // above) and `ResolvedNode::from_node` never reads
+                // `operators`, so move the operator subtree out instead of
+                // deep-cloning it a second time.
+                let runtime = node.operators.take().ok_or_eyre("no operators")?;
+                CoreNodeKind::Runtime(runtime)
             }
             classify::NodeClass::Operator => {
-                let op = node.operator.as_ref().ok_or_eyre("no operator")?;
+                // Move the operator out of the owned `node` rather than
+                // cloning its (potentially large) config; `from_node` does
+                // not read `operator`.
+                let op = node.operator.take().ok_or_eyre("no operator")?;
                 CoreNodeKind::Runtime(RuntimeNode {
                     operators: vec![OperatorDefinition {
-                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config.clone(),
+                        id: op.id.unwrap_or_else(|| default_op_id.clone()),
+                        config: op.config,
                     }],
                 })
             }
@@ -814,6 +821,59 @@ nodes:
         }
     }
 
+    /// The operator subtree must survive resolution. The `Runtime`/`Operator`
+    /// arms move `node.operators` / `node.operator` out with `take()`, which
+    /// is only sound because `ResolvedNode::from_node` never reads those
+    /// fields. Pin that invariant: a regression that consumed the subtree
+    /// before building the `CoreNodeKind`, or a new `ResolvedNode` field
+    /// sourced from `node.operator` after the take (which would compile and
+    /// silently read `None`), surfaces here as a missing operator.
+    #[test]
+    fn resolve_preserves_operator_subtree() {
+        let desc: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: runtime_node
+    operators:
+      - id: op_a
+        python: a.py
+        outputs:
+          - out_a
+  - id: operator_node
+    operator:
+      python: b.py
+      outputs:
+        - out_b
+",
+        )
+        .expect("parse");
+
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+
+        // A `runtime:` (operators) node keeps every declared operator.
+        match &resolved[&NodeId::from("runtime_node".to_string())].kind {
+            CoreNodeKind::Runtime(rt) => {
+                let ids: Vec<_> = rt.operators.iter().map(|o| o.id.to_string()).collect();
+                assert_eq!(ids, ["op_a"], "runtime operators must survive resolution");
+            }
+            other => panic!("expected Runtime kind, got {other:?}"),
+        }
+
+        // A single-`operator:` node resolves to a one-operator runtime,
+        // defaulting the operator id to `op`.
+        match &resolved[&NodeId::from("operator_node".to_string())].kind {
+            CoreNodeKind::Runtime(rt) => {
+                assert_eq!(
+                    rt.operators.len(),
+                    1,
+                    "the operator must survive resolution"
+                );
+                assert_eq!(rt.operators[0].id.to_string(), SINGLE_OPERATOR_DEFAULT_ID);
+            }
+            other => panic!("expected Runtime kind, got {other:?}"),
+        }
+    }
+
     #[test]
     fn topology_lookup_prefers_the_node_being_added_over_a_same_id_topology_entry() {
         // The lookup chains topology nodes *before* `desc`'s own, so a node id
@@ -1351,6 +1411,46 @@ nodes:
         assert_eq!(
             node.deploy.as_ref().and_then(|d| d.machine.as_deref()),
             Some("gpu-box")
+        );
+    }
+
+    /// A multi-operator runtime node whose id contains a `.` must emit a
+    /// Mermaid `subgraph` with a sanitized id (dots are invalid in subgraph
+    /// ids), mirroring the module-subgraph path. Node ids legally contain `.`,
+    /// and module expansion prefixes inner node ids with `{module_id}.`, so the
+    /// unsanitized `subgraph camera.front` this used to emit was an invalid
+    /// Mermaid document.
+    #[test]
+    fn runtime_node_subgraph_id_is_sanitized_for_dotted_ids() {
+        let yaml = r#"
+nodes:
+  - id: camera.front
+    operators:
+      - id: detect
+        python: detect.py
+        inputs:
+          tick: dora/timer/millis/100
+        outputs:
+          - bbox
+      - id: track
+        python: track.py
+        inputs:
+          bbox: camera.front/detect/bbox
+        outputs:
+          - tracks
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart =
+            visualize::visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("subgraph camera_front [camera.front]"),
+            "runtime-node subgraph id must be sanitized and labelled; got:\n{flowchart}"
+        );
+        assert!(
+            !flowchart.contains("subgraph camera.front"),
+            "an unsanitized dotted subgraph id is invalid Mermaid; got:\n{flowchart}"
         );
     }
 }

@@ -100,10 +100,36 @@ fn collect_dora_nodes(
     }
 }
 
+/// Escape Mermaid-significant characters in free-form label text (e.g. a node
+/// `description`) so it stays well-formed inside a quoted Mermaid label.
+///
+/// Node and data IDs are charset-validated to be Mermaid-safe, but a
+/// `description` is unrestricted, so a `"` (or `<`, `>`, `#`, `&`) would
+/// otherwise corrupt the generated diagram. Mermaid accepts HTML entity codes
+/// written with a leading `#` in place of `&`, so we emit those. `#` is escaped
+/// first so the entities we introduce are not re-processed.
+///
+/// A raw newline is escaped last: the label is written into a single-line
+/// Mermaid statement, so a newline (e.g. from a YAML block-scalar
+/// `description`) would split the statement across lines and make the whole
+/// document invalid. It becomes a `<br/>` line break — inserted *after* the
+/// `<`/`>` escaping above so this markup is not itself escaped. A `\r` is
+/// dropped first so a CRLF source does not leave a stray carriage return
+/// (nor produce a doubled break).
+fn escape_mermaid_label(text: &str) -> String {
+    text.replace('#', "#35;")
+        .replace('&', "#amp;")
+        .replace('"', "#quot;")
+        .replace('<', "#lt;")
+        .replace('>', "#gt;")
+        .replace('\r', "")
+        .replace('\n', "<br/>")
+}
+
 fn visualize_node(node: &ResolvedNode, flowchart: &mut String) {
     let node_id = &node.id;
     let description = if let Some(desc) = &node.description {
-        format!("<hr/>*{desc}*")
+        format!("<hr/>*{}*", escape_mermaid_label(desc))
     } else {
         "".to_string()
     };
@@ -159,7 +185,16 @@ fn visualize_runtime_node(
             writeln!(flowchart, "  {node_id}/{operator_id}[{node_id}]").unwrap();
         }
     } else {
-        writeln!(flowchart, "subgraph {node_id}").unwrap();
+        // Sanitize the id for Mermaid the same way the module-subgraph path
+        // above does (dots are invalid in subgraph IDs) and keep the original
+        // id as the readable label. Node ids legally contain `.`, and any
+        // runtime node inside a module is prefixed with `{module_id}.` during
+        // expansion, so an unsanitized `subgraph {node_id}` here emits an
+        // invalid Mermaid document for those nodes. The contained operator
+        // nodes keep their raw `{node_id}/{operator_id}` ids (dots are valid in
+        // node ids, only subgraph ids), so edges still line up.
+        let safe_id = node_id.as_ref().replace('.', "_");
+        writeln!(flowchart, "subgraph {safe_id} [{node_id}]").unwrap();
         for operator in operators {
             let operator_id = &operator.id;
             if operator.config.inputs.is_empty() {
@@ -278,4 +313,107 @@ fn visualize_user_mapping(
 fn format_type_label(urn: &str) -> String {
     let short = crate::types::urn_short_name(urn);
     format!(" [{short}]")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{escape_mermaid_label, visualize_nodes_with_boundaries};
+    use crate::descriptor::{Descriptor, DescriptorExt, ModuleBoundaries};
+
+    /// End-to-end guard through `visualize_nodes_with_boundaries`: a `"` in a
+    /// node `description` must reach the emitted Mermaid label as the entity
+    /// `#quot;`, never as a bare `"` that would prematurely close the quoted
+    /// label. Reverting the `escape_mermaid_label` call in `visualize_node`
+    /// to interpolate the raw `desc` fails this test (the unit tests above,
+    /// which call the helper directly, would not catch that regression).
+    #[test]
+    fn description_with_double_quote_is_escaped_in_output() {
+        let yaml = r#"
+nodes:
+  - id: camera
+    path: ./camera
+    description: 'Captures "raw" frames'
+    outputs:
+      - image
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("Captures #quot;raw#quot; frames"),
+            "description `\"` must be escaped to `#quot;`; got:\n{flowchart}"
+        );
+        assert!(
+            !flowchart.contains(r#""raw""#),
+            "a bare quoted substring corrupts the Mermaid label; got:\n{flowchart}"
+        );
+    }
+
+    /// A YAML block-scalar `description` carries raw newlines. The label is
+    /// written into a single-line Mermaid statement, so a raw `\n` would split
+    /// the statement and invalidate the document; it must become a `<br/>`
+    /// break and the node's statement must stay on one line.
+    #[test]
+    fn multiline_description_becomes_single_line_with_br() {
+        let yaml = "
+nodes:
+  - id: camera
+    path: ./camera
+    description: |
+      Captures frames
+      from the front camera
+    outputs:
+      - image
+";
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("Captures frames<br/>from the front camera"),
+            "a newline in the description must become a `<br/>`; got:\n{flowchart}"
+        );
+        // Every node statement must be a single line: no statement line may
+        // contain the mid-description text without also closing the label.
+        let split_line = flowchart
+            .lines()
+            .any(|l| l.trim() == "from the front camera");
+        assert!(
+            !split_line,
+            "the description must not split the Mermaid statement across lines; got:\n{flowchart}"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_passes_plain_text_through() {
+        assert_eq!(
+            escape_mermaid_label("Captures raw frames"),
+            "Captures raw frames"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_escapes_double_quote() {
+        // A `"` would otherwise prematurely close the quoted Mermaid label.
+        assert_eq!(
+            escape_mermaid_label(r#"Captures "raw" frames"#),
+            "Captures #quot;raw#quot; frames"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_escapes_all_significant_chars() {
+        assert_eq!(
+            escape_mermaid_label(r#"a & b < c > d " e # f"#),
+            "a #amp; b #lt; c #gt; d #quot; e #35; f"
+        );
+    }
+
+    #[test]
+    fn escape_mermaid_label_does_not_double_escape_entities() {
+        // The `#` from an introduced entity must not be re-escaped into `#35;`.
+        assert_eq!(escape_mermaid_label(r#"""#), "#quot;");
+        assert!(!escape_mermaid_label(r#"""#).contains("#35;"));
+    }
 }

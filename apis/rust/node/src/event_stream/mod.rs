@@ -997,8 +997,13 @@ impl EventStream {
     fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
         // `contains_key` short-circuits cheaply once the check is consumed, so
-        // steady-state topic messages pay a single map lookup (zero extra cost
-        // after the first message per input).
+        // steady-state topic messages pay a single map lookup after the check
+        // is consumed. The check is consumed on the first *non-`Null`* message
+        // (see the `Null` note below), so an input that only ever carries
+        // `Null` (an annotated timer, an empty-payload stream) keeps re-running
+        // this cheap, allocation-free inspection each message rather than a
+        // single lookup — the deliberate cost of not disabling validation on a
+        // `Null` first message.
         //
         // Skip the check (and keep it armed) when the message carries pattern
         // metadata (`request_id`, `goal_id`, or `goal_status`) — the input is
@@ -1010,13 +1015,19 @@ impl EventStream {
         if let Event::Input { id, metadata, data } = event
             && self.input_type_checks.contains_key(id)
             && !crate::node::carries_pattern_correlation(&metadata.parameters)
-            && let Some(expected) = self.input_type_checks.remove(id)
         {
             let raw = dora_arrow_convert::internal::array_ref(data);
             let actual = raw.data_type();
-            // Skip check for Null type (timer ticks, empty payloads)
-            // to avoid spurious warnings on annotated timer inputs.
-            if *actual != arrow_schema::DataType::Null && *actual != expected {
+            // A `Null` first message (timer ticks, empty/metadata-only
+            // payloads) carries no type to validate. Skip it *without*
+            // consuming the one-shot check, so the first genuinely-typed
+            // message on this input is still validated instead of silently
+            // escaping the check. The check is consumed (`remove`) only once
+            // a non-`Null` payload has actually been inspected.
+            if *actual != arrow_schema::DataType::Null
+                && let Some(expected) = self.input_type_checks.remove(id)
+                && *actual != expected
+            {
                 tracing::warn!(
                     input = %id,
                     expected = ?expected,
@@ -2620,6 +2631,45 @@ mod tests {
                 "outputs should arrive in send order"
             );
         }
+    }
+
+    /// A `Null` first message on a type-checked input must NOT consume the
+    /// one-shot first-message type check: the check has to survive so the
+    /// first genuinely-typed message is still validated. Before the fix the
+    /// check was `remove`d before the `Null` guard, so any input whose first
+    /// message was `Null` (a timer tick, an empty/metadata-only payload)
+    /// silently disabled type validation for all its later messages.
+    #[test]
+    fn null_first_message_does_not_consume_type_check() {
+        use arrow::array::{Int32Array, NullArray};
+        use dora_message::metadata::Metadata;
+
+        let (_node, mut events) = test_event_stream();
+        let id = DataId::from("cam".to_string());
+        events
+            .input_type_checks
+            .insert(id.clone(), arrow_schema::DataType::Int32);
+
+        let clock = dora_core::uhlc::HLC::default();
+        let input = |arr: std::sync::Arc<dyn arrow::array::Array>| Event::Input {
+            id: id.clone(),
+            metadata: Metadata::new(clock.new_timestamp()),
+            data: dora_arrow_convert::internal::from_array_ref(arr),
+        };
+
+        // A `Null` first message leaves the check armed.
+        events.note_produced_event(&input(std::sync::Arc::new(NullArray::new(1))));
+        assert!(
+            events.input_type_checks.contains_key(&id),
+            "a Null first message must not consume the type check"
+        );
+
+        // The first non-Null message consumes it (validation happened).
+        events.note_produced_event(&input(std::sync::Arc::new(Int32Array::from(vec![1]))));
+        assert!(
+            !events.input_type_checks.contains_key(&id),
+            "the first non-Null message must consume the one-shot type check"
+        );
     }
 
     #[test]

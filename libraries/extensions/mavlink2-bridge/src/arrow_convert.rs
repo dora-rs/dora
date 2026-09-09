@@ -4,8 +4,10 @@
 //!
 //! * One row per call. `to_record_batch` returns a 1-row `RecordBatch`;
 //!   `from_record_batch` requires exactly one row and rejects anything else.
-//! * All MAVLink enums (regardless of wire width) are stored as `UInt32`
-//!   to match the Rust `repr(u32)` of the generated enum types.
+//! * MAVLink enums are stored as `UInt32` to match the Rust `repr(u32)` of the
+//!   generated enum types, regardless of their wire width. The sole exception is
+//!   `SET_MODE::base_mode`, kept at its `UInt8` wire width because the MAVLink
+//!   spec defines it as a `uint8` bitfield (see the `SET_MODE_DATA` impl below).
 //! * Bitflag fields are stored at their bitflag's natural width
 //!   (`MavModeFlag` is `u8`, `MavSysStatusSensor` is `u32`).
 //! * Primitive fields keep their wire width unchanged.
