@@ -29,6 +29,18 @@ pub enum Event {
     Control(ControlEvent),
     Daemon(DaemonRequest),
     DaemonHeartbeatInterval,
+    /// A daemon reported the zenoh endpoint it bound, for the coordinator to
+    /// hand to daemons registering later.
+    DaemonZenohEndpoint {
+        daemon_id: DaemonId,
+        /// Connection-instance ID stamped at registration, checked the same way
+        /// `DaemonExit` checks it (#2392): a report from a superseded
+        /// connection must not overwrite the endpoint of the connection that
+        /// replaced it, which for a restarted daemon is a different port.
+        connection_id: Uuid,
+        /// `Some` confirms the advertised endpoint, `None` withdraws it.
+        endpoint: Option<String>,
+    },
     CtrlC,
     Log(LogMessage),
     DaemonExit {
@@ -99,6 +111,7 @@ impl Event {
             Event::Control(_) => "Control",
             Event::Daemon(_) => "Daemon",
             Event::DaemonHeartbeatInterval => "DaemonHeartbeatInterval",
+            Event::DaemonZenohEndpoint { .. } => "DaemonZenohEndpoint",
             Event::CtrlC => "CtrlC",
             Event::Log(_) => "Log",
             Event::DaemonExit { .. } => "DaemonExit",

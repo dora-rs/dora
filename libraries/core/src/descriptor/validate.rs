@@ -252,28 +252,48 @@ fn check_timing_fields(
 /// probe the exact same boundary with its non-panicking twin
 /// `try_from_secs_f64`, so a value accepted here can never panic the daemon.
 ///
-/// When `allow_zero` is `false`, `0.0` is also rejected. This is required for
-/// fields that reach `tokio::time::interval` (e.g. `health_check_interval`),
-/// which panics on a zero period.
+/// When `allow_zero` is `false`, any value that produces a zero-length
+/// `Duration` is also rejected. This is required for fields that reach
+/// `tokio::time::interval` (e.g. `health_check_interval`), which panics on a
+/// zero period. Checking the resulting `Duration` -- not just the literal
+/// `0.0` -- also rejects a tiny-but-positive value such as `1e-10`, which
+/// `Duration::from_secs_f64` rounds down to `Duration::ZERO`. This mirrors the
+/// timer parser's `interval.is_zero()` guard in `dora-message`.
 fn check_seconds_field(
     owner: &str,
     field: &str,
     value: Option<f64>,
     allow_zero: bool,
 ) -> eyre::Result<()> {
-    if let Some(value) = value
-        && (std::time::Duration::try_from_secs_f64(value).is_err() || (!allow_zero && value == 0.0))
-    {
-        let requirement = if allow_zero {
-            "non-negative"
-        } else {
-            "positive"
-        };
-        bail!(
-            "{owner} has invalid `{field}`: {value} \
-             (must be a finite, {requirement} number of seconds smaller than {})",
-            std::time::Duration::MAX.as_secs_f64()
-        );
+    if let Some(value) = value {
+        // A negative / non-finite / overflowing value fails to convert; a
+        // tiny-but-positive value (e.g. `1e-10`) converts to `Duration::ZERO`,
+        // which must also be rejected for interval fields (`allow_zero ==
+        // false`). Inspect the resulting `Duration`, not the literal `0.0`.
+        let duration = std::time::Duration::try_from_secs_f64(value);
+        let is_zero = duration.as_ref().is_ok_and(|d| d.is_zero());
+        if !allow_zero && is_zero {
+            // Distinct message: a value like `1e-10` *is* positive, so calling it
+            // "not positive" would misdirect the user -- the real reason is that
+            // it rounds down to a zero-length duration.
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a positive number of seconds; this value is zero or \
+                 rounds down to a zero-length duration)"
+            );
+        }
+        if duration.is_err() {
+            let requirement = if allow_zero {
+                "non-negative"
+            } else {
+                "positive"
+            };
+            bail!(
+                "{owner} has invalid `{field}`: {value} \
+                 (must be a finite, {requirement} number of seconds smaller than {})",
+                std::time::Duration::MAX.as_secs_f64()
+            );
+        }
     }
     Ok(())
 }
@@ -424,9 +444,10 @@ impl ResolvedNodeExt for ResolvedNode {
             CoreNodeKind::Custom(n) => n.max_rotated_files,
         };
         if let Some(n) = value {
-            if n == 0 {
-                bail!("`max_rotated_files` must be at least 1");
-            }
+            // 0 is meaningful: keep the active log only, rotating the previous
+            // one away rather than retaining it. That matches the documented
+            // disk bound `max_log_size * (1 + max_rotated_files)`, which at 0
+            // is one active file.
             if n > 100 {
                 bail!("`max_rotated_files` must not exceed 100");
             }
@@ -1452,27 +1473,7 @@ operators:
     }
 
     fn custom_node() -> dora_message::descriptor::CustomNode {
-        dora_message::descriptor::CustomNode {
-            path: "node".to_string(),
-            source: dora_message::descriptor::NodeSource::Local,
-            path_sha256: None,
-            args: None,
-            envs: None,
-            build: None,
-            send_stdout_as: None,
-            send_logs_as: None,
-            min_log_level: None,
-            max_log_size: None,
-            max_rotated_files: None,
-            restart_policy: Default::default(),
-            max_restarts: 0,
-            restart_delay: None,
-            max_restart_delay: None,
-            restart_window: None,
-            health_check_timeout: None,
-            finish_grace_secs: None,
-            run_config: serde_yaml::from_str("{}").unwrap(),
-        }
+        dora_message::descriptor::CustomNode::new("node".to_string())
     }
 
     #[test]
@@ -1567,7 +1568,10 @@ operators:
     fn seconds_field_rejects_zero_when_positive_required() {
         check_seconds_field("owner", "field", None, false).unwrap();
         check_seconds_field("owner", "field", Some(3600.0), false).unwrap();
-        for bad in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+        // `1e-10` is finite and positive but `Duration::from_secs_f64` rounds
+        // it down to `Duration::ZERO`, which would panic `tokio::time::interval`
+        // just like a literal `0.0`, so it must be rejected too.
+        for bad in [0.0, 1e-10, -1.0, f64::NAN, f64::INFINITY] {
             let err = check_seconds_field("owner", "field", Some(bad), false)
                 .unwrap_err()
                 .to_string();
@@ -1576,6 +1580,9 @@ operators:
                 "{bad} should be rejected with a field/constraint message, got: {err}"
             );
         }
+        // A tiny-but-positive value is fine when zero is allowed (it does not
+        // reach `tokio::time::interval`).
+        check_seconds_field("owner", "field", Some(1e-10), true).unwrap();
     }
 
     // `health_check_interval` (dataflow-level) reaches `Duration::from_secs_f64`
@@ -1613,6 +1620,33 @@ nodes:
         let dataflow = parse_dataflow(
             "\
 health_check_interval: 0.0
+nodes:
+  - id: a
+    path: node_a
+    build: cargo build
+    outputs:
+      - out
+",
+        );
+        let err = check_dataflow(&dataflow, Path::new("/nonexistent-dora-validate-test"))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("health_check_interval") && err.contains("positive"),
+            "error should name the field and constraint, got: {err}"
+        );
+    }
+
+    // A tiny-but-positive `health_check_interval` (e.g. `1e-10`) is finite and
+    // non-zero as an `f64`, so a literal `value == 0.0` check would let it
+    // through -- but `Duration::from_secs_f64` rounds it down to
+    // `Duration::ZERO`, which panics `tokio::time::interval`. It must be
+    // rejected up front just like `0.0`.
+    #[test]
+    fn check_dataflow_rejects_subnanosecond_health_check_interval() {
+        let dataflow = parse_dataflow(
+            "\
+health_check_interval: 0.0000000001
 nodes:
   - id: a
     path: node_a
@@ -2687,24 +2721,40 @@ nodes:
         check_wiring(&descriptor).unwrap();
     }
 
+    /// Reads a fixture that lives outside this crate, or `None` when this is
+    /// not a repository checkout. `include_str!` would be the obvious choice,
+    /// but a path that leaves the crate directory is not in the published
+    /// `.crate`, so the crate would fail to *compile* its tests for anyone
+    /// building from crates.io (#3400).
+    ///
+    /// The workspace manifest is the marker for "we are in the repo". Only
+    /// its absence skips: inside a checkout a missing fixture is a stale
+    /// path and panics, so this keeps the one property `include_str!` had
+    /// that a plain `.ok()` would throw away.
+    fn repo_fixture(relative: &str) -> Option<String> {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        if !root.join("Cargo.toml").is_file() {
+            return None;
+        }
+        let path = root.join(relative);
+        Some(
+            std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("fixture {} is missing: {e}", path.display())),
+        )
+    }
+
     #[test]
     fn ros2_zenoh_documentation_examples_parse_with_explicit_profiles() {
         let examples = [
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml"
-            )),
-            include_str!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/../../examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml"
-            )),
+            "examples/ros2-bridge/yaml-bridge/dataflow-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-service/dataflow-client-zenoh.yml",
+            "examples/ros2-bridge/yaml-bridge-action/dataflow-zenoh.yml",
         ];
-        for yaml in examples {
-            let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        for relative in examples {
+            let Some(yaml) = repo_fixture(relative) else {
+                continue; // packaged crate: the examples tree is not shipped
+            };
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
             let ros2 = descriptor
                 .nodes
                 .iter()
@@ -2722,10 +2772,9 @@ nodes:
 
     #[test]
     fn ros2_zenoh_documentation_links_upstream_wire_contract() {
-        let guide = include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../guide/src/advanced/ros2-bridge.md"
-        ));
+        let Some(guide) = repo_fixture("guide/src/advanced/ros2-bridge.md") else {
+            return; // packaged crate: the guide is not shipped
+        };
         assert!(guide.contains("https://github.com/ros2/rmw_zenoh/blob/rolling/docs/design.md"));
         assert!(guide.contains("https://www.ros.org/reps/rep-2016.html"));
     }
@@ -3119,6 +3168,23 @@ nodes:
                 "expected '{expected}' to be mentioned in error, got: {err}"
             );
         }
+    }
+
+    #[test]
+    fn max_rotated_files_accepts_zero_and_still_caps_at_100() {
+        let node = |n: u32| -> ResolvedNode {
+            let mut custom = custom_node();
+            custom.max_rotated_files = Some(n);
+            ResolvedNode::new(NodeId::from("n".to_owned()), CoreNodeKind::Custom(custom))
+        };
+
+        // 0 is a real configuration: keep the active log only, rotating the
+        // previous one away. The documented disk bound
+        // `max_log_size * (1 + max_rotated_files)` is one file at 0.
+        assert_eq!(node(0).max_rotated_files().unwrap(), Some(0));
+        // The upper bound is unchanged.
+        assert_eq!(node(100).max_rotated_files().unwrap(), Some(100));
+        assert!(node(101).max_rotated_files().is_err());
     }
 }
 

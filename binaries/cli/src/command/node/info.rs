@@ -6,7 +6,10 @@ use serde::Serialize;
 use tabwriter::TabWriter;
 
 use crate::{
-    command::{Executable, default_tracing},
+    command::{
+        Executable, default_tracing,
+        topic::selector::{node_topic_inputs, node_topic_outputs},
+    },
     common::{
         CoordinatorOptions, expect_reply, resolve_dataflow_identifier_interactive,
         send_control_request,
@@ -205,13 +208,18 @@ fn build_output_info(
     node_desc: &dora_message::descriptor::Node,
     descriptor: &Descriptor,
 ) -> Vec<OutputInfo> {
-    node_desc
-        .outputs
+    // Use `node_topic_outputs` / `node_topic_inputs` rather than the raw
+    // `node.outputs` / `node.inputs` fields: those are empty for `operator:` and
+    // `operators:` nodes, which declare their ports under `operator.config` /
+    // `operators[].config` (dora-rs/dora#2893). Reading the raw fields makes
+    // `dora node info` report no inputs/outputs for an operator-backed node, and
+    // omits every operator-node consumer from an output's subscriber list.
+    node_topic_outputs(node_desc)
         .iter()
         .map(|output_id| {
             let mut subscribers = Vec::new();
             for other_node in &descriptor.nodes {
-                for (input_id, input) in &other_node.inputs {
+                for (input_id, input) in node_topic_inputs(other_node) {
                     if let InputMapping::User(user) = &input.mapping
                         && user.source == node_desc.id
                         && user.output == *output_id
@@ -229,9 +237,8 @@ fn build_output_info(
 }
 
 fn build_input_info(node_desc: &dora_message::descriptor::Node) -> Vec<InputInfo> {
-    node_desc
-        .inputs
-        .iter()
+    node_topic_inputs(node_desc)
+        .into_iter()
         .map(|(input_id, input)| InputInfo {
             id: input_id.to_string(),
             // Use `InputMapping`'s canonical `Display` rather than re-deriving the
@@ -321,5 +328,76 @@ fn print_table(output: &NodeInfoOutput) {
         let _ = tw.flush();
     } else {
         println!("  <not running or metrics unavailable>");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build_input_info, build_output_info};
+    use dora_message::descriptor::{Descriptor, Node};
+
+    fn descriptor() -> Descriptor {
+        serde_yaml::from_str(
+            "\
+nodes:
+  - id: camera
+    path: camera
+    outputs:
+      - frame
+  - id: detect
+    operator:
+      python: detect.py
+      inputs:
+        image: camera/frame
+      outputs:
+        - boxes
+  - id: sink
+    path: sink
+    inputs:
+      boxes: detect/boxes
+",
+        )
+        .expect("parse descriptor")
+    }
+
+    fn node<'a>(descriptor: &'a Descriptor, id: &str) -> &'a Node {
+        descriptor
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == id)
+            .expect("node in fixture")
+    }
+
+    // Regression: `dora node info` read the raw `node.inputs`, which is empty
+    // for `operator:` nodes (their ports live under `operator.config`), so it
+    // reported no inputs for operator-backed nodes (dora-rs/dora#2893).
+    #[test]
+    fn operator_node_inputs_are_reported() {
+        let d = descriptor();
+        let ids: Vec<_> = build_input_info(node(&d, "detect"))
+            .into_iter()
+            .map(|i| i.id)
+            .collect();
+        assert!(
+            ids.iter().any(|id| id == "image"),
+            "operator input missing: {ids:?}"
+        );
+    }
+
+    // The output listing and its subscriber scan must likewise see operator
+    // ports: `detect/boxes` is produced by an operator and consumed by `sink`.
+    #[test]
+    fn operator_node_outputs_and_subscribers_are_reported() {
+        let d = descriptor();
+        let outputs = build_output_info(node(&d, "detect"), &d);
+        let boxes = outputs
+            .iter()
+            .find(|o| o.id == "boxes")
+            .expect("operator output `boxes` should be listed");
+        assert!(
+            boxes.subscribers.iter().any(|s| s == "sink/boxes"),
+            "operator-node subscriber missing: {:?}",
+            boxes.subscribers
+        );
     }
 }

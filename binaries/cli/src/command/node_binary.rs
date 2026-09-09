@@ -83,7 +83,19 @@ fn search(binary_name: &str) -> Option<PathBuf> {
         .unwrap_or_else(|_| PathBuf::from("target"));
     for profile in ["debug", "release"] {
         if let Some(candidate) = probe_dir(&cargo_target.join(profile), binary_name) {
-            return dunce::canonicalize(candidate).ok();
+            // Fall back if canonicalization fails (e.g. a transient race against
+            // the build, or a symlink/permission edge case). The other branches
+            // above return the located path directly; discarding a binary we
+            // just found — and thereby also skipping the remaining `release`
+            // probe — would be worse. Make the fallback absolute so it still
+            // resolves like the other branches' paths even if the working
+            // directory changes before the binary is spawned (`cargo_target`
+            // may be the relative default `target/`).
+            return Some(
+                dunce::canonicalize(&candidate)
+                    .or_else(|_| std::path::absolute(&candidate))
+                    .unwrap_or(candidate),
+            );
         }
     }
 

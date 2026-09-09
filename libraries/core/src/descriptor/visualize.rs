@@ -4,7 +4,7 @@ use dora_message::{
     id::{DataId, NodeId},
 };
 
-use super::{CustomNode, ModuleBoundaries, ResolvedNode, RuntimeNode};
+use super::{CustomNode, ModuleBoundaries, ResolvedNode, RuntimeNode, SINGLE_OPERATOR_DEFAULT_ID};
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt::Write as _,
@@ -140,18 +140,23 @@ fn visualize_runtime_node(
     operators: &[OperatorDefinition],
     flowchart: &mut String,
 ) {
-    if operators.len() == 1 && operators[0].id.to_string() == "op" {
+    if operators.len() == 1 && operators[0].id.as_ref() == SINGLE_OPERATOR_DEFAULT_ID {
         let operator = &operators[0];
+        // The node's mermaid id must match how edges reference this operator,
+        // which `visualize_node_inputs` builds as `{node_id}/{operator.id}`.
+        // Use the operator id here rather than a second literal `op` so the two
+        // can never drift apart if `SINGLE_OPERATOR_DEFAULT_ID` changes.
+        let operator_id = &operator.id;
         // single operator node
         if operator.config.inputs.is_empty() {
             // source node
-            writeln!(flowchart, "  {node_id}/op[\\{node_id}/]").unwrap();
+            writeln!(flowchart, "  {node_id}/{operator_id}[\\{node_id}/]").unwrap();
         } else if operator.config.outputs.is_empty() {
             // sink node
-            writeln!(flowchart, "  {node_id}/op[/{node_id}\\]").unwrap();
+            writeln!(flowchart, "  {node_id}/{operator_id}[/{node_id}\\]").unwrap();
         } else {
             // normal node
-            writeln!(flowchart, "  {node_id}/op[{node_id}]").unwrap();
+            writeln!(flowchart, "  {node_id}/{operator_id}[{node_id}]").unwrap();
         }
     } else {
         writeln!(flowchart, "subgraph {node_id}").unwrap();

@@ -26,6 +26,13 @@ pub fn encode<T: serde::Serialize>(value: &T) -> postcard::Result<Vec<u8>> {
     encode_presized(value, 0)
 }
 
+/// Exact length `value` takes in the binary wire format, computed without
+/// producing the encoding (bulk payloads are counted, not copied). Lets a
+/// sender size a frame before committing to it.
+pub fn serialized_size<T: serde::Serialize>(value: &T) -> postcard::Result<usize> {
+    postcard::experimental::serialized_size(value)
+}
+
 /// [`encode`], for a message carrying `bulk_bytes` bytes of bulk payload.
 ///
 /// The encoder writes into a `Vec` that would otherwise start empty and
@@ -169,27 +176,50 @@ use uuid::{Timestamp, Uuid};
 /// Dora assigns each dataflow instance a unique ID on start.
 pub type DataflowId = uuid::Uuid;
 
+/// Unique identifier for a CLI/coordinator session.
+///
+/// A session groups the CLI commands issued against one coordinator connection.
+/// The id is a time-ordered UUIDv7, so sessions sort by creation time.
+///
+/// ```
+/// use dora_message::SessionId;
+///
+/// let a = SessionId::generate();
+/// let b = SessionId::generate();
+/// assert_ne!(a, b);
+/// assert_eq!(a.uuid().get_version_num(), 7);
+/// ```
 #[derive(
     Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 pub struct SessionId(uuid::Uuid);
 
 impl SessionId {
+    /// Generate a fresh, unique session id (a time-ordered UUIDv7).
     pub fn generate() -> Self {
         Self(Uuid::new_v7(Timestamp::now(uuid::NoContext)))
     }
 
+    /// The underlying UUID.
     pub fn uuid(&self) -> uuid::Uuid {
         self.0
     }
 }
 
+/// Unique identifier for one `dora build` of a dataflow.
+///
+/// Assigned when a build starts and carried through to the run so a dataflow
+/// can be matched to the artifacts it was built from. Like [`SessionId`], it is
+/// a time-ordered UUIDv7. Its [`Display`](std::fmt::Display) form is
+/// `BuildId(<uuid>)`; use [`from_display_str`](BuildId::from_display_str) to
+/// recover a value from that form.
 #[derive(
     Debug, Clone, Copy, serde::Serialize, serde::Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash,
 )]
 pub struct BuildId(uuid::Uuid);
 
 impl BuildId {
+    /// Generate a fresh, unique build id (a time-ordered UUIDv7).
     pub fn generate() -> Self {
         Self(Uuid::new_v7(Timestamp::now(uuid::NoContext)))
     }

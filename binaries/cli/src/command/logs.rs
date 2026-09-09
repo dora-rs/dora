@@ -1,6 +1,6 @@
 use std::{
     collections::HashMap,
-    io::{Read, Seek, Write},
+    io::{Read, Seek},
     path::{Path, PathBuf},
 };
 
@@ -122,7 +122,6 @@ impl Executable for LogsArgs {
                 self.tail,
                 self.follow,
                 self.grep.as_deref(),
-                &self.level,
                 self.since,
                 self.until,
                 &config,
@@ -147,7 +146,6 @@ impl Executable for LogsArgs {
                     &session,
                     uuid,
                     None,
-                    &self.level,
                     self.since,
                     self.until,
                     self.grep.as_deref(),
@@ -369,7 +367,7 @@ fn follow_local_logs(args: &LogsArgs) -> Result<()> {
             // on the next poll — it must never abort the follow session, which
             // the daemon's rotation (rename + delete) would otherwise do.
             let new_pos = match handle {
-                Some(file) => match read_appended_log_lines(file, plan.resume) {
+                Some(file) => match read_appended_log_lines(file, &plan.path, plan.resume) {
                     Ok((msgs, new_pos)) => {
                         new_messages.extend(msgs);
                         new_pos
@@ -666,7 +664,11 @@ fn retain_unlisted_state(
 /// the (racily larger) file size, so nothing is re-read and duplicated on the
 /// next poll. Bytes are decoded lossily so a read that ends inside a multibyte
 /// UTF-8 sequence cannot abort the follow session.
-fn read_appended_log_lines(file: &mut std::fs::File, pos: u64) -> Result<(Vec<LogMessage>, u64)> {
+fn read_appended_log_lines(
+    file: &mut std::fs::File,
+    path: &Path,
+    pos: u64,
+) -> Result<(Vec<LogMessage>, u64)> {
     file.seek(std::io::SeekFrom::Start(pos))?;
     let mut buf = Vec::new();
     file.read_to_end(&mut buf)?;
@@ -675,7 +677,10 @@ fn read_appended_log_lines(file: &mut std::fs::File, pos: u64) -> Result<(Vec<Lo
         None => return Ok((Vec::new(), pos)),
     };
     let text = String::from_utf8_lossy(&buf[..consumed]);
-    let messages = text.lines().filter_map(parse_jsonl_line).collect();
+    // Route through the same per-file parser as the initial read so raw lines
+    // appended to a legacy `.txt` file are surfaced rather than silently
+    // dropped (they parse as `None` under `parse_jsonl_line`).
+    let messages = parse_log_content(path, &text);
     Ok((messages, pos + consumed as u64))
 }
 
@@ -752,9 +757,13 @@ fn find_log_files(dataflow_dir: &Path) -> Result<Vec<PathBuf>> {
 /// Extract rotation index from a log filename. Current file returns 0, `.1.jsonl` returns 1, etc.
 fn rotation_index(path: &Path) -> u32 {
     let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-    // Pattern: log_<node>.<N>.jsonl
+    // Pattern: log_<node>.<N>.<ext>, where <ext> is `jsonl` or the legacy
+    // `txt`. `find_log_files` collects both extensions, so both must be handled
+    // here or a rotated `.txt` file sorts as if it were the current file.
     if let Some(rest) = name.strip_prefix("log_")
-        && let Some(rest) = rest.strip_suffix(".jsonl")
+        && let Some(rest) = rest
+            .strip_suffix(".jsonl")
+            .or_else(|| rest.strip_suffix(".txt"))
     {
         // Check if the last segment after the last '.' is a number
         if let Some(dot_pos) = rest.rfind('.')
@@ -764,6 +773,29 @@ fn rotation_index(path: &Path) -> u32 {
         }
     }
     0 // current file
+}
+
+/// Whether the remainder left after stripping `log_<node>` from a filename is a
+/// valid log-file suffix: exactly `.jsonl`/`.txt`, or a rotated
+/// `.<index>.jsonl`/`.<index>.txt`.
+///
+/// A bare `starts_with('.') && ends_with(".jsonl")` check is not enough: a node
+/// id may contain non-leading dots (`validate_node_id` allows `cam.left`), so
+/// stripping `log_cam` from `log_cam.left.jsonl` yields `.left.jsonl`, which
+/// would otherwise be wrongly attributed to node `cam`. Requiring the remainder
+/// to be an exact suffix keeps a dot-prefix sibling's logs from leaking through.
+fn is_node_log_suffix(rest: &str) -> bool {
+    let Some(inner) = rest
+        .strip_suffix(".jsonl")
+        .or_else(|| rest.strip_suffix(".txt"))
+    else {
+        return false;
+    };
+    // `inner` is now "" for the current file, or ".<index>" for a rotated one.
+    inner.is_empty()
+        || inner
+            .strip_prefix('.')
+            .is_some_and(|idx| !idx.is_empty() && idx.bytes().all(|b| b.is_ascii_digit()))
 }
 
 /// Find all log files for a node (including rotated), oldest first.
@@ -782,7 +814,7 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
             Some(rest) => rest,
             None => continue,
         };
-        if rest.starts_with('.') && (rest.ends_with(".jsonl") || rest.ends_with(".txt")) {
+        if is_node_log_suffix(rest) {
             files.push(entry.path());
         }
     }
@@ -808,7 +840,7 @@ fn find_node_log_files(dataflow_dir: &Path, node: &NodeId) -> Result<Vec<PathBuf
 fn read_log_file(path: &Path) -> Result<Vec<LogMessage>> {
     let content = std::fs::read_to_string(path)
         .wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    parse_log_content(path, &content)
+    Ok(parse_log_content(path, &content))
 }
 
 /// Read a log file for follow mode: the messages to print plus the follow state
@@ -840,7 +872,7 @@ fn read_log_file_tracked(path: &Path) -> Result<(Vec<LogMessage>, FollowedFile)>
     // Only the newline-terminated prefix is parsed; a partial trailing line is
     // left for a later poll. Decoding lossily cannot abort here.
     let content = String::from_utf8_lossy(&bytes[..consumed]);
-    let messages = parse_log_content(path, &content)?;
+    let messages = parse_log_content(path, &content);
     Ok((
         messages,
         FollowedFile {
@@ -851,39 +883,65 @@ fn read_log_file_tracked(path: &Path) -> Result<(Vec<LogMessage>, FollowedFile)>
     ))
 }
 
-/// Parse log file `content` into messages. Legacy `.txt` files holding no
-/// parseable JSON are raw text and are written straight to stdout instead.
-fn parse_log_content(path: &Path, content: &str) -> Result<Vec<LogMessage>> {
-    let is_jsonl = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .map(|e| e == "jsonl")
-        .unwrap_or(false);
+/// Whether `path` is the structured `.jsonl` format the daemon writes today,
+/// as opposed to a legacy raw-text `.txt` file. A non-JSON line in a `.jsonl`
+/// file is a corrupt record and is skipped; a non-JSON line in a `.txt` file is
+/// real console output and is preserved as a raw [`LogMessage`].
+fn is_jsonl_log_file(path: &Path) -> bool {
+    path.extension().and_then(|e| e.to_str()) == Some("jsonl")
+}
 
-    if is_jsonl {
-        Ok(content
+/// Wrap a raw (non-JSON) log line as a synthetic [`LogMessage`] so it flows
+/// through the same filter → sort → print pipeline as structured logs, instead
+/// of being written to stdout verbatim (which bypassed `--grep`/`--tail`/
+/// `--since`/`--until` and printed out of timestamp order).
+///
+/// Raw lines carry no timestamp or level, so they follow a defined policy: the
+/// `Stdout` channel — untyped console output, which passes the default level
+/// filter — and the Unix epoch as timestamp, so they sort ahead of timestamped
+/// records and are treated as the oldest possible line by `--since`/`--until`.
+fn raw_text_log_message(line: &str) -> LogMessage {
+    LogMessage {
+        build_id: None,
+        dataflow_id: None,
+        node_id: None,
+        daemon_id: None,
+        level: dora_message::common::LogLevelOrStdout::Stdout,
+        target: None,
+        module_path: None,
+        file: None,
+        line: None,
+        message: line.to_string(),
+        // Unix epoch. `from_timestamp_nanos` is infallible, so this keeps the
+        // production unwrap/expect budget clean.
+        timestamp: DateTime::from_timestamp_nanos(0),
+        fields: None,
+    }
+}
+
+/// Parse one line of a legacy `.txt` log file: a structured record if it parses
+/// as JSON, otherwise the raw line wrapped via [`raw_text_log_message`]. Blank
+/// lines yield `None`, matching the `.jsonl` path.
+fn parse_txt_log_line(line: &str) -> Option<LogMessage> {
+    if line.trim().is_empty() {
+        return None;
+    }
+    Some(parse_jsonl_line(line).unwrap_or_else(|| raw_text_log_message(line)))
+}
+
+/// Parse log file `content` into messages. `.jsonl` files keep only structured
+/// records; legacy `.txt` files preserve raw (non-JSON) lines as synthetic
+/// [`LogMessage`]s so they filter and sort alongside structured logs (including
+/// the raw lines of a mixed-content file, which used to be dropped).
+fn parse_log_content(path: &Path, content: &str) -> Vec<LogMessage> {
+    if is_jsonl_log_file(path) {
+        content
             .lines()
             .filter(|line| !line.trim().is_empty())
             .filter_map(parse_jsonl_line)
-            .collect())
+            .collect()
     } else {
-        // Legacy .txt files: try to parse each line as JSON (LogMessage)
-        // If that fails, treat as raw text
-        let messages: Vec<LogMessage> = content
-            .lines()
-            .filter(|line| !line.trim().is_empty())
-            .filter_map(parse_jsonl_line)
-            .collect();
-
-        if messages.is_empty() {
-            // Raw text file, just print it directly
-            std::io::stdout()
-                .write_all(content.as_bytes())
-                .wrap_err("failed to write to stdout")?;
-            Ok(Vec::new())
-        } else {
-            Ok(messages)
-        }
+        content.lines().filter_map(parse_txt_log_line).collect()
     }
 }
 
@@ -1093,27 +1151,58 @@ fn matches_node_filter(msg_node: Option<&str>, want: Option<&str>) -> bool {
     }
 }
 
+/// The level to subscribe the coordinator log stream at when following: the
+/// most verbose (highest) filter across the global `level` and every per-node
+/// `--log-filter` override.
+///
+/// The coordinator drops any message strictly more verbose than the
+/// subscription level, so the stream must be opened at least as verbosely as
+/// the loosest filter the client might display; the precise per-node decision
+/// is left to the client-side `should_display`. `Stdout` maps to `Trace` (the
+/// most permissive filter), matching how the coordinator treats it.
+fn follow_subscription_level(
+    level: &dora_core::build::LogLevelOrStdout,
+    node_filters: &HashMap<String, dora_core::build::LogLevelOrStdout>,
+) -> log::LevelFilter {
+    fn as_filter(level: &dora_core::build::LogLevelOrStdout) -> log::LevelFilter {
+        match level {
+            dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
+            dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
+        }
+    }
+    node_filters
+        .values()
+        .map(as_filter)
+        .fold(as_filter(level), std::cmp::max)
+}
+
 /// Subscribe to coordinator log stream with time/grep/node filtering.
 ///
 /// `node`, when set, restricts the stream to messages from that single node —
 /// mirroring the node scoping already applied to the historical fetch in
 /// [`logs`]. Without this, `--node <N> --follow` would show history for `N`
 /// but then stream live logs from every node once following began.
-#[allow(clippy::too_many_arguments)]
 fn stream_logs_from_coordinator(
     session: &WsSession,
     uuid: Uuid,
     node: Option<&NodeId>,
-    level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     grep: Option<&str>,
     config: &LogOutputConfig,
 ) -> Result<()> {
-    let log_level = match level {
-        dora_core::build::LogLevelOrStdout::Stdout => log::LevelFilter::Trace,
-        dora_core::build::LogLevelOrStdout::LogLevel(l) => l.to_level_filter(),
-    };
+    // Subscribe at the most verbose level requested by *any* active filter --
+    // the global `--level` and every per-node `--log-filter` override. The
+    // coordinator drops messages more verbose than the subscription level
+    // (`LogSubscriber::send_message`), so subscribing at only the global level
+    // would starve a per-node filter that is more verbose than the global one:
+    // the historical dump (fetched unfiltered, filtered client-side) would show
+    // those lines but the live `--follow` stream never would. The precise
+    // per-node filtering is then applied client-side by `print_log_message`.
+    //
+    // Both the subscription width and the client-side display filter read from
+    // the same `config`, so they cannot drift apart.
+    let log_level = follow_subscription_level(&config.min_level, &config.node_filters);
 
     let now = Utc::now();
     let since_threshold =
@@ -1185,7 +1274,6 @@ pub fn logs(
     tail: Option<usize>,
     follow: bool,
     grep: Option<&str>,
-    level: &dora_core::build::LogLevelOrStdout,
     since: Option<std::time::Duration>,
     until: Option<std::time::Duration>,
     config: &LogOutputConfig,
@@ -1229,22 +1317,14 @@ pub fn logs(
         return Ok(());
     }
 
-    stream_logs_from_coordinator(
-        session,
-        uuid,
-        Some(&node),
-        level,
-        since,
-        until,
-        grep,
-        config,
-    )
+    stream_logs_from_coordinator(session, uuid, Some(&node), since, until, grep, config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use dora_message::common::LogLevelOrStdout;
+    use std::io::Write;
     use std::path::PathBuf;
 
     fn make_msg(
@@ -1289,6 +1369,15 @@ mod tests {
     #[test]
     fn rotation_index_txt_file() {
         assert_eq!(rotation_index(&PathBuf::from("log_sensor.txt")), 0);
+    }
+
+    #[test]
+    fn rotation_index_rotated_txt_file() {
+        // `find_log_files` collects rotated legacy `.txt` files too, so their
+        // index must be parsed like `.jsonl`. Before the fix this returned 0
+        // (treated as the current file) and sorted out of order.
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.1.txt")), 1);
+        assert_eq!(rotation_index(&PathBuf::from("log_sensor.3.txt")), 3);
     }
 
     // --- apply_time_filters ---
@@ -1495,12 +1584,42 @@ mod tests {
         let dir = tempdir().unwrap();
         File::create(dir.path().join("log_cam.jsonl")).unwrap();
         File::create(dir.path().join("log_cam_left.jsonl")).unwrap();
+        // A node id may contain a non-leading dot, so `cam.left` is a valid,
+        // distinct node whose log file must NOT be attributed to `cam`.
+        File::create(dir.path().join("log_cam.left.jsonl")).unwrap();
+        // A rotated file for the queried node still belongs to it.
+        File::create(dir.path().join("log_cam.1.jsonl")).unwrap();
 
         let node_id = NodeId::from("cam".to_string());
         let files = find_node_log_files(dir.path(), &node_id).unwrap();
 
-        assert_eq!(files.len(), 1);
-        assert!(files[0].file_name().unwrap() == "log_cam.jsonl");
+        let names: std::collections::HashSet<_> = files
+            .iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["log_cam.jsonl", "log_cam.1.jsonl"]
+                .into_iter()
+                .map(String::from)
+                .collect()
+        );
+    }
+
+    #[test]
+    fn is_node_log_suffix_accepts_only_exact_suffixes() {
+        // Current file and rotated variants for the queried node.
+        assert!(is_node_log_suffix(".jsonl"));
+        assert!(is_node_log_suffix(".txt"));
+        assert!(is_node_log_suffix(".1.jsonl"));
+        assert!(is_node_log_suffix(".42.txt"));
+        // A dot-prefix sibling (`log_cam.left.jsonl` stripped of `log_cam`).
+        assert!(!is_node_log_suffix(".left.jsonl"));
+        assert!(!is_node_log_suffix(".left.txt"));
+        // Non-numeric rotation segment and unrelated extensions.
+        assert!(!is_node_log_suffix(".x.jsonl"));
+        assert!(!is_node_log_suffix(".jsonl.bak"));
+        assert!(!is_node_log_suffix(""));
     }
 
     // --- follow-mode rotation planning (plan_follow_reads / same_log_file) ---
@@ -1538,7 +1657,7 @@ mod tests {
 
     fn read_appended_at(path: &Path, pos: u64) -> Result<(Vec<LogMessage>, u64)> {
         let mut file = std::fs::File::open(path)?;
-        read_appended_log_lines(&mut file, pos)
+        read_appended_log_lines(&mut file, path, pos)
     }
 
     fn resume_for<'a>(plans: &'a [FollowPlan], path: &str) -> &'a FollowPlan {
@@ -1934,6 +2053,92 @@ mod tests {
         assert_eq!(new_pos, complete.len() as u64);
     }
 
+    // --- legacy raw-text (.txt) handling (#3312) ---
+
+    #[test]
+    fn parse_txt_wraps_raw_lines_as_stdout_messages() {
+        // A pure raw-text `.txt` file: every line becomes a synthetic message
+        // (Stdout channel, epoch timestamp) instead of being dumped verbatim, so
+        // it can flow through the filter/sort/print pipeline.
+        let path = PathBuf::from("log_node.txt");
+        let msgs = parse_log_content(&path, "hello\nworld\n");
+        assert_eq!(msgs.len(), 2);
+        assert_eq!(msgs[0].message, "hello");
+        assert_eq!(msgs[1].message, "world");
+        assert!(msgs.iter().all(|m| m.level == LogLevelOrStdout::Stdout));
+        assert_eq!(msgs[0].timestamp, DateTime::from_timestamp_nanos(0));
+    }
+
+    #[test]
+    fn parse_txt_preserves_mixed_json_and_raw_lines() {
+        // Regression: a mixed-content `.txt` used to return only the JSON lines
+        // and silently drop the raw ones. Both must survive now.
+        let structured = serde_json::to_string(&msg_with_level("json", log::Level::Error, 5))
+            .expect("serialize LogMessage");
+        let content = format!("raw before\n{structured}\nraw after\n");
+        let msgs = parse_log_content(&PathBuf::from("log_node.txt"), &content);
+
+        let rendered: Vec<&str> = msgs.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(rendered, vec!["raw before", "json", "raw after"]);
+        // The structured line keeps its parsed level; the raw ones are Stdout.
+        assert_eq!(msgs[0].level, LogLevelOrStdout::Stdout);
+        assert_eq!(msgs[1].level, LogLevelOrStdout::LogLevel(log::Level::Error));
+        assert_eq!(msgs[2].level, LogLevelOrStdout::Stdout);
+    }
+
+    #[test]
+    fn parse_jsonl_skips_non_json_lines() {
+        // In a `.jsonl` file a non-JSON line is a corrupt record, not raw text,
+        // so it is skipped rather than wrapped.
+        let structured = serde_json::to_string(&msg_with_level("ok", log::Level::Info, 1))
+            .expect("serialize LogMessage");
+        let msgs = parse_log_content(
+            &PathBuf::from("log_node.jsonl"),
+            &format!("{structured}\nnot json\n"),
+        );
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].message, "ok");
+    }
+
+    #[test]
+    fn raw_txt_lines_honor_grep_and_tail() {
+        // The core bug: raw `.txt` content bypassed every client-side filter.
+        // Routed through `filter_and_tail`, `--grep` and `--tail` now apply.
+        let msgs = parse_log_content(&PathBuf::from("log_node.txt"), "alpha\nbeta\nalpha again\n");
+        let config = LogOutputConfig::default();
+
+        let grepped = filter_and_tail(
+            msgs.clone(),
+            None,
+            None,
+            Some("alpha"),
+            &config,
+            None,
+            Utc::now(),
+        );
+        let grepped_msgs: Vec<&str> = grepped.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(grepped_msgs, vec!["alpha", "alpha again"]);
+
+        let tailed = filter_and_tail(msgs, None, None, None, &config, Some(1), Utc::now());
+        let tailed_msgs: Vec<&str> = tailed.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(tailed_msgs, vec!["alpha again"]);
+    }
+
+    #[test]
+    fn read_appended_txt_surfaces_raw_lines() {
+        use tempfile::tempdir;
+
+        // Follow mode: raw lines appended to a `.txt` file must be surfaced, not
+        // dropped (they parse as `None` under `parse_jsonl_line`).
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("log_node.txt");
+        std::fs::write(&path, "line one\nline two\n").unwrap();
+
+        let (msgs, _pos) = read_appended_at(&path, 0).unwrap();
+        let rendered: Vec<&str> = msgs.iter().map(|m| m.message.as_str()).collect();
+        assert_eq!(rendered, vec!["line one", "line two"]);
+    }
+
     // --- level filter is applied before tail ---
 
     fn msg_with_level(message: &str, level: log::Level, ts_secs: i64) -> LogMessage {
@@ -1982,5 +2187,63 @@ mod tests {
             ..Default::default()
         };
         assert!(level_filter_is_active(&restrictive));
+    }
+
+    // --- follow_subscription_level ---
+
+    #[test]
+    fn follow_subscription_level_uses_global_when_no_node_filters() {
+        let level = LogLevelOrStdout::LogLevel(log::Level::Error);
+        assert_eq!(
+            follow_subscription_level(&level, &HashMap::new()),
+            log::LevelFilter::Error
+        );
+    }
+
+    #[test]
+    fn follow_subscription_level_widens_to_more_verbose_node_filter() {
+        // Global `error`, but node `x` is filtered at `debug`. The coordinator
+        // drops anything more verbose than the subscription level, so
+        // subscribing at `error` would never deliver `x`'s debug/info/warn
+        // lines even though the client would display them. The subscription
+        // must widen to `debug`.
+        let level = LogLevelOrStdout::LogLevel(log::Level::Error);
+        let mut node_filters = HashMap::new();
+        node_filters.insert(
+            "x".to_string(),
+            LogLevelOrStdout::LogLevel(log::Level::Debug),
+        );
+        assert_eq!(
+            follow_subscription_level(&level, &node_filters),
+            log::LevelFilter::Debug
+        );
+    }
+
+    #[test]
+    fn follow_subscription_level_keeps_global_when_node_filter_is_less_verbose() {
+        // Global `debug`, node `x` only wants `error`. The global level is the
+        // loosest, so the subscription stays at `debug` and the client filters
+        // `x` down to `error`.
+        let level = LogLevelOrStdout::LogLevel(log::Level::Debug);
+        let mut node_filters = HashMap::new();
+        node_filters.insert(
+            "x".to_string(),
+            LogLevelOrStdout::LogLevel(log::Level::Error),
+        );
+        assert_eq!(
+            follow_subscription_level(&level, &node_filters),
+            log::LevelFilter::Debug
+        );
+    }
+
+    #[test]
+    fn follow_subscription_level_stdout_filter_is_most_permissive() {
+        let level = LogLevelOrStdout::LogLevel(log::Level::Error);
+        let mut node_filters = HashMap::new();
+        node_filters.insert("x".to_string(), LogLevelOrStdout::Stdout);
+        assert_eq!(
+            follow_subscription_level(&level, &node_filters),
+            log::LevelFilter::Trace
+        );
     }
 }

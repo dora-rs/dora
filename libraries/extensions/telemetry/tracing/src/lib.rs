@@ -307,19 +307,20 @@ pub fn init_tracing_subscriber(
     file_filter: LevelFilter,
 ) -> eyre::Result<Option<OtelGuard>> {
     let mut builder = TracingBuilder::new(name);
-    let guard: Option<OtelGuard>;
 
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() || std::env::var("DORA_JAEGER_TRACING").is_ok() {
+    let guard: Option<OtelGuard> = if std::env::var("DORA_OTLP_ENDPOINT").is_ok()
+        || std::env::var("DORA_JAEGER_TRACING").is_ok()
+    {
         builder = builder
             .with_otlp_tracing()
             .wrap_err("failed to set up OTLP tracing")?;
-        guard = builder.guard.take();
+        builder.guard.take()
     } else {
         if let Some(filter) = stdout_filter {
             builder = builder.with_stdout(filter, false);
         }
-        guard = None;
-    }
+        None
+    };
 
     if let Some(filename) = file_name {
         builder = builder.with_file(filename, file_filter)?;

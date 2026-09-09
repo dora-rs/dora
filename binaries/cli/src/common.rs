@@ -406,12 +406,11 @@ mod tests {
     }
 
     fn deploy_with(machine: Option<&str>) -> Deploy {
-        Deploy {
-            machine: machine.map(str::to_owned),
-            working_dir: None,
-            labels: Default::default(),
-            distribute: Default::default(),
-        }
+        // `Deploy` is `#[non_exhaustive]`, so neither a struct literal nor
+        // functional-update syntax is available here.
+        let mut deploy = Deploy::default();
+        deploy.machine = machine.map(str::to_owned);
+        deploy
     }
 
     #[test]
