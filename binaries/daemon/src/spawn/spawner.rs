@@ -1,7 +1,7 @@
 use crate::{
     CoreNodeKindExt, Event,
     log::NodeLogger,
-    node_communication::spawn_listener_loop,
+    node_communication::{REPLAY_NODE_INGRESS_BYTE_LIMIT, spawn_listener_loop},
     spawn::{command::path_spawn_command, prepared::PreparedNode},
 };
 use clonable_command::{Command, Stdio};
@@ -34,7 +34,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::AtomicU64},
 };
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 
 /// Environment variable names that must never be passed to spawned nodes:
 /// loader-injection vectors and daemon-level secrets. Refused from a
@@ -693,6 +693,11 @@ impl Spawner {
         // closes the listener instead of leaking it until dataflow end
         // (dora-rs/dora#2988 review, finding 3).
         let (listener_shutdown, node_shutdown_rx) = tokio::sync::watch::channel(false);
+        let replay_ingress_budget = node
+            .env
+            .as_ref()
+            .is_some_and(|env| env.contains_key("DORA_REPLAY_OUTPUT_RECEIPT"))
+            .then(|| Arc::new(Semaphore::new(REPLAY_NODE_INGRESS_BYTE_LIMIT)));
         let daemon_communication = spawn_listener_loop(
             &dataflow_id,
             &node_id,
@@ -702,6 +707,7 @@ impl Spawner {
             last_activity.clone(),
             self.shutdown.clone(),
             node_shutdown_rx,
+            replay_ingress_budget,
         )
         .await?;
 

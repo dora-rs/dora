@@ -6,18 +6,23 @@ use dora_message::{
 use eyre::eyre;
 use flume::RecvTimeoutError;
 use std::{sync::Arc, time::Duration};
-use tokio::sync::mpsc;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc};
 
 use crate::daemon_connection::DaemonChannel;
+
+const REPLAY_NODE_EVENT_BYTE_LIMIT: usize = 4 * dora_message::MAX_MESSAGE_BYTES;
 
 pub fn init(
     node_id: NodeId,
     tx: mpsc::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    replay_byte_budget: Option<Arc<Semaphore>>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
+    let join_handle = std::thread::spawn(|| {
+        event_stream_loop(node_id_cloned, tx, channel, clock, replay_byte_budget)
+    });
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -26,6 +31,7 @@ pub fn init(
 pub enum EventItem {
     NodeEvent {
         event: NodeEvent,
+        _byte_permit: Option<OwnedSemaphorePermit>,
     },
     /// Zenoh-received input carrying the already-decoded Arrow array.
     ///
@@ -98,6 +104,7 @@ fn event_stream_loop(
     tx: mpsc::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    replay_byte_budget: Option<Arc<Semaphore>>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -136,18 +143,18 @@ fn event_stream_loop(
                 break Err(err.wrap_err("daemon channel broken"));
             }
         };
-        for Timestamped { inner, timestamp } in events {
-            if let Err(err) = clock.update_with_timestamp(&timestamp) {
+        for event in events {
+            if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
                 tracing::warn!("failed to update HLC: {err}");
             }
-            if matches!(inner, NodeEvent::AllInputsClosed) {
+            if matches!(&event.inner, NodeEvent::AllInputsClosed) {
                 close_tx = true;
             }
 
             // Out-of-band: an extension's bookkeeping, not a dataflow input.
             // Consume it so user code never has to match on an event it did
             // not ask for; the extension drains the queue on its own schedule.
-            if let NodeEvent::ExtensionDropped { namespace, key } = &inner {
+            if let NodeEvent::ExtensionDropped { namespace, key } = &event.inner {
                 crate::event_stream::extensions::push_dropped(namespace.clone(), key.clone());
                 continue;
             }
@@ -158,7 +165,11 @@ fn event_stream_loop(
                 // `tokio::sync::mpsc` here — instead of `flume` — avoids the
                 // AB-BA deadlock between flume 0.10's spinlock and pyo3's
                 // GIL-acquiring waker (upstream dora-rs/dora#1603).
-                match tx.blocking_send(EventItem::NodeEvent { event: inner }) {
+                let Some(item) = node_event_item(event, replay_byte_budget.as_ref(), &node_id)
+                else {
+                    continue;
+                };
+                match tx.blocking_send(item) {
                     Ok(()) => {}
                     Err(send_error) => {
                         let event = send_error.0;
@@ -170,7 +181,10 @@ fn event_stream_loop(
                     }
                 }
             } else {
-                tracing::warn!("dropping event because event `tx` was already closed: `{inner:?}`");
+                tracing::warn!(
+                    "dropping event because event `tx` was already closed: `{:?}`",
+                    event.inner
+                );
             }
 
             if close_tx {
@@ -187,5 +201,114 @@ fn event_stream_loop(
             _ => unreachable!(),
         };
         tracing::error!("failed to report fatal EventStream error: {err:?}");
+    }
+}
+
+fn node_event_item(
+    event: Timestamped<NodeEvent>,
+    replay_byte_budget: Option<&Arc<Semaphore>>,
+    node_id: &NodeId,
+) -> Option<EventItem> {
+    let byte_permit = if matches!(&event.inner, NodeEvent::Input { .. }) {
+        let Some(budget) = replay_byte_budget else {
+            return Some(EventItem::NodeEvent {
+                event: event.inner,
+                _byte_permit: None,
+            });
+        };
+        let wire_size = match dora_message::serialized_size(&event) {
+            Ok(size) => size,
+            Err(error) => {
+                tracing::error!(node = %node_id, "cannot size verified replay input: {error}");
+                return None;
+            }
+        };
+        let Ok(wire_size) = u32::try_from(wire_size) else {
+            tracing::error!(node = %node_id, wire_size, "verified replay input is too large");
+            return None;
+        };
+        match budget.clone().try_acquire_many_owned(wire_size) {
+            Ok(permit) => Some(permit),
+            Err(_) => {
+                tracing::error!(
+                    node = %node_id,
+                    wire_size,
+                    available_bytes = budget.available_permits(),
+                    "verified replay input byte limit reached; dropping input"
+                );
+                return None;
+            }
+        }
+    } else {
+        None
+    };
+
+    Some(EventItem::NodeEvent {
+        event: event.inner,
+        _byte_permit: byte_permit,
+    })
+}
+
+pub(super) fn replay_byte_budget(enabled: bool) -> Option<Arc<Semaphore>> {
+    enabled.then(|| Arc::new(Semaphore::new(REPLAY_NODE_EVENT_BYTE_LIMIT)))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use dora_core::{config::NodeId, uhlc::HLC};
+    use dora_message::{common::Timestamped, daemon_to_node::NodeEvent, metadata::Metadata};
+    use tokio::sync::Semaphore;
+
+    use super::node_event_item;
+
+    fn input_event() -> Timestamped<NodeEvent> {
+        let clock = HLC::default();
+        Timestamped {
+            inner: NodeEvent::Input {
+                id: "cam".into(),
+                metadata: Arc::new(Metadata::new(clock.new_timestamp())),
+                data: None,
+            },
+            timestamp: clock.new_timestamp(),
+        }
+    }
+
+    #[test]
+    fn verified_input_holds_its_exact_wire_size_until_drop() {
+        let event = input_event();
+        let wire_size = dora_message::serialized_size(&event).unwrap();
+        let budget = Arc::new(Semaphore::new(wire_size));
+
+        let item = node_event_item(event, Some(&budget), &NodeId::from("sink".to_owned()))
+            .expect("input fits the byte budget");
+        assert_eq!(budget.available_permits(), 0);
+
+        drop(item);
+        assert_eq!(budget.available_permits(), wire_size);
+    }
+
+    #[test]
+    fn verified_input_is_rejected_when_its_exact_wire_size_does_not_fit() {
+        let event = input_event();
+        let wire_size = dora_message::serialized_size(&event).unwrap();
+        let budget = Arc::new(Semaphore::new(wire_size - 1));
+
+        assert!(node_event_item(event, Some(&budget), &NodeId::from("sink".to_owned())).is_none());
+        assert_eq!(budget.available_permits(), wire_size - 1);
+    }
+
+    #[test]
+    fn control_event_does_not_use_the_replay_byte_budget() {
+        let clock = HLC::default();
+        let event = Timestamped {
+            inner: NodeEvent::Stop,
+            timestamp: clock.new_timestamp(),
+        };
+        let budget = Arc::new(Semaphore::new(0));
+
+        assert!(node_event_item(event, Some(&budget), &NodeId::from("sink".to_owned())).is_some());
+        assert_eq!(budget.available_permits(), 0);
     }
 }

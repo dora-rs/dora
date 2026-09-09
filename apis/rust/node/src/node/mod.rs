@@ -5,6 +5,7 @@ use crate::{
         TestingCommunication, TestingInput, TestingOptions, TestingOutput,
         take_testing_communication,
     },
+    replay_receipt::{INPUT_RECEIPT_ENV, OUTPUT_RECEIPT_ENV, ReceiptRecorder},
 };
 
 use self::{arrow_utils::ipc_encode, control_channel::ControlChannel};
@@ -794,6 +795,8 @@ pub struct DoraNode {
     /// When `Some`, holds the mode (Warn/Error) and a map of output DataId -> expected Arrow DataType.
     runtime_type_checks: Option<(RuntimeTypeCheck, HashMap<DataId, arrow_schema::DataType>)>,
 
+    output_receipt: ReceiptRecorder,
+
     /// Tokio runtime owned by the node. Populated only when no ambient
     /// runtime was available at init. Must drop after the zenoh session
     /// (which is drained explicitly at the top of [`Drop`]) so that any
@@ -1165,6 +1168,15 @@ impl DoraNode {
             restart_count,
             output_routing,
         } = node_config;
+        let node_id_string = node_id.to_string();
+        let output_receipt = ReceiptRecorder::from_env(OUTPUT_RECEIPT_ENV, &node_id_string)
+            .map_err(|error| {
+                NodeError::Init(format!("invalid output replay receipt config: {error:#}"))
+            })?;
+        let input_receipt =
+            ReceiptRecorder::from_env(INPUT_RECEIPT_ENV, &node_id_string).map_err(|error| {
+                NodeError::Init(format!("invalid input replay receipt config: {error:#}"))
+            })?;
         let clock = Arc::new(uhlc::HLC::default());
         let input_config = run_config.inputs.clone();
 
@@ -1366,6 +1378,7 @@ impl DoraNode {
             clock.clone(),
             write_events_to,
             zenoh_session.as_ref(),
+            input_receipt,
         )
         .wrap_err("failed to init event stream")?;
 
@@ -1427,6 +1440,7 @@ impl DoraNode {
             interactive: false,
             restart_count,
             runtime_type_checks,
+            output_receipt,
             _owned_runtime: owned_runtime,
             testing_daemon,
             testing_shutdown,
@@ -1768,6 +1782,7 @@ impl DoraNode {
         }
 
         let metadata = Metadata::from_parameters(self.clock.new_timestamp(), parameters);
+        let receipt_timestamp = metadata.timestamp();
 
         let finalized = sample.map(|sample| sample.finalize());
 
@@ -1788,9 +1803,9 @@ impl DoraNode {
 
         // How a data-plane message should be delivered.
         enum Delivery {
-            /// zenoh delivered the payload (or it was consumed by a failed SHM
-            /// put); only the daemon's control-plane state needs syncing.
-            Zenoh,
+            /// The payload took the zenoh path. A failed SHM put consumes the
+            /// payload, so only the daemon's control-plane state can still sync.
+            Zenoh { published: bool },
             /// Deliver via the daemon control channel. `None` is a metadata-only
             /// message with no payload.
             Daemon(Option<DataMessage>),
@@ -1823,7 +1838,7 @@ impl DoraNode {
                     );
                 }
                 match self.zenoh_publish(&output_id, &metadata, finalized, diag) {
-                    Ok(PublishOutcome::Published) => Delivery::Zenoh,
+                    Ok(PublishOutcome::Published) => Delivery::Zenoh { published: true },
                     Ok(PublishOutcome::NotPublished(sample)) => {
                         Delivery::Daemon(Some(sample.into_data_message()))
                     }
@@ -1832,7 +1847,7 @@ impl DoraNode {
                             "zenoh publish failed ({e}); message dropped \
                              (SHM payload consumed, no daemon fallback)"
                         );
-                        Delivery::Zenoh
+                        Delivery::Zenoh { published: false }
                     }
                 }
             }
@@ -1848,8 +1863,8 @@ impl DoraNode {
             None => Delivery::Daemon(None),
         };
 
-        match delivery {
-            Delivery::Zenoh => {
+        let sent = match delivery {
+            Delivery::Zenoh { published } => {
                 // Keep the daemon's control-plane state in sync (input
                 // deadlines, circuit-breaker recovery) without duplicating the
                 // data payload that zenoh already delivered.
@@ -1862,6 +1877,7 @@ impl DoraNode {
                 self.control_channel
                     .report_output_sent(output_id.clone(), metadata)
                     .wrap_err_with(|| format!("failed to report output {output_id}"))?;
+                published
             }
             Delivery::Daemon(data) => {
                 // The daemon/TCP path serializes the whole message; an oversized
@@ -1891,7 +1907,13 @@ impl DoraNode {
                 self.control_channel
                     .send_message(output_id.clone(), metadata, data)
                     .wrap_err_with(|| format!("failed to send output {output_id}"))?;
+                true
             }
+        };
+
+        if sent {
+            self.output_receipt
+                .record(output_id.as_str(), receipt_timestamp);
         }
 
         Ok(())
@@ -2668,6 +2690,7 @@ pub(crate) fn teardown_with_timeout(
 
 impl Drop for DoraNode {
     fn drop(&mut self) {
+        self.output_receipt.finish();
         // The startup handshake's marker thread holds an `Arc` clone of the
         // publishers, so it must be stopped and joined before the publishers
         // are dropped for the undeclare below to see the last reference. Do

@@ -53,6 +53,8 @@
 //! # }
 //! ```
 
+pub mod replay_receipt;
+
 use std::io::{self, BufReader, BufWriter, Read, Write};
 
 use eyre::Context;

@@ -2414,6 +2414,7 @@ dependencies = [
  "dora-core",
  "dora-message",
  "dora-metrics",
+ "dora-recording",
  "dora-tracing",
  "eyre",
  "flatbuffers",
@@ -2574,6 +2575,9 @@ name = "dora-recording"
 version = "1.0.1"
 dependencies = [
  "eyre",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
  "tempfile",
  "uuid",
 ]
@@ -2582,10 +2586,15 @@ dependencies = [
 name = "dora-replay-node"
 version = "1.0.1"
 dependencies = [
+ "aligned-vec",
  "dora-message",
  "dora-node-api",
  "dora-recording",
  "eyre",
+ "serde_json",
+ "serde_yaml",
+ "tempfile",
+ "tracing-subscriber",
 ]
 
 [[package]]

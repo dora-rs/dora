@@ -648,6 +648,12 @@ jobs:
           --
           --test-threads=1
           --nocapture
+      - name: Verify full-speed replay delivery
+        run: |
+          cargo build --locked -p dora-cli -p dora-replay-node
+          DORA_REPLAY_TEST_CLI="$PWD/target/debug/dora" \
+            cargo test --locked -p dora-replay-node --test replay_delivery speed_zero_ \
+            -- --ignored --test-threads=1 --nocapture
       # Python variant of the lifecycle test piggybacks on this job
       # because it needs uv (already set up above). The e2e job runs
       # every OTHER test in the file via `--skip lifecycle_python`, so
