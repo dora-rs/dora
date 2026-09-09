@@ -349,6 +349,18 @@ lost. Setting both is an error.
 dora daemon --machine-id edge-01 --coordinator-addr 10.0.0.1   --zenoh-config-overlay routers.json5
 ```
 
+### Zenoh Transport Timeouts
+
+By default, dora bounds the Zenoh unicast transport open timeout (`transport/unicast/open_timeout`) to **1000 ms** (1 s) to prevent slow teardown hangs when peers are unreachable. On high-latency WAN links (for example, behind ~200 ms RTT where TCP handshake and Zenoh session initiation require roughly 3 round-trips), 1 s leaves little headroom under packet loss.
+
+Operators can raise this timeout without writing a JSON5 overlay file by setting:
+
+```bash
+DORA_ZENOH_OPEN_TIMEOUT_MS=3000
+```
+
+Or by specifying `transport.unicast.open_timeout` in a `--zenoh-config-overlay` JSON5 file.
+
 ## Cluster Commands Reference
 
 All `dora cluster` commands operate on a `cluster.yml` file and use SSH to manage remote machines.

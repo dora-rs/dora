@@ -13,7 +13,7 @@ use dora_core::{
     topics::{
         DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, DORA_ZENOH_CONNECT_ENV,
         DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_LISTEN_EXTRA_ENV, DORA_ZENOH_MULTICAST_ENV,
-        ZENOH_CONFIG_PATH_ENV,
+        DORA_ZENOH_OPEN_TIMEOUT_MS_ENV, ZENOH_CONFIG_PATH_ENV,
     },
     uhlc::HLC,
 };
@@ -59,7 +59,11 @@ const SEARCH_PATH_ENV: &[&str] = &["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"];
 /// descriptor's `env:` like the control-plane wiring below, but deliberately
 /// still inherited (see [`deny_inherited_env`]), so one variable on the daemon
 /// covers every node it spawns.
-const DEPLOYMENT_ZENOH_ENV: &[&str] = &[ZENOH_CONFIG_PATH_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV];
+const DEPLOYMENT_ZENOH_ENV: &[&str] = &[
+    ZENOH_CONFIG_PATH_ENV,
+    DORA_ZENOH_CONFIG_OVERLAY_ENV,
+    DORA_ZENOH_OPEN_TIMEOUT_MS_ENV,
+];
 
 /// Control-plane variables the daemon injects into every node it spawns.
 /// Descriptor `env:` / `envs:` entries must not override them: they configure
