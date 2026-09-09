@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A `queue_policy: backpressure` input is no longer discarded by a timer flood** ([#3428](https://github.com/dora-rs/dora/issues/3428)). The direct node-to-node zenoh path hands each message to the receiver with a non-blocking send into one ingress channel shared by all of the receiver's inputs, so a fast timer could fill that channel while the receiver was busy and the next backpressure message was dropped before the per-input policy saw it. Any output with a `backpressure` consumer now stays on the daemon path, whose delivery into that channel blocks instead of dropping. This costs the whole output its zero-copy path and puts it under the daemon's 64 MiB per-message limit; the daemon path remains a bounded buffer, not a guarantee (see `docs/yaml-spec.md`). `dora node add`/`replace` now refuse a `backpressure` input whose producer is already running with the output on the direct path, since a running producer cannot be re-routed. `dora replay` marks every unset input `backpressure`, so replay dataflows run on the daemon path.
+- **A node that stalls and then asks for events no longer loses its whole backlog.** The daemon answered the next-event request with every queued event in one frame; past 64 MiB the frame was refused and the events, already dequeued, were dropped with only a warning while `dora run` still exited 0. Replies are now cut by exact wire length so each fits the 64 MiB frame, metadata included, and the remainder waits for the next request; an event that alone cannot fit is dropped with an error instead of wedging the queue.
+- **A consumer that stops reading can no longer grow daemon memory without bound.** The per-node listener drained the receiver's bounded channel into an unbounded queue. The queue is now capped at 1000 events or 256 MiB of payload; past that the channel fills and the existing sender-side drop policy applies.
+
 ## v1.0.1 (2026-09-03)
 
 Patch release. 1.0.0 could not be installed from crates.io.
