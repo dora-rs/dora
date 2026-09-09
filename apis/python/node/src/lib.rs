@@ -48,14 +48,13 @@ fn runtime() -> PyResult<&'static Runtime> {
 #[pyfunction]
 fn host_log<'py>(record: Bound<'py, PyAny>) -> PyResult<()> {
     // Python logging levels are arbitrary ints (`logging.addLevelName` /
-    // `logging.log(n, ..)` accept any value), so a `u8` extraction raises
-    // `OverflowError` for any level > 255 and turns a benign log call into an
-    // error at the call site. `i64` covers the full range of a real level
-    // (any custom int, including one well above ERROR, maps to the right
-    // bucket); the `unwrap_or(0)` fallback only fires for a non-integer
-    // `levelno`, which is malformed input handled as the lowest severity,
-    // mirroring the `lineno` handling below.
-    let level = record.getattr("levelno")?.extract::<i64>().unwrap_or(0);
+    // `logging.log(n, ..)` accept any value), so the previous `extract::<u8>()`
+    // raised `OverflowError` for any level > 255 and turned a benign log call
+    // into an error. Widen to `i64`, which covers the full range of a real
+    // level (any custom int, including one well above ERROR, buckets
+    // correctly). Keep the `?`: a non-integer `levelno` is malformed input and
+    // should surface at the call site, not be silently coerced to a level.
+    let level = record.getattr("levelno")?.extract::<i64>()?;
     let message = record.getattr("getMessage")?.call0()?.to_string();
     let pathname = record.getattr("pathname")?.to_string();
     let lineno = record.getattr("lineno")?.extract::<u32>().unwrap_or(0);
@@ -1221,6 +1220,46 @@ fn dora(_py: Python, m: Bound<'_, PyModule>) -> PyResult<()> {
 // `libraries/extensions/tensor-pool/python/src/transport.rs` (pure
 // decision logic, exercised without a GPU — see the `#[cfg(test)]` module
 // there). The `transport_tests` scaffolding that used to live here was
-// removed: it was empty, and this crate's test binary is excluded from
-// CI (`cargo test --all` skips the PyO3 crates), so the stub advertised
-// coverage that did not exist (bot review 5306582566).
+// removed: it was empty, and the stub advertised coverage that did not
+// exist (bot review 5306582566). `cargo test --all` skips this crate (its
+// test binary links libpython), but the module below still runs in CI via
+// the `contract-tests` job's `make qa-test-python`.
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    // Build a stub object shaped like a `logging.LogRecord` with the given
+    // `levelno` expression (e.g. `"300"` for an int, `"'x'"` for a non-int).
+    fn make_record<'py>(py: Python<'py>, levelno: &str) -> Bound<'py, PyAny> {
+        let locals = PyDict::new(py);
+        let code = CString::new(format!(
+            "import types\n\
+             record = types.SimpleNamespace(\
+             levelno={levelno}, getMessage=lambda: 'msg', \
+             pathname='f.py', lineno=1, name='t')"
+        ))
+        .unwrap();
+        py.run(&code, None, Some(&locals)).unwrap();
+        locals.get_item("record").unwrap().unwrap()
+    }
+
+    // A large custom level (> 255) must be accepted, not rejected with
+    // `OverflowError` as the old `extract::<u8>()` did.
+    #[test]
+    fn host_log_accepts_level_above_255() {
+        Python::attach(|py| {
+            assert!(host_log(make_record(py, "300")).is_ok());
+        });
+    }
+
+    // A non-integer `levelno` is malformed and must surface as an error rather
+    // than be silently coerced to a level.
+    #[test]
+    fn host_log_rejects_non_integer_level() {
+        Python::attach(|py| {
+            assert!(host_log(make_record(py, "'x'")).is_err());
+        });
+    }
+}

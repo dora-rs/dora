@@ -47,6 +47,13 @@ tracing = { workspace = true }
 [build-dependencies]
 pyo3-build-config = { workspace = true }
 
+[dev-dependencies]
+# `auto-initialize` lets the `#[cfg(test)]` module start an embedded
+# interpreter so `host_log` can be exercised against a stub record. Test-only
+# (the workspace pyo3 is abi3, not `extension-module`, so there is no conflict);
+# the maturin-built wheel does not see dev-dependencies.
+pyo3 = { workspace = true, features = ["auto-initialize"] }
+
 [lib]
 name = "dora"
 crate-type = ["cdylib"]
