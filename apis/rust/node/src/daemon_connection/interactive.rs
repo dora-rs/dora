@@ -6,7 +6,7 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::{DataMessage, Timestamped},
     daemon_to_node::{DaemonReply, NodeEvent},
-    id::DataId,
+    id::{DataId, InvalidId},
     metadata::Metadata,
     node_to_daemon::DaemonRequest,
 };
@@ -116,12 +116,12 @@ impl InteractiveEvents {
                 self.stopped = true;
                 return Ok(Some(NodeEvent::Stop));
             }
-            // `id` is typed at an interactive prompt, so parse it fallibly:
-            // `DataId`'s `From<String>` (`.into()`) panics on an invalid id — e.g.
-            // one containing a space or `;` — which would crash the whole node.
-            // Re-prompt instead, matching how the `Data` prompt below rejects bad
-            // input rather than aborting.
-            match id.parse() {
+            // `id` is typed at an interactive prompt, so parse it fallibly via
+            // `parse_input_id` (see its docs): `DataId::from(String)` / `.into()`
+            // would panic on an invalid id and crash the whole node. Re-prompt
+            // instead, matching how the `Data` prompt below rejects bad input
+            // rather than aborting.
+            match parse_input_id(&id) {
                 Ok(id) => break id,
                 Err(err) => {
                     eprintln!("{}", format!("invalid input ID: {err}").red());
@@ -187,6 +187,18 @@ impl InteractiveEvents {
     }
 }
 
+/// Parse a `DataId` typed at the interactive `Input ID` prompt.
+///
+/// Deliberately fallible: `DataId`'s `From<String>` (`.into()`) panics on an
+/// invalid id — e.g. one containing a space or `;` — which would crash the
+/// whole node. Returning `Err` lets the prompt loop re-ask instead of aborting.
+/// Keeping this as a named helper (rather than an inline `.parse()`) gives the
+/// call site one testable seam and a place to document why `.into()` must not
+/// be used here.
+fn parse_input_id(raw: &str) -> Result<DataId, InvalidId> {
+    raw.parse()
+}
+
 /// Read the first batch from an Arrow IPC file and return it as `ArrayData`.
 ///
 /// This opens arbitrary user-provided file paths. It is intended for
@@ -245,21 +257,27 @@ mod tests {
     use super::*;
     use arrow::array::ArrayRef;
 
-    /// The interactive `Input ID` prompt parses the typed id fallibly
-    /// (`str::parse`) instead of `DataId::from(String)` / `.into()`, which
-    /// panics on an invalid id and would crash the whole node. Guard that
-    /// contract: ids a user could plausibly mistype are rejected as `Err`, not
-    /// a panic, so the prompt loop can re-ask.
+    /// The interactive `Input ID` prompt routes the typed id through
+    /// [`parse_input_id`] — a fallible `str::parse` — instead of
+    /// `DataId::from(String)` / `.into()`, which panics on an invalid id and
+    /// would crash the whole node. Guard that contract on the actual helper the
+    /// call site uses: ids a user could plausibly mistype come back as `Err` (so
+    /// the prompt loop re-asks) rather than panicking, and a well-formed id
+    /// parses. If `parse_input_id` regressed to `.into()`, the first assertion
+    /// would panic instead of returning `Err`, failing this test.
     #[test]
-    fn invalid_input_id_is_rejected_not_panicked() {
+    fn parse_input_id_rejects_invalid_without_panicking() {
         for bad in ["my input", "a;b", "a b/c", "café"] {
             assert!(
-                bad.parse::<DataId>().is_err(),
-                "expected `{bad}` to be rejected via parse"
+                parse_input_id(bad).is_err(),
+                "expected `{bad}` to be rejected by parse_input_id"
             );
         }
-        // a well-formed id still parses
-        assert!("valid_id.0-1/sub".parse::<DataId>().is_ok());
+        // a well-formed id still parses and round-trips unchanged
+        assert_eq!(
+            &*parse_input_id("valid_id.0-1/sub").expect("valid id should parse"),
+            "valid_id.0-1/sub"
+        );
     }
 
     #[test]
