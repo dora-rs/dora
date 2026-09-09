@@ -103,9 +103,12 @@ pub fn expand_modules_with_boundaries(
         });
     }
 
-    let canonical_base = base_dir
-        .canonicalize()
-        .with_context(|| format!("failed to resolve base directory: {}", base_dir.display()))?;
+    let project_root = normalize_path(dunce::simplified(
+        &std::path::absolute(base_dir)
+            .with_context(|| format!("failed to make base_dir absolute: {}", base_dir.display()))?,
+    ));
+    let canonical_project_root = dunce::canonicalize(&project_root)
+        .with_context(|| format!("failed to resolve project root: {}", project_root.display()))?;
     let mut seen = HashSet::new();
     let mut flat_nodes = Vec::new();
     let mut output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
@@ -115,8 +118,14 @@ pub fn expand_modules_with_boundaries(
         if node.module.is_some() {
             // Field validation happens inside `expand_module_node`, so top-level
             // and nested module nodes go through the same whitelist.
-            let (mut expanded, omap) =
-                expand_module_node(node, base_dir, &canonical_base, 0, &mut seen)?;
+            let (mut expanded, omap) = expand_module_node(
+                node,
+                base_dir,
+                &project_root,
+                &canonical_project_root,
+                0,
+                &mut seen,
+            )?;
             // Propagate the module node's own `build` to each expanded leaf node,
             // mirroring how a nested module node's build is propagated in Phase 2
             // of `expand_module_node`. `check_module` accepts `build` for exactly
@@ -273,7 +282,7 @@ fn check_module_file_inner(
             // Note: unlike `expand_module_node`, we intentionally do NOT reject
             // a nested reference that leaves `module_dir`. The real expansion
             // path confines nested modules to the *project root*
-            // (`canonical_base`, threaded through recursion), which routinely
+            // (`project_root`, threaded through recursion), which routinely
             // sits above an individual module's directory -- a module in
             // `modules/a/` may reference a sibling module in `modules/shared/`
             // via `../shared/base.yml`. This linter runs on a module file in
@@ -575,7 +584,8 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
 fn expand_module_node(
     node: &Node,
     base_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
+    canonical_project_root: &Path,
     depth: u8,
     seen: &mut HashSet<PathBuf>,
 ) -> eyre::Result<(Vec<Node>, ModuleOutputMap)> {
@@ -608,14 +618,83 @@ fn expand_module_node(
         );
     }
 
+    // Find the canonical target of the first symlink component, if any
+    let mut current = base_dir.to_path_buf();
+    let mut symlink_target_root: Option<PathBuf> = None;
+    for component in Path::new(module_path_str).components() {
+        match component {
+            std::path::Component::Normal(c) => {
+                current.push(c);
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.is_symlink()
+                    && symlink_target_root.is_none()
+                {
+                    symlink_target_root = dunce::canonicalize(&current).ok();
+                }
+            }
+            std::path::Component::ParentDir => {
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.is_symlink()
+                {
+                    let target = dunce::canonicalize(&current).ok();
+                    let is_in_tree = target
+                        .as_ref()
+                        .is_some_and(|t| t.starts_with(canonical_project_root));
+                    if !is_in_tree {
+                        bail!(
+                            "module path `{}` escapes the project directory (node `{}`)",
+                            module_path_str,
+                            node.id
+                        );
+                    }
+                }
+                current.pop();
+            }
+            _ => {}
+        }
+    }
+
     let module_path = base_dir.join(module_path_str);
-    let canonical = module_path
-        .canonicalize()
+    let canonical = dunce::canonicalize(&module_path)
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
 
-    if !canonical.starts_with(canonical_base) {
+    let absolute_module = normalize_path(dunce::simplified(
+        &std::path::absolute(&module_path).with_context(|| {
+            format!(
+                "failed to make module path absolute: {}",
+                module_path.display()
+            )
+        })?,
+    ));
+    if !absolute_module.starts_with(project_root) {
         bail!(
             "module path `{}` escapes the project directory (node `{}`)",
+            module_path_str,
+            node.id
+        );
+    }
+
+    // Lexical and physical resolutions must name the same file. This prevents
+    // `..` traversal over symlinks from escaping, while leaving in-tree symlinks working.
+    if dunce::canonicalize(&absolute_module).ok().as_ref() != Some(&canonical) {
+        bail!(
+            "module path `{}` escapes the project directory (node `{}`)",
+            module_path_str,
+            node.id
+        );
+    }
+
+    // Confinement: the loaded physical file must either reside within the
+    // canonical project root, or within the canonical target of a symlink
+    // located inside the project directory.
+    let in_project = canonical.starts_with(canonical_project_root);
+    let in_symlink = symlink_target_root
+        .as_ref()
+        .is_some_and(|target| canonical.starts_with(target));
+
+    if !in_project && !in_symlink {
+        bail!(
+            "module path `{}` physically escapes the project directory (node `{}`)",
             module_path_str,
             node.id
         );
@@ -634,7 +713,7 @@ fn expand_module_node(
     let module_file = load_module_file(&canonical)?;
     validate_module_header(&module_file.module)?;
     let module_id = node.id.to_string();
-    let module_dir = canonical
+    let module_dir = absolute_module
         .parent()
         .expect("module file must have a parent directory");
 
@@ -744,7 +823,7 @@ fn expand_module_node(
             )?;
         }
 
-        resolve_inner_node_paths(&mut inner_node, module_dir, canonical_base)?;
+        resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
 
         // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
@@ -777,8 +856,14 @@ fn expand_module_node(
         if inner_node.module.is_some() {
             let nested_id = inner_node.id.to_string();
             let accumulated_build = inner_node.build.clone();
-            let (mut nested, nested_omap) =
-                expand_module_node(&inner_node, module_dir, canonical_base, depth + 1, seen)?;
+            let (mut nested, nested_omap) = expand_module_node(
+                &inner_node,
+                module_dir,
+                project_root,
+                canonical_project_root,
+                depth + 1,
+                seen,
+            )?;
             // Propagate the outer module's accumulated build to each nested leaf node,
             // mirroring how `deploy` is propagated through recursion.
             if let Some(ref outer_build) = accumulated_build {
@@ -868,19 +953,19 @@ fn expand_module_node(
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
     if let Some(ref mut path) = node.path {
-        resolve_module_relative_path(path, module_dir, canonical_base, &owner)?;
+        resolve_module_relative_path(path, module_dir, project_root, &owner)?;
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
-            resolve_operator_source_paths(&mut op.config, module_dir, canonical_base, &owner)?;
+            resolve_operator_source_paths(&mut op.config, module_dir, project_root, &owner)?;
         }
     }
     if let Some(ref mut operator) = node.operator {
-        resolve_operator_source_paths(&mut operator.config, module_dir, canonical_base, &owner)?;
+        resolve_operator_source_paths(&mut operator.config, module_dir, project_root, &owner)?;
     }
     Ok(())
 }
@@ -888,15 +973,15 @@ fn resolve_inner_node_paths(
 fn resolve_operator_source_paths(
     config: &mut OperatorConfig,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
     owner: &str,
 ) -> eyre::Result<()> {
     match &mut config.source {
         OperatorSource::SharedLibrary(path) | OperatorSource::Wasm(path) => {
-            resolve_module_relative_path(path, module_dir, canonical_base, owner)
+            resolve_module_relative_path(path, module_dir, project_root, owner)
         }
         OperatorSource::Python(source) => {
-            resolve_module_relative_path(&mut source.source, module_dir, canonical_base, owner)
+            resolve_module_relative_path(&mut source.source, module_dir, project_root, owner)
         }
     }
 }
@@ -904,7 +989,7 @@ fn resolve_operator_source_paths(
 fn resolve_module_relative_path(
     path: &mut String,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
     owner: &str,
 ) -> eyre::Result<()> {
     // Resolve relative paths: make inner node/operator sources relative to
@@ -924,7 +1009,7 @@ fn resolve_module_relative_path(
     }
 
     let resolved = normalize_path(&module_dir.join(path.as_str()));
-    let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
+    let relative = resolved.strip_prefix(project_root).map_err(|_| {
         eyre::eyre!(
             "module node `{}` path `{}` resolves outside the project \
                  directory (resolved to `{}`)",
@@ -3696,6 +3781,268 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    // This test guards the fix for #3341: an in-tree module directory that is
+    // a symlink pointing outside the project root.
+    #[test]
+    fn expand_modules_accepts_symlinked_module_dir() {
+        let tmp = TempDir::new().unwrap();
+        let shared_dir = tmp.path().join("shared_modules");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        write_file(
+            &shared_dir,
+            "shared.yml",
+            r#"
+module:
+  name: shared
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared_dir, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&shared_dir, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/shared.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("modules/worker.py")
+        );
+    }
+
+    #[test]
+    fn expand_modules_accepts_in_tree_symlink_with_dotdot() {
+        let tmp = TempDir::new().unwrap();
+        let project_dir = tmp.path().join("project");
+        let real_modules = project_dir.join("real_modules");
+        std::fs::create_dir_all(&real_modules).unwrap();
+
+        write_file(
+            &project_dir,
+            "top.yml",
+            r#"
+module:
+  name: top
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_modules, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&real_modules, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        // `modules/../top.yml` traverses `..` over the in-tree symlink `modules`.
+        // Lexically and physically, it resolves to `project/top.yml`, within
+        // the project directory and must be accepted.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/../top.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("worker.py")
+        );
+    }
+
+    #[test]
+    fn reject_symlinked_module_dir_divergent_lexical_and_physical() {
+        let tmp = TempDir::new().unwrap();
+        let external_base = tmp.path().join("external");
+        let external_modules = external_base.join("modules");
+        let external_shared = external_base.join("shared");
+        std::fs::create_dir_all(&external_modules).unwrap();
+        std::fs::create_dir_all(&external_shared).unwrap();
+        write_file(
+            &external_shared,
+            "x.yml",
+            "module:\n  name: x\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&external_modules, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&external_modules, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        // Also create project/shared/x.yml so lexical resolution finds a file inside project
+        let project_shared = project_dir.join("shared");
+        std::fs::create_dir_all(&project_shared).unwrap();
+        write_file(
+            &project_shared,
+            "x.yml",
+            "module:\n  name: project_x\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        // `modules/../shared/x.yml`:
+        // Lexically resolves to `project/shared/x.yml`.
+        // Physically resolves to `external/shared/x.yml`.
+        // Lexical and physical resolutions diverge, so this must be rejected.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/../shared/x.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, &project_dir);
+        assert!(result.is_err(), "expected error but succeeded");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    fn reject_symlinked_module_dir_dotdot_escape() {
+        let tmp = TempDir::new().unwrap();
+        let shared_base = tmp.path().join("shared_base");
+        let shared_dir = shared_base.join("shared_modules");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        write_file(
+            &shared_dir,
+            "shared.yml",
+            "module:\n  name: shared\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        // Place escape.yml outside the symlink target (in shared_base)
+        write_file(
+            &shared_base,
+            "escape.yml",
+            "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared_dir, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&shared_dir, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        // `modules/../escape.yml` uses a single `..`.
+        // Lexically, `project/modules/..` collapses to `project/`, which
+        // would pass a purely lexical containment check.
+        // Physically, `modules` dereferences to `shared_modules`, and `..`
+        // escapes into `shared_base/escape.yml`.
+        // This must be rejected as an escape.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/../escape.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, &project_dir);
+        assert!(result.is_err(), "expected error but succeeded");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_modules_accepts_dotdot_in_base_dir() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let project_dir = sub.join("..").join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        write_file(
+            &project_dir,
+            "mod.yml",
+            r#"
+module:
+  name: inner
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: mod.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("worker.py")
+        );
     }
 
     #[test]

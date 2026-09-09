@@ -279,7 +279,7 @@ Two consequences worth knowing:
 
 ## Security
 
-- **Path confinement**: Module file paths must resolve within the dataflow's base directory. Absolute paths and directory traversal (`../`) outside the base are rejected.
+- **Path confinement**: Module file paths must resolve with lexical containment in the project root, plus physical containment in the root or in the target of an in-tree symlink. Absolute paths and directory traversal (`../`) that escape these boundaries are rejected.
 - **File size limit**: Module files are capped at 1 MB.
 - **Depth limit**: Recursive nesting is capped at 8 levels.
 - **Param key validation**: Parameter keys must be alphanumeric with underscores only.
