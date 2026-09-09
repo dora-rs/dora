@@ -1,0 +1,12 @@
+nodes:
+  - id: sender
+    path: sender.py
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - counter
+
+  - id: receiver
+    path: receiver.py
+    inputs:
+      counter: sender/counter
