@@ -517,7 +517,10 @@ impl RunningDataflow {
                     interval_stream.tick().await;
 
                     let span = tracing::span!(tracing::Level::TRACE, "tick");
-                    let _ = span.enter();
+                    // Bind the guard so the span stays entered for the tick body
+                    // below; `let _ = span.enter()` drops the guard immediately,
+                    // leaving the span inactive. No `.await` runs while it is held.
+                    let _guard = span.enter();
 
                     // Build metadata with minimal allocations.
                     // Use shared daemon clock (not per-timer HLC) for causality.
