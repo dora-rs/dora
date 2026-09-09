@@ -169,10 +169,12 @@ dora_free_input_id (
  *  `None` is returned — never an error type — in every non-success case:
  *  - the data was already taken by a previous call (see above);
  *  - the Arrow FFI import of the payload failed;
- *  - the payload's Arrow type is unsupported by this raw-byte API, which
- *  exposes only `UInt8` (and empty) payloads. A payload of any other Arrow
- *  type (e.g. an `Int32`/`Float` array from another node) yields `None`, so a
- *  `None` result is not by itself proof that the message carried no data.
+ *  - the payload's Arrow type is unsupported by this raw-byte API, which reads
+ *  only `UInt8` payloads (a zero-length `UInt8` array reads back as an empty
+ *  vector). A payload of any other Arrow type — including a metadata-only
+ *  `()` payload, which is a null array, and an `Int32`/`Float` array from
+ *  another node — yields `None`, so a `None` result is not by itself proof
+ *  that the message carried no data.
  *
  *  Each of these logs a diagnostic to stderr.
  *
