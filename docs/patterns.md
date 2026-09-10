@@ -118,7 +118,7 @@ sweep deadlines itself. Pass `None` to poll without one.
 ```rust
 // once per loop iteration, for each outstanding request
 let timeout = Some(Duration::from_secs(5));
-match events.try_recv_service_response(&rid, ExpectedServers::One(&server), timeout) {
+match events.try_recv_service_response(&rid, &server, timeout) {
     Ok(Some(Event::Input { data, .. })) => complete(data),
     Ok(None) => {}                        // not ready — get on with the iteration
     Err(PatternError::Timeout) => give_up(),
@@ -144,9 +144,11 @@ with a loop that reads until empty — the non-blocking read returns
 buffered events first but then falls through to the live stream, so it
 can consume and discard a reply a later poll was going to correlate.
 
-In C++ the timeout is `timeout_ms`, where `0` means *no deadline* rather
-than "return immediately" — a poll never blocks, so there is nothing to
-time out. That inverts the usual convention for a timeout argument.
+In C++ the timeout is `timeout_ms`, and it means the same thing for the
+polls as for the blocking waits: `0` expires immediately, and
+`UINT64_MAX` is the spelling for "no practical deadline". Moving a
+request between the two forms therefore never silently changes its
+deadline.
 
 > **Ordering matters.** The polls and your own `recv()` read the same
 > stream, so whichever runs first consumes what is there. A poll
@@ -397,6 +399,16 @@ in §2 and §3 above). They:
    instance without hanging.
 3. Buffer non-matching events so your main event loop keeps working.
 
+**With several requests in flight, handle the event yourself too.** A
+`NodeRestarted` is reported to the *one* correlation that consumes it —
+the wait or poll that happened to be reading the stream when it arrived.
+Other requests outstanding against the same server are not told, and
+would otherwise sit until their own deadlines lapse. A restart that lands
+between calls reaches your own `recv()` as `Event::NodeRestarted { id }`
+instead. So a node with more than one request in flight should react to
+that event directly: `cancel_correlation` each request outstanding
+against the restarted node, then resend under a fresh `request_id`.
+
 Alternatively, handle the fault manually:
 
 ```rust
@@ -453,6 +465,8 @@ into `dora-node-api.h` (dora-rs/dora#2686).
 | `EventStream::try_recv_action_result` | `try_recv_action_result(...)` |
 | `EventStream::recv_service_response_from` | `recv_service_response_from(...)` |
 | `EventStream::recv_action_result_from` | `recv_action_result_from(...)` |
+| `EventStream::try_recv_service_response_from` | `try_recv_service_response_from(...)` |
+| `EventStream::try_recv_action_result_from` | `try_recv_action_result_from(...)` |
 | `ExpectedServers::AnyOf` / `::Any` | a `Vec<String>` of node ids / an empty one |
 | `GOAL_STATUS_SUCCEEDED` / `_ABORTED` / `_CANCELED` | `goal_status_succeeded()` / `_aborted()` / `_canceled()` |
 | `PatternError` | `DoraPatternStatus` |

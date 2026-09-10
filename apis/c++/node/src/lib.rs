@@ -401,7 +401,11 @@ mod ffi {
         /// later poll past it returns `Timeout` exactly once. So a
         /// caller does not sweep deadlines itself — it passes the same
         /// `timeout_ms` every iteration and reacts to `Timeout` like
-        /// any other status. Pass `0` for no deadline.
+        /// any other status.
+        ///
+        /// `timeout_ms` means the same here as in the blocking
+        /// `recv_service_response`: `0` expires immediately, and
+        /// `UINT64_MAX` is the spelling for "no practical deadline".
         ///
         /// The clock starts at that first poll rather than at send
         /// time, and the first deadline registered for an id wins.
@@ -423,8 +427,8 @@ mod ffi {
         /// `timeout_ms` behaves as in `try_recv_service_response`, but
         /// bounds the *whole goal* rather than the gap between feedback
         /// messages: a long goal that is making visible progress will
-        /// still expire. Pass `0` for no deadline, and an empty
-        /// `server_node_id` to accept any responder.
+        /// still expire. Pass `UINT64_MAX` for no practical deadline,
+        /// and an empty `server_node_id` to accept any responder.
         fn try_recv_action_result(
             events: &mut Box<Events>,
             goal_id: &str,
@@ -1448,10 +1452,10 @@ fn try_recv_service_response(
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(events.0.try_recv_service_response(
+    try_pattern_result(events.0.try_recv_service_response_from(
         request_id,
         servers.as_ref(),
-        poll_timeout(timeout_ms),
+        Some(clamp_pattern_timeout(timeout_ms)),
     ))
 }
 
@@ -1465,10 +1469,10 @@ fn try_recv_action_result(
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(events.0.try_recv_action_result(
+    try_pattern_result(events.0.try_recv_action_result_from(
         goal_id,
         servers.as_ref(),
-        poll_timeout(timeout_ms),
+        Some(clamp_pattern_timeout(timeout_ms)),
     ))
 }
 
@@ -1535,10 +1539,10 @@ fn try_recv_service_response_from(
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(events.0.try_recv_service_response(
+    try_pattern_result(events.0.try_recv_service_response_from(
         request_id,
         servers.as_ref(),
-        poll_timeout(timeout_ms),
+        Some(clamp_pattern_timeout(timeout_ms)),
     ))
 }
 
@@ -1557,10 +1561,10 @@ fn try_recv_action_result_from(
         Ok(servers) => servers,
         Err(result) => return result,
     };
-    try_pattern_result(events.0.try_recv_action_result(
+    try_pattern_result(events.0.try_recv_action_result_from(
         goal_id,
         servers.as_ref(),
-        poll_timeout(timeout_ms),
+        Some(clamp_pattern_timeout(timeout_ms)),
     ))
 }
 
@@ -1626,21 +1630,6 @@ fn parse_server_list(ids: &[&str]) -> Result<OwnedServers, ffi::DoraPatternResul
 
 fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str) {
     events.0.cancel_correlation(correlation_id);
-}
-
-/// Map a C++ `timeout_ms` onto the Rust poll's optional deadline.
-///
-/// `0` means "no deadline" — the poll then behaves exactly as it did
-/// before deadlines existed. Any other value is clamped the same way
-/// `clamp_pattern_timeout` clamps the blocking waits, because it
-/// crosses the bridge as an unbounded `u64` and ends up in an
-/// `Instant + Duration`.
-fn poll_timeout(timeout_ms: u64) -> Option<Duration> {
-    if timeout_ms == 0 {
-        None
-    } else {
-        Some(clamp_pattern_timeout(timeout_ms))
-    }
 }
 
 /// Map a non-blocking correlated receive onto the C++ result struct.
@@ -2153,20 +2142,29 @@ mod tests {
         );
     }
 
+    /// `timeout_ms` must mean one thing across the whole header.
+    ///
+    /// The polls once mapped `0` to "no deadline" while the blocking
+    /// waits mapped it to `Duration::ZERO`, so moving a request from
+    /// `recv_service_response` to `try_recv_service_response` silently
+    /// dropped its deadline. Both forms now go through
+    /// `clamp_pattern_timeout`, and `UINT64_MAX` is the spelling for
+    /// "no practical deadline" (dora-rs/dora#3046).
     #[test]
-    fn zero_timeout_means_no_deadline() {
-        // `0` has to keep meaning "poll forever", or a caller that
-        // never wanted a deadline would start getting Timeout.
-        assert!(poll_timeout(0).is_none());
+    fn zero_timeout_means_the_same_for_polls_and_blocking_waits() {
+        assert_eq!(clamp_pattern_timeout(0), Duration::ZERO);
     }
 
     #[test]
-    fn nonzero_timeout_is_clamped_like_the_blocking_waits() {
-        let clamped = poll_timeout(u64::MAX).expect("a non-zero timeout is a deadline");
-        assert_eq!(clamped, clamp_pattern_timeout(u64::MAX));
-
-        let ordinary = poll_timeout(5_000).expect("a non-zero timeout is a deadline");
-        assert_eq!(ordinary, Duration::from_millis(5_000));
+    fn u64_max_is_the_no_practical_deadline_spelling() {
+        let clamped = clamp_pattern_timeout(u64::MAX);
+        assert!(
+            clamped > Duration::from_secs(60 * 60 * 24 * 365),
+            "UINT64_MAX must clamp to a deadline no caller will reach, got {clamped:?}"
+        );
+        Instant::now()
+            .checked_add(clamped)
+            .expect("the clamped deadline must be representable");
     }
 
     #[test]

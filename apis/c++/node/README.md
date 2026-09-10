@@ -317,10 +317,11 @@ iteration and reacts to `Timeout` like any other status — no deadline
 bookkeeping of its own. The clock starts at that first poll rather than
 at send time, and the first deadline registered for an id wins.
 
-`timeout_ms == 0` means **no deadline**, not "return immediately" — a
-poll never blocks anyway, so there is nothing to time out. This inverts
-the usual convention for a `timeout` argument, so it is worth a second
-look when reading calling code.
+`timeout_ms` carries one meaning across the whole header: `0` expires
+immediately, exactly as it does for the blocking `recv_service_response`,
+and `UINT64_MAX` is the spelling for **no practical deadline**. Moving a
+request from a blocking wait to a poll by changing the function name
+therefore never silently drops its deadline.
 
 A poll drops its own registration on a match, an error or expiry. If the
 node abandons a request it will never poll again — the peer died, the

@@ -1283,7 +1283,7 @@ impl EventStream {
     /// ```ignore
     /// // once per event-loop iteration, for each outstanding request
     /// let timeout = Some(Duration::from_secs(5));
-    /// match events.try_recv_service_response(&request_id, ExpectedServers::One(&server), timeout) {
+    /// match events.try_recv_service_response(&request_id, &server, timeout) {
     ///     Ok(Some(Event::Input { data, .. })) => complete(data),
     ///     Ok(None) => {} // not ready — carry on with the rest of the tick
     ///     Err(PatternError::Timeout) => give_up(),
@@ -1292,6 +1292,28 @@ impl EventStream {
     /// }
     /// ```
     pub fn try_recv_service_response(
+        &mut self,
+        request_id: &str,
+        expected_server: &NodeId,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Event>, PatternError> {
+        self.try_recv_service_response_from(
+            request_id,
+            ExpectedServers::One(expected_server),
+            timeout,
+        )
+    }
+
+    /// [`try_recv_service_response`](Self::try_recv_service_response)
+    /// over a set of acceptable responders.
+    ///
+    /// Stands to `try_recv_service_response` exactly as
+    /// [`recv_service_response_from`](Self::recv_service_response_from)
+    /// stands to [`recv_service_response`](Self::recv_service_response):
+    /// same semantics, a set of acceptable responders instead of one.
+    /// See [`ExpectedServers`] for what that choice does and does not
+    /// affect.
+    pub fn try_recv_service_response_from(
         &mut self,
         request_id: &str,
         expected: ExpectedServers<'_>,
@@ -1344,6 +1366,22 @@ impl EventStream {
     /// not the gap between feedback messages — a long-running goal that
     /// is making visible progress will still expire.
     pub fn try_recv_action_result(
+        &mut self,
+        goal_id: &str,
+        expected_server: &NodeId,
+        timeout: Option<Duration>,
+    ) -> Result<Option<Event>, PatternError> {
+        self.try_recv_action_result_from(goal_id, ExpectedServers::One(expected_server), timeout)
+    }
+
+    /// [`try_recv_action_result`](Self::try_recv_action_result) over a
+    /// set of acceptable responders.
+    ///
+    /// Stands to `try_recv_action_result` exactly as
+    /// [`recv_action_result_from`](Self::recv_action_result_from)
+    /// stands to [`recv_action_result`](Self::recv_action_result).
+    /// See [`ExpectedServers`].
+    pub fn try_recv_action_result_from(
         &mut self,
         goal_id: &str,
         expected: ExpectedServers<'_>,
@@ -1566,13 +1604,21 @@ impl EventStream {
             return false;
         };
         let now = std::time::Instant::now();
-        let deadline = *self
-            .correlation_deadlines
-            .entry(needle.to_owned())
-            // Saturating: `timeout` crosses the C++ boundary as an
-            // unbounded value, and `Instant + Duration` panics on
-            // overflow.
-            .or_insert_with(|| now.checked_add(timeout).unwrap_or(now));
+        // `get` before `entry`: the hit is the common case — a poll loop
+        // re-checks the same in-flight ids every iteration — and `entry`
+        // would allocate a `String` key on every one of those hits.
+        let deadline = match self.correlation_deadlines.get(needle) {
+            Some(deadline) => *deadline,
+            None => {
+                // Saturating: `timeout` crosses the C++ boundary as an
+                // unbounded value, and `Instant + Duration` panics on
+                // overflow.
+                let deadline = now.checked_add(timeout).unwrap_or(now);
+                self.correlation_deadlines
+                    .insert(needle.to_owned(), deadline);
+                deadline
+            }
+        };
         if now >= deadline {
             self.correlation_deadlines.remove(needle);
             return true;
@@ -1605,6 +1651,20 @@ impl EventStream {
     /// until empty can consume — and discard — a reply a later poll was
     /// going to correlate. Read events you can classify yourself rather
     /// than discarding whatever comes back.
+    ///
+    /// # Restarts with several requests in flight
+    ///
+    /// A restart is reported as [`PatternError::ServerRestarted`] to the
+    /// *one* correlation that consumes it — the wait or poll that
+    /// happened to be reading the stream when it arrived. Other requests
+    /// outstanding against the same server are not told, and would
+    /// otherwise sit until their own deadlines lapse. A restart that
+    /// lands between calls reaches the caller's own [`recv`](Self::recv)
+    /// as [`Event::NodeRestarted`] instead.
+    ///
+    /// So a node with more than one request in flight should react to
+    /// that event directly: cancel each correlation outstanding against
+    /// the restarted node, then resend under a fresh `request_id`.
     pub fn cancel_correlation(&mut self, correlation_id: &str) {
         self.correlation_deadlines.remove(correlation_id);
     }
@@ -2267,10 +2327,6 @@ impl EventStream {
         self.pending_passthrough.push_back(event);
     }
 
-    /// Test-only: buffer an empty input directly in the scheduler and force
-    /// scheduler mode, simulating an input the scheduler held back while
-    /// prioritizing `Stop`. Used to verify `recv_async` drains buffered inputs
-    /// after `Stop` instead of dropping them (dora-rs/dora#2027).
     /// Test-only: deliver a `NodeRestarted` through the *stream* rather
     /// than the passthrough buffer, so `try_correlation` classifies it
     /// for real. The scripted integration harness has no
@@ -2315,6 +2371,10 @@ impl EventStream {
         });
     }
 
+    /// Test-only: buffer an empty input directly in the scheduler and force
+    /// scheduler mode, simulating an input the scheduler held back while
+    /// prioritizing `Stop`. Used to verify `recv_async` drains buffered inputs
+    /// after `Stop` instead of dropping them (dora-rs/dora#2027).
     fn push_scheduler_input_for_testing(&mut self, id: &str) {
         use crate::event_stream::thread::EventItem;
         use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
@@ -3176,7 +3236,7 @@ mod tests {
 
         let server = NodeId::from("calc".to_string());
         let got = events
-            .try_recv_service_response("req-2", ExpectedServers::One(&server), None)
+            .try_recv_service_response("req-2", &server, None)
             .expect("poll must not error");
         match got {
             Some(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
@@ -3195,7 +3255,7 @@ mod tests {
         ));
 
         let server = NodeId::from("calc".to_string());
-        let result = events.try_recv_service_response("req-1", ExpectedServers::One(&server), None);
+        let result = events.try_recv_service_response("req-1", &server, None);
 
         // Deliberately not asserting `Ok(None)`: whether the scripted
         // `Stop` has been delivered yet is a race, and a `Stop` in the
@@ -3225,9 +3285,7 @@ mod tests {
         ]);
 
         let server = NodeId::from("calc".to_string());
-        let matched = poll_until(|| {
-            events.try_recv_service_response("req-1", ExpectedServers::One(&server), None)
-        });
+        let matched = poll_until(|| events.try_recv_service_response("req-1", &server, None));
         match matched {
             Event::Input { id, .. } => assert_eq!(id.as_str(), "response"),
             other => panic!("expected the correlated response, got {other:?}"),
@@ -3254,9 +3312,7 @@ mod tests {
         ]);
 
         let server = NodeId::from("nav".to_string());
-        let matched = poll_until(|| {
-            events.try_recv_action_result("goal-1", ExpectedServers::One(&server), None)
-        });
+        let matched = poll_until(|| events.try_recv_action_result("goal-1", &server, None));
         match matched {
             Event::Input { id, .. } => assert_eq!(id.as_str(), "result"),
             other => panic!("expected the terminal result, got {other:?}"),
@@ -3279,8 +3335,7 @@ mod tests {
         // `None` is the pre-deadline behaviour: whatever happens, it is
         // never a Timeout.
         for _ in 0..3 {
-            let result =
-                events.try_recv_service_response("req-1", ExpectedServers::One(&server), None);
+            let result = events.try_recv_service_response("req-1", &server, None);
             assert!(
                 !matches!(result, Err(PatternError::Timeout)),
                 "a poll without a deadline must never time out, got {result:?}"
@@ -3340,11 +3395,7 @@ mod tests {
         assert!(events.correlation_deadlines.contains_key("req-1"));
 
         let got = events
-            .try_recv_service_response(
-                "req-1",
-                ExpectedServers::One(&server),
-                Some(Duration::from_secs(60)),
-            )
+            .try_recv_service_response("req-1", &server, Some(Duration::from_secs(60)))
             .expect("the buffered reply must satisfy the poll");
         assert!(got.is_some());
         assert!(
@@ -3364,7 +3415,7 @@ mod tests {
 
         let server = NodeId::from("calc".to_string());
         let got = events
-            .try_recv_service_response("req-1", ExpectedServers::One(&server), Some(Duration::ZERO))
+            .try_recv_service_response("req-1", &server, Some(Duration::ZERO))
             .expect("a buffered reply must win over an expired deadline");
         match got {
             Some(Event::Input { id, .. }) => assert_eq!(id.as_str(), "response"),
@@ -3407,8 +3458,11 @@ mod tests {
         let registered = events.correlation_deadlines["req-1"];
 
         events.push_scheduler_node_restarted_for_testing("b");
-        let restarted =
-            events.try_recv_service_response("req-1", ExpectedServers::AnyOf(&candidates), timeout);
+        let restarted = events.try_recv_service_response_from(
+            "req-1",
+            ExpectedServers::AnyOf(&candidates),
+            timeout,
+        );
         assert!(
             matches!(&restarted, Err(PatternError::ServerRestarted(id)) if id == "b"),
             "expected a ServerRestarted naming b, got {restarted:?}"
@@ -3435,8 +3489,7 @@ mod tests {
         assert!(events.correlation_deadlines.contains_key("req-1"));
 
         events.push_scheduler_node_restarted_for_testing("calc");
-        let restarted =
-            events.try_recv_service_response("req-1", ExpectedServers::One(&server), timeout);
+        let restarted = events.try_recv_service_response("req-1", &server, timeout);
         assert!(matches!(restarted, Err(PatternError::ServerRestarted(_))));
 
         assert!(
@@ -3468,11 +3521,7 @@ mod tests {
             "the reply must start on the stream, not in the buffer"
         );
 
-        let got = events.try_recv_service_response(
-            "req-1",
-            ExpectedServers::One(&server),
-            Some(Duration::ZERO),
-        );
+        let got = events.try_recv_service_response("req-1", &server, Some(Duration::ZERO));
         match got {
             Ok(Some(Event::Input { id, .. })) => assert_eq!(id.as_str(), "response"),
             other => panic!(
@@ -3488,11 +3537,7 @@ mod tests {
         let (_node, mut events) = scripted_event_stream(vec![]);
         let server = NodeId::from("calc".to_string());
 
-        let got = events.try_recv_service_response(
-            "req-1",
-            ExpectedServers::One(&server),
-            Some(Duration::ZERO),
-        );
+        let got = events.try_recv_service_response("req-1", &server, Some(Duration::ZERO));
         // An empty scripted stream closes, which is terminal in its own
         // right; either way it must not be a silent `Ok(None)`.
         assert!(
@@ -3519,11 +3564,8 @@ mod tests {
         // poll just reports `Ok(None)` because nothing is ready yet.
         let mut saw_end = false;
         for _ in 0..2_000 {
-            let polled = events.try_recv_service_response(
-                "req-1",
-                ExpectedServers::One(&server),
-                Some(Duration::from_secs(60)),
-            );
+            let polled =
+                events.try_recv_service_response("req-1", &server, Some(Duration::from_secs(60)));
             if matches!(polled, Err(PatternError::StreamEnded)) {
                 saw_end = true;
                 break;
@@ -3586,7 +3628,11 @@ mod tests {
         let b = NodeId::from("b".to_string());
         let candidates = [a, b];
         let matched = poll_until(|| {
-            events.try_recv_service_response("req-1", ExpectedServers::AnyOf(&candidates), None)
+            events.try_recv_service_response_from(
+                "req-1",
+                ExpectedServers::AnyOf(&candidates),
+                None,
+            )
         });
         assert!(matches!(matched, Event::Input { .. }));
     }
