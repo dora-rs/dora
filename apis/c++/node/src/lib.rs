@@ -316,6 +316,21 @@ mod ffi {
             metadata: Box<Metadata>,
         ) -> DoraRequestId;
 
+        /// Send a service request under a caller-supplied `request_id`.
+        ///
+        /// `send_service_request` mints a fresh id per call, so it
+        /// cannot express one logical request fanned out to several
+        /// nodes: each publish would carry a different correlation, and
+        /// no single receive could await "whichever answers first".
+        /// Call `new_request_id()` once and send each copy with this.
+        fn send_service_request_with_id(
+            output_sender: &mut Box<OutputSender>,
+            output_id: String,
+            data: &[u8],
+            metadata: Box<Metadata>,
+            request_id: &str,
+        ) -> DoraResult;
+
         /// Arrow-payload variant of `send_service_request`. Consumes the
         /// Arrow C Data Interface structs behind `array_ptr` /
         /// `schema_ptr` exactly like `send_arrow_output` does.
@@ -1326,6 +1341,37 @@ fn goal_status_canceled() -> String {
 }
 
 #[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
+fn send_service_request_with_id(
+    sender: &mut Box<OutputSender>,
+    output_id: String,
+    data: &[u8],
+    metadata: Box<Metadata>,
+    request_id: &str,
+) -> ffi::DoraResult {
+    let mut parameters = (*metadata).into_parameters();
+    set_request_id(&mut parameters, request_id);
+    send_output_locked(
+        &sender.0,
+        "send_service_request_with_id",
+        output_id,
+        data,
+        parameters,
+    )
+}
+
+/// Pin `parameters` to a caller-supplied `request_id`.
+///
+/// The counterpart of [`insert_request_id`], which always mints a fresh
+/// one. Split out so the "the caller's id survives" contract can be
+/// tested without a live daemon connection.
+fn set_request_id(parameters: &mut DoraMetadataParameters, request_id: &str) {
+    parameters.insert(
+        dora_node_api::REQUEST_ID.to_string(),
+        DoraParameter::String(request_id.to_owned()),
+    );
+}
+
+#[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
 fn send_service_request(
     sender: &mut Box<OutputSender>,
     output_id: String,
@@ -2205,6 +2251,43 @@ mod tests {
         assert!(
             event_as_node_restarted(event).is_err(),
             "a caller that branched wrongly must be told, not handed a plausible id"
+        );
+    }
+
+    // ---- dora-rs/dora#3046 ----
+
+    /// The whole point of the `_with_id` variant: the caller's id must
+    /// survive, or a fan-out cannot share one correlation.
+    #[test]
+    fn send_service_request_with_id_preserves_the_caller_id() {
+        let mut parameters = DoraMetadataParameters::default();
+        parameters.insert(
+            dora_node_api::REQUEST_ID.to_string(),
+            DoraParameter::String("stale".into()),
+        );
+
+        set_request_id(&mut parameters, "caller-supplied");
+
+        assert_eq!(
+            parameters.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("caller-supplied".into())),
+            "the caller's id must replace whatever the metadata carried"
+        );
+    }
+
+    /// The two id paths must stay distinguishable: one mints, one obeys.
+    #[test]
+    fn set_request_id_and_insert_request_id_differ() {
+        let mut minted = DoraMetadataParameters::default();
+        let generated = insert_request_id(&mut minted);
+
+        let mut pinned = DoraMetadataParameters::default();
+        set_request_id(&mut pinned, "req-fixed");
+
+        assert_ne!(generated, "req-fixed");
+        assert_eq!(
+            pinned.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("req-fixed".into()))
         );
     }
 }
