@@ -125,7 +125,9 @@ only the waiting is gone.
 
 The framework owns the timeout: the first poll carrying one registers a
 deadline for that `request_id`, and a later poll past it returns
-`PatternError::Timeout` once. A caller passes the same timeout every
+`PatternError::Timeout` once per deadline — it releases the registration,
+so polling the same id again starts a new one; treat `Timeout` as terminal
+for that request. A caller passes the same timeout every
 iteration and reacts to `Timeout` like any other outcome — it does not
 sweep deadlines itself. Pass `None` to poll without one.
 

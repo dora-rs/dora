@@ -427,10 +427,12 @@ mod ffi {
         ///
         /// `timeout_ms` is owned by the framework: the first poll
         /// carrying one registers a deadline for `request_id`, and a
-        /// later poll past it returns `Timeout` exactly once. So a
-        /// caller does not sweep deadlines itself — it passes the same
-        /// `timeout_ms` every iteration and reacts to `Timeout` like
-        /// any other status.
+        /// later poll past it returns `Timeout` once per deadline — it
+        /// releases the registration, so polling the same id again
+        /// starts a new one; treat `Timeout` as terminal for that
+        /// request. So a caller does not sweep deadlines itself — it
+        /// passes the same `timeout_ms` every iteration and reacts to
+        /// `Timeout` like any other status.
         ///
         /// `timeout_ms` means the same here as in the blocking
         /// `recv_service_response`: `0` expires immediately, and

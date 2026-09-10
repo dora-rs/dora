@@ -1269,8 +1269,10 @@ impl EventStream {
     ///
     /// `timeout` is owned by the framework, not the caller: the first
     /// poll carrying one registers a deadline for `request_id`, and a
-    /// later poll past it returns [`PatternError::Timeout`] exactly
-    /// once. A caller therefore does not sweep deadlines itself — it
+    /// later poll past it returns [`PatternError::Timeout`] once per
+    /// deadline — it releases the registration, so polling the same id
+    /// again starts a new one; treat `Timeout` as terminal for the
+    /// request. A caller therefore does not sweep deadlines itself — it
     /// passes the same timeout each iteration and reacts to `Timeout`
     /// like any other outcome. Pass `None` to poll without a deadline.
     ///
@@ -1370,7 +1372,7 @@ impl EventStream {
     /// `timeout` works exactly as in
     /// [`try_recv_service_response`](Self::try_recv_service_response):
     /// the framework registers the deadline on the first poll carrying
-    /// one and reports `Timeout` once. Note it bounds the *whole goal*,
+    /// one and reports `Timeout` once per deadline. Note it bounds the *whole goal*,
     /// not the gap between feedback messages — a long-running goal that
     /// is making visible progress will still expire.
     pub fn try_recv_action_result(
@@ -1436,7 +1438,7 @@ impl EventStream {
             return Ok(event);
         }
 
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = saturating_deadline(std::time::Instant::now(), timeout);
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
@@ -1606,7 +1608,8 @@ impl EventStream {
     ///
     /// Returns `true` exactly once per registration: the entry is
     /// removed as it expires, so the caller sees one `Timeout` rather
-    /// than a `Timeout` on every subsequent poll.
+    /// than a `Timeout` on every subsequent poll. A later call for the
+    /// same id then registers a new deadline from scratch.
     fn correlation_expired(&mut self, needle: &str, timeout: Option<Duration>) -> bool {
         let Some(timeout) = timeout else {
             return false;
@@ -1618,10 +1621,7 @@ impl EventStream {
         let deadline = match self.correlation_deadlines.get(needle) {
             Some(deadline) => *deadline,
             None => {
-                // Saturating: `timeout` crosses the C++ boundary as an
-                // unbounded value, and `Instant + Duration` panics on
-                // overflow.
-                let deadline = now.checked_add(timeout).unwrap_or(now);
+                let deadline = saturating_deadline(now, timeout);
                 self.correlation_deadlines
                     .insert(needle.to_owned(), deadline);
                 deadline
@@ -1761,6 +1761,20 @@ fn restarted_node_id(event: &Event) -> String {
         Event::NodeRestarted { id } => id.to_string(),
         _ => unreachable!("ServerRestarted is only returned for Event::NodeRestarted"),
     }
+}
+
+/// The instant `timeout` after `now`, saturated to the latest one an
+/// `Instant` can represent, i.e. no practical deadline.
+///
+/// `Instant + Duration` panics on overflow, and collapsing the overflow
+/// to `now` instead would expire a caller asking to wait "forever" at
+/// once. The halving mirrors `clamp_pattern_timeout` in the C++ bridge.
+fn saturating_deadline(now: Instant, timeout: Duration) -> Instant {
+    let mut span = timeout;
+    while now.checked_add(span).is_none() {
+        span /= 2;
+    }
+    now + span
 }
 
 /// Outcome of classifying a single event during a pattern-aware wait.
@@ -3796,6 +3810,70 @@ mod tests {
         }
     }
 
+    /// An event stream that is open and empty: nothing ready, not closed.
+    ///
+    /// The deadline path is only reached through a drain that found
+    /// nothing, so tests of it need exactly this state, and the scripted
+    /// harness cannot give it reliably. An empty script closes the stream
+    /// almost at once. A `Stop` scheduled in the future is not enough
+    /// either: the testing daemon serves every request on one thread, and
+    /// `DoraNode::init` sets up its control channel only after the event
+    /// stream thread has started asking for events, so init can park
+    /// behind that scheduled sleep until the stream is already closed.
+    ///
+    /// So this skips `DoraNode` and answers the stream's requests itself.
+    /// `NextEvent` is held rather than answered, which keeps the stream
+    /// open with nothing in it for as long as the test runs. Dropping the
+    /// stream releases it with an empty batch, and a `NextEvent` that only
+    /// arrives after that is answered at once, so the event thread exits
+    /// promptly instead of waiting out its join timeout.
+    fn open_empty_event_stream() -> EventStream {
+        use tokio::sync::{mpsc, oneshot};
+
+        let (channel, mut requests) =
+            mpsc::channel::<(Timestamped<DaemonRequest>, oneshot::Sender<DaemonReply>)>(16);
+        std::thread::spawn(move || {
+            let mut held = Vec::new();
+            let mut dropped = false;
+            while let Some((request, reply)) = requests.blocking_recv() {
+                match request.inner {
+                    DaemonRequest::NextEvent if !dropped => {
+                        held.push(reply);
+                        continue;
+                    }
+                    DaemonRequest::NextEvent => {
+                        let _ = reply.send(DaemonReply::NextEvents(Vec::new()));
+                        continue;
+                    }
+                    DaemonRequest::EventStreamDropped => {
+                        dropped = true;
+                        for pending in held.drain(..) {
+                            let _ = pending.send(DaemonReply::NextEvents(Vec::new()));
+                        }
+                    }
+                    _ => {}
+                }
+                let _ = reply.send(DaemonReply::Result(Ok(())));
+            }
+        });
+
+        let communication = DaemonCommunicationWrapper::Testing {
+            channel,
+            shutdown: Arc::new(AtomicBool::new(false)),
+        };
+        EventStream::init(
+            DataflowId::new_v4(),
+            &NodeId::from("test-node".to_string()),
+            &communication,
+            BTreeMap::new(),
+            &BTreeMap::new(),
+            Arc::new(uhlc::HLC::default()),
+            None,
+            None,
+        )
+        .expect("an event stream over the in-test daemon")
+    }
+
     #[test]
     fn try_recv_service_response_matches_already_buffered_reply() {
         // Fully deterministic: the reply is buffered before the poll, so
@@ -3872,8 +3950,11 @@ mod tests {
         );
     }
 
-    #[test]
-    fn try_recv_action_result_polling_passes_feedback_through() {
+    /// Feedback for a goal is not terminal, so a result poll must skip it
+    /// and leave it buffered for the caller's own loop.
+    fn assert_result_poll_passes_feedback_through(
+        poll: impl Fn(&mut EventStream) -> Result<Option<Event>, PatternError>,
+    ) {
         let (_node, mut events) = scripted_event_stream(vec![
             input_at("feedback", Some(goal_params("goal-1", None))),
             input_at(
@@ -3883,20 +3964,25 @@ mod tests {
             stop_at(),
         ]);
 
-        let server = NodeId::from("nav".to_string());
-        let matched = poll_until(|| events.try_recv_action_result("goal-1", &server, None));
+        let matched = poll_until(|| poll(&mut events));
         match matched {
             Event::Input { id, .. } => assert_eq!(id.as_str(), "result"),
             other => panic!("expected the terminal result, got {other:?}"),
         }
 
-        // Feedback for the same goal is not terminal, so it belongs to
-        // the caller's loop rather than to the poll.
         let buffered = events.recv();
         assert!(
             matches!(&buffered, Some(Event::Input { id, .. }) if id.as_str() == "feedback"),
             "expected the buffered 'feedback' input, got {buffered:?}"
         );
+    }
+
+    #[test]
+    fn try_recv_action_result_polling_passes_feedback_through() {
+        let server = NodeId::from("nav".to_string());
+        assert_result_poll_passes_feedback_through(|events| {
+            events.try_recv_action_result("goal-1", &server, None)
+        });
     }
 
     #[test]
@@ -3919,6 +4005,17 @@ mod tests {
             )
         });
         assert!(matches!(matched, Event::Input { .. }));
+    }
+
+    /// Fan-out goals share `try_correlation` with fan-out requests but
+    /// match on a *terminal* `goal_status` rather than a bare id, so the
+    /// action `_from` variant is pinned on its own.
+    #[test]
+    fn try_recv_action_result_from_correlates_fan_out_result_from_any_of() {
+        let candidates = [NodeId::from("a".to_string()), NodeId::from("b".to_string())];
+        assert_result_poll_passes_feedback_through(|events| {
+            events.try_recv_action_result_from("goal-1", ExpectedServers::AnyOf(&candidates), None)
+        });
     }
 
     #[test]
@@ -3952,25 +4049,55 @@ mod tests {
         );
     }
 
+    /// With nothing on the stream, a lapsed deadline reports `Timeout`
+    /// once per deadline (see `try_recv_service_response`).
+    ///
+    /// The stream must stay open (see `open_empty_event_stream`): on an
+    /// empty scripted stream the poll almost always saw `StreamEnded`,
+    /// which short-circuits before the deadline is consulted, so the test
+    /// kept passing even if an expired deadline returned `Ok(None)`.
     #[test]
-    fn expired_correlation_reports_timeout_exactly_once() {
-        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
+    fn an_expired_deadline_is_reported_once_then_released() {
+        let mut events = open_empty_event_stream();
+        let server = NodeId::from("calc".to_string());
+        let timeout = Some(Duration::from_millis(5));
 
-        // A zero timeout is already expired when registered, so this is
-        // deterministic without sleeping.
-        let expired = Some(Duration::ZERO);
+        // Registering and checking share one `now`, so this cannot expire.
+        let first = events.try_recv_service_response("req-1", &server, timeout);
+        assert!(matches!(first, Ok(None)), "not expired yet, got {first:?}");
+
+        std::thread::sleep(Duration::from_millis(10));
+        let expired = events.try_recv_service_response("req-1", &server, timeout);
         assert!(
-            events.correlation_expired("req-1", expired),
-            "a zero timeout must be expired on the first poll"
+            matches!(expired, Err(PatternError::Timeout)),
+            "the poll past the deadline must report it, got {expired:?}"
         );
-
-        // The entry is dropped as it expires, so the caller is not told
-        // the same request timed out on every subsequent poll. The next
-        // call re-registers instead.
         assert!(
             !events.correlation_deadlines.contains_key("req-1"),
-            "an expired registration must not linger"
+            "reporting Timeout must release the registration"
         );
+
+        let next = events.try_recv_service_response("req-1", &server, timeout);
+        assert!(
+            matches!(next, Ok(None)),
+            "the next poll starts a new deadline rather than repeating Timeout, got {next:?}"
+        );
+        assert!(events.correlation_deadlines.contains_key("req-1"));
+    }
+
+    /// A deadline too far out to represent means no practical deadline,
+    /// not one that has already passed (see `saturating_deadline`).
+    #[test]
+    fn an_unrepresentable_deadline_does_not_expire_at_once() {
+        let mut events = open_empty_event_stream();
+        let server = NodeId::from("calc".to_string());
+
+        let first = events.try_recv_service_response("req-1", &server, Some(Duration::MAX));
+        assert!(
+            matches!(first, Ok(None)),
+            "an unreachable deadline must not have lapsed, got {first:?}"
+        );
+        assert!(events.correlation_deadlines.contains_key("req-1"));
     }
 
     #[test]
@@ -3990,12 +4117,25 @@ mod tests {
         assert!(events.correlation_deadlines.is_empty());
     }
 
+    /// The blocking wait saturates an unrepresentable deadline just as the
+    /// poll does, instead of panicking on `Instant + Duration` overflow.
     #[test]
-    fn an_absurd_timeout_does_not_panic() {
-        // `timeout_ms` crosses the C++ boundary unbounded, and
-        // `Instant + Duration` panics on overflow.
-        let (_node, mut events) = scripted_event_stream(vec![stop_at()]);
-        let _ = events.correlation_expired("req-1", Some(Duration::from_secs(u64::MAX)));
+    fn a_blocking_wait_with_an_unrepresentable_timeout_does_not_panic() {
+        let (_node, mut events) = scripted_event_stream(vec![
+            input_at("response", Some(request_id_params("req-1"))),
+            stop_at(),
+        ]);
+        let server = NodeId::from("calc".to_string());
+
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::MAX,
+        ));
+        assert!(
+            matches!(response, Ok(Event::Input { .. })),
+            "expected the correlated response, got {response:?}"
+        );
     }
 
     #[test]
@@ -4129,25 +4269,6 @@ mod tests {
                 "a reply that arrived before the deadline must not be reported as Timeout: {other:?}"
             ),
         }
-    }
-
-    /// The complement: with nothing on the stream, an lapsed deadline
-    /// still reports `Timeout` rather than hanging on `Ok(None)`.
-    #[test]
-    fn an_expired_deadline_still_reports_timeout_when_nothing_arrived() {
-        let (_node, mut events) = scripted_event_stream(vec![]);
-        let server = NodeId::from("calc".to_string());
-
-        let got = events.try_recv_service_response("req-1", &server, Some(Duration::ZERO));
-        // An empty scripted stream closes, which is terminal in its own
-        // right; either way it must not be a silent `Ok(None)`.
-        assert!(
-            matches!(
-                got,
-                Err(PatternError::Timeout) | Err(PatternError::StreamEnded)
-            ),
-            "an lapsed deadline with nothing to show must be terminal, got {got:?}"
-        );
     }
 
     /// Both routes to `StreamEnded` — a buffered `Event::Stop` and a

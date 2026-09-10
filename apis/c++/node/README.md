@@ -287,10 +287,12 @@ default:
 
 The framework owns the deadline: the first poll carrying a `timeout_ms`
 registers it against that `request_id`, and a later poll past it returns
-`Timeout` exactly once. A caller passes the same `timeout_ms` every
-iteration and reacts to `Timeout` like any other status — no deadline
-bookkeeping of its own. The clock starts at that first poll rather than
-at send time, and the first deadline registered for an id wins.
+`Timeout` once per deadline — it releases the registration, so polling the
+same id again starts a new one; treat `Timeout` as terminal for the request
+and drop it from your pending set. A caller passes the same `timeout_ms`
+every iteration and reacts to `Timeout` like any other status — no deadline
+bookkeeping of its own. The clock starts at that first poll rather than at
+send time, and the first deadline registered for an id wins.
 
 `timeout_ms` carries one meaning across the whole header: `0` expires
 immediately, exactly as it does for the blocking `recv_service_response`,
