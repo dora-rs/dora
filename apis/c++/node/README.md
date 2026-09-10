@@ -257,6 +257,42 @@ between calls reaches your own loop as `DoraEventType::NodeRestarted` (use
 wait out its whole deadline against a server you had already been told had
 restarted.
 
+#### Fanning one request out to several servers
+
+`send_service_request` mints a fresh `request_id` per call, so it cannot
+express one logical request sent to several nodes. Mint the id once and send
+each copy with `send_service_request_with_id`:
+
+```c++
+auto request_id = std::string(new_request_id());
+for (const auto &server : servers)
+{
+    send_service_request_with_id(
+        dora_node.send_output, server.output, payload, new_metadata(), request_id);
+}
+```
+
+Then await whichever answers first with `recv_service_response_from`, which
+takes a `Vec<String>` of acceptable responders — an empty vector means any
+node:
+
+```c++
+rust::Vec<rust::String> candidates;
+candidates.push_back("a");
+candidates.push_back("b");
+auto reply = recv_service_response_from(
+    dora_node.events, request_id, candidates, /* timeout_ms */ 5000);
+```
+
+The set governs only restart detection; which reply matches is decided by
+`request_id` alone. A restart of any listed node is reported as
+`ServerRestarted` naming that node — a notification, not a verdict, since
+the other candidates may still answer.
+
+A list holding exactly one id is treated as the single-server case, not as a
+one-element set: with nobody else to answer, that restart *is* the verdict.
+`recv_action_result_from` is the equivalent for actions.
+
 The server must echo the request's `request_id` back, which is why it needs
 `event_as_input_with_metadata`:
 

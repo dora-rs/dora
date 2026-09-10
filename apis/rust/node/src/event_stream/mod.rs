@@ -1225,21 +1225,24 @@ impl EventStream {
         expected_server: &NodeId,
         timeout: Duration,
     ) -> Result<Event, PatternError> {
-        self.wait_for_correlation(
-            timeout,
-            expected_server,
-            |event, request_id| match event {
-                Event::Input { metadata, .. } => {
-                    dora_message::metadata::get_string_param(
-                        &metadata.parameters,
-                        dora_message::metadata::REQUEST_ID,
-                    ) == Some(request_id)
-                }
-                _ => false,
-            },
-            request_id,
-        )
-        .await
+        self.recv_service_response_from(request_id, ExpectedServers::One(expected_server), timeout)
+            .await
+    }
+
+    /// [`recv_service_response`](Self::recv_service_response) over a set
+    /// of acceptable responders.
+    ///
+    /// Use this for a request fanned out to several nodes under one
+    /// `request_id`, where the first reply wins. See
+    /// [`ExpectedServers`] for what the choice does and does not affect.
+    pub async fn recv_service_response_from(
+        &mut self,
+        request_id: &str,
+        expected: ExpectedServers<'_>,
+        timeout: Duration,
+    ) -> Result<Event, PatternError> {
+        self.wait_for_correlation(timeout, expected, matches_request_id, request_id)
+            .await
     }
 
     /// Waits for a terminal action result (`goal_status` ∈
@@ -1256,33 +1259,20 @@ impl EventStream {
         expected_server: &NodeId,
         timeout: Duration,
     ) -> Result<Event, PatternError> {
-        self.wait_for_correlation(
-            timeout,
-            expected_server,
-            |event, goal_id| match event {
-                Event::Input { metadata, .. } => {
-                    let matches_goal = dora_message::metadata::get_string_param(
-                        &metadata.parameters,
-                        dora_message::metadata::GOAL_ID,
-                    ) == Some(goal_id);
-                    if !matches_goal {
-                        return false;
-                    }
-                    matches!(
-                        dora_message::metadata::get_string_param(
-                            &metadata.parameters,
-                            dora_message::metadata::GOAL_STATUS,
-                        ),
-                        Some(dora_message::metadata::GOAL_STATUS_SUCCEEDED)
-                            | Some(dora_message::metadata::GOAL_STATUS_ABORTED)
-                            | Some(dora_message::metadata::GOAL_STATUS_CANCELED)
-                    )
-                }
-                _ => false,
-            },
-            goal_id,
-        )
-        .await
+        self.recv_action_result_from(goal_id, ExpectedServers::One(expected_server), timeout)
+            .await
+    }
+
+    /// [`recv_action_result`](Self::recv_action_result) over a set of
+    /// acceptable responders. See [`ExpectedServers`].
+    pub async fn recv_action_result_from(
+        &mut self,
+        goal_id: &str,
+        expected: ExpectedServers<'_>,
+        timeout: Duration,
+    ) -> Result<Event, PatternError> {
+        self.wait_for_correlation(timeout, expected, matches_terminal_action_result, goal_id)
+            .await
     }
 
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
@@ -1292,7 +1282,7 @@ impl EventStream {
     async fn wait_for_correlation<F>(
         &mut self,
         timeout: Duration,
-        expected_server: &NodeId,
+        expected: ExpectedServers<'_>,
         is_match: F,
         needle: &str,
     ) -> Result<Event, PatternError>
@@ -1339,11 +1329,12 @@ impl EventStream {
                 Either::Right((Some(e), _)) => e,
             };
 
-            match classify_correlation_event(&event, expected_server, |e| is_match(e, needle)) {
+            match classify_correlation_event(&event, expected, |e| is_match(e, needle)) {
                 CorrelationOutcome::Match => return Ok(event),
                 CorrelationOutcome::ServerRestarted => {
+                    let restarted = restarted_node_id(&event);
                     self.pending_passthrough.push_back(event);
-                    return Err(PatternError::ServerRestarted(expected_server.to_string()));
+                    return Err(PatternError::ServerRestarted(restarted));
                 }
                 CorrelationOutcome::StreamEnded => {
                     self.pending_passthrough.push_back(event);
@@ -1394,6 +1385,60 @@ fn control_event_json(
     serde_json::Value::Object(event_json)
 }
 
+/// Whether `event` is a service response carrying `request_id`.
+fn matches_request_id(event: &Event, request_id: &str) -> bool {
+    match event {
+        Event::Input { metadata, .. } => {
+            dora_message::metadata::get_string_param(
+                &metadata.parameters,
+                dora_message::metadata::REQUEST_ID,
+            ) == Some(request_id)
+        }
+        _ => false,
+    }
+}
+
+/// Whether `event` is a *terminal* action result for `goal_id`.
+///
+/// Feedback messages carry the same `goal_id` without a terminal
+/// `goal_status`, so they deliberately do not match — they stay
+/// available to the caller's own event loop.
+fn matches_terminal_action_result(event: &Event, goal_id: &str) -> bool {
+    match event {
+        Event::Input { metadata, .. } => {
+            let matches_goal = dora_message::metadata::get_string_param(
+                &metadata.parameters,
+                dora_message::metadata::GOAL_ID,
+            ) == Some(goal_id);
+            if !matches_goal {
+                return false;
+            }
+            matches!(
+                dora_message::metadata::get_string_param(
+                    &metadata.parameters,
+                    dora_message::metadata::GOAL_STATUS,
+                ),
+                Some(dora_message::metadata::GOAL_STATUS_SUCCEEDED)
+                    | Some(dora_message::metadata::GOAL_STATUS_ABORTED)
+                    | Some(dora_message::metadata::GOAL_STATUS_CANCELED)
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Name of the node in a [`CorrelationOutcome::ServerRestarted`] event.
+///
+/// With [`ExpectedServers::AnyOf`] the restarted node is whichever
+/// candidate the event names, so it has to come from the event rather
+/// than from the caller's expectation.
+fn restarted_node_id(event: &Event) -> String {
+    match event {
+        Event::NodeRestarted { id } => id.to_string(),
+        _ => unreachable!("ServerRestarted is only returned for Event::NodeRestarted"),
+    }
+}
+
 /// Outcome of classifying a single event during a pattern-aware wait.
 /// Separated from `wait_for_correlation` so the decision logic can be
 /// unit-tested without a live `EventStream`.
@@ -1413,7 +1458,7 @@ enum CorrelationOutcome {
 
 fn classify_correlation_event<F>(
     event: &Event,
-    expected_server: &NodeId,
+    expected: ExpectedServers<'_>,
     is_match: F,
 ) -> CorrelationOutcome
 where
@@ -1423,10 +1468,49 @@ where
         return CorrelationOutcome::Match;
     }
     match event {
-        Event::NodeRestarted { id } if id == expected_server => CorrelationOutcome::ServerRestarted,
+        Event::NodeRestarted { id } if expected.contains(id) => CorrelationOutcome::ServerRestarted,
         Event::Stop(_) => CorrelationOutcome::StreamEnded,
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
+    }
+}
+
+/// Which node(s) a correlated receive treats as "its" server when
+/// deciding whether an [`Event::NodeRestarted`] orphans the in-flight
+/// request.
+///
+/// This only controls *restart* detection. Which reply satisfies the
+/// wait is decided purely by the correlation id (`request_id` /
+/// `goal_id`), never by the sender — so a fan-out request is matched by
+/// whichever node answers first regardless of this setting.
+#[derive(Debug, Clone, Copy)]
+pub enum ExpectedServers<'a> {
+    /// Exactly one server. A restart of that node ends the wait with
+    /// [`PatternError::ServerRestarted`].
+    One(&'a NodeId),
+    /// A fan-out request sent to several nodes, where the first reply
+    /// wins.
+    ///
+    /// A restart of *any* listed node is surfaced as
+    /// [`PatternError::ServerRestarted`] naming that node. It is a
+    /// notification, not a verdict: the remaining candidates may still
+    /// answer, so a caller that does not care can simply wait again —
+    /// buffered events and the correlation are preserved across calls.
+    AnyOf(&'a [NodeId]),
+    /// Accept a reply from anyone and never correlate restarts. Use when
+    /// the responder is not known up front; the wait then ends only on a
+    /// match, the deadline, or the stream ending.
+    Any,
+}
+
+impl ExpectedServers<'_> {
+    /// Whether a restart of `id` should orphan the in-flight request.
+    fn contains(&self, id: &NodeId) -> bool {
+        match self {
+            Self::One(expected) => *expected == id,
+            Self::AnyOf(expected) => expected.contains(id),
+            Self::Any => false,
+        }
     }
 }
 
@@ -2278,7 +2362,11 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = make_input_event("response", request_id_params("req-42"));
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::Match
         );
     }
@@ -2288,7 +2376,11 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = make_input_event("response", request_id_params("req-99"));
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::Passthrough
         );
     }
@@ -2298,7 +2390,11 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = Event::NodeRestarted { id: server.clone() };
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::ServerRestarted
         );
     }
@@ -2310,7 +2406,11 @@ mod tests {
             id: NodeId::from("other".to_string()),
         };
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::Passthrough
         );
     }
@@ -2320,7 +2420,11 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = Event::Stop(StopCause::Manual);
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::StreamEnded
         );
     }
@@ -2330,7 +2434,11 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = Event::Error("boom".to_string());
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::StreamError
         );
     }
@@ -2340,7 +2448,11 @@ mod tests {
         let server = NodeId::from("calc".to_string());
         let event = make_input_event("sensor", MetadataParameters::new());
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::Passthrough
         );
     }
@@ -2354,7 +2466,11 @@ mod tests {
             value: serde_json::json!(0.85),
         };
         assert_eq!(
-            classify_correlation_event(&event, &server, is_request_match("req-42")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_request_match("req-42")
+            ),
             CorrelationOutcome::Passthrough
         );
     }
@@ -2364,7 +2480,11 @@ mod tests {
         let server = NodeId::from("nav".to_string());
         let event = make_input_event("result", goal_params("goal-1", Some(GOAL_STATUS_SUCCEEDED)));
         assert_eq!(
-            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_action_result_match("goal-1")
+            ),
             CorrelationOutcome::Match
         );
     }
@@ -2374,7 +2494,11 @@ mod tests {
         let server = NodeId::from("nav".to_string());
         let event = make_input_event("result", goal_params("goal-1", Some(GOAL_STATUS_ABORTED)));
         assert_eq!(
-            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_action_result_match("goal-1")
+            ),
             CorrelationOutcome::Match
         );
     }
@@ -2386,7 +2510,11 @@ mod tests {
         let server = NodeId::from("nav".to_string());
         let event = make_input_event("feedback", goal_params("goal-1", None));
         assert_eq!(
-            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_action_result_match("goal-1")
+            ),
             CorrelationOutcome::Passthrough
         );
     }
@@ -2396,9 +2524,123 @@ mod tests {
         let server = NodeId::from("nav".to_string());
         let event = make_input_event("result", goal_params("goal-2", Some(GOAL_STATUS_SUCCEEDED)));
         assert_eq!(
-            classify_correlation_event(&event, &server, is_action_result_match("goal-1")),
+            classify_correlation_event(
+                &event,
+                ExpectedServers::One(&server),
+                is_action_result_match("goal-1")
+            ),
             CorrelationOutcome::Passthrough
         );
+    }
+
+    // ---- dora-rs/dora#3046: ExpectedServers ----
+
+    #[test]
+    fn expected_servers_one_matches_only_that_node() {
+        let calc = NodeId::from("calc".to_string());
+        let other = NodeId::from("other".to_string());
+        assert!(ExpectedServers::One(&calc).contains(&calc));
+        assert!(!ExpectedServers::One(&calc).contains(&other));
+    }
+
+    #[test]
+    fn expected_servers_any_of_matches_each_listed_node() {
+        let a = NodeId::from("a".to_string());
+        let b = NodeId::from("b".to_string());
+        let other = NodeId::from("other".to_string());
+        let list = [a.clone(), b.clone()];
+        assert!(ExpectedServers::AnyOf(&list).contains(&a));
+        assert!(ExpectedServers::AnyOf(&list).contains(&b));
+        assert!(!ExpectedServers::AnyOf(&list).contains(&other));
+    }
+
+    #[test]
+    fn expected_servers_any_never_correlates_restarts() {
+        // `Any` means "no restart correlation" — not "every restart is
+        // mine". A node that did not know its responder up front must
+        // not be told an unrelated restart orphaned its request.
+        let calc = NodeId::from("calc".to_string());
+        assert!(!ExpectedServers::Any.contains(&calc));
+    }
+
+    #[test]
+    fn expected_servers_any_of_empty_matches_nothing() {
+        let calc = NodeId::from("calc".to_string());
+        assert!(!ExpectedServers::AnyOf(&[]).contains(&calc));
+    }
+
+    #[test]
+    fn classify_any_of_restart_returns_server_restarted() {
+        let a = NodeId::from("a".to_string());
+        let b = NodeId::from("b".to_string());
+        let list = [a.clone(), b.clone()];
+        let event = Event::NodeRestarted { id: b };
+        assert_eq!(
+            classify_correlation_event(
+                &event,
+                ExpectedServers::AnyOf(&list),
+                is_request_match("req-42")
+            ),
+            CorrelationOutcome::ServerRestarted
+        );
+    }
+
+    #[test]
+    fn classify_any_of_unlisted_restart_is_passthrough() {
+        let a = NodeId::from("a".to_string());
+        let list = [a];
+        let event = Event::NodeRestarted {
+            id: NodeId::from("unrelated".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(
+                &event,
+                ExpectedServers::AnyOf(&list),
+                is_request_match("req-42")
+            ),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_any_ignores_restart() {
+        let event = Event::NodeRestarted {
+            id: NodeId::from("calc".to_string()),
+        };
+        assert_eq!(
+            classify_correlation_event(&event, ExpectedServers::Any, is_request_match("req-42")),
+            CorrelationOutcome::Passthrough
+        );
+    }
+
+    #[test]
+    fn classify_match_wins_regardless_of_expected_servers() {
+        // The core fan-out guarantee: a reply is correlated by
+        // `request_id` alone, so it matches even when it comes from a
+        // node the caller never listed.
+        let listed = NodeId::from("a".to_string());
+        let list = [listed];
+        let event = make_input_event("response", request_id_params("req-42"));
+        for expected in [
+            ExpectedServers::Any,
+            ExpectedServers::AnyOf(&list),
+            ExpectedServers::AnyOf(&[]),
+        ] {
+            assert_eq!(
+                classify_correlation_event(&event, expected, is_request_match("req-42")),
+                CorrelationOutcome::Match,
+            );
+        }
+    }
+
+    #[test]
+    fn restarted_node_id_reports_the_event_not_the_expectation() {
+        // With `AnyOf` the caller does not know which candidate went
+        // down, so the reported name has to come from the event.
+        let event = Event::NodeRestarted {
+            id: NodeId::from("b".to_string()),
+        };
+        assert_eq!(restarted_node_id(&event), "b");
     }
 
     // ---- dora-rs/adora#172: pending_passthrough integration ----
