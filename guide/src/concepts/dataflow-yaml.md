@@ -277,7 +277,8 @@ For a complete guide to all logging features, see [Logging](logging.md).
 | `restart_delay` | float | -- | Initial backoff in seconds. Doubles each attempt |
 | `max_restart_delay` | float | -- | Cap for exponential backoff |
 | `restart_window` | float | -- | Time window for counting restarts. The counter resets after this many seconds since the first restart in the current window. Enables "N restarts per M seconds" semantics with `max_restarts` |
-| `health_check_timeout` | float | -- | If the node does not communicate with the daemon (send outputs, subscribe, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy` |
+| `health_check_timeout` | float | -- | Once the node has connected (subscribed to events), if it then does not communicate with the daemon (send outputs, acknowledge ticks, etc.) for this many seconds, the daemon kills the process and evaluates the `restart_policy`. Covers **post-connection** liveness only |
+| `startup_timeout` | float | -- | If the node process fails to connect (subscribe to events) within this many seconds after process spawn, the daemon kills the process and evaluates the `restart_policy`. Bounds startup/initialization time. Evaluated on each `health_check_interval` tick (default 5s) |
 
 Restart policies:
 

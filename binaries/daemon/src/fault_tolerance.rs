@@ -12,6 +12,7 @@ use dora_core::config::NodeId;
 pub(crate) struct FaultToleranceStats {
     pub restarts: AtomicU64,
     pub health_check_kills: AtomicU64,
+    pub startup_timeout_kills: AtomicU64,
     pub input_timeouts: AtomicU64,
     pub circuit_breaker_recoveries: AtomicU64,
 }
@@ -20,6 +21,7 @@ impl FaultToleranceStats {
     pub fn any_nonzero(&self) -> bool {
         self.restarts.load(atomic::Ordering::Relaxed) > 0
             || self.health_check_kills.load(atomic::Ordering::Relaxed) > 0
+            || self.startup_timeout_kills.load(atomic::Ordering::Relaxed) > 0
             || self.input_timeouts.load(atomic::Ordering::Relaxed) > 0
             || self
                 .circuit_breaker_recoveries

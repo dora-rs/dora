@@ -1,0 +1,15 @@
+# `check_node_health` runs on `NodeHealthCheckInterval` ticks (default
+# 5 s, binaries/daemon/src/lib.rs). Override to 0.1 s so health check
+# ticks fire frequently.
+health_check_interval: 0.1
+
+nodes:
+  - id: slow-init-node
+    build: cargo build -p stop-delay-node
+    path: ../../target/debug/stop-delay-node
+    restart_policy: never
+    startup_timeout: 1.5
+    env:
+      DORA_TEST_INIT_DELAY_MS: 300
+    inputs:
+      tick: dora/timer/millis/200

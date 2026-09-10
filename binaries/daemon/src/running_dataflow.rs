@@ -121,7 +121,12 @@ pub struct RunningNode {
     /// the CLI help ("the daemon's restart loop re-spawns it").
     pub(crate) force_restart_next: Arc<AtomicBool>,
     pub(crate) last_activity: Arc<AtomicU64>,
+    /// Timestamp (millis since epoch) when the child process was spawned (0 if not currently running / in backoff).
+    pub(crate) spawned_at: Arc<AtomicU64>,
+    /// One-shot latch set when startup_timeout kills the process, preventing repeated kill submissions while awaiting exit.
+    pub(crate) startup_kill_sent: Arc<AtomicBool>,
     pub(crate) health_check_timeout: Option<Duration>,
+    pub(crate) startup_timeout: Option<Duration>,
     /// Per-node finish-drain grace override (from `finish_grace_secs` in the
     /// descriptor). When `Some`, overrides the global `DORA_FINISH_DRAIN_GRACE_SECS`
     /// for this node in the finish-straggler watchdog.
@@ -365,6 +370,8 @@ pub struct RunningDataflow {
     /// predecessor's marker, and cleaning up a stale event cannot clear a
     /// live incarnation's marker.
     pub(crate) grace_duration_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
+    /// Startup-timeout kill markers keyed by `(node id, generation)`.
+    pub(crate) startup_timeout_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
     /// Reverse index from output to the set of CLI subscribers watching it.
@@ -433,6 +440,7 @@ impl RunningDataflow {
             empty_set: BTreeSet::new(),
             cascading_error_causes: Default::default(),
             grace_duration_kills: Default::default(),
+            startup_timeout_kills: Default::default(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
             debug_topic_watchers: Default::default(),

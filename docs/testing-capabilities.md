@@ -130,6 +130,7 @@ Known gap: `dora self update` destructive swap path (tracked in
 | `restart_window` counter reset | `restart_window_resets_restart_counter` | PR | Contract |
 | `input_timeout` delivers `InputClosed` | `input_timeout_delivers_input_closed_to_downstream` | PR | Contract |
 | `health_check_timeout` SIGKILLs unresponsive node | `health_check_timeout_sigkills_unresponsive_node` | PR | Contract |
+| `startup_timeout` SIGKILLs hung node before init | `node_killed_on_startup_timeout_unwedges_dataflow` | PR | Contract |
 | `NodeRestarted` delivery to downstream | `node_restarted_is_delivered_to_downstream` | PR | Contract |
 | `InputRecovered` delivery after break | `input_recovered_is_delivered_after_broken_input_receives_data` | PR | Contract |
 | Full kill→respawn→kill cycle under health check | no automated coverage | — | Gap (#1631 follow-up) |

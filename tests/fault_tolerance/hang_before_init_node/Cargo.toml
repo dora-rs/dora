@@ -1,0 +1,20 @@
+[package]
+name = "hang-before-init-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: appends an incarnation marker, then blocks without
+# calling init_from_env. Paired with startup-timeout.yml to test that
+# the daemon startup deadline kills unconnected hung nodes.
+
+[[bin]]
+name = "hang-before-init-node"
+path = "src/main.rs"
+
+[dependencies]
+eyre = { workspace = true }
