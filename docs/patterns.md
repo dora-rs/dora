@@ -67,6 +67,20 @@ The server MUST pass through the `request_id` from the incoming request's
 metadata parameters into the response. The client matches responses to
 requests using this key.
 
+`send_service_request` mints a fresh `request_id` per call, so it cannot
+express one logical request sent to several servers — each publish would
+carry a different correlation. `send_service_request_with_id` takes the id
+instead, so every copy shares one:
+
+```rust
+let request_id = DoraNode::new_request_id();
+for server in &servers {
+    node.send_service_request_with_id(
+        server.output.clone(), params.clone(), data.clone(), request_id.clone(),
+    )?;
+}
+```
+
 #### Waiting for a response with timeout + fault tolerance
 
 Use [`EventStream::recv_service_response`](../apis/rust/node/src/event_stream/mod.rs)
@@ -373,6 +387,7 @@ into `dora-node-api.h` (dora-rs/dora#2686).
 |------|-----|
 | `DoraNode::new_request_id` / `new_goal_id` | `new_request_id()` / `new_goal_id()` |
 | `DoraNode::send_service_request` | `send_service_request(...)` / `send_arrow_service_request(...)` |
+| `DoraNode::send_service_request_with_id` | `send_service_request_with_id(...)` |
 | `DoraNode::send_service_response` | `send_service_response(...)` |
 | `EventStream::recv_service_response` | `recv_service_response(...)` |
 | `EventStream::recv_action_result` | `recv_action_result(...)` |
