@@ -127,6 +127,11 @@ mod ffi {
         /// A caller-supplied argument was rejected (e.g. a malformed
         /// server node id). Nothing was awaited.
         InvalidArgument,
+        /// Returned only by the `try_recv_*` polls: no correlated reply
+        /// is available yet. Not an error — call again on a later
+        /// iteration. Distinct from `Timeout`, which means a deadline
+        /// actually elapsed.
+        NotReady,
     }
 
     /// Result of `recv_service_response` / `recv_action_result`.
@@ -407,6 +412,99 @@ mod ffi {
             server_node_ids: &Vec<String>,
             timeout_ms: u64,
         ) -> DoraPatternResult;
+
+        /// Non-blocking poll for the response carrying `request_id`.
+        ///
+        /// Returns `NotReady` when the reply has not arrived yet, so a
+        /// single-threaded node can check several outstanding requests
+        /// per event-loop iteration without ever stalling. Follows the
+        /// same convention as `try_next_event`.
+        ///
+        /// Non-matching events are buffered for later `next_event`
+        /// calls exactly as in `recv_service_response`, and correlation
+        /// state carries across calls — so polling in a loop is
+        /// equivalent to waiting, minus the blocking.
+        ///
+        /// `timeout_ms` is owned by the framework: the first poll
+        /// carrying one registers a deadline for `request_id`, and a
+        /// later poll past it returns `Timeout` exactly once. So a
+        /// caller does not sweep deadlines itself — it passes the same
+        /// `timeout_ms` every iteration and reacts to `Timeout` like
+        /// any other status.
+        ///
+        /// `timeout_ms` means the same here as in the blocking
+        /// `recv_service_response`: `0` expires immediately, and
+        /// `UINT64_MAX` is the spelling for "no practical deadline".
+        ///
+        /// The clock starts at that first poll rather than at send
+        /// time, and the first deadline registered for an id wins.
+        ///
+        /// Pass an empty `server_node_id` to accept a reply from any
+        /// node and skip restart correlation.
+        fn try_recv_service_response(
+            events: &mut Box<Events>,
+            request_id: &str,
+            server_node_id: &str,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Non-blocking poll for a *terminal* result for `goal_id`.
+        ///
+        /// Returns `NotReady` while the goal is still running. Feedback
+        /// messages stay buffered for the caller's own event loop.
+        ///
+        /// `timeout_ms` behaves as in `try_recv_service_response`, but
+        /// bounds the *whole goal* rather than the gap between feedback
+        /// messages: a long goal that is making visible progress will
+        /// still expire. Pass `UINT64_MAX` for no practical deadline,
+        /// and an empty `server_node_id` to accept any responder.
+        fn try_recv_action_result(
+            events: &mut Box<Events>,
+            goal_id: &str,
+            server_node_id: &str,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Non-blocking `recv_service_response_from`: the fan-out poll.
+        fn try_recv_service_response_from(
+            events: &mut Box<Events>,
+            request_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Non-blocking `recv_action_result_from`.
+        fn try_recv_action_result_from(
+            events: &mut Box<Events>,
+            goal_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// Forget an outstanding correlation's deadline.
+        ///
+        /// A poll drops its own registration on a match, an error or
+        /// expiry, so this is only needed when a node abandons a
+        /// request it will never poll again — a peer died, the operator
+        /// cancelled, the reply stopped mattering. Without it that one
+        /// entry lives until the event stream is dropped, which for a
+        /// long-running node is an unbounded slow leak.
+        ///
+        /// Safe to call for an id that was never registered.
+        ///
+        /// It releases the deadline and nothing else. A reply arriving
+        /// *after* its request timed out or was cancelled matches no
+        /// live correlation, so the next poll buffers it for
+        /// `next_event` like any other unrelated input. A node that
+        /// reads its events clears those as a matter of course; one
+        /// that only polls and never reads keeps one buffered event per
+        /// unclaimed reply.
+        ///
+        /// Do not "fix" that with a loop that reads until empty:
+        /// `try_next_event` returns buffered events first but then
+        /// falls through to the live stream, so such a loop can consume
+        /// and discard a reply a later poll was going to correlate.
+        fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str);
 
         fn next(self: &mut CombinedEvents) -> CombinedEvent;
 
@@ -1550,6 +1648,105 @@ fn recv_action_result_from(
     ))
 }
 
+/// Map a non-blocking correlated receive onto the C++ result struct.
+///
+/// `Ok(None)` becomes `NotReady` with an `Empty` event, mirroring how
+/// `try_next_event` reports "nothing available" — deliberately distinct
+/// from `Timeout`, since no deadline was involved.
+fn try_pattern_result(outcome: Result<Option<Event>, PatternError>) -> ffi::DoraPatternResult {
+    match outcome {
+        Ok(Some(event)) => pattern_result(Ok(event)),
+        Ok(None) => pattern_failure(
+            ffi::DoraPatternStatus::NotReady,
+            String::new(),
+            EventOrReason::Empty,
+        ),
+        Err(err) => pattern_result(Err(err)),
+    }
+}
+
+fn try_recv_service_response(
+    events: &mut Box<Events>,
+    request_id: &str,
+    server_node_id: &str,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_list(std::slice::from_ref(&server_node_id)) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_service_response_from(
+        request_id,
+        servers.as_ref(),
+        Some(clamp_pattern_timeout(timeout_ms)),
+    ))
+}
+
+fn try_recv_action_result(
+    events: &mut Box<Events>,
+    goal_id: &str,
+    server_node_id: &str,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_list(std::slice::from_ref(&server_node_id)) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_action_result_from(
+        goal_id,
+        servers.as_ref(),
+        Some(clamp_pattern_timeout(timeout_ms)),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn try_recv_service_response_from(
+    events: &mut Box<Events>,
+    request_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_service_response_from(
+        request_id,
+        servers.as_ref(),
+        Some(clamp_pattern_timeout(timeout_ms)),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn try_recv_action_result_from(
+    events: &mut Box<Events>,
+    goal_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    try_pattern_result(events.0.try_recv_action_result_from(
+        goal_id,
+        servers.as_ref(),
+        Some(clamp_pattern_timeout(timeout_ms)),
+    ))
+}
+
+fn cancel_correlation(events: &mut Box<Events>, correlation_id: &str) {
+    events.0.cancel_correlation(correlation_id);
+}
+
 /// Owned form of [`ExpectedServers`], which borrows.
 ///
 /// The parsed `NodeId`s must outlive the borrow handed to the receive,
@@ -1567,10 +1764,18 @@ impl OwnedServers {
             Self::Any => ExpectedServers::Any,
             // Exactly one candidate is `One`, not a one-element `AnyOf`.
             //
-            // The two differ in what a restart *means*: with a set, a
-            // restart is a notification because the others may still
-            // answer. With a single server there is nobody else, so the
-            // restart is the verdict for that request.
+            // The two differ in what a restart *means*: with a set,
+            // a restart is a notification because the others may still
+            // answer, so the deadline keeps running. With a single
+            // server there is nobody else, so the restart is the
+            // verdict and the deadline must go with the orphaned
+            // request.
+            //
+            // This is the path every C++ single-server poll takes —
+            // `try_recv_service_response(.., server_node_id, ..)` wraps
+            // its lone id in a slice — so without this it would leak one
+            // deadline entry per abandoned request, which is exactly
+            // what `cancel_correlation` was added to avoid needing.
             Self::Some(ids) => match ids.as_slice() {
                 [only] => ExpectedServers::One(only),
                 many => ExpectedServers::AnyOf(many),
@@ -2520,5 +2725,62 @@ mod tests {
             }
             Ok(_) => panic!("a malformed node id must be rejected"),
         }
+    }
+
+    #[test]
+    fn not_ready_is_distinct_from_timeout_and_carries_no_error() {
+        let not_ready = try_pattern_result(Ok(None));
+        assert!(matches!(not_ready.status, ffi::DoraPatternStatus::NotReady));
+        assert!(
+            not_ready.error.is_empty(),
+            "NotReady is not a failure, so it must not carry an error string: {}",
+            not_ready.error
+        );
+        assert!(matches!(
+            event_type(&not_ready.event),
+            ffi::DoraEventType::Empty
+        ));
+    }
+
+    #[test]
+    fn try_pattern_result_passes_errors_through_unchanged() {
+        let timeout = try_pattern_result(Err(PatternError::Timeout));
+        assert!(matches!(timeout.status, ffi::DoraPatternStatus::Timeout));
+
+        let restarted = try_pattern_result(Err(PatternError::ServerRestarted("b".into())));
+        assert!(matches!(
+            restarted.status,
+            ffi::DoraPatternStatus::ServerRestarted
+        ));
+        assert!(
+            restarted.error.contains("b"),
+            "the restarted node's id must reach the C++ caller: {}",
+            restarted.error
+        );
+    }
+
+    /// `timeout_ms` must mean one thing across the whole header.
+    ///
+    /// The polls once mapped `0` to "no deadline" while the blocking
+    /// waits mapped it to `Duration::ZERO`, so moving a request from
+    /// `recv_service_response` to `try_recv_service_response` silently
+    /// dropped its deadline. Both forms now go through
+    /// `clamp_pattern_timeout`, and `UINT64_MAX` is the spelling for
+    /// "no practical deadline" (dora-rs/dora#3046).
+    #[test]
+    fn zero_timeout_means_the_same_for_polls_and_blocking_waits() {
+        assert_eq!(clamp_pattern_timeout(0), Duration::ZERO);
+    }
+
+    #[test]
+    fn u64_max_is_the_no_practical_deadline_spelling() {
+        let clamped = clamp_pattern_timeout(u64::MAX);
+        assert!(
+            clamped > Duration::from_secs(60 * 60 * 24 * 365),
+            "UINT64_MAX must clamp to a deadline no caller will reach, got {clamped:?}"
+        );
+        Instant::now()
+            .checked_add(clamped)
+            .expect("the clamped deadline must be representable");
     }
 }
