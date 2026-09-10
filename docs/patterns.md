@@ -391,6 +391,9 @@ into `dora-node-api.h` (dora-rs/dora#2686).
 | `DoraNode::send_service_response` | `send_service_response(...)` |
 | `EventStream::recv_service_response` | `recv_service_response(...)` |
 | `EventStream::recv_action_result` | `recv_action_result(...)` |
+| `EventStream::recv_service_response_from` | `recv_service_response_from(...)` |
+| `EventStream::recv_action_result_from` | `recv_action_result_from(...)` |
+| `ExpectedServers::AnyOf` / `::Any` | a `Vec<String>` of node ids / an empty one |
 | `GOAL_STATUS_SUCCEEDED` / `_ABORTED` / `_CANCELED` | `goal_status_succeeded()` / `_aborted()` / `_canceled()` |
 | `PatternError` | `DoraPatternStatus` |
 
