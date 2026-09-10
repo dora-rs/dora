@@ -65,6 +65,14 @@ mod ffi {
         /// exists so C++ nodes can react to reloads (e.g. flushing
         /// caches) rather than treating them as `Unknown`.
         Reload,
+        /// An upstream node restarted after a failure. Use
+        /// `event_as_node_restarted` for its id.
+        ///
+        /// Same reason as `Reload`: without a variant of its own this
+        /// arrived as `Unknown`, so a C++ node could not reset state or
+        /// re-send work it had in flight, and could not even tell that
+        /// anything had happened.
+        NodeRestarted,
     }
 
     struct DoraInput {
@@ -225,6 +233,12 @@ mod ffi {
         fn event_as_input_with_metadata(event: Box<DoraEvent>) -> Result<DoraInputWithMetadata>;
         /// Extract the failure payload from a `NodeFailed` event.
         fn event_as_node_failed(event: Box<DoraEvent>) -> Result<DoraNodeFailed>;
+        /// Id of the node that restarted, for a `NodeRestarted` event.
+        ///
+        /// Errors for any other event, so a caller that branched on
+        /// `event_type` wrongly is told rather than handed something
+        /// plausible.
+        fn event_as_node_restarted(event: Box<DoraEvent>) -> Result<String>;
         /// Selectively close one or more of this node's outputs without
         /// shutting the whole node down. Subsequent downstream
         /// subscribers see the corresponding `InputClosed` event.
@@ -623,6 +637,7 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
             Event::Error(_) => ffi::DoraEventType::Error,
             Event::NodeFailed { .. } => ffi::DoraEventType::NodeFailed,
             Event::Reload { .. } => ffi::DoraEventType::Reload,
+            Event::NodeRestarted { .. } => ffi::DoraEventType::NodeRestarted,
             _ => ffi::DoraEventType::Unknown,
         },
         EventOrReason::Closed => ffi::DoraEventType::AllInputsClosed,
@@ -695,6 +710,14 @@ fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFail
         error,
         source_node_id: source_node_id.to_string(),
     })
+}
+
+#[allow(clippy::boxed_local)] // `Box<DoraEvent>` is mandated by the cxx bridge signature.
+fn event_as_node_restarted(event: Box<DoraEvent>) -> eyre::Result<String> {
+    let EventOrReason::Event(Event::NodeRestarted { id }) = event.0 else {
+        bail!("not a NodeRestarted event");
+    };
+    Ok(id.to_string())
 }
 
 /// Parse a caller-supplied output id via `FromStr` instead of the panicking
@@ -2152,6 +2175,36 @@ mod tests {
             log.error.contains("poisoned"),
             "non-send node operations must fail-stop as well: {}",
             log.error
+        );
+    }
+
+    /// A restart must reach C++ as itself, not as `Unknown`.
+    ///
+    /// Without this the event still arrived — it simply could not be
+    /// identified, so a node had no way to reset state or resend work,
+    /// and no way to know anything had happened at all.
+    #[test]
+    fn a_node_restart_is_reported_as_itself_not_unknown() {
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::NodeRestarted {
+            id: dora_node_api::dora_core::config::NodeId::from("calc".to_string()),
+        })));
+        assert!(matches!(
+            event_type(&event),
+            ffi::DoraEventType::NodeRestarted
+        ));
+
+        let id = event_as_node_restarted(event).expect("a NodeRestarted event carries its id");
+        assert_eq!(id, "calc");
+    }
+
+    #[test]
+    fn event_as_node_restarted_rejects_other_events() {
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Stop(
+            dora_node_api::StopCause::Manual,
+        ))));
+        assert!(
+            event_as_node_restarted(event).is_err(),
+            "a caller that branched wrongly must be told, not handed a plausible id"
         );
     }
 }
