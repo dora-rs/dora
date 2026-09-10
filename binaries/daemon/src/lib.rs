@@ -6584,9 +6584,30 @@ impl Daemon {
                                 None if grace_duration_kill || finish_escalated => {
                                     NodeErrorCause::GraceDuration
                                 }
-                                None if startup_timed_out => NodeErrorCause::Other {
-                                    stderr: "process killed: startup_timeout exceeded before node connected".to_string(),
-                                },
+                                None if startup_timed_out && is_sigkill_like_exit(&exit_status) => {
+                                    let cause = dataflow
+                                        .and_then(|d| d.node_stderr_most_recent.get(&node_id))
+                                        .map(|queue| {
+                                            let mut lines = Vec::new();
+                                            if queue.is_full() {
+                                                lines.push("[...]\n".into());
+                                            }
+                                            while let Some(line) = queue.pop() {
+                                                lines.push(line);
+                                            }
+                                            lines
+                                        })
+                                        .map(extract_err_from_stderr)
+                                        .unwrap_or_default();
+
+                                    let timeout_msg = "process killed: startup_timeout exceeded before node connected";
+                                    let stderr = if cause.is_empty() {
+                                        timeout_msg.to_string()
+                                    } else {
+                                        format!("{timeout_msg}\n{cause}")
+                                    };
+                                    NodeErrorCause::Other { stderr }
+                                }
                                 None => {
                                     let cause = dataflow
                                         .and_then(|d| d.node_stderr_most_recent.get(&node_id))
@@ -7560,6 +7581,25 @@ fn is_sigterm_like_exit(exit_status: &NodeExitStatus) -> bool {
             | NodeExitStatus::ExitCode(130)
             | NodeExitStatus::ExitCode(STATUS_CONTROL_C_EXIT)
     )
+}
+
+/// Whether `exit_status` has the shape of a node terminated by SIGKILL (or process kill).
+///
+/// On Unix, a process killed by `ProcessOperation::Kill` (`start_kill()`) terminates
+/// with `Signal(9)` (SIGKILL) or exit code 137 (= 128 + 9).
+/// On non-Unix platforms, a killed process terminates with a non-zero status.
+fn is_sigkill_like_exit(exit_status: &NodeExitStatus) -> bool {
+    #[cfg(unix)]
+    {
+        matches!(
+            exit_status,
+            NodeExitStatus::Signal(9) | NodeExitStatus::ExitCode(137)
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        !exit_status.is_success()
+    }
 }
 
 /// Decide whether the health-check watchdog should kill a node.
@@ -10167,7 +10207,7 @@ mod fault_tolerance_tests {
 
 #[cfg(test)]
 mod planned_stop_exit_tests {
-    use super::{STATUS_CONTROL_C_EXIT, is_sigterm_like_exit};
+    use super::{STATUS_CONTROL_C_EXIT, is_sigkill_like_exit, is_sigterm_like_exit};
     use dora_message::common::NodeExitStatus;
 
     #[test]
@@ -10201,6 +10241,22 @@ mod planned_stop_exit_tests {
         // SIGKILL is a hard kill (grace exceeded), not a graceful stop —
         // it must keep flowing through the GraceDuration branch.
         assert!(!is_sigterm_like_exit(&NodeExitStatus::Signal(9)));
+    }
+
+    #[test]
+    fn recognises_kill_exit_shapes() {
+        #[cfg(unix)]
+        {
+            assert!(is_sigkill_like_exit(&NodeExitStatus::Signal(9)));
+            assert!(is_sigkill_like_exit(&NodeExitStatus::ExitCode(137)));
+            assert!(!is_sigkill_like_exit(&NodeExitStatus::ExitCode(1)));
+            assert!(!is_sigkill_like_exit(&NodeExitStatus::Signal(15)));
+        }
+        #[cfg(not(unix))]
+        {
+            assert!(is_sigkill_like_exit(&NodeExitStatus::ExitCode(1)));
+            assert!(!is_sigkill_like_exit(&NodeExitStatus::Success));
+        }
     }
 }
 

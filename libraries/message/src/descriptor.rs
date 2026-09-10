@@ -1448,6 +1448,9 @@ pub struct CustomNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub health_check_timeout: Option<f64>,
 
+    /// Per-node finish-drain grace period in seconds.
+    ///
+    /// Overrides the global `DORA_FINISH_DRAIN_GRACE_SECS` for this node only.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_grace_secs: Option<f64>,
 
@@ -1461,6 +1464,7 @@ pub struct CustomNode {
     /// evaluates the `restart_policy`.
     ///
     /// Evaluated on each `health_check_interval` tick (default 5s).
+    // Appended last so existing fields keep their wire-format order.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_timeout: Option<f64>,
 }

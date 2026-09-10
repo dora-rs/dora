@@ -678,13 +678,12 @@ WIRE_DIR = "libraries/message/src"
 
 # Modules in `dora-message` that are framed as JSON or YAML, not positional
 # postcard binary:
-# - `descriptor` and `config` are dataflow YAML/JSON descriptors (governed by
-#   Surface 3: Dataflow YAML schema, and made #[non_exhaustive] in #3387).
+# - `descriptor` is dataflow YAML/JSON descriptors (governed by Surface 3:
+#   Dataflow YAML schema, and made #[non_exhaustive] in #3387).
 # - WebSocket protocol modules (*_to_*.rs, ws_protocol.rs) use serde_json framing
 #   with named keys, so additive fields are backward- and forward-compatible.
 NON_POSTCARD_MODULES = {
     "descriptor",
-    "config",
     "daemon_to_coordinator",
     "coordinator_to_daemon",
     "cli_to_coordinator",

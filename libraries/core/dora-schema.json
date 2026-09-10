@@ -535,7 +535,7 @@
           ]
         },
         "startup_timeout": {
-          "description": "Startup connection deadline in seconds.",
+          "description": "Startup connection deadline in seconds.\n\nIf the node process fails to connect (subscribe to events) within this\nmany seconds after process spawn, the daemon kills the process and\nevaluates the `restart_policy`.\n\nEvaluated on each `health_check_interval` tick (default 5s).",
           "type": [
             "number",
             "null"
