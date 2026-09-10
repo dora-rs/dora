@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Breaking
+
+- **`DoraEventType` has a new `NodeRestarted` variant** ([#3046](https://github.com/dora-rs/dora/issues/3046)). A restart of an upstream node reached C++ as `Unknown`, so a node could not reset state, resend work it had in flight, or even tell that anything had happened. It now arrives as `DoraEventType::NodeRestarted`, with `event_as_node_restarted(event)` returning the restarted node's id. This changes what existing C++ nodes see: a `switch` over `DoraEventType` without a `default` arm stops compiling under `-Werror=switch`. Add a `default`, or handle the new variant.
+
+### Added
+
+- **`send_service_request_with_id`** ([#3046](https://github.com/dora-rs/dora/issues/3046)), in both the Rust and C++ node APIs. `send_service_request` mints a fresh `request_id` per call, so it cannot express one logical request fanned out to several servers: each publish carries a different correlation and no single receive can await "whichever answers first". The new variant takes the id from the caller, so every copy shares one.
+
+- **Fan-out service and action requests** ([#3046](https://github.com/dora-rs/dora/issues/3046)). `ExpectedServers` (`One` / `AnyOf` / `Any`) and the new `recv_service_response_from` / `recv_action_result_from` let one request go to several servers under a single `request_id`, with the first reply winning. The set governs only restart detection — which reply matches is still decided by the correlation id alone. Exposed to C++ as a `Vec<String>` of acceptable responders; an empty vector means any node.
+
 ### Fixed
 
 - **A `queue_policy: backpressure` input is no longer discarded by a timer flood** ([#3428](https://github.com/dora-rs/dora/issues/3428)). The direct node-to-node zenoh path hands each message to the receiver with a non-blocking send into one ingress channel shared by all of the receiver's inputs, so a fast timer could fill that channel while the receiver was busy and the next backpressure message was dropped before the per-input policy saw it. Any output with a `backpressure` consumer now stays on the daemon path, whose delivery into that channel blocks instead of dropping. This costs the whole output its zero-copy path and puts it under the daemon's 64 MiB per-message limit; the daemon path remains a bounded buffer, not a guarantee (see `docs/yaml-spec.md`). `dora node add`/`replace` now refuse a `backpressure` input whose producer is already running with the output on the direct path, since a running producer cannot be re-routed. `dora replay` marks every unset input `backpressure`, so replay dataflows run on the daemon path.

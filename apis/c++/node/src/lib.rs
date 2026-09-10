@@ -12,7 +12,7 @@ use chrono::DateTime;
 #[cfg(any(feature = "ros2-bridge", test))]
 use dora_node_api::merged::MergeExternal;
 use dora_node_api::{
-    self, Event, EventStream, Metadata as DoraMetadata,
+    self, Event, EventStream, ExpectedServers, Metadata as DoraMetadata,
     MetadataParameters as DoraMetadataParameters, Parameter as DoraParameter, PatternError,
     TryRecvError,
     arrow_v59::array::{AsArray, UInt8Array},
@@ -65,6 +65,14 @@ mod ffi {
         /// exists so C++ nodes can react to reloads (e.g. flushing
         /// caches) rather than treating them as `Unknown`.
         Reload,
+        /// An upstream node restarted after a failure. Use
+        /// `event_as_node_restarted` for its id.
+        ///
+        /// Same reason as `Reload`: without a variant of its own this
+        /// arrived as `Unknown`, so a C++ node could not reset state or
+        /// re-send work it had in flight, and could not even tell that
+        /// anything had happened.
+        NodeRestarted,
     }
 
     struct DoraInput {
@@ -225,6 +233,12 @@ mod ffi {
         fn event_as_input_with_metadata(event: Box<DoraEvent>) -> Result<DoraInputWithMetadata>;
         /// Extract the failure payload from a `NodeFailed` event.
         fn event_as_node_failed(event: Box<DoraEvent>) -> Result<DoraNodeFailed>;
+        /// Id of the node that restarted, for a `NodeRestarted` event.
+        ///
+        /// Errors for any other event, so a caller that branched on
+        /// `event_type` wrongly is told rather than handed something
+        /// plausible.
+        fn event_as_node_restarted(event: Box<DoraEvent>) -> Result<String>;
         /// Selectively close one or more of this node's outputs without
         /// shutting the whole node down. Subsequent downstream
         /// subscribers see the corresponding `InputClosed` event.
@@ -302,6 +316,21 @@ mod ffi {
             metadata: Box<Metadata>,
         ) -> DoraRequestId;
 
+        /// Send a service request under a caller-supplied `request_id`.
+        ///
+        /// `send_service_request` mints a fresh id per call, so it
+        /// cannot express one logical request fanned out to several
+        /// nodes: each publish would carry a different correlation, and
+        /// no single receive could await "whichever answers first".
+        /// Call `new_request_id()` once and send each copy with this.
+        fn send_service_request_with_id(
+            output_sender: &mut Box<OutputSender>,
+            output_id: String,
+            data: &[u8],
+            metadata: Box<Metadata>,
+            request_id: &str,
+        ) -> DoraResult;
+
         /// Arrow-payload variant of `send_service_request`. Consumes the
         /// Arrow C Data Interface structs behind `array_ptr` /
         /// `schema_ptr` exactly like `send_arrow_output` does.
@@ -350,6 +379,32 @@ mod ffi {
             events: &mut Box<Events>,
             goal_id: &str,
             server_node_id: &str,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// `recv_service_response` over a set of acceptable responders,
+        /// for a request fanned out to several nodes under one
+        /// `request_id` where the first reply wins.
+        ///
+        /// An empty `server_node_ids` accepts a reply from any node.
+        /// The set only affects restart detection: which reply matches
+        /// is decided by `request_id` alone. A restart of any listed
+        /// node is reported as `ServerRestarted` naming that node — a
+        /// notification, not a verdict, since the others may still
+        /// answer.
+        fn recv_service_response_from(
+            events: &mut Box<Events>,
+            request_id: &str,
+            server_node_ids: &Vec<String>,
+            timeout_ms: u64,
+        ) -> DoraPatternResult;
+
+        /// `recv_action_result` over a set of acceptable responders.
+        /// See `recv_service_response_from`.
+        fn recv_action_result_from(
+            events: &mut Box<Events>,
+            goal_id: &str,
+            server_node_ids: &Vec<String>,
             timeout_ms: u64,
         ) -> DoraPatternResult;
 
@@ -623,6 +678,7 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
             Event::Error(_) => ffi::DoraEventType::Error,
             Event::NodeFailed { .. } => ffi::DoraEventType::NodeFailed,
             Event::Reload { .. } => ffi::DoraEventType::Reload,
+            Event::NodeRestarted { .. } => ffi::DoraEventType::NodeRestarted,
             _ => ffi::DoraEventType::Unknown,
         },
         EventOrReason::Closed => ffi::DoraEventType::AllInputsClosed,
@@ -695,6 +751,14 @@ fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFail
         error,
         source_node_id: source_node_id.to_string(),
     })
+}
+
+#[allow(clippy::boxed_local)] // `Box<DoraEvent>` is mandated by the cxx bridge signature.
+fn event_as_node_restarted(event: Box<DoraEvent>) -> eyre::Result<String> {
+    let EventOrReason::Event(Event::NodeRestarted { id }) = event.0 else {
+        bail!("not a NodeRestarted event");
+    };
+    Ok(id.to_string())
 }
 
 /// Parse a caller-supplied output id via `FromStr` instead of the panicking
@@ -1303,6 +1367,37 @@ fn goal_status_canceled() -> String {
 }
 
 #[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
+fn send_service_request_with_id(
+    sender: &mut Box<OutputSender>,
+    output_id: String,
+    data: &[u8],
+    metadata: Box<Metadata>,
+    request_id: &str,
+) -> ffi::DoraResult {
+    let mut parameters = (*metadata).into_parameters();
+    set_request_id(&mut parameters, request_id);
+    send_output_locked(
+        &sender.0,
+        "send_service_request_with_id",
+        output_id,
+        data,
+        parameters,
+    )
+}
+
+/// Pin `parameters` to a caller-supplied `request_id`.
+///
+/// The counterpart of [`insert_request_id`], which always mints a fresh
+/// one. Split out so the "the caller's id survives" contract can be
+/// tested without a live daemon connection.
+fn set_request_id(parameters: &mut DoraMetadataParameters, request_id: &str) {
+    parameters.insert(
+        dora_node_api::REQUEST_ID.to_string(),
+        DoraParameter::String(request_id.to_owned()),
+    );
+}
+
+#[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
 fn send_service_request(
     sender: &mut Box<OutputSender>,
     output_id: String,
@@ -1408,6 +1503,115 @@ fn recv_action_result(
     pattern_result(futures_lite::future::block_on(
         events.0.recv_action_result(goal_id, &server, timeout),
     ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: cxx maps `Vec<String>` to
+/// `rust::Vec<rust::String>` and has no slice-of-String equivalent, so
+/// the signature is dictated by the bridge (the same reason the
+/// `borrowed_box` allow appears elsewhere in this file).
+#[allow(clippy::ptr_arg)]
+fn recv_service_response_from(
+    events: &mut Box<Events>,
+    request_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    pattern_result(futures_lite::future::block_on(
+        events.0.recv_service_response_from(
+            request_id,
+            servers.as_ref(),
+            clamp_pattern_timeout(timeout_ms),
+        ),
+    ))
+}
+
+/// `&Vec<String>` rather than `&[String]`: see `recv_service_response_from`.
+#[allow(clippy::ptr_arg)]
+fn recv_action_result_from(
+    events: &mut Box<Events>,
+    goal_id: &str,
+    server_node_ids: &Vec<String>,
+    timeout_ms: u64,
+) -> ffi::DoraPatternResult {
+    let servers = match parse_server_strings(server_node_ids) {
+        Ok(servers) => servers,
+        Err(result) => return result,
+    };
+    pattern_result(futures_lite::future::block_on(
+        events.0.recv_action_result_from(
+            goal_id,
+            servers.as_ref(),
+            clamp_pattern_timeout(timeout_ms),
+        ),
+    ))
+}
+
+/// Owned form of [`ExpectedServers`], which borrows.
+///
+/// The parsed `NodeId`s must outlive the borrow handed to the receive,
+/// so they are held here and lent out via [`Self::as_ref`].
+enum OwnedServers {
+    /// No node ids were supplied — accept any responder.
+    Any,
+    /// One or more parsed node ids.
+    Some(Vec<NodeId>),
+}
+
+impl OwnedServers {
+    fn as_ref(&self) -> ExpectedServers<'_> {
+        match self {
+            Self::Any => ExpectedServers::Any,
+            // Exactly one candidate is `One`, not a one-element `AnyOf`.
+            //
+            // The two differ in what a restart *means*: with a set, a
+            // restart is a notification because the others may still
+            // answer. With a single server there is nobody else, so the
+            // restart is the verdict for that request.
+            Self::Some(ids) => match ids.as_slice() {
+                [only] => ExpectedServers::One(only),
+                many => ExpectedServers::AnyOf(many),
+            },
+        }
+    }
+}
+
+/// Parse a C++-supplied list of server node ids.
+///
+/// An empty list — or a single empty string, which is how the
+/// single-server waits spell "anyone" — means [`OwnedServers::Any`].
+/// Empty entries in a non-trivial list are rejected rather than silently
+/// widening the set to "any", which would be a surprising way for a
+/// stray `""` to disable restart detection.
+fn parse_server_strings(ids: &[String]) -> Result<OwnedServers, ffi::DoraPatternResult> {
+    let borrowed: Vec<&str> = ids.iter().map(String::as_str).collect();
+    parse_server_list(&borrowed)
+}
+
+fn parse_server_list(ids: &[&str]) -> Result<OwnedServers, ffi::DoraPatternResult> {
+    if ids.is_empty() || (ids.len() == 1 && ids[0].is_empty()) {
+        return Ok(OwnedServers::Any);
+    }
+    let mut parsed = Vec::with_capacity(ids.len());
+    for id in ids {
+        parsed.push(parse_server_node_id(id)?);
+    }
+    Ok(OwnedServers::Some(parsed))
+}
+
+/// Parse one node id, mapping a bad id onto `InvalidArgument` instead of
+/// the panicking `NodeId::from(String)`.
+fn parse_server_node_id(server_node_id: &str) -> Result<NodeId, ffi::DoraPatternResult> {
+    server_node_id.parse::<NodeId>().map_err(|e| {
+        pattern_failure(
+            ffi::DoraPatternStatus::InvalidArgument,
+            format!("invalid server node id '{server_node_id}': {e}"),
+            EventOrReason::Empty,
+        )
+    })
 }
 
 /// Validate and normalise the arguments shared by both pattern-aware
@@ -2153,5 +2357,168 @@ mod tests {
             "non-send node operations must fail-stop as well: {}",
             log.error
         );
+    }
+
+    /// A restart must reach C++ as itself, not as `Unknown`.
+    ///
+    /// Without this the event still arrived — it simply could not be
+    /// identified, so a node had no way to reset state or resend work,
+    /// and no way to know anything had happened at all.
+    #[test]
+    fn a_node_restart_is_reported_as_itself_not_unknown() {
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::NodeRestarted {
+            id: dora_node_api::dora_core::config::NodeId::from("calc".to_string()),
+        })));
+        assert!(matches!(
+            event_type(&event),
+            ffi::DoraEventType::NodeRestarted
+        ));
+
+        let id = event_as_node_restarted(event).expect("a NodeRestarted event carries its id");
+        assert_eq!(id, "calc");
+    }
+
+    #[test]
+    fn event_as_node_restarted_rejects_other_events() {
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Stop(
+            dora_node_api::StopCause::Manual,
+        ))));
+        assert!(
+            event_as_node_restarted(event).is_err(),
+            "a caller that branched wrongly must be told, not handed a plausible id"
+        );
+    }
+
+    // ---- dora-rs/dora#3046 ----
+
+    /// The whole point of the `_with_id` variant: the caller's id must
+    /// survive, or a fan-out cannot share one correlation.
+    #[test]
+    fn send_service_request_with_id_preserves_the_caller_id() {
+        let mut parameters = DoraMetadataParameters::default();
+        parameters.insert(
+            dora_node_api::REQUEST_ID.to_string(),
+            DoraParameter::String("stale".into()),
+        );
+
+        set_request_id(&mut parameters, "caller-supplied");
+
+        assert_eq!(
+            parameters.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("caller-supplied".into())),
+            "the caller's id must replace whatever the metadata carried"
+        );
+    }
+
+    /// The two id paths must stay distinguishable: one mints, one obeys.
+    #[test]
+    fn set_request_id_and_insert_request_id_differ() {
+        let mut minted = DoraMetadataParameters::default();
+        let generated = insert_request_id(&mut minted);
+
+        let mut pinned = DoraMetadataParameters::default();
+        set_request_id(&mut pinned, "req-fixed");
+
+        assert_ne!(generated, "req-fixed");
+        assert_eq!(
+            pinned.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("req-fixed".into()))
+        );
+    }
+
+    #[test]
+    fn empty_server_list_means_any() {
+        let Ok(parsed) = parse_server_list(&[]) else {
+            panic!("an empty list is valid and means Any");
+        };
+        assert!(matches!(parsed, OwnedServers::Any));
+    }
+
+    #[test]
+    fn single_empty_server_id_means_any() {
+        // How the single-server polls spell "accept any responder".
+        let Ok(parsed) = parse_server_list(&[""]) else {
+            panic!("an empty id is the 'any' spelling and must be accepted");
+        };
+        assert!(matches!(parsed, OwnedServers::Any));
+    }
+
+    /// The C++ single-server polls wrap their lone id in a slice, so
+    /// this is the mapping every one of them goes through. It has to
+    /// land on `One`: with a single candidate there is nobody else who
+    /// could answer, so a restart is the verdict for that request rather
+    /// than a notification.
+    #[test]
+    fn a_single_server_maps_to_one_not_a_one_element_any_of() {
+        let Ok(parsed) = parse_server_list(&["srv"]) else {
+            panic!("a single valid id must parse");
+        };
+        assert!(
+            matches!(parsed.as_ref(), ExpectedServers::One(id) if id.as_ref() == "srv"),
+            "a lone server must become One, not a one-element set"
+        );
+    }
+
+    #[test]
+    fn several_servers_still_map_to_any_of() {
+        let Ok(parsed) = parse_server_list(&["a", "b"]) else {
+            panic!("both ids are valid");
+        };
+        assert!(
+            matches!(parsed.as_ref(), ExpectedServers::AnyOf(ids) if ids.len() == 2),
+            "a real fan-out must keep AnyOf semantics"
+        );
+    }
+
+    #[test]
+    fn no_servers_still_maps_to_any() {
+        let Ok(parsed) = parse_server_list(&[]) else {
+            panic!("an empty list is valid");
+        };
+        assert!(matches!(parsed.as_ref(), ExpectedServers::Any));
+    }
+
+    #[test]
+    fn server_list_parses_every_entry() {
+        let Ok(parsed) = parse_server_list(&["a", "b"]) else {
+            panic!("both ids are valid");
+        };
+        match parsed {
+            OwnedServers::Some(ids) => {
+                assert_eq!(ids.len(), 2);
+                assert_eq!(ids[0].as_ref(), "a");
+                assert_eq!(ids[1].as_ref(), "b");
+            }
+            OwnedServers::Any => panic!("a non-empty list must not widen to Any"),
+        }
+    }
+
+    #[test]
+    fn empty_entry_inside_a_list_is_rejected() {
+        // Silently treating this as "any" would let one stray "" switch
+        // off restart detection for the whole set.
+        let result = parse_server_list(&["a", ""]);
+        match result {
+            Err(failure) => assert!(matches!(
+                failure.status,
+                ffi::DoraPatternStatus::InvalidArgument
+            )),
+            Ok(_) => panic!("an empty entry in a real list must be rejected"),
+        }
+    }
+
+    #[test]
+    fn invalid_server_id_in_a_list_is_reported_not_panicked() {
+        let result = parse_server_list(&["ok", "bad id/with slash"]);
+        match result {
+            Err(failure) => {
+                assert!(matches!(
+                    failure.status,
+                    ffi::DoraPatternStatus::InvalidArgument
+                ));
+                assert!(failure.error.contains("bad id/with slash"));
+            }
+            Ok(_) => panic!("a malformed node id must be rejected"),
+        }
     }
 }
