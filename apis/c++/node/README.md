@@ -250,6 +250,13 @@ The `event` field also carries a matching `DoraEventType` (`Timeout` /
 `server_node_id` yields `DoraPatternStatus::InvalidArgument` rather than
 aborting the process.
 
+`ServerRestarted` is reported for a restart that lands while a wait is
+running, because the correlation is reading the stream then. One that lands
+between calls reaches your own loop as `DoraEventType::NodeRestarted` (use
+`event_as_node_restarted` for the id). Ignore it and the next request will
+wait out its whole deadline against a server you had already been told had
+restarted.
+
 The server must echo the request's `request_id` back, which is why it needs
 `event_as_input_with_metadata`:
 

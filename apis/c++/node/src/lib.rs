@@ -65,6 +65,14 @@ mod ffi {
         /// exists so C++ nodes can react to reloads (e.g. flushing
         /// caches) rather than treating them as `Unknown`.
         Reload,
+        /// An upstream node restarted after a failure. Use
+        /// `event_as_node_restarted` for its id.
+        ///
+        /// Same reason as `Reload`: without a variant of its own this
+        /// arrived as `Unknown`, so a C++ node could not reset state or
+        /// re-send work it had in flight, and could not even tell that
+        /// anything had happened.
+        NodeRestarted,
     }
 
     struct DoraInput {
@@ -225,6 +233,12 @@ mod ffi {
         fn event_as_input_with_metadata(event: Box<DoraEvent>) -> Result<DoraInputWithMetadata>;
         /// Extract the failure payload from a `NodeFailed` event.
         fn event_as_node_failed(event: Box<DoraEvent>) -> Result<DoraNodeFailed>;
+        /// Id of the node that restarted, for a `NodeRestarted` event.
+        ///
+        /// Errors for any other event, so a caller that branched on
+        /// `event_type` wrongly is told rather than handed something
+        /// plausible.
+        fn event_as_node_restarted(event: Box<DoraEvent>) -> Result<String>;
         /// Selectively close one or more of this node's outputs without
         /// shutting the whole node down. Subsequent downstream
         /// subscribers see the corresponding `InputClosed` event.
@@ -301,6 +315,21 @@ mod ffi {
             data: &[u8],
             metadata: Box<Metadata>,
         ) -> DoraRequestId;
+
+        /// Send a service request under a caller-supplied `request_id`.
+        ///
+        /// `send_service_request` mints a fresh id per call, so it
+        /// cannot express one logical request fanned out to several
+        /// nodes: each publish would carry a different correlation, and
+        /// no single receive could await "whichever answers first".
+        /// Call `new_request_id()` once and send each copy with this.
+        fn send_service_request_with_id(
+            output_sender: &mut Box<OutputSender>,
+            output_id: String,
+            data: &[u8],
+            metadata: Box<Metadata>,
+            request_id: &str,
+        ) -> DoraResult;
 
         /// Arrow-payload variant of `send_service_request`. Consumes the
         /// Arrow C Data Interface structs behind `array_ptr` /
@@ -623,6 +652,7 @@ fn event_type(event: &DoraEvent) -> ffi::DoraEventType {
             Event::Error(_) => ffi::DoraEventType::Error,
             Event::NodeFailed { .. } => ffi::DoraEventType::NodeFailed,
             Event::Reload { .. } => ffi::DoraEventType::Reload,
+            Event::NodeRestarted { .. } => ffi::DoraEventType::NodeRestarted,
             _ => ffi::DoraEventType::Unknown,
         },
         EventOrReason::Closed => ffi::DoraEventType::AllInputsClosed,
@@ -695,6 +725,14 @@ fn event_as_node_failed(event: Box<DoraEvent>) -> eyre::Result<ffi::DoraNodeFail
         error,
         source_node_id: source_node_id.to_string(),
     })
+}
+
+#[allow(clippy::boxed_local)] // `Box<DoraEvent>` is mandated by the cxx bridge signature.
+fn event_as_node_restarted(event: Box<DoraEvent>) -> eyre::Result<String> {
+    let EventOrReason::Event(Event::NodeRestarted { id }) = event.0 else {
+        bail!("not a NodeRestarted event");
+    };
+    Ok(id.to_string())
 }
 
 /// Parse a caller-supplied output id via `FromStr` instead of the panicking
@@ -1300,6 +1338,37 @@ fn goal_status_aborted() -> String {
 
 fn goal_status_canceled() -> String {
     dora_node_api::GOAL_STATUS_CANCELED.to_string()
+}
+
+#[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
+fn send_service_request_with_id(
+    sender: &mut Box<OutputSender>,
+    output_id: String,
+    data: &[u8],
+    metadata: Box<Metadata>,
+    request_id: &str,
+) -> ffi::DoraResult {
+    let mut parameters = (*metadata).into_parameters();
+    set_request_id(&mut parameters, request_id);
+    send_output_locked(
+        &sender.0,
+        "send_service_request_with_id",
+        output_id,
+        data,
+        parameters,
+    )
+}
+
+/// Pin `parameters` to a caller-supplied `request_id`.
+///
+/// The counterpart of [`insert_request_id`], which always mints a fresh
+/// one. Split out so the "the caller's id survives" contract can be
+/// tested without a live daemon connection.
+fn set_request_id(parameters: &mut DoraMetadataParameters, request_id: &str) {
+    parameters.insert(
+        dora_node_api::REQUEST_ID.to_string(),
+        DoraParameter::String(request_id.to_owned()),
+    );
 }
 
 #[allow(clippy::boxed_local)] // `Box<Metadata>` is mandated by the cxx bridge signature.
@@ -2152,6 +2221,73 @@ mod tests {
             log.error.contains("poisoned"),
             "non-send node operations must fail-stop as well: {}",
             log.error
+        );
+    }
+
+    /// A restart must reach C++ as itself, not as `Unknown`.
+    ///
+    /// Without this the event still arrived — it simply could not be
+    /// identified, so a node had no way to reset state or resend work,
+    /// and no way to know anything had happened at all.
+    #[test]
+    fn a_node_restart_is_reported_as_itself_not_unknown() {
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::NodeRestarted {
+            id: dora_node_api::dora_core::config::NodeId::from("calc".to_string()),
+        })));
+        assert!(matches!(
+            event_type(&event),
+            ffi::DoraEventType::NodeRestarted
+        ));
+
+        let id = event_as_node_restarted(event).expect("a NodeRestarted event carries its id");
+        assert_eq!(id, "calc");
+    }
+
+    #[test]
+    fn event_as_node_restarted_rejects_other_events() {
+        let event = Box::new(DoraEvent(EventOrReason::Event(Event::Stop(
+            dora_node_api::StopCause::Manual,
+        ))));
+        assert!(
+            event_as_node_restarted(event).is_err(),
+            "a caller that branched wrongly must be told, not handed a plausible id"
+        );
+    }
+
+    // ---- dora-rs/dora#3046 ----
+
+    /// The whole point of the `_with_id` variant: the caller's id must
+    /// survive, or a fan-out cannot share one correlation.
+    #[test]
+    fn send_service_request_with_id_preserves_the_caller_id() {
+        let mut parameters = DoraMetadataParameters::default();
+        parameters.insert(
+            dora_node_api::REQUEST_ID.to_string(),
+            DoraParameter::String("stale".into()),
+        );
+
+        set_request_id(&mut parameters, "caller-supplied");
+
+        assert_eq!(
+            parameters.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("caller-supplied".into())),
+            "the caller's id must replace whatever the metadata carried"
+        );
+    }
+
+    /// The two id paths must stay distinguishable: one mints, one obeys.
+    #[test]
+    fn set_request_id_and_insert_request_id_differ() {
+        let mut minted = DoraMetadataParameters::default();
+        let generated = insert_request_id(&mut minted);
+
+        let mut pinned = DoraMetadataParameters::default();
+        set_request_id(&mut pinned, "req-fixed");
+
+        assert_ne!(generated, "req-fixed");
+        assert_eq!(
+            pinned.get(dora_node_api::REQUEST_ID),
+            Some(&DoraParameter::String("req-fixed".into()))
         );
     }
 }
