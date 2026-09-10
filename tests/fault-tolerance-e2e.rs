@@ -642,6 +642,134 @@ async fn node_killed_on_startup_timeout_unwedges_dataflow() {
     );
 }
 
+/// A node that connects within startup_timeout is not killed, proving that
+/// presence in `connected_nodes` disarms the startup watchdog (#3022).
+#[tokio::test(flavor = "multi_thread")]
+async fn node_connected_within_startup_timeout_is_not_killed() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "stop-delay-node"])
+        .status()
+        .expect("failed to build stop-delay-node");
+    assert!(status.success(), "stop-delay-node build failed");
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/startup-timeout-connected.yml");
+
+    let start = std::time::Instant::now();
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_millis(2500)),
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete within deadline");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed >= Duration::from_millis(2300),
+        "dataflow took {elapsed:?}, expected to run until stop_after (2.5s) without being killed at startup_timeout (1.5s)"
+    );
+
+    let node_result = dr
+        .node_results
+        .get(&"slow-init-node".to_string().into())
+        .expect("slow-init-node should be in node_results");
+    assert!(
+        node_result.is_ok(),
+        "expected slow-init-node to complete cleanly after connecting within startup_timeout, got {:?}",
+        node_result
+    );
+}
+
+/// A node killed on startup_timeout that is configured to restart remains
+/// protected by the startup watchdog on subsequent incarnations (#3022).
+#[tokio::test(flavor = "multi_thread")]
+async fn startup_timeout_rearmed_on_restarted_incarnation() {
+    let status = std::process::Command::new("cargo")
+        .args(["build", "-p", "hang-before-init-node"])
+        .status()
+        .expect("failed to build hang-before-init-node");
+    assert!(status.success(), "hang-before-init-node build failed");
+
+    let marker = std::env::temp_dir().join("dora-startup-timeout-restart.log");
+    let _ = std::fs::remove_file(&marker);
+
+    let dataflow_path =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/dataflows/startup-timeout-restart.yml");
+
+    let start = std::time::Instant::now();
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        Some(Duration::from_secs(10)),
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete within deadline");
+    let elapsed = start.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "dataflow took {elapsed:?}, expected unwedging well before 10s fallback stop_after (startup_timeout: 0.5s x 2 incarnations)"
+    );
+
+    let contents = std::fs::read_to_string(&marker).expect("marker file should exist");
+    let _ = std::fs::remove_file(&marker);
+    let incarnation_count = contents.lines().filter(|l| *l == "incarnation").count();
+    assert_eq!(
+        incarnation_count, 2,
+        "expected exactly 2 incarnations (initial + 1 restart), got {incarnation_count}. marker:\n{contents}"
+    );
+
+    let node_result = dr
+        .node_results
+        .get(&"hang-before-init".to_string().into())
+        .expect("hang-before-init should be in node_results");
+    let err = node_result
+        .as_ref()
+        .expect_err("hang-before-init should have errored after exhausting restarts");
+    #[cfg(unix)]
+    assert!(
+        matches!(
+            err.exit_status,
+            dora_message::common::NodeExitStatus::Signal(9)
+        ),
+        "expected Signal(9) kill on startup timeout expiry, got {:?} (cause: {:?})",
+        err.exit_status,
+        err.cause,
+    );
+    #[cfg(windows)]
+    assert!(
+        !err.exit_status.is_success(),
+        "expected non-zero exit on startup timeout expiry, got {:?} (cause: {:?})",
+        err.exit_status,
+        err.cause,
+    );
+    assert!(
+        matches!(
+            &err.cause,
+            dora_message::common::NodeErrorCause::Other { stderr } if stderr.contains("startup_timeout")
+        ),
+        "expected NodeErrorCause::Other with startup_timeout message, got {:?}",
+        err.cause,
+    );
+}
+
 /// `NodeRestarted` is delivered to downstream nodes after an upstream
 /// node is restarted (#1631).
 ///

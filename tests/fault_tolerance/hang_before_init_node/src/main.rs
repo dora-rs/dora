@@ -5,6 +5,9 @@ use std::time::Duration;
 fn main() -> eyre::Result<()> {
     let marker_path = std::env::var("DORA_TEST_MARKER_FILE")
         .map(std::path::PathBuf::from)
+        .or_else(|_| {
+            std::env::var("DORA_TEST_MARKER_NAME").map(|name| std::env::temp_dir().join(name))
+        })
         .unwrap_or_else(|_| std::env::temp_dir().join("dora-startup-timeout.log"));
     let mut marker = std::fs::OpenOptions::new()
         .create(true)
