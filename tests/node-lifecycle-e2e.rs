@@ -2361,6 +2361,56 @@ fn run_killed_by_sigkill_does_not_orphan_nodes() {
     }
 }
 
+/// dora-rs/dora#3473: a node SIGKILL-orphaned BEFORE it reaches
+/// `DoraNode::init` must not survive a hard-killed `dora run` either.
+///
+/// The sibling test above covers a node killed once it is up and guarded from
+/// inside. This one covers the window before that guard arms: the fixture
+/// publishes its pid and then sleeps — never reaching `init`, so nothing of
+/// dora runs in it — while `dora run` is SIGKILLed during that sleep. The only
+/// thing that can contain it here is the daemon's spawn-time `PR_SET_PDEATHSIG`.
+///
+/// Linux-only: `PR_SET_PDEATHSIG` is the mechanism, and macOS has no
+/// equivalent, so the pre-`init` window stays a documented gap there.
+#[test]
+#[cfg(target_os = "linux")]
+fn run_killed_before_node_init_does_not_orphan() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    // The pre-`init` sleep (120s) is deliberately far longer than the 30s
+    // teardown deadline below: without containment the node is still sleeping --
+    // alive and detectable -- when the deadline passes, so an unfixed daemon
+    // fails this test rather than passing because the node happened to exit on
+    // its own (e.g. a later `init` that can no longer reach the dead daemon).
+    let mut run = StubbornRun::start_preinit("dora-3473-preinit-orphan", true, 120);
+    let node_pid = run.wait_for_node();
+
+    let killed = Command::new("kill")
+        .args(["-KILL", &run.cli.id().to_string()])
+        .status()
+        .expect("failed to run `kill`");
+    // Checked: an undelivered signal would make the wait below time out and
+    // report an orphan that was never actually orphaned.
+    assert!(killed.success(), "failed to SIGKILL `dora run`");
+    let status = run.cli.wait().expect("failed to reap `dora run`");
+    run.cli_reaped = true;
+
+    // `PR_SET_PDEATHSIG` lands the SIGKILL essentially the moment the parent
+    // dies; 30s is slack for a loaded runner while still bounding it, and is
+    // well inside the fixture's 120s pre-`init` sleep.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while node_is_fixture(node_pid) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "node {node_pid} outlived a SIGKILLed `dora run` ({status}) by 30s while \
+             still before `init`: the pre-`init` orphan window is unguarded \
+             (#3473)\nstderr tail:\n{}",
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// A `dora run` of the stubborn fixture, plus the RAII teardown both orphan
 /// tests need.
 ///
@@ -2427,6 +2477,22 @@ impl StubbornRun {
     /// will not look, and the failure would surface later as a misleading "node
     /// never reported its pid".
     fn start(prefix: &str, own_process_group: bool) -> Self {
+        Self::start_with(prefix, own_process_group, None)
+    }
+
+    /// Like [`Self::start`], but the fixture sleeps `preinit_sleep_secs` seconds
+    /// **before** it reaches `DoraNode::init` — the pre-`init` orphan window
+    /// (dora-rs/dora#3473), where the in-node poll guard has not armed yet.
+    ///
+    /// The sleep must outlast the test's teardown deadline, so a node that is
+    /// NOT contained is still alive (and detectably so) when the deadline
+    /// passes, rather than exiting on its own once the sleep ends.
+    #[cfg(target_os = "linux")]
+    fn start_preinit(prefix: &str, own_process_group: bool, preinit_sleep_secs: u64) -> Self {
+        Self::start_with(prefix, own_process_group, Some(preinit_sleep_secs))
+    }
+
+    fn start_with(prefix: &str, own_process_group: bool, preinit_sleep_secs: Option<u64>) -> Self {
         use std::os::unix::process::CommandExt as _;
 
         ensure_cli_built();
@@ -2452,18 +2518,28 @@ impl StubbornRun {
         }
         let scratch = |ext: &str| target.join(format!("{prefix}-{}.{ext}", std::process::id()));
         let (yaml, pid_file, log) = (scratch("yml"), scratch("pid"), scratch("log"));
+        // Optional pre-`init` sleep, injected as a sibling `env:` entry of
+        // `DORA_TEST_PID_FILE` (six-space indent, under the node's `env:`).
+        let preinit_env = match preinit_sleep_secs {
+            Some(secs) => format!("      DORA_TEST_PREINIT_SLEEP_SECS: \"{secs}\"\n"),
+            None => String::new(),
+        };
         fs::write(
             &yaml,
             format!(
-                "nodes:\n  \
-                 - id: stubborn\n    \
-                   path: \"{node}\"\n    \
-                   env:\n      \
-                     DORA_TEST_PID_FILE: \"{pid_file}\"\n    \
-                   inputs:\n      \
-                     tick: dora/timer/millis/100\n",
+                concat!(
+                    "nodes:\n",
+                    "  - id: stubborn\n",
+                    "    path: \"{node}\"\n",
+                    "    env:\n",
+                    "      DORA_TEST_PID_FILE: \"{pid_file}\"\n",
+                    "{preinit_env}",
+                    "    inputs:\n",
+                    "      tick: dora/timer/millis/100\n",
+                ),
                 node = target.join("debug/sigterm-ignoring-node").display(),
                 pid_file = pid_file.display(),
+                preinit_env = preinit_env,
             ),
         )
         .expect("failed to write dataflow yaml");
