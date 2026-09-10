@@ -690,6 +690,74 @@ impl PreparedNode {
                     }
                 }
 
+                // Close the pre-`init` orphan window on Linux (dora-rs/dora#3473).
+                //
+                // The in-node orphan guard (`apis/rust/node/src/orphan_guard.rs`)
+                // only arms once the node reaches `DoraNode::init`. A node
+                // SIGKILL-orphaned before that — a Python node still in `import
+                // torch`, a `path: shell` command that never runs any dora code
+                // (dora-rs/dora#3472) — is stranded with `ppid 1` exactly as
+                // before #3018. Ask the kernel to SIGKILL the child when its
+                // parent (this in-process `dora run` daemon) dies, which needs no
+                // dora code in the child and so covers that window.
+                //
+                // Gated on the same signal as the in-node guard: the presence of
+                // `DORA_RUN_PARENT_PID`, set only on the in-process `dora run` /
+                // `Daemon::run_dataflow` spawn path (`bind_nodes_to_parent`). The
+                // coordinator-attached path (`dora up` + `dora start`) must inject
+                // nothing, so a daemon restart does not take its nodes down
+                // (dora-rs/dora#2029, `tests/daemon-reconnect-e2e.rs`).
+                //
+                // Bounded on purpose: `PR_SET_PDEATHSIG` keys off the parent
+                // *thread*, and reaches only the direct child (under `--uv` that
+                // is the `uv` wrapper, not the interpreter). It is a complement
+                // for the startup window, never the post-`init` mechanism — the
+                // node clears it and hands over to the poll guard at `init`.
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::process::CommandExt as _;
+
+                    let run_parent_pid: Option<libc::pid_t> = std_command
+                        .get_envs()
+                        .find(|(key, _)| {
+                            *key == std::ffi::OsStr::new(dora_core::topics::DORA_RUN_PARENT_PID_ENV)
+                        })
+                        .and_then(|(_, value)| value)
+                        .and_then(|value| value.to_str())
+                        .and_then(|value| value.trim().parse::<libc::pid_t>().ok());
+
+                    if let Some(parent) = run_parent_pid {
+                        // SAFETY: `prctl`, `getppid` and `_exit` are all
+                        // async-signal-safe, so they are sound to call in the
+                        // forked child before `exec`; the closure allocates
+                        // nothing and captures only a `Copy` pid.
+                        unsafe {
+                            std_command.pre_exec(move || {
+                                let ret = libc::prctl(
+                                    libc::PR_SET_PDEATHSIG,
+                                    libc::SIGKILL as libc::c_ulong,
+                                );
+                                // Best effort: a failure here only loses the
+                                // pre-`init` cover, and the in-node poll guard
+                                // still contains the node once it reaches `init`.
+                                if ret != 0 {
+                                    return Ok(());
+                                }
+                                // Close the fork/prctl race: if the parent already
+                                // died in the window between `fork` and the line
+                                // above, `PDEATHSIG` will never fire (the death it
+                                // waits for has passed), so this child would be the
+                                // very orphan the signal exists to prevent. A
+                                // reparented child reads a different `getppid`.
+                                if libc::getppid() != parent {
+                                    libc::_exit(0);
+                                }
+                                Ok(())
+                            });
+                        }
+                    }
+                }
+
                 let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
