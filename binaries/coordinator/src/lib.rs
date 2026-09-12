@@ -140,6 +140,7 @@ mod log_subscriber;
 mod otel_metrics;
 mod run;
 mod state;
+mod subscriber_channel;
 mod timeout_streak;
 mod topic_subscriber;
 mod ws_control;
