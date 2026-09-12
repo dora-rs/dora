@@ -10,6 +10,20 @@ fn split_once(s: &'_ str, pat: char) -> (&'_ str, Option<&'_ str>) {
     (items.next().unwrap(), items.next())
 }
 
+fn strip_comment(s: &str) -> &str {
+    let mut in_quotes = false;
+    for (i, c) in s.char_indices() {
+        if c == '"' {
+            in_quotes = !in_quotes;
+        } else if c == '#' && !in_quotes {
+            //if is the first character of the line or the previous character is a blackspace
+            if i == 0 || s.as_bytes()[i - 1].is_ascii_whitespace() {
+                return &s[..i];
+            }
+        }
+    }
+    s
+}
 pub fn parse_message_file<P: AsRef<Path>>(pkg_name: &str, interface_file: P) -> Result<Message> {
     parse_message_string(
         pkg_name,
@@ -33,7 +47,7 @@ pub fn parse_message_string(
     let mut constants = vec![];
 
     for line in message_string.lines() {
-        let (line, _) = split_once(line, '#');
+        let line = strip_comment(line);
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -51,7 +65,7 @@ pub fn parse_message_string(
         // first non-space, non-`=` run after the type is the name, so the line
         // is a constant iff the first character after that name (skipping
         // spaces) is `=`.
-        //
+        //parse_message_string
         // rest is None when the line has no space (e.g. tab-separated or
         // single-token); that is never a constant, so it falls through to
         // `member_def` rather than panicking.
@@ -224,5 +238,16 @@ mod test {
             "expected a constant, got {spaced:?}"
         );
         assert_eq!(spaced.constants[0].name, "Y");
+    }
+    #[test]
+    fn hash_in_unquoted_string_value() {
+        let msg = parse_message_string("pkg", "Msg", "string PATTERN=a#b").unwrap();
+        assert_eq!(msg.constants[0].value, vec!["a#b".to_string()]);
+    }
+
+    #[test]
+    fn hash_in_quoted_string_value() {
+        let msg = parse_message_string("pkg", "Msg", r#"string GREETING="a # b""#).unwrap();
+        assert_eq!(msg.constants[0].value, vec!["a # b".to_string()]);
     }
 }
