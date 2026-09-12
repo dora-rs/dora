@@ -156,7 +156,7 @@ make qa-test-python
 # cargo test -p <crate-name>
 ```
 
-**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph + package-includes + the no-compile half of the 1.x compatibility gate in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
+**Shortcut**: `make qa-fast` runs fmt + clippy + supply-chain audit + unwrap budget + secret-files + typos + publish-graph + package-includes + the no-compile half of the 1.x compatibility gate + nightly-reporting wiring in ~30 seconds. Use it as a sanity check before every commit. Then run the full `cargo test` above before `git push`.
 
 If you add new example dataflows, also run `./scripts/smoke-all.sh --rust-only` to verify smoke tests pass.
 
@@ -200,6 +200,7 @@ The deeper QA gates — `make qa-full`, `make qa-deep`, `make qa-nightly`, `make
 - crates.io publish-graph check (`make qa-publish-graph`, a step in the `Check` job): no published crate may depend on a `publish = false` one, and the ordered publish list in `release.yml` must name every dependency before its dependents (#3304)
 - Breaking-change gate (`make qa-breaking ARGS="--fast"` + `cargo-semver-checks`): every surface dora 1.x freezes — the C header, the cxx bridge, the dataflow YAML schema, the postcard wire format, the `dora` command snapshot, the Python floor, and the Rust API of the covered crates — diffed against the last release tag
 - Build-time include check (`make qa-package-includes`, a step in the `Check` job): every `include_str!` / `include_bytes!` target of a publishable crate must be a git-tracked file inside that crate, since `cargo package` ships nothing else. `dora-operator-api-c` read its cmake templates from the sibling `apis/c/node/` crate, which built here and broke `cargo install dora-cli` on 1.0.0 (#3400)
+- Nightly reporting wiring (`make qa-ci-reporting`, its own checkout-only job): asserts every `nightly.yml` job is actually watched by `file-issue-on-failure` and `close-issue-on-success`, and that none of them is silently advisory, so a regression cannot go unreported (#2987)
 - License check (`cargo-lichking`)
 - Rust toolchain pinned to 1.97.1 (see `.github/workflows/ci.yml`)
 
