@@ -351,6 +351,7 @@ fn append_arrow_array_json(
     let data_type_json = serde_json::to_value(data_array.data_type())
         .context("failed to serialize data type as JSON")?;
 
+    let source = data_array.clone();
     let batch = RecordBatch::try_from_iter([("inner", data_array)])
         .context("failed to create RecordBatch")?;
 
@@ -368,13 +369,151 @@ fn append_arrow_array_json(
         serde_json::from_reader(json_data_encoded.as_slice())
             .context("failed to parse JSON data again")?;
     // remove `inner` field again
-    let json_data_flattened: Vec<_> = json_data
+    let mut json_data_flattened: Vec<_> = json_data
         .into_iter()
         .map(|mut m| m.remove("inner"))
         .collect();
+    restore_non_finite_floats(source.as_ref(), &mut json_data_flattened);
     output.insert("data".into(), json_data_flattened.into());
     output.insert("data_type".into(), data_type_json);
     Ok(())
+}
+
+/// `arrow_json` writes NaN and the infinities as `null`, because JSON has no
+/// literal for either. Put them back as the strings the reader already accepts
+/// for a float column (`"NaN"` / `"Infinity"` / `"-Infinity"`), so a recorded
+/// non-finite float replays as itself rather than as a null.
+///
+/// `json` holds one slot per row of `source`, `None` where the encoder wrote no
+/// value at all (a null row, which `arrow_json` omits). Struct fields and list
+/// elements are walked recursively, since dora outputs are commonly
+/// struct-shaped. Map and union children are not walked: `arrow_json` cannot
+/// round-trip those through the reader anyway.
+fn restore_non_finite_floats(
+    source: &dyn arrow::array::Array,
+    json: &mut [Option<serde_json::Value>],
+) {
+    use arrow::array::{
+        Array, FixedSizeListArray, Float32Array, Float64Array, LargeListArray, ListArray,
+        StructArray,
+    };
+
+    let source = source.as_any();
+    if let Some(a) = source.downcast_ref::<Float64Array>() {
+        overwrite_non_finite(
+            json,
+            (0..a.len()).map(|i| (!a.is_null(i)).then(|| a.value(i))),
+        );
+    } else if let Some(a) = source.downcast_ref::<Float32Array>() {
+        overwrite_non_finite(
+            json,
+            (0..a.len()).map(|i| (!a.is_null(i)).then(|| a.value(i) as f64)),
+        );
+    } else if let Some(a) = source.downcast_ref::<StructArray>() {
+        restore_in_struct_fields(a, json);
+    } else if let Some(a) = source.downcast_ref::<ListArray>() {
+        let offsets = a.value_offsets();
+        let ranges: Vec<_> = (0..a.len())
+            .map(|i| (offsets[i] as usize, offsets[i + 1] as usize))
+            .collect();
+        restore_in_list_elements(a.values(), &ranges, json);
+    } else if let Some(a) = source.downcast_ref::<LargeListArray>() {
+        let offsets = a.value_offsets();
+        let ranges: Vec<_> = (0..a.len())
+            .map(|i| (offsets[i] as usize, offsets[i + 1] as usize))
+            .collect();
+        restore_in_list_elements(a.values(), &ranges, json);
+    } else if let Some(a) = source.downcast_ref::<FixedSizeListArray>() {
+        let size = a.value_length() as usize;
+        let ranges: Vec<_> = (0..a.len()).map(|i| (i * size, (i + 1) * size)).collect();
+        restore_in_list_elements(a.values(), &ranges, json);
+    }
+}
+
+/// One non-finite float as the string the reader accepts for a float column;
+/// `None` for a finite value, which JSON already carries losslessly.
+fn encode_non_finite(value: f64) -> Option<serde_json::Value> {
+    if value.is_nan() {
+        Some("NaN".into())
+    } else if value == f64::INFINITY {
+        Some("Infinity".into())
+    } else if value == f64::NEG_INFINITY {
+        Some("-Infinity".into())
+    } else {
+        None
+    }
+}
+
+/// Overwrite every slot whose source value is a non-finite float. Driven by the
+/// source's validity, not by the emitted JSON, so a genuine null (`None`) keeps
+/// its `null` and is never confused with a NaN.
+fn overwrite_non_finite(
+    json: &mut [Option<serde_json::Value>],
+    values: impl Iterator<Item = Option<f64>>,
+) {
+    for (slot, value) in json.iter_mut().zip(values) {
+        if let Some(encoded) = value.and_then(encode_non_finite) {
+            *slot = Some(encoded);
+        }
+    }
+}
+
+/// Walk each struct field as a column of its own: lift the field out of every
+/// row's object, fix that column, then put it back. A field the encoder omitted
+/// (a null) stays omitted.
+fn restore_in_struct_fields(
+    source: &arrow::array::StructArray,
+    json: &mut [Option<serde_json::Value>],
+) {
+    for (field, child) in source.fields().iter().zip(source.columns()) {
+        let name = field.name();
+        let mut column: Vec<_> = json
+            .iter()
+            .map(|row| row.as_ref().and_then(|row| row.get(name)).cloned())
+            .collect();
+        restore_non_finite_floats(child.as_ref(), &mut column);
+        for (row, value) in json.iter_mut().zip(column) {
+            if let (Some(serde_json::Value::Object(row)), Some(value)) = (row.as_mut(), value) {
+                row.insert(name.clone(), value);
+            }
+        }
+    }
+}
+
+/// Walk a list's elements as one flat column, the shape the child array already
+/// has: gather every row's elements by their child index, fix the child array as
+/// a whole, then scatter the results back into the rows they came from.
+fn restore_in_list_elements(
+    values: &arrow::array::ArrayRef,
+    ranges: &[(usize, usize)],
+    json: &mut [Option<serde_json::Value>],
+) {
+    use arrow::array::Array;
+
+    let mut flat: Vec<Option<serde_json::Value>> = vec![None; values.len()];
+    for (row, &(start, end)) in json.iter().zip(ranges) {
+        let Some(serde_json::Value::Array(elements)) = row.as_ref() else {
+            continue;
+        };
+        for (index, element) in (start..end.min(flat.len())).zip(elements) {
+            if !element.is_null() {
+                flat[index] = Some(element.clone());
+            }
+        }
+    }
+
+    restore_non_finite_floats(values.as_ref(), &mut flat);
+
+    for (row, &(start, end)) in json.iter_mut().zip(ranges) {
+        let Some(serde_json::Value::Array(elements)) = row.as_mut() else {
+            continue;
+        };
+        for (index, element) in (start..end.min(flat.len())).zip(elements.iter_mut()) {
+            if let Some(fixed) = &flat[index] {
+                *element = fixed.clone();
+            }
+        }
+    }
 }
 
 fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
@@ -481,7 +620,7 @@ fn wrap_value_into_object(value: serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int32Array, make_array};
+    use arrow::array::{ArrayRef, Float32Array, Float64Array, Int32Array, make_array};
 
     /// Record an array via the recorder's encoder, then replay it back through
     /// the reader — the property record/replay rests on.
@@ -506,6 +645,154 @@ mod tests {
         let back = make_array(roundtrip(array).expect("empty array should replay"));
         assert_eq!(back.len(), 0);
         assert_eq!(back.data_type(), &DataType::Int32);
+    }
+
+    #[test]
+    fn non_finite_floats_round_trip() {
+        // JSON has no NaN or infinity literal, so `arrow_json` writes all three
+        // as `null`. They are now re-encoded as the strings the reader already
+        // accepts, so they replay as themselves instead of as nulls
+        // (dora-rs/dora#3427).
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            None,
+        ]));
+        let back = Float64Array::from(roundtrip(array).expect("should replay"));
+
+        assert_eq!(back.value(0), 1.5);
+        assert!(back.value(1).is_nan());
+        assert_eq!(back.value(2), f64::INFINITY);
+        assert_eq!(back.value(3), f64::NEG_INFINITY);
+        // The genuine null is still the only null: a NaN must not be
+        // indistinguishable from a missing value.
+        assert_eq!(back.null_count(), 1);
+        assert!(back.is_null(4));
+    }
+
+    #[test]
+    fn non_finite_f32_round_trips() {
+        let array: ArrayRef = Arc::new(Float32Array::from(vec![
+            Some(1.5f32),
+            Some(f32::NAN),
+            Some(f32::NEG_INFINITY),
+        ]));
+        let back = Float32Array::from(roundtrip(array).expect("should replay"));
+
+        assert_eq!(back.value(0), 1.5);
+        assert!(back.value(1).is_nan());
+        assert_eq!(back.value(2), f32::NEG_INFINITY);
+        assert_eq!(back.null_count(), 0);
+    }
+
+    #[test]
+    fn recorded_non_finite_floats_use_string_encoding() {
+        // Pins the on-disk shape. This is the recording format, so a change
+        // here is a format change and should be deliberate.
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            None,
+        ]));
+        let mut json = serde_json::Map::new();
+        append_arrow_array_json(&mut json, array).expect("should encode");
+
+        assert_eq!(
+            json["data"],
+            serde_json::json!([1.5, "NaN", "Infinity", "-Infinity", null]),
+        );
+    }
+
+    #[test]
+    fn recordings_written_before_the_string_encoding_still_read() {
+        // A recording produced by the previous writer has `null` where a
+        // non-finite value used to be. Those must keep reading as nulls rather
+        // than failing, so existing recordings stay replayable.
+        let decoded = read_input_data(InputData::JsonObject {
+            data: serde_json::json!([1.5, null]),
+            data_type: Some(serde_json::json!("Float64")),
+        })
+        .expect("an older recording should still read");
+        let decoded = Float64Array::from(decoded);
+
+        assert_eq!(decoded.value(0), 1.5);
+        assert!(decoded.is_null(1));
+    }
+    #[test]
+    fn non_finite_floats_nested_in_a_list_round_trip() {
+        // The walk descends into list elements, so a non-finite float inside a
+        // list survives too -- list-shaped outputs are common in dora graphs
+        // (dora-rs/dora#3427).
+        use arrow::array::ListArray;
+        use arrow::datatypes::Float64Type;
+
+        let list = ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+            Some(vec![Some(1.5), Some(f64::NAN), None]),
+            Some(vec![Some(f64::INFINITY), Some(f64::NEG_INFINITY)]),
+        ]);
+        let back = roundtrip(Arc::new(list)).expect("should replay");
+        let back = ListArray::from(back);
+        let first = Float64Array::from(back.value(0).to_data());
+        let second = Float64Array::from(back.value(1).to_data());
+
+        assert_eq!(first.value(0), 1.5);
+        assert!(first.value(1).is_nan());
+        assert!(first.is_null(2));
+        // The element null is still the only null in that row.
+        assert_eq!(first.null_count(), 1);
+        assert_eq!(second.value(0), f64::INFINITY);
+        assert_eq!(second.value(1), f64::NEG_INFINITY);
+        assert_eq!(second.null_count(), 0);
+    }
+
+    #[test]
+    fn non_finite_floats_nested_in_a_struct_round_trip() {
+        // dora outputs are frequently struct-shaped, so the struct case carries
+        // most of the practical weight of this fix.
+        use arrow::array::StructArray;
+        use arrow::datatypes::{Field, Fields};
+
+        let floats: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            None,
+        ]));
+        let ints: ArrayRef = Arc::new(Int32Array::from(vec![1, 2, 3]));
+        let fields = Fields::from(vec![
+            Field::new("value", DataType::Float64, true),
+            Field::new("seq", DataType::Int32, false),
+        ]);
+        let array = StructArray::new(fields, vec![floats, ints], None);
+        let back = StructArray::from(roundtrip(Arc::new(array)).expect("should replay"));
+        let values = Float64Array::from(back.column(0).to_data());
+        let seq = Int32Array::from(back.column(1).to_data());
+
+        assert!(values.value(0).is_nan());
+        assert_eq!(values.value(1), f64::INFINITY);
+        assert!(values.is_null(2));
+        assert_eq!(values.null_count(), 1);
+        assert_eq!(seq.values(), &[1, 2, 3]);
+    }
+
+    #[test]
+    fn recorded_nested_non_finite_floats_use_string_encoding() {
+        // Pins the on-disk shape for the nested case as well.
+        use arrow::array::ListArray;
+        use arrow::datatypes::Float64Type;
+
+        let list = ListArray::from_iter_primitive::<Float64Type, _, _>(vec![Some(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            None,
+        ])]);
+        let mut json = serde_json::Map::new();
+        append_arrow_array_json(&mut json, Arc::new(list)).expect("should encode");
+
+        assert_eq!(json["data"], serde_json::json!([[1.5, "NaN", null]]));
     }
 
     #[test]
