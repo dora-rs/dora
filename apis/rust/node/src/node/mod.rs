@@ -2381,6 +2381,25 @@ impl DoraNode {
     ///
     /// Uses a per-thread monotonic counter context to guarantee uniqueness
     /// even when multiple IDs are generated within the same clock tick.
+    ///
+    /// ```
+    /// use dora_node_api::DoraNode;
+    /// use dora_node_api::uuid::Uuid;
+    ///
+    /// let a = DoraNode::new_request_id();
+    /// let b = DoraNode::new_request_id();
+    ///
+    /// // Unique even when generated within the same clock tick.
+    /// assert_ne!(a, b);
+    /// // UUID v7 is time-ordered, so a later ID sorts after an earlier one.
+    /// assert!(b > a);
+    /// // Both are valid v7 UUIDs; `new_goal_id` is an alias returning the same shape.
+    /// assert_eq!(Uuid::parse_str(&a).unwrap().get_version_num(), 7);
+    /// assert_eq!(
+    ///     Uuid::parse_str(&DoraNode::new_goal_id()).unwrap().get_version_num(),
+    ///     7,
+    /// );
+    /// ```
     pub fn new_request_id() -> String {
         thread_local! {
             static CTX: uuid::ContextV7 = const { uuid::ContextV7::new() };
@@ -2958,6 +2977,16 @@ impl SampleAllocator {
     /// This is what a node without a zenoh session (interactive/testing mode)
     /// uses; it also lets callers that only need the encoding — tests, most
     /// obviously — build one without a live node.
+    ///
+    /// ```
+    /// use dora_node_api::SampleAllocator;
+    ///
+    /// // No zenoh session required — every allocation is a writable heap buffer.
+    /// let alloc = SampleAllocator::heap();
+    /// let mut sample = alloc.allocate(4).unwrap();
+    /// sample.copy_from_slice(&[1, 2, 3, 4]); // write straight into the buffer
+    /// assert_eq!(&sample[..], &[1, 2, 3, 4]);
+    /// ```
     pub fn heap() -> Self {
         Self {
             shm_provider: None,
