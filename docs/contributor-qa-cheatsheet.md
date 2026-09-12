@@ -70,6 +70,8 @@ Runs:
 - typo check
 - crates.io publish-graph check
 - build-time include check (every `include_str!` target ships with its crate)
+- frozen 1.x surface check (C header, cxx bridge, YAML schema, wire format,
+  CLI snapshot, Python floor — the no-compile half)
 - nightly reporting-wiring check (`nightly.yml`: no job unmonitored)
 
 ### Before push
