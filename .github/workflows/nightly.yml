@@ -2146,6 +2146,9 @@ jobs:
               smoke-suite)
                 echo 'cargo test -p dora-examples --test example-smoke -- --test-threads=1'
                 ;;
+              hub-smoke)
+                echo 'cargo test -p dora-examples --test hub-smoke -- --test-threads=1'
+                ;;
               log-sinks)
                 # Three dataflows in this job; run each individually on failure.
                 printf 'dora run examples/log-sink-file/dataflow.yml --uv --stop-after 15s\ndora run examples/log-sink-alert/dataflow.yml --uv --stop-after 15s\ndora run examples/log-sink-tcp/dataflow.yml --uv --stop-after 15s\n'
@@ -2227,6 +2230,8 @@ jobs:
             case "$1" in
               build-cli) echo '^Build dora CLI \(shared\)$' ;;
               smoke-suite) echo '^Smoke suite \(tests/example-smoke\.rs\)$' ;;
+              hub-smoke) echo '^Hub smoke suite \(tests/hub-smoke\.rs\)$' ;;
+              wheel-smoke) echo '^Python wheel smoke \(dora-rs \+ dora-rs-cli\)$' ;;
               log-sinks) echo '^Log-sink examples \(Python sources\)$' ;;
               service-action) echo '^Service / Action patterns \(Rust-only\)$' ;;
               streaming) echo '^Streaming example \(Python\)$' ;;
