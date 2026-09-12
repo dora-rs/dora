@@ -874,6 +874,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+      # The gate's own tests run first: if the parser stopped understanding
+      # the workflow, `make qa-ci-reporting` would print OK and mean nothing.
+      - run: make qa-ci-reporting-selftest
       - run: make qa-ci-reporting
 
   # ===== License check =====
