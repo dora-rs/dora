@@ -86,6 +86,11 @@ fi
 # script cannot evaluate. The same tolerance applies to a job header, which may
 # carry a trailing comment.
 #
+# Only the leading whitespace is fixed; whitespace *after* the key name is not.
+# `continue-on-error : true` is the same key to YAML as `continue-on-error:`,
+# so every key here is matched as `<name>[[:space:]]*:` — an optional space
+# before the colon must not be the difference between flagged and green.
+#
 # A 2-space line that is *not* recognised as a job header is fatal rather than
 # skipped: the job would drop out of invariant 2 entirely, and its keys would
 # be attributed to the job above it, so both the omission and the
@@ -99,11 +104,11 @@ parse_workflow() {
     !injobs { next }
 
     # --- job header: `  <name>:`, optionally with a trailing comment ---
-    /^  [A-Za-z0-9_-]+:[[:space:]]*(#.*)?$/ {
+    /^  [A-Za-z0-9_-]+[[:space:]]*:[[:space:]]*(#.*)?$/ {
       job = $0
       sub(/^  /, "", job)
       sub(/[[:space:]]*#.*$/, "", job)
-      sub(/:[[:space:]]*$/, "", job)
+      sub(/[[:space:]]*:[[:space:]]*$/, "", job)
       inneeds = 0
       print "JOB " job
       next
@@ -129,10 +134,10 @@ parse_workflow() {
     inneeds && /^    [A-Za-z]/ { inneeds = 0 }
 
     # --- `needs:` in its three YAML spellings ---
-    /^    needs:[[:space:]]*(#.*)?$/ { inneeds = 1; next }
-    /^    needs:[[:space:]]*\[/ {
+    /^    needs[[:space:]]*:[[:space:]]*(#.*)?$/ { inneeds = 1; next }
+    /^    needs[[:space:]]*:[[:space:]]*\[/ {
       list = $0
-      sub(/^    needs:[[:space:]]*\[/, "", list)
+      sub(/^    needs[[:space:]]*:[[:space:]]*\[/, "", list)
       sub(/\].*$/, "", list)
       n = split(list, parts, ",")
       for (i = 1; i <= n; i++) {
@@ -141,9 +146,9 @@ parse_workflow() {
       }
       next
     }
-    /^    needs:[[:space:]]*[A-Za-z0-9_-]+/ {
+    /^    needs[[:space:]]*:[[:space:]]*[A-Za-z0-9_-]+/ {
       dep = $0
-      sub(/^    needs:[[:space:]]*/, "", dep)
+      sub(/^    needs[[:space:]]*:[[:space:]]*/, "", dep)
       sub(/[[:space:]]*#.*$/, "", dep)
       sub(/[[:space:]]+$/, "", dep)
       if (dep != "") print "NEED " job " " dep
@@ -152,13 +157,16 @@ parse_workflow() {
 
     # --- job-level `continue-on-error` (exactly 4 spaces) ---
     #
+    # The key tolerates a space before its colon; the indentation in front
+    # of it does not move.
+    #
     # Not `== "true"`: `True`, `TRUE` and a quoted `"true"` are the same
     # boolean to GitHub, and a `${{ }}` expression is a flag this script cannot
     # evaluate. Only a literal `false` — the default, spelled out — is treated
     # as "this job can report".
-    /^    continue-on-error:/ {
+    /^    continue-on-error[[:space:]]*:/ {
       val = $0
-      sub(/^    continue-on-error:[[:space:]]*/, "", val)
+      sub(/^    continue-on-error[[:space:]]*:[[:space:]]*/, "", val)
       sub(/[[:space:]]*#.*$/, "", val)
       sub(/[[:space:]]+$/, "", val)
       # Judged unquoted and case-folded, but reported as written, so the
