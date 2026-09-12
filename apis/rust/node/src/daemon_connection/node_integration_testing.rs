@@ -351,6 +351,7 @@ fn append_arrow_array_json(
     let data_type_json = serde_json::to_value(data_array.data_type())
         .context("failed to serialize data type as JSON")?;
 
+    let source = data_array.clone();
     let batch = RecordBatch::try_from_iter([("inner", data_array)])
         .context("failed to create RecordBatch")?;
 
@@ -368,13 +369,55 @@ fn append_arrow_array_json(
         serde_json::from_reader(json_data_encoded.as_slice())
             .context("failed to parse JSON data again")?;
     // remove `inner` field again
-    let json_data_flattened: Vec<_> = json_data
+    let mut json_data_flattened: Vec<_> = json_data
         .into_iter()
         .map(|mut m| m.remove("inner"))
         .collect();
+    restore_non_finite_floats(&source, &mut json_data_flattened);
     output.insert("data".into(), json_data_flattened.into());
     output.insert("data_type".into(), data_type_json);
     Ok(())
+}
+
+/// `arrow_json` writes NaN and the infinities as `null`, because JSON has no
+/// literal for either. Put them back as the strings the reader already accepts
+/// for a float column (`"NaN"` / `"Infinity"` / `"-Infinity"`), so a recorded
+/// non-finite float replays as itself rather than as a null.
+fn restore_non_finite_floats(
+    source: &arrow::array::ArrayRef,
+    json: &mut [Option<serde_json::Value>],
+) {
+    use arrow::array::{Float32Array, Float64Array};
+
+    fn encode(v: f64) -> Option<serde_json::Value> {
+        if v.is_nan() {
+            Some("NaN".into())
+        } else if v == f64::INFINITY {
+            Some("Infinity".into())
+        } else if v == f64::NEG_INFINITY {
+            Some("-Infinity".into())
+        } else {
+            None
+        }
+    }
+
+    let values: Vec<Option<f64>> = if let Some(a) = source.as_any().downcast_ref::<Float64Array>() {
+        (0..a.len())
+            .map(|i| (!a.is_null(i)).then(|| a.value(i)))
+            .collect()
+    } else if let Some(a) = source.as_any().downcast_ref::<Float32Array>() {
+        (0..a.len())
+            .map(|i| (!a.is_null(i)).then(|| a.value(i) as f64))
+            .collect()
+    } else {
+        return;
+    };
+
+    for (slot, value) in json.iter_mut().zip(values) {
+        if let Some(encoded) = value.and_then(encode) {
+            *slot = Some(encoded);
+        }
+    }
 }
 
 fn read_input_data(data: InputData) -> eyre::Result<arrow::array::ArrayData> {
@@ -481,7 +524,7 @@ fn wrap_value_into_object(value: serde_json::Value) -> serde_json::Value {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{ArrayRef, Int32Array, make_array};
+    use arrow::array::{ArrayRef, Float32Array, Float64Array, Int32Array, make_array};
 
     /// Record an array via the recorder's encoder, then replay it back through
     /// the reader — the property record/replay rests on.
@@ -506,6 +549,101 @@ mod tests {
         let back = make_array(roundtrip(array).expect("empty array should replay"));
         assert_eq!(back.len(), 0);
         assert_eq!(back.data_type(), &DataType::Int32);
+    }
+
+    #[test]
+    fn non_finite_floats_round_trip() {
+        // JSON has no NaN or infinity literal, so `arrow_json` writes all three
+        // as `null`. They are now re-encoded as the strings the reader already
+        // accepts, so they replay as themselves instead of as nulls
+        // (dora-rs/dora#3427).
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            None,
+        ]));
+        let back = Float64Array::from(roundtrip(array).expect("should replay"));
+
+        assert_eq!(back.value(0), 1.5);
+        assert!(back.value(1).is_nan());
+        assert_eq!(back.value(2), f64::INFINITY);
+        assert_eq!(back.value(3), f64::NEG_INFINITY);
+        // The genuine null is still the only null: a NaN must not be
+        // indistinguishable from a missing value.
+        assert_eq!(back.null_count(), 1);
+        assert!(back.is_null(4));
+    }
+
+    #[test]
+    fn non_finite_f32_round_trips() {
+        let array: ArrayRef = Arc::new(Float32Array::from(vec![
+            Some(1.5f32),
+            Some(f32::NAN),
+            Some(f32::NEG_INFINITY),
+        ]));
+        let back = Float32Array::from(roundtrip(array).expect("should replay"));
+
+        assert_eq!(back.value(0), 1.5);
+        assert!(back.value(1).is_nan());
+        assert_eq!(back.value(2), f32::NEG_INFINITY);
+        assert_eq!(back.null_count(), 0);
+    }
+
+    #[test]
+    fn recorded_non_finite_floats_use_string_encoding() {
+        // Pins the on-disk shape. This is the recording format, so a change
+        // here is a format change and should be deliberate.
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(f64::NAN),
+            Some(f64::INFINITY),
+            Some(f64::NEG_INFINITY),
+            None,
+        ]));
+        let mut json = serde_json::Map::new();
+        append_arrow_array_json(&mut json, array).expect("should encode");
+
+        assert_eq!(
+            json["data"],
+            serde_json::json!([1.5, "NaN", "Infinity", "-Infinity", null]),
+        );
+    }
+
+    #[test]
+    fn recordings_written_before_the_string_encoding_still_read() {
+        // A recording produced by the previous writer has `null` where a
+        // non-finite value used to be. Those must keep reading as nulls rather
+        // than failing, so existing recordings stay replayable.
+        let decoded = read_input_data(InputData::JsonObject {
+            data: serde_json::json!([1.5, null]),
+            data_type: Some(serde_json::json!("Float64")),
+        })
+        .expect("an older recording should still read");
+        let decoded = Float64Array::from(decoded);
+
+        assert_eq!(decoded.value(0), 1.5);
+        assert!(decoded.is_null(1));
+    }
+
+    #[test]
+    fn non_finite_floats_nested_in_a_list_are_still_lost() {
+        // The fixup walks the top-level array only, so a non-finite float
+        // inside a List or Struct is still written as `null`. Pinning the
+        // current limitation rather than endorsing it; extending the walk to
+        // nested types is follow-up work on dora-rs/dora#3427.
+        use arrow::array::ListArray;
+        use arrow::datatypes::Float64Type;
+
+        let list = ListArray::from_iter_primitive::<Float64Type, _, _>(vec![Some(vec![
+            Some(1.5),
+            Some(f64::NAN),
+        ])]);
+        let mut json = serde_json::Map::new();
+        append_arrow_array_json(&mut json, Arc::new(list)).expect("should encode");
+
+        assert_eq!(json["data"], serde_json::json!([[1.5, null]]));
     }
 
     #[test]
