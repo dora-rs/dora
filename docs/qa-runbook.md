@@ -414,6 +414,13 @@ If you want to add a new QA check:
 4. Add it to `scripts/qa/all.sh` in the appropriate tier (fast / full / tier1) — unless it needs infrastructure the ladder cannot assume (a Docker daemon, an sshd), in which case leave it out and say so in the Makefile target, as `qa-docker-slim` and `qa-cluster-e2e` do.
 5. Add a CI job to `.github/workflows/ci.yml` that calls `make qa-<name>`.
 6. Document it in this runbook (Section 3).
+7. If the gate should be able to block a merge, add its **check name** — the
+   job's `name:`, spelled exactly — to `merge.required_statuses` in
+   `.trunk/trunk.yaml`. Branch protection only gates entry to the queue;
+   that list is what Trunk waits on while it tests a batch, so a gate
+   missing from it can go red without holding the batch it is red on. Only
+   add a check that is produced on *every* batch branch — the header of
+   that file explains which ones are not.
 
 ---
 
