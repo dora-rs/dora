@@ -1,5 +1,7 @@
 use std::collections::BTreeMap;
 
+use crate::subscriber_channel::SubscriberChannel;
+
 pub struct TopicFrame {
     pub subscription_id: uuid::Uuid,
     pub payload: std::sync::Arc<[u8]>,
@@ -10,8 +12,7 @@ pub(crate) struct TopicSubscriber {
         dora_message::common::DaemonId,
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     >,
-    sender: Option<tokio::sync::mpsc::Sender<TopicFrame>>,
-    timeouts: crate::timeout_streak::TimeoutStreak,
+    channel: SubscriberChannel<TopicFrame>,
 }
 
 impl TopicSubscriber {
@@ -24,8 +25,7 @@ impl TopicSubscriber {
     ) -> Self {
         Self {
             outputs_by_daemon,
-            sender: Some(sender),
-            timeouts: crate::timeout_streak::TimeoutStreak::default(),
+            channel: SubscriberChannel::new(sender),
         }
     }
 
@@ -39,10 +39,7 @@ impl TopicSubscriber {
     }
 
     pub(crate) async fn send_frame(&mut self, frame: TopicFrame) -> eyre::Result<()> {
-        let sender = self
-            .sender
-            .as_ref()
-            .ok_or_else(|| eyre::eyre!("subscriber is closed"))?;
+        let sender = self.channel.sender()?;
         sender
             .send(frame)
             .await
@@ -51,22 +48,19 @@ impl TopicSubscriber {
     }
 
     pub(crate) fn reset_timeout_streak(&mut self) {
-        self.timeouts.reset();
+        self.channel.reset_timeout_streak();
     }
 
     pub(crate) fn record_timeout(&mut self) -> usize {
-        self.timeouts.record()
+        self.channel.record_timeout()
     }
 
     pub(crate) fn is_closed(&self) -> bool {
-        match &self.sender {
-            None => true,
-            Some(sender) => sender.is_closed(),
-        }
+        self.channel.is_closed()
     }
 
     pub(crate) fn close(&mut self) {
-        self.sender = None;
+        self.channel.close();
     }
 }
 

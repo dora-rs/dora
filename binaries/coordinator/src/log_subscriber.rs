@@ -1,19 +1,17 @@
-use crate::timeout_streak::TimeoutStreak;
+use crate::subscriber_channel::SubscriberChannel;
 use dora_message::coordinator_to_cli::LogMessage;
-use eyre::{Context, ContextCompat};
+use eyre::Context;
 
 pub struct LogSubscriber {
     pub level: log::LevelFilter,
-    sender: Option<tokio::sync::mpsc::Sender<String>>,
-    timeouts: TimeoutStreak,
+    channel: SubscriberChannel<String>,
 }
 
 impl LogSubscriber {
     pub fn new(level: log::LevelFilter, sender: tokio::sync::mpsc::Sender<String>) -> Self {
         Self {
             level,
-            sender: Some(sender),
-            timeouts: TimeoutStreak::default(),
+            channel: SubscriberChannel::new(sender),
         }
     }
 
@@ -34,7 +32,7 @@ impl LogSubscriber {
             dora_core::build::LogLevelOrStdout::Stdout => {}
         }
 
-        let sender = self.sender.as_ref().context("subscriber is closed")?;
+        let sender = self.channel.sender()?;
         let json = serde_json::to_string(&dora_message::ws_protocol::WsEvent {
             event: "log".to_string(),
             payload: serde_json::to_value(message)?,
@@ -49,23 +47,20 @@ impl LogSubscriber {
 
     /// Reset the consecutive-timeout streak after a successful send.
     pub fn reset_timeout_streak(&mut self) {
-        self.timeouts.reset();
+        self.channel.reset_timeout_streak();
     }
 
     /// Record a send timeout and return the new consecutive-timeout count.
     pub fn record_timeout(&mut self) -> usize {
-        self.timeouts.record()
+        self.channel.record_timeout()
     }
 
     pub fn is_closed(&self) -> bool {
-        match &self.sender {
-            None => true,
-            Some(sender) => sender.is_closed(),
-        }
+        self.channel.is_closed()
     }
 
     pub fn close(&mut self) {
-        self.sender = None;
+        self.channel.close();
     }
 }
 
