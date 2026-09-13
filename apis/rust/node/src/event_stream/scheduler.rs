@@ -113,11 +113,20 @@ fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
     let Some(params) = event_parameters(dropped) else {
         return;
     };
+    log_correlation_drop_params(event_id, params);
+}
+
+/// The body of [`log_correlation_drop`], taking the correlation parameters
+/// directly so the passthrough-buffer eviction path in
+/// [`EventStream`](super::EventStream) — which holds already-converted `Event`s,
+/// not `EventItem`s — can emit the identical loud error without duplicating the
+/// key list or the remediation message (dora-rs/dora#3197).
+pub(crate) fn log_correlation_drop_params(input_id: &DataId, params: &MetadataParameters) {
     let request_id = get_string_param(params, REQUEST_ID);
     let goal_id = get_string_param(params, GOAL_ID);
     let goal_status = get_string_param(params, GOAL_STATUS);
     tracing::error!(
-        input = %event_id,
+        input = %input_id,
         ?request_id,
         ?goal_id,
         ?goal_status,
@@ -128,6 +137,11 @@ fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
     );
 }
 pub(crate) const NON_INPUT_EVENT: &str = "dora.non_input_event";
+
+/// Capacity of the scheduler's single non-input (control-event) queue, and of
+/// the matching bucket in `EventStream`'s passthrough buffer. Shared so the two
+/// bounds cannot drift apart (dora-rs/dora#3197).
+pub(crate) const NON_INPUT_EVENT_QUEUE_SIZE: usize = 1_000;
 
 /// Shared [`DataId`] for [`NON_INPUT_EVENT`], so the hot `add_event`/`next`
 /// paths don't have to allocate a fresh `String` on every call.
