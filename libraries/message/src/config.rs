@@ -46,6 +46,18 @@ impl QueuePolicy {
     /// `add_event`, so the operator never receives a single message and the
     /// dataflow silently hangs. Clamp `queue_size: 0` to 1 (latest-only)
     /// instead of turning the input into a dead port.
+    ///
+    /// ```
+    /// use dora_message::config::QueuePolicy;
+    ///
+    /// // DropOldest keeps `queue_size`, but never a dead 0-capacity port.
+    /// assert_eq!(QueuePolicy::DropOldest.effective_cap(5), 5);
+    /// assert_eq!(QueuePolicy::DropOldest.effective_cap(0), 1);
+    ///
+    /// // Backpressure buffers 10x the configured size, with a floor of 100.
+    /// assert_eq!(QueuePolicy::Backpressure.effective_cap(5), 100);
+    /// assert_eq!(QueuePolicy::Backpressure.effective_cap(50), 500);
+    /// ```
     pub fn effective_cap(&self, queue_size: usize) -> usize {
         match self {
             Self::DropOldest => queue_size.max(1),
