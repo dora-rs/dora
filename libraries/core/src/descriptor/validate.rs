@@ -624,7 +624,7 @@ fn validate_ros2_config(
     node_inputs: &BTreeMap<DataId, Input>,
     node_outputs: &BTreeSet<DataId>,
 ) -> eyre::Result<()> {
-    use dora_message::descriptor::{Ros2Direction, Ros2Role, Ros2TransportConfig};
+    use dora_message::descriptor::{Ros2Role, Ros2TransportConfig};
 
     if let Ros2TransportConfig::Zenoh {
         config_uri: Some(uri),
@@ -684,37 +684,13 @@ fn validate_ros2_config(
         for t in topics {
             validate_ros2_name(node_id, "topic", &t.topic)?;
             validate_ros2_type_format(node_id, &t.topic, &t.message_type)?;
-            // The bridge routes each topic to a dora port: a subscribe topic
-            // feeds an output, a publish topic consumes an input. When the
-            // mapping is not set explicitly the bridge derives the port id from
-            // the topic name (`Ros2TopicConfig::output_port_id`). Either way,
-            // the resulting id must be a declared port — otherwise data is
-            // silently dropped at runtime with no diagnostic: a subscribe
-            // `send_output` to an unknown id is ignored, and a publish topic
-            // bound to an unknown input never receives any data to publish.
-            match &t.direction {
-                Ros2Direction::Subscribe => {
-                    let output = t.output_port_id();
-                    if !node_outputs.contains(output.as_str()) {
-                        bail!(
-                            "node `{node_id}`: ros2 subscribe topic `{}` maps to output \
-                             `{output}`, which is not declared in the node's `outputs`",
-                            t.topic
-                        );
-                    }
-                }
-                Ros2Direction::Publish => {
-                    let input = t.input_port_id();
-                    if !node_inputs.contains_key(input.as_str()) {
-                        bail!(
-                            "node `{node_id}`: ros2 publish topic `{}` maps to input \
-                             `{input}`, which is not declared in the node's `inputs`",
-                            t.topic
-                        );
-                    }
-                }
-            }
         }
+        // The per-topic port-existence check lives on the resolution path
+        // (`validate_ros2_topic_ports`) so the coordinator's `dora start` path,
+        // which resolves without validating, enforces it too. Delegate here
+        // rather than restating the rule, keeping validation and `dora start` in
+        // lockstep by construction (dora-rs/dora#3484).
+        super::validate_ros2_topic_ports(node_id, topics, node_inputs, node_outputs)?;
     } else if let Some(service) = &config.service {
         validate_ros2_name(node_id, "service", service)?;
         let service_type = config.service_type.as_ref().ok_or_else(|| {

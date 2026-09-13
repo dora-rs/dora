@@ -278,6 +278,18 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 let config = node.ros2.as_ref().ok_or_eyre("no ros2")?;
                 let config =
                     resolve_ros2_single_topic(&node.id, config, &node.inputs, &node.outputs)?;
+                // `resolve_ros2_single_topic` checks single-topic port mappings
+                // and rewrites them into a one-entry `topics:` list; a config
+                // that already uses `topics:` passes through unchanged. Either
+                // way, verify every resolved topic maps to a declared port here
+                // on the resolution path, so the coordinator's `dora start` path
+                // — which resolves without running the validator — rejects an
+                // undeclared multi-topic mapping instead of silently dropping
+                // every message at runtime (dora-rs/dora#3484). Service/action
+                // configs leave `topics` unset and are skipped.
+                if let Some(topics) = &config.topics {
+                    validate_ros2_topic_ports(&node.id, topics, &node.inputs, &node.outputs)?;
+                }
                 let bridge_config_json = serde_json::to_string(&config)
                     .context("failed to serialize ROS2 bridge config")?;
 
@@ -392,6 +404,58 @@ pub(crate) fn resolve_ros2_single_topic<'a>(
         qos: None,
     }]);
     Ok(Cow::Owned(resolved))
+}
+
+/// Verify that every entry of a multi-topic (`topics:`) ros2 bridge config maps
+/// to a port the node actually declares.
+///
+/// The bridge routes each topic to a dora port: a subscribe topic feeds an
+/// output, a publish topic consumes an input. When the mapping is not set
+/// explicitly the id is derived from the topic name
+/// ([`Ros2TopicConfig::output_port_id`] / [`input_port_id`]). Either way, the
+/// resulting id must be a declared port — otherwise data is silently dropped at
+/// runtime with no diagnostic: a subscribe `send_output` to an unknown id is
+/// ignored, and a publish topic bound to an unknown input never receives any
+/// data to publish.
+///
+/// Like [`resolve_ros2_single_topic`], this lives on the *resolution* path (and
+/// is delegated to from [`validate`]) rather than in the validator alone: `dora
+/// run` and `dora check` validate first, but the coordinator's `dora start` path
+/// resolves without validating, so a validator-only guard would still drop
+/// silently there (dora-rs/dora#3484).
+///
+/// [`input_port_id`]: Ros2TopicConfig::input_port_id
+pub(crate) fn validate_ros2_topic_ports(
+    node_id: &NodeId,
+    topics: &[Ros2TopicConfig],
+    node_inputs: &BTreeMap<DataId, Input>,
+    node_outputs: &BTreeSet<DataId>,
+) -> eyre::Result<()> {
+    for t in topics {
+        match &t.direction {
+            Ros2Direction::Subscribe => {
+                let output = t.output_port_id();
+                if !node_outputs.contains(output.as_str()) {
+                    bail!(
+                        "node `{node_id}`: ros2 subscribe topic `{}` maps to output \
+                         `{output}`, which is not declared in the node's `outputs`",
+                        t.topic
+                    );
+                }
+            }
+            Ros2Direction::Publish => {
+                let input = t.input_port_id();
+                if !node_inputs.contains_key(input.as_str()) {
+                    bail!(
+                        "node `{node_id}`: ros2 publish topic `{}` maps to input \
+                         `{input}`, which is not declared in the node's `inputs`",
+                        t.topic
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl DescriptorExt for Descriptor {
@@ -1678,6 +1742,89 @@ nodes:
         assert!(
             !flowchart.contains("subgraph camera.front"),
             "an unsanitized dotted subgraph id is invalid Mermaid; got:\n{flowchart}"
+        );
+    }
+
+    /// A multi-topic (`topics:`) ros2 bridge that maps a topic to an undeclared
+    /// port must be rejected on the *resolution* path, not just by the
+    /// validator. The coordinator's `dora start` path resolves without running
+    /// the validator, so before dora-rs/dora#3484 an undeclared multi-topic
+    /// mapping passed here and silently dropped every message at runtime.
+    #[test]
+    fn resolve_rejects_undeclared_multi_topic_subscribe_output() {
+        let yaml = r#"
+nodes:
+  - id: lidar_bridge
+    outputs: [scan]
+    ros2:
+      topics:
+        - topic: /scan
+          message_type: sensor_msgs/LaserScan
+          direction: subscribe
+          output: scna
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("resolution must reject a topic mapped to an undeclared output")
+            .to_string();
+        assert!(
+            err.contains("scna") && err.contains("not declared"),
+            "error should name the undeclared output, got: {err}"
+        );
+    }
+
+    /// The publish counterpart: a topic bound to an undeclared input is rejected
+    /// on the resolution path too.
+    #[test]
+    fn resolve_rejects_undeclared_multi_topic_publish_input() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs: [cmd]
+  - id: cmd_bridge
+    inputs:
+      cmd: source/cmd
+    ros2:
+      topics:
+        - topic: /cmd_vel
+          message_type: geometry_msgs/Twist
+          direction: publish
+          input: typo_in
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("resolution must reject a topic mapped to an undeclared input")
+            .to_string();
+        assert!(
+            err.contains("typo_in") && err.contains("not declared"),
+            "error should name the undeclared input, got: {err}"
+        );
+    }
+
+    /// Guard the other way: a multi-topic config whose mappings all reference
+    /// declared ports (explicit and topic-derived) still resolves.
+    #[test]
+    fn resolve_accepts_declared_multi_topic_ports() {
+        let yaml = r#"
+nodes:
+  - id: bridge
+    outputs: [scan, laser]
+    ros2:
+      topics:
+        - topic: /scan
+          message_type: sensor_msgs/LaserScan
+          direction: subscribe
+          output: scan
+        - topic: /laser
+          message_type: sensor_msgs/LaserScan
+          direction: subscribe
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        desc.resolve_aliases_and_set_defaults().expect(
+            "a multi-topic config mapping declared ports (explicit and derived) must resolve",
         );
     }
 }
