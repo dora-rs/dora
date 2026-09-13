@@ -241,6 +241,42 @@ impl Scheduler {
         std::mem::take(&mut self.dropped)
     }
 
+    /// The effective queue capacity for an input, i.e. `queue_size` combined
+    /// with its [`QueuePolicy`] via [`QueuePolicy::effective_cap`]. Uses the
+    /// same defaults as [`add_event`](Self::add_event) for an unconfigured
+    /// input (`DEFAULT_QUEUE_SIZE`, `drop_oldest`), so a bound derived from
+    /// this matches what the scheduler itself would enforce.
+    ///
+    /// Exposed so the passthrough buffer in [`EventStream`](super::EventStream)
+    /// — which holds events that a pattern-aware wait pulled out of the
+    /// scheduler — can apply the *same* per-input bound the scheduler would
+    /// have, instead of retaining them without limit (dora-rs/dora#3197).
+    pub(crate) fn effective_cap_for(&self, id: &DataId) -> usize {
+        let size = self
+            .event_queues
+            .get(id)
+            .map(|(size, _)| *size)
+            .unwrap_or(DEFAULT_QUEUE_SIZE);
+        let policy = self.queue_policies.get(id).copied().unwrap_or_default();
+        policy.effective_cap(size)
+    }
+
+    /// Account for one dropped event on `id`, so a drop enforced outside the
+    /// scheduler (the passthrough bound) still shows up in
+    /// [`drain_drop_counts`](Self::drain_drop_counts) exactly like an in-queue
+    /// `drop_oldest` eviction (dora-rs/dora#3197).
+    pub(crate) fn record_drop(&mut self, id: &DataId) {
+        *self.dropped.entry(id.clone()).or_insert(0) += 1;
+    }
+
+    /// Account for one dropped non-input (control) event, under the same
+    /// `NON_INPUT_EVENT` key the scheduler itself uses when its non-input queue
+    /// overflows — so a passthrough-bound drop of a control event is reported
+    /// consistently with an in-queue one (dora-rs/dora#3197).
+    pub(crate) fn record_non_input_drop(&mut self) {
+        *self.dropped.entry(NON_INPUT_EVENT_ID.clone()).or_insert(0) += 1;
+    }
+
     pub(crate) fn add_event(&mut self, event: EventItem) {
         let (event_id, should_flush) = match &event {
             EventItem::NodeEvent {

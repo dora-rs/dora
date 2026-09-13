@@ -112,6 +112,14 @@ pub struct EventStream {
     /// for a correlation match. Drained first on the next `recv()` so
     /// the caller's main event loop never loses intermediate events
     /// (dora-rs/adora#148).
+    ///
+    /// Bounded via [`buffer_passthrough`](Self::buffer_passthrough): an event a
+    /// correlated wait pulls out of the scheduler and stashes here still counts
+    /// against a bound — `Event::Input`s against their input's `queue_size` /
+    /// `queue_policy`, control events against a shared non-input cap — so the
+    /// retention cannot grow without limit for a node that never reads its
+    /// events, and per-input queue policy means the same thing whether or not a
+    /// correlated receive touched the event (dora-rs/dora#3197).
     pending_passthrough: std::collections::VecDeque<Event>,
     /// Set to true after an `Event::Stop` has been delivered. Zenoh
     /// subscriber threads hold clones of the event channel sender, so
@@ -1285,6 +1293,125 @@ impl EventStream {
         .await
     }
 
+    /// Stash an event that a pattern-aware wait consumed while searching for a
+    /// correlation match, so the caller's own event loop can still see it on
+    /// the next `recv()` / `recv_async()` / `next()`.
+    ///
+    /// The buffer escapes the scheduler's per-input `queue_size` /
+    /// `queue_policy` — an event that moves scheduler → passthrough left that
+    /// policy behind and, before dora-rs/dora#3197, was retained without limit
+    /// until someone read it. A node that lets pattern-aware waits own the
+    /// stream and never reads events itself has no drain, so a high-rate input
+    /// it never correlates for (or a flapping upstream spamming control events)
+    /// grew unbounded where the scheduler would have dropped oldest. We re-apply
+    /// a bound here (see [`enforce_passthrough_bound`](Self::enforce_passthrough_bound))
+    /// so the retention stays bounded and per-input policy means the same thing
+    /// whether or not a correlated receive touched the event.
+    fn buffer_passthrough(&mut self, event: Event) {
+        let (bucket, cap) = match &event {
+            Event::Input { id, .. } => {
+                let id = id.clone();
+                let cap = self.scheduler.effective_cap_for(&id);
+                (PassthroughBucket::Input(id), cap)
+            }
+            // Control events (`Reload`, a non-expected-server `NodeRestarted`,
+            // `ParamUpdate`, …) share one cap, mirroring the scheduler's single
+            // `NON_INPUT_EVENT` queue. `Stop` is exempt from eviction below.
+            _ => (PassthroughBucket::NonInput, NON_INPUT_PASSTHROUGH_CAP),
+        };
+        self.pending_passthrough.push_back(event);
+        self.enforce_passthrough_bound(&bucket, cap);
+    }
+
+    /// Enforce `bucket`'s bound over the buffered passthrough events belonging
+    /// to it, mirroring `Scheduler::select_eviction`: sacrifice the oldest
+    /// ordinary (non-correlated) event first so service responses and action
+    /// results survive; only when every buffered event in the bucket is
+    /// correlated do we drop the oldest correlated one, loudly — the same
+    /// request/response-contract-breaking last resort the scheduler logs
+    /// (dora-rs/adora#145, dora-rs/dora#3197). `Stop` is never dropped, matching
+    /// the scheduler's `is_stop`.
+    ///
+    /// `buffer_passthrough` calls this after every push, so the buffer is over
+    /// capacity by at most one and a single eviction restores the bound. A
+    /// single pass finds both the count and the two candidate indices.
+    fn enforce_passthrough_bound(&mut self, bucket: &PassthroughBucket, cap: usize) {
+        use dora_message::metadata::carries_pattern_correlation;
+
+        let mut count = 0usize;
+        // Oldest droppable ordinary (non-correlated) event, and oldest droppable
+        // event at all (correlated included). `Stop` is neither.
+        let mut oldest_ordinary = None;
+        let mut oldest_droppable = None;
+        for (i, event) in self.pending_passthrough.iter().enumerate() {
+            let (in_bucket, correlated) = match (bucket, event) {
+                (
+                    PassthroughBucket::Input(id),
+                    Event::Input {
+                        id: eid, metadata, ..
+                    },
+                ) => (eid == id, carries_pattern_correlation(&metadata.parameters)),
+                (PassthroughBucket::Input(_), _) => (false, false),
+                // Non-input bucket: every non-input event counts (no correlation
+                // concept applies); `Stop` is handled as eviction-immune below.
+                (PassthroughBucket::NonInput, Event::Input { .. }) => (false, false),
+                (PassthroughBucket::NonInput, _) => (true, false),
+            };
+            if !in_bucket {
+                continue;
+            }
+            count += 1;
+            if matches!(event, Event::Stop(_)) {
+                continue; // eviction-immune, like the scheduler's `is_stop`
+            }
+            if oldest_droppable.is_none() {
+                oldest_droppable = Some(i);
+            }
+            if !correlated && oldest_ordinary.is_none() {
+                oldest_ordinary = Some(i);
+            }
+        }
+
+        if count <= cap {
+            return;
+        }
+
+        // Prefer to sacrifice an ordinary event (the scheduler's `RemoveAt` /
+        // `DropIncoming`); fall back to the oldest correlated one, dropped
+        // loudly (`DropCorrelatedLoud`).
+        let (evict_at, correlated_drop) = match oldest_ordinary {
+            Some(idx) => (idx, false),
+            None => match oldest_droppable {
+                Some(idx) => (idx, true),
+                // Only a `Stop` in the bucket (at most one) — nothing to drop.
+                None => return,
+            },
+        };
+
+        // Log inside a scope that releases the immutable borrow before the
+        // mutation below.
+        {
+            match self.pending_passthrough.get(evict_at) {
+                Some(Event::Input { id, metadata, .. }) if correlated_drop => {
+                    log_passthrough_correlation_drop(id, &metadata.parameters);
+                }
+                Some(Event::Input { id, .. }) => {
+                    tracing::warn!(input = %id, "discarding buffered input due to queue size limit");
+                }
+                _ => {
+                    tracing::warn!(
+                        "discarding buffered control event due to passthrough buffer limit"
+                    );
+                }
+            }
+        }
+        self.pending_passthrough.remove(evict_at);
+        match bucket {
+            PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
+            PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
+        }
+    }
+
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
     /// for an event that satisfies `is_match(event, needle)`. Buffers
     /// every non-matching event so the caller's main event loop can
@@ -1342,11 +1469,11 @@ impl EventStream {
             match classify_correlation_event(&event, expected_server, |e| is_match(e, needle)) {
                 CorrelationOutcome::Match => return Ok(event),
                 CorrelationOutcome::ServerRestarted => {
-                    self.pending_passthrough.push_back(event);
+                    self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
                 }
                 CorrelationOutcome::StreamEnded => {
-                    self.pending_passthrough.push_back(event);
+                    self.buffer_passthrough(event);
                     return Err(PatternError::StreamEnded);
                 }
                 CorrelationOutcome::StreamError => {
@@ -1356,7 +1483,7 @@ impl EventStream {
                     unreachable!("StreamError only returned for Event::Error");
                 }
                 CorrelationOutcome::Passthrough => {
-                    self.pending_passthrough.push_back(event);
+                    self.buffer_passthrough(event);
                 }
             }
         }
@@ -1428,6 +1555,43 @@ where
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
+}
+
+/// Upper bound on buffered non-input control events (`Reload`, a
+/// non-expected-server `NodeRestarted`, `ParamUpdate`, …) stashed by a
+/// pattern-aware wait. Mirrors the fixed cap the scheduler gives its single
+/// `NON_INPUT_EVENT` queue, so control events retained here are bounded the
+/// same way (dora-rs/dora#3197). `Stop` is exempt (see
+/// [`EventStream::enforce_passthrough_bound`]).
+const NON_INPUT_PASSTHROUGH_CAP: usize = 1_000;
+
+/// Which bound a buffered passthrough event counts against.
+enum PassthroughBucket {
+    /// An `Event::Input`, bounded by its input's effective `queue_size`.
+    Input(DataId),
+    /// Any non-input control event, bounded by [`NON_INPUT_PASSTHROUGH_CAP`].
+    NonInput,
+}
+
+/// Emit a loud error when the passthrough bound has to drop a correlated event
+/// because every buffered event for its input is correlated. Mirrors the
+/// scheduler's `log_correlation_drop` so the two eviction paths surface the
+/// same request/goal identifiers and remediation (dora-rs/dora#3197).
+fn log_passthrough_correlation_drop(
+    input_id: &DataId,
+    params: &dora_message::metadata::MetadataParameters,
+) {
+    use dora_message::metadata::{GOAL_ID, GOAL_STATUS, REQUEST_ID, get_string_param};
+    tracing::error!(
+        input = %input_id,
+        request_id = ?get_string_param(params, REQUEST_ID),
+        goal_id = ?get_string_param(params, GOAL_ID),
+        goal_status = ?get_string_param(params, GOAL_STATUS),
+        "passthrough buffer full of correlated messages for this input; \
+         dropping oldest correlation. This breaks the service/action \
+         request-response contract. Consider increasing queue_size or \
+         switching this input to `queue_policy: backpressure`."
+    );
 }
 
 impl EventStream {
@@ -2579,6 +2743,177 @@ mod tests {
         assert!(
             matches!(second, Some(Event::Stop(_))),
             "expected Stop second, got {second:?}"
+        );
+    }
+
+    // ---- dora-rs/dora#3197: the passthrough buffer is bounded per input ----
+
+    /// Build an `Event::Input` for `id`, optionally tagged with a `request_id`
+    /// so `carries_pattern_correlation` treats it as a correlated response.
+    fn passthrough_input(id: &DataId, request_id: Option<&str>) -> Event {
+        use dora_message::metadata::{Metadata, MetadataParameters, Parameter, REQUEST_ID};
+        let mut params = MetadataParameters::new();
+        if let Some(request_id) = request_id {
+            params.insert(REQUEST_ID.into(), Parameter::String(request_id.to_string()));
+        }
+        let ts = dora_core::uhlc::HLC::default().new_timestamp();
+        Event::Input {
+            id: id.clone(),
+            metadata: Metadata::from_parameters(ts, params),
+            data: dora_arrow_convert::internal::from_array_ref(std::sync::Arc::new(
+                arrow::array::NullArray::new(1),
+            )),
+        }
+    }
+
+    fn count_buffered_for(events: &EventStream, id: &DataId) -> usize {
+        events
+            .pending_passthrough
+            .iter()
+            .filter(|e| matches!(e, Event::Input { id: eid, .. } if eid == id))
+            .count()
+    }
+
+    /// A node that lets pattern-aware waits own the stream and never reads
+    /// events itself must not accumulate an unbounded passthrough buffer: an
+    /// ordinary input stashed there is capped at its effective `queue_size`
+    /// (default 10, `drop_oldest`), and the overflow is accounted as drops.
+    #[test]
+    fn buffer_passthrough_bounds_ordinary_inputs_per_queue_size() {
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv(); // drain the initial Stop
+
+        let id = DataId::from("sensor".to_string());
+        let cap = 10; // unconfigured input -> DEFAULT_QUEUE_SIZE, drop_oldest
+        for _ in 0..(cap + 5) {
+            events.buffer_passthrough(passthrough_input(&id, None));
+        }
+
+        assert_eq!(
+            count_buffered_for(&events, &id),
+            cap,
+            "passthrough retention must be capped at the input's queue_size"
+        );
+        assert_eq!(
+            events.drain_drop_counts().get(&id),
+            Some(&5),
+            "over-cap passthrough events must be counted as drops for the input"
+        );
+    }
+
+    /// The passthrough bound honours the same correlation preference the
+    /// scheduler uses: when the buffer for an input is full of correlated
+    /// responses, an incoming ordinary event on that input is dropped rather
+    /// than a correlation — a client waiting on a `request_id` never loses its
+    /// response to unrelated traffic.
+    #[test]
+    fn buffer_passthrough_preserves_correlated_over_ordinary() {
+        use dora_message::metadata::{REQUEST_ID, get_string_param};
+
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv();
+
+        let id = DataId::from("svc".to_string());
+        let cap = 10;
+
+        for i in 0..cap {
+            events.buffer_passthrough(passthrough_input(&id, Some(&format!("req-{i}"))));
+        }
+        // Flood with ordinary events on the same input.
+        for _ in 0..20 {
+            events.buffer_passthrough(passthrough_input(&id, None));
+        }
+
+        let correlated = events
+            .pending_passthrough
+            .iter()
+            .filter(|e| {
+                matches!(e, Event::Input { metadata, .. }
+                if get_string_param(&metadata.parameters, REQUEST_ID).is_some())
+            })
+            .count();
+        assert_eq!(
+            correlated, cap,
+            "every correlated response must be preserved"
+        );
+        assert_eq!(
+            events.pending_passthrough.len(),
+            cap,
+            "ordinary floods must not push the buffer past the cap"
+        );
+    }
+
+    /// A buffered `Stop` has no input id and must never be evicted by an input
+    /// flooding the buffer — mirroring the scheduler, where `Stop` is
+    /// eviction-immune.
+    #[test]
+    fn buffer_passthrough_never_drops_stop() {
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv();
+
+        events.buffer_passthrough(Event::Stop(StopCause::Manual));
+
+        let id = DataId::from("flood".to_string());
+        for _ in 0..30 {
+            events.buffer_passthrough(passthrough_input(&id, None));
+        }
+
+        assert!(
+            events
+                .pending_passthrough
+                .iter()
+                .any(|e| matches!(e, Event::Stop(_))),
+            "a buffered Stop must survive an input flood"
+        );
+        assert_eq!(
+            count_buffered_for(&events, &id),
+            10,
+            "the flooding input is still capped at its queue_size"
+        );
+    }
+
+    /// Non-input control events (a flapping upstream's `NodeRestarted`,
+    /// `Reload`, `ParamUpdate`, …) that a pattern-aware wait keeps stashing are
+    /// also bounded — otherwise a never-reading node grows the buffer without
+    /// limit even though no input is involved (dora-rs/dora#3197). `Stop` still
+    /// survives.
+    #[test]
+    fn buffer_passthrough_bounds_control_events() {
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv();
+
+        // One eviction-immune `Stop` plus a control-event flood. The cap counts
+        // the `Stop` (as the scheduler's `NON_INPUT_EVENT` queue length does),
+        // so the bucket settles at `cap` = 1 `Stop` + (cap - 1) `Reload`s.
+        events.buffer_passthrough(Event::Stop(StopCause::Manual));
+        let pushed_reloads = NON_INPUT_PASSTHROUGH_CAP + 25;
+        for _ in 0..pushed_reloads {
+            events.buffer_passthrough(Event::Reload { operator_id: None });
+        }
+
+        let non_input = events
+            .pending_passthrough
+            .iter()
+            .filter(|e| !matches!(e, Event::Input { .. }))
+            .count();
+        assert_eq!(
+            non_input, NON_INPUT_PASSTHROUGH_CAP,
+            "buffered control events must be capped at the non-input limit"
+        );
+        assert!(
+            events
+                .pending_passthrough
+                .iter()
+                .any(|e| matches!(e, Event::Stop(_))),
+            "Stop must survive a control-event flood"
+        );
+        let expected_drops = (pushed_reloads + 1 - NON_INPUT_PASSTHROUGH_CAP) as u64;
+        assert_eq!(
+            events
+                .drain_drop_counts()
+                .get(&DataId::from(NON_INPUT_EVENT.to_string())),
+            Some(&expected_drops),
+            "control-event overflow must be accounted under the non-input key"
         );
     }
 
