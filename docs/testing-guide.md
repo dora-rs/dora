@@ -305,7 +305,7 @@ fn test_main_function() -> eyre::Result<()> {
     let inputs = TestingInput::Input(
         IntegrationTestInput::new("node_id".parse().unwrap(), events),
     );
-    let (tx, mut rx) = integration_testing::unbounded_channel();
+    let (tx, mut rx) = integration_testing::output_channel();
     let outputs = TestingOutput::ToChannel(tx);
     let options = TestingOptions { skip_output_time_offsets: true };
 
