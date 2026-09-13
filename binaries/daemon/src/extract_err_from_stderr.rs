@@ -61,10 +61,8 @@ impl StderrMatcher {
             "Traceback (most recent call last):",
         ];
 
-        for marker in MARKERS.iter() {
-            if line.starts_with(marker) {
-                return true;
-            }
+        if MARKERS.iter().any(|marker| line.starts_with(marker)) {
+            return true;
         }
 
         if line.starts_with("SyntaxError: ") {
@@ -87,13 +85,9 @@ impl StderrMatcher {
         // common non-error log lines
         const NEGATIVE_MARKERS: &[&str] = &["Warning:"];
 
-        for marker in NEGATIVE_MARKERS.iter() {
-            if line.starts_with(marker) {
-                return true;
-            }
-        }
-
-        false
+        NEGATIVE_MARKERS
+            .iter()
+            .any(|marker| line.starts_with(marker))
     }
 }
 
