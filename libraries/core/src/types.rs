@@ -118,6 +118,17 @@ fn arrow_type_from_name(name: &str) -> Option<DataType> {
 /// `arrow:` field: a known primitive, or `Struct` (whose shape is its fields).
 /// Anything else cannot be materialized into a schema, so it must be rejected
 /// at manifest validation rather than silently failing later at build time.
+///
+/// ```
+/// use dora_core::types::is_known_arrow_type;
+///
+/// assert!(is_known_arrow_type("Float64"));
+/// assert!(is_known_arrow_type("Struct"));
+/// // Arrow discriminants dora does not materialize are rejected:
+/// assert!(!is_known_arrow_type("FixedSizeBinary"));
+/// // A struct type referenced by its own name is not an arrow discriminant:
+/// assert!(!is_known_arrow_type("Vector3"));
+/// ```
 pub fn is_known_arrow_type(name: &str) -> bool {
     arrow_type_from_name(name).is_some() || name == "Struct"
 }
@@ -323,6 +334,19 @@ struct TypePackage {
 }
 
 /// Extract the short type name from a URN (e.g. `std/media/v1/Image` -> `Image`).
+///
+/// Any `[...]` type-parameter block is stripped first, then the last `/`-delimited
+/// segment is returned. A bare name with no `/` is returned unchanged.
+///
+/// ```
+/// use dora_core::types::urn_short_name;
+///
+/// assert_eq!(urn_short_name("std/media/v1/Image"), "Image");
+/// // Type parameters are stripped before taking the last path segment:
+/// assert_eq!(urn_short_name("std/media/v1/AudioFrame[sample_type=f32]"), "AudioFrame");
+/// // A bare name (no `/`) is returned unchanged:
+/// assert_eq!(urn_short_name("BareName"), "BareName");
+/// ```
 pub fn urn_short_name(urn: &str) -> &str {
     // Strip params first
     let base = urn.split('[').next().unwrap_or(urn);
@@ -520,7 +544,25 @@ impl std::fmt::Display for SchemaError {
 
 // --- Metadata pattern resolution (Phase 5) ---
 
-/// Resolve a pattern shorthand to required metadata keys.
+/// Resolve a communication-pattern shorthand to the metadata keys it requires.
+///
+/// The recognized shorthands are `"service-server"` / `"service-client"`,
+/// `"action-server"`, and `"action-client"` (see `docs/patterns.md`). Any other
+/// string returns `None`.
+///
+/// ```
+/// use dora_core::types::pattern_metadata_keys;
+///
+/// assert_eq!(pattern_metadata_keys("service-server"), Some(&["request_id"][..]));
+/// assert_eq!(pattern_metadata_keys("service-client"), Some(&["request_id"][..]));
+/// assert_eq!(
+///     pattern_metadata_keys("action-server"),
+///     Some(&["goal_id", "goal_status"][..]),
+/// );
+/// assert_eq!(pattern_metadata_keys("action-client"), Some(&["goal_id"][..]));
+/// // An unknown shorthand has no required keys:
+/// assert_eq!(pattern_metadata_keys("topic"), None);
+/// ```
 pub fn pattern_metadata_keys(pattern: &str) -> Option<&'static [&'static str]> {
     match pattern {
         "service-server" | "service-client" => Some(&["request_id"]),
@@ -761,6 +803,18 @@ impl Default for TypeRegistry {
 
 /// Simple edit distance (Levenshtein) for typo suggestions.
 /// Returns `usize::MAX` for inputs longer than 256 characters to prevent DoS.
+///
+/// The 256-character cap is measured in [`char`]s, not bytes, so a multibyte
+/// input well under 256 characters is still scored rather than rejected.
+///
+/// ```
+/// use dora_core::types::edit_distance;
+///
+/// assert_eq!(edit_distance("kitten", "sitting"), 3);
+/// assert_eq!(edit_distance("image", "image"), 0);
+/// // Inputs longer than 256 characters short-circuit to `usize::MAX`:
+/// assert_eq!(edit_distance(&"a".repeat(257), "a"), usize::MAX);
+/// ```
 pub fn edit_distance(a: &str, b: &str) -> usize {
     // Guard on character count, not byte length: the DP matrix below is sized
     // by `chars().count()`, so that is the quantity the DoS cap must bound. A
