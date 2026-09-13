@@ -11,15 +11,44 @@ fn split_once(s: &'_ str, pat: char) -> (&'_ str, Option<&'_ str>) {
 }
 
 fn strip_comment(s: &str) -> &str {
-    let mut in_quotes = false;
-    for (i, c) in s.char_indices() {
-        if c == '"' {
-            in_quotes = !in_quotes;
-        } else if c == '#' && !in_quotes {
-            //if is the first character of the line or the previous character is a blackspace
-            if i == 0 || s.as_bytes()[i - 1].is_ascii_whitespace() {
-                return &s[..i];
+    let type_string = s.split_whitespace().next().unwrap_or("");
+
+    if type_string == "string" || type_string == "wstring" {
+        let mut in_quotes = None;
+        let mut have_quotes = false;
+        let bytes = s.as_bytes();
+        for (i, c) in s.char_indices() {
+            if c == '\'' {
+                have_quotes = true;
+                if in_quotes.is_none() {
+                    in_quotes = Some('\'');
+                } else if in_quotes == Some('\'') {
+                    in_quotes = None;
+                }
+            } else if c == '\"' {
+                have_quotes = true;
+                if in_quotes.is_none() {
+                    in_quotes = Some('\"');
+                } else if in_quotes == Some('\"') {
+                    in_quotes = None;
+                }
             }
+
+            if c == '#' {
+                if have_quotes {
+                    if in_quotes.is_none() {
+                        return &s[..i];
+                    }
+                } else {
+                    if bytes[i - 1].is_ascii_whitespace() {
+                        return &s[..i];
+                    }
+                }
+            }
+        }
+    } else {
+        if let Some(i) = s.find('#') {
+            return &s[..i];
         }
     }
     s
@@ -65,7 +94,7 @@ pub fn parse_message_string(
         // first non-space, non-`=` run after the type is the name, so the line
         // is a constant iff the first character after that name (skipping
         // spaces) is `=`.
-        //parse_message_string
+        //
         // rest is None when the line has no space (e.g. tab-separated or
         // single-token); that is never a constant, so it falls through to
         // `member_def` rather than panicking.
@@ -249,5 +278,41 @@ mod test {
     fn hash_in_quoted_string_value() {
         let msg = parse_message_string("pkg", "Msg", r#"string GREETING="a # b""#).unwrap();
         assert_eq!(msg.constants[0].value, vec!["a # b".to_string()]);
+    }
+    #[test]
+    fn comment_besides_value() {
+        let msg = parse_message_string("pkg", "Msg", "int32 x#comment").unwrap();
+        assert_eq!(msg.members[0].name, "x");
+    }
+    #[test]
+    fn comment_besides_constant() {
+        let msg = parse_message_string("pkg", "Msg", "int32 X=5#comment").unwrap();
+        assert_eq!(msg.constants[0].value, vec!["5".to_string()]);
+    }
+    #[test]
+    fn hash_in_single_quoted_string_value() {
+        let msg = parse_message_string("pkg", "Msg", "string PATTERN='a # b'").unwrap();
+        assert_eq!(msg.constants[0].value, vec!["a # b".to_string()]);
+    }
+    #[test]
+    fn unquoted_string_with_comment() {
+        let msg = parse_message_string("pkg", "Msg", "string PATTERN=a #comment").unwrap();
+        assert_eq!(msg.constants[0].value, vec!["a".to_string()]);
+    }
+    #[test]
+    fn double_quoted_string_with_attached_comment() {
+        let msg =
+            parse_message_string("pkg", "Msg", r##"string GREETING="value"#comment"##).unwrap();
+        assert_eq!(msg.constants[0].value, vec!["value".to_string()]);
+    }
+    #[test]
+    fn single_quoted_string_with_attached_comment() {
+        let msg = parse_message_string("pkg", "Msg", "string GREETING='green'#comentario").unwrap();
+        assert_eq!(msg.constants[0].value, vec!["green".to_string()]);
+    }
+    #[test]
+    fn primitive_with_attached_comment() {
+        let msg = parse_message_string("pkg", "Msg", "int32 LIMIT=100#comment").unwrap();
+        assert_eq!(msg.constants[0].value, vec!["100".to_string()]);
     }
 }
