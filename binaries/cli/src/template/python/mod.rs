@@ -1,4 +1,4 @@
-use eyre::{Context, bail};
+use eyre::Context;
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -30,8 +30,10 @@ pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> 
 }
 
 fn replace_space(file: &str, name: &str) -> String {
-    let mut file = file.replace("__node-name__", &name.replace(" ", "-"));
-    file = file.replace("__node_name__", &name.replace("-", "_").replace(" ", "_"));
+    // `validate_name` already restricts names to `[A-Za-z0-9_-]`, so only the
+    // `-` -> `_` mapping for Python module names is still needed here.
+    let mut file = file.replace("__node-name__", name);
+    file = file.replace("__node_name__", &name.replace('-', "_"));
     file.replace("Node Name", name)
 }
 fn create_custom_node(
@@ -39,19 +41,13 @@ fn create_custom_node(
     path: Option<PathBuf>,
     main: &str,
 ) -> Result<(), eyre::ErrReport> {
-    // Reject names that would turn into path separators or non-ASCII module
-    // directories, mirroring the validation in `create_dataflow`. Spaces are
-    // fine — they are normalized to `-`/`_` below.
-    if name.contains('/') {
-        bail!("node name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("node name must be ASCII");
-    }
+    // Names are restricted to `[A-Za-z0-9_-]` by `validate_name`, so no
+    // further normalization is needed below.
+    super::validate_name(&name, "node")?;
 
     // create directories
-    let root = path.unwrap_or_else(|| PathBuf::from(name.replace(" ", "-")));
-    let module_path = root.join(name.replace(" ", "_").replace("-", "_"));
+    let root = path.unwrap_or_else(|| PathBuf::from(name.as_str()));
+    let module_path = root.join(name.replace('-', "_"));
     fs::create_dir(&root)
         .with_context(|| format!("failed to create root directory `{}`", root.display()))?;
 
@@ -126,12 +122,7 @@ fn create_dataflow(
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
     const WORKSPACE_README: &str = include_str!("README.md");
 
-    if name.contains('/') {
-        bail!("dataflow name must not contain `/` separators");
-    }
-    if !name.is_ascii() {
-        bail!("dataflow name must be ASCII");
-    }
+    super::validate_name(&name, "dataflow")?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
@@ -165,10 +156,10 @@ fn create_dataflow(
     fs::write(&pyproject_path, pyproject)
         .with_context(|| format!("failed to write `{}`", pyproject_path.display()))?;
 
-    create_custom_node("talker 1".into(), Some(root.join("talker-1")), TALKER_PY)?;
-    create_custom_node("talker 2".into(), Some(root.join("talker-2")), TALKER_PY)?;
+    create_custom_node("talker-1".into(), Some(root.join("talker-1")), TALKER_PY)?;
+    create_custom_node("talker-2".into(), Some(root.join("talker-2")), TALKER_PY)?;
     create_custom_node(
-        "listener 1".into(),
+        "listener-1".into(),
         Some(root.join("listener-1")),
         LISTENER_PY,
     )?;

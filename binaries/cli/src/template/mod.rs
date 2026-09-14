@@ -1,4 +1,4 @@
-use eyre::ContextCompat;
+use eyre::{ContextCompat, bail};
 use std::path::Path;
 
 mod c;
@@ -27,6 +27,29 @@ fn normalize_for_cmake(path: &str) -> String {
     path.replace('\\', "/")
 }
 
+/// Validate a node or dataflow `name` before it is substituted into generated
+/// files.
+///
+/// The name is interpolated raw into syntax-sensitive contexts — unquoted
+/// CMake arguments (`project(___name___ ...)`), TOML strings
+/// (`name = "___name___"`), YAML scalars and directory names — so anything
+/// outside `[A-Za-z0-9_-]` can produce a broken, unbuildable project
+/// (see issue #3440). The first character must be a letter so the name is
+/// also usable as a bare CMake argument, a Cargo package name and a Python
+/// module name.
+fn validate_name(name: &str, kind: &str) -> eyre::Result<()> {
+    let mut chars = name.chars();
+    let valid = !name.is_empty()
+        && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+    if !valid {
+        bail!(
+            "{kind} name `{name}` is invalid: use only ASCII letters, digits, `-` and `_`, starting with a letter"
+        );
+    }
+    Ok(())
+}
+
 pub fn create(args: crate::CommandNew, use_path_deps: bool) -> eyre::Result<()> {
     match args.lang {
         crate::Lang::Rust => rust::create(args, use_path_deps),
@@ -49,5 +72,42 @@ mod tests {
         let normalized = normalize_for_cmake(r"C:\Users\example\dora");
         assert_eq!(normalized, "C:/Users/example/dora");
         assert!(!normalized.contains('\\'));
+    }
+
+    #[test]
+    fn validate_name_accepts_safe_names() {
+        for name in ["talker_1", "my-node", "node2", "a", "A-_0"] {
+            validate_name(name, "node").unwrap_or_else(|_| panic!("should accept `{name}`"));
+            validate_name(name, "dataflow").unwrap_or_else(|_| panic!("should accept `{name}`"));
+        }
+    }
+
+    #[test]
+    fn validate_name_rejects_names_that_break_generated_files() {
+        // Each of these passed the old validation but produced broken
+        // generated build files (see issue #3440).
+        for name in [
+            "",
+            "my node",
+            "foo\"bar",
+            "a/b",
+            "h\u{e9}llo",
+            "(x)",
+            "a#b",
+            "a;b",
+            "-lead",
+            "9lives",
+            "_",
+            "a_b ",
+        ] {
+            assert!(
+                validate_name(name, "node").is_err(),
+                "should reject node name `{name}`"
+            );
+            assert!(
+                validate_name(name, "dataflow").is_err(),
+                "should reject dataflow name `{name}`"
+            );
+        }
     }
 }
