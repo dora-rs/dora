@@ -1744,6 +1744,13 @@ pub struct Ros2TopicConfig {
 
 /// Strip the leading `/` of a ROS2 topic name, then map any remaining `/` to
 /// `_` (e.g. `/robot/scan` -> `robot_scan`).
+///
+/// ```
+/// use dora_message::descriptor::derive_port_id;
+///
+/// assert_eq!(derive_port_id("/robot/scan"), "robot_scan");
+/// assert_eq!(derive_port_id("scan"), "scan");
+/// ```
 pub fn derive_port_id(topic: &str) -> String {
     topic.trim_start_matches('/').replace('/', "_")
 }
@@ -1785,6 +1792,23 @@ impl Ros2TopicConfig {
 /// config, and the validator, which rejects the ambiguous case, call this — a
 /// wrong choice here binds the bridge to a port nothing is wired to and drops
 /// every message silently.
+///
+/// ```
+/// use dora_message::descriptor::single_topic_port_id;
+///
+/// // The topic-derived id is preferred when the node declares it...
+/// assert_eq!(
+///     single_topic_port_id("/robot/scan", &["robot_scan", "status"]),
+///     Some("robot_scan".to_string()),
+/// );
+/// // ...otherwise a node that declares a single port resolves to that port...
+/// assert_eq!(
+///     single_topic_port_id("/robot/scan", &["lidar"]),
+///     Some("lidar".to_string()),
+/// );
+/// // ...but several non-matching ports leave the choice ambiguous.
+/// assert_eq!(single_topic_port_id("/robot/scan", &["a", "b"]), None);
+/// ```
 pub fn single_topic_port_id(topic: &str, declared_ports: &[&str]) -> Option<String> {
     let derived = derive_port_id(topic);
     if declared_ports.contains(&derived.as_str()) {
