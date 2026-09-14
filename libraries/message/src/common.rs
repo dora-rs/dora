@@ -136,6 +136,27 @@ impl LogLevelOrStdout {
     /// - A `LogLevel` message always passes a `Stdout` filter (the most
     ///   permissive), and passes a `LogLevel` filter `min` when its severity is
     ///   at least as severe as `min` (`msg <= min` in log-crate ordering).
+    ///
+    /// ```
+    /// use dora_message::common::{LogLevel, LogLevelOrStdout};
+    ///
+    /// let stdout = LogLevelOrStdout::Stdout;
+    /// let info = LogLevelOrStdout::LogLevel(LogLevel::Info);
+    /// let error = LogLevelOrStdout::LogLevel(LogLevel::Error);
+    ///
+    /// // Severity: `Error` is more severe than `Info`, so it passes an `Info` filter...
+    /// assert!(error.passes(&info));
+    /// // ...while a less severe message is filtered out.
+    /// assert!(!info.passes(&error));
+    /// // A message passes a filter at its own level.
+    /// assert!(info.passes(&info));
+    ///
+    /// // A `LogLevel` message always passes the (most permissive) `Stdout` filter,
+    /// // but a `Stdout` message passes only a `Stdout` filter, never a severity one.
+    /// assert!(info.passes(&stdout));
+    /// assert!(stdout.passes(&stdout));
+    /// assert!(!stdout.passes(&info));
+    /// ```
     pub fn passes(&self, min: &LogLevelOrStdout) -> bool {
         match (self, min) {
             (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
@@ -338,6 +359,14 @@ impl fmt::Debug for DataMessage {
     }
 }
 
+/// Identity of a running daemon: an optional operator-supplied machine id
+/// paired with a per-process time-ordered UUIDv7.
+///
+/// The machine id (typically a hostname) makes the [`Display`](std::fmt::Display)
+/// form human-readable and lets the coordinator route by machine, while the UUID
+/// keeps the id unique even when two daemons share a machine id (or none is set).
+/// The `Display` form is `"{machine_id}-{uuid}"`, or a bare `"{uuid}"` when there
+/// is no machine id; [`from_display_str`](Self::from_display_str) is its inverse.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct DaemonId {
     machine_id: Option<String>,
@@ -345,6 +374,8 @@ pub struct DaemonId {
 }
 
 impl DaemonId {
+    /// Create a fresh daemon id for the given machine, assigning a new
+    /// time-ordered UUIDv7. Pass `None` when no machine id is configured.
     pub fn new(machine_id: Option<String>) -> Self {
         DaemonId {
             machine_id,
@@ -352,6 +383,9 @@ impl DaemonId {
         }
     }
 
+    /// Whether this daemon was created with exactly the given machine id.
+    ///
+    /// Always `false` for a daemon created without a machine id.
     pub fn matches_machine_id(&self, machine_id: &str) -> bool {
         self.machine_id
             .as_ref()
@@ -359,6 +393,7 @@ impl DaemonId {
             .unwrap_or_default()
     }
 
+    /// The machine id this daemon was created with, or `None` if none was set.
     pub fn machine_id(&self) -> Option<&str> {
         self.machine_id.as_deref()
     }
@@ -375,6 +410,24 @@ impl DaemonId {
     /// machine-id path requires the canonical 36-char UUID suffix that
     /// `Display` emits; the bare path accepts any form `Uuid::parse_str`
     /// recognizes (canonical / simple / urn / braced).
+    ///
+    /// ```
+    /// use dora_message::common::DaemonId;
+    ///
+    /// // A hyphenated machine id round-trips through `Display` (dora-rs/dora#2027)...
+    /// let id = DaemonId::new(Some("my-host".to_string()));
+    /// assert_eq!(DaemonId::from_display_str(&id.to_string()), Some(id.clone()));
+    /// assert_eq!(id.machine_id(), Some("my-host"));
+    /// assert!(id.matches_machine_id("my-host"));
+    ///
+    /// // ...as does a daemon with no machine id (a bare UUID).
+    /// let anon = DaemonId::new(None);
+    /// assert_eq!(DaemonId::from_display_str(&anon.to_string()), Some(anon.clone()));
+    /// assert_eq!(anon.machine_id(), None);
+    ///
+    /// // Garbage does not parse to a bogus id.
+    /// assert_eq!(DaemonId::from_display_str("not-a-daemon-id"), None);
+    /// ```
     pub fn from_display_str(s: &str) -> Option<Self> {
         // No machine id: the whole string is the UUID.
         if let Ok(uuid) = Uuid::parse_str(s) {
