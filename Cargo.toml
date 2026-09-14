@@ -84,6 +84,7 @@ members = [
     "tests/fault_tolerance/event_log_observer_node",
     "tests/fault_tolerance/fire_and_forget_source_node",
     "tests/fault_tolerance/hang_after_init_node",
+    "tests/fault_tolerance/hang_before_init_node",
     "tests/fault_tolerance/input_closed_observer_node",
     "tests/fault_tolerance/late_dynamic_sender",
     "tests/fault_tolerance/reconnect_survivor_node",

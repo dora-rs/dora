@@ -1005,6 +1005,16 @@ pub struct Node {
     /// Machine deployment configuration.
     #[schemars(skip)]
     pub deploy: Option<Deploy>,
+
+    /// Startup connection deadline in seconds.
+    ///
+    /// If the node process fails to connect (subscribe to events) within this
+    /// many seconds after process spawn, the daemon kills the process and
+    /// evaluates the `restart_policy`.
+    ///
+    /// Evaluated on each `health_check_interval` tick (default 5s).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
 }
 
 impl Node {
@@ -1066,6 +1076,7 @@ impl Node {
             params: Default::default(),
             cpu_affinity: None,
             deploy: None,
+            startup_timeout: None,
         }
     }
 }
@@ -1445,6 +1456,17 @@ pub struct CustomNode {
 
     #[serde(flatten)]
     pub run_config: NodeRunConfig,
+
+    /// Startup connection deadline in seconds.
+    ///
+    /// If the node process fails to connect (subscribe to events) within this
+    /// many seconds after process spawn, the daemon kills the process and
+    /// evaluates the `restart_policy`.
+    ///
+    /// Evaluated on each `health_check_interval` tick (default 5s).
+    // Appended last so existing fields keep their wire-format order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_timeout: Option<f64>,
 }
 
 impl CustomNode {
@@ -1475,6 +1497,7 @@ impl CustomNode {
             health_check_timeout: None,
             finish_grace_secs: None,
             run_config: NodeRunConfig::default(),
+            startup_timeout: None,
         }
     }
 
@@ -1527,6 +1550,7 @@ impl CustomNode {
                 input_types: std::mem::take(&mut node.input_types),
                 shared_memory_pool_size: node.shared_memory_pool_size.take(),
             },
+            startup_timeout: node.startup_timeout.take(),
         }
     }
 }
