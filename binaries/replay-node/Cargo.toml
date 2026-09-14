@@ -22,3 +22,10 @@ dora-node-api = { workspace = true, default-features = false, features = ["arrow
 dora-recording = { workspace = true }
 dora-message = { workspace = true }
 eyre = { workspace = true }
+
+[dev-dependencies]
+aligned-vec = { version = "0.6.4", features = ["serde"] }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+tempfile = { workspace = true }
+tracing-subscriber = "0.3"

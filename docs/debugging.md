@@ -217,7 +217,7 @@ Replay works by:
 1. Reading the `.drec` file header to get the original dataflow descriptor
 2. Identifying which nodes produced the recorded data
 3. Replacing those source nodes with `dora-replay-node` instances
-4. Running the modified dataflow -- downstream nodes receive replayed data identically to live data
+4. Running the modified dataflow to deliver recorded payloads to downstream nodes
 
 The replay node binary (`dora-replay-node`) is auto-built on first use.
 
@@ -226,9 +226,39 @@ The replay node binary (`dora-replay-node`) is auto-built on first use.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--speed <FLOAT>` | `1.0` | Playback speed multiplier. `2.0` = 2x, `0.5` = half speed, `0` = as fast as possible |
-| `--loop` | off | Loop the recording continuously |
+| `--delivery-timeout <DURATION>` | `30s` | Maximum duration for verified full-speed replay |
+| `--loop` | off | Loop the recording continuously at a nonzero speed |
 | `--replace <NODES>` | all recorded | Comma-separated list of nodes to replace |
 | `--output-yaml <PATH>` | - | Write modified descriptor YAML without running |
+
+### Verified Full-Speed Replay
+
+Executed replay with `--speed 0` verifies delivery to each direct receiver's node input API.
+Each source records the count and ordered identities of its submitted messages per output.
+Each receiver records the identities of messages returned by its input API per input.
+The CLI compares these receipts after the dataflow finishes.
+A successful exit requires matching receipts and source counts that match the recording.
+
+Missing, duplicated, or reordered deliveries on an edge cause a nonzero exit.
+Verification does not compare order across different streams.
+A missing receipt, cancellation, or timeout also causes a nonzero exit.
+Receivers must use a node API build with replay receipt support.
+The receipt proves input API delivery. It does not prove application processing or recording integrity.
+
+This mode requires a finite local graph with static executable receivers.
+All receiver inputs must come directly from recorded outputs.
+It rejects partial replacement, live inputs, timers, lossy queue policies, deployment settings, operator receivers, modules, and restart policies.
+It also rejects `DORA_WRITE_EVENTS_TO` and correlation helpers that retain pending events.
+During verified replay, `drain()` returns at most one available event per call.
+
+Unspecified input queues use 64 messages. Explicit queue sizes must be between 1 and 1024.
+Verified queues use backpressure and the daemon route.
+Producer ingress, daemon receiver queues, and node receiver queues each have a 256 MiB admission limit.
+These limits include serialized metadata and payloads. They exclude transport copies and application-owned events.
+Queue exhaustion can still discard messages, but receipt verification prevents a successful exit after delivery loss.
+
+Use `--delivery-timeout 2m` when the default 30-second duration is insufficient.
+`--output-yaml` only generates a descriptor. It does not verify delivery when that descriptor runs later.
 
 ### Selective Replay
 
@@ -706,7 +736,7 @@ dora topic echo -d my-dataflow node/output --format json
 dora record dataflow.yml -o debug.drec
 
 # 3. Replay with known input to isolate the issue
-dora replay debug.drec --replace sensor --speed 0
+dora replay debug.drec --replace sensor --speed 1
 ```
 
 ### Workflow 3: Performance Issues

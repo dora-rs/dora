@@ -525,7 +525,8 @@ dora replay <FILE> [OPTIONS]
 | Flag | Default | Description |
 |------|---------|-------------|
 | `<FILE>` | required | Path to `.drec` recording |
-| `--speed <FLOAT>` | `1.0` | Playback speed (0 = max speed) |
+| `--speed <FLOAT>` | `1.0` | Playback speed (0 verifies executed replay, except with `--output-yaml`) |
+| `--delivery-timeout <DURATION>` | `30s` | Maximum duration for verified full-speed replay |
 | `--loop` | false | Loop the recording |
 | `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |

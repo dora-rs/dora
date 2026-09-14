@@ -3,7 +3,10 @@ use std::{
     fs::File,
     io::Write,
     path::{Path, PathBuf},
+    time::Duration,
 };
+
+mod verification;
 
 use clap::Args;
 use dora_recording::RecordingReader;
@@ -15,7 +18,11 @@ use crate::command::{Executable, Run};
 ///
 /// Reads a recording, identifies which nodes produced the recorded data,
 /// replaces them with replay nodes, and runs the modified dataflow.
-/// Downstream nodes receive replayed data identically to live data.
+/// Downstream nodes receive recorded payloads through the node input API.
+/// Executed replay at speed 0 requires matching sender and receiver input-API receipts.
+/// This verifies ordered delivery per direct recorded edge, not application processing.
+/// Receivers must use a node API with replay receipt support.
+/// Full-speed verification supports finite local graphs with static executable receivers.
 ///
 /// Examples:
 ///
@@ -55,6 +62,10 @@ pub struct Replay {
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
     output_yaml: Option<String>,
+
+    /// Maximum run duration for verified full-speed replay
+    #[clap(long, default_value = "30s", value_parser = crate::common::parse_duration)]
+    delivery_timeout: Duration,
 }
 
 impl Executable for Replay {
@@ -105,6 +116,21 @@ fn parse_speed(s: &str) -> Result<f64, String> {
 }
 
 fn run_replay(args: Replay) -> eyre::Result<()> {
+    if !args.speed.is_finite() || args.speed < 0.0 {
+        bail!("replay speed must be a finite nonnegative number");
+    }
+    let verify_delivery = args.speed == 0.0 && args.output_yaml.is_none();
+    if verify_delivery && crate::common::write_events_to().is_some() {
+        bail!(
+            "verified full-speed replay does not support DORA_WRITE_EVENTS_TO because event tracing retains an unbounded history"
+        );
+    }
+    if verify_delivery && args.r#loop {
+        bail!("verified full-speed replay requires a finite recording; --loop is not supported");
+    }
+    if verify_delivery && args.delivery_timeout.is_zero() {
+        bail!("replay delivery timeout must be greater than zero");
+    }
     let file = File::open(&args.file).wrap_err_with(|| {
         format!(
             "failed to open recording file `{}`\n\n  \
@@ -120,6 +146,14 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
 
     let mut descriptor: serde_yaml::Value =
         serde_yaml::from_str(descriptor_yaml).wrap_err("failed to parse descriptor YAML")?;
+
+    if verify_delivery
+        && descriptor
+            .get("deploy")
+            .is_some_and(|value| !value.is_null())
+    {
+        bail!("verified full-speed replay does not support dataflow deployment settings");
+    }
 
     // Discover which nodes produced recorded data and how many messages each
     // output carries (used to size receiver queues below).
@@ -163,10 +197,9 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         requested
     };
 
-    if args.speed == 0.0 && nodes_to_replace.len() < recorded_counts.len() {
-        eprintln!(
-            "warning: partial --replace with --speed 0: live intermediate nodes may re-emit \
-             faster than their downstream consumers' default input queues can absorb"
+    if verify_delivery && nodes_to_replace.len() < recorded_counts.len() {
+        bail!(
+            "verified full-speed replay requires all recorded nodes; partial --replace is not supported"
         );
     }
 
@@ -189,7 +222,18 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         args.speed,
         args.r#loop,
     );
-    raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+    if !verify_delivery {
+        raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+    }
+
+    let verification = if verify_delivery {
+        Some(verification::Verification::prepare(
+            nodes,
+            &recorded_counts,
+        )?)
+    } else {
+        None
+    };
 
     let modified_yaml =
         serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")?;
@@ -199,6 +243,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         std::fs::write(&output_path, &modified_yaml)
             .wrap_err_with(|| format!("failed to write {output_path}"))?;
         eprintln!("Modified descriptor written to {output_path}");
+        eprintln!("Descriptor generation does not verify replay delivery");
         return Ok(());
     }
 
@@ -242,14 +287,19 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
-    run.execute()
+    let mut run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
+    if verification.is_some() {
+        run.stop_after = Some(args.delivery_timeout);
+        run = run.with_fail_on_stop();
+    }
+    run.execute()?;
+    if let Some(verification) = verification {
+        verification.verify(&recorded_counts)?;
+    }
+    Ok(())
 }
 
-/// Rewrites each recorded node in the descriptor into a replay node: swaps its
-/// `path` for the `dora-replay-node` binary, strips the build/source/operator
-/// keys and its `inputs`, republishes its recorded `outputs`, and injects the
-/// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
+/// Replace recorded producers with the replay executable and recording settings.
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -357,36 +407,8 @@ fn append_prefixed_outputs(
     }
 }
 
-/// Raises replayed inputs' node-level queue sizes so a full-speed replay does
-/// not drop messages *at the node input-queue layer*.
-///
-/// Replay can outpace receivers — especially with `--speed 0` — and dora's
-/// real-time defaults drop under pressure: each input queue holds
-/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
-/// sized from the queue sizes. For every input fed by a replayed node, this
-/// sets `queue_size` to the recorded message count for that output and
-/// `queue_policy: backpressure`, so one pass of the recording fits entirely
-/// and any residual overflow is logged loudly instead of dropped silently
-/// (#2144).
-///
-/// Scope and limits:
-/// - Inputs with an explicit `queue_size` are left untouched: an explicit
-///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
-///   which replay should reproduce, not override.
-/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
-///   partial `--replace`, live intermediate nodes can re-emit at full speed
-///   into their own downstream consumers' default queues (warned at the call
-///   site).
-/// - The sizing bounds one pass of the recording; `--loop` can still
-///   overflow, at which point the backpressure policy logs errors at its
-///   hard cap instead of dropping silently.
-/// - This addresses only the node input-queue layer. The layer beneath it —
-///   the direct node-to-node zenoh data plane, whose output publishers use
-///   `CongestionControl::Drop` (`apis/rust/node/src/node/mod.rs`) — can still
-///   drop an unpaced `--speed 0` burst while `send` reports success. That
-///   holds for single-daemon replay too, since same-machine nodes exchange
-///   outputs over the same direct path, so this is not a multi-daemon-only
-///   gap. Not addressed here (dora-rs/dora#3397).
+/// Size unspecified queues for one recording pass in paced replay or generated YAML.
+/// Queue sizing does not verify delivery. Explicit queue sizes remain unchanged.
 fn raise_replayed_input_queue_sizes(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -494,6 +516,47 @@ fn find_replay_node_binary() -> eyre::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rejects_speeds_that_bypass_full_speed_verification() {
+        for speed in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            let error = run_replay(Replay {
+                file: "unused.drec".into(),
+                replace: Vec::new(),
+                speed,
+                r#loop: false,
+                output_yaml: None,
+                delivery_timeout: Duration::from_secs(30),
+            })
+            .expect_err("invalid speed must fail before opening the recording");
+            assert!(error.to_string().contains("replay speed"));
+        }
+    }
+
+    #[test]
+    fn rejects_dataflow_deployment_before_starting_replay() {
+        let file = tempfile::NamedTempFile::new().expect("recording file");
+        let header = dora_recording::RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: uuid::Uuid::nil(),
+            descriptor_yaml: b"deploy: {machine: remote}\nnodes: []\n".to_vec(),
+        };
+        dora_recording::RecordingWriter::new(file.reopen().expect("open recording"), &header)
+            .expect("write header")
+            .finish()
+            .expect("finish recording");
+        let error = run_replay(Replay {
+            file: file.path().to_string_lossy().into_owned(),
+            replace: Vec::new(),
+            speed: 0.0,
+            r#loop: false,
+            output_yaml: None,
+            delivery_timeout: Duration::from_secs(30),
+        })
+        .expect_err("deployment must be rejected before running");
+        assert!(error.to_string().contains("dataflow deployment settings"));
+    }
 
     fn run_rewrite(yaml: &str, replaced: &[&str], counts: &[(&str, &str, u64)]) -> String {
         let mut descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();

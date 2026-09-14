@@ -29,6 +29,7 @@ arrow-v59 = ["dora-arrow-convert/arrow-v59"]
 [dependencies]
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-message = { workspace = true }
+dora-recording = { workspace = true }
 eyre = { workspace = true }
 serde_yaml = { workspace = true }
 tracing = { workspace = true }

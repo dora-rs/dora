@@ -150,6 +150,9 @@ pub struct Run {
         value_name = "BOOL"
     )]
     pub exit_when_nodes_finish: Option<bool>,
+    /// Return an error when a local stop source ends the run.
+    #[clap(skip)]
+    fail_on_stop: bool,
 }
 
 impl Run {
@@ -170,11 +173,18 @@ impl Run {
             hub_override: Vec::new(),
             env: Vec::new(),
             exit_when_nodes_finish: None,
+            fail_on_stop: false,
         }
     }
 
     pub fn with_working_dir(mut self, working_dir: PathBuf) -> Self {
         self.working_dir = Some(working_dir);
+        self
+    }
+
+    /// Makes Ctrl-C, termination, and `stop_after` fail after cleanup.
+    pub(crate) fn with_fail_on_stop(mut self) -> Self {
+        self.fail_on_stop = true;
         self
     }
 }
@@ -294,6 +304,7 @@ impl Executable for Run {
         let debug = self.debug;
         let working_dir_override = self.working_dir.clone();
         let exit_when_nodes_finish = self.exit_when_nodes_finish;
+        let fail_on_stop = self.fail_on_stop;
         let handle = rt.spawn(async move {
             Daemon::run_dataflow_with(
                 None,
@@ -313,7 +324,8 @@ impl Executable for Run {
                 match exit_when_nodes_finish {
                     Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
                     None => RunDataflowOptions::default(),
-                },
+                }
+                .fail_on_stop(fail_on_stop),
             )
             .await
         });

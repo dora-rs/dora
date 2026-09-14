@@ -124,6 +124,8 @@ pub struct EventStream {
     /// Set in [`Drop`] before `EventStreamDropped` so a scheduled `next_event`
     /// sleep cannot deadlock the close handshake (dora-rs/dora#2855).
     testing_shutdown: Option<Arc<AtomicBool>>,
+    input_receipt: crate::replay_receipt::ReceiptRecorder,
+    verified_replay: bool,
 }
 
 /// Spawn the consumer half of the startup handshake: a thread that answers
@@ -197,9 +199,33 @@ fn spawn_startup_acker(
     }
 }
 
+fn validate_verified_replay_inputs(
+    node_id: &NodeId,
+    verified_replay: bool,
+    writes_event_trace: bool,
+    input_config: &BTreeMap<DataId, Input>,
+) -> eyre::Result<()> {
+    if !verified_replay {
+        return Ok(());
+    }
+    if writes_event_trace {
+        eyre::bail!(
+            "verified replay input receipts cannot be combined with write_events_to for node `{node_id}`"
+        );
+    }
+    for (input_id, input) in input_config {
+        if input.queue_policy != Some(dora_message::config::QueuePolicy::Backpressure) {
+            eyre::bail!(
+                "verified replay input `{node_id}/{input_id}` must use `queue_policy: backpressure`"
+            );
+        }
+    }
+    Ok(())
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
-    #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
+    #[tracing::instrument(level = "trace", skip(clock, zenoh_session, input_receipt))]
     pub(crate) fn init(
         dataflow_id: DataflowId,
         node_id: &NodeId,
@@ -209,7 +235,14 @@ impl EventStream {
         clock: Arc<uhlc::HLC>,
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
+        input_receipt: crate::replay_receipt::ReceiptRecorder,
     ) -> eyre::Result<Self> {
+        validate_verified_replay_inputs(
+            node_id,
+            input_receipt.is_configured(),
+            write_events_to.is_some(),
+            &input_config,
+        )?;
         let channel = match daemon_communication {
             DaemonCommunicationWrapper::Standard(daemon_communication) => {
                 match daemon_communication {
@@ -359,6 +392,7 @@ impl EventStream {
             zenoh_session,
             &input_config,
             testing_shutdown,
+            input_receipt,
         )
     }
 
@@ -376,6 +410,7 @@ impl EventStream {
         zenoh_session: Option<&zenoh::Session>,
         input_config: &BTreeMap<DataId, Input>,
         testing_shutdown: Option<Arc<AtomicBool>>,
+        input_receipt: crate::replay_receipt::ReceiptRecorder,
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
@@ -749,7 +784,15 @@ impl EventStream {
 
         close_channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
 
-        let thread_handle = thread::init(node_id.clone(), tx, channel, clock.clone())?;
+        let verified_replay = input_receipt.is_configured();
+        let replay_byte_budget = thread::replay_byte_budget(verified_replay);
+        let thread_handle = thread::init(
+            node_id.clone(),
+            tx,
+            channel,
+            clock.clone(),
+            replay_byte_budget,
+        )?;
 
         Ok(EventStream {
             node_id: node_id.clone(),
@@ -768,6 +811,8 @@ impl EventStream {
             pending_passthrough: std::collections::VecDeque::new(),
             stop_received: false,
             testing_shutdown,
+            input_receipt,
+            verified_replay,
         })
     }
 
@@ -856,9 +901,14 @@ impl EventStream {
         // scheduler, so the caller's main event loop never loses
         // events that arrived during a helper wait (dora-rs/adora#148).
         if let Some(event) = self.pending_passthrough.pop_front() {
+            self.record_yielded_event(&event);
             return Some(event);
         }
-        self.recv_from_stream().await
+        let event = self.recv_from_stream().await;
+        if let Some(event) = &event {
+            self.record_yielded_event(event);
+        }
+        event
     }
 
     /// Receive the next event straight from the scheduler/receiver,
@@ -989,6 +1039,12 @@ impl EventStream {
 
         if matches!(event, Event::Stop(_)) {
             self.stop_received = true;
+        }
+    }
+
+    fn record_yielded_event(&mut self, event: &Event) {
+        if let Event::Input { id, metadata, .. } = event {
+            self.input_receipt.record(id.as_str(), metadata.timestamp());
         }
     }
 
@@ -1135,16 +1191,27 @@ impl EventStream {
         }
     }
 
-    /// Receives all buffered [`Event`]s without blocking, using an [`EventScheduler`] for fairness.
+    /// Receives buffered [`Event`]s without blocking, using an [`EventScheduler`] for fairness.
+    ///
+    /// During verified replay, each call returns at most one ready event. This bounds the returned
+    /// vector while producers continue to refill upstream queues. Other runs return all ready events.
     ///
     /// Return `Some(Vec::new())` if no events are ready.
     /// Returns [`None`] once the event stream is closed and no events are buffered anymore.
     ///
     /// This method never blocks and is safe to use in asynchronous contexts.
     ///
-    /// This method is equivalent to repeatedly calling [`try_recv`][Self::try_recv]. See its docs
-    /// for details on event reordering.
+    /// Outside verified replay, this method is equivalent to repeatedly calling
+    /// [`try_recv`][Self::try_recv]. See its docs for details on event reordering.
     pub fn drain(&mut self) -> Option<Vec<Event>> {
+        if self.verified_replay {
+            return match self.try_recv() {
+                Ok(event) => Some(vec![event]),
+                Err(TryRecvError::Empty) => Some(Vec::new()),
+                Err(TryRecvError::Closed) => None,
+            };
+        }
+
         let mut events = Vec::new();
         loop {
             match self.try_recv() {
@@ -1299,6 +1366,12 @@ impl EventStream {
     where
         F: Fn(&Event, &str) -> bool,
     {
+        if self.verified_replay {
+            return Err(PatternError::StreamError(
+                "pattern receive helpers are disabled during verified replay".to_owned(),
+            ));
+        }
+
         // A previous pattern-aware wait may already have buffered the event
         // we are now looking for. With pipelined requests, the response to
         // `req-2` can arrive — and be classified non-matching, so buffered
@@ -1320,6 +1393,7 @@ impl EventStream {
             .position(|event| is_match(event, needle))
             && let Some(event) = self.pending_passthrough.remove(pos)
         {
+            self.record_yielded_event(&event);
             return Ok(event);
         }
 
@@ -1340,7 +1414,10 @@ impl EventStream {
             };
 
             match classify_correlation_event(&event, expected_server, |e| is_match(e, needle)) {
-                CorrelationOutcome::Match => return Ok(event),
+                CorrelationOutcome::Match => {
+                    self.record_yielded_event(&event);
+                    return Ok(event);
+                }
                 CorrelationOutcome::ServerRestarted => {
                     self.pending_passthrough.push_back(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
@@ -1433,7 +1510,7 @@ where
 impl EventStream {
     fn convert_event_item(item: EventItem) -> Event {
         match item {
-            EventItem::NodeEvent { event } => match event {
+            EventItem::NodeEvent { event, .. } => match event {
                 NodeEvent::Stop => Event::Stop(event::StopCause::Manual),
                 NodeEvent::Reload { operator_id } => Event::Reload { operator_id },
                 NodeEvent::InputClosed { id } => Event::InputClosed { id },
@@ -1740,13 +1817,9 @@ impl Stream for EventStream {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Self::Item>> {
-        // Drain events that were buffered by pattern-aware helpers
-        // (`recv_service_response`, `recv_action_result`) before
-        // polling the underlying receiver. Mirrors the drain at the
-        // top of `recv_async` so `StreamExt::next()` and `recv()`
-        // return the same events in the same order
-        // (dora-rs/adora#172).
+        // Return events buffered by correlation helpers before polling the receiver.
         if let Some(event) = self.pending_passthrough.pop_front() {
+            self.record_yielded_event(&event);
             return std::task::Poll::Ready(Some(event));
         }
 
@@ -1761,11 +1834,10 @@ impl Stream for EventStream {
             .poll_recv(cx)
             .map(|item| item.map(Self::convert_event_item));
 
-        // Mirror recv_async(): run the first-message type check and stop
-        // tracking on the Stream path too, via the shared helper so the two
-        // paths stay in lockstep (dora-rs/adora#172, #174).
+        // Apply the first-message type check and Stop tracking to this receive path.
         if let std::task::Poll::Ready(Some(ref event)) = poll {
             self.note_produced_event(event);
+            self.record_yielded_event(event);
         }
         poll
     }
@@ -1773,6 +1845,7 @@ impl Stream for EventStream {
 
 impl Drop for EventStream {
     fn drop(&mut self) {
+        self.input_receipt.finish();
         // Tear down the per-input zenoh callback subscribers under a deadline.
         // `Subscriber::drop` undeclares the subscription on the shared zenoh
         // session, which blocks indefinitely when zenoh's net runtime is
@@ -1959,6 +2032,7 @@ impl EventStream {
                 metadata: std::sync::Arc::new(meta),
                 data: None,
             },
+            _byte_permit: None,
         });
     }
 
@@ -1971,6 +2045,7 @@ impl EventStream {
         self.use_scheduler = true;
         self.scheduler.add_event(EventItem::NodeEvent {
             event: NodeEvent::Stop,
+            _byte_permit: None,
         });
     }
 }
@@ -1978,6 +2053,50 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn replay_guard_inputs(
+        policy: Option<dora_message::config::QueuePolicy>,
+    ) -> BTreeMap<DataId, Input> {
+        let mut input: Input = serde_yaml::from_str("source/output").unwrap();
+        input.queue_policy = policy;
+        BTreeMap::from([(DataId::from("camera".to_owned()), input)])
+    }
+
+    #[test]
+    fn verified_replay_rejects_write_events_trace() {
+        let inputs = replay_guard_inputs(Some(dora_message::config::QueuePolicy::Backpressure));
+        let error =
+            validate_verified_replay_inputs(&NodeId::from("sink".to_owned()), true, true, &inputs)
+                .unwrap_err();
+        assert!(error.to_string().contains("write_events_to"));
+    }
+
+    #[test]
+    fn verified_replay_requires_backpressure_on_every_input() {
+        let inputs = replay_guard_inputs(None);
+        let error =
+            validate_verified_replay_inputs(&NodeId::from("sink".to_owned()), true, false, &inputs)
+                .unwrap_err();
+        assert!(error.to_string().contains("sink/camera"));
+        assert!(error.to_string().contains("backpressure"));
+    }
+
+    #[test]
+    fn replay_input_guards_allow_backpressure_and_do_not_change_live_mode() {
+        let backpressure =
+            replay_guard_inputs(Some(dora_message::config::QueuePolicy::Backpressure));
+        validate_verified_replay_inputs(
+            &NodeId::from("sink".to_owned()),
+            true,
+            false,
+            &backpressure,
+        )
+        .unwrap();
+
+        let live = replay_guard_inputs(None);
+        validate_verified_replay_inputs(&NodeId::from("sink".to_owned()), false, true, &live)
+            .unwrap();
+    }
 
     #[test]
     fn control_event_json_shape_and_key_order() {
@@ -2013,6 +2132,7 @@ mod tests {
                 key: "fps".into(),
                 value_json: serde_json::to_vec(&serde_json::json!(60)).unwrap(),
             },
+            _byte_permit: None,
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -2154,6 +2274,7 @@ mod tests {
     fn convert_param_deleted() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::ParamDeleted { key: "fps".into() },
+            _byte_permit: None,
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -2168,6 +2289,7 @@ mod tests {
     fn convert_stop_event() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::Stop,
+            _byte_permit: None,
         };
         let event = EventStream::convert_event_item(item);
         assert!(matches!(event, Event::Stop(StopCause::Manual)));
@@ -2177,6 +2299,7 @@ mod tests {
     fn convert_all_inputs_closed() {
         let item = EventItem::NodeEvent {
             event: NodeEvent::AllInputsClosed,
+            _byte_permit: None,
         };
         let event = EventStream::convert_event_item(item);
         assert!(matches!(event, Event::Stop(StopCause::AllInputsClosed)));
@@ -2188,6 +2311,7 @@ mod tests {
             event: NodeEvent::InputClosed {
                 id: "input_1".to_string().into(),
             },
+            _byte_permit: None,
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -2202,6 +2326,7 @@ mod tests {
             event: NodeEvent::NodeRestarted {
                 id: "upstream".to_string().into(),
             },
+            _byte_permit: None,
         };
         let event = EventStream::convert_event_item(item);
         match event {
@@ -2426,6 +2551,37 @@ mod tests {
         crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
     }
 
+    fn input_receipt_config(
+        streams: &[&str],
+    ) -> dora_recording::replay_receipt::ReplayReceiptConfig {
+        let session_id = uuid::Uuid::now_v7();
+        dora_recording::replay_receipt::ReplayReceiptConfig {
+            session_id,
+            node_id: "test-node".to_owned(),
+            stream_ids: streams.iter().map(|stream| (*stream).to_owned()).collect(),
+            receipt_path: std::env::temp_dir()
+                .join(format!("dora-replay-receipt-{session_id}.json")),
+        }
+    }
+
+    fn enable_input_receipt(
+        events: &mut EventStream,
+        config: dora_recording::replay_receipt::ReplayReceiptConfig,
+    ) {
+        events.input_receipt =
+            crate::replay_receipt::ReceiptRecorder::from_config_for_testing(config, "test-node")
+                .unwrap();
+        events.verified_replay = true;
+    }
+
+    fn read_and_remove_receipt(
+        config: &dora_recording::replay_receipt::ReplayReceiptConfig,
+    ) -> dora_recording::replay_receipt::ReplayReceipt {
+        let receipt = dora_recording::replay_receipt::read_receipt(config).unwrap();
+        std::fs::remove_file(&config.receipt_path).unwrap();
+        receipt
+    }
+
     /// #2956: outputs sent through `TestingOutput::ToChannel` must reach the
     /// receiver, in order, when drained after the node has finished — the
     /// documented usage pattern, and previously untested (every other
@@ -2580,6 +2736,178 @@ mod tests {
             matches!(second, Some(Event::Stop(_))),
             "expected Stop second, got {second:?}"
         );
+    }
+
+    #[test]
+    fn recv_records_an_input_only_when_it_is_yielded() {
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            vec![
+                TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Input {
+                        id: "cam".parse().unwrap(),
+                        metadata: None,
+                        data: None,
+                    },
+                },
+                TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Stop,
+                },
+            ],
+        ));
+        let (tx, _rx) = crate::integration_testing::output_channel();
+        let (node, mut events) = crate::DoraNode::init_testing(
+            inputs,
+            TestingOutput::ToChannel(tx),
+            TestingOptions {
+                skip_output_time_offsets: true,
+            },
+        )
+        .unwrap();
+        let config = input_receipt_config(&["cam"]);
+        enable_input_receipt(&mut events, config.clone());
+
+        assert!(matches!(events.recv(), Some(Event::Input { id, .. }) if id.as_str() == "cam"));
+        drop(events);
+        let receipt = read_and_remove_receipt(&config);
+        assert_eq!(receipt.streams["cam"].count, 1);
+        drop(node);
+    }
+
+    #[test]
+    fn stream_poll_records_a_buffered_input_when_yielded() {
+        use futures::StreamExt;
+
+        let (node, mut events) = test_event_stream();
+        let _ = events.recv();
+        let config = input_receipt_config(&["cam"]);
+        enable_input_receipt(&mut events, config.clone());
+        events.push_passthrough_for_testing(make_input_event("cam", MetadataParameters::new()));
+
+        assert!(matches!(
+            futures::executor::block_on(events.next()),
+            Some(Event::Input { id, .. }) if id.as_str() == "cam"
+        ));
+        drop(events);
+        let receipt = read_and_remove_receipt(&config);
+        assert_eq!(receipt.streams["cam"].count, 1);
+        drop(node);
+    }
+
+    #[test]
+    fn verified_drain_returns_one_input_per_call_and_receipts_each_input() {
+        let (node, mut events) = test_event_stream();
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+        let stream_ids = ["first", "second", "third"];
+        let config = input_receipt_config(&stream_ids);
+        enable_input_receipt(&mut events, config.clone());
+        for stream_id in stream_ids {
+            events.push_passthrough_for_testing(make_input_event(
+                stream_id,
+                MetadataParameters::new(),
+            ));
+        }
+
+        let mut returned = Vec::new();
+        for _ in 0..stream_ids.len() {
+            let batch = events
+                .drain()
+                .expect("stream remains open while inputs remain");
+            assert_eq!(batch.len(), 1);
+            let Event::Input { id, .. } = batch.into_iter().next().unwrap() else {
+                panic!("verified drain returned a non-input event");
+            };
+            returned.push(id.to_string());
+        }
+        assert_eq!(
+            returned,
+            vec!["first".to_owned(), "second".to_owned(), "third".to_owned()]
+        );
+        assert!(events.drain().is_none());
+
+        drop(events);
+        let receipt = read_and_remove_receipt(&config);
+        for stream_id in stream_ids {
+            assert_eq!(receipt.streams[stream_id].count, 1);
+        }
+        drop(node);
+    }
+
+    #[test]
+    fn live_drain_still_returns_all_ready_events() {
+        let (node, mut events) = test_event_stream();
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+        for stream_id in ["first", "second", "third"] {
+            events.push_passthrough_for_testing(make_input_event(
+                stream_id,
+                MetadataParameters::new(),
+            ));
+        }
+
+        assert_eq!(events.drain().expect("buffered events").len(), 3);
+        assert!(events.drain().is_none());
+        drop(events);
+        drop(node);
+    }
+
+    #[test]
+    fn correlation_helpers_remain_disabled_after_receipt_finishes() {
+        let inputs = TestingInput::Input(IntegrationTestInput::new(
+            "test-node".parse().unwrap(),
+            vec![
+                TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Input {
+                        id: "sensor".parse().unwrap(),
+                        metadata: None,
+                        data: None,
+                    },
+                },
+                TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Input {
+                        id: "response".parse().unwrap(),
+                        metadata: Some(request_id_params("req-1")),
+                        data: None,
+                    },
+                },
+                TimedIncomingEvent {
+                    time_offset_secs: 0.0,
+                    event: IncomingEvent::Stop,
+                },
+            ],
+        ));
+        let (tx, _rx) = crate::integration_testing::output_channel();
+        let (node, mut events) = crate::DoraNode::init_testing(
+            inputs,
+            TestingOutput::ToChannel(tx),
+            TestingOptions {
+                skip_output_time_offsets: true,
+            },
+        )
+        .unwrap();
+        let config = input_receipt_config(&["sensor", "response"]);
+        enable_input_receipt(&mut events, config.clone());
+
+        events.input_receipt.finish();
+        let response = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &NodeId::from("calc".to_owned()),
+            Duration::from_secs(5),
+        ));
+        assert!(matches!(
+            response,
+            Err(PatternError::StreamError(message))
+                if message == "pattern receive helpers are disabled during verified replay"
+        ));
+
+        let receipt = read_and_remove_receipt(&config);
+        assert_eq!(receipt.streams["response"].count, 0);
+        assert_eq!(receipt.streams["sensor"].count, 0);
+        drop(events);
+        drop(node);
     }
 
     /// Regression: a pattern-aware wait (`recv_service_response`) must make
@@ -3000,6 +3328,7 @@ mod tests {
                 metadata: Arc::new(metadata),
                 data: None,
             },
+            _byte_permit: None,
         };
         let Event::Input {
             metadata: user_metadata,

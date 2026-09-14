@@ -172,6 +172,7 @@ pub mod event_stream;
 pub mod integration_testing;
 mod node;
 mod orphan_guard;
+mod replay_receipt;
 
 pub use error::{NodeError, NodeResult, PatternError};
 

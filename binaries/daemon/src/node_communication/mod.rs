@@ -1,4 +1,7 @@
-use crate::{DaemonNodeEvent, Event, NODE_EVENT_CHANNEL_CAPACITY};
+use crate::{
+    DaemonNodeEvent, Event, NODE_EVENT_CHANNEL_CAPACITY, NodeEventReceiver, QueuedNodeEvent,
+    node_event_channel,
+};
 use dora_core::{config::NodeId, topics::LOCALHOST, uhlc};
 use dora_message::{
     DataflowId,
@@ -18,13 +21,12 @@ use std::{
 };
 use tokio::{
     net::TcpListener,
-    sync::{
-        mpsc::{self, Receiver},
-        oneshot,
-    },
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
 };
 
 pub mod tcp;
+
+pub(crate) const REPLAY_NODE_INGRESS_BYTE_LIMIT: usize = 4 * dora_message::MAX_MESSAGE_BYTES;
 
 pub fn current_millis() -> u64 {
     std::time::SystemTime::now()
@@ -43,6 +45,7 @@ pub async fn spawn_listener_loop(
     last_activity: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     node_shutdown: tokio::sync::watch::Receiver<bool>,
+    replay_ingress_budget: Option<Arc<Semaphore>>,
 ) -> eyre::Result<DaemonCommunication> {
     let socket = match TcpListener::bind((LOCALHOST, 0)).await {
         Ok(socket) => socket,
@@ -58,16 +61,14 @@ pub async fn spawn_listener_loop(
     let daemon_tx = daemon_tx.clone();
     let shutdown = shutdown.clone();
     tokio::spawn(async move {
-        tcp::listener_loop(
-            socket,
+        let context = tcp::ListenerContext::new(
             generation,
             daemon_tx,
             clock,
             last_activity,
-            shutdown,
-            node_shutdown,
-        )
-        .await;
+            replay_ingress_budget,
+        );
+        tcp::listener_loop(socket, context, shutdown, node_shutdown).await;
         tracing::debug!("event listener loop finished for `{event_loop_node_id}`");
     });
 
@@ -109,28 +110,10 @@ fn queue_saturated(events: usize, bytes: usize) -> bool {
     events >= LISTENER_QUEUE_MAX_EVENTS || bytes >= LISTENER_QUEUE_MAX_BYTES
 }
 
-/// A queued event with its exact wire length, measured once at enqueue.
-struct SizedEvent {
-    size: usize,
-    event: Timestamped<NodeEvent>,
-}
-
-impl SizedEvent {
-    fn new(event: Timestamped<NodeEvent>) -> Self {
-        let size = dora_message::serialized_size(&event).unwrap_or_else(|err| {
-            // Serializing these types cannot fail in practice; if it ever
-            // does, the reply itself fails the same way, so any size will do.
-            tracing::warn!("cannot size queued node event ({err}); using the size hint");
-            event.inner.encode_size_hint()
-        });
-        Self { size, event }
-    }
-
-    fn describe(&self) -> String {
-        match &self.event.inner {
-            NodeEvent::Input { id, .. } => format!("input `{id}`"),
-            other => format!("{other:?}"),
-        }
+fn describe_event(event: &Timestamped<NodeEvent>) -> String {
+    match &event.inner {
+        NodeEvent::Input { id, .. } => format!("input `{id}`"),
+        other => format!("{other:?}"),
     }
 }
 
@@ -142,13 +125,14 @@ struct Listener {
     /// superseded process (dora-rs/dora#2927).
     generation: u64,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
-    subscribed_events: Option<Receiver<Timestamped<NodeEvent>>>,
+    subscribed_events: Option<NodeEventReceiver>,
     pending_counter: Option<Arc<AtomicU64>>,
-    queue: VecDeque<SizedEvent>,
+    queue: VecDeque<QueuedNodeEvent>,
     /// Sum of the exact wire lengths over `queue`, kept incrementally.
     queued_bytes: usize,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
+    replay_ingress_budget: Option<Arc<Semaphore>>,
 }
 
 impl Listener {
@@ -158,6 +142,7 @@ impl Listener {
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
         hlc: Arc<uhlc::HLC>,
         last_activity: Arc<AtomicU64>,
+        replay_ingress_budget: Option<Arc<Semaphore>>,
     ) {
         // receive the first message
         let message = match connection
@@ -208,6 +193,7 @@ impl Listener {
                             queued_bytes: 0,
                             clock: hlc.clone(),
                             last_activity,
+                            replay_ingress_budget,
                         };
                         match listener
                             .run_inner(connection)
@@ -255,7 +241,7 @@ impl Listener {
                     future::Either::Right((message, _)) => break message,
                 };
 
-                self.enqueue(event);
+                self.enqueue_queued(event);
                 self.handle_events().await?;
             };
 
@@ -263,6 +249,9 @@ impl Listener {
                 Ok(Some(message)) => {
                     if let Err(err) = self.handle_message(message, &mut connection).await {
                         tracing::warn!("{err:?}");
+                        if self.replay_ingress_budget.is_some() {
+                            return Err(err);
+                        }
                     }
                 }
                 Err(err) => {
@@ -281,13 +270,13 @@ impl Listener {
             let Some(events) = &mut self.subscribed_events else {
                 break;
             };
-            let Ok(event) = events.try_recv() else {
+            let Ok(event) = events.try_recv_queued() else {
                 break;
             };
             if let Some(counter) = &self.pending_counter {
                 counter.fetch_sub(1, Ordering::Relaxed);
             }
-            self.enqueue(event);
+            self.enqueue_queued(event);
         }
         Ok(())
     }
@@ -296,15 +285,22 @@ impl Listener {
         queue_saturated(self.queue.len(), self.queued_bytes)
     }
 
+    #[cfg(test)]
     fn enqueue(&mut self, event: Timestamped<NodeEvent>) {
-        let sized = SizedEvent::new(event);
-        self.queued_bytes = self.queued_bytes.saturating_add(sized.size);
-        self.queue.push_back(sized);
+        self.enqueue_queued(QueuedNodeEvent::unbudgeted(event));
     }
 
-    fn pop_front(&mut self) -> Option<SizedEvent> {
+    fn enqueue_queued(&mut self, mut event: QueuedNodeEvent) {
+        let size = event.ensure_wire_size();
+        self.queued_bytes = self.queued_bytes.saturating_add(size);
+        self.queue.push_back(event);
+    }
+
+    fn pop_front(&mut self) -> Option<QueuedNodeEvent> {
         let sized = self.queue.pop_front()?;
-        self.queued_bytes = self.queued_bytes.saturating_sub(sized.size);
+        self.queued_bytes = self
+            .queued_bytes
+            .saturating_sub(sized.wire_size().expect("queued event was sized"));
         Some(sized)
     }
 
@@ -318,30 +314,32 @@ impl Listener {
         let mut batch = Vec::new();
         let mut batch_bytes = 0usize;
         while let Some(front) = self.queue.front() {
-            if front.size > NEXT_EVENTS_REPLY_BUDGET {
+            let front_size = front.wire_size().expect("queued event was sized");
+            if front_size > NEXT_EVENTS_REPLY_BUDGET {
                 let Some(dropped) = self.pop_front() else {
                     break;
                 };
                 tracing::error!(
                     node = %self.node_id,
-                    size = dropped.size,
+                    size = dropped.wire_size().expect("queued event was sized"),
                     "dropping {}: its encoding exceeds the {}-byte daemon frame limit and can \
                      never be delivered",
-                    dropped.describe(),
+                    describe_event(dropped.event()),
                     dora_message::MAX_MESSAGE_BYTES,
                 );
                 continue;
             }
             if !batch.is_empty()
-                && batch_bytes.saturating_add(front.size) > NEXT_EVENTS_REPLY_BUDGET
+                && batch_bytes.saturating_add(front_size) > NEXT_EVENTS_REPLY_BUDGET
             {
                 break;
             }
             let Some(sized) = self.pop_front() else {
                 break;
             };
-            batch_bytes = batch_bytes.saturating_add(sized.size);
-            batch.push(sized.event);
+            batch_bytes =
+                batch_bytes.saturating_add(sized.wire_size().expect("queued event was sized"));
+            batch.push(sized.into_event());
         }
         batch
     }
@@ -352,6 +350,11 @@ impl Listener {
         message: Timestamped<DaemonRequest>,
         connection: &mut C,
     ) -> eyre::Result<()> {
+        let replay_ingress_permit = if matches!(&message.inner, DaemonRequest::SendMessage { .. }) {
+            self.acquire_replay_ingress(&message)?
+        } else {
+            None
+        };
         self.last_activity
             .store(current_millis(), Ordering::Release);
         let timestamp = message.timestamp;
@@ -401,6 +404,7 @@ impl Listener {
                     output_id,
                     metadata,
                     data,
+                    replay_ingress_permit,
                 };
                 self.process_daemon_event(event, None, connection).await?;
             }
@@ -415,7 +419,7 @@ impl Listener {
                 self.process_daemon_event(event, None, connection).await?;
             }
             DaemonRequest::Subscribe => {
-                let (tx, rx) = mpsc::channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
+                let (tx, rx) = node_event_channel(crate::NODE_EVENT_CHANNEL_CAPACITY);
                 let pending_counter = Arc::new(AtomicU64::new(0));
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
@@ -438,12 +442,13 @@ impl Listener {
                 let reply = if queued_events.is_empty() {
                     match self.subscribed_events.as_mut() {
                         // wait for next event
-                        Some(events) => match events.recv().await {
-                            Some(event) => {
+                        Some(events) => match events.recv_queued().await {
+                            Some(mut event) => {
                                 if let Some(counter) = &self.pending_counter {
                                     counter.fetch_sub(1, Ordering::Relaxed);
                                 }
-                                DaemonReply::NextEvents(vec![event])
+                                event.ensure_wire_size();
+                                DaemonReply::NextEvents(vec![event.into_event()])
                             }
                             None => DaemonReply::NextEvents(vec![]),
                         },
@@ -546,6 +551,29 @@ impl Listener {
         Ok(())
     }
 
+    fn acquire_replay_ingress(
+        &self,
+        request: &Timestamped<DaemonRequest>,
+    ) -> eyre::Result<Option<OwnedSemaphorePermit>> {
+        let Some(budget) = &self.replay_ingress_budget else {
+            return Ok(None);
+        };
+        let wire_size = dora_message::serialized_size(request)
+            .wrap_err("failed to size verified replay SendMessage request")?;
+        let wire_size = u32::try_from(wire_size)
+            .wrap_err("verified replay SendMessage request exceeds byte admission range")?;
+        budget
+            .clone()
+            .try_acquire_many_owned(wire_size)
+            .map(Some)
+            .map_err(|_| {
+                eyre!(
+                    "verified replay producer exceeded the {}-byte daemon ingress limit",
+                    REPLAY_NODE_INGRESS_BYTE_LIMIT
+                )
+            })
+    }
+
     async fn process_daemon_event<C: Connection>(
         &mut self,
         event: DaemonNodeEvent,
@@ -594,7 +622,7 @@ impl Listener {
     /// This is similar to `self.subscribed_events.recv()`. The difference is that the future
     /// does not return `None` when the channel is closed and instead stays pending forever.
     /// This behavior can be useful when waiting for multiple event sources at once.
-    fn next_event(&mut self) -> impl Future<Output = Timestamped<NodeEvent>> + Unpin + '_ {
+    fn next_event(&mut self) -> impl Future<Output = QueuedNodeEvent> + Unpin + '_ {
         let poll = |cx: &mut task::Context<'_>| {
             // A saturated queue takes nothing more from the channel. The
             // caller recreates this future after every request, so polling
@@ -603,7 +631,7 @@ impl Listener {
                 return Poll::Pending;
             }
             if let Some(events) = &mut self.subscribed_events {
-                match events.poll_recv(cx) {
+                match events.poll_recv_queued(cx) {
                     Poll::Ready(Some(event)) => {
                         if let Some(counter) = &self.pending_counter {
                             counter.fetch_sub(1, Ordering::Relaxed);
@@ -666,9 +694,9 @@ mod tests {
         }
     }
 
-    fn listener() -> (Listener, mpsc::Sender<Timestamped<NodeEvent>>) {
+    fn listener() -> (Listener, crate::NodeEventSender) {
         let (daemon_tx, _daemon_rx) = mpsc::channel(1);
-        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (tx, rx) = node_event_channel(NODE_EVENT_CHANNEL_CAPACITY);
         let listener = Listener {
             dataflow_id: Uuid::nil(),
             node_id: NodeId::from("sink".to_string()),
@@ -680,6 +708,7 @@ mod tests {
             queued_bytes: 0,
             clock: Arc::new(uhlc::HLC::default()),
             last_activity: Arc::new(AtomicU64::new(0)),
+            replay_ingress_budget: None,
         };
         (listener, tx)
     }
@@ -847,5 +876,24 @@ mod tests {
         assert_eq!(batch.len(), LISTENER_QUEUE_MAX_EVENTS);
         listener.handle_events().await.unwrap();
         assert_eq!(listener.queue.len(), 5, "room again: the channel drains");
+    }
+
+    #[tokio::test]
+    async fn replay_byte_permit_covers_subscription_and_listener_queues() {
+        let (mut listener, tx) = listener();
+        let clock = listener.clock.clone();
+        let event = metadata_heavy_input(&clock, 4096);
+        let size = dora_message::serialized_size(&event).unwrap();
+        tx.enable_data_byte_limit(size);
+
+        tx.try_send(event).unwrap();
+        assert_eq!(tx.available_data_bytes(), Some(0));
+
+        listener.handle_events().await.unwrap();
+        assert_eq!(listener.queue.len(), 1);
+        assert_eq!(tx.available_data_bytes(), Some(0));
+
+        assert_eq!(listener.take_queued_events_within_budget().len(), 1);
+        assert_eq!(tx.available_data_bytes(), Some(size));
     }
 }
