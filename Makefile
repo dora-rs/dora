@@ -63,7 +63,7 @@
         qa-examples qa-cluster-e2e qa-cluster-record-replay qa-docker-slim \
         ros2-zenoh-humble ros2-zenoh-kilted \
         qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph qa-package-includes \
-        qa-clippy qa-test qa-test-python \
+        qa-ci-reporting qa-ci-reporting-selftest qa-clippy qa-test qa-test-python \
         qa-test-python-node qa-coverage qa-mutants qa-semver qa-breaking qa-breaking-update \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
         qa-verify-release
@@ -159,6 +159,17 @@ qa-publish-graph:
 # file inside that crate, or the published `.crate` will not have it.
 qa-package-includes:
 	@scripts/qa/package-includes.sh
+
+# Structural check on nightly.yml failure reporting. Parses the workflow
+# only -- runs no nightly job, takes well under a second.
+qa-ci-reporting:
+	@scripts/qa/ci-nightly-reporting.sh
+
+# The gate's own tests: feed known-broken workflows through the real script
+# and assert it goes red. A structural check that only ever prints OK is
+# indistinguishable from one that stopped parsing.
+qa-ci-reporting-selftest:
+	@python3 scripts/qa/tests/test_ci_nightly_reporting.py
 
 qa-clippy:
 	@cargo clippy --all --all-targets \
