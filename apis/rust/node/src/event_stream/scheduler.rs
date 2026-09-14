@@ -113,11 +113,20 @@ fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
     let Some(params) = event_parameters(dropped) else {
         return;
     };
+    log_correlation_drop_params(event_id, params);
+}
+
+/// The body of [`log_correlation_drop`], taking the correlation parameters
+/// directly so the passthrough-buffer eviction path in
+/// [`EventStream`](super::EventStream) — which holds already-converted `Event`s,
+/// not `EventItem`s — can emit the identical loud error without duplicating the
+/// key list or the remediation message (dora-rs/dora#3197).
+pub(crate) fn log_correlation_drop_params(input_id: &DataId, params: &MetadataParameters) {
     let request_id = get_string_param(params, REQUEST_ID);
     let goal_id = get_string_param(params, GOAL_ID);
     let goal_status = get_string_param(params, GOAL_STATUS);
     tracing::error!(
-        input = %event_id,
+        input = %input_id,
         ?request_id,
         ?goal_id,
         ?goal_status,
@@ -128,6 +137,11 @@ fn log_correlation_drop(event_id: &DataId, dropped: &EventItem) {
     );
 }
 pub(crate) const NON_INPUT_EVENT: &str = "dora.non_input_event";
+
+/// Capacity of the scheduler's single non-input (control-event) queue, and of
+/// the matching bucket in `EventStream`'s passthrough buffer. Shared so the two
+/// bounds cannot drift apart (dora-rs/dora#3197).
+pub(crate) const NON_INPUT_EVENT_QUEUE_SIZE: usize = 1_000;
 
 /// Shared [`DataId`] for [`NON_INPUT_EVENT`], so the hot `add_event`/`next`
 /// paths don't have to allocate a fresh `String` on every call.
@@ -239,6 +253,42 @@ impl Scheduler {
     /// Returns and resets the accumulated drop counts per input ID.
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
         std::mem::take(&mut self.dropped)
+    }
+
+    /// The effective queue capacity for an input, i.e. `queue_size` combined
+    /// with its [`QueuePolicy`] via [`QueuePolicy::effective_cap`]. Uses the
+    /// same defaults as [`add_event`](Self::add_event) for an unconfigured
+    /// input (`DEFAULT_QUEUE_SIZE`, `drop_oldest`), so a bound derived from
+    /// this matches what the scheduler itself would enforce.
+    ///
+    /// Exposed so the passthrough buffer in [`EventStream`](super::EventStream)
+    /// — which holds events that a pattern-aware wait pulled out of the
+    /// scheduler — can apply the *same* per-input bound the scheduler would
+    /// have, instead of retaining them without limit (dora-rs/dora#3197).
+    pub(crate) fn effective_cap_for(&self, id: &DataId) -> usize {
+        let size = self
+            .event_queues
+            .get(id)
+            .map(|(size, _)| *size)
+            .unwrap_or(DEFAULT_QUEUE_SIZE);
+        let policy = self.queue_policies.get(id).copied().unwrap_or_default();
+        policy.effective_cap(size)
+    }
+
+    /// Account for one dropped event on `id`, so a drop enforced outside the
+    /// scheduler (the passthrough bound) still shows up in
+    /// [`drain_drop_counts`](Self::drain_drop_counts) exactly like an in-queue
+    /// `drop_oldest` eviction (dora-rs/dora#3197).
+    pub(crate) fn record_drop(&mut self, id: &DataId) {
+        *self.dropped.entry(id.clone()).or_insert(0) += 1;
+    }
+
+    /// Account for one dropped non-input (control) event, under the same
+    /// `NON_INPUT_EVENT` key the scheduler itself uses when its non-input queue
+    /// overflows — so a passthrough-bound drop of a control event is reported
+    /// consistently with an in-queue one (dora-rs/dora#3197).
+    pub(crate) fn record_non_input_drop(&mut self) {
+        *self.dropped.entry(NON_INPUT_EVENT_ID.clone()).or_insert(0) += 1;
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
