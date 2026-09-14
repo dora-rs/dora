@@ -205,6 +205,29 @@ fn spawn_startup_acker(
     }
 }
 
+/// Open a fresh [`DaemonChannel`] to the daemon this node talks to.
+///
+/// `purpose` names the channel in the connection-error context (e.g. `"event
+/// stream"`), so a failure points at which of the node's channels could not be
+/// established.
+fn connect_daemon_channel(
+    daemon_communication: &DaemonCommunicationWrapper,
+    node_id: &NodeId,
+    purpose: &str,
+) -> eyre::Result<DaemonChannel> {
+    let channel = match daemon_communication {
+        DaemonCommunicationWrapper::Standard(daemon_communication) => match daemon_communication {
+            DaemonCommunication::Tcp { socket_addr } => DaemonChannel::new_tcp(*socket_addr)
+                .wrap_err_with(|| format!("failed to connect {purpose} for node `{node_id}`"))?,
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+        },
+        DaemonCommunicationWrapper::Testing { channel, .. } => {
+            DaemonChannel::IntegrationTestChannel(channel.clone())
+        }
+    };
+    Ok(channel)
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
@@ -218,48 +241,15 @@ impl EventStream {
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
-        let channel = match daemon_communication {
-            DaemonCommunicationWrapper::Standard(daemon_communication) => {
-                match daemon_communication {
-                    DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
-                            format!("failed to connect event stream for node `{node_id}`")
-                        })?
-                    }
-
-                    DaemonCommunication::Interactive => {
-                        DaemonChannel::Interactive(Default::default())
-                    }
-                }
-            }
-
-            DaemonCommunicationWrapper::Testing { channel, .. } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone())
-            }
-        };
+        let channel = connect_daemon_channel(daemon_communication, node_id, "event stream")?;
 
         let testing_shutdown = match daemon_communication {
             DaemonCommunicationWrapper::Testing { shutdown, .. } => Some(shutdown.clone()),
             _ => None,
         };
 
-        let close_channel = match daemon_communication {
-            DaemonCommunicationWrapper::Standard(daemon_communication) => {
-                match daemon_communication {
-                    DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
-                            format!("failed to connect event close channel for node `{node_id}`")
-                        })?
-                    }
-                    DaemonCommunication::Interactive => {
-                        DaemonChannel::Interactive(Default::default())
-                    }
-                }
-            }
-            DaemonCommunicationWrapper::Testing { channel, .. } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone())
-            }
-        };
+        let close_channel =
+            connect_daemon_channel(daemon_communication, node_id, "event close channel")?;
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
             .iter()
