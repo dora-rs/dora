@@ -30,7 +30,7 @@ fn create_dataflow(
 ) -> Result<(), eyre::ErrReport> {
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
 
-    super::validate_name(&name, false)?;
+    super::validate_name("dataflow", &name, false)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
@@ -93,7 +93,7 @@ fn create_custom_node(
     template_scripts: &str,
     use_path_deps: bool,
 ) -> Result<(), eyre::ErrReport> {
-    super::validate_name(&name, false)?;
+    super::validate_name("node", &name, false)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));

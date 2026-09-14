@@ -31,7 +31,7 @@ fn create_dataflow(
     const DATAFLOW_YML: &str = include_str!("dataflow-template.yml");
     const WORKSPACE_CARGO_TOML: &str = include_str!("Cargo-template.toml");
 
-    super::validate_name(&name, false)?;
+    super::validate_name("dataflow", &name, false)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
@@ -82,7 +82,7 @@ fn create_custom_node(
 ) -> Result<(), eyre::ErrReport> {
     const CARGO_TOML: &str = include_str!("node/Cargo-template.toml");
 
-    super::validate_name(&name, false)?;
+    super::validate_name("node", &name, false)?;
 
     // create directories
     let root = path.as_deref().unwrap_or_else(|| Path::new(&name));
