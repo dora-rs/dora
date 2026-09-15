@@ -155,6 +155,8 @@ dora record dataflow.yml -o my-capture.drec
 
 This injects a hidden `__dora_record__` node into the dataflow that subscribes to all node outputs and writes them to a `.drec` file. The record node binary (`dora-record-node`) is auto-built on first use.
 
+The record node's inputs use `queue_policy: backpressure` with a large queue (default 1000) so a producer that briefly outruns the disk writes is buffered instead of silently dropped. If it ever does drop (disk permanently slower than the producer), the record node prints the dropped topic and count at the end of the run. Tune the buffer with `--queue-size <N>`.
+
 The recording runs until you press Ctrl-C or the dataflow stops.
 
 ### Recording Specific Topics

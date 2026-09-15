@@ -45,6 +45,28 @@ fn build_reverse_map(topics_json: &str) -> eyre::Result<HashMap<String, (NodeId,
     Ok(reverse_map)
 }
 
+/// Translate a `drain_drop_counts` map — keyed by the record node's own input
+/// ids — back into the `source_node/source_output` topics the user asked to
+/// record, so a warning names what was lost. An id with no reverse-map entry
+/// (e.g. the runtime's non-input drop key) falls back to the raw id.
+fn dropped_summary(
+    drops: &HashMap<DataId, u64>,
+    reverse_map: &HashMap<String, (NodeId, DataId)>,
+) -> String {
+    let mut parts: Vec<String> = drops
+        .iter()
+        .map(|(input_id, count)| {
+            let topic = reverse_map
+                .get(input_id.as_str())
+                .map(|(node, output)| format!("{node}/{output}"))
+                .unwrap_or_else(|| input_id.to_string());
+            format!("{count} on {topic}")
+        })
+        .collect();
+    parts.sort();
+    parts.join(", ")
+}
+
 /// Flush the recording's `BufWriter` after this many records. Bounds crash
 /// loss by record *count* on a high-rate stream.
 const FLUSH_EVERY_N_RECORDS: u64 = 100;
@@ -161,6 +183,8 @@ fn main() -> eyre::Result<()> {
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
     let mut writer = RecordingWriter::new(file, &header)?;
     let mut msg_count: u64 = 0;
+    let mut dropped_count: u64 = 0;
+    let mut last_drop_report: Option<Instant> = None;
     let mut flush_policy = FlushPolicy::new();
 
     eprintln!("dora-record-node: recording to {output_file}");
@@ -272,6 +296,26 @@ fn main() -> eyre::Result<()> {
             // durability window stays time-bounded.
             _ => flush_policy.on_idle(&mut writer)?,
         }
+
+        // Surface scheduler drops. The record node writes to disk, so any
+        // queue overflow here means the `.drec` will not match what was
+        // produced; say so instead of letting the footer imply completeness.
+        let drops = events.drain_drop_counts();
+        let newly_dropped: u64 = drops.values().sum();
+        if newly_dropped > 0 {
+            dropped_count += newly_dropped;
+            // Rate-limit to the flush cadence: during a persistent overflow the
+            // loop iterates per delivered event, and a warning per event would
+            // drown the very symptom it exists to report.
+            if last_drop_report.is_none_or(|t| t.elapsed() >= FLUSH_INTERVAL) {
+                eprintln!(
+                    "dora-record-node: dropped {newly_dropped} message(s) — {} — \
+                     the recording may be incomplete",
+                    dropped_summary(&drops, &reverse_map)
+                );
+                last_drop_report = Some(Instant::now());
+            }
+        }
     }
 
     let footer = writer.finish()?;
@@ -279,6 +323,9 @@ fn main() -> eyre::Result<()> {
     eprintln!("  Messages: {msg_count}");
     eprintln!("  Bytes:    {}", footer.total_bytes);
     eprintln!("  File:     {output_file}");
+    if dropped_count > 0 {
+        eprintln!("  Dropped:  {dropped_count} (the recording is incomplete)");
+    }
 
     Ok(())
 }
@@ -491,5 +538,33 @@ mod tests {
             sink.flushed_len() > 0,
             "count bound must flush every {FLUSH_EVERY_N_RECORDS} records"
         );
+    }
+
+    #[test]
+    fn dropped_summary_names_the_affected_topics() {
+        let mut reverse_map = HashMap::new();
+        reverse_map.insert(
+            "camera___image".to_string(),
+            ("camera".parse().unwrap(), "image".parse().unwrap()),
+        );
+        reverse_map.insert(
+            "lidar___points".to_string(),
+            ("lidar".parse().unwrap(), "points".parse().unwrap()),
+        );
+        let mut drops = HashMap::new();
+        drops.insert("lidar___points".parse().unwrap(), 7);
+        drops.insert("camera___image".parse().unwrap(), 42);
+        let summary = dropped_summary(&drops, &reverse_map);
+        assert_eq!(
+            summary, "42 on camera/image, 7 on lidar/points",
+            "the warning must name the recorded topics, sorted for stability"
+        );
+    }
+
+    #[test]
+    fn dropped_summary_falls_back_to_the_input_id() {
+        let drops = HashMap::from([(DataId::from("unknown___id".to_owned()), 3)]);
+        let summary = dropped_summary(&drops, &HashMap::new());
+        assert_eq!(summary, "3 on unknown___id");
     }
 }

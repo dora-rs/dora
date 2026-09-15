@@ -16,6 +16,15 @@ use eyre::{Context, bail};
 
 use crate::command::{Executable, Run, default_tracing, topic::selector::public_topic_output_id};
 
+/// Default per-topic queue size on the injected record node.
+///
+/// The default is deliberately much larger than the runtime default
+/// (`DEFAULT_QUEUE_SIZE`: 10): the record node only ever falls behind when a
+/// producer outruns its disk writes, and a burst deep enough to overflow a
+/// 10-deep `drop_oldest` queue silently loses messages from the recording.
+/// See [`Record::queue_size`].
+const DEFAULT_RECORD_QUEUE_SIZE: usize = 1000;
+
 /// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
 /// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
 /// before NTP sync) rather than panicking. Using the same fallback for both the
@@ -66,6 +75,18 @@ pub struct Record {
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
     output_yaml: Option<String>,
+
+    /// Size of each input queue on the injected record node.
+    ///
+    /// The record node writes to disk while producers run ahead of it. A queue
+    /// sized like the runtime default (10, `drop_oldest`) evicts the oldest
+    /// messages whenever a producer outruns the writer, and the `.drec` then
+    /// comes up short with no sign of it. `queue_policy: backpressure` buffers
+    /// up to 10x this value before dropping (at an error) — larger values also
+    /// hold more payload data in memory, so raise it only when bursts actually
+    /// overflow.
+    #[clap(long, value_name = "N", default_value_t = DEFAULT_RECORD_QUEUE_SIZE as u64)]
+    queue_size: u64,
 
     /// Stream data through coordinator WebSocket instead of recording on target.
     /// Useful when the target machine has no local disk.
@@ -193,6 +214,31 @@ fn build_input_id_map<'a>(
     Ok(map)
 }
 
+/// The YAML entry for one recorded topic in `__dora_record__`'s `inputs:`.
+///
+/// A bare `node/output` string would inherit the runtime defaults — a 10-deep
+/// `drop_oldest` queue — which silently drops messages whenever a producer
+/// outruns the record node's disk writes, leaving a `.drec` that reports a
+/// confident message total it never captured. Emit a mapping instead so the
+/// record node buffers bursts (`queue_policy: backpressure`, up to 10x
+/// `queue_size` before the hard cap drops loudly) and can size them up.
+fn record_node_input(topic: &str, queue_size: usize) -> serde_yaml::Value {
+    let mut input = serde_yaml::Mapping::new();
+    input.insert(
+        serde_yaml::Value::String("source".to_string()),
+        serde_yaml::Value::String(topic.to_string()),
+    );
+    input.insert(
+        serde_yaml::Value::String("queue_size".to_string()),
+        serde_yaml::Value::Number((queue_size as u64).into()),
+    );
+    input.insert(
+        serde_yaml::Value::String("queue_policy".to_string()),
+        serde_yaml::Value::String("backpressure".to_string()),
+    );
+    serde_yaml::Value::Mapping(input)
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -253,7 +299,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     for (input_id, topic) in &topic_map {
         inputs_mapping.insert(
             serde_yaml::Value::String((*input_id).to_owned()),
-            serde_yaml::Value::String((*topic).to_owned()),
+            record_node_input(topic, args.queue_size as usize),
         );
     }
 
@@ -699,6 +745,7 @@ fn select_dataflow(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dora_message::config::QueuePolicy;
     use uuid::Uuid;
 
     fn make_df(name: Option<&str>) -> DataflowIdAndName {
@@ -771,6 +818,25 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map["cam___frame"], "cam/frame");
         assert_eq!(map["lidar___points"], "lidar/points");
+    }
+
+    #[test]
+    fn record_node_inputs_parse_as_backpressured_sized_config() {
+        // A bare `node/output` string would give the record node the runtime
+        // defaults (10-deep drop_oldest): a burst that overflows it is dropped
+        // silently, and the `.drec` looks complete while it isn't (#3282). The
+        // emitted mapping must deserialize (through the descriptor's untagged
+        // `InputDef`) to the config the daemon will apply.
+        let input: dora_message::config::Input =
+            serde_yaml::from_value(record_node_input("camera/image", 1000))
+                .expect("record node input must parse as a typed Input");
+        assert_eq!(input.mapping.to_string(), "camera/image");
+        assert_eq!(input.queue_size, Some(1000));
+        assert_eq!(
+            input.queue_policy,
+            Some(QueuePolicy::Backpressure),
+            "a record input must buffer bursts, not silently drop the oldest"
+        );
     }
 
     #[test]
