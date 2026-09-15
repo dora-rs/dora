@@ -14,6 +14,7 @@ choice is the compatibility promise.
 import inspect
 
 import dora
+from dora.testing import MockNode
 
 # Frozen by the 1.0 guarantee. Removing or renaming any of these needs a 2.0.
 FROZEN_MODULE_NAMES = frozenset(
@@ -205,3 +206,24 @@ def test_every_frozen_name_is_documented_as_a_class_or_callable():
             f"`dora.{name}` is a {type(value).__name__}, not a class or "
             f"callable; frozen surface should be one or the other."
         )
+
+
+def test_mock_node_covers_the_frozen_node_surface():
+    """MockNode is a drop-in for Node, so it must offer every frozen method.
+
+    Daemon-only methods (merge_external_events, send_output_raw) are
+    present but raise NotImplementedError rather than missing, keeping the
+    surface intact and turning silent AttributeError into an explicit one.
+    """
+    missing = FROZEN_CLASS_MEMBERS["Node"] - public_names(MockNode)
+    assert not missing, (
+        f"MockNode is missing {sorted(missing)}. A drop-in replacement for "
+        f"Node must offer every frozen method; add it even if it only raises "
+        f"NotImplementedError."
+    )
+    extra = public_names(MockNode) - FROZEN_CLASS_MEMBERS["Node"]
+    assert not extra, (
+        f"MockNode exposes {sorted(extra)}, which is not on `dora.Node`. "
+        f"A drop-in should not grow public members the frozen node lacks; "
+        f"prefix helpers with `_`."
+    )
