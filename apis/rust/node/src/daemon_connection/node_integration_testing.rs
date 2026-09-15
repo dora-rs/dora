@@ -373,26 +373,30 @@ fn append_arrow_array_json(
         .into_iter()
         .map(|mut m| m.remove("inner"))
         .collect();
-    restore_non_finite_floats(source.as_ref(), &mut json_data_flattened);
+    restore_float_values(source.as_ref(), &mut json_data_flattened);
     output.insert("data".into(), json_data_flattened.into());
     output.insert("data_type".into(), data_type_json);
     Ok(())
 }
 
-/// `arrow_json` writes NaN and the infinities as `null`, because JSON has no
-/// literal for either. Put them back as the strings the reader already accepts
-/// for a float column (`"NaN"` / `"Infinity"` / `"-Infinity"`), so a recorded
-/// non-finite float replays as itself rather than as a null.
+/// Re-encode float columns so a recorded float replays bit-identical:
+///
+/// - `arrow_json` writes NaN and the infinities as `null`, because JSON has no
+///   literal for either. Put them back as the strings the reader already
+///   accepts for a float column (`"NaN"` / `"Infinity"` / `"-Infinity"`), so a
+///   recorded non-finite float replays as itself rather than as a null.
+/// - For the same reason `arrow_json` does not guarantee finite floats either:
+///   it can emit a decimal that is one ULP off (`1e50` is written as
+///   `9.999999999999999e49`, which parses back one ULP low). Rewriting every
+///   finite value from the source with `Number::from_f64` (the shortest
+///   representation that round-trips) makes the recording lossless.
 ///
 /// `json` holds one slot per row of `source`, `None` where the encoder wrote no
 /// value at all (a null row, which `arrow_json` omits). Struct fields and list
 /// elements are walked recursively, since dora outputs are commonly
 /// struct-shaped. Map and union children are not walked: `arrow_json` cannot
 /// round-trip those through the reader anyway.
-fn restore_non_finite_floats(
-    source: &dyn arrow::array::Array,
-    json: &mut [Option<serde_json::Value>],
-) {
+fn restore_float_values(source: &dyn arrow::array::Array, json: &mut [Option<serde_json::Value>]) {
     use arrow::array::{
         Array, FixedSizeListArray, Float32Array, Float64Array, LargeListArray, ListArray,
         StructArray,
@@ -400,12 +404,12 @@ fn restore_non_finite_floats(
 
     let source = source.as_any();
     if let Some(a) = source.downcast_ref::<Float64Array>() {
-        overwrite_non_finite(
+        overwrite_floats(
             json,
             (0..a.len()).map(|i| (!a.is_null(i)).then(|| a.value(i))),
         );
     } else if let Some(a) = source.downcast_ref::<Float32Array>() {
-        overwrite_non_finite(
+        overwrite_floats(
             json,
             (0..a.len()).map(|i| (!a.is_null(i)).then(|| a.value(i) as f64)),
         );
@@ -431,7 +435,7 @@ fn restore_non_finite_floats(
 }
 
 /// One non-finite float as the string the reader accepts for a float column;
-/// `None` for a finite value, which JSON already carries losslessly.
+/// `None` for a finite value, which is encoded as a JSON number instead.
 fn encode_non_finite(value: f64) -> Option<serde_json::Value> {
     if value.is_nan() {
         Some("NaN".into())
@@ -444,16 +448,25 @@ fn encode_non_finite(value: f64) -> Option<serde_json::Value> {
     }
 }
 
-/// Overwrite every slot whose source value is a non-finite float. Driven by the
-/// source's validity, not by the emitted JSON, so a genuine null (`None`) keeps
-/// its `null` and is never confused with a NaN.
-fn overwrite_non_finite(
+/// Overwrite every slot whose source value is a float, driven by the source's
+/// validity rather than the emitted JSON, so a genuine null (`None`) keeps its
+/// `null` and is never confused with a value: non-finite floats become the
+/// string markers the reader accepts, and finite floats become the shortest
+/// JSON number that parses back to the same bits.
+fn overwrite_floats(
     json: &mut [Option<serde_json::Value>],
     values: impl Iterator<Item = Option<f64>>,
 ) {
     for (slot, value) in json.iter_mut().zip(values) {
-        if let Some(encoded) = value.and_then(encode_non_finite) {
+        let Some(value) = value else { continue };
+        if let Some(encoded) = encode_non_finite(value) {
             *slot = Some(encoded);
+        } else {
+            *slot = Some(
+                serde_json::Number::from_f64(value)
+                    .expect("finite f64 always maps to a JSON number")
+                    .into(),
+            );
         }
     }
 }
@@ -471,7 +484,7 @@ fn restore_in_struct_fields(
             .iter()
             .map(|row| row.as_ref().and_then(|row| row.get(name)).cloned())
             .collect();
-        restore_non_finite_floats(child.as_ref(), &mut column);
+        restore_float_values(child.as_ref(), &mut column);
         for (row, value) in json.iter_mut().zip(column) {
             if let (Some(serde_json::Value::Object(row)), Some(value)) = (row.as_mut(), value) {
                 row.insert(name.clone(), value);
@@ -502,7 +515,7 @@ fn restore_in_list_elements(
         }
     }
 
-    restore_non_finite_floats(values.as_ref(), &mut flat);
+    restore_float_values(values.as_ref(), &mut flat);
 
     for (row, &(start, end)) in json.iter_mut().zip(ranges) {
         let Some(serde_json::Value::Array(elements)) = row.as_mut() else {
@@ -634,6 +647,98 @@ mod tests {
                     .expect("encoder always writes `data_type`"),
             ),
         })
+    }
+
+    #[test]
+    fn finite_floats_round_trip_bit_identical() {
+        // The JSON writer does not always emit the shortest representation that
+        // round-trips, so some finite f64 values come back one ULP off
+        // (dora-rs/dora#3427). Tracking a float's exact bits makes the
+        // controller's assertions independent of the peeked value.
+        let values = [1.5, 1e50, 6.507048294634909e50, -5.0170334694796705e243];
+        let array: ArrayRef = Arc::new(Float64Array::from(
+            values.into_iter().map(Some).collect::<Vec<_>>(),
+        ));
+        let back = Float64Array::from(roundtrip(array).expect("finite floats should replay"));
+
+        for (i, &expected) in values.iter().enumerate() {
+            assert_eq!(
+                back.value(i).to_bits(),
+                expected.to_bits(),
+                "float at index {i} drifted by one ULP"
+            );
+        }
+    }
+
+    #[test]
+    fn recorded_finite_floats_use_shortest_round_trip_encoding() {
+        // Pins the on-disk shape for finite floats: each value is written as the
+        // shortest JSON number that parses back to the same bits, rather than
+        // whatever decimal `arrow_json` happened to emit.
+        let array: ArrayRef = Arc::new(Float64Array::from(vec![
+            Some(1.5),
+            Some(1e50),
+            Some(-5.0170334694796705e243),
+        ]));
+        let mut json = serde_json::Map::new();
+        append_arrow_array_json(&mut json, array).expect("should encode");
+
+        assert_eq!(
+            json["data"],
+            serde_json::json!([1.5, 1e50, -5.0170334694796705e243]),
+        );
+    }
+
+    #[test]
+    fn finite_floats_nested_in_a_list_round_trip() {
+        // The walk descends into list elements, so a drift-prone finite float
+        // inside a list survives bit-identical as well (dora-rs/dora#3427).
+        use arrow::array::ListArray;
+        use arrow::datatypes::Float64Type;
+
+        let values = [1e50, 6.507048294634909e50];
+        let list = ListArray::from_iter_primitive::<Float64Type, _, _>(vec![Some(vec![
+            Some(values[0]),
+            Some(values[1]),
+            None,
+        ])]);
+        let back = roundtrip(Arc::new(list)).expect("should replay");
+        let back = ListArray::from(back);
+        let first = Float64Array::from(back.value(0).to_data());
+
+        assert!(first.is_null(2));
+        assert_eq!(first.null_count(), 1);
+        assert_eq!(first.value(0).to_bits(), values[0].to_bits());
+        assert_eq!(first.value(1).to_bits(), values[1].to_bits());
+    }
+
+    #[test]
+    fn finite_floats_nested_in_a_struct_round_trip() {
+        // Same for struct fields, the most common dora output shape.
+        use arrow::array::StructArray;
+        use arrow::datatypes::{Field, Fields};
+
+        let value = 1e50;
+        let floats: ArrayRef = Arc::new(Float64Array::from(vec![Some(value), None]));
+        let fields = Fields::from(vec![Field::new("value", DataType::Float64, true)]);
+        let array = StructArray::new(fields.clone(), vec![floats], None);
+        let back = StructArray::from(roundtrip(Arc::new(array)).expect("should replay"));
+        let values = Float64Array::from(back.column(0).to_data());
+
+        assert_eq!(values.value(0).to_bits(), value.to_bits());
+        assert!(values.is_null(1));
+        assert_eq!(values.null_count(), 1);
+    }
+
+    #[test]
+    fn finite_f32_round_trips_bit_identical() {
+        let value = 0.1f32;
+        let array: ArrayRef = Arc::new(Float32Array::from(vec![Some(value), None]));
+        let back = Float32Array::from(roundtrip(array).expect("should replay"));
+
+        assert_eq!(back.value(0).to_bits(), value.to_bits());
+        assert!(back.is_null(1));
+        assert_eq!(back.null_count(), 1);
     }
 
     #[test]
