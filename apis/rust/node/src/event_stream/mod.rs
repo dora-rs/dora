@@ -4,7 +4,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -52,6 +52,56 @@ pub mod input_tracker;
 pub mod merged;
 mod scheduler;
 mod thread;
+
+/// Hand one zenoh-delivered event to the shared ingress channel, counting it as
+/// a drop if the channel is full.
+///
+/// The callback runs on zenoh's tokio IO worker, where `blocking_send` would
+/// panic, so the send is a `try_send` and a full channel means the payload is
+/// gone. That loss used to be log-only, which made `drain_drop_counts()` read
+/// zero while a node was losing every zero-copy message it could not keep up
+/// with (#3282).
+///
+/// A *closed* channel is not counted: it means the receiver is gone, i.e.
+/// ordinary shutdown, and counting it would have every node report phantom
+/// drops as it tears down.
+///
+/// Split out of the callback so the accounting is unit-testable without a live
+/// zenoh session.
+fn send_or_count_ingress_drop(
+    tx: &tokio::sync::mpsc::Sender<EventItem>,
+    item: EventItem,
+    input_id: &DataId,
+    dropped: &AtomicU64,
+) {
+    use tokio::sync::mpsc::error::TrySendError;
+    match tx.try_send(item) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            // Log once per drain window, not once per lost message. A formatted
+            // `warn!` with a subscriber attached measures ~1.6 us against ~1.7 ns
+            // for the counter, and this runs on zenoh's IO worker — the thread
+            // delivering every input of this node. Logging per drop would
+            // amplify the very backlog it reports.
+            //
+            // `fetch_add` returns the previous value, so the rate limit is free:
+            // zero when this is the first drop since the last
+            // `drain_drop_counts()` swapped the counter back to 0. The count
+            // itself is never rate-limited — that is what the counter is for.
+            if dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+                tracing::warn!(
+                    input = %input_id,
+                    "event channel full; dropping zenoh input. Raise this input's \
+                     queue_size — the ingress channel is sized from the sum of the \
+                     node's input queue_sizes."
+                );
+            }
+        }
+        Err(TrySendError::Closed(_)) => {
+            // Normal shutdown: the receiver is gone, nothing to report.
+        }
+    }
+}
 
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
 ///
@@ -101,6 +151,18 @@ pub struct EventStream {
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
+    /// Per-input counters for events dropped at the shared zenoh ingress
+    /// channel, before the scheduler ever sees them.
+    ///
+    /// The scheduler's own counters cover only what reached its per-input
+    /// queues. A zero-copy payload arriving on the direct zenoh path is
+    /// `try_send`-ed into one shared channel by a zenoh IO worker, and a full
+    /// channel drops it there — a site the scheduler cannot observe and, being
+    /// on another thread, cannot be given `&mut Scheduler` to report through.
+    /// One `AtomicU64` per input keeps the callback lock-free; `drain_drop_counts`
+    /// folds them in so callers see one number per input regardless of which
+    /// transport the payload took (#3282).
+    ingress_drops: HashMap<DataId, Arc<AtomicU64>>,
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
@@ -402,6 +464,9 @@ impl EventStream {
         // a full queue just delays the ack until the producer's next marker.
         let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<DataId>(256);
         let mut ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>> = HashMap::new();
+        // Populated per subscribed input below and moved into `EventStream`, so
+        // `drain_drop_counts` can read what the zenoh IO workers recorded.
+        let mut ingress_drops: HashMap<DataId, Arc<AtomicU64>> = HashMap::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             use zenoh::qos::CongestionControl;
@@ -491,6 +556,8 @@ impl EventStream {
                     let ack_tx_cb = ack_tx.clone();
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
+                    let ingress_drops_cb =
+                        ingress_drops.entry(input_id.clone()).or_default().clone();
                     let decoder = decoder.clone();
                     let first_undecodable_cb = first_undecodable.clone();
                     let subscriber = session
@@ -664,28 +731,16 @@ impl EventStream {
                                             .lock()
                                             .unwrap_or_else(|p| p.into_inner()) = None;
                                     }
-                                    // Callback runs on zenoh's tokio IO worker —
-                                    // `blocking_send` panics from a tokio context, so
-                                    // use `try_send`. If the channel is full the event
-                                    // is dropped (logged); receiver-dropped also
-                                    // surfaces here, in which case there's nothing to do.
-                                    if let Err(e) = tx_cb.try_send(EventItem::ZenohInput {
-                                        id: input_id_cb.clone(),
-                                        metadata: std::sync::Arc::new(metadata),
-                                        data,
-                                    }) {
-                                        use tokio::sync::mpsc::error::TrySendError;
-                                        match e {
-                                            TrySendError::Full(_) => {
-                                                tracing::warn!(
-                                                    "event channel full; dropping zenoh input"
-                                                );
-                                            }
-                                            TrySendError::Closed(_) => {
-                                                // normal shutdown
-                                            }
-                                        }
-                                    }
+                                    send_or_count_ingress_drop(
+                                        &tx_cb,
+                                        EventItem::ZenohInput {
+                                            id: input_id_cb.clone(),
+                                            metadata: std::sync::Arc::new(metadata),
+                                            data,
+                                        },
+                                        &input_id_cb,
+                                        &ingress_drops_cb,
+                                    );
                                 }));
                             if result.is_err() {
                                 tracing::error!(
@@ -760,6 +815,7 @@ impl EventStream {
             start_timestamp: clock.new_timestamp(),
             clock,
             scheduler,
+            ingress_drops,
             write_events_to,
             use_scheduler,
             input_type_checks,
@@ -1006,8 +1062,22 @@ impl EventStream {
     /// `max(10 × queue_size, 100)`.
     /// This method returns a map from input ID to the number of messages dropped
     /// since the last call.
+    /// Drops are reported per input across both loss sites — the scheduler's
+    /// per-input eviction and the shared zenoh ingress channel — so a caller
+    /// does not have to know which transport a payload took to learn it was
+    /// lost (#3282).
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
-        self.scheduler.drain_drop_counts()
+        let mut counts = self.scheduler.drain_drop_counts();
+        for (id, dropped) in &self.ingress_drops {
+            // Load before swapping: a node polling this every `recv()` pays a
+            // read-modify-write per input otherwise, and the counter is zero on
+            // every healthy call.
+            if dropped.load(Ordering::Relaxed) > 0 {
+                let n = dropped.swap(0, Ordering::Relaxed);
+                *counts.entry(id.clone()).or_insert(0) += n;
+            }
+        }
+        counts
     }
 
     fn add_event(&mut self, event: EventItem) {
@@ -3406,6 +3476,79 @@ mod tests {
         assert!(
             second.is_none(),
             "Stream::next must yield None after Stop, got {second:?}"
+        );
+    }
+
+    // ---- #3282: zenoh-path ingress drops must reach drain_drop_counts() ----
+
+    fn zenoh_item(id: &str) -> EventItem {
+        use dora_arrow_convert::IntoArrow;
+        let ts = uhlc::HLC::default().new_timestamp();
+        EventItem::ZenohInput {
+            id: DataId::from(id.to_string()),
+            metadata: std::sync::Arc::new(Metadata::new(ts)),
+            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+        }
+    }
+
+    /// A zero-copy payload never reaches the scheduler's per-input queue: the
+    /// zenoh callback `try_send`s it into the node's single shared ingress
+    /// channel, and a full channel drops it there. Before #3282 that site only
+    /// logged, so `drain_drop_counts()` — the one programmatic way a node can
+    /// learn it lost data — reported zero while data was being lost. This is the
+    /// audit item in `docs/audit-2026-06-04-soundness.md`.
+    #[test]
+    fn ingress_overflow_is_counted() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<EventItem>(1);
+        let id = DataId::from("camera".to_string());
+        let drops = std::sync::Arc::new(AtomicU64::new(0));
+
+        // First fits the capacity-1 channel.
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+
+        // The next two find it full and must be counted, not just logged.
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+    }
+
+    /// A closed channel is ordinary shutdown, not data loss — counting it would
+    /// make every node report phantom drops as it tears down.
+    #[test]
+    fn ingress_send_to_a_closed_channel_is_not_a_drop() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<EventItem>(1);
+        drop(rx);
+        let id = DataId::from("camera".to_string());
+        let drops = std::sync::Arc::new(AtomicU64::new(0));
+
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+    }
+
+    /// `drain_drop_counts()` must report one number per input, summing the
+    /// scheduler's per-input evictions and the ingress-channel drops — a caller
+    /// asking "did I lose anything on `camera`?" should not have to know which
+    /// transport the payload happened to take. And draining must reset, so two
+    /// calls don't double-count.
+    #[test]
+    fn drain_drop_counts_merges_ingress_and_scheduler_drops() {
+        let (_node, mut events) = test_event_stream();
+        let id = DataId::from("camera".to_string());
+
+        events.scheduler.record_drop(&id);
+        events
+            .ingress_drops
+            .entry(id.clone())
+            .or_default()
+            .fetch_add(2, Ordering::Relaxed);
+
+        let counts = events.drain_drop_counts();
+        assert_eq!(counts.get(&id), Some(&3));
+
+        assert!(
+            events.drain_drop_counts().is_empty(),
+            "drain must reset both sources"
         );
     }
 }
