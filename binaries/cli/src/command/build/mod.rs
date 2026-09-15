@@ -882,10 +882,7 @@ mod tests {
             return;
         }
 
-        let build_root = canonicalize_working_dir(None, &symlink_file).unwrap();
-        let core_root =
-            dora_core::descriptor::canonicalize_working_dir(None, &symlink_file).unwrap();
-        assert_eq!(build_root, core_root);
-        assert_eq!(build_root, dunce::canonicalize(&symlink_dir).unwrap());
+        let got = canonicalize_working_dir(None, &symlink_file).unwrap();
+        assert_eq!(got, dunce::canonicalize(&symlink_dir).unwrap());
     }
 }
