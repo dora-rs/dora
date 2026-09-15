@@ -86,11 +86,7 @@ impl FieldVisitor {
             return;
         }
         if value.len() > MAX_FIELD_VALUE_BYTES {
-            let mut end = MAX_FIELD_VALUE_BYTES;
-            while !value.is_char_boundary(end) {
-                end -= 1;
-            }
-            value.truncate(end);
+            value.truncate(value.floor_char_boundary(MAX_FIELD_VALUE_BYTES));
             value.push_str("...");
         }
         self.0.push((name.to_string(), value));

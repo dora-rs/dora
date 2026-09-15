@@ -77,13 +77,9 @@ const MAX_LOG_LINE_BYTES: usize = 1024 * 1024;
 /// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
 fn truncate_log_line(content: &mut String) {
     if content.len() > MAX_LOG_LINE_BYTES {
-        // Find the last valid UTF-8 char boundary at or before MAX_LOG_LINE_BYTES.
-        // This is equivalent to str::floor_char_boundary (stable in 1.91).
-        let mut boundary = MAX_LOG_LINE_BYTES;
-        while boundary > 0 && !content.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        content.truncate(boundary);
+        // Truncate at the last valid UTF-8 char boundary at or before
+        // MAX_LOG_LINE_BYTES so the retained prefix stays valid UTF-8.
+        content.truncate(content.floor_char_boundary(MAX_LOG_LINE_BYTES));
         content.push_str("... [truncated]");
     }
 }
