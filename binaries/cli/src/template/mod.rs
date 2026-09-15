@@ -36,16 +36,25 @@ fn normalize_for_cmake(path: &str) -> String {
 /// outside `[A-Za-z0-9_-]` can produce a broken, unbuildable project
 /// (see issue #3440). The first character must be a letter so the name is
 /// also usable as a bare CMake argument, a Cargo package name and a Python
-/// module name.
+/// module name; the last character must be a letter or digit so the name is
+/// a valid Python distribution name (PEP 508). Names cargo reserves for its
+/// own build directories are rejected too, since the Rust node template
+/// makes the package name the implicit binary target name.
+const RESERVED_CARGO_TARGET_NAMES: &[&str] = &["build", "deps", "examples", "incremental"];
+
 fn validate_name(name: &str, kind: &str) -> eyre::Result<()> {
     let mut chars = name.chars();
     let valid = !name.is_empty()
         && chars.next().is_some_and(|c| c.is_ascii_alphabetic())
-        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_');
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+        && name.ends_with(|c: char| c.is_ascii_alphanumeric());
     if !valid {
         bail!(
-            "{kind} name `{name}` is invalid: use only ASCII letters, digits, `-` and `_`, starting with a letter"
+            "{kind} name `{name}` is invalid: use only ASCII letters, digits, `-` and `_`, starting and ending with a letter or digit"
         );
+    }
+    if RESERVED_CARGO_TARGET_NAMES.contains(&name) {
+        bail!("{kind} name `{name}` is invalid: cargo forbids target names that collide with its build directories");
     }
     Ok(())
 }
@@ -99,6 +108,15 @@ mod tests {
             "9lives",
             "_",
             "a_b ",
+            // Trailing `-`/`_` fails PEP 508 for generated Python projects.
+            "foo-",
+            "foo_",
+            // Cargo forbids these as (implicit binary) target names since
+            // they collide with its build directories.
+            "build",
+            "deps",
+            "examples",
+            "incremental",
         ] {
             assert!(
                 validate_name(name, "node").is_err(),
