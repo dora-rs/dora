@@ -6,7 +6,10 @@ use std::{
 use arrow_schema::DataType;
 use clap::Args;
 use dora_core::config::InputMapping;
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use dora_message::{
+    common::{Timestamped, TopicDebugMode},
+    daemon_to_daemon::InterDaemonEvent,
+};
 
 use crate::{
     command::{
@@ -161,7 +164,8 @@ fn info(
 
     // Subscribe via WS
     let ws_topics = vec![(topic.node_id.clone(), topic.data_id.clone())];
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) =
+        session.subscribe_topics(dataflow_id, ws_topics, TopicDebugMode::Full)?;
 
     let stats = Arc::new(TopicStats::default());
     let stats_clone = stats.clone();

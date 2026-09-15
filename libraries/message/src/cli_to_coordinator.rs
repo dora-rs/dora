@@ -260,6 +260,27 @@ pub enum ControlRequest {
     },
 }
 
+/// A topic subscription that relays each frame payload-less
+/// (`InterDaemonEvent::Output` with `data: None`). Used by `dora topic hz`,
+/// which only measures cadence: shipping every sample's bytes over the shared
+/// control channel is wasted work and can wedge it for a camera-sized output
+/// (dora-rs/dora#3509).
+///
+/// A standalone type on purpose: the Rust API surface freezes the
+/// `ControlRequest` variants, so growth rides on *new* request types (routed
+/// by the WS `method` field) instead of new variants or fields.
+#[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
+pub struct TopicSubscribeMetadataOnly {
+    pub dataflow_id: Uuid,
+    pub topics: Vec<(NodeId, DataId)>,
+    /// Same semantics as the `protocol_version` field of
+    /// [`ControlRequest::TopicSubscribe`]: the binary-frame encoding the client
+    /// speaks. `None` means the client predates the handshake and is rejected
+    /// by the coordinator.
+    #[serde(default)]
+    pub protocol_version: Option<u16>,
+}
+
 impl ControlRequest {
     /// Build a Hello request stamped with the current crate version of
     /// `dora-message` (the wire-protocol version).
@@ -345,5 +366,61 @@ mod tests {
             }
             other => panic!("expected Hello, got {other:?}"),
         }
+    }
+
+    // A CLI that predates metadata-only subscriptions sends a `TopicSubscribe`
+    // without any hint of it. It must keep decoding verbatim: the wire surface
+    // is frozen, so the metadata-only request is a standalone type on its own
+    // WS method (`topic_subscribe_metadata`) instead of a field or variant
+    // added to this one (dora-rs/dora#3509).
+    #[test]
+    fn topic_subscribe_legacy_json_decodes_unchanged() {
+        let json = format!(
+            r#"{{"TopicSubscribe":{{"dataflow_id":"{}","topics":[["node_a","out_1"]],"protocol_version":4}}}}"#,
+            uuid::Uuid::new_v4()
+        );
+        let decoded: ControlRequest = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            ControlRequest::TopicSubscribe {
+                topics,
+                protocol_version,
+                ..
+            } => {
+                assert_eq!(
+                    topics,
+                    vec![(
+                        crate::id::NodeId::from("node_a".to_string()),
+                        crate::id::DataId::from("out_1".to_string())
+                    )]
+                );
+                assert_eq!(protocol_version, Some(4));
+            }
+            other => panic!("expected TopicSubscribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topic_subscribe_metadata_only_roundtrips() {
+        let dataflow_id = uuid::Uuid::new_v4();
+        let req = crate::cli_to_coordinator::TopicSubscribeMetadataOnly {
+            dataflow_id,
+            topics: vec![(
+                crate::id::NodeId::from("node_a".to_string()),
+                crate::id::DataId::from("out_1".to_string()),
+            )],
+            protocol_version: Some(4),
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: crate::cli_to_coordinator::TopicSubscribeMetadataOnly =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.dataflow_id, dataflow_id);
+        assert_eq!(
+            decoded.topics,
+            vec![(
+                crate::id::NodeId::from("node_a".to_string()),
+                crate::id::DataId::from("out_1".to_string())
+            )]
+        );
+        assert_eq!(decoded.protocol_version, Some(4));
     }
 }

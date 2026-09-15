@@ -53,6 +53,7 @@ enum SessionCommand {
     /// Subscribe to topic data via binary WS frames.
     SubscribeTopics {
         request: Vec<u8>,
+        method: String,
         data_tx: std_mpsc::Sender<eyre::Result<Vec<u8>>>,
         ack_tx: oneshot::Sender<eyre::Result<Uuid>>,
     },
@@ -200,21 +201,43 @@ impl WsSession {
         &self,
         dataflow_id: Uuid,
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+        mode: dora_message::common::TopicDebugMode,
     ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
-        let request = serde_json::to_vec(
-            &dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
-                dataflow_id,
-                topics,
-                protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
-            },
-        )
-        .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
+        // `TopicSubscribe` (full) and the standalone `TopicSubscribeMetadataOnly`
+        // request ride different WS methods: the Rust API surface freezes the
+        // `ControlRequest` variants, so growth adds a request type instead of a
+        // variant (dora-rs/dora#3509). The requested mode picks both.
+        let (request, method) = match mode {
+            dora_message::common::TopicDebugMode::Full => {
+                let request = serde_json::to_vec(
+                    &dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
+                        dataflow_id,
+                        topics,
+                        protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
+                    },
+                )
+                .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
+                (request, "control".to_string())
+            }
+            dora_message::common::TopicDebugMode::MetadataOnly => {
+                let request = serde_json::to_vec(
+                    &dora_message::cli_to_coordinator::TopicSubscribeMetadataOnly {
+                        dataflow_id,
+                        topics,
+                        protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
+                    },
+                )
+                .map_err(|e| eyre!("failed to serialize TopicSubscribeMetadataOnly: {e}"))?;
+                (request, "topic_subscribe_metadata".to_string())
+            }
+        };
 
         let (data_tx, data_rx) = std_mpsc::channel();
         let (ack_tx, ack_rx) = oneshot::channel();
         self.cmd_tx
             .send(SessionCommand::SubscribeTopics {
                 request,
+                method,
                 data_tx,
                 ack_tx,
             })
@@ -339,7 +362,12 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                             break;
                         }
                     }
-                    SessionCommand::SubscribeTopics { request, data_tx, ack_tx } => {
+                    SessionCommand::SubscribeTopics {
+                        request,
+                        method,
+                        data_tx,
+                        ack_tx,
+                    } => {
                         let id = Uuid::new_v4();
                         let params = match serde_json::from_slice(&request) {
                             Ok(v) => v,
@@ -350,7 +378,7 @@ async fn session_loop(ws_stream: WsStream, mut cmd_rx: mpsc::UnboundedReceiver<S
                         };
                         let req = WsRequest {
                             id,
-                            method: "control".to_string(),
+                            method,
                             params,
                         };
                         let json = match serde_json::to_string(&req) {

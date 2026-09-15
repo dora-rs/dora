@@ -199,10 +199,26 @@ impl DaemonConnection {
     /// `message` is already-serialized JSON, so it is embedded into the envelope
     /// verbatim rather than re-parsed into a `serde_json::Value` first.
     pub(crate) async fn send_and_receive(&self, message: &[u8]) -> eyre::Result<Vec<u8>> {
+        self.send_and_receive_as(message, "daemon_command").await
+    }
+
+    /// Send a message to the daemon over an explicit command method and wait
+    /// for a reply.
+    ///
+    /// `message` is already-serialized JSON, so it is embedded into the envelope
+    /// verbatim rather than re-parsed into a `serde_json::Value` first. The
+    /// method is a parameter so the metadata-only topic-debug command can ride
+    /// `daemon_command_metadata` instead of widening the frozen
+    /// `DaemonCoordinatorEvent` variants (dora-rs/dora#3509).
+    pub(crate) async fn send_and_receive_as(
+        &self,
+        message: &[u8],
+        method: &str,
+    ) -> eyre::Result<Vec<u8>> {
         let id = Uuid::new_v4();
         let params_str =
             std::str::from_utf8(message).map_err(|e| eyre!("outgoing message not UTF-8: {e}"))?;
-        let json = format!(r#"{{"id":"{id}","method":"daemon_command","params":{params_str}}}"#);
+        let json = format!(r#"{{"id":"{id}","method":"{method}","params":{params_str}}}"#);
 
         let (reply_tx, reply_rx) = oneshot::channel();
         {

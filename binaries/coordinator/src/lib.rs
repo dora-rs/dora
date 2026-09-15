@@ -2127,6 +2127,7 @@ async fn start_inner(
                 ControlEvent::TopicSubscribe {
                     dataflow_id,
                     topics,
+                    mode,
                     sender,
                     done_tx,
                 } => {
@@ -2135,6 +2136,7 @@ async fn start_inner(
                         &mut daemon_connections,
                         dataflow_id,
                         topics,
+                        mode,
                         sender,
                         &clock,
                     )
@@ -4399,6 +4401,7 @@ async fn start_topic_debug_stream(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+    mode: dora_message::common::TopicDebugMode,
     sender: tokio::sync::mpsc::Sender<crate::topic_subscriber::TopicFrame>,
     clock: &HLC,
 ) -> eyre::Result<Uuid> {
@@ -4419,7 +4422,8 @@ async fn start_topic_debug_stream(
     // post-dispatch path already rolls back via `rollback_topic_debug_stream`.
     // No frame can reach the subscriber before it is inserted, because the
     // requests are merely built here and not dispatched until `join_all` below.
-    let subscriber = topic_subscriber::TopicSubscriber::new(outputs_by_daemon.clone(), sender);
+    let subscriber =
+        topic_subscriber::TopicSubscriber::new(outputs_by_daemon.clone(), mode, sender);
 
     let mut start_requests = Vec::new();
     for (daemon_id, outputs) in outputs_by_daemon {
@@ -4427,18 +4431,38 @@ async fn start_topic_debug_stream(
             .get_mut(&daemon_id)
             .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
             .clone();
-        let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::StartTopicDebugStream {
-                dataflow_id,
-                outputs,
-                subscription_id,
-            },
-            timestamp: clock.new_timestamp(),
-        })?;
+        // Full payloads ride the `daemon_command` method with the frozen
+        // `DaemonCoordinatorEvent` variant; metadata-only requests are a
+        // standalone type on their own method so neither `DaemonCoordinatorEvent`
+        // nor `ControlRequest` grows a new variant (dora-rs/dora#3509).
+        let (message, method) = match mode {
+            dora_message::common::TopicDebugMode::Full => (
+                serde_json::to_vec(&Timestamped {
+                    inner: DaemonCoordinatorEvent::StartTopicDebugStream {
+                        dataflow_id,
+                        outputs,
+                        subscription_id,
+                    },
+                    timestamp: clock.new_timestamp(),
+                })?,
+                "daemon_command",
+            ),
+            dora_message::common::TopicDebugMode::MetadataOnly => (
+                serde_json::to_vec(&Timestamped {
+                    inner: dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly {
+                        dataflow_id,
+                        outputs,
+                        subscription_id,
+                    },
+                    timestamp: clock.new_timestamp(),
+                })?,
+                "daemon_command_metadata",
+            ),
+        };
         start_requests.push(async move {
             let result = async {
                 let reply_raw = connection
-                    .send_and_receive(&message)
+                    .send_and_receive_as(&message, method)
                     .await
                     .wrap_err("failed to send start-topic-debug-stream message")?;
                 let reply: DaemonCoordinatorReply = serde_json::from_slice(&reply_raw)
@@ -4647,27 +4671,58 @@ async fn restore_topic_debug_streams_for_daemon(
             let Some(outputs) = subscriber.outputs_by_daemon().get(daemon_id).cloned() else {
                 continue;
             };
-            let message = match serde_json::to_vec(&Timestamped {
-                inner: DaemonCoordinatorEvent::StartTopicDebugStream {
-                    dataflow_id: *dataflow_id,
-                    outputs,
-                    subscription_id: *subscription_id,
-                },
-                timestamp: clock.new_timestamp(),
-            }) {
-                Ok(message) => message,
-                Err(err) => {
-                    tracing::warn!(
-                        %daemon_id,
-                        %dataflow_id,
-                        %subscription_id,
-                        "failed to serialize topic debug stream restore message: {err}"
-                    );
-                    continue;
+            // Serialize the matching command flavor and its WS method:
+            // `daemon_command` for full payloads, `daemon_command_metadata` for
+            // the standalone metadata-only type (dora-rs/dora#3509).
+            let (message, method) = match subscriber.mode() {
+                dora_message::common::TopicDebugMode::Full => {
+                    let message = match serde_json::to_vec(&Timestamped {
+                        inner: DaemonCoordinatorEvent::StartTopicDebugStream {
+                            dataflow_id: *dataflow_id,
+                            outputs,
+                            subscription_id: *subscription_id,
+                        },
+                        timestamp: clock.new_timestamp(),
+                    }) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            tracing::warn!(
+                                %daemon_id,
+                                %dataflow_id,
+                                %subscription_id,
+                                "failed to serialize topic debug stream restore message: {err}"
+                            );
+                            continue;
+                        }
+                    };
+                    (message, "daemon_command")
+                }
+                dora_message::common::TopicDebugMode::MetadataOnly => {
+                    let message = match serde_json::to_vec(&Timestamped {
+                        inner:
+                            dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly {
+                                dataflow_id: *dataflow_id,
+                                outputs,
+                                subscription_id: *subscription_id,
+                            },
+                        timestamp: clock.new_timestamp(),
+                    }) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            tracing::warn!(
+                                %daemon_id,
+                                %dataflow_id,
+                                %subscription_id,
+                                "failed to serialize topic debug stream restore message: {err}"
+                            );
+                            continue;
+                        }
+                    };
+                    (message, "daemon_command_metadata")
                 }
             };
 
-            match connection.send_and_receive(&message).await {
+            match connection.send_and_receive_as(&message, method).await {
                 Ok(reply_raw) => {
                     match serde_json::from_slice::<DaemonCoordinatorReply>(&reply_raw) {
                         Ok(DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(()))) => {}
@@ -6162,6 +6217,7 @@ mod tests {
             &mut daemon_connections,
             dataflow_id,
             topics,
+            dora_message::common::TopicDebugMode::Full,
             tx,
             &clock,
         )
@@ -7471,6 +7527,7 @@ mod tests {
                     dataflow_id: start_df,
                     outputs,
                     subscription_id,
+                    ..
                 } => {
                     assert_eq!(start_df, dataflow_id);
                     assert_eq!(outputs, vec![(expected_node_id, expected_data_id)]);
@@ -7496,6 +7553,7 @@ mod tests {
             &mut daemon_connections,
             dataflow_id,
             vec![(node_id.clone(), data_id.clone())],
+            dora_message::common::TopicDebugMode::Full,
             frame_tx,
             &HLC::default(),
         )
@@ -7620,6 +7678,7 @@ mod tests {
             &mut daemon_connections,
             dataflow_id,
             vec![(node_id_a, data_id.clone()), (node_id_b, data_id)],
+            dora_message::common::TopicDebugMode::Full,
             frame_tx,
             &HLC::default(),
         )
@@ -7645,7 +7704,8 @@ mod tests {
         #[derive(serde::Deserialize)]
         struct OutboundRaw {
             id: String,
-            params: Timestamped<DaemonCoordinatorEvent>,
+            method: String,
+            params: serde_json::Value,
         }
 
         let dataflow_id = DataflowId::from(Uuid::new_v4());
@@ -7653,6 +7713,10 @@ mod tests {
         let node_id: dora_core::config::NodeId = "sender".to_string().into();
         let data_id: dora_core::config::DataId = "message".to_string().into();
         let subscription_id = Uuid::new_v4();
+        // A metadata-only subscriber (e.g. `dora topic hz`) must be restored
+        // as metadata-only, or the daemon would rebuild Full watchers on every
+        // reconnect (dora-rs/dora#3509).
+        let expected_mode = dora_message::common::TopicDebugMode::MetadataOnly;
 
         // Stand up a connection whose rx we can inspect after the reconnect path runs.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
@@ -7672,32 +7736,65 @@ mod tests {
         outputs_by_daemon.insert(daemon_id.clone(), vec![(node_id.clone(), data_id.clone())]);
         dataflow.topic_subscribers.insert(
             subscription_id,
-            crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+            crate::topic_subscriber::TopicSubscriber::new(
+                outputs_by_daemon,
+                expected_mode,
+                frame_tx,
+            ),
         );
         running_dataflows.insert(dataflow_id, dataflow);
 
         // Task that responds as the reconnected daemon would.
         let seen = Arc::new(tokio::sync::Mutex::new(None::<(Uuid, DataflowId)>));
         let seen_task = seen.clone();
+        let expected_mode_task = expected_mode;
         let daemon_task = tokio::spawn(async move {
             let outbound = rx
                 .recv()
                 .await
                 .expect("reconnected daemon should receive restore message");
             let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-            if let DaemonCoordinatorEvent::StartTopicDebugStream {
-                dataflow_id: restore_df,
-                subscription_id: restore_sub,
-                ..
-            } = outbound_raw.params.inner
-            {
-                *seen_task.lock().await = Some((restore_sub, restore_df));
-            } else {
-                panic!(
-                    "unexpected event on reconnect: {:?}",
-                    outbound_raw.params.inner
-                );
-            }
+            let (restore_sub, restore_df, restore_mode) = match outbound_raw.method.as_str() {
+                // Full payloads ride `daemon_command` with the frozen event;
+                // metadata-only rides `daemon_command_metadata` with the
+                // standalone type (dora-rs/dora#3509).
+                "daemon_command" => {
+                    let event: Timestamped<DaemonCoordinatorEvent> =
+                        serde_json::from_value(outbound_raw.params).unwrap();
+                    match event.inner {
+                        DaemonCoordinatorEvent::StartTopicDebugStream {
+                            dataflow_id,
+                            outputs: _,
+                            subscription_id,
+                        } => (
+                            subscription_id,
+                            dataflow_id,
+                            dora_message::common::TopicDebugMode::Full,
+                        ),
+                        other => {
+                            panic!("unexpected event on reconnect: {other:?}");
+                        }
+                    }
+                }
+                "daemon_command_metadata" => {
+                    let event: Timestamped<
+                        dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly,
+                    > = serde_json::from_value(outbound_raw.params).unwrap();
+                    (
+                        event.inner.subscription_id,
+                        event.inner.dataflow_id,
+                        dora_message::common::TopicDebugMode::MetadataOnly,
+                    )
+                }
+                other => {
+                    panic!("unexpected method on reconnect: {other:?}");
+                }
+            };
+            assert_eq!(
+                restore_mode, expected_mode_task,
+                "restore must re-issue the subscription with its original mode"
+            );
+            *seen_task.lock().await = Some((restore_sub, restore_df));
             let reply =
                 serde_json::to_string(&DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(())))
                     .unwrap();
@@ -7760,7 +7857,11 @@ mod tests {
         outputs_by_daemon.insert(daemon_id.clone(), vec![(node_id, data_id)]);
         dataflow.topic_subscribers.insert(
             Uuid::new_v4(),
-            crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+            crate::topic_subscriber::TopicSubscriber::new(
+                outputs_by_daemon,
+                dora_message::common::TopicDebugMode::Full,
+                frame_tx,
+            ),
         );
         running_dataflows.insert(dataflow_id, dataflow);
 
@@ -7797,11 +7898,19 @@ mod tests {
         let (tx2, mut rx2) = tokio::sync::mpsc::channel(4);
         dataflow.topic_subscribers.insert(
             Uuid::new_v4(),
-            crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), tx1),
+            crate::topic_subscriber::TopicSubscriber::new(
+                BTreeMap::new(),
+                dora_message::common::TopicDebugMode::Full,
+                tx1,
+            ),
         );
         dataflow.topic_subscribers.insert(
             Uuid::new_v4(),
-            crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), tx2),
+            crate::topic_subscriber::TopicSubscriber::new(
+                BTreeMap::new(),
+                dora_message::common::TopicDebugMode::Full,
+                tx2,
+            ),
         );
 
         // Call the real helper, not a mirror of it. If the helper is renamed

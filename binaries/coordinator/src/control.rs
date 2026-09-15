@@ -30,6 +30,7 @@ pub enum ControlEvent {
     TopicSubscribe {
         dataflow_id: Uuid,
         topics: Vec<(NodeId, DataId)>,
+        mode: dora_message::common::TopicDebugMode,
         sender: mpsc::Sender<crate::topic_subscriber::TopicFrame>,
         done_tx: oneshot::Sender<Result<Uuid, String>>,
     },

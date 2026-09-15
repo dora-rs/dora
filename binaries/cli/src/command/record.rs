@@ -8,7 +8,9 @@ use std::{
 use clap::Args;
 use dora_core::descriptor::Descriptor;
 use dora_message::{
-    common::Timestamped, coordinator_to_cli::DataflowIdAndName, daemon_to_daemon::InterDaemonEvent,
+    common::{Timestamped, TopicDebugMode},
+    coordinator_to_cli::DataflowIdAndName,
+    daemon_to_daemon::InterDaemonEvent,
     id::NodeId,
 };
 use dora_recording::{RecordEntry, RecordingHeader, RecordingWriter};
@@ -478,7 +480,8 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
             ))
         })
         .collect::<eyre::Result<Vec<_>>>()?;
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) =
+        session.subscribe_topics(dataflow_id, ws_topics, TopicDebugMode::Full)?;
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
     // wall clock is set before 1970; `epoch_nanos` falls back to a zero base

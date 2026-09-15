@@ -374,13 +374,15 @@ pub struct RunningDataflow {
     pub(crate) startup_timeout_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
-    /// Reverse index from output to the set of CLI subscribers watching it.
-    /// Hot-path read on every node output dispatch (`send_topic_debug_frames`)
-    /// and on the `has_debug_watchers` check. Unsubscribe scans this map
-    /// rather than maintaining a separate inverse map: unsubscribe is rare
-    /// compared to dispatch, and the scan is bounded by the count of outputs
-    /// that currently have at least one subscriber.
-    pub(crate) debug_topic_watchers: BTreeMap<OutputId, BTreeSet<uuid::Uuid>>,
+    /// Reverse index from output to the CLI subscribers watching it and the
+    /// per-subscription [`TopicDebugMode`] they asked for. Hot-path read on
+    /// every node output dispatch (`send_topic_debug_frames`) and on the
+    /// `has_debug_watchers` check. Unsubscribe scans this map rather than
+    /// maintaining a separate inverse map: unsubscribe is rare compared to
+    /// dispatch, and the scan is bounded by the count of outputs that
+    /// currently have at least one subscriber.
+    pub(crate) debug_topic_watchers:
+        BTreeMap<OutputId, BTreeMap<uuid::Uuid, dora_message::common::TopicDebugMode>>,
     pub(crate) finished_tx: broadcast::Sender<()>,
     /// Shutdown signal for listener loops — send `true` when dataflow finishes.
     pub(crate) listener_shutdown_tx: tokio::sync::watch::Sender<bool>,

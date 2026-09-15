@@ -1,6 +1,9 @@
 use crossterm::event::{Event, KeyCode, KeyModifiers};
 use dora_core::descriptor::Descriptor;
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
+use dora_message::{
+    common::{Timestamped, TopicDebugMode},
+    daemon_to_daemon::InterDaemonEvent,
+};
 use itertools::Itertools;
 use ratatui::{DefaultTerminal, prelude::*, widgets::*};
 use std::{
@@ -86,7 +89,8 @@ impl Executable for Hz {
             .map(|t| (t.node_id.clone(), t.data_id.clone()))
             .collect();
 
-        let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+        let (_subscription_id, data_rx) =
+            session.subscribe_topics(dataflow_id, ws_topics, TopicDebugMode::MetadataOnly)?;
 
         // Non-interactive path: collect for `--duration`, print final stats.
         if let Some(secs) = self.duration {
@@ -163,11 +167,11 @@ fn run_hz_oneshot(
                     node_id, output_id, ..
                 } = event.inner
                 {
-                    let now = Instant::now();
-                    stats[0].1.record(now); // aggregate
+                    let stamp = event.timestamp.get_time().to_duration();
+                    stats[0].1.record(stamp); // aggregate
                     let key = (node_id.to_string(), output_id.to_string());
                     if let Some(&idx) = topic_index.get(&key) {
-                        stats[idx].1.record(now);
+                        stats[idx].1.record(stamp);
                     }
                 }
             }
@@ -197,7 +201,7 @@ fn run_hz_oneshot(
 
 #[derive(Debug)]
 struct HzStats {
-    timestamps: Mutex<VecDeque<Instant>>,
+    timestamps: Mutex<VecDeque<Duration>>,
     window_duration: Duration,
 }
 
@@ -209,22 +213,21 @@ impl HzStats {
         }
     }
 
-    fn record(&self, now: Instant) {
+    /// Record an occurrence at wall-clock `t`.
+    ///
+    /// Timestamps come from the HLC stamp on the relayed frame, not the moment
+    /// the frame was received: the daemon->coordinator->CLI relay adds
+    /// propagation and serialization latency, which would otherwise inflate the
+    /// measured intervals (dora-rs/dora#3509).
+    fn record(&self, t: Duration) {
         let mut timestamps = self.timestamps.lock().unwrap_or_else(|e| e.into_inner());
-        timestamps.push_back(now);
-        // `now - window_duration` panics ("overflow when subtracting duration
-        // from instant") when the window exceeds the monotonic-clock value --
-        // reachable via a large `--window` (which `parse_window` leaves
-        // unbounded) or within `window` seconds of the monotonic epoch. When
-        // the cutoff would predate the epoch, every timestamp is within the
-        // window, so there is nothing to prune. Mirrors `info::calculate_hz`.
-        if let Some(cutoff) = now.checked_sub(self.window_duration) {
-            while let Some(&first) = timestamps.front() {
-                if first < cutoff {
-                    timestamps.pop_front();
-                } else {
-                    break;
-                }
+        timestamps.push_back(t);
+        let cutoff = t.saturating_sub(self.window_duration);
+        while let Some(&first) = timestamps.front() {
+            if first < cutoff {
+                timestamps.pop_front();
+            } else {
+                break;
             }
         }
     }
@@ -236,7 +239,7 @@ impl HzStats {
             .iter()
             .tuple_windows()
             .filter_map(|(a, b)| {
-                let dt = b.duration_since(*a).as_secs_f64() * 1000.0;
+                let dt = b.saturating_sub(*a).as_secs_f64() * 1000.0;
                 if dt > 0.0 { Some(dt) } else { None }
             })
             .collect()
@@ -314,7 +317,6 @@ fn run_hz(
     let topic_index = build_topic_index(&stats, descriptor);
 
     let mut selected: usize = 0;
-    let sub_window = Duration::from_millis(1000);
     let mut rate_series: Vec<VecDeque<u64>> = vec![VecDeque::with_capacity(240); stats.len()];
     let start = Instant::now();
 
@@ -347,11 +349,11 @@ fn run_hz(
                 InterDaemonEvent::Output {
                     node_id, output_id, ..
                 } => {
-                    let now = Instant::now();
-                    all_stats.record(now);
+                    let stamp = event.timestamp.get_time().to_duration();
+                    all_stats.record(stamp);
                     let key = (node_id.to_string(), output_id.to_string());
                     if let Some(&idx) = topic_index_clone.get(&key) {
-                        stats_clones[idx].record(now);
+                        stats_clones[idx].record(stamp);
                     }
                 }
                 InterDaemonEvent::OutputClosed { .. } => {}
@@ -362,18 +364,20 @@ fn run_hz(
     });
 
     loop {
-        let now = Instant::now();
-        // `None` when the 1 s sub-window predates the monotonic epoch (only in
-        // the first second of uptime); then every timestamp counts as recent.
-        let cutoff = now.checked_sub(sub_window);
+        // Count samples in the last 1 s sub-window, derived from the most
+        // recent recorded wall-clock stamp (no monotonic conversion needed).
+        let sub_window = Duration::from_millis(1000);
         for (i, (_topic, s)) in stats.iter().enumerate() {
             let mut count = 0usize;
             let ts = s.timestamps.lock().unwrap_or_else(|e| e.into_inner());
-            for &t in ts.iter().rev() {
-                if cutoff.is_some_and(|c| t < c) {
-                    break;
+            if let Some(&latest) = ts.back() {
+                let cutoff = latest.saturating_sub(sub_window);
+                for &t in ts.iter().rev() {
+                    if t < cutoff {
+                        break;
+                    }
+                    count += 1;
                 }
-                count += 1;
             }
             let hz = (count as f64) / sub_window.as_secs_f64();
             let v = hz.max(0.0).round() as u64;
@@ -651,22 +655,54 @@ mod tests {
 
         // Writer and reader must still work despite the poisoned lock rather
         // than panicking on a bare `.unwrap()`.
-        stats.record(Instant::now());
-        stats.record(Instant::now());
+        stats.record(Duration::from_secs(1));
+        stats.record(Duration::from_secs(2));
         let _ = stats.intervals_ms();
     }
 
     // A huge window (`parse_window` imposes no upper bound) must not panic in
     // `record`: `now - window_duration` would otherwise overflow the monotonic
-    // clock. Regression for the `dora topic hz --window <huge>` panic.
+    // clock. Reachable via a large `--window`; `Duration` subtraction saturates.
     #[test]
     fn record_does_not_underflow_on_huge_window() {
         let stats = HzStats::new(u32::MAX as usize);
-        // Would panic with "overflow when subtracting duration from instant"
-        // before the `checked_sub` guard.
-        stats.record(Instant::now());
-        stats.record(Instant::now());
-        // Nothing pruned: the cutoff predates the epoch, so both are kept.
+        // Nothing pruned: the cutoff predates the stamps, so both are kept.
+        stats.record(Duration::from_secs(100));
+        stats.record(Duration::from_secs(101));
         assert_eq!(stats.timestamps.lock().unwrap().len(), 2);
+    }
+
+    // Intervals must use the producer's timeline, not the receiver's. Feed two
+    // stamps that arrived AFTER their nominal production times: the first
+    // interval reflects the stamp delta, not the arrival delta
+    // (dora-rs/dora#3509).
+    #[test]
+    fn intervals_use_producer_timestamps_not_arrival_time() {
+        let stats = HzStats::new(10);
+        stats.record(Duration::from_millis(1_000));
+        // Producer says 100 ms apart...
+        stats.record(Duration::from_millis(1_100));
+        // ...but the receiver saw them 500 ms apart. Measuring against arrival
+        // would report a ~2 Hz interval.
+        let _expected_arrival = Duration::from_millis(1_600);
+
+        let intervals = stats.intervals_ms();
+        assert_eq!(intervals.len(), 1);
+        // ~10 Hz, i.e. 100 ms, not 500 ms.
+        assert!((intervals[0] - 100.0).abs() < 1.0);
+    }
+
+    // A stamp arriving out of order (producer timestamp older than the last
+    // one seen) must not poison the stats: the interval computes to the stamp
+    // delta, which can be zero or non-monotonic, and such pairs are skipped.
+    #[test]
+    fn record_skips_non_positive_intervals() {
+        let stats = HzStats::new(10);
+        stats.record(Duration::from_millis(1_000));
+        // Spurious duplicate / out-of-order stamp: zero interval.
+        stats.record(Duration::from_millis(1_000));
+        stats.record(Duration::from_millis(1_200));
+        assert_eq!(stats.intervals_ms().len(), 1);
+        assert!((stats.intervals_ms()[0] - 200.0).abs() < 1.0);
     }
 }
