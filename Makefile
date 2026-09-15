@@ -62,7 +62,8 @@
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
         qa-examples qa-cluster-e2e qa-cluster-record-replay qa-docker-slim \
         ros2-zenoh-humble ros2-zenoh-kilted \
-        qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph qa-package-includes \
+        qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph \
+        qa-package-includes qa-lockfile \
         qa-ci-reporting qa-ci-reporting-selftest qa-clippy qa-test qa-test-python \
         qa-test-python-node qa-coverage qa-mutants qa-semver qa-breaking qa-breaking-update \
         qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
@@ -159,6 +160,13 @@ qa-publish-graph:
 # file inside that crate, or the published `.crate` will not have it.
 qa-package-includes:
 	@scripts/qa/package-includes.sh
+
+# Cargo.lock freshness gate (#3512): the committed lock must already
+# satisfy every workspace manifest. Plain cargo commands rewrite the lock
+# in place, so a stale entry is green locally and only surfaces 3-4 hours
+# later in the nightly's --locked builds (`msrv`, cluster `cargo install`).
+qa-lockfile:
+	@scripts/qa/lockfile.sh
 
 # Structural check on nightly.yml failure reporting. Parses the workflow
 # only -- runs no nightly job, takes well under a second.

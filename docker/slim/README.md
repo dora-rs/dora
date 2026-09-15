@@ -81,4 +81,4 @@ docker build . -t dora-slim
 docker run --rm -v "$PWD/smoke.sh:/smoke.sh:ro" dora-slim bash /smoke.sh
 ```
 
-CI runs the same script against every build (`.github/workflows/docker-image.yml`), and the image is only published once it passes. The Dockerfile installs `dora-rs-cli` from PyPI rather than from the workspace, so the smoke covers the *published* CLI plus the image -- see `docs/qa-runbook.md` §3.14 for what a failure does and does not implicate.
+CI runs the same script against every build (`.github/workflows/docker-image.yml`), and the image is only published once it passes. The Dockerfile installs `dora-rs-cli` from PyPI rather than from the workspace, so the smoke covers the *published* CLI plus the image -- see `docs/qa-runbook.md` §3.15 for what a failure does and does not implicate.

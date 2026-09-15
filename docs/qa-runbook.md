@@ -51,7 +51,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 
 | Target | Runs | Budget | When to use |
 |---|---|---|---|
-| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph + package-includes + breaking-changes + ci-reporting | ~15 s | Pre-commit |
+| `make qa-fast` | fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph + package-includes + lockfile + breaking-changes + ci-reporting | ~15 s | Pre-commit |
 | `make qa-full` | `qa-fast` + full test suite + coverage | ~5-10 min | Pre-push |
 | `make qa-deep` | `qa-full` + mutation testing on diff + semver | ~15 min | Target Tier 1 local gate (stronger than today's CI: adds coverage, adversarial, mutants, semver) |
 | `make qa-tier1` | alias for `qa-deep` | — | Back-compat; prefer `qa-deep` |
@@ -63,6 +63,7 @@ rustup component add miri --toolchain nightly   # optional; for unsafe-code anal
 | `make qa-clippy` | `cargo clippy --all --all-targets -- -D warnings` (excluding Python) | ~1 min | After mechanical edits |
 | `make qa-audit` | `cargo audit` + `cargo deny check` | ~10 s | After bumping deps |
 | `make qa-unwrap` | count `.unwrap()` / `.expect(` in production code | ~2 s | After adding unwraps |
+| `make qa-lockfile` | `Cargo.lock` already satisfies every manifest (`--locked` resolve, no build) | ~1 s | After a workspace version bump, adding a crate, or a rebase that touched manifests |
 | `make qa-test` | `cargo test --all` (excluding Python) | ~3-5 min | After code changes |
 | `make qa-coverage` | `cargo llvm-cov` (writes `lcov.info`) | ~5 min | To see coverage locally |
 | `make qa-mutants` | `cargo mutants --in-diff origin/main` on critical crates | ~5-30 min | To verify tests actually detect bugs |
@@ -182,7 +183,19 @@ Reproduce locally with `make qa-publish-graph`; the rules and what each protects
 
 Reproduce locally with `make qa-package-includes`, and confirm a fix end to end with `cargo package -p <crate>` — that builds the crate from its own tarball, which is exactly what the gate approximates statically.
 
-### 3.8 `test` failed
+### 3.8 `lockfile` failed
+
+**Cause**: the committed `Cargo.lock` is not a solution for the workspace manifests, so any `--locked` build fails. The error cargo prints is "the lock file needs to be updated but --locked was passed" (or, with no network, "cannot update the lock file ... because --locked was passed").
+
+Nothing in the normal edit loop shows you this: `cargo build`, `cargo check` and `cargo test` update the lock in place and carry on. Only builds that pass `--locked` object, and until #3512 every one of those lived in the nightly — the `msrv` job, and the `cargo install --path binaries/cli --locked` in the cluster jobs. They report 3-4 hours later, file a `nightly-regression` issue, and name neither the crate nor the commit responsible.
+
+**Fix**: `cargo metadata --format-version 1 >/dev/null` (any cargo command works) refreshes the lock; commit the diff with the manifest change that caused it. The gate names the offending packages for you — it resolves into a scratch copy and prints the committed and resolved versions side by side, then puts your lock back untouched.
+
+**The shape that actually happens**: a workspace version bump. Almost every crate here uses `version.workspace = true`, so bumping `[workspace.package] version` moves all of their manifests at once — including test-only fixtures under `tests/` and `examples/` that you never build directly. A branch that pinned its own new entry before the bump keeps that entry through the rebase or squash, and nothing local complains.
+
+That is #3512: #3360 added the `hang-before-init-node` fixture as a brand-new `[[package]]` block pinned at `1.0.0`, landing on a main already bumped to `1.0.1` by #3405. New text conflicts with nothing, so the merge was clean and the result was a lock no branch had ever validated. This is why the gate runs in the `Check` job and not only in `qa-fast`: `Check` is a `.trunk/trunk.yaml` required status and `ci.yml` triggers on `push: trunk-merge/**`, so it sees the merged batch tree rather than a PR head alone.
+
+### 3.9 `test` failed
 
 **Cause**: you broke a test.
 
@@ -194,7 +207,7 @@ cargo test -p <crate> <test_name> -- --nocapture
 
 If the test was wrong and the code is right, fix the test. If the code was wrong, fix the code. Don't fix the test to match broken code.
 
-### 3.9 `coverage` (soft) flagged
+### 3.10 `coverage` (soft) flagged
 
 **Cause**: the diff coverage gate (if running on a PR) found less than 70% of your new/changed lines are covered by tests.
 
@@ -205,7 +218,7 @@ make qa-coverage
 open target/llvm-cov/html/index.html   # if you also run `cargo llvm-cov --html`
 ```
 
-### 3.10 `mutation` escaped
+### 3.11 `mutation` escaped
 
 **Cause**: `cargo-mutants` found a mutation that no test detected — meaning your tests are incomplete for the mutated code path.
 
@@ -226,7 +239,7 @@ Construct an input where the mutated version produces a different output from th
 
 **Do not** waive mutations just to make the gate pass. The point of the gate is to surface weak tests.
 
-### 3.11 `semver` flagged
+### 3.12 `semver` flagged
 
 **Cause**: `cargo-semver-checks` found a breaking change in a publishable crate's public API since the last tag.
 
@@ -236,7 +249,7 @@ Construct an input where the mutated version produces a different output from th
 
 Soft during 0.x, hard from 1.0 on. It runs as a step of the `breaking-changes` gate below, which passes `--release-type minor` so the lints run whatever the version numbers say.
 
-### 3.12 `breaking-changes` failed
+### 3.13 `breaking-changes` failed
 
 **Cause**: a surface dora 1.x freezes changed. The report names the surface and the item — a removed `dora` flag, a reordered postcard field, a YAML property that became required, a raised `requires-python`.
 
@@ -251,7 +264,7 @@ Two failures that read oddly:
 - **"major version bump ..."** — a 2.0 withdraws the promises the gate measures against, so it stops there rather than reporting a green or a red that means nothing. When the bump is deliberate, `ALLOW_MAJOR_BUMP=1 make qa-breaking` (and set the same variable on the `breaking-changes` job for the PR that carries it).
 - **"the generated surface files are stale"** — regenerating changed the tree, so the comparison ran against an out-of-date snapshot and its "ok" meant nothing. Commit the regenerated files and read the report again.
 
-### 3.13 `ci-reporting` failed
+### 3.14 `ci-reporting` failed
 
 **Cause**: a change to `.github/workflows/nightly.yml` left one of its jobs outside the failure-reporting wiring. Both reporter jobs read `needs.<job>.result`, so a job missing from a `needs` list — or carrying job-level `continue-on-error: true` — can never be named in the `nightly-regression` issue. The gate reports one of three things.
 
@@ -265,7 +278,7 @@ Two failures that read oddly:
 
 Reproduce locally with `make qa-ci-reporting`; the three invariants and the failure each one is named after are documented at the top of [`scripts/qa/ci-nightly-reporting.sh`](../scripts/qa/ci-nightly-reporting.sh).
 
-### 3.14 `Docker Image CI/CD` failed
+### 3.15 `Docker Image CI/CD` failed
 
 **Cause**: `.github/workflows/docker-image.yml` builds `docker/slim/Dockerfile` and runs a dataflow inside the image (`docker/slim/smoke.sh`). It only fires on `docker/**` and on the workflow file itself.
 
