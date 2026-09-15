@@ -2425,6 +2425,7 @@ dependencies = [
  "is-terminal",
  "libc",
  "opentelemetry",
+ "proptest",
  "serde_json",
  "serde_yaml",
  "thiserror 2.0.20",
