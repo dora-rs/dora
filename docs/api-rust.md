@@ -280,9 +280,16 @@ pub fn drain(&mut self) -> Option<Vec<Event>>
 // True if no events are buffered in the scheduler or receiver.
 pub fn is_empty(&self) -> bool
 
-// Returns and resets accumulated drop counts per input ID.
-// For `drop_oldest` inputs, drops happen at `queue_size`.
-// For `backpressure` inputs, drops happen at 10x `queue_size` (hard safety cap).
+// Returns and resets accumulated drop counts per input ID, across both
+// loss sites:
+//   - The scheduler's per-input queue. For `drop_oldest` inputs drops
+//     happen at `queue_size`; for `backpressure` inputs at 10x `queue_size`
+//     (hard safety cap).
+//   - The shared zenoh ingress channel, which a payload on the direct
+//     zero-copy path overflows before the per-input policy ever applies.
+//     That channel is sized from the *sum* of the node's input
+//     `queue_size`s (floor 64), so raising any input's `queue_size`
+//     deepens it.
 pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64>
 ```
 
