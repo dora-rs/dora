@@ -42,6 +42,26 @@ struct ActiveTopicSubscription {
     subscription_id: Uuid,
     dataflow_id: Uuid,
     topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+    mode: dora_message::common::TopicDebugMode,
+}
+
+/// Find an existing subscription covering the same (dataflow, topics, mode)
+/// triple. Split out so dedup semantics are testable without a live WebSocket.
+///
+/// `hz` is `MetadataOnly` and `echo`/`record` are `Full`; both may target the
+/// same outputs, and each must get its own subscription rather than collapsing
+/// onto the other (dora-rs/dora#3509).
+fn find_matching_subscription<'a>(
+    subscriptions: &'a [ActiveTopicSubscription],
+    dataflow_id: Uuid,
+    topics: &[(dora_message::id::NodeId, dora_message::id::DataId)],
+    mode: dora_message::common::TopicDebugMode,
+) -> Option<&'a ActiveTopicSubscription> {
+    subscriptions.iter().find(|subscription| {
+        subscription.dataflow_id == dataflow_id
+            && subscription.topics == topics
+            && subscription.mode == mode
+    })
 }
 
 /// Serialize a `WsResponse` and send it over the WS connection.
@@ -206,6 +226,7 @@ pub(crate) async fn handle_control_ws(
                         dataflow_id,
                         topics,
                         protocol_version,
+                        mode,
                     } => {
                         // Reject before doing any work: the frames this
                         // subscription would produce are positionally encoded,
@@ -220,10 +241,14 @@ pub(crate) async fn handle_control_ws(
                         let mut normalized_topics = topics.clone();
                         normalized_topics.sort();
 
-                        if let Some(existing) = topic_subscriptions.iter().find(|subscription| {
-                            subscription.dataflow_id == *dataflow_id
-                                && subscription.topics == normalized_topics
-                        }) {
+                        // `hz` and `echo` of the same topics are different streams (one is
+                        // metadata-only), so the mode is part of the dedup key.
+                        if let Some(existing) = find_matching_subscription(
+                            &topic_subscriptions,
+                            *dataflow_id,
+                            &normalized_topics,
+                            *mode,
+                        ) {
                             let reply = ControlRequestReply::TopicSubscribed {
                                 subscription_id: existing.subscription_id,
                                 protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
@@ -267,6 +292,7 @@ pub(crate) async fn handle_control_ws(
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
                             dataflow_id: *dataflow_id,
                             topics: topics.clone(),
+                            mode: *mode,
                             sender: binary_tx.clone(),
                             done_tx,
                         })).await;
@@ -277,6 +303,7 @@ pub(crate) async fn handle_control_ws(
                                     subscription_id,
                                     dataflow_id: *dataflow_id,
                                     topics: normalized_topics,
+                                    mode: *mode,
                                 });
                                 subscription_id
                             }
@@ -574,6 +601,61 @@ mod tests {
             err,
             dora_message::topic_protocol_mismatch_message("client", Some(1)),
             "should reuse the shared message rather than a local variant"
+        );
+    }
+
+    // An `hz` and an `echo` of the same topics are different streams: both must
+    // match their own mode and never collapse onto each other. Without the mode
+    // in the dedup key, one of them would silently stop receiving frames
+    // (dora-rs/dora#3509).
+    #[test]
+    fn dedup_distinguishes_metadata_only_from_full_for_the_same_topics() {
+        let dataflow_id = Uuid::new_v4();
+        let topics = vec![(
+            dora_message::id::NodeId::from("node_a".to_string()),
+            dora_message::id::DataId::from("out_1".to_string()),
+        )];
+        let subs = vec![
+            ActiveTopicSubscription {
+                subscription_id: Uuid::new_v4(),
+                dataflow_id,
+                topics: topics.clone(),
+                mode: dora_message::common::TopicDebugMode::Full,
+            },
+            ActiveTopicSubscription {
+                subscription_id: Uuid::new_v4(),
+                dataflow_id,
+                topics: topics.clone(),
+                mode: dora_message::common::TopicDebugMode::MetadataOnly,
+            },
+        ];
+
+        let matched_full = find_matching_subscription(
+            &subs,
+            dataflow_id,
+            &topics,
+            dora_message::common::TopicDebugMode::Full,
+        )
+        .expect("the Full subscription must be found");
+        assert_eq!(matched_full.subscription_id, subs[0].subscription_id);
+        let matched_meta = find_matching_subscription(
+            &subs,
+            dataflow_id,
+            &topics,
+            dora_message::common::TopicDebugMode::MetadataOnly,
+        )
+        .expect("the MetadataOnly subscription must be found");
+        assert_eq!(matched_meta.subscription_id, subs[1].subscription_id);
+
+        // A different dataflow or topic set must not match.
+        assert!(
+            find_matching_subscription(
+                &subs,
+                Uuid::new_v4(),
+                &topics,
+                dora_message::common::TopicDebugMode::Full,
+            )
+            .is_none()
         );
     }
 }

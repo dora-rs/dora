@@ -508,6 +508,7 @@ fn cli_topic_subscription_receives_binary_frames_immediately_after_subscribe_ack
         .subscribe_topics(
             Uuid::new_v4(),
             vec![("node".to_string().into(), "output".to_string().into())],
+            dora_message::common::TopicDebugMode::Full,
         )
         .expect("subscribe topics");
 

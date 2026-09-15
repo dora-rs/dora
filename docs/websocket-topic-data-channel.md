@@ -108,6 +108,12 @@ After the handshake, the coordinator pushes binary WS frames. Each frame has a f
 | `subscription_id` | 16 bytes | UUID matching the `TopicSubscribed` ack, for multiplexing |
 | payload | variable | Raw `Timestamped<InterDaemonEvent>` postcard bytes from Zenoh |
 
+For a `MetadataOnly` subscription (`dora topic hz`), the payload is still a
+valid `Timestamped<InterDaemonEvent>` postcard frame, but the `Output`'s `data`
+field is `None`. The daemon never serializes the sample's payload for those
+subscriptions, so inspecting cadence on a camera-sized output does not drag the
+bytes across the control plane (see [topic hz](#dora-topic-hz)).
+
 The 16-byte UUID prefix allows multiplexing multiple subscriptions on a single WS connection without additional framing overhead.
 
 ### Protocol version
@@ -136,9 +142,13 @@ side refuses the subscription on mismatch:
 coordinator's:
 
 ```json
-{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2}}
+{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2, "mode": "metadata-only"}}
 {"TopicSubscribed": {"subscription_id": "...", "protocol_version": 2}}
 ```
+
+`mode` selects how much of each sample to relay: `"full"` (default; payload
+included) or `"metadata-only"`. It is `#[serde(default)]`, so a peer that
+predates it omits the field and stays on full-payload frames.
 
 Both fields are `#[serde(default)]`, so a peer that predates the handshake
 simply omits them — which deserializes to `None` and is rejected for the same
@@ -253,6 +263,13 @@ dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
 ```
 
 Uses ratatui for the TUI. A background `std::thread` receives events from `data_rx` and dispatches to per-topic `HzStats` trackers via a `BTreeMap<(node_id, data_id), index>` lookup.
+
+`hz` subscribes with `mode: "metadata-only"`: it only measures cadence, so
+requesting the payloads would just discard them — and, inside the daemon, would
+have shipped every camera-sized sample as a JSON number-array over the shared
+WS control channel. The daemon relays a data-less frame instead, and `hz` times
+events from the frame's HLC timestamp rather than the moment it arrives, which
+would otherwise absorb relay and serialization latency.
 
 ### `dora topic info`
 

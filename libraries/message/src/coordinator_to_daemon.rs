@@ -239,6 +239,10 @@ pub enum DaemonCoordinatorEvent {
         dataflow_id: DataflowId,
         outputs: Vec<(NodeId, DataId)>,
         subscription_id: uuid::Uuid,
+        /// Whether each frame should carry the payload
+        /// (`TopicDebugMode::Full`) or only the envelope (`MetadataOnly`).
+        #[serde(default)]
+        mode: crate::common::TopicDebugMode,
     },
     /// Stop forwarding output frames for a previously registered CLI topic
     /// inspection subscription.
@@ -333,5 +337,31 @@ mod register_result_tests {
     fn an_error_reply_is_an_error_through_both_accessors() {
         assert!(RegisterResult::Err("nope".into()).to_result().is_err());
         assert!(RegisterResult::Err("nope".into()).into_parts().is_err());
+    }
+}
+
+#[cfg(test)]
+mod start_topic_debug_stream_tests {
+    use super::*;
+
+    /// A coordinator built before `mode` existed sends `StartTopicDebugStream`
+    /// without it. It must decode as full-payload mode so relayed frames keep
+    /// carrying data (no silent regression to dropped payloads) — the wire
+    /// protocol stays compatible (dora-rs/dora#3509).
+    #[test]
+    fn start_without_mode_decodes_as_full() {
+        let legacy = format!(
+            r#"{{"StartTopicDebugStream":{{"dataflow_id":"{}","outputs":[["node_a","out_1"]],"subscription_id":"{}"}}}}"#,
+            uuid::Uuid::new_v4(),
+            uuid::Uuid::new_v4()
+        );
+        let decoded: DaemonCoordinatorEvent =
+            serde_json::from_str(&legacy).expect("legacy start request must stay decodable");
+        match decoded {
+            DaemonCoordinatorEvent::StartTopicDebugStream { mode, .. } => {
+                assert_eq!(mode, crate::common::TopicDebugMode::Full);
+            }
+            other => panic!("expected StartTopicDebugStream, got {other:?}"),
+        }
     }
 }

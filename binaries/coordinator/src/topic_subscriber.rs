@@ -10,6 +10,10 @@ pub(crate) struct TopicSubscriber {
         dora_message::common::DaemonId,
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     >,
+    /// The payload mode the subscription asked for. Restoring a stream on
+    /// daemon reconnect re-sends `StartTopicDebugStream` with the original
+    /// mode, so the daemon rebuilds metadata-only watchers as metadata-only.
+    mode: dora_message::common::TopicDebugMode,
     sender: Option<tokio::sync::mpsc::Sender<TopicFrame>>,
     timeouts: crate::timeout_streak::TimeoutStreak,
 }
@@ -20,10 +24,12 @@ impl TopicSubscriber {
             dora_message::common::DaemonId,
             Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
         >,
+        mode: dora_message::common::TopicDebugMode,
         sender: tokio::sync::mpsc::Sender<TopicFrame>,
     ) -> Self {
         Self {
             outputs_by_daemon,
+            mode,
             sender: Some(sender),
             timeouts: crate::timeout_streak::TimeoutStreak::default(),
         }
@@ -36,6 +42,10 @@ impl TopicSubscriber {
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     > {
         &self.outputs_by_daemon
+    }
+
+    pub(crate) fn mode(&self) -> dora_message::common::TopicDebugMode {
+        self.mode
     }
 
     pub(crate) async fn send_frame(&mut self, frame: TopicFrame) -> eyre::Result<()> {
@@ -79,7 +89,14 @@ mod tests {
         capacity: usize,
     ) -> (TopicSubscriber, tokio::sync::mpsc::Receiver<TopicFrame>) {
         let (tx, rx) = tokio::sync::mpsc::channel(capacity);
-        (TopicSubscriber::new(BTreeMap::new(), tx), rx)
+        (
+            TopicSubscriber::new(
+                BTreeMap::new(),
+                dora_message::common::TopicDebugMode::Full,
+                tx,
+            ),
+            rx,
+        )
     }
 
     #[tokio::test]

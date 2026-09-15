@@ -905,7 +905,11 @@ mod tests {
     async fn send_topic_frames_resets_timeout_streak_on_successful_send() {
         let subscription_id = Uuid::new_v4();
         let (tx, mut rx) = tokio::sync::mpsc::channel(4);
-        let mut subscriber = TopicSubscriber::new(BTreeMap::new(), tx);
+        let mut subscriber = TopicSubscriber::new(
+            BTreeMap::new(),
+            dora_message::common::TopicDebugMode::Full,
+            tx,
+        );
         // Prime the counter: simulate 3 prior timeouts.
         assert_eq!(subscriber.record_timeout(), 1);
         assert_eq!(subscriber.record_timeout(), 2);
@@ -943,7 +947,11 @@ mod tests {
         .await
         .unwrap();
 
-        let subscriber = TopicSubscriber::new(BTreeMap::new(), tx);
+        let subscriber = TopicSubscriber::new(
+            BTreeMap::new(),
+            dora_message::common::TopicDebugMode::Full,
+            tx,
+        );
         let mut subscribers = BTreeMap::new();
         subscribers.insert(subscription_id, subscriber);
 

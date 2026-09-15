@@ -3,7 +3,11 @@ use std::{collections::HashMap, ptr::NonNull, sync::Arc, time::SystemTime};
 use arrow::{buffer::OffsetBuffer, datatypes::Field};
 use clap::Args;
 use colored::Colorize;
-use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent, metadata::Parameter};
+use dora_message::{
+    common::{Timestamped, TopicDebugMode},
+    daemon_to_daemon::InterDaemonEvent,
+    metadata::Parameter,
+};
 use eyre::{Context, eyre};
 
 use crate::{
@@ -97,7 +101,8 @@ fn inspect(
         .map(|t| (t.node_id.clone(), t.data_id.clone()))
         .collect();
 
-    let (_subscription_id, data_rx) = session.subscribe_topics(dataflow_id, ws_topics)?;
+    let (_subscription_id, data_rx) =
+        session.subscribe_topics(dataflow_id, ws_topics, TopicDebugMode::Full)?;
 
     // If no data arrives within this timeout, hint that debug mode may be needed.
     const HINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);

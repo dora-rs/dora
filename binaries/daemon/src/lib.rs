@@ -2118,6 +2118,17 @@ impl Daemon {
         #[cfg(feature = "tensor-pool")]
         dora_tensor_pool::daemon::PoolState::sweep_orphans_at_startup(self.machine_id.as_deref());
 
+        // This function is re-entered on every reconnect, while the dataflows
+        // (and their debug-topic watchers) survive across attempts. Watchers
+        // registered over a dropped connection otherwise keep producing frames
+        // into its dead channel forever; there is no stall on the daemon side
+        // either, so the leak is silent (dora-rs/dora#3509). Drop them all here
+        // and let the coordinator's `restore_topic_debug_streams_for_daemon`
+        // re-install the still-active subscriptions with their original modes.
+        for dataflow in self.running.values_mut() {
+            dataflow.debug_topic_watchers.clear();
+        }
+
         let watchdog_clock = self.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
@@ -3892,6 +3903,7 @@ impl Daemon {
                 dataflow_id,
                 outputs,
                 subscription_id,
+                mode,
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {
@@ -3899,7 +3911,7 @@ impl Daemon {
                             .debug_topic_watchers
                             .entry(OutputId(node_id, data_id))
                             .or_default()
-                            .insert(subscription_id);
+                            .insert(subscription_id, mode);
                     }
                     Ok(())
                 } else {
@@ -4214,21 +4226,7 @@ impl Daemon {
             return Ok(());
         }
 
-        let event = InterDaemonEvent::Output {
-            dataflow_id,
-            node_id: output_id.0.clone(),
-            output_id: output_id.1.clone(),
-            metadata,
-            data: data.map(|d| AVec::from_slice(128, &d)),
-        };
-        let serialized_event = Timestamped {
-            inner: event,
-            timestamp: self.clock.new_timestamp(),
-        }
-        .serialize()
-        .wrap_err("failed to serialize debug topic event")?;
-
-        self.send_topic_debug_frames(dataflow_id, &output_id, serialized_event)
+        self.send_topic_debug_frames(dataflow_id, &output_id, &metadata, data.as_deref())
             .await
     }
 
@@ -5606,32 +5604,29 @@ impl Daemon {
         }
 
         let output_id = output_id_key;
-        let event = InterDaemonEvent::Output {
-            dataflow_id,
-            node_id: output_id.0.clone(),
-            output_id: output_id.1.clone(),
-            metadata,
-            data: data_bytes,
-        };
-        let serialized_event = Timestamped {
-            inner: event,
-            timestamp: self.clock.new_timestamp(),
-        }
-        .serialize()
-        .wrap_err("failed to serialize inter-daemon event")?;
-
         if has_debug_watchers {
-            if remote_receivers {
-                self.send_topic_debug_frames(dataflow_id, &output_id, serialized_event.clone())
-                    .await?;
-            } else {
-                self.send_topic_debug_frames(dataflow_id, &output_id, serialized_event)
-                    .await?;
-                return Ok(());
-            }
+            self.send_topic_debug_frames(
+                dataflow_id,
+                &output_id,
+                &metadata,
+                data_bytes.as_ref().map(|d| d.as_slice()),
+            )
+            .await?;
         }
 
         if remote_receivers {
+            let serialized_event = Timestamped {
+                inner: InterDaemonEvent::Output {
+                    dataflow_id,
+                    node_id: output_id.0.clone(),
+                    output_id: output_id.1.clone(),
+                    metadata,
+                    data: data_bytes,
+                },
+                timestamp: self.clock.new_timestamp(),
+            }
+            .serialize()
+            .wrap_err("failed to serialize inter-daemon event")?;
             self.send_to_remote_receivers(dataflow_id, &output_id, serialized_event)
                 .await?;
         }
@@ -5724,18 +5719,86 @@ impl Daemon {
         &self,
         dataflow_id: Uuid,
         output_id: &OutputId,
+        metadata: &dora_message::metadata::Metadata,
+        data: Option<&[u8]>,
+    ) -> Result<(), eyre::Error> {
+        let Some(dataflow) = self.running.get(&dataflow_id) else {
+            return Ok(());
+        };
+        let Some(watchers) = dataflow.debug_topic_watchers.get(output_id) else {
+            return Ok(());
+        };
+        if watchers.is_empty() {
+            return Ok(());
+        }
+
+        let (full_ids, metadata_only_ids) = partition_debug_watchers(watchers);
+
+        // In the full-mode frame the payload is embedded as JSON number arrays
+        // by the WS envelope below; in the metadata-only frame it is omitted.
+        // Frames are grouped per mode, so a mixed-mode output sends at most two
+        // small WS control messages per sample.
+        if !full_ids.is_empty() {
+            let event = InterDaemonEvent::Output {
+                dataflow_id,
+                node_id: output_id.0.clone(),
+                output_id: output_id.1.clone(),
+                metadata: metadata.clone(),
+                data: data.map(|d| AVec::from_slice(128, d)),
+            };
+            let serialized_event = Timestamped {
+                inner: event,
+                timestamp: self.clock.new_timestamp(),
+            }
+            .serialize()
+            .wrap_err("failed to serialize debug topic event")?;
+            self.send_topic_debug_frame_group(dataflow_id, output_id, full_ids, serialized_event)
+                .await?;
+        }
+
+        if !metadata_only_ids.is_empty() {
+            let event = InterDaemonEvent::Output {
+                dataflow_id,
+                node_id: output_id.0.clone(),
+                output_id: output_id.1.clone(),
+                metadata: metadata.clone(),
+                data: None,
+            };
+            let serialized_event = Timestamped {
+                inner: event,
+                timestamp: self.clock.new_timestamp(),
+            }
+            .serialize()
+            .wrap_err("failed to serialize debug topic event")?;
+            self.send_topic_debug_frame_group(
+                dataflow_id,
+                output_id,
+                metadata_only_ids,
+                serialized_event,
+            )
+            .await?;
+        }
+
+        Ok(())
+    }
+
+    /// Relay one serialized debug event to the given coordinator subscriptions.
+    ///
+    /// The event is packaged into a JSON [`CoordinatorRequest::Event`]
+    /// envelope and pushed through the shared daemon→coordinator WS send
+    /// channel (which also carries watchdog, log and metric traffic). A full
+    /// WS channel drops the frame rather than block, so a slow inspection
+    /// consumer can never stall the control plane.
+    async fn send_topic_debug_frame_group(
+        &self,
+        dataflow_id: Uuid,
+        output_id: &OutputId,
+        subscription_ids: Vec<Uuid>,
         serialized_event: Vec<u8>,
     ) -> Result<(), eyre::Error> {
         let Some(sender) = &self.coordinator_sender else {
             return Ok(());
         };
-        let Some(dataflow) = self.running.get(&dataflow_id) else {
-            return Ok(());
-        };
-        let Some(subscription_ids) = dataflow.debug_topic_watchers.get(output_id) else {
-            return Ok(());
-        };
-        let subscription_ids: Vec<_> = subscription_ids.iter().copied().collect();
         let subscription_count = subscription_ids.len();
 
         let message = serde_json::to_vec(&Timestamped {
@@ -8913,14 +8976,18 @@ mod fault_tolerance_tests {
         let sub_b = uuid::Uuid::new_v4();
 
         // Two subs, both watching out_1; only sub_a watches out_2.
+        use dora_message::common::TopicDebugMode;
         df.debug_topic_watchers
             .entry(OutputId(node_a.clone(), out_1.clone()))
             .or_default()
-            .extend([sub_a, sub_b]);
+            .extend([
+                (sub_a, TopicDebugMode::Full),
+                (sub_b, TopicDebugMode::MetadataOnly),
+            ]);
         df.debug_topic_watchers
             .entry(OutputId(node_a.clone(), out_2.clone()))
             .or_default()
-            .insert(sub_a);
+            .insert(sub_a, TopicDebugMode::Full);
 
         // Mirror the production stop path exactly.
         df.debug_topic_watchers.retain(|_output_id, watchers| {
@@ -8934,7 +9001,7 @@ mod fault_tolerance_tests {
             .get(&OutputId(node_a.clone(), out_1))
             .expect("out_1 entry must remain because sub_b still watches it");
         assert_eq!(out_1_watchers.len(), 1);
-        assert!(out_1_watchers.contains(&sub_b));
+        assert!(out_1_watchers.contains_key(&sub_b));
 
         // out_2 had only sub_a → entry removed entirely after scan.
         assert!(
@@ -8942,6 +9009,28 @@ mod fault_tolerance_tests {
                 .contains_key(&OutputId(node_a, out_2)),
             "out_2 must be dropped because its only watcher was sub_a"
         );
+    }
+
+    // A metadata-only watcher must not drag the payload onto the control WS:
+    // the partition splits ids so the frame serializer emits `data: None` for
+    // it and only ships the payload to Full subscribers (dora-rs/dora#3509).
+    #[test]
+    fn partition_debug_watchers_by_mode() {
+        use dora_message::common::TopicDebugMode as Mode;
+
+        let full_a = Uuid::new_v4();
+        let full_b = Uuid::new_v4();
+        let meta_c = Uuid::new_v4();
+        let watchers = BTreeMap::from([
+            (full_a, Mode::Full),
+            (meta_c, Mode::MetadataOnly),
+            (full_b, Mode::Full),
+        ]);
+
+        let (full, metadata_only) = partition_debug_watchers(&watchers);
+        assert_eq!(full.len(), 2);
+        assert!(full.contains(&full_a) && full.contains(&full_b));
+        assert_eq!(metadata_only, vec![meta_c]);
     }
 
     #[test]
@@ -9375,7 +9464,10 @@ mod fault_tolerance_tests {
             // Both nodes have a debug-topic watcher on their `message` output.
             df.debug_topic_watchers.insert(
                 OutputId(node.clone(), output_m.clone()),
-                BTreeSet::from([uuid::Uuid::new_v4()]),
+                BTreeMap::from([(
+                    uuid::Uuid::new_v4(),
+                    dora_message::common::TopicDebugMode::Full,
+                )]),
             );
         }
 
@@ -10696,4 +10788,22 @@ mod startup_timeout_tests {
         let now = 1_000u64;
         assert!(!startup_timeout_should_kill(false, spawn, now, TIMEOUT));
     }
+}
+
+/// Split the watchers of one output into `(full, metadata-only)` subscription
+/// ids. Kept as a free function so the mode partitioning is unit-testable
+/// without a running daemon.
+fn partition_debug_watchers(
+    watchers: &BTreeMap<Uuid, dora_message::common::TopicDebugMode>,
+) -> (Vec<Uuid>, Vec<Uuid>) {
+    let mut full = Vec::new();
+    let mut metadata_only = Vec::new();
+    for (subscription_id, mode) in watchers {
+        if *mode == dora_message::common::TopicDebugMode::Full {
+            full.push(*subscription_id);
+        } else {
+            metadata_only.push(*subscription_id);
+        }
+    }
+    (full, metadata_only)
 }

@@ -154,6 +154,11 @@ pub enum ControlRequest {
         /// misparse postcard frames.
         #[serde(default)]
         protocol_version: Option<u16>,
+        /// Which part of each sample to relay. `MetadataOnly` lets `dora topic
+        /// hz` measure cadence without shipping payloads over the control
+        /// channel (dora-rs/dora#3509).
+        #[serde(default)]
+        mode: crate::common::TopicDebugMode,
     },
     TopicUnsubscribe {
         subscription_id: Uuid,
@@ -344,6 +349,53 @@ mod tests {
                 assert_eq!(dora_version, crate::current_crate_version());
             }
             other => panic!("expected Hello, got {other:?}"),
+        }
+    }
+
+    // An old CLI (or coordinator) that predates the `mode` field sends a
+    // `TopicSubscribe` without it. It must decode as the full-payload default,
+    // so the wire protocol stays compatible (dora-rs/dora#3509).
+    #[test]
+    fn topic_subscribe_defaults_mode_to_full() {
+        let json = format!(
+            r#"{{"TopicSubscribe":{{"dataflow_id":"{}","topics":[["node_a","out_1"]],"protocol_version":4}}}}"#,
+            uuid::Uuid::new_v4()
+        );
+        let decoded: ControlRequest = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            ControlRequest::TopicSubscribe { mode, topics, .. } => {
+                assert_eq!(mode, crate::common::TopicDebugMode::Full);
+                assert_eq!(
+                    topics,
+                    vec![(
+                        crate::id::NodeId::from("node_a".to_string()),
+                        crate::id::DataId::from("out_1".to_string())
+                    )]
+                );
+            }
+            other => panic!("expected TopicSubscribe, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn topic_subscribe_roundtrips_metadata_only_mode() {
+        let dataflow_id = uuid::Uuid::new_v4();
+        let req = ControlRequest::TopicSubscribe {
+            dataflow_id,
+            topics: vec![(
+                crate::id::NodeId::from("node_a".to_string()),
+                crate::id::DataId::from("out_1".to_string()),
+            )],
+            protocol_version: Some(4),
+            mode: crate::common::TopicDebugMode::MetadataOnly,
+        };
+        let json = serde_json::to_string(&req).expect("serialize");
+        let decoded: ControlRequest = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            ControlRequest::TopicSubscribe { mode, .. } => {
+                assert_eq!(mode, crate::common::TopicDebugMode::MetadataOnly);
+            }
+            other => panic!("expected TopicSubscribe, got {other:?}"),
         }
     }
 }

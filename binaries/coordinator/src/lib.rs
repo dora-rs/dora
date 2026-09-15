@@ -2127,6 +2127,7 @@ async fn start_inner(
                 ControlEvent::TopicSubscribe {
                     dataflow_id,
                     topics,
+                    mode,
                     sender,
                     done_tx,
                 } => {
@@ -2135,6 +2136,7 @@ async fn start_inner(
                         &mut daemon_connections,
                         dataflow_id,
                         topics,
+                        mode,
                         sender,
                         &clock,
                     )
@@ -4399,6 +4401,7 @@ async fn start_topic_debug_stream(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
     topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+    mode: dora_message::common::TopicDebugMode,
     sender: tokio::sync::mpsc::Sender<crate::topic_subscriber::TopicFrame>,
     clock: &HLC,
 ) -> eyre::Result<Uuid> {
@@ -4419,7 +4422,8 @@ async fn start_topic_debug_stream(
     // post-dispatch path already rolls back via `rollback_topic_debug_stream`.
     // No frame can reach the subscriber before it is inserted, because the
     // requests are merely built here and not dispatched until `join_all` below.
-    let subscriber = topic_subscriber::TopicSubscriber::new(outputs_by_daemon.clone(), sender);
+    let subscriber =
+        topic_subscriber::TopicSubscriber::new(outputs_by_daemon.clone(), mode, sender);
 
     let mut start_requests = Vec::new();
     for (daemon_id, outputs) in outputs_by_daemon {
@@ -4432,6 +4436,7 @@ async fn start_topic_debug_stream(
                 dataflow_id,
                 outputs,
                 subscription_id,
+                mode,
             },
             timestamp: clock.new_timestamp(),
         })?;
@@ -4652,6 +4657,7 @@ async fn restore_topic_debug_streams_for_daemon(
                     dataflow_id: *dataflow_id,
                     outputs,
                     subscription_id: *subscription_id,
+                    mode: subscriber.mode(),
                 },
                 timestamp: clock.new_timestamp(),
             }) {
@@ -6162,6 +6168,7 @@ mod tests {
             &mut daemon_connections,
             dataflow_id,
             topics,
+            dora_message::common::TopicDebugMode::Full,
             tx,
             &clock,
         )
@@ -7471,6 +7478,7 @@ mod tests {
                     dataflow_id: start_df,
                     outputs,
                     subscription_id,
+                    ..
                 } => {
                     assert_eq!(start_df, dataflow_id);
                     assert_eq!(outputs, vec![(expected_node_id, expected_data_id)]);
@@ -7496,6 +7504,7 @@ mod tests {
             &mut daemon_connections,
             dataflow_id,
             vec![(node_id.clone(), data_id.clone())],
+            dora_message::common::TopicDebugMode::Full,
             frame_tx,
             &HLC::default(),
         )
@@ -7620,6 +7629,7 @@ mod tests {
             &mut daemon_connections,
             dataflow_id,
             vec![(node_id_a, data_id.clone()), (node_id_b, data_id)],
+            dora_message::common::TopicDebugMode::Full,
             frame_tx,
             &HLC::default(),
         )
@@ -7653,6 +7663,10 @@ mod tests {
         let node_id: dora_core::config::NodeId = "sender".to_string().into();
         let data_id: dora_core::config::DataId = "message".to_string().into();
         let subscription_id = Uuid::new_v4();
+        // A metadata-only subscriber (e.g. `dora topic hz`) must be restored
+        // as metadata-only, or the daemon would rebuild Full watchers on every
+        // reconnect (dora-rs/dora#3509).
+        let expected_mode = dora_message::common::TopicDebugMode::MetadataOnly;
 
         // Stand up a connection whose rx we can inspect after the reconnect path runs.
         let (tx, mut rx) = tokio::sync::mpsc::channel::<String>(8);
@@ -7672,13 +7686,18 @@ mod tests {
         outputs_by_daemon.insert(daemon_id.clone(), vec![(node_id.clone(), data_id.clone())]);
         dataflow.topic_subscribers.insert(
             subscription_id,
-            crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+            crate::topic_subscriber::TopicSubscriber::new(
+                outputs_by_daemon,
+                expected_mode,
+                frame_tx,
+            ),
         );
         running_dataflows.insert(dataflow_id, dataflow);
 
         // Task that responds as the reconnected daemon would.
         let seen = Arc::new(tokio::sync::Mutex::new(None::<(Uuid, DataflowId)>));
         let seen_task = seen.clone();
+        let expected_mode_task = expected_mode;
         let daemon_task = tokio::spawn(async move {
             let outbound = rx
                 .recv()
@@ -7687,10 +7706,15 @@ mod tests {
             let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
             if let DaemonCoordinatorEvent::StartTopicDebugStream {
                 dataflow_id: restore_df,
+                outputs: _,
                 subscription_id: restore_sub,
-                ..
+                mode: restore_mode,
             } = outbound_raw.params.inner
             {
+                assert_eq!(
+                    restore_mode, expected_mode_task,
+                    "restore must re-issue the subscription with its original mode"
+                );
                 *seen_task.lock().await = Some((restore_sub, restore_df));
             } else {
                 panic!(
@@ -7760,7 +7784,11 @@ mod tests {
         outputs_by_daemon.insert(daemon_id.clone(), vec![(node_id, data_id)]);
         dataflow.topic_subscribers.insert(
             Uuid::new_v4(),
-            crate::topic_subscriber::TopicSubscriber::new(outputs_by_daemon, frame_tx),
+            crate::topic_subscriber::TopicSubscriber::new(
+                outputs_by_daemon,
+                dora_message::common::TopicDebugMode::Full,
+                frame_tx,
+            ),
         );
         running_dataflows.insert(dataflow_id, dataflow);
 
@@ -7797,11 +7825,19 @@ mod tests {
         let (tx2, mut rx2) = tokio::sync::mpsc::channel(4);
         dataflow.topic_subscribers.insert(
             Uuid::new_v4(),
-            crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), tx1),
+            crate::topic_subscriber::TopicSubscriber::new(
+                BTreeMap::new(),
+                dora_message::common::TopicDebugMode::Full,
+                tx1,
+            ),
         );
         dataflow.topic_subscribers.insert(
             Uuid::new_v4(),
-            crate::topic_subscriber::TopicSubscriber::new(BTreeMap::new(), tx2),
+            crate::topic_subscriber::TopicSubscriber::new(
+                BTreeMap::new(),
+                dora_message::common::TopicDebugMode::Full,
+                tx2,
+            ),
         );
 
         // Call the real helper, not a mirror of it. If the helper is renamed

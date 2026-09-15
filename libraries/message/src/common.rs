@@ -309,6 +309,28 @@ impl From<Result<std::process::ExitStatus, std::io::Error>> for NodeExitStatus {
     }
 }
 
+/// Whether a topic inspection subscription needs the full payload or only the
+/// per-sample envelope (node, output, timestamp).
+///
+/// `dora topic hz` only measures publish cadence and discards the payload, but a
+/// full subscription ships every payload as a JSON-encoded byte array over the
+/// daemon's shared WebSocket control channel (`DaemonEvent::TopicDebugData`).
+/// Camera-sized frames are ~4.5x larger on the wire there, so a 30 Hz image
+/// topic can wedge the control plane of a healthy dataflow. A `MetadataOnly`
+/// subscription relays a data-less `InterDaemonEvent::Output` frame instead,
+/// which is tiny regardless of the underlying topic (dora-rs/dora#3509).
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Default, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum TopicDebugMode {
+    /// Relay the full `InterDaemonEvent::Output`, payload included.
+    #[default]
+    Full,
+    /// Relay a data-less frame: only node, output and timestamp.
+    MetadataOnly,
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct Timestamped<T> {
     pub inner: T,
