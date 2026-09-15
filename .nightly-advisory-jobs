@@ -11,14 +11,3 @@
 #
 # Every entry needs a reason and the issue tracking its removal. Entries are
 # meant to be deleted, not accumulated.
-
-# Added 2026-07-21 (#2790), made advisory after they were found failing every
-# night on `maturin: command not found` (#2742). Both blockers on a green run
-# are now fixed: the missing maturin setup, and the exact rmw_zenoh apt pins
-# that broke roughly fortnightly as upstream published new builds (#3321).
-# #3321 also established that these jobs do not flake — across twenty scheduled
-# runs every failure was pin rot, none was docker/apt/ROS-mirror noise — so the
-# only thing still missing is a run of green nightlies on top of that fix.
-# Remove both once they have that stretch of green — tracked in #2987.
-ros2-zenoh-humble
-ros2-zenoh-kilted
