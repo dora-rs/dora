@@ -200,6 +200,15 @@ jobs:
       # and fails for everyone who installs it from crates.io (#3400).
       - name: Check that build-time includes ship with their crate
         run: make qa-package-includes
+      # Must run BEFORE `cargo check --all`: that command rewrites a stale
+      # Cargo.lock in place and then passes, so by the time any later step
+      # runs the evidence is gone. This job is also the right home for the
+      # gate rather than qa-fast alone -- `Check` is in `.trunk/trunk.yaml`
+      # `required_statuses` and this workflow triggers on
+      # `push: trunk-merge/**`, so it validates the merged batch tree, and
+      # a lock entry can be fine on a PR head and stale once merged (#3512).
+      - name: Check that Cargo.lock is up to date
+        run: make qa-lockfile
       - name: Check
         run: cargo check --all
       # `cargo check --all` does NOT build `[[example]]` targets, so
