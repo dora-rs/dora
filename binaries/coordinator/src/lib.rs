@@ -1388,7 +1388,8 @@ async fn start_inner(
                                 "BuildLogSubscribe request should be handled separately"
                             )));
                         }
-                        ControlRequest::TopicSubscribe { .. } => {
+                        ControlRequest::TopicSubscribe { .. }
+                        | ControlRequest::TopicSubscribeMetadataOnly { .. } => {
                             let _ = reply_sender.send(Err(eyre::eyre!(
                                 "TopicSubscribe request should be handled separately"
                             )));
@@ -4432,11 +4433,21 @@ async fn start_topic_debug_stream(
             .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
             .clone();
         let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::StartTopicDebugStream {
-                dataflow_id,
-                outputs,
-                subscription_id,
-                mode,
+            inner: match mode {
+                dora_message::common::TopicDebugMode::Full => {
+                    DaemonCoordinatorEvent::StartTopicDebugStream {
+                        dataflow_id,
+                        outputs,
+                        subscription_id,
+                    }
+                }
+                dora_message::common::TopicDebugMode::MetadataOnly => {
+                    DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+                        dataflow_id,
+                        outputs,
+                        subscription_id,
+                    }
+                }
             },
             timestamp: clock.new_timestamp(),
         })?;
@@ -4653,11 +4664,21 @@ async fn restore_topic_debug_streams_for_daemon(
                 continue;
             };
             let message = match serde_json::to_vec(&Timestamped {
-                inner: DaemonCoordinatorEvent::StartTopicDebugStream {
-                    dataflow_id: *dataflow_id,
-                    outputs,
-                    subscription_id: *subscription_id,
-                    mode: subscriber.mode(),
+                inner: match subscriber.mode() {
+                    dora_message::common::TopicDebugMode::Full => {
+                        DaemonCoordinatorEvent::StartTopicDebugStream {
+                            dataflow_id: *dataflow_id,
+                            outputs,
+                            subscription_id: *subscription_id,
+                        }
+                    }
+                    dora_message::common::TopicDebugMode::MetadataOnly => {
+                        DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+                            dataflow_id: *dataflow_id,
+                            outputs,
+                            subscription_id: *subscription_id,
+                        }
+                    }
                 },
                 timestamp: clock.new_timestamp(),
             }) {
@@ -7704,24 +7725,34 @@ mod tests {
                 .await
                 .expect("reconnected daemon should receive restore message");
             let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-            if let DaemonCoordinatorEvent::StartTopicDebugStream {
-                dataflow_id: restore_df,
-                outputs: _,
-                subscription_id: restore_sub,
-                mode: restore_mode,
-            } = outbound_raw.params.inner
-            {
-                assert_eq!(
-                    restore_mode, expected_mode_task,
-                    "restore must re-issue the subscription with its original mode"
-                );
-                *seen_task.lock().await = Some((restore_sub, restore_df));
-            } else {
-                panic!(
-                    "unexpected event on reconnect: {:?}",
-                    outbound_raw.params.inner
-                );
-            }
+            let (restore_sub, restore_df, restore_mode) = match outbound_raw.params.inner {
+                DaemonCoordinatorEvent::StartTopicDebugStream {
+                    dataflow_id,
+                    outputs: _,
+                    subscription_id,
+                } => (
+                    subscription_id,
+                    dataflow_id,
+                    dora_message::common::TopicDebugMode::Full,
+                ),
+                DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+                    dataflow_id,
+                    outputs: _,
+                    subscription_id,
+                } => (
+                    subscription_id,
+                    dataflow_id,
+                    dora_message::common::TopicDebugMode::MetadataOnly,
+                ),
+                other => {
+                    panic!("unexpected event on reconnect: {other:?}");
+                }
+            };
+            assert_eq!(
+                restore_mode, expected_mode_task,
+                "restore must re-issue the subscription with its original mode"
+            );
+            *seen_task.lock().await = Some((restore_sub, restore_df));
             let reply =
                 serde_json::to_string(&DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(())))
                     .unwrap();

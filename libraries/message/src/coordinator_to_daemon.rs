@@ -239,10 +239,6 @@ pub enum DaemonCoordinatorEvent {
         dataflow_id: DataflowId,
         outputs: Vec<(NodeId, DataId)>,
         subscription_id: uuid::Uuid,
-        /// Whether each frame should carry the payload
-        /// (`TopicDebugMode::Full`) or only the envelope (`MetadataOnly`).
-        #[serde(default)]
-        mode: crate::common::TopicDebugMode,
     },
     /// Stop forwarding output frames for a previously registered CLI topic
     /// inspection subscription.
@@ -256,6 +252,19 @@ pub enum DaemonCoordinatorEvent {
         dataflow_id: DataflowId,
         /// The entries the daemon missed, ordered by sequence number.
         entries: Vec<StateCatchUpEntry>,
+    },
+    /// Same as [`StartTopicDebugStream`], but each frame is relayed payload-less
+    /// (`InterDaemonEvent::Output` with `data: None`): the receiving CLI only
+    /// measures cadence (`dora topic hz`), so the daemon must not ship the
+    /// sample's bytes over the shared control channel (dora-rs/dora#3509).
+    ///
+    /// Appended at the end of the enum: this is JSON-framed, yet the wire
+    /// surface enforces that existing variants keep their positions, so a new
+    /// variant may only ever be tacked on after the last one.
+    StartTopicDebugStreamMetadataOnly {
+        dataflow_id: DataflowId,
+        outputs: Vec<(NodeId, DataId)>,
+        subscription_id: uuid::Uuid,
     },
 }
 
@@ -344,12 +353,12 @@ mod register_result_tests {
 mod start_topic_debug_stream_tests {
     use super::*;
 
-    /// A coordinator built before `mode` existed sends `StartTopicDebugStream`
-    /// without it. It must decode as full-payload mode so relayed frames keep
-    /// carrying data (no silent regression to dropped payloads) — the wire
-    /// protocol stays compatible (dora-rs/dora#3509).
+    /// A coordinator built before metadata-only subscriptions existed sends
+    /// `StartTopicDebugStream`; it must keep decoding verbatim (full payload).
+    /// The wire surface is frozen, so metadata-only subs ride on a *new*
+    /// variant instead of a field added to this one (dora-rs/dora#3509).
     #[test]
-    fn start_without_mode_decodes_as_full() {
+    fn start_without_mode_decodes_unchanged() {
         let legacy = format!(
             r#"{{"StartTopicDebugStream":{{"dataflow_id":"{}","outputs":[["node_a","out_1"]],"subscription_id":"{}"}}}}"#,
             uuid::Uuid::new_v4(),
@@ -358,10 +367,52 @@ mod start_topic_debug_stream_tests {
         let decoded: DaemonCoordinatorEvent =
             serde_json::from_str(&legacy).expect("legacy start request must stay decodable");
         match decoded {
-            DaemonCoordinatorEvent::StartTopicDebugStream { mode, .. } => {
-                assert_eq!(mode, crate::common::TopicDebugMode::Full);
+            DaemonCoordinatorEvent::StartTopicDebugStream {
+                outputs,
+                subscription_id,
+                ..
+            } => {
+                assert_eq!(
+                    outputs,
+                    vec![(
+                        crate::id::NodeId::from("node_a".to_string()),
+                        crate::id::DataId::from("out_1".to_string())
+                    )]
+                );
+                assert!(!subscription_id.is_nil());
             }
             other => panic!("expected StartTopicDebugStream, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn start_metadata_only_roundtrips() {
+        let start = DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+            dataflow_id: uuid::Uuid::new_v4(),
+            outputs: vec![(
+                crate::id::NodeId::from("node_a".to_string()),
+                crate::id::DataId::from("out_1".to_string()),
+            )],
+            subscription_id: uuid::Uuid::new_v4(),
+        };
+        let json = serde_json::to_string(&start).expect("serialize");
+        let decoded: DaemonCoordinatorEvent = serde_json::from_str(&json).expect("deserialize");
+        match decoded {
+            DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+                outputs,
+                subscription_id,
+                ..
+            } => {
+                assert_eq!(
+                    outputs,
+                    vec![(
+                        crate::id::NodeId::from("node_a".to_string()),
+                        crate::id::DataId::from("out_1".to_string())
+                    )]
+                );
+                assert!(!subscription_id.is_nil());
+            }
+            other => panic!("expected StartTopicDebugStreamMetadataOnly, got {other:?}"),
         }
     }
 }

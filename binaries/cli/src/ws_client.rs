@@ -202,15 +202,27 @@ impl WsSession {
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
         mode: dora_message::common::TopicDebugMode,
     ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
-        let request = serde_json::to_vec(
-            &dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
-                dataflow_id,
-                topics,
-                protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
-                mode,
-            },
-        )
-        .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
+        // `TopicSubscribe` (full) and `TopicSubscribeMetadataOnly` are the two
+        // wire shapes the frozen surface allows; the requested mode selects
+        // which one is sent (dora-rs/dora#3509).
+        let request = match mode {
+            dora_message::common::TopicDebugMode::Full => {
+                dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
+                    dataflow_id,
+                    topics,
+                    protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
+                }
+            }
+            dora_message::common::TopicDebugMode::MetadataOnly => {
+                dora_message::cli_to_coordinator::ControlRequest::TopicSubscribeMetadataOnly {
+                    dataflow_id,
+                    topics,
+                    protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
+                }
+            }
+        };
+        let request = serde_json::to_vec(&request)
+            .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
 
         let (data_tx, data_rx) = std_mpsc::channel();
         let (ack_tx, ack_rx) = oneshot::channel();

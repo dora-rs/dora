@@ -29,6 +29,7 @@ use dora_message::{
     BuildId, DataflowId, SessionId,
     common::{
         DaemonId, DataMessage, GitSource, LogLevel, NodeError, NodeErrorCause, NodeExitStatus,
+        TopicDebugMode,
     },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{
@@ -2688,6 +2689,17 @@ impl Daemon {
         event: DaemonCoordinatorEvent,
         reply_tx: Sender<Option<DaemonCoordinatorReply>>,
     ) -> eyre::Result<RunStatus> {
+        // The two topic-debug-stream variants share their payload shape and
+        // disagree only on the relay mode (dora-rs/dora#3509). The outer match
+        // moves `event`, so the discriminant is captured here and consumed in
+        // the arm below.
+        let start_topic_debug_stream_mode = match &event {
+            DaemonCoordinatorEvent::StartTopicDebugStream { .. } => Some(TopicDebugMode::Full),
+            DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly { .. } => {
+                Some(TopicDebugMode::MetadataOnly)
+            }
+            _ => None,
+        };
         let status = match event {
             DaemonCoordinatorEvent::Build(BuildDataflowNodes {
                 build_id,
@@ -3903,8 +3915,19 @@ impl Daemon {
                 dataflow_id,
                 outputs,
                 subscription_id,
-                mode,
+                ..
+            }
+            | DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+                dataflow_id,
+                outputs,
+                subscription_id,
+                ..
             } => {
+                // The two wire variants select the relay mode (dora-rs/dora#3509);
+                // the combined pattern above binds the shared fields, so the
+                // discriminant flag was computed off a borrow at function entry.
+                let mode = start_topic_debug_stream_mode
+                    .expect("flag set for both topic-debug-stream variants");
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {
                         dataflow

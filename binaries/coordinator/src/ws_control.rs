@@ -226,8 +226,26 @@ pub(crate) async fn handle_control_ws(
                         dataflow_id,
                         topics,
                         protocol_version,
-                        mode,
+                        ..
+                    }
+                    | ControlRequest::TopicSubscribeMetadataOnly {
+                        dataflow_id,
+                        topics,
+                        protocol_version,
+                        ..
                     } => {
+                        // The two wire variants select the mode: plain
+                        // `TopicSubscribe` is full payload, the metadata-only
+                        // variant discards it (dora-rs/dora#3509).
+                        let mode = match control_request {
+                            ControlRequest::TopicSubscribe { .. } => {
+                                dora_message::common::TopicDebugMode::Full
+                            }
+                            ControlRequest::TopicSubscribeMetadataOnly { .. } => {
+                                dora_message::common::TopicDebugMode::MetadataOnly
+                            }
+                            _ => unreachable!("arm already narrowed to the two subscribe variants"),
+                        };
                         // Reject before doing any work: the frames this
                         // subscription would produce are positionally encoded,
                         // so a client on the other encoding misparses them
@@ -247,7 +265,7 @@ pub(crate) async fn handle_control_ws(
                             &topic_subscriptions,
                             *dataflow_id,
                             &normalized_topics,
-                            *mode,
+                            mode,
                         ) {
                             let reply = ControlRequestReply::TopicSubscribed {
                                 subscription_id: existing.subscription_id,
@@ -292,7 +310,7 @@ pub(crate) async fn handle_control_ws(
                         let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
                             dataflow_id: *dataflow_id,
                             topics: topics.clone(),
-                            mode: *mode,
+                            mode,
                             sender: binary_tx.clone(),
                             done_tx,
                         })).await;
@@ -303,7 +321,7 @@ pub(crate) async fn handle_control_ws(
                                     subscription_id,
                                     dataflow_id: *dataflow_id,
                                     topics: normalized_topics,
-                                    mode: *mode,
+                                    mode,
                                 });
                                 subscription_id
                             }

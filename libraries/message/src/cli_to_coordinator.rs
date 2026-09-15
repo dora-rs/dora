@@ -154,11 +154,6 @@ pub enum ControlRequest {
         /// misparse postcard frames.
         #[serde(default)]
         protocol_version: Option<u16>,
-        /// Which part of each sample to relay. `MetadataOnly` lets `dora topic
-        /// hz` measure cadence without shipping payloads over the control
-        /// channel (dora-rs/dora#3509).
-        #[serde(default)]
-        mode: crate::common::TopicDebugMode,
     },
     TopicUnsubscribe {
         subscription_id: Uuid,
@@ -263,6 +258,19 @@ pub enum ControlRequest {
     Hello {
         dora_version: semver::Version,
     },
+    /// [`TopicSubscribe`], but each relayed frame is payload-less
+    /// (`InterDaemonEvent::Output` with `data: None`). Used by `dora topic hz`,
+    /// which only measures cadence: shipping every sample's bytes over the
+    /// shared control channel is wasted work and can wedge it for a
+    /// camera-sized output (dora-rs/dora#3509).
+    TopicSubscribeMetadataOnly {
+        dataflow_id: Uuid,
+        topics: Vec<(NodeId, DataId)>,
+        /// See [`TopicSubscribe::protocol_version`]-like semantics. `None`
+        /// predates the handshake and is rejected by the coordinator.
+        #[serde(default)]
+        protocol_version: Option<u16>,
+    },
 }
 
 impl ControlRequest {
@@ -352,19 +360,23 @@ mod tests {
         }
     }
 
-    // An old CLI (or coordinator) that predates the `mode` field sends a
-    // `TopicSubscribe` without it. It must decode as the full-payload default,
-    // so the wire protocol stays compatible (dora-rs/dora#3509).
+    // A CLI that predates metadata-only subscriptions sends a `TopicSubscribe`
+    // without any hint of it. It must keep decoding verbatim: the wire surface
+    // is frozen, so metadata-only subs ride on a *new* variant instead of a
+    // field added to this one (dora-rs/dora#3509).
     #[test]
-    fn topic_subscribe_defaults_mode_to_full() {
+    fn topic_subscribe_legacy_json_decodes_unchanged() {
         let json = format!(
             r#"{{"TopicSubscribe":{{"dataflow_id":"{}","topics":[["node_a","out_1"]],"protocol_version":4}}}}"#,
             uuid::Uuid::new_v4()
         );
         let decoded: ControlRequest = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            ControlRequest::TopicSubscribe { mode, topics, .. } => {
-                assert_eq!(mode, crate::common::TopicDebugMode::Full);
+            ControlRequest::TopicSubscribe {
+                topics,
+                protocol_version,
+                ..
+            } => {
                 assert_eq!(
                     topics,
                     vec![(
@@ -372,30 +384,41 @@ mod tests {
                         crate::id::DataId::from("out_1".to_string())
                     )]
                 );
+                assert_eq!(protocol_version, Some(4));
             }
             other => panic!("expected TopicSubscribe, got {other:?}"),
         }
     }
 
     #[test]
-    fn topic_subscribe_roundtrips_metadata_only_mode() {
+    fn topic_subscribe_metadata_only_roundtrips() {
         let dataflow_id = uuid::Uuid::new_v4();
-        let req = ControlRequest::TopicSubscribe {
+        let req = ControlRequest::TopicSubscribeMetadataOnly {
             dataflow_id,
             topics: vec![(
                 crate::id::NodeId::from("node_a".to_string()),
                 crate::id::DataId::from("out_1".to_string()),
             )],
             protocol_version: Some(4),
-            mode: crate::common::TopicDebugMode::MetadataOnly,
         };
         let json = serde_json::to_string(&req).expect("serialize");
         let decoded: ControlRequest = serde_json::from_str(&json).expect("deserialize");
         match decoded {
-            ControlRequest::TopicSubscribe { mode, .. } => {
-                assert_eq!(mode, crate::common::TopicDebugMode::MetadataOnly);
+            ControlRequest::TopicSubscribeMetadataOnly {
+                topics,
+                protocol_version,
+                ..
+            } => {
+                assert_eq!(
+                    topics,
+                    vec![(
+                        crate::id::NodeId::from("node_a".to_string()),
+                        crate::id::DataId::from("out_1".to_string())
+                    )]
+                );
+                assert_eq!(protocol_version, Some(4));
             }
-            other => panic!("expected TopicSubscribe, got {other:?}"),
+            other => panic!("expected TopicSubscribeMetadataOnly, got {other:?}"),
         }
     }
 }

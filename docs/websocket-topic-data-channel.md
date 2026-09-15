@@ -108,7 +108,8 @@ After the handshake, the coordinator pushes binary WS frames. Each frame has a f
 | `subscription_id` | 16 bytes | UUID matching the `TopicSubscribed` ack, for multiplexing |
 | payload | variable | Raw `Timestamped<InterDaemonEvent>` postcard bytes from Zenoh |
 
-For a `MetadataOnly` subscription (`dora topic hz`), the payload is still a
+For a metadata-only subscription (`dora topic hz`, requested via the
+`TopicSubscribeMetadataOnly` variant), the payload is still a
 valid `Timestamped<InterDaemonEvent>` postcard frame, but the `Output`'s `data`
 field is `None`. The daemon never serializes the sample's payload for those
 subscriptions, so inspecting cadence on a camera-sized output does not drag the
@@ -142,13 +143,17 @@ side refuses the subscription on mismatch:
 coordinator's:
 
 ```json
-{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2, "mode": "metadata-only"}}
+{"TopicSubscribe":  {"dataflow_id": "...", "topics": [...], "protocol_version": 2}}
+{"TopicSubscribeMetadataOnly": {"dataflow_id": "...", "topics": [...], "protocol_version": 2}}
 {"TopicSubscribed": {"subscription_id": "...", "protocol_version": 2}}
 ```
 
-`mode` selects how much of each sample to relay: `"full"` (default; payload
-included) or `"metadata-only"`. It is `#[serde(default)]`, so a peer that
-predates it omits the field and stays on full-payload frames.
+The two request variants select how much of each sample to relay. Plain
+`TopicSubscribe` is full-payload; `TopicSubscribeMetadataOnly` asks the daemon
+to drop sample payloads (see [topic hz](#dora-topic-hz)). They are distinct
+wire variants on purpose: the `dora-message` wire surface treats enum variants
+as frozen, so the protocol grows by *adding* a variant, never by widening an
+existing one.
 
 Both fields are `#[serde(default)]`, so a peer that predates the handshake
 simply omits them — which deserializes to `None` and is rejected for the same
@@ -264,7 +269,7 @@ dora topic hz -d my-dataflow robot1/pose robot2/vel --window 5
 
 Uses ratatui for the TUI. A background `std::thread` receives events from `data_rx` and dispatches to per-topic `HzStats` trackers via a `BTreeMap<(node_id, data_id), index>` lookup.
 
-`hz` subscribes with `mode: "metadata-only"`: it only measures cadence, so
+`hz` sends `TopicSubscribeMetadataOnly`: it only measures cadence, so
 requesting the payloads would just discard them — and, inside the daemon, would
 have shipped every camera-sized sample as a JSON number-array over the shared
 WS control channel. The daemon relays a data-less frame instead, and `hz` times
