@@ -5921,6 +5921,12 @@ impl Daemon {
             }
         }
 
+        // The receiver is back: forget its stale missing-stream markers so a
+        // later drop of the newly-installed channel warns again (dora-rs/
+        // dora#3201).
+        dataflow
+            .missing_channel_warned
+            .retain(|(node, _)| node != &node_id);
         dataflow.subscribe_channels.insert(node_id, event_sender);
     }
 
@@ -7425,6 +7431,41 @@ async fn send_output_to_local_receivers(
                     );
                 }
             }
+        } else {
+            // The receiver is registered in `mappings` but has no live daemon
+            // event stream: its channel was dropped (crash that never
+            // re-subscribed, `EventStreamDropped`, or a closed listener). This
+            // is the silent-routing-loss mode of dora-rs/dora#3201 — the
+            // producer's send still "succeeds" but the consumer receives
+            // nothing, indefinitely. Make it visible, once per edge; the
+            // marker is cleared on (re)subscribe so an edge that drops its
+            // stream again after reconnecting gets a fresh warning.
+            if dataflow
+                .missing_channel_warned
+                .insert((receiver_id.clone(), input_id.clone()))
+            {
+                tracing::warn!(
+                    receiver = %receiver_id,
+                    input = %input_id,
+                    output = %output_id.1,
+                    "dropping `{}/{}` to `{receiver_id}`: node has no daemon \
+                     event stream (it may be restarting or failed to \
+                     re-subscribe) — the edge stays registered in the routing \
+                     table while its channel is gone",
+                    output_id.0,
+                    output_id.1,
+                );
+            } else {
+                tracing::debug!(
+                    receiver = %receiver_id,
+                    input = %input_id,
+                    output = %output_id.1,
+                    "dropping `{}/{}` to `{receiver_id}`: no daemon event \
+                     stream (warning already emitted for this edge)",
+                    output_id.0,
+                    output_id.1,
+                );
+            }
         }
     }
     for id in closed {
@@ -8299,6 +8340,7 @@ mod fault_tolerance_tests {
     use crate::pending::DataflowStatus;
     use crate::running_dataflow::{HandleReplacement, StopProcessPolicy};
     use std::sync::atomic::AtomicU32;
+    use std::sync::{Arc, Mutex};
 
     use dora_message::{daemon_to_node::NodeEvent, descriptor::Descriptor};
     use std::sync::atomic::{AtomicBool, AtomicU64};
@@ -9876,6 +9918,145 @@ mod fault_tolerance_tests {
         let events = drain_events(&mut rx);
         assert_eq!(events.len(), 1);
         assert!(matches_event(&events[0], "Input"));
+    }
+
+    // -- Regression tests for dora-rs/dora#3201: a receiver whose event
+    //    stream is gone must not be silently starved. --
+
+    /// Minimal `tracing::Subscriber` that records the level of every event it
+    /// receives, so a test can assert whether (and how often) a warning fires.
+    #[derive(Clone, Default)]
+    struct LevelCapture {
+        levels: Arc<Mutex<Vec<tracing::Level>>>,
+    }
+
+    impl tracing::Subscriber for LevelCapture {
+        fn enabled(&self, _metadata: &tracing::Metadata<'_>) -> bool {
+            true
+        }
+        fn new_span(&self, _span: &tracing::span::Attributes<'_>) -> tracing::span::Id {
+            tracing::span::Id::from_u64(1)
+        }
+        fn record(&self, _span: &tracing::span::Id, _values: &tracing::span::Record<'_>) {}
+        fn record_follows_from(&self, _span: &tracing::span::Id, _follows: &tracing::span::Id) {}
+        fn event(&self, event: &tracing::Event<'_>) {
+            self.levels.lock().unwrap().push(*event.metadata().level());
+        }
+        fn enter(&self, _span: &tracing::span::Id) {}
+        fn exit(&self, _span: &tracing::span::Id) {}
+    }
+
+    /// A receiver recorded in `mappings` but missing from
+    /// `subscribe_channels` gets routed to *nothing*: `send_output_to_local_receivers`
+    /// cannot deliver, and the producer's send still "succeeds". The missing
+    /// listener must therefore be made visible, exactly once per edge, instead
+    /// of silently starving the consumer (dora-rs/dora#3201).
+    #[test]
+    fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
+        let capture = LevelCapture::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        tracing::subscriber::with_default(capture.clone(), || {
+            rt.block_on(async {
+                let mut df = test_dataflow();
+                let clock = test_clock();
+                let sender: NodeId = "sender".to_string().into();
+                let output: DataId = "output".to_string().into();
+                let receiver: NodeId = "receiver".to_string().into();
+                let input: DataId = "input".to_string().into();
+
+                df.mappings.insert(
+                    OutputId(sender.clone(), output.clone()),
+                    BTreeSet::from([(receiver.clone(), input.clone())]),
+                );
+                // Deliberately no `subscribe_channels` entry: the receiver's
+                // event stream is gone (dropped or closed).
+
+                let metadata = metadata::Metadata::new(clock.new_timestamp());
+                let output_id = OutputId(sender, output);
+                send_output_to_local_receivers(
+                    &output_id, &mut df, &metadata, None, &clock, None, false,
+                )
+                .await
+                .unwrap();
+                // And again: the *second* drop of the same edge must not warn.
+                send_output_to_local_receivers(
+                    &output_id, &mut df, &metadata, None, &clock, None, false,
+                )
+                .await
+                .unwrap();
+
+                let levels = capture.levels.lock().unwrap();
+                let warns = levels
+                    .iter()
+                    .filter(|level| **level == tracing::Level::WARN)
+                    .count();
+                assert_eq!(
+                    warns, 1,
+                    "the orphaned edge must warn exactly once, got {levels:?}"
+                );
+            });
+        });
+    }
+
+    /// One starved consumer must not take the whole fan-out down: a sibling
+    /// receiver with a live channel still gets its message while the orphaned
+    /// one is warned about exactly once.
+    #[test]
+    fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
+        let capture = LevelCapture::default();
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+
+        let delivered = tracing::subscriber::with_default(capture.clone(), || {
+            rt.block_on(async {
+                let mut df = test_dataflow();
+                let clock = test_clock();
+                let sender: NodeId = "sender".to_string().into();
+                let output: DataId = "output".to_string().into();
+                let healthy: NodeId = "healthy".to_string().into();
+                let orphaned: NodeId = "orphaned".to_string().into();
+                let input: DataId = "input".to_string().into();
+
+                df.mappings.insert(
+                    OutputId(sender.clone(), output.clone()),
+                    BTreeSet::from([
+                        (healthy.clone(), input.clone()),
+                        (orphaned.clone(), input.clone()),
+                    ]),
+                );
+
+                let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+                df.subscribe_channels.insert(healthy.clone(), tx);
+
+                let metadata = metadata::Metadata::new(clock.new_timestamp());
+                let output_id = OutputId(sender, output);
+                send_output_to_local_receivers(
+                    &output_id, &mut df, &metadata, None, &clock, None, false,
+                )
+                .await
+                .unwrap();
+
+                let events = drain_events(&mut rx);
+                let levels = capture.levels.lock().unwrap();
+                let warns = levels
+                    .iter()
+                    .filter(|level| **level == tracing::Level::WARN)
+                    .count();
+                assert_eq!(
+                    warns, 1,
+                    "the orphaned sibling must warn once while the healthy \
+                     receiver is served, got {levels:?}"
+                );
+                events
+            })
+        });
+
+        assert_eq!(delivered.len(), 1, "healthy receiver must be served once");
+        assert!(matches_event(&delivered[0], "Input"));
     }
 
     // -- Test 8: Full circuit breaker cycle: open -> break -> recover --
