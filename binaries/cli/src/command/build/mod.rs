@@ -863,4 +863,26 @@ mod tests {
             Some("new-fingerprint")
         );
     }
+
+    #[test]
+    fn build_and_run_working_dir_agree_on_symlinked_entrypoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("target");
+        let symlink_dir = tmp.path().join("symlink_holder");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let target_file = target_dir.join("dataflow.yml");
+        std::fs::write(&target_file, "").unwrap();
+        let symlink_file = symlink_dir.join("entrypoint.yml");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_file, &symlink_file).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&target_file, &symlink_file).is_err() {
+            return;
+        }
+
+        let got = canonicalize_working_dir(None, &symlink_file).unwrap();
+        assert_eq!(got, dunce::canonicalize(&symlink_dir).unwrap());
+    }
 }
