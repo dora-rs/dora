@@ -699,6 +699,30 @@ struct CancelGoalRequestWire {
     goal_info: ros2_client::action::GoalInfo,
 }
 
+/// Map a result message's `goal_status` metadata parameter to a terminal
+/// [`GoalStatusEnum`](ros2_client::action::GoalStatusEnum) for the Zenoh action
+/// server.
+///
+/// This mirrors the DDS action server (see the `"result"` arm of
+/// `run_action_server`): a missing status means the goal succeeded, an explicit
+/// `SUCCEEDED`/`ABORTED`/`CANCELED` maps across, and any *unknown* status string
+/// defaults to `Aborted` (with a warning). The previous Zenoh code mapped
+/// everything except `ABORTED`/`CANCELED` to `Succeeded`, so a typo'd or
+/// unsupported `goal_status` was silently reported as success — masking a
+/// handler failure and diverging from the DDS path.
+fn zenoh_result_goal_status(status: Option<&str>) -> ros2_client::action::GoalStatusEnum {
+    use ros2_client::action::GoalStatusEnum;
+    match status {
+        None | Some(GOAL_STATUS_SUCCEEDED) => GoalStatusEnum::Succeeded,
+        Some(GOAL_STATUS_ABORTED) => GoalStatusEnum::Aborted,
+        Some(GOAL_STATUS_CANCELED) => GoalStatusEnum::Canceled,
+        Some(other) => {
+            tracing::warn!("unknown goal_status `{other}`, defaulting to Aborted");
+            GoalStatusEnum::Aborted
+        }
+    }
+}
+
 fn run_zenoh_action_server(
     server: ZenohActionServer,
     goal_type_info: TypeInfo<'static>,
@@ -930,11 +954,8 @@ fn run_zenoh_action_server(
                         futures::executor::block_on(server.feedback.publish(&payload))?;
                     }
                     "result" => {
-                        goal.status = match get_string_param(&metadata.parameters, GOAL_STATUS) {
-                            Some(GOAL_STATUS_CANCELED) => GoalStatusEnum::Canceled,
-                            Some(GOAL_STATUS_ABORTED) => GoalStatusEnum::Aborted,
-                            _ => GoalStatusEnum::Succeeded,
-                        };
+                        let status_param = get_string_param(&metadata.parameters, GOAL_STATUS);
+                        goal.status = zenoh_result_goal_status(status_param);
                         let response = {
                             let _guard = TypeInfoGuard::serialize(result_type_info.clone());
                             serialize_cdr(&GetResultResponse {
@@ -2169,5 +2190,50 @@ mod peer_failure_tests {
         assert!(peer_value_or_warn(malformed, "test").is_none());
         let valid: eyre::Result<u32> = Ok(42);
         assert_eq!(peer_value_or_warn(valid, "test"), Some(42));
+    }
+}
+
+#[cfg(test)]
+mod zenoh_goal_status_tests {
+    use super::ros2_client::action::GoalStatusEnum;
+    use super::zenoh_result_goal_status;
+
+    #[test]
+    fn missing_status_is_success() {
+        assert!(matches!(
+            zenoh_result_goal_status(None),
+            GoalStatusEnum::Succeeded
+        ));
+    }
+
+    #[test]
+    fn explicit_statuses_map_across() {
+        assert!(matches!(
+            zenoh_result_goal_status(Some("succeeded")),
+            GoalStatusEnum::Succeeded
+        ));
+        assert!(matches!(
+            zenoh_result_goal_status(Some("aborted")),
+            GoalStatusEnum::Aborted
+        ));
+        assert!(matches!(
+            zenoh_result_goal_status(Some("canceled")),
+            GoalStatusEnum::Canceled
+        ));
+    }
+
+    // The original bug: an unknown status string was silently reported as
+    // `Succeeded`, masking a handler failure. It must now default to `Aborted`,
+    // matching the DDS action server.
+    #[test]
+    fn unknown_status_defaults_to_aborted_not_succeeded() {
+        assert!(matches!(
+            zenoh_result_goal_status(Some("typo-failed")),
+            GoalStatusEnum::Aborted
+        ));
+        assert!(matches!(
+            zenoh_result_goal_status(Some("")),
+            GoalStatusEnum::Aborted
+        ));
     }
 }
