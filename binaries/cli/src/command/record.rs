@@ -63,6 +63,15 @@ pub struct Record {
     #[clap(long, value_name = "TOPICS", value_delimiter = ',')]
     topics: Vec<String>,
 
+    /// Queue size for the recorder's inputs (default: 1000).
+    ///
+    /// The recorder reads its inputs with `queue_policy: backpressure`, so a
+    /// producer that outruns the writer is slowed down rather than having its
+    /// messages dropped. This sets how many messages may buffer before that
+    /// backpressure kicks in.
+    #[clap(long, value_name = "N", default_value_t = 1000)]
+    queue_size: u64,
+
     /// Just generate modified YAML, don't run
     #[clap(long, value_name = "PATH")]
     output_yaml: Option<String>,
@@ -193,6 +202,41 @@ fn build_input_id_map<'a>(
     Ok(map)
 }
 
+/// Builds the record node's YAML `inputs` from the validated `input_id -> topic`
+/// map.
+///
+/// Each input is emitted as a mapping with `queue_policy: backpressure` and a
+/// deep `queue_size`, not a bare `node/output` string. A bare string inherits
+/// the real-time defaults (a 10-deep queue with `drop_oldest`), which silently
+/// discard messages whenever a producer outruns the writer (a fast camera, an
+/// fsync stall, a busy CI runner) -- so the recorder's whole job, writing every
+/// message to disk, quietly produced incomplete `.drec` files. `backpressure`
+/// slows the producer instead of dropping, mirroring how `dora replay` sizes
+/// its inputs (see `replay.rs`).
+fn build_record_inputs(topic_map: &BTreeMap<&str, &str>, queue_size: u64) -> serde_yaml::Mapping {
+    let mut inputs = serde_yaml::Mapping::new();
+    for (input_id, topic) in topic_map {
+        let mut input = serde_yaml::Mapping::new();
+        input.insert(
+            serde_yaml::Value::String("source".to_owned()),
+            serde_yaml::Value::String((*topic).to_owned()),
+        );
+        input.insert(
+            serde_yaml::Value::String("queue_size".to_owned()),
+            serde_yaml::Value::Number(queue_size.into()),
+        );
+        input.insert(
+            serde_yaml::Value::String("queue_policy".to_owned()),
+            serde_yaml::Value::String("backpressure".to_owned()),
+        );
+        inputs.insert(
+            serde_yaml::Value::String((*input_id).to_owned()),
+            serde_yaml::Value::Mapping(input),
+        );
+    }
+    inputs
+}
+
 fn run_record(args: Record) -> eyre::Result<()> {
     let yaml_bytes =
         std::fs::read(&args.file).wrap_err_with(|| format!("failed to read {}", args.file))?;
@@ -246,16 +290,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     let topics_json =
         serde_json::to_string(&topic_map).wrap_err("failed to serialize topic map")?;
 
-    // Build the record node's YAML inputs from the validated map, so this
-    // second `input_id`-keyed structure cannot reintroduce a collision
-    // independently of `topic_map` (it would otherwise silently overwrite).
-    let mut inputs_mapping = serde_yaml::Mapping::new();
-    for (input_id, topic) in &topic_map {
-        inputs_mapping.insert(
-            serde_yaml::Value::String((*input_id).to_owned()),
-            serde_yaml::Value::String((*topic).to_owned()),
-        );
-    }
+    let inputs_mapping = build_record_inputs(&topic_map, args.queue_size);
 
     // Find record node binary
     let record_node_bin = find_record_node_binary()?;
@@ -771,6 +806,41 @@ mod tests {
         assert_eq!(map.len(), 2);
         assert_eq!(map["cam___frame"], "cam/frame");
         assert_eq!(map["lidar___points"], "lidar/points");
+    }
+
+    #[test]
+    fn build_record_inputs_uses_backpressure_and_given_queue_size() {
+        let topic_map = BTreeMap::from([
+            ("cam___frame", "cam/frame"),
+            ("lidar___points", "lidar/points"),
+        ]);
+        let inputs = build_record_inputs(&topic_map, 1000);
+        assert_eq!(inputs.len(), 2);
+
+        for (input_id, source) in [
+            ("cam___frame", "cam/frame"),
+            ("lidar___points", "lidar/points"),
+        ] {
+            let value = inputs
+                .get(input_id)
+                .unwrap_or_else(|| panic!("missing input {input_id}"));
+            // Round-trip through the real config type the node API parses, so
+            // this pins the effective backpressure capacity across the
+            // CLI/node boundary rather than just the literal YAML keys.
+            let parsed: dora_message::config::Input =
+                serde_yaml::from_value(value.clone()).expect("record input must parse as Input");
+            assert_eq!(parsed.queue_size, Some(1000));
+            assert_eq!(
+                parsed.queue_policy,
+                Some(dora_message::config::QueuePolicy::Backpressure)
+            );
+            assert_eq!(
+                parsed.mapping,
+                source
+                    .parse::<dora_message::config::InputMapping>()
+                    .expect("valid input mapping")
+            );
+        }
     }
 
     #[test]

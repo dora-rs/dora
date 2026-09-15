@@ -275,7 +275,32 @@ fn main() -> eyre::Result<()> {
     }
 
     let footer = writer.finish()?;
+
+    // Recording with `queue_policy: backpressure` slows a fast producer rather
+    // than dropping its messages, but the scheduler still enforces a hard
+    // safety cap, so a drop is possible under extreme pressure. Report any
+    // input that overflowed instead of printing a confident total for a
+    // recording that is actually incomplete (#3282).
+    let drop_counts = events.drain_drop_counts();
+    let dropped_total: u64 = drop_counts.values().sum();
+
     eprintln!("dora-record-node: recording complete");
+    if dropped_total > 0 {
+        eprintln!("  Status:   INCOMPLETE -- {dropped_total} message(s) dropped");
+        let mut per_input: Vec<_> = drop_counts.into_iter().filter(|(_, n)| *n > 0).collect();
+        // Loudest offender first, so the most affected topic is easy to spot.
+        per_input.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        for (input_id, count) in per_input {
+            match reverse_map.get(&*input_id) {
+                Some((source_node, source_output)) => {
+                    eprintln!("    {source_node}/{source_output}: {count} dropped")
+                }
+                None => eprintln!("    {input_id}: {count} dropped"),
+            }
+        }
+    } else {
+        eprintln!("  Status:   complete");
+    }
     eprintln!("  Messages: {msg_count}");
     eprintln!("  Bytes:    {}", footer.total_bytes);
     eprintln!("  File:     {output_file}");
