@@ -1,5 +1,5 @@
 use std::{
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     fs::File,
     io::Write,
     time::{Duration, Instant, SystemTime},
@@ -136,6 +136,95 @@ fn unix_nanos(now: SystemTime) -> u64 {
         .unwrap_or(0)
 }
 
+/// Running total of messages the node API dropped before the writer saw them.
+///
+/// Recorded messages can be lost in two places the recorder cannot control: the
+/// scheduler's per-input queue, and the shared zenoh ingress channel that
+/// zero-copy payloads arrive on. `EventStream::drain_drop_counts` reports both,
+/// but it *resets on read*, so the totals have to be accumulated here or every
+/// drain but the last is forgotten.
+///
+/// Without this the run ends with a confident `Messages: N` that counts only
+/// what was written, and a short `.drec` is indistinguishable from a complete
+/// one (#3282).
+#[derive(Debug, Default)]
+struct DropTally {
+    per_input: BTreeMap<DataId, u64>,
+}
+
+impl DropTally {
+    /// Fold one `drain_drop_counts()` result into the running total.
+    fn absorb(&mut self, counts: HashMap<DataId, u64>) {
+        for (id, n) in counts {
+            *self.per_input.entry(id).or_insert(0) += n;
+        }
+    }
+
+    /// Drops on ids the recorder actually writes, i.e. the ones that make the
+    /// `.drec` short.
+    ///
+    /// Anything else the scheduler counted — most often its single
+    /// `dora.non_input_event` bucket for control events — is real, but it is not
+    /// *recording* loss: those events are never written to the file. Counting
+    /// them toward completeness would report a capture that got every message as
+    /// INCOMPLETE, and point the reader at `--queue-size`, which cannot resize
+    /// that queue anyway (its cap is a node-API constant).
+    fn recorded_total(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> u64 {
+        self.per_input
+            .iter()
+            .filter(|(id, _)| reverse_map.contains_key(&***id))
+            .map(|(_, n)| *n)
+            .sum()
+    }
+
+    /// Render the end-of-run report, or `None` when nothing was dropped.
+    ///
+    /// Recorded topics are listed by the `node/output` name the user asked for,
+    /// under the INCOMPLETE banner. Ids the recorder does not write are listed
+    /// separately, so nothing counted silently disappears but a control-event
+    /// overflow does not accuse the recording of being short.
+    fn report(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> Option<String> {
+        use std::fmt::Write as _;
+
+        let mut recorded_lines = String::new();
+        let mut other_lines = String::new();
+        let mut recorded = 0u64;
+        for (id, n) in &self.per_input {
+            match reverse_map.get(&**id) {
+                Some((node, output)) => {
+                    recorded += n;
+                    let _ = writeln!(recorded_lines, "              {node}/{output}: {n}");
+                }
+                None => {
+                    let _ = writeln!(other_lines, "              {id}: {n}");
+                }
+            }
+        }
+        if recorded_lines.is_empty() && other_lines.is_empty() {
+            return None;
+        }
+
+        let mut out = String::new();
+        if !recorded_lines.is_empty() {
+            let _ = write!(
+                out,
+                "  WARNING:  {recorded} message(s) were dropped before reaching the recorder.\n\
+                 \x20           THIS RECORDING IS INCOMPLETE.\n{recorded_lines}\
+                 \x20           Raise the recorder's queue depth with \
+                 `dora record --queue-size <N>`.\n"
+            );
+        }
+        if !other_lines.is_empty() {
+            let _ = write!(
+                out,
+                "  NOTE:     dropped events the recorder does not write (no recorded \
+                 messages lost):\n{other_lines}"
+            );
+        }
+        Some(out)
+    }
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -162,6 +251,8 @@ fn main() -> eyre::Result<()> {
     let mut writer = RecordingWriter::new(file, &header)?;
     let mut msg_count: u64 = 0;
     let mut flush_policy = FlushPolicy::new();
+    let mut drops = DropTally::default();
+    let mut warned_about_drops = false;
 
     eprintln!("dora-record-node: recording to {output_file}");
 
@@ -256,6 +347,21 @@ fn main() -> eyre::Result<()> {
                 writer.write_entry(&entry)?;
                 msg_count += 1;
                 flush_policy.after_write(&mut writer)?;
+
+                // Poll for drops periodically rather than per event. The final
+                // drain after the loop is what makes the totals exact; this
+                // exists only so a multi-hour capture says something before it
+                // ends.
+                if msg_count.is_multiple_of(FLUSH_EVERY_N_RECORDS) {
+                    drops.absorb(events.drain_drop_counts());
+                    if !warned_about_drops && drops.recorded_total(&reverse_map) > 0 {
+                        warned_about_drops = true;
+                        eprintln!(
+                            "dora-record-node: WARNING: dropping messages — this recording \
+                             will be incomplete. Raise `dora record --queue-size <N>`."
+                        );
+                    }
+                }
             }
             // `Event::Stop` is deliberately NOT a `break`. The node API gives
             // `Stop` strict priority over inputs that were already queued behind
@@ -274,11 +380,29 @@ fn main() -> eyre::Result<()> {
         }
     }
 
+    // Final drain: everything dropped since the last flush boundary, plus any
+    // drop on a run too short to have flushed at all.
+    drops.absorb(events.drain_drop_counts());
+
     let footer = writer.finish()?;
-    eprintln!("dora-record-node: recording complete");
+    // Claim only what was measured. `Messages:` counts what was written, so on
+    // its own it reads as a confident total even for a truncated capture — but
+    // "complete" would overclaim in the other direction: the producer's direct
+    // zenoh publisher is declared `CongestionControl::Drop`, so a message can
+    // be discarded in zenoh's egress and never reach this node's counters at
+    // all. Zero drops here means "nothing was dropped on any path this node can
+    // see", which is the honest statement.
+    if drops.recorded_total(&reverse_map) == 0 {
+        eprintln!("dora-record-node: recording finished, no dropped messages detected");
+    } else {
+        eprintln!("dora-record-node: recording finished INCOMPLETE");
+    }
     eprintln!("  Messages: {msg_count}");
     eprintln!("  Bytes:    {}", footer.total_bytes);
     eprintln!("  File:     {output_file}");
+    if let Some(report) = drops.report(&reverse_map) {
+        eprint!("{report}");
+    }
 
     Ok(())
 }
@@ -288,6 +412,122 @@ mod tests {
     use super::*;
     use std::cell::RefCell;
     use std::rc::Rc;
+
+    // ---- #3282: an incomplete recording must say so ----
+
+    fn tally_with(counts: &[(&str, u64)]) -> DropTally {
+        let mut tally = DropTally::default();
+        tally.absorb(
+            counts
+                .iter()
+                .map(|(id, n)| (DataId::from((*id).to_string()), *n))
+                .collect(),
+        );
+        tally
+    }
+
+    fn camera_lidar_map() -> HashMap<String, (NodeId, DataId)> {
+        HashMap::from([
+            (
+                "camera___image".to_string(),
+                ("camera".parse().unwrap(), "image".parse().unwrap()),
+            ),
+            (
+                "lidar___points".to_string(),
+                ("lidar".parse().unwrap(), "points".parse().unwrap()),
+            ),
+        ])
+    }
+
+    #[test]
+    fn a_clean_run_reports_nothing() {
+        assert!(DropTally::default().report(&camera_lidar_map()).is_none());
+    }
+
+    #[test]
+    fn drops_accumulate_across_drains() {
+        // `drain_drop_counts` resets on read, so the recorder has to keep the
+        // running total itself or every drain but the last is forgotten.
+        let mut tally = tally_with(&[("camera___image", 3)]);
+        tally.absorb(HashMap::from([(
+            DataId::from("camera___image".to_string()),
+            4,
+        )]));
+        assert_eq!(tally.per_input.values().sum::<u64>(), 7);
+    }
+
+    #[test]
+    fn report_names_the_source_topic_not_the_mangled_input_id() {
+        // The user asked to record `camera/image`; `camera___image` is our
+        // internal encoding and means nothing to them.
+        let tally = tally_with(&[("camera___image", 193)]);
+        let report = tally
+            .report(&camera_lidar_map())
+            .expect("drops must report");
+
+        assert!(report.contains("camera/image: 193"), "got: {report}");
+        assert!(!report.contains("camera___image"), "got: {report}");
+        assert!(
+            report.contains("INCOMPLETE"),
+            "the report must say the recording is incomplete: {report}"
+        );
+    }
+
+    #[test]
+    fn report_lists_every_affected_topic() {
+        let tally = tally_with(&[("camera___image", 2), ("lidar___points", 5)]);
+        let report = tally
+            .report(&camera_lidar_map())
+            .expect("drops must report");
+        assert!(report.contains("camera/image: 2"), "got: {report}");
+        assert!(report.contains("lidar/points: 5"), "got: {report}");
+        assert_eq!(tally.per_input.values().sum::<u64>(), 7);
+    }
+
+    /// Control events share one scheduler queue (`dora.non_input_event`) whose
+    /// cap is a node-API constant. Overflowing it is real, but the recorder
+    /// never writes those events, so the `.drec` is not short — and
+    /// `--queue-size` cannot resize that queue. Report it, but do not call the
+    /// recording incomplete over it.
+    #[test]
+    fn control_event_drops_do_not_make_the_recording_incomplete() {
+        let tally = tally_with(&[("dora.non_input_event", 1)]);
+        let map = camera_lidar_map();
+
+        assert_eq!(tally.per_input.values().sum::<u64>(), 1);
+        assert_eq!(tally.recorded_total(&map), 0);
+
+        let report = tally.report(&map).expect("the drop must still be reported");
+        assert!(report.contains("dora.non_input_event: 1"), "got: {report}");
+        assert!(
+            !report.contains("INCOMPLETE"),
+            "a control-event drop must not accuse the recording: {report}"
+        );
+        assert!(
+            !report.contains("--queue-size"),
+            "must not advise a flag that cannot affect the control queue: {report}"
+        );
+    }
+
+    /// Mixed run: recorded-topic loss drives the verdict, and the control-event
+    /// drop is still reported below it rather than folded into the headline.
+    #[test]
+    fn report_separates_recorded_loss_from_control_drops() {
+        let tally = tally_with(&[("camera___image", 7), ("dora.non_input_event", 2)]);
+        let map = camera_lidar_map();
+
+        assert_eq!(tally.per_input.values().sum::<u64>(), 9);
+        assert_eq!(tally.recorded_total(&map), 7);
+
+        let report = tally.report(&map).expect("drops must report");
+        assert!(
+            report.contains("7 message(s) were dropped"),
+            "the headline counts recorded loss only: {report}"
+        );
+        assert!(report.contains("INCOMPLETE"), "got: {report}");
+        assert!(report.contains("camera/image: 7"), "got: {report}");
+        assert!(report.contains("dora.non_input_event: 2"), "got: {report}");
+    }
 
     #[test]
     fn unix_nanos_saturates_on_pre_epoch_clock() {
