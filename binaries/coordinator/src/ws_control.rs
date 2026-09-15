@@ -2,15 +2,15 @@ use crate::{Event, control::ControlEvent};
 use axum::extract::ws::{Message, WebSocket};
 use dora_message::{
     TOPIC_DATA_PROTOCOL_VERSION,
-    cli_to_coordinator::{ControlRequest, check_cli_version},
-    common::Timestamped,
+    cli_to_coordinator::{ControlRequest, TopicSubscribeMetadataOnly, check_cli_version},
+    common::{Timestamped, TopicDebugMode},
     coordinator_to_cli::ControlRequestReply,
     current_crate_version,
     daemon_to_daemon::InterDaemonEvent,
     metadata::{FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter},
     ws_protocol::{WsRequest, WsResponse},
 };
-use futures::{SinkExt, StreamExt};
+use futures::{SinkExt, StreamExt, stream::SplitSink};
 use std::sync::Arc;
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
@@ -98,6 +98,143 @@ fn format_response_json(id: Uuid, reply: &impl serde::Serialize) -> String {
     }
 }
 
+/// Shared mutable state for one `/api/control` WebSocket connection, passed to
+/// `handle_topic_subscribe` so it reads and answers without re-binding loop
+/// locals.
+struct ControlWsSession<'a> {
+    ws_tx: &'a mut SplitSink<WebSocket, Message>,
+    topic_subscriptions: &'a mut Vec<ActiveTopicSubscription>,
+    event_tx: &'a mpsc::Sender<Event>,
+    binary_tx: &'a mpsc::Sender<crate::topic_subscriber::TopicFrame>,
+}
+
+/// Register a CLI topic subscription and answer with `TopicSubscribed`.
+///
+/// Shared by the plain `TopicSubscribe` request (full payloads) and the
+/// standalone `topic_subscribe_metadata` method (mode `MetadataOnly`), which
+/// `dora topic hz` uses so the daemon never ships payloads over the control
+/// channel (dora-rs/dora#3509).
+///
+/// Returns `Err(())` when the WebSocket is gone, which the caller must treat
+/// as 'drop the connection' (the same condition that makes `handle_control_ws`
+/// `break` out of its loop).
+async fn handle_topic_subscribe(
+    request_id: Uuid,
+    dataflow_id: Uuid,
+    topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+    protocol_version: Option<u16>,
+    mode: TopicDebugMode,
+    session: &mut ControlWsSession<'_>,
+) -> Result<(), ()> {
+    let ControlWsSession {
+        ws_tx,
+        topic_subscriptions,
+        event_tx,
+        binary_tx,
+    } = session;
+    // Reject before doing any work: the frames this subscription would
+    // produce are positionally encoded, so a client on the other encoding
+    // misparses them instead of erroring (dora-rs/dora#3153).
+    if let Err(msg) = check_topic_protocol(protocol_version) {
+        let resp = WsResponse::err(request_id, msg);
+        let _ = send_ws_response(ws_tx, &resp).await;
+        return Ok(());
+    }
+
+    let mut normalized_topics = topics.clone();
+    normalized_topics.sort();
+
+    // `hz` and `echo` of the same topics are different streams (one is
+    // metadata-only), so the mode is part of the dedup key.
+    if let Some(existing) =
+        find_matching_subscription(topic_subscriptions, dataflow_id, &normalized_topics, mode)
+    {
+        let reply = ControlRequestReply::TopicSubscribed {
+            subscription_id: existing.subscription_id,
+            protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
+        };
+        let resp_json = format_response_json(request_id, &reply);
+        if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
+            return Err(());
+        }
+        return Ok(());
+    }
+
+    // Validate topic count
+    if topics.len() > MAX_TOPICS_PER_SUBSCRIBE {
+        let resp = WsResponse::err(
+            request_id,
+            format!(
+                "too many topics ({}, max {})",
+                topics.len(),
+                MAX_TOPICS_PER_SUBSCRIBE
+            ),
+        );
+        let _ = send_ws_response(ws_tx, &resp).await;
+        return Ok(());
+    }
+
+    // Validate subscription count
+    if topic_subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
+        let resp = WsResponse::err(
+            request_id,
+            format!(
+                "too many active subscriptions ({}, max {})",
+                topic_subscriptions.len(),
+                MAX_SUBSCRIPTIONS_PER_CONNECTION
+            ),
+        );
+        let _ = send_ws_response(ws_tx, &resp).await;
+        return Ok(());
+    }
+
+    let (done_tx, done_rx) = oneshot::channel();
+    let _ = event_tx
+        .send(Event::Control(ControlEvent::TopicSubscribe {
+            dataflow_id,
+            topics: topics.clone(),
+            mode,
+            sender: binary_tx.clone(),
+            done_tx,
+        }))
+        .await;
+
+    let subscription_id = match done_rx.await {
+        Ok(Ok(subscription_id)) => {
+            topic_subscriptions.push(ActiveTopicSubscription {
+                subscription_id,
+                dataflow_id,
+                topics: normalized_topics,
+                mode,
+            });
+            subscription_id
+        }
+        Ok(Err(err)) => {
+            let resp = WsResponse::err(request_id, err);
+            let _ = send_ws_response(ws_tx, &resp).await;
+            return Ok(());
+        }
+        Err(_) => {
+            let resp = WsResponse::err(
+                request_id,
+                "topic subscribe request dropped before completion".to_string(),
+            );
+            let _ = send_ws_response(ws_tx, &resp).await;
+            return Ok(());
+        }
+    };
+
+    let reply = ControlRequestReply::TopicSubscribed {
+        subscription_id,
+        protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
+    };
+    let resp_json = format_response_json(request_id, &reply);
+    if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
+        return Err(());
+    }
+    Ok(())
+}
+
 /// Handle a single CLI WebSocket connection on `/api/control`.
 ///
 /// For normal requests: deserialize ControlRequest from WsRequest.params,
@@ -148,6 +285,41 @@ pub(crate) async fn handle_control_ws(
                         continue;
                     }
                 };
+
+                // The standalone metadata-only subscribe rides its own WS method, so it
+                // can stay a separate request type instead of a new variant on
+                // the frozen `ControlRequest` (dora-rs/dora#3509).
+                if req.method == "topic_subscribe_metadata" {
+                    let subscribe = match serde_json::from_value::<TopicSubscribeMetadataOnly>(
+                        req.params.clone(),
+                    ) {
+                        Ok(r) => r,
+                        Err(e) => {
+                            let resp = WsResponse::err(req.id, format!("invalid params: {e}"));
+                            let _ = send_ws_response(&mut ws_tx, &resp).await;
+                            continue;
+                        }
+                    };
+                    if handle_topic_subscribe(
+                        req.id,
+                        subscribe.dataflow_id,
+                        subscribe.topics,
+                        subscribe.protocol_version,
+                        TopicDebugMode::MetadataOnly,
+                        &mut ControlWsSession {
+                            ws_tx: &mut ws_tx,
+                            topic_subscriptions: &mut topic_subscriptions,
+                            event_tx: &event_tx,
+                            binary_tx: &binary_tx,
+                        },
+                    )
+                    .await
+                    .is_err()
+                    {
+                        break;
+                    }
+                    continue;
+                }
 
                 let control_request: ControlRequest = match serde_json::from_value(req.params.clone()) {
                     Ok(r) => r,
@@ -227,125 +399,23 @@ pub(crate) async fn handle_control_ws(
                         topics,
                         protocol_version,
                         ..
-                    }
-                    | ControlRequest::TopicSubscribeMetadataOnly {
-                        dataflow_id,
-                        topics,
-                        protocol_version,
-                        ..
                     } => {
-                        // The two wire variants select the mode: plain
-                        // `TopicSubscribe` is full payload, the metadata-only
-                        // variant discards it (dora-rs/dora#3509).
-                        let mode = match control_request {
-                            ControlRequest::TopicSubscribe { .. } => {
-                                dora_message::common::TopicDebugMode::Full
-                            }
-                            ControlRequest::TopicSubscribeMetadataOnly { .. } => {
-                                dora_message::common::TopicDebugMode::MetadataOnly
-                            }
-                            _ => unreachable!("arm already narrowed to the two subscribe variants"),
-                        };
-                        // Reject before doing any work: the frames this
-                        // subscription would produce are positionally encoded,
-                        // so a client on the other encoding misparses them
-                        // instead of erroring (dora-rs/dora#3153).
-                        if let Err(msg) = check_topic_protocol(*protocol_version) {
-                            let resp = WsResponse::err(req.id, msg);
-                            let _ = send_ws_response(&mut ws_tx, &resp).await;
-                            continue;
-                        }
-
-                        let mut normalized_topics = topics.clone();
-                        normalized_topics.sort();
-
-                        // `hz` and `echo` of the same topics are different streams (one is
-                        // metadata-only), so the mode is part of the dedup key.
-                        if let Some(existing) = find_matching_subscription(
-                            &topic_subscriptions,
+                        if handle_topic_subscribe(
+                            req.id,
                             *dataflow_id,
-                            &normalized_topics,
-                            mode,
-                        ) {
-                            let reply = ControlRequestReply::TopicSubscribed {
-                                subscription_id: existing.subscription_id,
-                                protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
-                            };
-                            let resp_json = format_response_json(req.id, &reply);
-                            if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
-                                break;
-                            }
-                            continue;
-                        }
-
-                        // Validate topic count
-                        if topics.len() > MAX_TOPICS_PER_SUBSCRIBE {
-                            let resp = WsResponse::err(
-                                req.id,
-                                format!(
-                                    "too many topics ({}, max {})",
-                                    topics.len(),
-                                    MAX_TOPICS_PER_SUBSCRIBE
-                                ),
-                            );
-                            let _ = send_ws_response(&mut ws_tx, &resp).await;
-                            continue;
-                        }
-
-                        // Validate subscription count
-                        if topic_subscriptions.len() >= MAX_SUBSCRIPTIONS_PER_CONNECTION {
-                            let resp = WsResponse::err(
-                                req.id,
-                                format!(
-                                    "too many active subscriptions ({}, max {})",
-                                    topic_subscriptions.len(),
-                                    MAX_SUBSCRIPTIONS_PER_CONNECTION
-                                ),
-                            );
-                            let _ = send_ws_response(&mut ws_tx, &resp).await;
-                            continue;
-                        }
-
-                        let (done_tx, done_rx) = oneshot::channel();
-                        let _ = event_tx.send(Event::Control(ControlEvent::TopicSubscribe {
-                            dataflow_id: *dataflow_id,
-                            topics: topics.clone(),
-                            mode,
-                            sender: binary_tx.clone(),
-                            done_tx,
-                        })).await;
-
-                        let subscription_id = match done_rx.await {
-                            Ok(Ok(subscription_id)) => {
-                                topic_subscriptions.push(ActiveTopicSubscription {
-                                    subscription_id,
-                                    dataflow_id: *dataflow_id,
-                                    topics: normalized_topics,
-                                    mode,
-                                });
-                                subscription_id
-                            }
-                            Ok(Err(err)) => {
-                                let resp = WsResponse::err(req.id, err);
-                                let _ = send_ws_response(&mut ws_tx, &resp).await;
-                                continue;
-                            }
-                            Err(_) => {
-                                let resp = WsResponse::err(
-                                    req.id,
-                                    "topic subscribe request dropped before completion".to_string(),
-                                );
-                                let _ = send_ws_response(&mut ws_tx, &resp).await;
-                                continue;
-                            }
-                        };
-
-                        let reply = ControlRequestReply::TopicSubscribed {
-                            subscription_id,
-                            protocol_version: Some(TOPIC_DATA_PROTOCOL_VERSION),
-                        };
-                        let resp_json = format_response_json(req.id, &reply);
-                        if ws_tx.send(Message::Text(resp_json.into())).await.is_err() {
+                            topics.clone(),
+                            *protocol_version,
+                            TopicDebugMode::Full,
+                            &mut ControlWsSession {
+                                ws_tx: &mut ws_tx,
+                                topic_subscriptions: &mut topic_subscriptions,
+                                event_tx: &event_tx,
+                                binary_tx: &binary_tx,
+                            },
+                        )
+                        .await
+                        .is_err()
+                        {
                             break;
                         }
                         continue;

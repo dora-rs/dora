@@ -24,9 +24,22 @@ const REGISTER_TIMEOUT: Duration = Duration::from_secs(30);
 #[cfg(feature = "tensor-pool")]
 pub const CROSS_REGISTER_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// A command from the coordinator on the daemon WS connection.
+///
+/// Most commands are the frozen `DaemonCoordinatorEvent`; the metadata-only
+/// topic-debug stream rides its own WS method with a standalone type, so
+/// neither has to widen that crate-public enum (dora-rs/dora#3509).
+#[derive(Debug)]
+pub enum CoordinatorCommand {
+    Event(Box<DaemonCoordinatorEvent>),
+    StartTopicDebugStreamMetadataOnly(
+        dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly,
+    ),
+}
+
 #[derive(Debug)]
 pub struct CoordinatorEvent {
-    pub event: DaemonCoordinatorEvent,
+    pub event: CoordinatorCommand,
     pub reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
 }
 
@@ -419,8 +432,11 @@ async fn run_coordinator_ws_reader<Rx, E>(
         }
 
         // Parse directly from raw text to preserve u128 fidelity for uhlc::ID
-        // inside timestamps.
-        let raw: CoordinatorCommandRaw = match serde_json::from_str(&text) {
+        // inside timestamps. The coordinator picks the params type by method:
+        // plain commands and fire-and-forget events parse as the frozen
+        // `DaemonCoordinatorEvent`, while the metadata-only topic-debug command
+        // is a standalone type on `daemon_command_metadata` (dora-rs/dora#3509).
+        let head: CoordinatorCommandHead = match serde_json::from_str(&text) {
             Ok(r) => r,
             Err(e) => {
                 tracing::warn!("failed to parse coordinator WS message: {e}");
@@ -428,11 +444,47 @@ async fn run_coordinator_ws_reader<Rx, E>(
             }
         };
 
-        let request_id = raw.id;
-        let needs_reply = raw.method == "daemon_command";
-        let event = raw.params;
+        let request_id = head.id;
+        let (command, timestamp, needs_reply) = match head.method.as_str() {
+            "daemon_command_metadata" => {
+                let raw = match serde_json::from_str::<
+                    CoordinatorCommandRaw<
+                        dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly,
+                    >,
+                >(&text)
+                {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("failed to parse coordinator WS message: {e}");
+                        continue;
+                    }
+                };
+                (
+                    CoordinatorCommand::StartTopicDebugStreamMetadataOnly(raw.params.inner),
+                    raw.params.timestamp,
+                    true,
+                )
+            }
+            _ => {
+                let raw = match serde_json::from_str::<CoordinatorCommandRaw<DaemonCoordinatorEvent>>(
+                    &text,
+                ) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        tracing::warn!("failed to parse coordinator WS message: {e}");
+                        continue;
+                    }
+                };
+                let needs_reply = head.method == "daemon_command";
+                (
+                    CoordinatorCommand::Event(Box::new(raw.params.inner)),
+                    raw.params.timestamp,
+                    needs_reply,
+                )
+            }
+        };
 
-        if let Err(err) = clock.update_with_timestamp(&event.timestamp) {
+        if let Err(err) = clock.update_with_timestamp(&timestamp) {
             tracing::warn!("failed to update daemon clock: {err}");
         }
 
@@ -440,10 +492,10 @@ async fn run_coordinator_ws_reader<Rx, E>(
         if tx
             .send(Timestamped {
                 inner: CoordinatorEvent {
-                    event: event.inner,
+                    event: command,
                     reply_tx,
                 },
-                timestamp: event.timestamp,
+                timestamp,
             })
             .await
             .is_err()
@@ -585,13 +637,28 @@ struct ReplyRouteRaw {
     params: Option<serde_json::Value>,
 }
 
-/// Helper for deserializing coordinator commands directly from raw JSON text,
-/// bypassing `serde_json::Value` to preserve u128 fidelity for uhlc::ID.
+/// Helper for deserializing the params of a coordinator command directly from
+/// raw JSON text, bypassing `serde_json::Value` to preserve u128 fidelity for
+/// uhlc::ID.
+///
+/// The params payload type depends on the command method, so it is generic:
+/// `CoordinatorCommandRaw<DaemonCoordinatorEvent>` for the frozen events and
+/// `CoordinatorCommandRaw<StartTopicDebugStreamMetadataOnly>` for the
+/// metadata-only topic-debug command (dora-rs/dora#3509). Both parse from the
+/// same raw `text`, so each keeps u128 fidelity. `id`/`method` are dropped
+/// here — they were already read from [`CoordinatorCommandHead`] to pick the
+/// params type.
 #[derive(serde::Deserialize)]
-struct CoordinatorCommandRaw {
+struct CoordinatorCommandRaw<T> {
+    params: Timestamped<T>,
+}
+
+/// Command envelope head: enough to pick the params type before re-parsing
+/// `params` by method.
+#[derive(serde::Deserialize)]
+struct CoordinatorCommandHead {
     id: Uuid,
     method: String,
-    params: Timestamped<DaemonCoordinatorEvent>,
 }
 
 /// Jitter for reconnect backoff using a properly seeded random source.

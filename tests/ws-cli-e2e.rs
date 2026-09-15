@@ -13,8 +13,12 @@ use dora_coordinator::dora_coordinator_store::{
 };
 use dora_coordinator::{CoordinatorStore, InMemoryStore};
 use dora_message::{
-    cli_to_coordinator::ControlRequest, common::DaemonId, coordinator_to_cli::ControlRequestReply,
-    current_crate_version, id::NodeId, ws_protocol::WsRequest,
+    cli_to_coordinator::{ControlRequest, TopicSubscribeMetadataOnly},
+    common::DaemonId,
+    coordinator_to_cli::ControlRequestReply,
+    current_crate_version,
+    id::NodeId,
+    ws_protocol::WsRequest,
 };
 use futures::{SinkExt, StreamExt};
 use std::{
@@ -208,6 +212,33 @@ fn start_mock_topic_server(subscription_id: Uuid, payload: Vec<u8>) -> u16 {
                 continue;
             };
             let request: WsRequest = serde_json::from_str(&text).expect("parse WsRequest");
+            // The metadata-only subscription rides a dedicated WS method with a
+            // standalone params type (dora-rs/dora#3509); everything else is the
+            // frozen `ControlRequest`.
+            if request.method == "topic_subscribe_metadata" {
+                let _subscribe: TopicSubscribeMetadataOnly =
+                    serde_json::from_value(request.params.clone())
+                        .expect("parse metadata-only subscribe request");
+                let reply = ControlRequestReply::TopicSubscribed {
+                    subscription_id,
+                    protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
+                };
+                let response = serde_json::json!({
+                    "id": request.id,
+                    "result": reply,
+                });
+                ws_tx
+                    .send(Message::Text(response.to_string().into()))
+                    .await
+                    .expect("send metadata-only topic subscribe reply");
+                let mut frame = subscription_id.as_bytes().to_vec();
+                frame.extend_from_slice(&payload);
+                ws_tx
+                    .send(Message::Binary(frame.into()))
+                    .await
+                    .expect("send binary frame");
+                break;
+            }
             let control_request: ControlRequest =
                 serde_json::from_value(request.params).expect("parse control request");
             match control_request {
@@ -511,6 +542,33 @@ fn cli_topic_subscription_receives_binary_frames_immediately_after_subscribe_ack
             dora_message::common::TopicDebugMode::Full,
         )
         .expect("subscribe topics");
+
+    assert_eq!(received_subscription_id, subscription_id);
+    let payload = data_rx
+        .recv_timeout(std::time::Duration::from_secs(2))
+        .expect("receive topic payload")
+        .expect("topic payload should be ok");
+    assert_eq!(payload, expected_payload);
+}
+
+#[test]
+fn cli_topic_subscription_receives_binary_frames_with_metadata_only_mode() {
+    let subscription_id = Uuid::new_v4();
+    let expected_payload = b"topic-payload".to_vec();
+    let port = start_mock_topic_server(subscription_id, expected_payload.clone());
+    let addr: SocketAddr = format!("127.0.0.1:{port}").parse().unwrap();
+    let session = WsSession::connect(addr).expect("failed to connect WsSession");
+
+    // `dora topic hz` subscribes MetadataOnly: the request must ride the
+    // `topic_subscribe_metadata` WS method with the standalone params type,
+    // and still receive binary frames for the subscription (dora-rs/dora#3509).
+    let (received_subscription_id, data_rx) = session
+        .subscribe_topics(
+            Uuid::new_v4(),
+            vec![("node".to_string().into(), "output".to_string().into())],
+            dora_message::common::TopicDebugMode::MetadataOnly,
+        )
+        .expect("subscribe topics metadata-only");
 
     assert_eq!(received_subscription_id, subscription_id);
     let payload = data_rx

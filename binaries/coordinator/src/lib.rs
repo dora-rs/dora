@@ -1388,8 +1388,7 @@ async fn start_inner(
                                 "BuildLogSubscribe request should be handled separately"
                             )));
                         }
-                        ControlRequest::TopicSubscribe { .. }
-                        | ControlRequest::TopicSubscribeMetadataOnly { .. } => {
+                        ControlRequest::TopicSubscribe { .. } => {
                             let _ = reply_sender.send(Err(eyre::eyre!(
                                 "TopicSubscribe request should be handled separately"
                             )));
@@ -4432,29 +4431,38 @@ async fn start_topic_debug_stream(
             .get_mut(&daemon_id)
             .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
             .clone();
-        let message = serde_json::to_vec(&Timestamped {
-            inner: match mode {
-                dora_message::common::TopicDebugMode::Full => {
-                    DaemonCoordinatorEvent::StartTopicDebugStream {
+        // Full payloads ride the `daemon_command` method with the frozen
+        // `DaemonCoordinatorEvent` variant; metadata-only requests are a
+        // standalone type on their own method so neither `DaemonCoordinatorEvent`
+        // nor `ControlRequest` grows a new variant (dora-rs/dora#3509).
+        let (message, method) = match mode {
+            dora_message::common::TopicDebugMode::Full => (
+                serde_json::to_vec(&Timestamped {
+                    inner: DaemonCoordinatorEvent::StartTopicDebugStream {
                         dataflow_id,
                         outputs,
                         subscription_id,
-                    }
-                }
-                dora_message::common::TopicDebugMode::MetadataOnly => {
-                    DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+                    },
+                    timestamp: clock.new_timestamp(),
+                })?,
+                "daemon_command",
+            ),
+            dora_message::common::TopicDebugMode::MetadataOnly => (
+                serde_json::to_vec(&Timestamped {
+                    inner: dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly {
                         dataflow_id,
                         outputs,
                         subscription_id,
-                    }
-                }
-            },
-            timestamp: clock.new_timestamp(),
-        })?;
+                    },
+                    timestamp: clock.new_timestamp(),
+                })?,
+                "daemon_command_metadata",
+            ),
+        };
         start_requests.push(async move {
             let result = async {
                 let reply_raw = connection
-                    .send_and_receive(&message)
+                    .send_and_receive_as(&message, method)
                     .await
                     .wrap_err("failed to send start-topic-debug-stream message")?;
                 let reply: DaemonCoordinatorReply = serde_json::from_slice(&reply_raw)
@@ -4663,38 +4671,58 @@ async fn restore_topic_debug_streams_for_daemon(
             let Some(outputs) = subscriber.outputs_by_daemon().get(daemon_id).cloned() else {
                 continue;
             };
-            let message = match serde_json::to_vec(&Timestamped {
-                inner: match subscriber.mode() {
-                    dora_message::common::TopicDebugMode::Full => {
-                        DaemonCoordinatorEvent::StartTopicDebugStream {
+            // Serialize the matching command flavor and its WS method:
+            // `daemon_command` for full payloads, `daemon_command_metadata` for
+            // the standalone metadata-only type (dora-rs/dora#3509).
+            let (message, method) = match subscriber.mode() {
+                dora_message::common::TopicDebugMode::Full => {
+                    let message = match serde_json::to_vec(&Timestamped {
+                        inner: DaemonCoordinatorEvent::StartTopicDebugStream {
                             dataflow_id: *dataflow_id,
                             outputs,
                             subscription_id: *subscription_id,
+                        },
+                        timestamp: clock.new_timestamp(),
+                    }) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            tracing::warn!(
+                                %daemon_id,
+                                %dataflow_id,
+                                %subscription_id,
+                                "failed to serialize topic debug stream restore message: {err}"
+                            );
+                            continue;
                         }
-                    }
-                    dora_message::common::TopicDebugMode::MetadataOnly => {
-                        DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
-                            dataflow_id: *dataflow_id,
-                            outputs,
-                            subscription_id: *subscription_id,
+                    };
+                    (message, "daemon_command")
+                }
+                dora_message::common::TopicDebugMode::MetadataOnly => {
+                    let message = match serde_json::to_vec(&Timestamped {
+                        inner:
+                            dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly {
+                                dataflow_id: *dataflow_id,
+                                outputs,
+                                subscription_id: *subscription_id,
+                            },
+                        timestamp: clock.new_timestamp(),
+                    }) {
+                        Ok(message) => message,
+                        Err(err) => {
+                            tracing::warn!(
+                                %daemon_id,
+                                %dataflow_id,
+                                %subscription_id,
+                                "failed to serialize topic debug stream restore message: {err}"
+                            );
+                            continue;
                         }
-                    }
-                },
-                timestamp: clock.new_timestamp(),
-            }) {
-                Ok(message) => message,
-                Err(err) => {
-                    tracing::warn!(
-                        %daemon_id,
-                        %dataflow_id,
-                        %subscription_id,
-                        "failed to serialize topic debug stream restore message: {err}"
-                    );
-                    continue;
+                    };
+                    (message, "daemon_command_metadata")
                 }
             };
 
-            match connection.send_and_receive(&message).await {
+            match connection.send_and_receive_as(&message, method).await {
                 Ok(reply_raw) => {
                     match serde_json::from_slice::<DaemonCoordinatorReply>(&reply_raw) {
                         Ok(DaemonCoordinatorReply::StartTopicDebugStreamResult(Ok(()))) => {}
@@ -7676,7 +7704,8 @@ mod tests {
         #[derive(serde::Deserialize)]
         struct OutboundRaw {
             id: String,
-            params: Timestamped<DaemonCoordinatorEvent>,
+            method: String,
+            params: serde_json::Value,
         }
 
         let dataflow_id = DataflowId::from(Uuid::new_v4());
@@ -7725,27 +7754,40 @@ mod tests {
                 .await
                 .expect("reconnected daemon should receive restore message");
             let outbound_raw: OutboundRaw = serde_json::from_str(&outbound).unwrap();
-            let (restore_sub, restore_df, restore_mode) = match outbound_raw.params.inner {
-                DaemonCoordinatorEvent::StartTopicDebugStream {
-                    dataflow_id,
-                    outputs: _,
-                    subscription_id,
-                } => (
-                    subscription_id,
-                    dataflow_id,
-                    dora_message::common::TopicDebugMode::Full,
-                ),
-                DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
-                    dataflow_id,
-                    outputs: _,
-                    subscription_id,
-                } => (
-                    subscription_id,
-                    dataflow_id,
-                    dora_message::common::TopicDebugMode::MetadataOnly,
-                ),
+            let (restore_sub, restore_df, restore_mode) = match outbound_raw.method.as_str() {
+                // Full payloads ride `daemon_command` with the frozen event;
+                // metadata-only rides `daemon_command_metadata` with the
+                // standalone type (dora-rs/dora#3509).
+                "daemon_command" => {
+                    let event: Timestamped<DaemonCoordinatorEvent> =
+                        serde_json::from_value(outbound_raw.params).unwrap();
+                    match event.inner {
+                        DaemonCoordinatorEvent::StartTopicDebugStream {
+                            dataflow_id,
+                            outputs: _,
+                            subscription_id,
+                        } => (
+                            subscription_id,
+                            dataflow_id,
+                            dora_message::common::TopicDebugMode::Full,
+                        ),
+                        other => {
+                            panic!("unexpected event on reconnect: {other:?}");
+                        }
+                    }
+                }
+                "daemon_command_metadata" => {
+                    let event: Timestamped<
+                        dora_message::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly,
+                    > = serde_json::from_value(outbound_raw.params).unwrap();
+                    (
+                        event.inner.subscription_id,
+                        event.inner.dataflow_id,
+                        dora_message::common::TopicDebugMode::MetadataOnly,
+                    )
+                }
                 other => {
-                    panic!("unexpected event on reconnect: {other:?}");
+                    panic!("unexpected method on reconnect: {other:?}");
                 }
             };
             assert_eq!(

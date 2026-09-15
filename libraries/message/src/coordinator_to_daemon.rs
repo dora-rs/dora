@@ -253,19 +253,22 @@ pub enum DaemonCoordinatorEvent {
         /// The entries the daemon missed, ordered by sequence number.
         entries: Vec<StateCatchUpEntry>,
     },
-    /// Same as [`StartTopicDebugStream`], but each frame is relayed payload-less
-    /// (`InterDaemonEvent::Output` with `data: None`): the receiving CLI only
-    /// measures cadence (`dora topic hz`), so the daemon must not ship the
-    /// sample's bytes over the shared control channel (dora-rs/dora#3509).
-    ///
-    /// Appended at the end of the enum: this is JSON-framed, yet the wire
-    /// surface enforces that existing variants keep their positions, so a new
-    /// variant may only ever be tacked on after the last one.
-    StartTopicDebugStreamMetadataOnly {
-        dataflow_id: DataflowId,
-        outputs: Vec<(NodeId, DataId)>,
-        subscription_id: uuid::Uuid,
-    },
+}
+
+/// Like [`DaemonCoordinatorEvent::StartTopicDebugStream`], but each frame is
+/// relayed payload-less (`InterDaemonEvent::Output` with `data: None`): the
+/// receiving CLI only measures cadence (`dora topic hz`), so the daemon must
+/// not ship the sample's bytes over the shared control channel
+/// (dora-rs/dora#3509).
+///
+/// A standalone type on purpose: the Rust API surface freezes the
+/// `DaemonCoordinatorEvent` variants, so this command rides on its own WS
+/// method instead of a new variant or field.
+#[derive(Debug, serde::Deserialize, serde::Serialize)]
+pub struct StartTopicDebugStreamMetadataOnly {
+    pub dataflow_id: DataflowId,
+    pub outputs: Vec<(NodeId, DataId)>,
+    pub subscription_id: uuid::Uuid,
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]
@@ -355,8 +358,9 @@ mod start_topic_debug_stream_tests {
 
     /// A coordinator built before metadata-only subscriptions existed sends
     /// `StartTopicDebugStream`; it must keep decoding verbatim (full payload).
-    /// The wire surface is frozen, so metadata-only subs ride on a *new*
-    /// variant instead of a field added to this one (dora-rs/dora#3509).
+    /// The wire surface is frozen, so the metadata-only command is a standalone
+    /// type on its own WS method (`daemon_command_metadata`) instead of a field
+    /// or variant added to this one (dora-rs/dora#3509).
     #[test]
     fn start_without_mode_decodes_unchanged() {
         let legacy = format!(
@@ -387,7 +391,7 @@ mod start_topic_debug_stream_tests {
 
     #[test]
     fn start_metadata_only_roundtrips() {
-        let start = DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+        let start = crate::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly {
             dataflow_id: uuid::Uuid::new_v4(),
             outputs: vec![(
                 crate::id::NodeId::from("node_a".to_string()),
@@ -396,23 +400,10 @@ mod start_topic_debug_stream_tests {
             subscription_id: uuid::Uuid::new_v4(),
         };
         let json = serde_json::to_string(&start).expect("serialize");
-        let decoded: DaemonCoordinatorEvent = serde_json::from_str(&json).expect("deserialize");
-        match decoded {
-            DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
-                outputs,
-                subscription_id,
-                ..
-            } => {
-                assert_eq!(
-                    outputs,
-                    vec![(
-                        crate::id::NodeId::from("node_a".to_string()),
-                        crate::id::DataId::from("out_1".to_string())
-                    )]
-                );
-                assert!(!subscription_id.is_nil());
-            }
-            other => panic!("expected StartTopicDebugStreamMetadataOnly, got {other:?}"),
-        }
+        let decoded: crate::coordinator_to_daemon::StartTopicDebugStreamMetadataOnly =
+            serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(decoded.dataflow_id, start.dataflow_id);
+        assert_eq!(decoded.outputs, start.outputs);
+        assert_eq!(decoded.subscription_id, start.subscription_id);
     }
 }

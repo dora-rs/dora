@@ -11,8 +11,9 @@ pub(crate) struct TopicSubscriber {
         Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     >,
     /// The payload mode the subscription asked for. Restoring a stream on
-    /// daemon reconnect re-sends the wire variant that matches the original
-    /// mode (`StartTopicDebugStream` vs `StartTopicDebugStreamMetadataOnly`),
+    /// daemon reconnect re-sends the command flavor that matches the original
+    /// mode (`StartTopicDebugStream` on `daemon_command` vs
+    /// `StartTopicDebugStreamMetadataOnly` on `daemon_command_metadata`),
     /// so the daemon rebuilds metadata-only watchers as metadata-only.
     mode: dora_message::common::TopicDebugMode,
     sender: Option<tokio::sync::mpsc::Sender<TopicFrame>>,

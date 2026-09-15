@@ -9,7 +9,7 @@
 //! section of `docs/api-rust.md`.
 //!
 use aligned_vec::{AVec, ConstAlign};
-use coordinator::CoordinatorEvent;
+use coordinator::{CoordinatorCommand, CoordinatorEvent};
 use crossbeam::queue::ArrayQueue;
 use dora_core::{
     build::{self, BuildInfo, GitManager, PrevGitSource},
@@ -33,8 +33,8 @@ use dora_message::{
     },
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{
-        BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes, StateCatchUpEntry,
-        StateCatchUpOperation,
+        BuildDataflowNodes, DaemonCoordinatorEvent, SpawnDataflowNodes,
+        StartTopicDebugStreamMetadataOnly, StateCatchUpEntry, StateCatchUpOperation,
     },
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
@@ -1780,7 +1780,9 @@ impl Daemon {
         let coordinator_events = stream::once(async move {
             Timestamped {
                 inner: Event::Coordinator(CoordinatorEvent {
-                    event: DaemonCoordinatorEvent::Spawn(spawn_command),
+                    event: CoordinatorCommand::Event(Box::new(DaemonCoordinatorEvent::Spawn(
+                        spawn_command,
+                    ))),
                     reply_tx,
                 }),
                 timestamp,
@@ -2246,7 +2248,27 @@ impl Daemon {
 
             match inner {
                 Event::Coordinator(CoordinatorEvent { event, reply_tx }) => {
-                    let status = self.handle_coordinator_event(event, reply_tx).await?;
+                    let status = match event {
+                        // The metadata-only topic-debug stream is a standalone
+                        // command type: the daemon relays headers only, never
+                        // payloads (dora-rs/dora#3509).
+                        CoordinatorCommand::StartTopicDebugStreamMetadataOnly(
+                            StartTopicDebugStreamMetadataOnly {
+                                dataflow_id,
+                                outputs,
+                                subscription_id,
+                            },
+                        ) => self.handle_topic_debug_stream_start(
+                            dataflow_id,
+                            outputs,
+                            subscription_id,
+                            TopicDebugMode::MetadataOnly,
+                            reply_tx,
+                        ),
+                        CoordinatorCommand::Event(event) => {
+                            self.handle_coordinator_event(*event, reply_tx).await?
+                        }
+                    };
 
                     match status {
                         RunStatus::Continue => {}
@@ -2689,17 +2711,6 @@ impl Daemon {
         event: DaemonCoordinatorEvent,
         reply_tx: Sender<Option<DaemonCoordinatorReply>>,
     ) -> eyre::Result<RunStatus> {
-        // The two topic-debug-stream variants share their payload shape and
-        // disagree only on the relay mode (dora-rs/dora#3509). The outer match
-        // moves `event`, so the discriminant is captured here and consumed in
-        // the arm below.
-        let start_topic_debug_stream_mode = match &event {
-            DaemonCoordinatorEvent::StartTopicDebugStream { .. } => Some(TopicDebugMode::Full),
-            DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly { .. } => {
-                Some(TopicDebugMode::MetadataOnly)
-            }
-            _ => None,
-        };
         let status = match event {
             DaemonCoordinatorEvent::Build(BuildDataflowNodes {
                 build_id,
@@ -3915,36 +3926,13 @@ impl Daemon {
                 dataflow_id,
                 outputs,
                 subscription_id,
-                ..
-            }
-            | DaemonCoordinatorEvent::StartTopicDebugStreamMetadataOnly {
+            } => self.handle_topic_debug_stream_start(
                 dataflow_id,
                 outputs,
                 subscription_id,
-                ..
-            } => {
-                // The two wire variants select the relay mode (dora-rs/dora#3509);
-                // the combined pattern above binds the shared fields, so the
-                // discriminant flag was computed off a borrow at function entry.
-                let mode = start_topic_debug_stream_mode
-                    .expect("flag set for both topic-debug-stream variants");
-                let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    for (node_id, data_id) in outputs {
-                        dataflow
-                            .debug_topic_watchers
-                            .entry(OutputId(node_id, data_id))
-                            .or_default()
-                            .insert(subscription_id, mode);
-                    }
-                    Ok(())
-                } else {
-                    Err(format!("no running dataflow with ID `{dataflow_id}`"))
-                };
-                let _ = reply_tx.send(Some(DaemonCoordinatorReply::StartTopicDebugStreamResult(
-                    result,
-                )));
-                RunStatus::Continue
-            }
+                TopicDebugMode::Full,
+                reply_tx,
+            ),
             DaemonCoordinatorEvent::StopTopicDebugStream {
                 dataflow_id,
                 subscription_id,
@@ -4013,6 +4001,37 @@ impl Daemon {
             }
         };
         Ok(status)
+    }
+
+    /// Register debug-topic watchers for a subscription in `<mode>` and reply
+    /// with `StartTopicDebugStreamResult`.
+    ///
+    /// Shared by the frozen `StartTopicDebugStream` event (full payloads, mode
+    /// `Full`) and the standalone metadata-only command (dora-rs/dora#3509).
+    fn handle_topic_debug_stream_start(
+        &mut self,
+        dataflow_id: DataflowId,
+        outputs: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
+        subscription_id: Uuid,
+        mode: dora_message::common::TopicDebugMode,
+        reply_tx: Sender<Option<DaemonCoordinatorReply>>,
+    ) -> RunStatus {
+        let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
+            for (node_id, data_id) in outputs {
+                dataflow
+                    .debug_topic_watchers
+                    .entry(OutputId(node_id, data_id))
+                    .or_default()
+                    .insert(subscription_id, mode);
+            }
+            Ok(())
+        } else {
+            Err(format!("no running dataflow with ID `{dataflow_id}`"))
+        };
+        let _ = reply_tx.send(Some(DaemonCoordinatorReply::StartTopicDebugStreamResult(
+            result,
+        )));
+        RunStatus::Continue
     }
 
     /// Watchdog for nodes that block an otherwise-finished dataflow
