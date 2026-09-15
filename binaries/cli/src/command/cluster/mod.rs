@@ -8,7 +8,7 @@ use crate::{
     ws_client::WsSession,
 };
 
-use self::config::MachineConfig;
+use self::config::{ClusterConfig, MachineConfig, ZenohMesh};
 
 pub mod config;
 mod down;
@@ -85,6 +85,32 @@ pub(super) fn format_zenoh_peer_arg(zenoh_peer: Option<&str>) -> String {
     match zenoh_peer {
         Some(ep) => format!(" --zenoh-peer {ep}"),
         None => String::new(),
+    }
+}
+
+/// Resolve each machine's zenoh mesh argument fragment
+/// (` --zenoh-listen … --zenoh-connect …`) from the cluster config, warning once
+/// when a mesh is configured but cannot be derived.
+///
+/// Shared by `dora cluster up` (which starts daemons over SSH) and
+/// `dora cluster install` (which installs them as systemd services) so both wire
+/// the daemons into the same explicit clique. Falling back to multicast is
+/// deliberate: a partial mesh is worse than none, since explicit connect
+/// endpoints turn multicast scouting off for the daemons that have them while
+/// the rest still depend on it.
+pub(super) fn resolve_zenoh_mesh_args(config: &ClusterConfig) -> Option<BTreeMap<&str, String>> {
+    match config.zenoh_mesh_args() {
+        ZenohMesh::Derived(args) => Some(args),
+        ZenohMesh::NotNeeded => None,
+        ZenohMesh::Unavailable(reason) => {
+            eprintln!(
+                "WARNING: {reason}, so the daemons are left to discover each other \
+                 by multicast. On a network without multicast — a mesh VPN carries \
+                 none — they will not find each other. Fix the field named above, \
+                 or configure a shared `zenoh_peer` rendezvous."
+            );
+            None
+        }
     }
 }
 
