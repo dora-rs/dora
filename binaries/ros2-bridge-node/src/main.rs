@@ -691,7 +691,27 @@ struct ZenohServerGoal {
     id: ros2_client::action::GoalId,
     status: ros2_client::action::GoalStatusEnum,
     result: Option<Vec<u8>>,
-    result_request: Option<dora_ros2_bridge::transport::RequestId>,
+    /// Get-result requests received before the result was produced, each waiting
+    /// for a reply. This is a queue rather than a single slot: a ROS2 action
+    /// client (or several clients) can send more than one `GetResult` for the
+    /// same goal before it finishes, and every waiter must be answered when the
+    /// result arrives. A single `Option` here silently dropped all but the last
+    /// waiter, leaving those callers to hang until their own client-side timeout.
+    result_requests: Vec<dora_ros2_bridge::transport::RequestId>,
+}
+
+impl ZenohServerGoal {
+    /// Queue a get-result request to answer once the result is produced.
+    fn queue_result_request(&mut self, request_id: dora_ros2_bridge::transport::RequestId) {
+        self.result_requests.push(request_id);
+    }
+
+    /// Take every queued get-result request so the caller can reply to each with
+    /// the now-available result. Draining (rather than replacing an `Option`)
+    /// guarantees no waiter is dropped.
+    fn take_result_requests(&mut self) -> Vec<dora_ros2_bridge::transport::RequestId> {
+        std::mem::take(&mut self.result_requests)
+    }
 }
 
 #[derive(serde::Deserialize)]
@@ -827,7 +847,7 @@ fn run_zenoh_action_server(
                             id: decoded.goal_id,
                             status: GoalStatusEnum::Executing,
                             result: None,
-                            result_request: None,
+                            result_requests: Vec::new(),
                         },
                     )?;
                     let mut metadata = dora_message::metadata::MetadataParameters::default();
@@ -864,7 +884,7 @@ fn run_zenoh_action_server(
                             true
                         }
                         None => {
-                            goal.result_request = Some(request.id);
+                            goal.queue_result_request(request.id);
                             false
                         }
                     },
@@ -963,21 +983,25 @@ fn run_zenoh_action_server(
                                 result: BridgeMessage(Some(data.as_array().to_data())),
                             })?
                         };
-                        let delivered = if let Some(request_id) = goal.result_request.take() {
-                            if let Err(error) = futures::executor::block_on(
-                                server.get_result.reply(request_id, &response),
-                            ) {
-                                tracing::warn!(
-                                    "failed to reply to Zenoh get-result request: {error}"
-                                );
-                            }
-                            true
-                        } else {
+                        let waiting = goal.take_result_requests();
+                        let delivered = if waiting.is_empty() {
                             goal.result = Some(response);
                             false
+                        } else {
+                            // Answer every waiter, not just the most recent one.
+                            for request_id in waiting {
+                                if let Err(error) = futures::executor::block_on(
+                                    server.get_result.reply(request_id, &response),
+                                ) {
+                                    tracing::warn!(
+                                        "failed to reply to Zenoh get-result request: {error}"
+                                    );
+                                }
+                            }
+                            true
                         };
-                        // If a get-result request was already waiting, the result is
-                        // delivered now and the goal is retired; otherwise keep it
+                        // If any get-result request was already waiting, the result
+                        // is delivered now and the goal is retired; otherwise keep it
                         // (with the stored result) until the client polls.
                         if delivered {
                             goals.remove(&goal_key);
@@ -2235,5 +2259,59 @@ mod zenoh_goal_status_tests {
             zenoh_result_goal_status(Some("")),
             GoalStatusEnum::Aborted
         ));
+    }
+}
+
+#[cfg(test)]
+mod zenoh_goal_result_request_tests {
+    use super::ZenohServerGoal;
+    use super::ros2_client::action::{GoalId, GoalStatusEnum};
+    use dora_ros2_bridge::transport::RequestId;
+
+    fn request_id(sequence_number: i64) -> RequestId {
+        RequestId {
+            sequence_number,
+            client_gid: [0u8; 16],
+        }
+    }
+
+    fn goal() -> ZenohServerGoal {
+        ZenohServerGoal {
+            id: GoalId::new_random(),
+            status: GoalStatusEnum::Executing,
+            result: None,
+            result_requests: Vec::new(),
+        }
+    }
+
+    // Regression test for the orphaned-waiter bug: several get-result requests
+    // that arrive before the result is produced must all be retained and
+    // answered. The previous single-`Option` slot overwrote earlier waiters, so
+    // only the most recent request was ever replied to; the rest hung.
+    #[test]
+    fn multiple_pending_requests_are_all_retained_and_drained_in_order() {
+        let mut goal = goal();
+        goal.queue_result_request(request_id(1));
+        goal.queue_result_request(request_id(2));
+        goal.queue_result_request(request_id(3));
+
+        let drained = goal.take_result_requests();
+        assert_eq!(
+            drained,
+            vec![request_id(1), request_id(2), request_id(3)],
+            "every waiting get-result request must be answered, in arrival order"
+        );
+
+        // Draining leaves the queue empty so the goal can be retired.
+        assert!(
+            goal.take_result_requests().is_empty(),
+            "the queue must be empty after draining"
+        );
+    }
+
+    #[test]
+    fn no_pending_requests_drains_to_empty() {
+        let mut goal = goal();
+        assert!(goal.take_result_requests().is_empty());
     }
 }
