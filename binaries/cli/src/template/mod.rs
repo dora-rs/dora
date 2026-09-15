@@ -24,7 +24,13 @@ mod rust;
 /// and never emits CMake -- so a bare space can't break an unquoted CMake
 /// argument there the way it would for C/C++/Rust. Every other call site,
 /// including the Python dataflow path, passes `false`.
+///
+/// The name must also start with an ASCII letter, end with a letter or
+/// digit, and avoid the names cargo reserves (`build`, `deps`, `examples`,
+/// `incremental`).
 pub(crate) fn validate_name(kind: &str, name: &str, allow_spaces: bool) -> eyre::Result<()> {
+    const CARGO_RESERVED: [&str; 4] = ["build", "deps", "examples", "incremental"];
+
     if name.is_empty() {
         bail!("{kind} name must not be empty");
     }
@@ -35,6 +41,20 @@ pub(crate) fn validate_name(kind: &str, name: &str, allow_spaces: bool) -> eyre:
             "{kind} name contains invalid character '{c}' -- only ASCII letters, digits, `-`, `_`{} are allowed",
             if allow_spaces { ", and spaces" } else { "" }
         );
+    }
+    // A leading digit is an invalid Python module name; a leading `-`/`_` is
+    // an invalid PEP 508 project and cargo package name.
+    if !name.starts_with(|c: char| c.is_ascii_alphabetic()) {
+        bail!("{kind} name must start with an ASCII letter");
+    }
+    // PEP 508 project names must end with an alphanumeric.
+    if !name.ends_with(|c: char| c.is_ascii_alphanumeric()) {
+        bail!("{kind} name must end with an ASCII letter or digit");
+    }
+    // The Rust node template makes the package name the implicit bin target,
+    // and cargo rejects these names for one at manifest parse.
+    if CARGO_RESERVED.contains(&name) {
+        bail!("{kind} name `{name}` is reserved by cargo and cannot be used");
     }
     Ok(())
 }
@@ -124,6 +144,57 @@ mod tests {
     fn validate_name_rejects_dot() {
         assert!(validate_name("node", "my.node", false).is_err());
         assert!(validate_name("node", "my.node", true).is_err());
+    }
+
+    // A leading digit passes the character allow-list but is an invalid
+    // Python module name (`2048/main.py` cannot be imported), so cargo/CMake
+    // would accept it but the Python backend would not -- rejected uniformly.
+    #[test]
+    fn validate_name_rejects_leading_non_letter() {
+        for name in ["2048", "_foo", "-foo"] {
+            assert!(
+                validate_name("node", name, false).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    // A trailing `-`/`_` passes the character allow-list but PEP 508 requires
+    // the project name to end in an alphanumeric, so uv rejects the generated
+    // pyproject.
+    #[test]
+    fn validate_name_rejects_trailing_dash_or_underscore() {
+        for name in ["foo-", "foo_"] {
+            assert!(
+                validate_name("node", name, false).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    // These collide with cargo's build-directory names, so the Rust node
+    // template's `[package] name = "<name>"` (implicit bin target) is
+    // rejected by cargo at manifest parse.
+    #[test]
+    fn validate_name_rejects_cargo_reserved_target_names() {
+        for name in ["build", "deps", "examples", "incremental"] {
+            assert!(
+                validate_name("node", name, false).is_err(),
+                "expected {name:?} to be rejected"
+            );
+        }
+    }
+
+    // The internal scaffold node names must keep passing, or `dora new
+    // --kind dataflow` would fail partway through creating its own nodes.
+    #[test]
+    fn validate_name_accepts_internal_scaffold_names() {
+        for name in ["talker_1", "talker_2", "listener_1"] {
+            assert!(validate_name("node", name, false).is_ok());
+        }
+        for name in ["talker 1", "talker 2", "listener 1"] {
+            assert!(validate_name("node", name, true).is_ok());
+        }
     }
 
     #[test]
