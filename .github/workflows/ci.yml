@@ -624,7 +624,7 @@ jobs:
         # implementation detail (LD_LIBRARY_PATH only adds a search path).
         env:
           LD_LIBRARY_PATH: ${{ env.pythonLocation }}/lib
-      - uses: astral-sh/setup-uv@v10.0.1
+      - uses: astral-sh/setup-uv@v10.1.0
         with:
           enable-cache: true
       - name: Set up Python venv
