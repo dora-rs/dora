@@ -67,6 +67,20 @@ The server MUST pass through the `request_id` from the incoming request's
 metadata parameters into the response. The client matches responses to
 requests using this key.
 
+`send_service_request` mints a fresh `request_id` per call, so it cannot
+express one logical request sent to several servers — each publish would
+carry a different correlation. `send_service_request_with_id` takes the id
+instead, so every copy shares one:
+
+```rust
+let request_id = DoraNode::new_request_id();
+for server in &servers {
+    node.send_service_request_with_id(
+        server.output.clone(), params.clone(), data.clone(), request_id.clone(),
+    )?;
+}
+```
+
 #### Waiting for a response with timeout + fault tolerance
 
 Use [`EventStream::recv_service_response`](../apis/rust/node/src/event_stream/mod.rs)
@@ -96,6 +110,71 @@ on subsequent `recv()` calls, so your main event loop never loses
 intermediate inputs, parameter updates, or lifecycle events.
 
 **Example**: `examples/service-example/`
+
+#### Clients that cannot block
+
+`recv_service_response` waits. A single-threaded node with its own
+schedule to keep — or several requests outstanding at once — cannot
+afford that: the wait stalls everything else, and on a wedged server it
+stalls for the whole timeout.
+
+`try_recv_service_response` polls instead, returning `Ok(None)` when the
+reply has not arrived (dora-rs/dora#3046). Buffering, restart detection,
+correlation *and the deadline* are all handled as in the blocking form;
+only the waiting is gone.
+
+The framework owns the timeout: the first poll carrying one registers a
+deadline for that `request_id`, and a later poll past it returns
+`PatternError::Timeout` once per deadline — it releases the registration,
+so polling the same id again starts a new one; treat `Timeout` as terminal
+for that request. A caller passes the same timeout every
+iteration and reacts to `Timeout` like any other outcome — it does not
+sweep deadlines itself. Pass `None` to poll without one.
+
+```rust
+// once per loop iteration, for each outstanding request
+let timeout = Some(Duration::from_secs(5));
+match events.try_recv_service_response(&rid, &server, timeout) {
+    Ok(Some(Event::Input { data, .. })) => complete(data),
+    Ok(None) => {}                        // not ready — get on with the iteration
+    Err(PatternError::Timeout) => give_up(),
+    Err(e) => return Err(e.into()),
+    _ => unreachable!(),
+}
+```
+
+The clock starts at that first poll rather than at send time, and the
+first deadline registered for an id wins.
+
+A poll drops its own registration on a match, an error or expiry.
+`cancel_correlation` releases one the node abandons and will never poll
+again; without it that entry lives until the stream is dropped. It is
+available in both Rust and C++ and is a no-op for an unknown id.
+
+It releases the deadline only. A reply that arrives *after* its request
+timed out or was cancelled matches no live correlation, so the next poll
+buffers it for the caller's event loop like any other unrelated input.
+Reading events clears those; a node that only polls and never reads
+keeps one buffered event per unclaimed reply. Do not work around that
+with a loop that reads until empty — the non-blocking read returns
+buffered events first but then falls through to the live stream, so it
+can consume and discard a reply a later poll was going to correlate.
+
+In C++ the timeout is `timeout_ms`, and it means the same thing for the
+polls as for the blocking waits: `0` expires immediately, and
+`UINT64_MAX` is the spelling for "no practical deadline". Moving a
+request between the two forms therefore never silently changes its
+deadline.
+
+> **Ordering matters.** The polls and your own `recv()` read the same
+> stream, so whichever runs first consumes what is there. A poll
+> correlates the reply it wants and buffers everything else for a later
+> `recv()`, so polling first loses nothing. The reverse is not true: a
+> reply consumed by `recv()` is gone, and no later poll can see it.
+> Poll first, then drain your own events.
+
+`try_recv_action_result` is the same for actions.
+
 
 ## 3. Action (goal/feedback/result)
 
@@ -373,9 +452,17 @@ into `dora-node-api.h` (dora-rs/dora#2686).
 |------|-----|
 | `DoraNode::new_request_id` / `new_goal_id` | `new_request_id()` / `new_goal_id()` |
 | `DoraNode::send_service_request` | `send_service_request(...)` / `send_arrow_service_request(...)` |
+| `DoraNode::send_service_request_with_id` | `send_service_request_with_id(...)` |
 | `DoraNode::send_service_response` | `send_service_response(...)` |
 | `EventStream::recv_service_response` | `recv_service_response(...)` |
 | `EventStream::recv_action_result` | `recv_action_result(...)` |
+| `EventStream::recv_service_response_from` | `recv_service_response_from(...)` |
+| `EventStream::recv_action_result_from` | `recv_action_result_from(...)` |
+| `EventStream::try_recv_service_response` | `try_recv_service_response(...)` |
+| `EventStream::try_recv_action_result` | `try_recv_action_result(...)` |
+| `EventStream::try_recv_service_response_from` | `try_recv_service_response_from(...)` |
+| `EventStream::try_recv_action_result_from` | `try_recv_action_result_from(...)` |
+| `ExpectedServers::AnyOf` / `::Any` | a `Vec<String>` of node ids / an empty one |
 | `GOAL_STATUS_SUCCEEDED` / `_ABORTED` / `_CANCELED` | `goal_status_succeeded()` / `_aborted()` / `_canceled()` |
 | `PatternError` | `DoraPatternStatus` |
 
