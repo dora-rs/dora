@@ -86,6 +86,7 @@ dunce = "1.0.5"
 git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
+mcap = { version = "0.25.0", default-features = false }
 chrono = "0.4.45"
 dora-recording = { workspace = true }
 which = "8"
