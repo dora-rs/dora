@@ -8,7 +8,10 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::DaemonId,
     coordinator_to_daemon::ResolveMachineReply,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, Timestamped},
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonEvent, MAX_DAEMON_TEXT_MESSAGE_BYTES, Timestamped,
+        decode_topic_debug_frame,
+    },
     ws_protocol::WsResponse,
 };
 use futures::{SinkExt, StreamExt};
@@ -47,7 +50,27 @@ pub(crate) async fn handle_daemon_ws(
             msg = ws_rx.next() => {
                 let Some(msg) = msg else { break };
                 let text = match msg {
+                    // The socket admits messages up to the binary topic debug
+                    // frame size; text keeps the control-message limit every
+                    // coordinator has applied. Closing (rather than skipping)
+                    // is what exceeding it has always done, and it makes the
+                    // daemon reconnect instead of waiting on a lost reply.
+                    Ok(Message::Text(text)) if text.len() > MAX_DAEMON_TEXT_MESSAGE_BYTES => {
+                        tracing::warn!(
+                            "daemon sent a {}-byte text message, over the {MAX_DAEMON_TEXT_MESSAGE_BYTES}-byte limit — closing connection",
+                            text.len()
+                        );
+                        break;
+                    }
                     Ok(Message::Text(text)) => text,
+                    Ok(Message::Binary(data)) => {
+                        if !handle_daemon_binary_frame(&data, &event_tx, tracked_daemon_id.as_ref())
+                            .await
+                        {
+                            break;
+                        }
+                        continue;
+                    }
                     Ok(Message::Close(_)) => break,
                     Ok(Message::Ping(data)) => {
                         let _ = ws_tx.send(Message::Pong(data)).await;
@@ -117,6 +140,44 @@ pub(crate) async fn handle_daemon_ws(
             })
             .await;
     }
+}
+
+/// Handle a daemon WS binary message: a topic debug frame, sent in place of
+/// JSON `DaemonEvent::TopicDebugData` because this coordinator offered
+/// `RegisterResult::Ok::binary_debug_frames` (dora-rs/dora#3535).
+///
+/// Returns false if the connection should close: on the event channel
+/// closing, or on a frame from a daemon that has not registered, matching how
+/// `handle_daemon_request` treats an unregistered daemon's events. A frame
+/// that fails to decode is dropped with a warning; losing one debug frame is
+/// not worth a daemon's connection.
+async fn handle_daemon_binary_frame(
+    data: &[u8],
+    event_tx: &mpsc::Sender<Event>,
+    tracked_daemon_id: Option<&DaemonId>,
+) -> bool {
+    if tracked_daemon_id.is_none() {
+        tracing::warn!("daemon sent binary frame before registering — closing connection");
+        return false;
+    }
+    match decode_daemon_binary_frame(data) {
+        Ok(event) => event_tx.send(event).await.is_ok(),
+        Err(err) => {
+            tracing::warn!("dropping malformed topic debug frame from daemon: {err}");
+            true
+        }
+    }
+}
+
+/// Decode a daemon WS binary message into the same [`Event::TopicDebugData`]
+/// the JSON `DaemonEvent::TopicDebugData` translates to.
+fn decode_daemon_binary_frame(data: &[u8]) -> eyre::Result<Event> {
+    let frame = decode_topic_debug_frame(data)?;
+    Ok(Event::TopicDebugData {
+        dataflow_id: frame.dataflow_id,
+        subscription_ids: frame.subscription_ids,
+        payload: frame.payload.to_vec(),
+    })
 }
 
 /// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
@@ -448,6 +509,79 @@ async fn handle_daemon_response(
         let _ = sender.send(result_json);
     } else {
         tracing::warn!("no pending reply for daemon WS response id {}", response.id);
+    }
+}
+
+#[cfg(test)]
+mod topic_debug_frame_tests {
+    use super::*;
+    use dora_message::daemon_to_coordinator::encode_topic_debug_frame;
+
+    fn topic_debug_data(event: Option<Event>) -> (Uuid, Vec<Uuid>, Vec<u8>) {
+        match event {
+            Some(Event::TopicDebugData {
+                dataflow_id,
+                subscription_ids,
+                payload,
+            }) => (dataflow_id, subscription_ids, payload),
+            other => panic!("expected a TopicDebugData event, got {other:?}"),
+        }
+    }
+
+    /// Both shapes a daemon may send — JSON from a daemon that did not get (or
+    /// does not know) the flag, binary from one that did — must reach the
+    /// coordinator as the same event.
+    #[test]
+    fn json_and_binary_frames_decode_to_the_same_event() {
+        let dataflow_id = Uuid::new_v4();
+        let subscription_ids = vec![Uuid::new_v4(), Uuid::new_v4()];
+        let payload = vec![0, 1, 2, 254, 255];
+
+        let from_json = topic_debug_data(translate_daemon_event(
+            DaemonId::new(Some("A".to_string())),
+            DaemonEvent::TopicDebugData {
+                dataflow_id,
+                subscription_ids: subscription_ids.clone(),
+                payload: payload.clone(),
+            },
+            Uuid::new_v4(),
+        ));
+        let binary = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload).unwrap();
+        let from_binary = topic_debug_data(decode_daemon_binary_frame(&binary).ok());
+
+        assert_eq!(from_json, (dataflow_id, subscription_ids, payload));
+        assert_eq!(from_binary, from_json);
+    }
+
+    #[tokio::test]
+    async fn a_binary_frame_is_forwarded_once_the_daemon_is_registered() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let dataflow_id = Uuid::new_v4();
+        let frame = encode_topic_debug_frame(dataflow_id, &[Uuid::new_v4()], b"data").unwrap();
+
+        assert!(handle_daemon_binary_frame(&frame, &event_tx, Some(&daemon_id)).await);
+        let (forwarded_dataflow, _, payload) = topic_debug_data(event_rx.try_recv().ok());
+        assert_eq!(forwarded_dataflow, dataflow_id);
+        assert_eq!(payload, b"data");
+    }
+
+    #[tokio::test]
+    async fn a_binary_frame_before_registration_closes_the_connection() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[], b"data").unwrap();
+
+        assert!(!handle_daemon_binary_frame(&frame, &event_tx, None).await);
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn a_malformed_binary_frame_is_dropped_without_closing() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+
+        assert!(handle_daemon_binary_frame(&[1, 2, 3], &event_tx, Some(&daemon_id)).await);
+        assert!(event_rx.try_recv().is_err());
     }
 }
 
