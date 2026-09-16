@@ -168,6 +168,12 @@ def resolve_baseline(root: Path) -> str:
     return max(tags, key=tag_sort_key)
 
 
+def baseline_ref(root: Path, explicit: str | None = None) -> str:
+    """The ref every half of the gate compares against: `--baseline`, then
+    `BREAKING_BASELINE`, then the newest release tag."""
+    return explicit or os.environ.get("BREAKING_BASELINE") or resolve_baseline(root)
+
+
 # --------------------------------------------------------------------------
 # Shared text helpers
 # --------------------------------------------------------------------------
@@ -265,6 +271,74 @@ def compare_ordered(
             )
         )
     return findings
+
+
+VARIANT_BODY_RE = re.compile(r"^(\w+)\s*\{(.*)\}\s*$", re.DOTALL)
+
+
+def split_json_variant_bodies(
+    owner: str, old: list[str], new: list[str]
+) -> tuple[list[Finding], list[str], list[str]]:
+    """Diff struct-variant *bodies* of a JSON-framed enum, by field name.
+
+    Returns the body findings plus both member lists rewritten to bare variant
+    names, so the caller's ordinary variant comparison still sees additions,
+    removals and reorderings -- it just no longer mistakes a field appended
+    inside a body for the variant being replaced.
+
+    Only for `NON_POSTCARD_MODULES`. Under postcard a struct-variant's fields
+    are as positional as a struct's, so the strict string match is correct there
+    and this must not be applied.
+
+    A variant whose rendering carries a ` [serde: ..]` suffix (a wire-affecting
+    attribute on the variant or one of its fields) does not match the body
+    pattern and keeps the strict match -- the conservative direction.
+    """
+
+    def parse(members: list[str]) -> list[tuple[str, list[str] | None]]:
+        # (variant name, its fields) -- fields is None for a unit/tuple variant.
+        return [
+            (m.group(1), split_top_level(m.group(2))) if (m := VARIANT_BODY_RE.match(s)) else (s, None)
+            for s in members
+        ]
+
+    old_parsed, new_parsed = parse(old), parse(new)
+    new_by_variant = dict(new_parsed)
+    findings: list[Finding] = []
+    for variant, old_fields in old_parsed:
+        if variant not in new_by_variant:
+            continue  # the caller's variant diff reports the removal
+        new_fields = new_by_variant[variant]
+        if (old_fields is None) != (new_fields is None):
+            # `"Hello"` and `{"Hello":{..}}` are different JSON shapes; neither
+            # side decodes the other's.
+            findings.append(
+                Finding(
+                    BREAK,
+                    f"{owner} variant `{variant}` changed between unit and struct form",
+                )
+            )
+            continue
+        if old_fields is None:
+            continue
+        # Deliberately not `compare_ordered`: position carries no meaning in
+        # named JSON framing, so neither a reorder nor an insert before the end
+        # is a break here. Only losing or retyping a field is.
+        for field in old_fields:
+            if field not in new_fields:
+                findings.append(
+                    Finding(
+                        BREAK, f"{owner} variant `{variant}`: field `{field}` removed"
+                    )
+                )
+        for field in new_fields:
+            if field not in old_fields:
+                findings.append(
+                    Finding(
+                        WARN, f"{owner} variant `{variant}`: field `{field}` added"
+                    )
+                )
+    return findings, [n for n, _ in old_parsed], [n for n, _ in new_parsed]
 
 
 def compare_signature_maps(
@@ -844,24 +918,32 @@ def check_wire_format(root: Path, baseline: Baseline) -> SurfaceResult:
     if not old_files:
         result.skipped = "no dora-message sources in the baseline"
         return result
-    new_files = {
-        str(p.relative_to(root / WIRE_DIR)): p.read_text()
-        for p in (root / WIRE_DIR).rglob("*.rs")
-    }
     old = parse_wire_types(old_files)
-    new = parse_wire_types(new_files)
+    new = parse_wire_types(read_wire_sources(root))
+    result.findings = diff_wire_types(old, new)
+    result.summary = f"{len(new)} serde types"
+    return result
 
+
+def read_wire_sources(root: Path) -> dict[str, str]:
+    """`dora-message` sources keyed by path relative to `WIRE_DIR`, the shape
+    `parse_wire_types` takes."""
+    base = root / WIRE_DIR
+    return {str(p.relative_to(base)): p.read_text() for p in base.rglob("*.rs")}
+
+
+def diff_wire_types(old: dict[str, dict], new: dict[str, dict]) -> list[Finding]:
+    """Findings between two `parse_wire_types` results."""
+    findings: list[Finding] = []
     for name, old_type in old.items():
         if name not in new:
-            result.findings.append(
-                Finding(BREAK, f"`{name}` removed from the wire protocol")
-            )
+            findings.append(Finding(BREAK, f"`{name}` removed from the wire protocol"))
             continue
         new_type = new[name]
         if new_type.get("container") != old_type.get("container"):
             # `untagged`, `tag`, `from`/`into`: these decide the framing of the
             # whole type, so a change reshapes every message carrying it.
-            result.findings.append(
+            findings.append(
                 Finding(
                     BREAK,
                     f"`{name}`: serde container attributes changed "
@@ -870,7 +952,7 @@ def check_wire_format(root: Path, baseline: Baseline) -> SurfaceResult:
                 )
             )
         if new_type["kind"] != old_type["kind"]:
-            result.findings.append(
+            findings.append(
                 Finding(
                     BREAK,
                     f"`{name}` changed from {old_type['kind']} to {new_type['kind']}",
@@ -897,19 +979,28 @@ def check_wire_format(root: Path, baseline: Baseline) -> SurfaceResult:
             # is meant to grow.
             added_level = WARN
             note = "postcard encodes the variant index" if is_postcard else "enum variant"
-        result.findings.extend(
+        old_members, new_members = old_type["members"], new_type["members"]
+        if old_type["kind"] == "enum" and not is_postcard:
+            # A struct-variant's fields are part of its rendered member string,
+            # so under the strict match an appended field would read as the
+            # variant being replaced -- a BREAK -- while the struct rule above
+            # calls the same addition in the same module a WARN. Diff the
+            # bodies by field name instead, under that rule.
+            extra, old_members, new_members = split_json_variant_bodies(
+                f"`{name}`", old_members, new_members
+            )
+            findings.extend(extra)
+        findings.extend(
             compare_ordered(
                 "field" if old_type["kind"] == "struct" else "variant",
                 f"`{name}`",
-                old_type["members"],
-                new_type["members"],
+                old_members,
+                new_members,
                 added_level=added_level,
                 reorder_note=note,
             )
         )
-
-    result.summary = f"{len(new)} serde types"
-    return result
+    return findings
 
 
 # --------------------------------------------------------------------------
@@ -1195,7 +1286,7 @@ def main() -> int:
     args = parser.parse_args()
 
     root = Path(args.root).resolve()
-    ref = args.baseline or os.environ.get("BREAKING_BASELINE") or resolve_baseline(root)
+    ref = baseline_ref(root, args.baseline)
     if args.print_baseline:
         print(ref)
         return 0

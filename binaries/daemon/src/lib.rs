@@ -3885,6 +3885,7 @@ impl Daemon {
                 dataflow_id,
                 outputs,
                 subscription_id,
+                ..
             } => {
                 let result = if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
                     for (node_id, data_id) in outputs {

@@ -10,6 +10,7 @@ real differ and asserts it is caught.
 Run: python3 -m unittest discover -s scripts/qa/tests
 """
 
+import re
 import sys
 import unittest
 from pathlib import Path
@@ -18,16 +19,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from breaking_changes import (  # noqa: E402
     BREAK,
+    NON_POSTCARD_MODULES,
     WARN,
+    Baseline,
     abi3_floor,
+    baseline_ref,
     compare_ordered,
     diff_schema,
+    diff_wire_types,
     flatten_schema,
     parse_c_header,
     parse_cli_surface,
     parse_cxx_bridge,
     parse_wire_types,
     python_floor,
+    read_wire_sources,
+    split_json_variant_bodies,
     tag_sort_key,
     version_tuple,
 )
@@ -207,6 +214,88 @@ class WireFormatTest(unittest.TestCase):
 
     def test_non_serde_types_are_ignored(self):
         self.assertNotIn("m::S", parse_wire_types({"m.rs": "pub struct S { a: u8 }"}))
+
+
+class JsonVariantBodyTest(unittest.TestCase):
+    """Struct-variant bodies in the JSON-framed control-plane modules.
+
+    A variant's fields are part of its rendered member string, so appending one
+    looks like "variant removed, variant added" -- a break -- while the same
+    addition to a plain struct in the same module is a warning. These pin the
+    reconciliation, and pin that it stops at the postcard boundary.
+    """
+
+    OLD = ["Hello { version: u16 }", "Stop"]
+    NEW = ["Hello { version: u16, mode: Mode }", "Stop"]
+
+    def test_appending_a_field_is_additive_not_a_break(self):
+        findings, old, new = split_json_variant_bodies("`E`", self.OLD, self.NEW)
+        self.assertEqual([f.level for f in findings], [WARN])
+        self.assertIn("field `mode: Mode` added", findings[0].detail)
+        # Bodies stripped, so the caller's variant diff sees no churn.
+        self.assertEqual((old, new), (["Hello", "Stop"], ["Hello", "Stop"]))
+
+    def test_removing_a_field_is_still_a_break(self):
+        findings, _, _ = split_json_variant_bodies("`E`", self.NEW, self.OLD)
+        self.assertEqual([f.level for f in findings], [BREAK])
+        self.assertIn("field `mode: Mode` removed", findings[0].detail)
+
+    def test_fields_split_on_top_level_commas_only(self):
+        # Field types nest commas (`Vec<(NodeId, DataId)>`): a naive split
+        # would report `DataId)>` removed when the tuple changes.
+        findings, _, _ = split_json_variant_bodies(
+            "`E`",
+            ["Sub { topics: Vec<(NodeId, DataId)>, v: u16 }"],
+            ["Sub { topics: Vec<(NodeId, Uuid)>, v: u16 }"],
+        )
+        self.assertEqual(
+            [(f.level, f.detail) for f in findings],
+            [
+                (BREAK, "`E` variant `Sub`: field `topics: Vec<(NodeId, DataId)>` removed"),
+                (WARN, "`E` variant `Sub`: field `topics: Vec<(NodeId, Uuid)>` added"),
+            ],
+        )
+
+    def test_inserting_a_field_before_the_end_is_additive(self):
+        # Position carries no meaning in JSON framing, unlike postcard, so an
+        # insert in the middle is as safe as an append.
+        findings, _, _ = split_json_variant_bodies(
+            "`E`", self.OLD, ["Hello { mode: Mode, version: u16 }", "Stop"]
+        )
+        self.assertEqual([f.level for f in findings], [WARN])
+
+    def test_unit_to_struct_form_is_a_break(self):
+        # Both directions: the JSON shape changes from a string to a map, so
+        # neither peer decodes the other's, and the bare names alone would
+        # hide it from the caller.
+        for old, new in [(["Stop"], ["Stop { force: bool }"]), (["Stop { force: bool }"], ["Stop"])]:
+            findings, old_names, new_names = split_json_variant_bodies("`E`", old, new)
+            self.assertEqual([f.level for f in findings], [BREAK], (old, new))
+            self.assertIn("changed between unit and struct form", findings[0].detail)
+            self.assertEqual((old_names, new_names), (["Stop"], ["Stop"]))
+
+    def test_variant_removal_still_surfaces_to_the_caller(self):
+        _, old, new = split_json_variant_bodies("`E`", self.OLD, ["Stop"])
+        findings = compare_ordered(
+            "variant", "`E`", old, new, added_level=WARN, reorder_note="x"
+        )
+        self.assertEqual(findings[0].level, BREAK)
+
+    def test_dispatch_is_keyed_on_the_module(self):
+        # Through the real differ: the same struct-variant field addition is
+        # a WARN in a JSON-framed module and a BREAK in a postcard one.
+        enum = "#[derive(Serialize)] pub enum E {{ V {{ a: u8{extra} }} }}"
+        old, new = enum.format(extra=""), enum.format(extra=", b: u8")
+        self.assertIn("cli_to_coordinator", NON_POSTCARD_MODULES)
+        self.assertNotIn("daemon_to_node", NON_POSTCARD_MODULES)
+        for module, level in [("cli_to_coordinator", WARN), ("daemon_to_node", BREAK)]:
+            findings = diff_wire_types(
+                parse_wire_types({f"{module}.rs": old}),
+                parse_wire_types({f"{module}.rs": new}),
+            )
+            levels = {f.level for f in findings}
+            self.assertIn(level, levels, (module, findings))
+            self.assertEqual(BREAK in levels, level == BREAK, (module, findings))
 
 
 class SchemaTest(unittest.TestCase):
@@ -405,11 +494,7 @@ class RealRepoCoverageTest(unittest.TestCase):
         self.assertGreaterEqual(len(parsed["functions"]), 40)
 
     def test_wire_types(self):
-        src = ROOT / "libraries/message/src"
-        files = {
-            str(path.relative_to(src)): path.read_text() for path in src.rglob("*.rs")
-        }
-        parsed = parse_wire_types(files)
+        parsed = parse_wire_types(read_wire_sources(ROOT))
         self.assertGreaterEqual(len(parsed), 80)
         # Every type must have been read past its opening brace.
         empty = [name for name, t in parsed.items() if not t["members"]]
@@ -426,6 +511,37 @@ class RealRepoCoverageTest(unittest.TestCase):
         parsed = parse_cli_surface((ROOT / "binaries/cli/cli-surface.txt").read_text())
         self.assertGreaterEqual(len(parsed), 50)
         self.assertIn("dora build", parsed)
+
+    def test_transitional_non_exhaustive_allow_is_retired(self):
+        """Fails once the baseline carries the attribute: delete the allow in
+        libraries/message/Cargo.toml and this test together."""
+        try:
+            baseline = baseline_ref(ROOT)
+        except SystemExit as e:
+            self.skipTest(str(e))
+        base = Baseline(ROOT, baseline)
+        marked_at_baseline = all(
+            re.search(
+                rf"#\[non_exhaustive\]\s*(?:(?:#\[[^\]]*\]|///[^\n]*)\s*)*{variant}\s*\{{",
+                base.read(f"libraries/message/src/{module}.rs") or "",
+            )
+            for module, variant in [
+                ("cli_to_coordinator", "TopicSubscribe"),
+                ("coordinator_to_daemon", "StartTopicDebugStream"),
+            ]
+        )
+        manifest = (ROOT / "libraries/message/Cargo.toml").read_text()
+        allowed = 'enum_variant_marked_non_exhaustive = "allow"' in manifest
+        self.assertEqual(
+            allowed,
+            not marked_at_baseline,
+            f"baseline {baseline} {'has' if marked_at_baseline else 'lacks'} "
+            "`#[non_exhaustive]` on `TopicSubscribe` and "
+            "`StartTopicDebugStream`, so the transitional "
+            "`enum_variant_marked_non_exhaustive` allow in "
+            "libraries/message/Cargo.toml must be "
+            f"{'deleted (with this test)' if marked_at_baseline else 'present'}",
+        )
 
 
 if __name__ == "__main__":

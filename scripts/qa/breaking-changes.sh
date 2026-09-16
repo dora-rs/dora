@@ -88,7 +88,9 @@ fi
 # tests feed known breaks through it; they take milliseconds, so they run
 # first, every time, rather than being a separate thing to remember.
 echo "=== differ self-test ==="
-if ! python3 -m unittest discover -s scripts/qa/tests -q; then
+# One test reads the baseline too (the transitional-allow check), so a
+# `--baseline` override has to reach it the same way it reaches the differ.
+if ! BREAKING_BASELINE="$BASELINE" python3 -m unittest discover -s scripts/qa/tests -q; then
   echo "the breaking-change differ is broken -- its findings cannot be trusted" >&2
   exit 2
 fi
