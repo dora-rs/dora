@@ -9,7 +9,7 @@ use dora_message::{
     coordinator_to_cli::{ControlRequestReply, DataflowList, DataflowResult},
     descriptor::Deploy,
 };
-use eyre::{Context, ContextCompat, bail};
+use eyre::{Context, bail};
 use std::{
     env::current_dir,
     io::IsTerminal,
@@ -249,24 +249,7 @@ pub(crate) fn working_dir_or_parent<'a>(
     }
 }
 
-/// Canonicalized form of `working_dir_or_parent`. Cargo invocations for
-/// `build:` directives and the `local_working_dir` sent to the
-/// coordinator both need a canonical path (symlinks resolved) so the
-/// workspace walk-up lands on the right `Cargo.toml`.
-pub(crate) fn canonicalize_working_dir(
-    override_: Option<&Path>,
-    dataflow_path: &Path,
-) -> eyre::Result<PathBuf> {
-    match override_ {
-        Some(p) => dunce::canonicalize(p)
-            .with_context(|| format!("failed to canonicalize working_dir `{}`", p.display())),
-        None => Ok(dunce::canonicalize(dataflow_path)
-            .context("failed to canonicalize dataflow file path")?
-            .parent()
-            .context("dataflow path has no parent dir")?
-            .to_owned()),
-    }
-}
+pub(crate) use dora_core::descriptor::canonicalize_working_dir;
 
 /// Returns `true` if the node's deploy config routes it to a specific
 /// (possibly remote) daemon rather than the default/unnamed one.
@@ -299,13 +282,7 @@ pub(crate) fn local_working_dir(
             .all(|n| !deploy_pins_daemon(n.deploy.as_ref()))
             && cli_and_daemon_on_same_machine(coordinator_session)?
         {
-            Some(
-                dunce::canonicalize(dataflow_path)
-                    .context("failed to canonicalize dataflow file path")?
-                    .parent()
-                    .context("dataflow path has no parent dir")?
-                    .to_owned(),
-            )
+            Some(canonicalize_working_dir(None, dataflow_path)?)
         } else {
             None
         },
@@ -382,6 +359,28 @@ mod tests {
         let missing = Path::new("/definitely/not/a/real/path/for/tests");
         let dataflow = Path::new("/tmp/does-not-matter.yml");
         assert!(canonicalize_working_dir(Some(missing), dataflow).is_err());
+    }
+
+    #[test]
+    fn canonicalize_working_dir_symlinked_entrypoint() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target_dir = tmp.path().join("target");
+        let symlink_dir = tmp.path().join("symlink_holder");
+        std::fs::create_dir(&target_dir).unwrap();
+        std::fs::create_dir(&symlink_dir).unwrap();
+        let target_file = target_dir.join("dataflow.yml");
+        std::fs::write(&target_file, "").unwrap();
+        let symlink_file = symlink_dir.join("entrypoint.yml");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target_file, &symlink_file).unwrap();
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&target_file, &symlink_file).is_err() {
+            return;
+        }
+
+        let got = canonicalize_working_dir(None, &symlink_file).unwrap();
+        assert_eq!(got, dunce::canonicalize(&symlink_dir).unwrap());
     }
 
     /// Pins the duration grammar accepted by `--stop-after`/`--grace`/
