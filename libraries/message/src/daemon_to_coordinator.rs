@@ -345,6 +345,12 @@ pub enum DaemonEvent {
     ///
     /// Daemon and coordinator are co-deployed from the same build, so this
     /// multi-subscriber shape is safe to evolve within the repository.
+    ///
+    /// This JSON form is the fallback. A coordinator that sets
+    /// `RegisterResult::Ok::binary_debug_frames` receives the same data as a
+    /// WebSocket binary message instead (see [`encode_topic_debug_frame`]),
+    /// because JSON renders `payload` as a decimal number array several times
+    /// its size. The variant stays for coordinators that do not set the flag.
     TopicDebugData {
         dataflow_id: DataflowId,
         subscription_ids: Vec<uuid::Uuid>,
@@ -378,6 +384,163 @@ pub enum DaemonEvent {
         #[serde(default)]
         clean_stop: bool,
     },
+}
+
+/// Largest WebSocket text message a coordinator accepts from a daemon.
+///
+/// Every coordinator enforces this, including ones that predate binary topic
+/// debug frames, and one that receives a larger message drops the daemon's
+/// connection. A daemon therefore must not send a JSON
+/// [`DaemonEvent::TopicDebugData`] beyond it; a payload of a few hundred
+/// kilobytes already is, once rendered as a number array.
+pub const MAX_DAEMON_TEXT_MESSAGE_BYTES: usize = 1024 * 1024;
+
+/// Largest binary topic debug frame (see [`encode_topic_debug_frame`]) a
+/// coordinator that offers `RegisterResult::Ok::binary_debug_frames` accepts,
+/// header included.
+pub const MAX_TOPIC_DEBUG_FRAME_BYTES: usize = 64 * 1024 * 1024;
+
+/// Length of the fixed part of a binary topic debug frame: the dataflow id
+/// and the subscription count.
+const TOPIC_DEBUG_FRAME_FIXED_HEADER: usize = 16 + 4;
+
+/// Encoded length of a binary topic debug frame, known before encoding it so
+/// an oversized frame can be dropped without copying its payload.
+pub fn topic_debug_frame_len(subscription_count: usize, payload_len: usize) -> usize {
+    TOPIC_DEBUG_FRAME_FIXED_HEADER
+        .saturating_add(subscription_count.saturating_mul(16))
+        .saturating_add(payload_len)
+}
+
+/// Encode a topic debug frame as the body of a daemon→coordinator WebSocket
+/// binary message: the binary counterpart of [`DaemonEvent::TopicDebugData`],
+/// used only when the coordinator set `RegisterResult::Ok::binary_debug_frames`.
+///
+/// Layout, mirroring the coordinator→CLI topic data frames (fixed-width ids
+/// ahead of the untouched payload):
+///
+/// ```text
+/// dataflow id (16 bytes) | subscription count n (u32 LE) | n × subscription id (16 bytes) | payload
+/// ```
+///
+/// No daemon/coordinator timestamp and no daemon id: the socket is already
+/// bound to the registered daemon, and the payload carries the producer's own
+/// timestamp.
+pub fn encode_topic_debug_frame(
+    dataflow_id: DataflowId,
+    subscription_ids: &[uuid::Uuid],
+    payload: &[u8],
+) -> eyre::Result<Vec<u8>> {
+    let count = u32::try_from(subscription_ids.len())
+        .map_err(|_| eyre::eyre!("too many topic debug subscriptions for one frame"))?;
+    let mut frame =
+        Vec::with_capacity(topic_debug_frame_len(subscription_ids.len(), payload.len()));
+    frame.extend_from_slice(dataflow_id.as_bytes());
+    frame.extend_from_slice(&count.to_le_bytes());
+    for id in subscription_ids {
+        frame.extend_from_slice(id.as_bytes());
+    }
+    frame.extend_from_slice(payload);
+    Ok(frame)
+}
+
+/// A binary topic debug frame decoded by [`decode_topic_debug_frame`].
+#[derive(Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct TopicDebugFrame<'a> {
+    pub dataflow_id: DataflowId,
+    pub subscription_ids: Vec<uuid::Uuid>,
+    pub payload: &'a [u8],
+}
+
+/// Decode a daemon→coordinator WebSocket binary message produced by
+/// [`encode_topic_debug_frame`].
+///
+/// The input comes from the network, so the subscription count is checked
+/// against the frame length before anything is allocated for it.
+pub fn decode_topic_debug_frame(frame: &[u8]) -> eyre::Result<TopicDebugFrame<'_>> {
+    let (fixed, rest) = frame
+        .split_first_chunk::<TOPIC_DEBUG_FRAME_FIXED_HEADER>()
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "topic debug frame too short for its header ({} bytes)",
+                frame.len()
+            )
+        })?;
+    let (dataflow_id, count) = fixed.split_at(16);
+    let dataflow_id = uuid::Uuid::from_slice(dataflow_id)?;
+    let count = u32::from_le_bytes(count.try_into()?) as usize;
+    let ids_len = count
+        .checked_mul(16)
+        .filter(|len| *len <= rest.len())
+        .ok_or_else(|| {
+            eyre::eyre!(
+                "topic debug frame claims {count} subscriptions but has only {} bytes after its header",
+                rest.len()
+            )
+        })?;
+    let (ids, payload) = rest.split_at(ids_len);
+    let subscription_ids = ids
+        .chunks_exact(16)
+        .map(uuid::Uuid::from_slice)
+        .collect::<Result<_, _>>()?;
+    Ok(TopicDebugFrame {
+        dataflow_id,
+        subscription_ids,
+        payload,
+    })
+}
+
+#[cfg(test)]
+mod topic_debug_frame_tests {
+    use super::*;
+
+    #[test]
+    fn a_frame_round_trips() {
+        let dataflow_id = uuid::Uuid::new_v4();
+        let subscription_ids = vec![uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let payload = b"postcard bytes, not json".to_vec();
+        let frame = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload).unwrap();
+
+        // The payload is carried as-is: header plus payload, nothing more.
+        assert_eq!(frame.len(), 16 + 4 + 2 * 16 + payload.len());
+        assert_eq!(frame.len(), topic_debug_frame_len(2, payload.len()));
+        assert!(frame.ends_with(&payload));
+
+        let decoded = decode_topic_debug_frame(&frame).unwrap();
+        assert_eq!(decoded.dataflow_id, dataflow_id);
+        assert_eq!(decoded.subscription_ids, subscription_ids);
+        assert_eq!(decoded.payload, payload.as_slice());
+    }
+
+    #[test]
+    fn an_empty_payload_and_no_subscriptions_round_trip() {
+        let dataflow_id = uuid::Uuid::new_v4();
+        let frame = encode_topic_debug_frame(dataflow_id, &[], &[]).unwrap();
+        let decoded = decode_topic_debug_frame(&frame).unwrap();
+        assert_eq!(decoded.dataflow_id, dataflow_id);
+        assert!(decoded.subscription_ids.is_empty());
+        assert!(decoded.payload.is_empty());
+    }
+
+    #[test]
+    fn a_truncated_header_is_rejected() {
+        assert!(decode_topic_debug_frame(&[]).is_err());
+        assert!(decode_topic_debug_frame(&[0; TOPIC_DEBUG_FRAME_FIXED_HEADER - 1]).is_err());
+    }
+
+    /// A count larger than the frame can hold must be rejected up front, not
+    /// trusted as an allocation size or allowed to overflow the length check.
+    #[test]
+    fn a_subscription_count_beyond_the_frame_is_rejected() {
+        let frame =
+            encode_topic_debug_frame(uuid::Uuid::new_v4(), &[uuid::Uuid::new_v4()], &[]).unwrap();
+        assert!(decode_topic_debug_frame(&frame[..frame.len() - 1]).is_err());
+
+        let mut huge = vec![0; TOPIC_DEBUG_FRAME_FIXED_HEADER];
+        huge[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert!(decode_topic_debug_frame(&huge).is_err());
+    }
 }
 
 /// Health status of a node

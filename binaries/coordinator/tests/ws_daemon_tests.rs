@@ -254,3 +254,90 @@ async fn same_host_daemons_are_handed_each_others_loopback_endpoints() {
     peers_c.sort();
     assert_eq!(peers_c, ["tcp/127.0.0.1:45001", "tcp/127.0.0.1:45002"]);
 }
+
+/// Read frames until the register reply (`params.inner.Ok`) arrives.
+async fn read_register_reply(
+    ws: &mut (impl StreamExt<Item = Result<Message, tokio_tungstenite::tungstenite::Error>> + Unpin),
+) -> serde_json::Value {
+    let read = async {
+        loop {
+            let msg = ws.next().await.expect("stream ended").expect("ws error");
+            if let Message::Text(text) = msg {
+                let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+                if let Some(ok) = value.pointer("/params/inner/Ok") {
+                    return ok.clone();
+                }
+            }
+        }
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(5), read)
+        .await
+        .expect("no register reply within 5s")
+}
+
+/// The coordinator offers binary topic debug frames at registration, and a
+/// binary frame from the registered daemon is accepted without disturbing the
+/// connection (dora-rs/dora#3535).
+#[tokio::test]
+async fn daemon_register_offers_binary_debug_frames_and_accepts_them() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = connect_daemon(port).await;
+    let (_id, json) = make_register_request();
+    ws.send(Message::Text(json.into())).await.unwrap();
+
+    let reply = read_register_reply(&mut ws).await;
+    assert_eq!(reply.get("binary_debug_frames"), Some(&json!(true)));
+
+    // A frame for a dataflow that is not running is simply dropped by the
+    // coordinator; what matters is that the socket stays usable afterwards.
+    // 4 MiB: a camera-sized output, well past the 1 MiB control-message limit
+    // the daemon socket used to apply to every message.
+    let frame = dora_message::daemon_to_coordinator::encode_topic_debug_frame(
+        Uuid::new_v4(),
+        &[Uuid::new_v4()],
+        &vec![0u8; 4 * 1024 * 1024],
+    )
+    .unwrap();
+    ws.send(Message::Binary(frame.into())).await.unwrap();
+
+    ws.send(Message::Ping(vec![7].into())).await.unwrap();
+    let pong = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match ws.next().await.expect("stream ended").expect("ws error") {
+                Message::Pong(data) => return data,
+                Message::Close(_) => panic!("coordinator closed the connection on a binary frame"),
+                _ => continue,
+            }
+        }
+    })
+    .await
+    .expect("no pong within 5s");
+    assert_eq!(pong.as_ref(), &[7]);
+}
+
+/// Raising the daemon socket's size limit for binary frames must not raise it
+/// for text: an oversized text message still closes the connection.
+#[tokio::test]
+async fn daemon_oversized_text_message_still_closes_the_connection() {
+    let (port, _handle) = common::start_test_coordinator().await;
+    let mut ws = register_daemon_and_wait(port).await;
+
+    let oversized =
+        "x".repeat(dora_message::daemon_to_coordinator::MAX_DAEMON_TEXT_MESSAGE_BYTES + 1);
+    // The coordinator may reset the socket while this is still being written.
+    let _ = ws.send(Message::Text(oversized.into())).await;
+
+    let closed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        loop {
+            match ws.next().await {
+                None | Some(Err(_)) | Some(Ok(Message::Close(_))) => return,
+                Some(Ok(_)) => continue,
+            }
+        }
+    })
+    .await;
+    assert!(
+        closed.is_ok(),
+        "coordinator kept the connection open after an oversized text message"
+    );
+}

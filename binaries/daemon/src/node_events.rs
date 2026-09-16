@@ -628,25 +628,28 @@ impl Daemon {
         let subscription_ids: Vec<_> = subscription_ids.iter().copied().collect();
         let subscription_count = subscription_ids.len();
 
-        let message = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: self.daemon_id.clone(),
-                event: DaemonEvent::TopicDebugData {
-                    dataflow_id,
-                    subscription_ids,
-                    payload: serialized_event,
-                },
-            },
-            timestamp: self.clock.new_timestamp(),
-        })?;
-        match sender.try_send_event(&message) {
+        match sender.try_send_topic_debug_frame(
+            &self.daemon_id,
+            &self.clock,
+            dataflow_id,
+            subscription_ids,
+            serialized_event,
+        ) {
             Ok(()) => {}
             Err(crate::coordinator::TrySendEventError::Full) => {
                 tracing::warn!(
                     %dataflow_id,
                     output = %format!("{}/{}", output_id.0, output_id.1),
                     subscriptions = subscription_count,
-                    "dropping topic debug frame because coordinator WS send channel is full"
+                    "dropping topic debug frame because the coordinator topic debug channel is full"
+                );
+            }
+            Err(err @ crate::coordinator::TrySendEventError::TooLarge { .. }) => {
+                tracing::warn!(
+                    %dataflow_id,
+                    output = %format!("{}/{}", output_id.0, output_id.1),
+                    subscriptions = subscription_count,
+                    "dropping topic debug frame: {err}"
                 );
             }
             Err(crate::coordinator::TrySendEventError::Closed) => {
@@ -654,10 +657,13 @@ impl Daemon {
                     %dataflow_id,
                     output = %format!("{}/{}", output_id.0, output_id.1),
                     subscriptions = subscription_count,
-                    "dropping topic debug frame because coordinator WS send channel is closed"
+                    "dropping topic debug frame because the coordinator topic debug channel is closed"
                 );
             }
-            Err(crate::coordinator::TrySendEventError::InvalidUtf8(err)) => {
+            Err(
+                err @ (crate::coordinator::TrySendEventError::InvalidUtf8(_)
+                | crate::coordinator::TrySendEventError::Encode(_)),
+            ) => {
                 return Err(eyre!(
                     "failed to encode topic debug frame for coordinator: {err}"
                 ));
