@@ -50,9 +50,15 @@ on:
 # cancels a still-queued/running earlier one instead of competing with it
 # (and with the merge queue) for the runner pool. Nightly is not a
 # merge-queue required status, so cancelling a run cannot wedge the queue.
+#
+# Only a scheduled run cancels, though: a `push` run (this file was
+# edited) or a manual dispatch queues behind whatever is in progress. Only
+# the scheduled run files and closes regression issues, so a push run that
+# cancelled it left the day unreported — 2026-09-15 and -16 both lost their
+# nightly this way while the push runs failed unseen.
 concurrency:
   group: nightly-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'schedule' }}
 
 permissions:
   contents: read
