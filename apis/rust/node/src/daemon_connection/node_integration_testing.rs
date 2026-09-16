@@ -911,4 +911,207 @@ mod tests {
             .expect("expected an Int32 array");
         assert_eq!(back.values(), &[1, 2, 3]);
     }
+
+    /// Properties over the same record/replay round-trip the example tests
+    /// above check at fixed values. The examples pin the cases that were
+    /// actually broken (dora-rs/dora#3427); these check that the contract holds
+    /// across the whole input range, which is where the original ULP drift and
+    /// the NaN-to-null collapse were hiding.
+    ///
+    /// Nightly re-runs every `proptest`-named test at 1000 cases
+    /// (`scripts/qa/all.sh`).
+    mod proptest_properties {
+        use super::*;
+        use arrow::array::{BooleanArray, Int64Array, StringArray, UInt64Array};
+        use proptest::prelude::*;
+
+        /// Bit-compare a float array against the values that went in, so NaN
+        /// payloads and signed zeros are held to their exact representation
+        /// rather than to float equality.
+        fn assert_f64_bits(before: &[Option<f64>], after: &Float64Array) {
+            assert_eq!(after.len(), before.len(), "length changed");
+            for (i, expected) in before.iter().enumerate() {
+                match expected {
+                    Some(v) => {
+                        assert!(!after.is_null(i), "value at {i} came back null");
+                        assert_eq!(
+                            after.value(i).to_bits(),
+                            v.to_bits(),
+                            "float at {i} changed: {v:e} -> {:e}",
+                            after.value(i),
+                        );
+                    }
+                    None => assert!(after.is_null(i), "null at {i} came back as a value"),
+                }
+            }
+        }
+
+        proptest! {
+            /// Signed integers survive exactly, including the magnitudes above
+            /// 2^53 that a JSON parser routing through `f64` would round.
+            #[test]
+            fn roundtrip_i64(values in prop::collection::vec(any::<Option<i64>>(), 1..32)) {
+                let before = values.clone();
+                let back = Int64Array::from(
+                    roundtrip(Arc::new(Int64Array::from(values))).unwrap(),
+                );
+                for (i, expected) in before.iter().enumerate() {
+                    prop_assert_eq!(back.is_null(i), expected.is_none());
+                    if let Some(v) = expected {
+                        prop_assert_eq!(back.value(i), *v);
+                    }
+                }
+            }
+
+            /// Unsigned integers are the other half of that range.
+            #[test]
+            fn roundtrip_u64(values in prop::collection::vec(any::<Option<u64>>(), 1..32)) {
+                let before = values.clone();
+                let back = UInt64Array::from(
+                    roundtrip(Arc::new(UInt64Array::from(values))).unwrap(),
+                );
+                for (i, expected) in before.iter().enumerate() {
+                    prop_assert_eq!(back.is_null(i), expected.is_none());
+                    if let Some(v) = expected {
+                        prop_assert_eq!(back.value(i), *v);
+                    }
+                }
+            }
+
+            /// Every finite `f64` replays bit-identical. This is the general
+            /// form of `finite_floats_round_trip_bit_identical`: the shortest
+            /// round-trip encoding has to hold across the range, not just at
+            /// the four values that were known to drift.
+            #[test]
+            fn roundtrip_finite_f64(
+                values in prop::collection::vec(
+                    proptest::option::of(any::<f64>().prop_filter("finite", |f| f.is_finite())),
+                    1..32,
+                ),
+            ) {
+                let before = values.clone();
+                let back = Float64Array::from(
+                    roundtrip(Arc::new(Float64Array::from(values))).unwrap(),
+                );
+                assert_f64_bits(&before, &back);
+            }
+
+            /// Same for `f32`, which takes a separate branch in the encoder.
+            #[test]
+            fn roundtrip_finite_f32(
+                values in prop::collection::vec(
+                    proptest::option::of(any::<f32>().prop_filter("finite", |f| f.is_finite())),
+                    1..32,
+                ),
+            ) {
+                let before = values.clone();
+                let back = Float32Array::from(
+                    roundtrip(Arc::new(Float32Array::from(values))).unwrap(),
+                );
+                prop_assert_eq!(back.len(), before.len());
+                for (i, expected) in before.iter().enumerate() {
+                    match expected {
+                        Some(v) => {
+                            prop_assert!(!back.is_null(i));
+                            prop_assert_eq!(back.value(i).to_bits(), v.to_bits());
+                        }
+                        None => prop_assert!(back.is_null(i)),
+                    }
+                }
+            }
+
+            /// Non-finite floats and genuine nulls stay distinguishable at any
+            /// mix. A NaN must never come back as a null, and a null must never
+            /// come back as a value -- the validity bitmap is what a node's
+            /// `is_null()` branches read.
+            #[test]
+            fn roundtrip_preserves_the_validity_bitmap(
+                values in prop::collection::vec(
+                    prop_oneof![
+                        Just(None),
+                        Just(Some(f64::NAN)),
+                        Just(Some(f64::INFINITY)),
+                        Just(Some(f64::NEG_INFINITY)),
+                        any::<f64>().prop_filter("finite", |f| f.is_finite()).prop_map(Some),
+                    ],
+                    1..32,
+                ),
+            ) {
+                let before = values.clone();
+                let back = Float64Array::from(
+                    roundtrip(Arc::new(Float64Array::from(values))).unwrap(),
+                );
+                prop_assert_eq!(
+                    back.null_count(),
+                    before.iter().filter(|v| v.is_none()).count(),
+                );
+                assert_f64_bits(&before, &back);
+            }
+
+            /// Strings survive exactly, including empty and non-ASCII content.
+            #[test]
+            fn roundtrip_strings(
+                values in prop::collection::vec(proptest::option::of(".{0,24}"), 1..16),
+            ) {
+                let refs: Vec<Option<&str>> = values.iter().map(|v| v.as_deref()).collect();
+                let back = StringArray::from(
+                    roundtrip(Arc::new(StringArray::from(refs))).unwrap(),
+                );
+                for (i, expected) in values.iter().enumerate() {
+                    match expected {
+                        Some(v) => prop_assert_eq!(back.value(i), v.as_str()),
+                        None => prop_assert!(back.is_null(i)),
+                    }
+                }
+            }
+
+            #[test]
+            fn roundtrip_bools(values in prop::collection::vec(any::<Option<bool>>(), 1..32)) {
+                let before = values.clone();
+                let back = BooleanArray::from(
+                    roundtrip(Arc::new(BooleanArray::from(values))).unwrap(),
+                );
+                for (i, expected) in before.iter().enumerate() {
+                    match expected {
+                        Some(v) => prop_assert_eq!(back.value(i), *v),
+                        None => prop_assert!(back.is_null(i)),
+                    }
+                }
+            }
+
+            /// Totality: decoding reports an error for anything it cannot
+            /// represent and never panics. By the time a recording is replayed
+            /// it is just a file -- it may have been hand-edited, truncated, or
+            /// written by a different dora version, so the reader has to treat
+            /// its contents as untrusted.
+            #[test]
+            fn read_input_data_never_panics(
+                data in prop::collection::vec(
+                    prop_oneof![
+                        Just(serde_json::Value::Null),
+                        any::<i64>().prop_map(|v| serde_json::json!(v)),
+                        any::<bool>().prop_map(|v| serde_json::json!(v)),
+                        ".{0,8}".prop_map(|v: String| serde_json::json!(v)),
+                        Just(serde_json::json!("NaN")),
+                        Just(serde_json::json!([1, 2])),
+                        Just(serde_json::json!({"inner": 1})),
+                    ],
+                    0..8,
+                ),
+                declared in prop_oneof![
+                    Just(None),
+                    Just(Some(serde_json::json!("Int64"))),
+                    Just(Some(serde_json::json!("Float64"))),
+                    Just(Some(serde_json::json!("Utf8"))),
+                    Just(Some(serde_json::json!("Boolean"))),
+                    Just(Some(serde_json::json!("NotAType"))),
+                ],
+            ) {
+                let _ = read_input_data(InputData::JsonObject {
+                    data: serde_json::Value::Array(data),
+                    data_type: declared,
+                });
+            }
+        }
+    }
 }
