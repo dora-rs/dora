@@ -79,6 +79,31 @@ impl Executable for Echo {
     }
 }
 
+/// Compute the `recv_timeout` for one iteration of the echo loop, or `None`
+/// when the `--duration` window has elapsed and the loop should stop.
+///
+/// Taking the already-computed `elapsed` (rather than an absolute deadline)
+/// keeps the caller off `Instant + Duration`, which overflows and panics for a
+/// large-but-valid `--duration`. A remaining wait is capped at `hint` so the
+/// loop still wakes periodically to show the "enable debug inspection" hint.
+fn echo_recv_timeout(
+    duration: Option<std::time::Duration>,
+    elapsed: std::time::Duration,
+    hint: std::time::Duration,
+) -> Option<std::time::Duration> {
+    match duration {
+        Some(d) => {
+            let remaining = d.saturating_sub(elapsed);
+            if remaining.is_zero() {
+                None
+            } else {
+                Some(remaining.min(hint))
+            }
+        }
+        None => Some(hint),
+    }
+}
+
 fn inspect(
     coordinator: CoordinatorOptions,
     selector: TopicSelector,
@@ -104,7 +129,13 @@ fn inspect(
     let mut hint_shown = false;
     let mut buf = Vec::with_capacity(1024);
     let mut emitted: u64 = 0;
-    let deadline = duration.map(|s| std::time::Instant::now() + std::time::Duration::from_secs(s));
+    // Track the run window as a start instant plus `elapsed()` rather than an
+    // absolute `Instant::now() + Duration::from_secs(seconds)`: `--duration` is
+    // bounded only from below (`range(1..)`), so a large-but-valid `u64` would
+    // make `Instant + Duration` overflow the monotonic clock and panic. See
+    // `echo_recv_timeout`, and the sibling `topic hz` sampler.
+    let start = std::time::Instant::now();
+    let duration = duration.map(std::time::Duration::from_secs);
     loop {
         // Stop conditions: --count reached or --duration elapsed.
         if let Some(max) = count
@@ -112,21 +143,15 @@ fn inspect(
         {
             break;
         }
-        let recv_timeout = match deadline {
-            Some(d) => {
-                let remaining = d.saturating_duration_since(std::time::Instant::now());
-                if remaining.is_zero() {
-                    break;
-                }
-                remaining.min(HINT_TIMEOUT)
-            }
-            None => HINT_TIMEOUT,
+        let recv_timeout = match echo_recv_timeout(duration, start.elapsed(), HINT_TIMEOUT) {
+            Some(timeout) => timeout,
+            None => break,
         };
         let result = match data_rx.recv_timeout(recv_timeout) {
             Ok(result) => result,
             Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                if let Some(d) = deadline
-                    && std::time::Instant::now() >= d
+                if let Some(d) = duration
+                    && start.elapsed() >= d
                 {
                     break;
                 }
@@ -448,5 +473,35 @@ mod tests {
         let err =
             decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(vec![0u8; 16])).unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    #[test]
+    fn echo_recv_timeout_does_not_panic_on_oversized_duration() {
+        use std::time::Duration;
+        let hint = Duration::from_secs(5);
+
+        // No `--duration`: always wait a hint-length window.
+        assert_eq!(echo_recv_timeout(None, Duration::ZERO, hint), Some(hint));
+
+        // A huge-but-valid `--duration` (10^19 s) must not panic: previously the
+        // loop formed `Instant::now() + Duration::from_secs(seconds)`, which
+        // overflowed the monotonic clock. The remaining wait is capped at `hint`.
+        let huge = Duration::from_secs(10_000_000_000_000_000_000);
+        assert_eq!(
+            echo_recv_timeout(Some(huge), Duration::from_secs(1), hint),
+            Some(hint),
+        );
+
+        // Once the window has elapsed, the loop is told to stop (`None`).
+        assert_eq!(
+            echo_recv_timeout(Some(Duration::from_secs(2)), Duration::from_secs(2), hint),
+            None,
+        );
+
+        // A remaining window shorter than the hint is returned as-is.
+        assert_eq!(
+            echo_recv_timeout(Some(Duration::from_secs(3)), Duration::from_secs(1), hint),
+            Some(Duration::from_secs(2)),
+        );
     }
 }
