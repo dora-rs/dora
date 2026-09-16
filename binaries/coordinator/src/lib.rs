@@ -4428,11 +4428,11 @@ async fn start_topic_debug_stream(
             .wrap_err_with(|| format!("no daemon connection for daemon `{daemon_id}`"))?
             .clone();
         let message = serde_json::to_vec(&Timestamped {
-            inner: DaemonCoordinatorEvent::StartTopicDebugStream {
+            inner: DaemonCoordinatorEvent::start_topic_debug_stream(
                 dataflow_id,
                 outputs,
                 subscription_id,
-            },
+            ),
             timestamp: clock.new_timestamp(),
         })?;
         start_requests.push(async move {
@@ -4648,11 +4648,11 @@ async fn restore_topic_debug_streams_for_daemon(
                 continue;
             };
             let message = match serde_json::to_vec(&Timestamped {
-                inner: DaemonCoordinatorEvent::StartTopicDebugStream {
-                    dataflow_id: *dataflow_id,
+                inner: DaemonCoordinatorEvent::start_topic_debug_stream(
+                    *dataflow_id,
                     outputs,
-                    subscription_id: *subscription_id,
-                },
+                    *subscription_id,
+                ),
                 timestamp: clock.new_timestamp(),
             }) {
                 Ok(message) => message,
@@ -7471,6 +7471,7 @@ mod tests {
                     dataflow_id: start_df,
                     outputs,
                     subscription_id,
+                    ..
                 } => {
                     assert_eq!(start_df, dataflow_id);
                     assert_eq!(outputs, vec![(expected_node_id, expected_data_id)]);

@@ -235,6 +235,10 @@ pub enum DaemonCoordinatorEvent {
     },
     /// Start forwarding matching output frames back to the coordinator over
     /// the daemon control channel for CLI topic inspection.
+    ///
+    /// Built through [`DaemonCoordinatorEvent::start_topic_debug_stream`];
+    /// `#[non_exhaustive]` for the reason given on [`RegisterResult::Ok`].
+    #[non_exhaustive]
     StartTopicDebugStream {
         dataflow_id: DataflowId,
         outputs: Vec<(NodeId, DataId)>,
@@ -253,6 +257,22 @@ pub enum DaemonCoordinatorEvent {
         /// The entries the daemon missed, ordered by sequence number.
         entries: Vec<StateCatchUpEntry>,
     },
+}
+
+impl DaemonCoordinatorEvent {
+    /// Forward frames of `outputs` from `dataflow_id` to the coordinator under
+    /// `subscription_id`.
+    pub fn start_topic_debug_stream(
+        dataflow_id: DataflowId,
+        outputs: Vec<(NodeId, DataId)>,
+        subscription_id: uuid::Uuid,
+    ) -> Self {
+        Self::StartTopicDebugStream {
+            dataflow_id,
+            outputs,
+            subscription_id,
+        }
+    }
 }
 
 #[derive(Debug, serde::Deserialize, serde::Serialize)]

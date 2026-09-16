@@ -226,6 +226,7 @@ pub(crate) async fn handle_control_ws(
                         dataflow_id,
                         topics,
                         protocol_version,
+                        ..
                     } => {
                         // Reject before doing any work: the frames this
                         // subscription would produce are positionally encoded,
