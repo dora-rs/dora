@@ -41,7 +41,7 @@ You do not have to list the daemons anywhere. Each daemon works out its own netw
 
 This means two things:
 
-- **The coordinator must listen on an address that the daemons can reach.** By default it listens on loopback (`127.0.0.1`) only. A daemon that reaches its coordinator over loopback also listens on loopback only, and does not announce any address to the other daemons, because an address like `127.0.0.1` would be useless to them. Such a daemon can only be found through multicast.
+- **The coordinator must listen on an address that the daemons can reach.** By default it listens on loopback (`127.0.0.1`) only. A daemon that reaches its coordinator over loopback also listens on loopback only, and the coordinator announces that address only to other daemons on the same machine, because `127.0.0.1` would be useless to anyone else. From another machine, such a daemon can only be found through multicast.
 - **The address a daemon announces must be reachable by the other daemons.** If it is not, for example because of a NAT, or because a machine with several network interfaces picked the wrong one, either set the address with `--zenoh-listen`, or use setup 2.
 
 Zenoh's multicast discovery (UDP on `224.0.0.224:7446`) stays enabled by default, in addition to the coordinator mechanism. It is not needed for the setup below, but on a network that supports it, it repairs a few rare situations automatically. See [Multicast, and what to do without it](#multicast-and-what-to-do-without-it).

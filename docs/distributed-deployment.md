@@ -169,10 +169,12 @@ machines:
 > every daemon can reach the coordinator needs no zenoh configuration at all —
 > not even on a network without multicast.
 >
-> Only a *routable* listener is distributed: a daemon that bound loopback (which
-> is what a coordinator on `127.0.0.1` yields) reports nothing, because handing
-> `127.0.0.1` to another machine would point it at its own loopback. That is why
-> a coordinator meant to serve remote daemons must bind a routable address —
+> A loopback listener (which is what a coordinator on `127.0.0.1` yields) is
+> handed only to daemons that also reached the coordinator over loopback — that
+> is, daemons on the coordinator's own machine — because handing `127.0.0.1` to
+> another machine would point it at its own loopback. So two daemons on one
+> machine link through the coordinator too, without multicast. But a coordinator
+> meant to serve remote daemons must bind a routable address —
 > `dora up --interface <IP>`, or `dora cluster up`, which does it for you.
 >
 > Daemons may start in any order and all at once: each advertises its endpoint

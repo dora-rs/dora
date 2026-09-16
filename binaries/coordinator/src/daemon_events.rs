@@ -71,7 +71,8 @@ impl Coordinator {
                         // `RegisterResult::Ok::peer_zenoh_endpoints`.
                         Ok(_) => RegisterResult::ok(
                             daemon_id.clone(),
-                            self.daemon_connections.zenoh_endpoints_for(&daemon_id),
+                            self.daemon_connections
+                                .zenoh_endpoints_for(&daemon_id, connection.peer_addr),
                         ),
                         Err(err) => RegisterResult::Err(err.clone()),
                     },
