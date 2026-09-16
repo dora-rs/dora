@@ -2111,6 +2111,17 @@ impl Daemon {
         #[cfg(feature = "tensor-pool")]
         dora_tensor_pool::daemon::PoolState::sweep_orphans_at_startup(self.machine_id.as_deref());
 
+        // This function is re-entered on every reconnect, while the dataflows
+        // (and their debug-topic watchers) survive across attempts. Watchers
+        // registered over a dropped connection otherwise keep producing frames
+        // into its dead channel forever; there is no stall on the daemon side
+        // either, so the leak is silent (dora-rs/dora#3509). Drop them all here
+        // and let the coordinator's `restore_topic_debug_streams_for_daemon`
+        // re-install the still-active subscriptions.
+        for dataflow in self.running.values_mut() {
+            dataflow.debug_topic_watchers.clear();
+        }
+
         let watchdog_clock = self.clock.clone();
         let watchdog_interval = tokio_stream::wrappers::IntervalStream::new(tokio::time::interval(
             Duration::from_secs(5),
