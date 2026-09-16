@@ -103,3 +103,6 @@ path = "src/lib.rs"
 dist = true
 
 [dev-dependencies]
+# Matches dora-message's pin (libraries/message/Cargo.toml); used only by the
+# `dora export` round-trip test to assemble the recorded `Output` payload.
+aligned-vec = { version = "0.6.4", features = ["serde"] }

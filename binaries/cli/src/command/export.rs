@@ -156,3 +156,239 @@ fn run_export(args: Export) -> eyre::Result<()> {
     );
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::BufWriter};
+
+    use super::{Export, run_export};
+    use aligned_vec::AVec;
+    use dora_message::{
+        common::Timestamped,
+        daemon_to_daemon::InterDaemonEvent,
+        id::{DataId, NodeId},
+        metadata::Metadata,
+        uhlc::{ID, NTP64, Timestamp},
+    };
+    use dora_recording::{FORMAT_VERSION, RecordEntry, RecordingHeader, RecordingWriter};
+    use mcap::MessageStream;
+    use tempfile::tempdir;
+    use uuid::Uuid;
+
+    /// A fixed but non-round HLC timestamp and 16-byte id, mirrored from the
+    /// wire-format golden vectors (`libraries/message/tests/uhlc_wire_format.rs`).
+    fn sample_timestamp() -> Timestamp {
+        let id_bytes: [u8; 16] = [
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10,
+        ];
+        Timestamp::new(
+            NTP64(0x1122_3344_5566_7788),
+            ID::try_from(&id_bytes).expect("non-zero id"),
+        )
+    }
+
+    /// Encode a recorded `Output` entry exactly the way the daemon does
+    /// (`binaries/daemon/src/lib.rs`): a `Timestamped` envelope around the
+    /// `InterDaemonEvent`, postcard-serialized into the entry's event bytes.
+    fn output_event_bytes(node_id: &str, output_id: &str, payload: &[u8]) -> Vec<u8> {
+        let timestamp = sample_timestamp();
+        let metadata = Metadata::new(timestamp);
+        let event = InterDaemonEvent::Output {
+            dataflow_id: Uuid::nil(),
+            node_id: NodeId::from(node_id.to_string()),
+            output_id: DataId::from(output_id.to_string()),
+            metadata,
+            data: Some(AVec::<u8, aligned_vec::ConstAlign<128>>::from_slice(
+                128, payload,
+            )),
+        };
+        Timestamped {
+            inner: event,
+            timestamp,
+        }
+        .serialize()
+        .expect("serialize output event")
+    }
+
+    #[test]
+    fn round_trip_drec_to_mcap_preserves_payload_time_and_topics() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("input.drec");
+        let mcap_path = dir.path().join("output.mcap");
+
+        // Mirror the recording header the daemon writes: fixed start time and
+        // an empty (never used by export) dataflow descriptor.
+        let header = RecordingHeader {
+            version: FORMAT_VERSION,
+            start_nanos: 1_000_000_000,
+            dataflow_id: Uuid::nil(),
+            descriptor_yaml: b"nodes: []".to_vec(),
+        };
+
+        let payload_a = b"ARROW1\x00\x00\x00\x00\x01\x00\x00\x00\x0a\x00\x00\x00".to_vec();
+        let payload_b = b"ARROW1\x00\x00\x00\x00\x02\x00\x00\x00\x0b\x00\x00\x00".to_vec();
+        let payload_c = b"ARROW1\x00\x00\x00\x00\x03\x00\x00\x00\x0c\x00\x00\x00\x0d\x00".to_vec();
+
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header).expect("init writer");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "camera".to_string(),
+                    output_id: "image".to_string(),
+                    timestamp_offset_nanos: 100,
+                    event_bytes: output_event_bytes("camera", "image", &payload_a),
+                })
+                .expect("write entry");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "camera".to_string(),
+                    output_id: "image".to_string(),
+                    timestamp_offset_nanos: 500,
+                    event_bytes: output_event_bytes("camera", "image", &payload_b),
+                })
+                .expect("write entry");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "lidar".to_string(),
+                    output_id: "points".to_string(),
+                    timestamp_offset_nanos: 300,
+                    event_bytes: output_event_bytes("lidar", "points", &payload_c),
+                })
+                .expect("write entry");
+            // A non-`Output` event must be skipped, not abort the export.
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "lidar".to_string(),
+                    output_id: "points".to_string(),
+                    timestamp_offset_nanos: 400,
+                    event_bytes: Timestamped {
+                        inner: InterDaemonEvent::OutputClosed {
+                            dataflow_id: Uuid::nil(),
+                            node_id: NodeId::from("lidar".to_string()),
+                            output_id: DataId::from("points".to_string()),
+                        },
+                        timestamp: sample_timestamp(),
+                    }
+                    .serialize()
+                    .expect("serialize output closed"),
+                })
+                .expect("write entry");
+            writer.finish().expect("finish recording");
+        }
+
+        let args = Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec![],
+        };
+        run_export(args).expect("run export");
+
+        let mcap_bytes = fs::read(&mcap_path).expect("read mcap");
+        let messages: Vec<_> = MessageStream::new(&mcap_bytes)
+            .expect("open mcap")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read mcap messages");
+
+        let publish_nanos = sample_timestamp().get_time().to_duration().as_nanos() as u64;
+
+        assert_eq!(messages.len(), 3, "OutputClosed entry must be skipped");
+        assert_eq!(messages[0].channel.topic, "camera/image");
+        assert_eq!(messages[0].channel.message_encoding, "arrow-ipc");
+        assert_eq!(messages[0].sequence, 1);
+        assert_eq!(messages[0].log_time, 1_000_000_100);
+        assert_eq!(messages[0].publish_time, publish_nanos);
+        assert_eq!(messages[0].data.as_ref(), &payload_a[..]);
+
+        assert_eq!(messages[1].channel.topic, "camera/image");
+        assert_eq!(messages[1].sequence, 2, "sequence increments per topic");
+        assert_eq!(messages[1].log_time, 1_000_000_500);
+        assert_eq!(messages[1].publish_time, publish_nanos);
+        assert_eq!(messages[1].data.as_ref(), &payload_b[..]);
+
+        assert_eq!(messages[2].channel.topic, "lidar/points");
+        assert_eq!(
+            messages[2].sequence, 1,
+            "separate topic restarts its sequence"
+        );
+        assert_eq!(messages[2].log_time, 1_000_000_300);
+        assert_eq!(messages[2].publish_time, publish_nanos);
+        assert_eq!(messages[2].data.as_ref(), &payload_c[..]);
+    }
+
+    #[test]
+    fn export_respects_topic_filter() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("input.drec");
+        let mcap_path = dir.path().join("output.mcap");
+
+        let header = RecordingHeader {
+            version: FORMAT_VERSION,
+            start_nanos: 1_000_000_000,
+            dataflow_id: Uuid::nil(),
+            descriptor_yaml: b"nodes: []".to_vec(),
+        };
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header).expect("init writer");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "camera".to_string(),
+                    output_id: "image".to_string(),
+                    timestamp_offset_nanos: 100,
+                    event_bytes: output_event_bytes("camera", "image", b"camera-payload"),
+                })
+                .expect("write entry");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "lidar".to_string(),
+                    output_id: "points".to_string(),
+                    timestamp_offset_nanos: 200,
+                    event_bytes: output_event_bytes("lidar", "points", b"lidar-payload"),
+                })
+                .expect("write entry");
+            writer.finish().expect("finish recording");
+        }
+
+        let args = Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec!["camera/image".to_string()],
+        };
+        run_export(args).expect("run export");
+
+        let mcap_bytes = fs::read(&mcap_path).expect("read mcap");
+        let messages: Vec<_> = MessageStream::new(&mcap_bytes)
+            .expect("open mcap")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read mcap messages");
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].channel.topic, "camera/image");
+        assert_eq!(messages[0].data.as_ref(), &b"camera-payload"[..]);
+    }
+
+    #[test]
+    fn parse_topic_filter_splits_node_and_output() {
+        let filter = super::parse_topic_filter(&["camera/image".to_string()]).expect("parse");
+        assert_eq!(filter, vec![("camera".to_string(), "image".to_string())]);
+    }
+
+    #[test]
+    fn parse_topic_filter_rejects_missing_output_slash() {
+        let err = super::parse_topic_filter(&["camera".to_string()]).expect_err("must reject");
+        assert!(
+            err.to_string().contains("expected `node_id/output_id`"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn parse_topic_filter_defaults_to_all_when_empty() {
+        let filter = super::parse_topic_filter(&[]).expect("parse");
+        assert!(filter.is_empty());
+    }
+}
