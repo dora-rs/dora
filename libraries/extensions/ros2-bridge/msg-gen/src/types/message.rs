@@ -536,7 +536,7 @@ impl Message {
 /// Keywords in Rust
 ///
 /// <https://doc.rust-lang.org/reference/keywords.html>
-const RUST_KEYWORDS: [&str; 51] = [
+const RUST_KEYWORDS: [&str; 52] = [
     // Strict keywords
     "as", "break", "const", "continue", "crate", "else", "enum", "extern", "false", "fn", "for",
     "if", "impl", "in", "let", "loop", "match", "mod", "move", "mut", "pub", "ref", "return",
@@ -548,5 +548,47 @@ const RUST_KEYWORDS: [&str; 51] = [
     "abstract", "become", "box", "do", "final", "macro", "override", "priv", "typeof", "unsized",
     "virtual", "yield", //
     // Reserved keywords (2018+)
-    "try",
+    "try", //
+    // Reserved keywords (2024+)
+    "gen",
 ];
+
+#[cfg(test)]
+mod codegen_tests {
+    use super::*;
+    use crate::types::primitives::BasicType;
+
+    fn message_with_member(name: &str) -> Message {
+        Message {
+            package: "test_pkg".to_string(),
+            name: "Test".to_string(),
+            members: vec![Member {
+                name: name.to_string(),
+                r#type: BasicType::U8.into(),
+                default: None,
+            }],
+            constants: vec![],
+        }
+    }
+
+    fn format_valid_rust(tokens: impl ToTokens) -> String {
+        crate::format_token_stream(tokens.into_token_stream())
+    }
+
+    // `gen` is reserved in the 2024 edition, so a ROS2 member with that name
+    // must be escaped like any other keyword; otherwise the generated struct
+    // field `pub gen: u8` does not compile.
+    #[test]
+    fn keyword_named_members_are_escaped() {
+        for name in ["gen", "type"] {
+            let message = message_with_member(name);
+            let (def, _impls) = message.struct_token_stream("test_pkg", false);
+            let generated = format_valid_rust(def);
+            let escaped = format!("pub {name}_:");
+            assert!(
+                generated.contains(&escaped),
+                "expected `{escaped}` in generated code:\n{generated}"
+            );
+        }
+    }
+}
