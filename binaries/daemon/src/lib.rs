@@ -619,12 +619,6 @@ impl Daemon {
         } else {
             None
         };
-        // Only a routable listener is worth advertising — handing `127.0.0.1`
-        // to a daemon on another machine would point it at its own loopback,
-        // and dialing it would cost that daemon its multicast fallback for
-        // nothing. A single-machine deployment therefore advertises nothing and
-        // keeps exactly the behavior it has today.
-        let advertise_listen_endpoint = !zenoh_bind.addr().is_loopback();
         let clock = Arc::new(HLC::default());
         let mut ctrlc_events = set_up_ctrlc_handler(clock.clone())?;
         // Tracks whether we've ever connected to the coordinator. The initial
@@ -676,9 +670,15 @@ impl Daemon {
                         // On a reconnect the session is already open, so the
                         // endpoint it *bound* is the truth — not the one we
                         // reserved, which may be a port we lost.
-                        advertise: if !advertise_listen_endpoint {
-                            AdvertiseListener::Never
-                        } else if let Some(d) = daemon.as_ref() {
+                        //
+                        // A loopback listener is advertised like any other.
+                        // The coordinator hands it only to daemons that
+                        // reached it over loopback themselves — i.e. on this
+                        // host — so a daemon elsewhere is never pointed at
+                        // its own loopback, and two daemons on one machine
+                        // link without multicast scouting
+                        // (`DaemonConnections::zenoh_endpoints_for`).
+                        advertise: if let Some(d) = daemon.as_ref() {
                             AdvertiseListener::Bound(d.zenoh_listen_endpoint.clone())
                         } else {
                             AdvertiseListener::Reserved
@@ -1457,27 +1457,21 @@ impl Daemon {
             // say so, or the coordinator hands that dead endpoint to every
             // daemon that registers afterwards.
             //
-            // Skipped entirely when nothing was advertised (`zenoh_routable_addr`
-            // is `None` for a loopback bind — a single-machine deployment), since
-            // there is then nothing to confirm or withdraw.
-            //
             // Re-sent on every reconnect, so a coordinator that restarted and
             // lost the registry relearns this daemon's endpoint.
-            if self.zenoh_routable_addr.is_some() {
-                let stamped = Timestamped {
-                    inner: CoordinatorRequest::Event {
-                        daemon_id: self.daemon_id.clone(),
-                        event: DaemonEvent::ZenohListenEndpoint {
-                            endpoint: self.zenoh_listen_endpoint.clone(),
-                        },
+            let stamped = Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: self.daemon_id.clone(),
+                    event: DaemonEvent::ZenohListenEndpoint {
+                        endpoint: self.zenoh_listen_endpoint.clone(),
                     },
-                    timestamp: self.clock.new_timestamp(),
-                };
-                if let Ok(bytes) = serde_json::to_vec(&stamped)
-                    && let Err(err) = sender.send_event(&bytes).await
-                {
-                    tracing::warn!("failed to report zenoh listen endpoint to coordinator: {err}");
-                }
+                },
+                timestamp: self.clock.new_timestamp(),
+            };
+            if let Ok(bytes) = serde_json::to_vec(&stamped)
+                && let Err(err) = sender.send_event(&bytes).await
+            {
+                tracing::warn!("failed to report zenoh listen endpoint to coordinator: {err}");
             }
         }
 

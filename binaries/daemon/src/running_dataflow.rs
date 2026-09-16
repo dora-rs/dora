@@ -304,10 +304,10 @@ pub struct RunningDataflow {
     /// needs are established deterministically rather than left to gossip.
     /// Populated when the dataflow is spawned; see `spawn::build_peering_plan`.
     pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
-    /// Keeps this daemon answering other daemons' node-endpoint queries for as
-    /// long as the dataflow runs. Dropped with the dataflow; see
-    /// `spawn::endpoint_exchange`.
-    pub(crate) endpoint_queryable: Option<crate::spawn::endpoint_exchange::EndpointQueryable>,
+    /// Keeps this daemon answering other daemons' node-endpoint queries (and
+    /// probing for the ones it could not reach) for as long as the dataflow
+    /// runs. Dropped with the dataflow; see `spawn::endpoint_exchange`.
+    pub(crate) endpoint_exchange: Option<crate::spawn::endpoint_exchange::ExchangeHandle>,
     pub(crate) pending_nodes: PendingNodes,
     pub(crate) dataflow_started: bool,
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
@@ -422,7 +422,7 @@ impl RunningDataflow {
         Self {
             id: dataflow_id,
             zenoh_peering: Arc::new(BTreeMap::new()),
-            endpoint_queryable: None,
+            endpoint_exchange: None,
             pending_nodes: PendingNodes::new(dataflow_id, daemon_id),
             dataflow_started: false,
             subscribe_channels: HashMap::new(),

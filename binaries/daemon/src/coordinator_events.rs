@@ -273,14 +273,20 @@ impl Daemon {
                 let (trigger_result, result_task) = match result {
                     Ok(result_task) => (Ok(()), Some(result_task)),
                     Err(err) => {
-                        // The spawn failed after the memory-pool subscriber
-                        // task was started (it is spawned before the node
-                        // build): the dataflow never reaches `self.running`,
-                        // so `finish_dataflow` will not run — terminate the
-                        // subscriber here or it leaks for the daemon's
-                        // lifetime.
+                        // `finish_dataflow` never runs for a spawn that failed,
+                        // so whatever `spawn_dataflow` registered before it
+                        // bailed is released here: the memory-pool subscriber
+                        // task (started before the node build), and the
+                        // `RunningDataflow` entry with its endpoint queryable
+                        // and link probe (inserted before the per-node checks
+                        // that can still fail — no node has been spawned by
+                        // then). Left in place, the entry would answer and
+                        // probe for a dataflow the coordinator already
+                        // considers failed.
                         #[cfg(feature = "tensor-pool")]
                         self.pool.abort_subscriber(&dataflow_id);
+                        self.running.remove(&dataflow_id);
+                        self.working_dir.remove(&dataflow_id);
                         (Err(format!("{err:?}")), None)
                     }
                 };
