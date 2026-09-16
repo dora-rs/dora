@@ -62,6 +62,8 @@ make qa-fast
 
 Runs:
 
+- `Cargo.lock` freshness check (`--locked` resolve; runs first, because every
+  cargo gate below it repairs a stale lock in place)
 - `cargo fmt --all -- --check`
 - `cargo clippy --all --all-targets -- -D warnings` with Python crates excluded
 - supply-chain audit

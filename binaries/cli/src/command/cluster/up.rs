@@ -12,10 +12,10 @@ use crate::{
     common::connect_to_coordinator,
 };
 
-use super::config::{ClusterConfig, ZenohMesh};
+use super::config::ClusterConfig;
 use super::{
     format_daemon_port_arg, format_labels_arg, format_zenoh_peer_arg, query_connected_daemons,
-    run_ssh, ssh_target,
+    resolve_zenoh_mesh_args, run_ssh, ssh_target,
 };
 
 /// Bring up a multi-machine cluster from a cluster.yml file.
@@ -64,22 +64,8 @@ impl Executable for Up {
         // 2. SSH into each machine to start a daemon
         let zenoh_peer_arg = format_zenoh_peer_arg(config.zenoh_peer.as_deref());
         // Wire the daemons into an explicit zenoh mesh where the config allows
-        // it. Falling back is deliberate: a partial mesh is worse than none,
-        // since explicit connect endpoints turn multicast scouting off for the
-        // daemons that have them while the rest still depend on it.
-        let zenoh_mesh_args = match config.zenoh_mesh_args() {
-            ZenohMesh::Derived(args) => Some(args),
-            ZenohMesh::NotNeeded => None,
-            ZenohMesh::Unavailable(reason) => {
-                eprintln!(
-                    "WARNING: {reason}, so the daemons are left to discover each other \
-                     by multicast. On a network without multicast — a mesh VPN carries \
-                     none — they will not find each other. Fix the field named above, \
-                     or configure a shared `zenoh_peer` rendezvous."
-                );
-                None
-            }
-        };
+        // it (shared with `dora cluster install`).
+        let zenoh_mesh_args = resolve_zenoh_mesh_args(&config);
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);

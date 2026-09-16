@@ -1972,21 +1972,16 @@ jobs:
         run: cargo test -p dora-ros2-bridge-python
 
   # ===== MSRV check =====
-  # Advisory (`continue-on-error`) until these have run green for a
-  # stretch: they drive real ROS 2 containers, so a docker/apt hiccup
-  # should not redden a nightly. NOTE that this also hides them from
-  # `file-issue-on-failure` — `needs.<job>.result` reads `success` for a
-  # continue-on-error job — which is why they failed silently from the
-  # day they were added (#2790, 2026-07-21) until #2742 went looking.
-  # Drop `continue-on-error` once they are trustworthy (#2987). Until then
-  # the exemption is recorded in `.nightly-advisory-jobs`, which
-  # `scripts/qa/ci-nightly-reporting.sh` checks against this list — adding
-  # the flag to any other reported job now fails PR CI.
+  # These drive real ROS 2 containers, and drive them from a blocking job:
+  # a docker/apt/ROS-mirror hiccup now reddens the nightly and shows up in
+  # the auto-filed failure issue rather than being hidden by
+  # `continue-on-error`. They earned blocking status by running green for
+  # ten consecutive nightlies after the maturin pin rot was fixed (#3321);
+  # they were advisory before that (#2790, #2742, #2987).
   ros2-zenoh-humble:
     name: ROS2 Zenoh Interop (Humble)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -2009,12 +2004,11 @@ jobs:
           name: ros2-zenoh-humble-logs
           path: target/ros2-zenoh-logs
 
-  # Advisory for the same reason as `ros2-zenoh-humble` above.
+  # Same trust status as `ros2-zenoh-humble` above.
   ros2-zenoh-kilted:
     name: ROS2 Zenoh Interop (Kilted)
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
@@ -2253,8 +2247,7 @@ jobs:
               bench-example) echo '^Bench Example \(.+\)$' ;;
               cross-check) echo '^Cross-check \(.+\)$' ;;
               ros2-bridge) echo '^ROS2 Bridge Basic Checks$' ;;
-              # `continue-on-error` keeps these two out of `failed_jobs`, but
-              # the cancellation classifier looks up every job in `needs`, and
+              # The cancellation classifier looks up every job in `needs`, and
               # an unmapped name there defaults to "report it".
               ros2-zenoh-humble) echo '^ROS2 Zenoh Interop \(Humble\)$' ;;
               ros2-zenoh-kilted) echo '^ROS2 Zenoh Interop \(Kilted\)$' ;;

@@ -4,7 +4,7 @@
 # This job's subject is the *published* `dora-rs-cli` plus the image, not the
 # diff that triggered it -- the Dockerfile installs from PyPI, not from this
 # workspace. It can therefore go red over things no PR here caused. See
-# "3.14 `Docker Image CI/CD` failed" in docs/qa-runbook.md before bisecting.
+# "3.15 `Docker Image CI/CD` failed" in docs/qa-runbook.md before bisecting.
 
 name: Docker Image CI/CD
 
