@@ -1572,11 +1572,41 @@ impl EventStream {
         self.try_correlation(expected, matches_terminal_action_result, goal_id, timeout)
     }
 
+    /// Blocking form of the pattern-aware helpers.
+    ///
+    /// Wraps [`correlated_wait`](Self::correlated_wait) to release a
+    /// deadline an earlier `try_recv_*` poll registered for `needle`: the
+    /// wait ends the request, so the entry would otherwise sit in
+    /// `correlation_deadlines` until the stream is dropped. An `AnyOf`
+    /// restart is the one outcome that does not end it — as in
+    /// `try_correlation`, the other candidates may still answer, so that
+    /// deadline keeps running rather than restarting on the next poll.
+    async fn wait_for_correlation<F>(
+        &mut self,
+        timeout: Duration,
+        expected: ExpectedServers<'_>,
+        is_match: F,
+        needle: &str,
+    ) -> Result<Event, PatternError>
+    where
+        F: Fn(&Event, &str) -> bool,
+    {
+        let result = self
+            .correlated_wait(timeout, expected, is_match, needle)
+            .await;
+        let may_still_be_answered = matches!(expected, ExpectedServers::AnyOf(_))
+            && matches!(result, Err(PatternError::ServerRestarted(_)));
+        if !may_still_be_answered {
+            self.correlation_deadlines.remove(needle);
+        }
+        result
+    }
+
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
     /// for an event that satisfies `is_match(event, needle)`. Buffers
     /// every non-matching event so the caller's main event loop can
     /// still see them via `recv()`.
-    async fn wait_for_correlation<F>(
+    async fn correlated_wait<F>(
         &mut self,
         timeout: Duration,
         expected: ExpectedServers<'_>,
@@ -1817,9 +1847,10 @@ impl EventStream {
 
     /// Forget an outstanding correlation's deadline.
     ///
-    /// A poll drops its own entry on a match, an error or expiry, so
-    /// this is only needed when a caller abandons a request it will
-    /// never poll again — otherwise that one entry lives until the
+    /// A poll drops its own entry on a match, an error or expiry, and a
+    /// blocking `recv_*` for the same id releases it too, so this is only
+    /// needed when a caller abandons a request it will never finish
+    /// either way — otherwise that one entry lives until the
     /// `EventStream` is dropped.
     ///
     /// # It does not discard a reply that arrives later
@@ -4586,6 +4617,73 @@ mod tests {
             );
         }
         assert!(events.correlation_deadlines.is_empty());
+    }
+
+    /// A deadline registered by a poll belongs to the request, not to the
+    /// polling API: finishing the same id through a blocking wait releases
+    /// it too, or the entry sits in the map until the stream is dropped.
+    #[test]
+    fn a_blocking_wait_releases_a_deadline_registered_by_a_poll() {
+        let mut events = open_empty_event_stream();
+        let server = NodeId::from("calc".to_string());
+
+        let polled =
+            events.try_recv_service_response("req-1", &server, Some(Duration::from_secs(60)));
+        assert!(
+            matches!(polled, Ok(None)),
+            "nothing to match yet, got {polled:?}"
+        );
+        assert!(events.correlation_deadlines.contains_key("req-1"));
+
+        let waited = futures::executor::block_on(events.recv_service_response(
+            "req-1",
+            &server,
+            Duration::from_millis(5),
+        ));
+        assert!(
+            matches!(waited, Err(PatternError::Timeout)),
+            "expected the blocking wait to time out, got {waited:?}"
+        );
+        assert!(
+            !events.correlation_deadlines.contains_key("req-1"),
+            "a blocking wait that ended the request must release its deadline"
+        );
+    }
+
+    /// As in the poll path, an `AnyOf` restart is a notification rather than
+    /// a verdict: the other candidates may still answer, so the deadline
+    /// keeps running instead of a flapping node resetting the clock.
+    #[test]
+    fn an_any_of_restart_in_a_blocking_wait_keeps_the_deadline() {
+        let mut events = open_empty_event_stream();
+        let candidates = [NodeId::from("a".to_string()), NodeId::from("b".to_string())];
+
+        let polled = events.try_recv_service_response_from(
+            "req-1",
+            ExpectedServers::AnyOf(&candidates),
+            Some(Duration::from_secs(60)),
+        );
+        assert!(
+            matches!(polled, Ok(None)),
+            "nothing to match yet, got {polled:?}"
+        );
+        let registered = events.correlation_deadlines["req-1"];
+
+        events.push_scheduler_node_restarted_for_testing("a");
+        let waited = futures::executor::block_on(events.recv_service_response_from(
+            "req-1",
+            ExpectedServers::AnyOf(&candidates),
+            Duration::from_secs(60),
+        ));
+        assert!(
+            matches!(waited, Err(PatternError::ServerRestarted(_))),
+            "expected the restart to be surfaced, got {waited:?}"
+        );
+        assert_eq!(
+            events.correlation_deadlines.get("req-1"),
+            Some(&registered),
+            "an AnyOf restart is not terminal, so the deadline keeps running"
+        );
     }
 
     /// The blocking wait saturates an unrepresentable deadline just as the
