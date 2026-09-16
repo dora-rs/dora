@@ -60,6 +60,24 @@ async fn send_ws_response(
     ws_tx.send(Message::Text(json.into())).await.map_err(|_| ())
 }
 
+/// Send the standard reply for a log-subscribe request: `{"subscribed": true}`
+/// when the target existed, or an error carrying `not_found_msg` otherwise.
+/// Shared by the `LogSubscribe` and `BuildLogSubscribe` handlers, which differ
+/// only in the event they emit and this message.
+async fn send_subscribe_reply(
+    ws_tx: &mut futures::stream::SplitSink<WebSocket, Message>,
+    req_id: Uuid,
+    found: bool,
+    not_found_msg: impl FnOnce() -> String,
+) -> Result<(), ()> {
+    let resp = if found {
+        WsResponse::ok(req_id, serde_json::json!({"subscribed": true}))
+    } else {
+        WsResponse::err(req_id, not_found_msg())
+    };
+    send_ws_response(ws_tx, &resp).await
+}
+
 /// Format a `WsResponse`-shaped JSON envelope using `serde_json::to_string`.
 ///
 /// Used instead of `send_ws_response` where the reply is already a concrete
@@ -176,12 +194,13 @@ pub(crate) async fn handle_control_ws(
                         })).await;
 
                         let found = found_rx.await.unwrap_or(false);
-                        let resp = if found {
-                            WsResponse::ok(req.id, serde_json::json!({"subscribed": true}))
-                        } else {
-                            WsResponse::err(req.id, format!("no running dataflow with id {dataflow_id}"))
-                        };
-                        let _ = send_ws_response(&mut ws_tx, &resp).await;
+                        let _ = send_subscribe_reply(
+                            &mut ws_tx,
+                            req.id,
+                            found,
+                            || format!("no running dataflow with id {dataflow_id}"),
+                        )
+                        .await;
                         continue;
                     }
                     ControlRequest::BuildLogSubscribe { build_id, level } => {
@@ -194,12 +213,13 @@ pub(crate) async fn handle_control_ws(
                         })).await;
 
                         let found = found_rx.await.unwrap_or(false);
-                        let resp = if found {
-                            WsResponse::ok(req.id, serde_json::json!({"subscribed": true}))
-                        } else {
-                            WsResponse::err(req.id, format!("no running build with id {build_id}"))
-                        };
-                        let _ = send_ws_response(&mut ws_tx, &resp).await;
+                        let _ = send_subscribe_reply(
+                            &mut ws_tx,
+                            req.id,
+                            found,
+                            || format!("no running build with id {build_id}"),
+                        )
+                        .await;
                         continue;
                     }
                     ControlRequest::TopicSubscribe {
