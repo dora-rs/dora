@@ -210,7 +210,7 @@ impl Coordinator {
         .await;
 
         // Build timeout watchdog — mirror of `check_spawn_timeouts`
-        // for `self.running_builds`. Releases `wait_for_build` waiters
+        // for `running_builds`. Releases `wait_for_build` waiters
         // that would otherwise hang on the client-side RPC deadline
         // when a daemon participating in `dora build` disconnects
         // or otherwise never reports its `build_result`. #1465.
@@ -456,12 +456,12 @@ impl Coordinator {
             reported_dataflows.len()
         );
         // Reconcile: if daemon reports a dataflow as running and it exists in
-        // the self.store as Pending/Failed/Recovering, update it to Running.
+        // the store as Pending/Failed/Recovering, update it to Running.
         //
-        // Exception: dataflows that are present in `self.archived_dataflows`
+        // Exception: dataflows that are present in `archived_dataflows`
         // have been declared terminally failed by the spawn-timeout
         // watchdog (or any other archive-on-failure path). Promoting
-        // their self.store status back to Running would contradict the
+        // their store status back to Running would contradict the
         // terminal verdict the user already received via
         // `wait_for_spawn`. Round-7 Finding 1.
         for entry in &reported_dataflows {
@@ -490,7 +490,7 @@ impl Coordinator {
                     // terminal. The `terminal: true` marker (set by
                     // the spawn-timeout watchdog and the recovery
                     // timeout) survives coordinator restarts in the
-                    // self.store, so a wedged daemon that reconnects
+                    // store, so a wedged daemon that reconnects
                     // post-restart cannot resurrect a terminally-
                     // failed dataflow (round-8 Finding 1).
                     // Non-terminal Failed records preserve the
@@ -517,7 +517,7 @@ impl Coordinator {
                         }
                         // Rebuild the live in-memory entry so the
                         // surviving nodes are visible + manageable again
-                        // (#2029 P1) — self.store status alone doesn't drive
+                        // (#2029 P1) — store status alone doesn't drive
                         // `dora list` / `stop` / `logs`.
                         if reestablish_running_dataflow(
                             &mut self.running_dataflows,
@@ -552,7 +552,7 @@ impl Coordinator {
                         }
                     }
                     StoreDataflowStatus::Running => {
-                        // Already `Running` in the self.store but possibly
+                        // Already `Running` in the store but possibly
                         // missing from the live map (e.g. a later report,
                         // or a coordinator restart that loaded the record
                         // but not the in-memory entry). Idempotent.
@@ -612,7 +612,7 @@ impl Coordinator {
                 },
                 Ok(None) => {
                     tracing::warn!(
-                        "daemon reports dataflow {df_id} running, but not found in self.store"
+                        "daemon reports dataflow {df_id} running, but not found in store"
                     );
                 }
                 Err(e) => {
@@ -662,7 +662,7 @@ impl Coordinator {
             // dataflow would have the dataflow re-spawned here,
             // resurrecting a terminally-failed dataflow in memory
             // even though `spawn_result` is `Cached(Err)` and the
-            // self.store says Failed. See PR #1854 round-4 Finding 1.
+            // store says Failed. See PR #1854 round-4 Finding 1.
             if df.spawn_result.is_terminal_error() {
                 continue;
             }
@@ -744,7 +744,7 @@ impl Coordinator {
                 }
                 None => {
                     // Log was pruned past this daemon's ack — fall back to full
-                    // param replay from the self.store.
+                    // param replay from the store.
                     tracing::info!(
                         "state catch-up: log pruned for dataflow {uuid}, \
                                  falling back to full param replay for daemon {daemon_id}"

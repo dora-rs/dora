@@ -86,7 +86,7 @@ impl Coordinator {
                             //
                             // This runs *before* close_topic_subscribers_on_finish
                             // intentionally: the restart block only touches the
-                            // coordinator's `self.running_dataflows` map and `self.pending_restarts`
+                            // coordinator's `running_dataflows` map and `pending_restarts`
                             // map, it does not interact with `finished_dataflow` or its
                             // Zenoh-side state (which has already been cleaned up by the
                             // daemons — that's why we're in this handler).
@@ -239,7 +239,7 @@ impl Coordinator {
                         // If the dataflow was previously archived by the
                         // spawn-timeout watchdog (round-6 Finding 2), merge
                         // the daemon's late-arriving completion result into
-                        // the synthetic `self.dataflow_results` entry so the
+                        // the synthetic `dataflow_results` entry so the
                         // per-node details are surfaced via `dora list` /
                         // `dora check` instead of being silently dropped.
                         // Per-node `Err(FailedToSpawn(..))` entries
@@ -263,7 +263,7 @@ impl Coordinator {
                     }
                 }
                 // Bound finished-history growth (active multi-daemon entries
-                // are preserved). Done after the match so `self.running_dataflows`
+                // are preserved). Done after the match so `running_dataflows`
                 // is no longer borrowed by the `entry(uuid)` scrutinee.
                 cap_dataflow_results(&mut self.dataflow_results, &self.running_dataflows);
             }
@@ -343,23 +343,23 @@ impl Coordinator {
                 if build.pending_build_results.is_empty() {
                     tracing::info!("dataflow build finished: `{build_id}`");
                     let Some(build) = self.running_builds.remove(&build_id) else {
-                        tracing::error!("build {build_id} disappeared from self.running_builds");
+                        tracing::error!("build {build_id} disappeared from running_builds");
                         return Ok(());
                     };
                     finalize_build(build_id, build, &mut self.finished_builds);
                 }
             }
             None => {
-                // Build no longer in `self.running_builds` — usually means
+                // Build no longer in `running_builds` — usually means
                 // the watchdog (`check_build_timeouts`) already marked
                 // it as terminally failed and moved it to
-                // `self.finished_builds`. Late replies are expected in that
+                // `finished_builds`. Late replies are expected in that
                 // case; warn but do not resurrect (the cached failure
                 // result is the authoritative one). #1465.
                 tracing::warn!(
                     build_id = %build_id,
                     daemon_id = %daemon_id,
-                    "received DataflowBuildResult for a build no longer in `self.running_builds` (already finalized or timed out — ignoring)"
+                    "received DataflowBuildResult for a build no longer in `running_builds` (already finalized or timed out — ignoring)"
                 );
             }
         }

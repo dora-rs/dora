@@ -667,7 +667,7 @@ impl Coordinator {
         // A pending restart already sent `StopDataflow` to
         // the daemon(s) and is waiting for
         // `DataflowFinishedOnDaemon` to spawn the new
-        // incarnation under a fresh UUID; `self.running_dataflows`
+        // incarnation under a fresh UUID; `running_dataflows`
         // still contains the old UUID in the meantime. An
         // explicit `Stop` for that UUID means the caller
         // wants the dataflow gone, not restarted — cancel
@@ -683,12 +683,12 @@ impl Coordinator {
             format!("dataflow `{dataflow_uuid}` was stopped before the restart could complete"),
         );
 
-        // `self.dataflow_results` is filled incrementally, one
+        // `dataflow_results` is filled incrementally, one
         // entry per daemon, while a multi-daemon dataflow is
         // still running on the others (see
         // `DataflowFinishedOnDaemon`). Only take the
         // already-stopped fast path when the dataflow is
-        // truly gone from `self.running_dataflows`; otherwise fall
+        // truly gone from `running_dataflows`; otherwise fall
         // through to `stop_dataflow` so the daemons that are
         // still running actually get told to stop. Mirrors
         // the `Clean` handler's guard.
@@ -753,7 +753,7 @@ impl Coordinator {
 
                 // Same partial-completion guard as `Stop`: a
                 // still-running multi-daemon dataflow has a
-                // partial `self.dataflow_results` entry, but must
+                // partial `dataflow_results` entry, but must
                 // still be stopped rather than reported done.
                 if !self.running_dataflows.contains_key(&dataflow_uuid)
                     && let Some(result) = self.dataflow_results.get(&dataflow_uuid)
@@ -858,9 +858,9 @@ impl Coordinator {
             },
             status: DataflowStatus::Running,
         });
-        // Skip uuids still in `self.running_dataflows`: a
+        // Skip uuids still in `running_dataflows`: a
         // partially-finished multi-daemon dataflow has a
-        // partial `self.dataflow_results` entry while it keeps
+        // partial `dataflow_results` entry while it keeps
         // running, and would otherwise be listed twice (once
         // Running, once Finished/Failed) with contradictory
         // statuses. It is already yielded above as Running.
@@ -893,9 +893,9 @@ impl Coordinator {
         // `dora clean` semantics (see #1835):
         //
         // * Only FULLY completed dataflows are eligible. For
-        //   multi-daemon dataflows `self.dataflow_results` is
+        //   multi-daemon dataflows `dataflow_results` is
         //   populated incrementally as each daemon finishes,
-        //   while the dataflow stays in `self.running_dataflows`
+        //   while the dataflow stays in `running_dataflows`
         //   until ALL daemons are gone. Cleaning a partial
         //   entry would corrupt the final status: when the
         //   last daemon finishes the reply is computed from
@@ -904,16 +904,16 @@ impl Coordinator {
         //   node failure.
         //
         // * Each cleaned entry is removed from the persisted
-        //   self.store so the on-disk state file doesn't grow
-        //   unboundedly. The persisted-self.store delete cascades
+        //   store so the on-disk state file doesn't grow
+        //   unboundedly. The persisted-store delete cascades
         //   to associated `dora param` rows.
         //
-        // * `self.finished_builds` is intentionally NOT touched —
+        // * `finished_builds` is intentionally NOT touched —
         //   clearing it would break concurrent `dora build`
         //   calls with "unknown build id" errors.
         //
         // Phase A: enumerate completed candidates from BOTH
-        // `self.dataflow_results` AND `self.store.list_dataflows()` so
+        // `dataflow_results` AND `store.list_dataflows()` so
         // a restarted coordinator can still reap historical
         // Succeeded/Failed rows that only exist on disk
         // (startup recovery intentionally does NOT reload
@@ -944,15 +944,15 @@ impl Coordinator {
         }
 
         // Hard-fail if we can't enumerate the persisted
-        // self.store. With a partial view we cannot honor the
+        // store. With a partial view we cannot honor the
         // "trim disk state" contract, and silently
         // processing only the in-memory subset would let
         // the CLI claim "nothing to clean" while
         // historical rows still sit on disk untouched.
         // The in-memory entries we would have processed
-        // stay in `self.dataflow_results`, so a subsequent
+        // stay in `dataflow_results`, so a subsequent
         // `dora clean` (after the operator fixes the
-        // underlying self.store issue) reaps them on the next
+        // underlying store issue) reaps them on the next
         // call. No state is mutated on this path.
         let records = match self.store.list_dataflows() {
             Ok(records) => records,
@@ -961,7 +961,7 @@ impl Coordinator {
                     "dora clean: failed to enumerate persisted \
                                          dataflows: {e}. No state was modified; the \
                                          next `dora clean` will retry once the \
-                                         coordinator's self.store is healthy again."
+                                         coordinator's store is healthy again."
                 )));
                 return Ok(());
             }
@@ -994,7 +994,7 @@ impl Coordinator {
             if let Err(e) = self.store.delete_dataflow(&uuid) {
                 tracing::warn!(
                     "skipping clean for dataflow {uuid}: \
-                                         persisted-self.store delete failed: {e}. \
+                                         persisted-store delete failed: {e}. \
                                          {state} preserved so a later `dora clean` \
                                          can retry.",
                     state = if in_memory {
@@ -1099,7 +1099,7 @@ impl Coordinator {
                                     let df = self.running_dataflows.get_mut(&dataflow_id).ok_or_else(
                                         || {
                                             eyre!(
-                                                "param persisted in self.store but running dataflow `{dataflow_id}` disappeared before runtime forwarding for node `{node_id}`"
+                                                "param persisted in store but running dataflow `{dataflow_id}` disappeared before runtime forwarding for node `{node_id}`"
                                             )
                                         },
                                     )?;
@@ -1125,7 +1125,7 @@ impl Coordinator {
                                     let conn =
                                         self.daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
                                             eyre!(
-                                                "param persisted in self.store but daemon `{daemon_id}` is not connected"
+                                                "param persisted in store but daemon `{daemon_id}` is not connected"
                                             )
                                         })?;
                                     let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
@@ -1165,7 +1165,7 @@ impl Coordinator {
                                     let df = self.running_dataflows.get_mut(&dataflow_id).ok_or_else(
                                         || {
                                             eyre!(
-                                                "param deleted in self.store but running dataflow `{dataflow_id}` disappeared before runtime forwarding for node `{node_id}`"
+                                                "param deleted in store but running dataflow `{dataflow_id}` disappeared before runtime forwarding for node `{node_id}`"
                                             )
                                         },
                                     )?;
@@ -1191,7 +1191,7 @@ impl Coordinator {
                                     let conn =
                                         self.daemon_connections.get_mut(&daemon_id).ok_or_else(|| {
                                             eyre!(
-                                                "param deleted in self.store but daemon `{daemon_id}` is not connected"
+                                                "param deleted in store but daemon `{daemon_id}` is not connected"
                                             )
                                         })?;
                                     let reply_raw = conn.send_and_receive(&msg).await.map_err(|e| {
@@ -1413,7 +1413,7 @@ impl Coordinator {
             let original_node = node.clone();
             // Resolve inside the borrow so the running
             // descriptor can be passed by reference; the
-            // borrow ends before `self.daemon_connections` is
+            // borrow ends before `daemon_connections` is
             // taken mutably below.
             let (daemon_id, uv, node_id, resolved_node) = {
                 let dataflow = self
