@@ -245,6 +245,7 @@ dora record | --coordinator-port <value>
 dora record | --name <value>
 dora record | --output-yaml <value>
 dora record | --proxy
+dora record | --queue-size <value>
 dora record | --topics <value>
 dora record | -o/--output <value>
 dora record | <file> (required)
