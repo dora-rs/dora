@@ -1,4 +1,5 @@
 use super::*;
+use crate::state::ParamTarget;
 use crate::{
     daemon_liveness::{
         DisconnectAction, HeartbeatSendOutcome, MAX_CONSECUTIVE_HEARTBEAT_SEND_TIMEOUTS,
@@ -11,6 +12,9 @@ use crate::{
     topology::NODE_STOPPED_GRACE,
 };
 use dora_core::descriptor::DescriptorExt;
+use dora_message::coordinator_to_daemon::{
+    DaemonCoordinatorEvent, StateCatchUpOperation, Timestamped,
+};
 use dora_message::descriptor::Descriptor;
 use dora_message::{
     common::{NodeError, NodeErrorCause, NodeExitStatus},
@@ -18,6 +22,7 @@ use dora_message::{
     descriptor::{Node, ResolvedNode},
     id::NodeId,
 };
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use tokio::time::{Duration as TokioDuration, timeout};
 use uuid::Uuid;
@@ -2191,7 +2196,7 @@ async fn close_topic_subscribers_on_finish_drains_all_subscribers() {
 /// Source-level guard that the DataflowFinishedOnDaemon dispatch still
 /// calls the cleanup helper. A refactor that moves the branch but forgets
 /// to keep the call wired up would leave the helper unreferenced from
-/// `lib.rs` and fail this check.
+/// `dataflow_events.rs` and fail this check.
 ///
 /// This is a second-line guard — the primary protection is that
 /// `close_topic_subscribers_on_finish` has no other callers, so removal
@@ -2199,13 +2204,13 @@ async fn close_topic_subscribers_on_finish_drains_all_subscribers() {
 /// reviewer might waive.
 #[test]
 fn dataflow_finish_dispatch_calls_close_helper() {
-    // Runtime read (not include_str!) so we don't embed ~100KB of source
-    // into every test binary. The file is always present when `cargo test`
-    // runs from the crate root.
+    // Runtime read (not include_str!) so we don't embed the source into
+    // every test binary. The file is always present when `cargo test` runs
+    // from the crate root.
     let src = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/lib.rs"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/dataflow_events.rs"),
     )
-    .expect("lib.rs must be readable at CARGO_MANIFEST_DIR/src/lib.rs");
+    .expect("dataflow_events.rs must be readable at CARGO_MANIFEST_DIR/src/dataflow_events.rs");
     assert!(
         src.contains("close_topic_subscribers_on_finish(&mut finished_dataflow)"),
         "DataflowFinishedOnDaemon arm must still call close_topic_subscribers_on_finish; \
