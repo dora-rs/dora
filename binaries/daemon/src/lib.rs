@@ -7828,11 +7828,7 @@ fn spawn_stack_sample_capture(node_id: NodeId, pid: Option<u32>) {
                 let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
                 const MAX_SAMPLE_BYTES: usize = 64 * 1024;
                 if text.len() > MAX_SAMPLE_BYTES {
-                    let mut cut = MAX_SAMPLE_BYTES;
-                    while !text.is_char_boundary(cut) {
-                        cut -= 1;
-                    }
-                    text.truncate(cut);
+                    text.truncate(text.floor_char_boundary(MAX_SAMPLE_BYTES));
                     text.push_str("\n…(truncated)");
                 }
                 tracing::warn!("stack sample of stuck node `{node_id}` (pid {pid}):\n{text}");
