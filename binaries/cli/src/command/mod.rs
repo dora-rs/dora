@@ -7,6 +7,7 @@ mod daemon;
 mod doctor;
 mod down;
 mod expand;
+mod export;
 mod graph;
 mod hub;
 pub mod inspect;
@@ -43,6 +44,7 @@ use daemon::Daemon;
 use doctor::Doctor;
 use down::Down;
 use expand::Expand;
+use export::Export;
 use eyre::Context;
 use graph::Graph;
 use hub::Hub;
@@ -122,6 +124,9 @@ pub enum Command {
     /// Replay a recorded dataflow from a `.drec` file
     #[clap(display_order = 17)]
     Replay(Replay),
+    /// Export a recording to an MCAP file
+    #[clap(display_order = 18)]
+    Export(Export),
     /// View coordinator tracing spans
     #[clap(subcommand, display_order = 18)]
     Trace(Trace),
@@ -212,6 +217,7 @@ impl Executable for Command {
             Command::Param(args) => args.execute(),
             Command::Record(args) => args.execute(),
             Command::Replay(args) => args.execute(),
+            Command::Export(args) => args.execute(),
             Command::Trace(args) => args.execute(),
             Command::Status(args) => args.execute(),
             Command::Doctor(args) => args.execute(),
