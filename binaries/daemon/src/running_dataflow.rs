@@ -314,6 +314,13 @@ pub struct RunningDataflow {
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    /// Edges seen routed with the receiver missing from `subscribe_channels` —
+    /// i.e. the receiver's daemon event stream was gone (dropped or closed)
+    /// while its entry in `mappings` survived. Guards the diagnostic warning so
+    /// it fires once per (receiver, input) edge instead of on every dropped
+    /// message; cleared when the receiver (re)subscribes, so an edge that drops
+    /// again after reconnecting gets a fresh warning (dora-rs/dora#3201).
+    pub(crate) missing_channel_warned: BTreeSet<(NodeId, DataId)>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
@@ -421,6 +428,7 @@ impl RunningDataflow {
             subscribe_channels: HashMap::new(),
             pending_messages: HashMap::new(),
             mappings: HashMap::new(),
+            missing_channel_warned: BTreeSet::new(),
             timers: BTreeMap::new(),
             log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
@@ -506,6 +514,7 @@ impl RunningDataflow {
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
         retain_other_nodes(&mut self.publishers, node_id);
+        self.missing_channel_warned.retain(|(n, _)| n != node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
