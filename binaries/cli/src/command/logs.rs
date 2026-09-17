@@ -32,7 +32,8 @@ pub struct LogsArgs {
     /// Deprecated positional node name. Use --node instead.
     #[clap(value_name = "NAME", hide = true, conflicts_with_all = ["node", "all_nodes"])]
     pub legacy_node: Option<NodeId>,
-    /// Show logs for the given node
+    /// Show logs for the given node.
+    /// Streams from coordinator by default, falls back to local out/ directory.
     #[clap(long, short = 'n', value_name = "NAME", conflicts_with = "all_nodes")]
     pub node: Option<NodeId>,
     /// Show logs from all nodes merged by timestamp.
@@ -103,29 +104,36 @@ impl Executable for LogsArgs {
 
         // --local always uses local file path
         if self.local {
-            if self.follow {
-                return follow_local_logs(&self);
-            }
-            return read_local_logs(&self);
+            return dispatch_local_logs(&self);
         }
 
-        // Single node via coordinator
+        // Single node: try the coordinator first, then fall back to the local
+        // `out/` directory when it is unavailable. This mirrors the all-nodes
+        // path below so that after a plain `dora run` (which never binds a
+        // coordinator) `dora logs --node <N>` works without forcing the user to
+        // discover `--local`; the local readers already honor `--node` through
+        // `find_node_log_files`.
         if let Some(ref node) = self.node {
             let node = node.clone();
-            let config = build_log_config(&self)?;
-            let session = self.coordinator.connect()?;
-            let uuid = resolve_logs_dataflow_identifier(&session, self.dataflow.as_deref(), None)?;
-            return logs(
-                &session,
-                uuid,
-                node,
-                self.tail,
-                self.follow,
-                self.grep.as_deref(),
-                self.since,
-                self.until,
-                &config,
-            );
+            return match self.coordinator.connect() {
+                Ok(session) => {
+                    let config = build_log_config(&self)?;
+                    let uuid =
+                        resolve_logs_dataflow_identifier(&session, self.dataflow.as_deref(), None)?;
+                    logs(
+                        &session,
+                        uuid,
+                        node,
+                        self.tail,
+                        self.follow,
+                        self.grep.as_deref(),
+                        self.since,
+                        self.until,
+                        &config,
+                    )
+                }
+                Err(_) => dispatch_local_logs(&self),
+            };
         }
 
         // All nodes (explicit --all-nodes or no node specified):
@@ -154,9 +162,24 @@ impl Executable for LogsArgs {
             }
             Err(_) => {
                 // Coordinator unavailable, fall back to local
-                read_local_logs(&self)
+                dispatch_local_logs(&self)
             }
         }
+    }
+}
+
+/// Read logs from the local `out/` directory, streaming when `--follow` is set.
+///
+/// Shared by the explicit `--local` path and by every coordinator-unavailable
+/// fallback, so all three honor `--follow` identically. Only `follow_local_logs`
+/// streams; `read_local_logs` prints once and returns, so dispatching here (not
+/// calling `read_local_logs` directly) is what keeps `--follow` working on the
+/// fallback paths.
+fn dispatch_local_logs(args: &LogsArgs) -> Result<()> {
+    if args.follow {
+        follow_local_logs(args)
+    } else {
+        read_local_logs(args)
     }
 }
 
