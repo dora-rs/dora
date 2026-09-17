@@ -1,5 +1,13 @@
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+/// Payload size (excluding the 8-byte header) at or below which
+/// [`socket_stream_send`] coalesces the header and body into one buffer.
+/// Chosen to cover normal control messages and small data outputs while
+/// keeping the extra copy trivial; larger payloads are written
+/// header-then-body without copying. Mirrors the node-side transport's
+/// `COALESCE_THRESHOLD`.
+const COALESCE_THRESHOLD: usize = 16 * 1024;
+
 pub async fn socket_stream_send(
     connection: &mut (impl AsyncWrite + Unpin),
     message: &[u8],
@@ -14,14 +22,31 @@ pub async fn socket_stream_send(
             ),
         ));
     }
-    // Concatenate length header + payload into a single buffer to avoid
-    // sending a tiny 8-byte TCP segment with TCP_NODELAY enabled.
-    // Previously used two separate write_all calls (2-3 syscalls per message).
     let len_raw = (message.len() as u64).to_le_bytes();
-    let mut buf = Vec::with_capacity(8 + message.len());
-    buf.extend_from_slice(&len_raw);
-    buf.extend_from_slice(message);
-    connection.write_all(&buf).await?;
+    // For a small message, concatenate the 8-byte length header and the payload
+    // into a single buffer and write it in one call. The connection has
+    // `TCP_NODELAY` enabled, so writing the header separately would flush it as
+    // its own tiny TCP segment before the body — an extra syscall and a runt
+    // segment on every message.
+    //
+    // Above the threshold we skip the coalescing copy and write the header and
+    // body separately: this is the daemon→node reply writer, and a
+    // `DaemonReply::NextEvents` carries data-plane payloads up to
+    // `MAX_MESSAGE_BYTES` (64 MiB) whenever an output takes the daemon path
+    // instead of direct zenoh. Copying tens of MiB just to avoid one runt
+    // header segment is the wrong trade — for a large body that header segment
+    // is negligible anyway. The wire format (8-byte LE length prefix + body) is
+    // identical on both paths. This mirrors the node-side transport
+    // (`apis/rust/node/src/daemon_connection/tcp.rs`).
+    if message.len() <= COALESCE_THRESHOLD {
+        let mut buf = Vec::with_capacity(8 + message.len());
+        buf.extend_from_slice(&len_raw);
+        buf.extend_from_slice(message);
+        connection.write_all(&buf).await?;
+    } else {
+        connection.write_all(&len_raw).await?;
+        connection.write_all(message).await?;
+    }
     Ok(())
 }
 
@@ -104,6 +129,24 @@ mod tests {
         socket_stream_send(&mut a, &payload).await.expect("send");
         let got = socket_stream_receive(&mut b).await.expect("receive");
         assert_eq!(got, payload);
+    }
+
+    #[tokio::test]
+    async fn large_payload_above_coalesce_threshold_roundtrips() {
+        // Payloads larger than COALESCE_THRESHOLD take the header-then-body
+        // two-write path (no coalescing copy). The framing must stay
+        // byte-identical to the coalesced small-payload path.
+        let (mut a, mut b) = duplex(1024 * 1024);
+        let payload: Vec<u8> = (0..(super::COALESCE_THRESHOLD + 4096))
+            .map(|i| i as u8)
+            .collect();
+        let writer = tokio::spawn(async move {
+            socket_stream_send(&mut a, &payload).await.expect("send");
+            payload
+        });
+        let got = socket_stream_receive(&mut b).await.expect("receive");
+        let sent = writer.await.expect("writer task");
+        assert_eq!(got, sent);
     }
 
     #[tokio::test]

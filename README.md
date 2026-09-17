@@ -24,7 +24,15 @@
   <a href="https://github.com/dora-rs/dora/blob/main/LICENSE"><img src="https://img.shields.io/github/license/dora-rs/dora" alt="License"/></a>
 </div>
 
+<br/>
+
+<p align="center">
+  <b>dora 1.0 is out.</b> Read the <a href="https://github.com/dora-rs/dora/blob/main/docs/blog/2026-09-02-dora-1.0.md">1.0 release post</a>.
+</p>
+
 # Dora
+
+
 
 **Agentic Dataflow-Oriented Robotic Architecture** -- a 100% Rust framework for building real-time robotics and AI applications.
 
@@ -231,7 +239,7 @@ dora cluster status
 dora cluster down
 ```
 
-See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks.
+See the [Distributed Deployment Guide](docs/distributed-deployment.md) for cluster.yml configuration, label scheduling, systemd services, rolling upgrades, and operational runbooks. The network side — one LAN, a VPN mesh, or isolated subnets joined by zenoh routers — is the [Multi-machine Guide](docs/multi-machine.md).
 
 ## CLI Commands
 
@@ -317,7 +325,7 @@ See the [Distributed Deployment Guide](docs/distributed-deployment.md) for clust
 
 Reference a node with one line of YAML -- `hub: dora-yolo@^0.5` -- and `dora build` resolves, pins, and type-checks it. See the [Hub guide](guide/src/hub/overview.md).
 
-For full CLI documentation, see [docs/cli.md](docs/cli.md). For distributed deployment, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
+For full CLI documentation, see [docs/cli.md](docs/cli.md). For running a dataflow across several machines, start with [docs/multi-machine.md](docs/multi-machine.md); for cluster management, see [docs/distributed-deployment.md](docs/distributed-deployment.md).
 
 ## Dataflow Configuration
 
@@ -625,7 +633,7 @@ Dora ships with a three-tier QA system designed for AI-authored code. Everything
 
 ```bash
 make qa-install        # one-time: install cargo-audit, cargo-deny, cargo-llvm-cov, cargo-mutants, cargo-semver-checks
-make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + typos (pre-commit)
+make qa-fast           # ~15s    -- fmt + clippy + audit + unwrap-budget + secret-files + typos + publish-graph (pre-commit)
 make qa-full           # ~5-10m  -- qa-fast + tests + coverage (pre-push)
 make qa-deep           # ~15m    -- qa-full + mutation testing + semver (target Tier 1 gate, stronger than today's CI; alias: qa-tier1)
 make qa-nightly        # ~3-4h -- qa-deep + proptest@1000 + miri + example-smoke + ci-nightly-jobs (full parity with .github/workflows/nightly.yml)
@@ -651,6 +659,7 @@ cargo install typos-cli
 - **Property testing** -- `proptest` on wire-protocol types; catches edge cases unit tests miss
 - **Miri** -- UB detection on pure-Rust unsafe hotspots (e.g., `dora-core::metadata`)
 - **SemVer check** -- `cargo-semver-checks` against the last git tag
+- **Breaking-change gate** -- every surface dora 1.x freezes, diffed against the last release tag: the C header, the cxx bridge, the dataflow YAML schema, the postcard wire format, the `dora` command, the Python floor, and the Rust API of the covered crates. Runs on every PR; the surface half needs no build (`make qa-breaking`)
 - **Adversarial LLM review** -- `scripts/qa/adversarial.sh` runs a *different* model on your diff to catch single-model blind spots (local today; CI pending API secret)
 
 **Reference docs:**

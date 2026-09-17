@@ -77,13 +77,9 @@ const MAX_LOG_LINE_BYTES: usize = 1024 * 1024;
 /// Truncate a log line to `MAX_LOG_LINE_BYTES`, respecting UTF-8 char boundaries.
 fn truncate_log_line(content: &mut String) {
     if content.len() > MAX_LOG_LINE_BYTES {
-        // Find the last valid UTF-8 char boundary at or before MAX_LOG_LINE_BYTES.
-        // This is equivalent to str::floor_char_boundary (stable in 1.91).
-        let mut boundary = MAX_LOG_LINE_BYTES;
-        while boundary > 0 && !content.is_char_boundary(boundary) {
-            boundary -= 1;
-        }
-        content.truncate(boundary);
+        // Truncate at the last valid UTF-8 char boundary at or before
+        // MAX_LOG_LINE_BYTES so the retained prefix stays valid UTF-8.
+        content.truncate(content.floor_char_boundary(MAX_LOG_LINE_BYTES));
         content.push_str("... [truncated]");
     }
 }
@@ -196,6 +192,8 @@ pub struct PreparedNode {
     pub(super) daemon_tx: mpsc::Sender<Timestamped<Event>>,
     pub(super) node_stderr_most_recent: Arc<ArrayQueue<String>>,
     pub(super) last_activity: Arc<AtomicU64>,
+    pub(super) spawned_at: Arc<AtomicU64>,
+    pub(super) startup_kill_sent: Arc<AtomicBool>,
     pub(super) ft_stats: Arc<crate::FaultToleranceStats>,
 }
 
@@ -243,7 +241,10 @@ impl PreparedNode {
                 }
             },
             last_activity: self.last_activity.clone(),
+            spawned_at: self.spawned_at.clone(),
+            startup_kill_sent: self.startup_kill_sent.clone(),
             health_check_timeout: self.health_check_timeout(),
+            startup_timeout: self.startup_timeout(),
             finish_grace_secs: self.finish_grace_secs(),
         };
 
@@ -262,41 +263,41 @@ impl PreparedNode {
         Ok(running_node)
     }
 
-    fn restart_policy(&self) -> RestartPolicy {
+    fn custom(&self) -> Option<&dora_core::descriptor::CustomNode> {
         match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => n.restart_policy,
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartPolicy::Never,
+            dora_core::descriptor::CoreNodeKind::Custom(n) => Some(n),
+            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
         }
+    }
+
+    fn restart_policy(&self) -> RestartPolicy {
+        self.custom()
+            .map_or(RestartPolicy::Never, |n| n.restart_policy)
     }
 
     fn health_check_timeout(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.health_check_timeout.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.health_check_timeout.map(Duration::from_secs_f64))
+    }
+
+    fn startup_timeout(&self) -> Option<Duration> {
+        self.custom()
+            .and_then(|n| n.startup_timeout.map(Duration::from_secs_f64))
     }
 
     fn finish_grace_secs(&self) -> Option<Duration> {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => {
-                n.finish_grace_secs.map(Duration::from_secs_f64)
-            }
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => None,
-        }
+        self.custom()
+            .and_then(|n| n.finish_grace_secs.map(Duration::from_secs_f64))
     }
 
     fn restart_config(&self) -> RestartConfig {
-        match &self.node.kind {
-            dora_core::descriptor::CoreNodeKind::Custom(n) => RestartConfig {
+        self.custom()
+            .map_or_else(RestartConfig::default, |n| RestartConfig {
                 max_restarts: n.max_restarts,
                 restart_delay: n.restart_delay.map(Duration::from_secs_f64),
                 max_restart_delay: n.max_restart_delay.map(Duration::from_secs_f64),
                 restart_window: n.restart_window.map(Duration::from_secs_f64),
-            },
-            dora_core::descriptor::CoreNodeKind::Runtime(_) => RestartConfig::default(),
-        }
+            })
     }
 
     /// Settle the daemon's restart debt when the loop aborts after having
@@ -364,6 +365,11 @@ impl PreparedNode {
                     .await;
                 break;
             };
+
+            // Process has exited; reset spawn timestamp and kill latch for the backoff period.
+            self.spawned_at.store(0, atomic::Ordering::Release);
+            self.startup_kill_sent
+                .store(false, atomic::Ordering::Release);
 
             // Consume the one-shot `force_restart_next` flag set by
             // `restart_single_node` (operator-requested `dora node
@@ -690,6 +696,74 @@ impl PreparedNode {
                     }
                 }
 
+                // Close the pre-`init` orphan window on Linux (dora-rs/dora#3473).
+                //
+                // The in-node orphan guard (`apis/rust/node/src/orphan_guard.rs`)
+                // only arms once the node reaches `DoraNode::init`. A node
+                // SIGKILL-orphaned before that — a Python node still in `import
+                // torch`, a `path: shell` command that never runs any dora code
+                // (dora-rs/dora#3472) — is stranded with `ppid 1` exactly as
+                // before #3018. Ask the kernel to SIGKILL the child when its
+                // parent (this in-process `dora run` daemon) dies, which needs no
+                // dora code in the child and so covers that window.
+                //
+                // Gated on the same signal as the in-node guard: the presence of
+                // `DORA_RUN_PARENT_PID`, set only on the in-process `dora run` /
+                // `Daemon::run_dataflow` spawn path (`bind_nodes_to_parent`). The
+                // coordinator-attached path (`dora up` + `dora start`) must inject
+                // nothing, so a daemon restart does not take its nodes down
+                // (dora-rs/dora#2029, `tests/daemon-reconnect-e2e.rs`).
+                //
+                // Bounded on purpose: `PR_SET_PDEATHSIG` keys off the parent
+                // *thread*, and reaches only the direct child (under `--uv` that
+                // is the `uv` wrapper, not the interpreter). It is a complement
+                // for the startup window, never the post-`init` mechanism — the
+                // node clears it and hands over to the poll guard at `init`.
+                #[cfg(target_os = "linux")]
+                {
+                    use std::os::unix::process::CommandExt as _;
+
+                    let run_parent_pid: Option<libc::pid_t> = std_command
+                        .get_envs()
+                        .find(|(key, _)| {
+                            *key == std::ffi::OsStr::new(dora_core::topics::DORA_RUN_PARENT_PID_ENV)
+                        })
+                        .and_then(|(_, value)| value)
+                        .and_then(|value| value.to_str())
+                        .and_then(|value| value.trim().parse::<libc::pid_t>().ok());
+
+                    if let Some(parent) = run_parent_pid {
+                        // SAFETY: `prctl`, `getppid` and `_exit` are all
+                        // async-signal-safe, so they are sound to call in the
+                        // forked child before `exec`; the closure allocates
+                        // nothing and captures only a `Copy` pid.
+                        unsafe {
+                            std_command.pre_exec(move || {
+                                let ret = libc::prctl(
+                                    libc::PR_SET_PDEATHSIG,
+                                    libc::SIGKILL as libc::c_ulong,
+                                );
+                                // Best effort: a failure here only loses the
+                                // pre-`init` cover, and the in-node poll guard
+                                // still contains the node once it reaches `init`.
+                                if ret != 0 {
+                                    return Ok(());
+                                }
+                                // Close the fork/prctl race: if the parent already
+                                // died in the window between `fork` and the line
+                                // above, `PDEATHSIG` will never fire (the death it
+                                // waits for has passed), so this child would be the
+                                // very orphan the signal exists to prevent. A
+                                // reparented child reads a different `getppid`.
+                                if libc::getppid() != parent {
+                                    libc::_exit(0);
+                                }
+                                Ok(())
+                            });
+                        }
+                    }
+                }
+
                 let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
@@ -718,6 +792,11 @@ impl PreparedNode {
         let pid = child.id().context(
             "Could not get the pid for the just spawned node and indicate that there is an error",
         )?;
+        let now = crate::node_communication::current_millis();
+        self.spawned_at.store(now, atomic::Ordering::Release);
+        self.startup_kill_sent
+            .store(false, atomic::Ordering::Release);
+        self.last_activity.store(now, atomic::Ordering::Release);
         logger
             .log(
                 LogLevel::Debug,
@@ -1277,6 +1356,8 @@ mod tests {
             daemon_tx,
             node_stderr_most_recent: Arc::new(ArrayQueue::new(4)),
             last_activity: Arc::new(AtomicU64::new(0)),
+            spawned_at: Arc::new(AtomicU64::new(0)),
+            startup_kill_sent: Arc::new(AtomicBool::new(false)),
             ft_stats: Arc::new(crate::FaultToleranceStats::default()),
         }
     }

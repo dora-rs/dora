@@ -182,7 +182,7 @@ nodes:
     send_stdout_as: raw_output    # route raw stdout as data output
     send_logs_as: log_entries     # route structured logs as data output
     max_log_size: "50MB"          # rotate log files at this size
-    max_rotated_files: 5          # number of rotated files to keep (1-100)
+    max_rotated_files: 5          # number of rotated files to keep (0-100)
 
     # --- Deployment ---
     deploy:
@@ -509,8 +509,15 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to record |
 | `--proxy` | false | Stream via WebSocket instead of recording on target |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
+| `--queue-size <N>` | `100` | Per-topic queue depth for the injected record node |
 
 Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `enable_debug_inspection: true`.
+
+**Recording completeness.** The injected record node writes to disk, so a producer burst or a stalled write can outrun it, and the messages it could not take are dropped before the writer sees them. `--queue-size` is how much slack each recorded topic gets; the depth also sizes the node's zenoh ingress channel, which is what zero-copy payloads (>=4 KB) actually overflow. Raise it to ride out longer stalls, at the cost of the memory the buffered payloads hold -- peak resident is roughly `2 x queue_size x payload size` per topic (the per-input scheduler queue and the shared ingress channel can each hold a full depth), which is a lot for video frames. For payloads at or above the zero-copy threshold, a buffered message also pins its shared-memory region: once a stalled recorder holds more than the producer's pool (`DORA_NODE_SHM_POOL_SIZE`, 8 MiB by default) can spare, that producer falls back to heap copies for all its consumers.
+
+Dropped messages are reported per topic when the run ends, and the summary says `INCOMPLETE`, so a short `.drec` is not mistaken for a whole one. A long capture also warns on stderr the first time it drops something. A clean run reports "no dropped messages detected" rather than "complete": producers publish with `CongestionControl::Drop`, so a message discarded in zenoh's egress never reaches the recorder's counters, and zero drops means nothing was lost on any path the recorder can see.
+
+The record node deliberately does *not* set `queue_policy: backpressure` on its inputs. That policy pins the producer's entire output to the daemon path for **every** consumer, so recording a dataflow would move its traffic off the zero-copy path and change what is being measured -- and it is not lossless anyway (it drops at `10x queue_size`). A recorder must not perturb the system it observes.
 
 **Ctrl-C in `--proxy` mode:** the first press stops the recording and finalizes the file. A second press exits immediately with status `130`, for the case where finalizing is itself stuck (a full disk or a stalled network mount). The recording is flushed before finalizing, so an escalated exit costs only the file's footer — `dora replay` still reads it, as a recording that ends early.
 
@@ -1480,14 +1487,15 @@ struct NodeId(String);      // [a-zA-Z0-9_.-], no leading `.`, not `dora`
 struct DataId(String);      // same validation
 type DataflowId = uuid::Uuid;
 
-// Data metadata
+// Data metadata. The payload is a self-describing Arrow IPC stream,
+// so no separate type descriptor is carried.
 struct Metadata {
-    timestamp: uhlc::Timestamp,    // hybrid logical clock
-    type_info: ArrowTypeInfo,      // Arrow schema
+    metadata_version: u16,          // Metadata::CURRENT_VERSION
+    timestamp: uhlc::Timestamp,     // hybrid logical clock
     parameters: MetadataParameters, // custom key-value pairs
 }
 
-// Node events (daemon -> node)
+// Node events (daemon -> node). `#[non_exhaustive]`, so match with a `_` arm.
 enum NodeEvent {
     Stop,
     Reload { operator_id },
@@ -1496,6 +1504,10 @@ enum NodeEvent {
     InputRecovered { id },
     NodeRestarted { id },
     AllInputsClosed,
+    ParamUpdate { key, value_json },
+    ParamDeleted { key },
+    NodeFailed { affected_input_ids, error, source_node_id },
+    ExtensionDropped { namespace, key },
 }
 ```
 
@@ -1699,18 +1711,57 @@ class Operator:
 
 ## Distributed Deployments
 
+The commands below set up one LAN. The [Multi-machine Guide](multi-machine.md) covers that case, VPN meshes, and isolated subnets joined by zenoh routers.
+
 ### Setup
 
 ```bash
-# Machine A (coordinator + daemon)
-dora up
+# The coordinator binds loopback by default, which no other machine can reach,
+# so bind the address the daemons will dial. Without this, machines B and C only
+# report a connection timeout.
+#
+# `dora list`/`logs`/`stop`/`start`/`down` all default to loopback, so set the
+# address once for them — on machine A and on any machine you drive the dataflow
+# from.
+export DORA_COORDINATOR_ADDR=192.168.1.10
 
-# Machine B (daemon only, pointing to coordinator on Machine A)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
+# Machine A: coordinator, plus its own *named* daemon.
+#
+# `dora up` would start an unnamed daemon, which `deploy: {machine: A}` can
+# never place a node on — so start the two separately whenever machine A is
+# itself a deploy target. Name the concrete address rather than `0.0.0.0`: each
+# daemon derives its zenoh listener from the coordinator address, and a wildcard
+# leaves A's daemon on loopback and undialable by B and C.
+dora coordinator --interface 192.168.1.10
+dora daemon --coordinator-addr 192.168.1.10 --machine-id A
+
+# Machine B (daemon only, pointing to the coordinator on Machine A)
+dora daemon --coordinator-addr 192.168.1.10 --machine-id B
 
 # Machine C (same)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
+dora daemon --coordinator-addr 192.168.1.10 --machine-id C
 ```
+
+`dora up --interface 192.168.1.10` remains the shortcut for a machine that only
+hosts the coordinator and runs no deployed nodes of its own: it starts both, but
+its daemon is unnamed.
+
+Each daemon derives the address its peers should dial from `--coordinator-addr`
+(the local address that routes toward the coordinator, which is the LAN address
+on a LAN and the tunnel address on a mesh VPN), sends it along with its
+registration, and receives in return the addresses of the daemons that
+registered before it. Each daemon dialing the ones that
+preceded it builds the full mesh, so nothing else has to be configured for the
+daemons to reach each other — including on a network without multicast, such as
+a mesh VPN.
+
+Override the derived address with `--zenoh-listen <IP>` on a multi-homed host
+that would otherwise advertise an interface the other machines cannot reach.
+
+The daemons can be started in any order, and simultaneously: each advertises
+its endpoint in its own registration, and the coordinator handles registrations
+one at a time, so whichever registers second is always handed the first one's
+address.
 
 ### Dataflow with Machine Assignment
 

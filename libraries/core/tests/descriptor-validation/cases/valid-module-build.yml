@@ -1,0 +1,6 @@
+nodes:
+  - id: nav
+    module: module-valid.yml
+    build: pip install nav-deps
+    inputs:
+      pose: localization/pose

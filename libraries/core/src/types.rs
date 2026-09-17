@@ -118,6 +118,17 @@ fn arrow_type_from_name(name: &str) -> Option<DataType> {
 /// `arrow:` field: a known primitive, or `Struct` (whose shape is its fields).
 /// Anything else cannot be materialized into a schema, so it must be rejected
 /// at manifest validation rather than silently failing later at build time.
+///
+/// ```
+/// use dora_core::types::is_known_arrow_type;
+///
+/// assert!(is_known_arrow_type("Float64"));
+/// assert!(is_known_arrow_type("Struct"));
+/// // Arrow discriminants dora does not materialize are rejected:
+/// assert!(!is_known_arrow_type("FixedSizeBinary"));
+/// // A struct type referenced by its own name is not an arrow discriminant:
+/// assert!(!is_known_arrow_type("Vector3"));
+/// ```
 pub fn is_known_arrow_type(name: &str) -> bool {
     arrow_type_from_name(name).is_some() || name == "Struct"
 }
@@ -199,7 +210,8 @@ pub struct ParsedUrn {
 /// - `std/media/v1/AudioFrame[sample_type=f32,channels=2]` (multiple params)
 ///
 /// Returns `None` for malformed input: a `[` with no closing `]`, empty
-/// brackets `[]`, or an empty parameter key or value.
+/// brackets `[]`, an empty parameter key or value, or a `[params]` block with
+/// no base type (e.g. `[sample_type=f32]`).
 ///
 /// ```
 /// use dora_core::types::parse_urn;
@@ -220,6 +232,7 @@ pub struct ParsedUrn {
 /// assert!(parse_urn("std/media/v1/AudioFrame[").is_none()); // no closing ]
 /// assert!(parse_urn("std/media/v1/AudioFrame[]").is_none()); // empty brackets
 /// assert!(parse_urn("std/media/v1/AudioFrame[=f32]").is_none()); // empty key
+/// assert!(parse_urn("[sample_type=f32]").is_none()); // no base type
 /// assert!(parse_urn("").is_none());
 /// ```
 pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
@@ -236,6 +249,9 @@ pub fn parse_urn(urn: &str) -> Option<ParsedUrn> {
         return None; // malformed: has `[` but no closing `]`
     }
     let base = urn[..bracket_start].to_string();
+    if base.is_empty() {
+        return None; // malformed: a `[params]` block with no base type
+    }
     let params_str = &urn[bracket_start + 1..urn.len() - 1];
     if params_str.is_empty() {
         return None; // malformed: empty brackets
@@ -318,6 +334,19 @@ struct TypePackage {
 }
 
 /// Extract the short type name from a URN (e.g. `std/media/v1/Image` -> `Image`).
+///
+/// Any `[...]` type-parameter block is stripped first, then the last `/`-delimited
+/// segment is returned. A bare name with no `/` is returned unchanged.
+///
+/// ```
+/// use dora_core::types::urn_short_name;
+///
+/// assert_eq!(urn_short_name("std/media/v1/Image"), "Image");
+/// // Type parameters are stripped before taking the last path segment:
+/// assert_eq!(urn_short_name("std/media/v1/AudioFrame[sample_type=f32]"), "AudioFrame");
+/// // A bare name (no `/`) is returned unchanged:
+/// assert_eq!(urn_short_name("BareName"), "BareName");
+/// ```
 pub fn urn_short_name(urn: &str) -> &str {
     // Strip params first
     let base = urn.split('[').next().unwrap_or(urn);
@@ -515,7 +544,25 @@ impl std::fmt::Display for SchemaError {
 
 // --- Metadata pattern resolution (Phase 5) ---
 
-/// Resolve a pattern shorthand to required metadata keys.
+/// Resolve a communication-pattern shorthand to the metadata keys it requires.
+///
+/// The recognized shorthands are `"service-server"` / `"service-client"`,
+/// `"action-server"`, and `"action-client"` (see `docs/patterns.md`). Any other
+/// string returns `None`.
+///
+/// ```
+/// use dora_core::types::pattern_metadata_keys;
+///
+/// assert_eq!(pattern_metadata_keys("service-server"), Some(&["request_id"][..]));
+/// assert_eq!(pattern_metadata_keys("service-client"), Some(&["request_id"][..]));
+/// assert_eq!(
+///     pattern_metadata_keys("action-server"),
+///     Some(&["goal_id", "goal_status"][..]),
+/// );
+/// assert_eq!(pattern_metadata_keys("action-client"), Some(&["goal_id"][..]));
+/// // An unknown shorthand has no required keys:
+/// assert_eq!(pattern_metadata_keys("topic"), None);
+/// ```
 pub fn pattern_metadata_keys(pattern: &str) -> Option<&'static [&'static str]> {
     match pattern {
         "service-server" | "service-client" => Some(&["request_id"]),
@@ -756,8 +803,29 @@ impl Default for TypeRegistry {
 
 /// Simple edit distance (Levenshtein) for typo suggestions.
 /// Returns `usize::MAX` for inputs longer than 256 characters to prevent DoS.
+///
+/// The 256-character cap is measured in [`char`]s, not bytes, so a multibyte
+/// input well under 256 characters is still scored rather than rejected.
+///
+/// ```
+/// use dora_core::types::edit_distance;
+///
+/// assert_eq!(edit_distance("kitten", "sitting"), 3);
+/// assert_eq!(edit_distance("image", "image"), 0);
+/// // Inputs longer than 256 characters short-circuit to `usize::MAX`:
+/// assert_eq!(edit_distance(&"a".repeat(257), "a"), usize::MAX);
+/// ```
 pub fn edit_distance(a: &str, b: &str) -> usize {
-    if a.len() > 256 || b.len() > 256 {
+    // Guard on character count, not byte length: the DP matrix below is sized
+    // by `chars().count()`, so that is the quantity the DoS cap must bound. A
+    // byte-length check also over-rejects a multibyte input that is well under
+    // 256 characters (>256 bytes), silently suppressing an otherwise valid typo
+    // suggestion — contrary to this function's documented "256 characters".
+    // `take(257)` keeps the guard bounded: it stops scanning after 257
+    // characters rather than walking a hostile, arbitrarily long string in
+    // full, and it runs before the `collect`s below so an oversized input
+    // never allocates the `Vec<char>`.
+    if a.chars().take(257).count() > 256 || b.chars().take(257).count() > 256 {
         return usize::MAX;
     }
     let a: Vec<char> = a.chars().collect();
@@ -817,6 +885,22 @@ mod tests {
     fn suggest_returns_none_for_unrelated() {
         let reg = TypeRegistry::new();
         assert!(reg.suggest("std/core/v1/Xyzzy").is_none());
+    }
+
+    #[test]
+    fn edit_distance_guards_on_characters_not_bytes() {
+        // Two 200-character multibyte strings are >256 bytes but well under the
+        // documented 256-character cap, so they must be measured, not bailed on
+        // with `usize::MAX`. `é` is 2 bytes, so 200 of them is 400 bytes.
+        let a: String = "é".repeat(200);
+        let mut b: String = "é".repeat(199);
+        b.push('e'); // one differing character
+        assert!(a.len() > 256 && b.len() > 256, "inputs exceed 256 bytes");
+        assert_eq!(edit_distance(&a, &b), 1);
+
+        // Genuinely over the character cap still short-circuits.
+        let long: String = "a".repeat(257);
+        assert_eq!(edit_distance(&long, "a"), usize::MAX);
     }
 
     #[test]
@@ -897,6 +981,21 @@ mod tests {
         assert!(parse_urn("foo[]").is_none()); // empty brackets
         assert!(parse_urn("foo[=val]").is_none()); // empty key
         assert!(parse_urn("foo[key=]").is_none()); // empty value
+    }
+
+    #[test]
+    fn parse_urn_rejects_empty_base() {
+        // A `[params]` block with no base type is malformed: the bracket is at
+        // offset 0, so the base is empty. It must be rejected, not accepted as a
+        // `ParsedUrn { base: "", .. }`.
+        assert!(parse_urn("[sample_type=f32]").is_none());
+        assert!(parse_urn("[a=1,b=2]").is_none());
+
+        // Before the fix, both parsed to an empty base with disjoint params, so
+        // `params_agree` treated them as a wildcard match — two unrelated
+        // empty-base strings spuriously `types_match`. Now they are unparseable
+        // and fall back to exact string equality, so they no longer match.
+        assert!(!types_match("[a=1]", "[b=2]"));
     }
 
     #[test]

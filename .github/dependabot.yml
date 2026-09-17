@@ -1,0 +1,27 @@
+# Keeps the SHA-pinned GitHub Actions current.
+#
+# The third-party actions in .github/workflows/ are pinned to commit SHAs
+# with the version in a trailing comment, so a compromised upstream tag or
+# branch cannot silently change what runs in CI. That covers the ones on
+# mutable branch refs and the four holding the most privilege (release
+# publishing, `@claude`, issue labelling); vendor-owned `actions/*` and
+# `docker/*` stay on major tags. The cost of a SHA pin is that it never
+# moves on its own: without an updater it also stops receiving upstream
+# security fixes, and the `# vN` comments rot as tags are re-pointed.
+#
+# Dependabot resolves both halves — it bumps the SHA and rewrites the
+# version comment in the same PR — which is what makes SHA pinning
+# sustainable rather than a one-time snapshot.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Batch into one PR per week; action bumps are individually trivial and
+    # separate PRs would each pay a full CI run against the lean PR gate.
+    groups:
+      github-actions:
+        patterns: ["*"]
+    labels:
+      - "dependencies"

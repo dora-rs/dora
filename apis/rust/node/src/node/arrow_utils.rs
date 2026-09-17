@@ -90,6 +90,14 @@ const _: () = assert!(ARROW_BUFFER_ALIGNMENT.is_power_of_two());
 /// batch, and an end-of-stream marker. This is self-describing and can be
 /// decoded without external type information.
 ///
+/// # Errors
+///
+/// Returns an error if the encoded IPC stream would exceed 256 MB — the limit
+/// every decode path (`decode_arrow_ipc`, `decode_arrow_ipc_zero_copy`, and the
+/// streaming input decoder) also enforces. Encoding fails loudly here rather
+/// than emitting a payload that every receiver would reject; split the array
+/// into smaller batches.
+///
 /// # Example
 ///
 /// ```
@@ -232,6 +240,12 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 /// copying just the misaligned buffers rather than erroring. This keeps the
 /// receive path robust while preserving zero-copy for the common SHM case.
 ///
+/// # Errors
+///
+/// Like [`decode_arrow_ipc`], returns an error for an empty, truncated, or
+/// otherwise malformed stream, for a batch whose column count is not exactly
+/// one, and for any payload larger than 256 MB — it never panics on bad input.
+///
 /// # Example
 ///
 /// ```
@@ -243,6 +257,9 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 /// let decoded = decode_arrow_ipc_zero_copy(IpcPayload::from_vec(ipc))?;
 /// let values: Vec<u64> = (&decoded).try_into()?;
 /// assert_eq!(values, vec![1, 2, 3]);
+///
+/// // A malformed stream is rejected with an error rather than panicking.
+/// assert!(decode_arrow_ipc_zero_copy(IpcPayload::from_vec(vec![0u8; 8])).is_err());
 /// # Ok(())
 /// # }
 /// ```

@@ -182,7 +182,7 @@ nodes:
     send_stdout_as: raw_output    # route raw stdout as data output
     send_logs_as: log_entries     # route structured logs as data output
     max_log_size: "50MB"          # rotate log files at this size
-    max_rotated_files: 5          # number of rotated files to keep (1-100)
+    max_rotated_files: 5          # number of rotated files to keep (0-100)
 
     # --- Deployment ---
     deploy:
@@ -510,8 +510,15 @@ dora record <DATAFLOW_YAML> [OPTIONS]
 | `--topics <TOPICS>` | all | Comma-separated `node/output` topics to record |
 | `--proxy` | false | Stream via WebSocket instead of recording on target |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
+| `--queue-size <N>` | `100` | Per-topic queue depth for the injected record node |
 
 Default mode injects a record node into the dataflow. `--proxy` mode requires a running dataflow and `enable_debug_inspection: true`.
+
+**Recording completeness.** The injected record node writes to disk, so a producer burst or a stalled write can outrun it, and the messages it could not take are dropped before the writer sees them. `--queue-size` is how much slack each recorded topic gets; the depth also sizes the node's zenoh ingress channel, which is what zero-copy payloads (>=4 KB) actually overflow. Raise it to ride out longer stalls, at the cost of the memory the buffered payloads hold -- peak resident is roughly `2 x queue_size x payload size` per topic (the per-input scheduler queue and the shared ingress channel can each hold a full depth), which is a lot for video frames. For payloads at or above the zero-copy threshold, a buffered message also pins its shared-memory region: once a stalled recorder holds more than the producer's pool (`DORA_NODE_SHM_POOL_SIZE`, 8 MiB by default) can spare, that producer falls back to heap copies for all its consumers.
+
+Dropped messages are reported per topic when the run ends, and the summary says `INCOMPLETE`, so a short `.drec` is not mistaken for a whole one. A long capture also warns on stderr the first time it drops something. A clean run reports "no dropped messages detected" rather than "complete": producers publish with `CongestionControl::Drop`, so a message discarded in zenoh's egress never reaches the recorder's counters, and zero drops means nothing was lost on any path the recorder can see.
+
+The record node deliberately does *not* set `queue_policy: backpressure` on its inputs. That policy pins the producer's entire output to the daemon path for **every** consumer, so recording a dataflow would move its traffic off the zero-copy path and change what is being measured -- and it is not lossless anyway (it drops at `10x queue_size`). A recorder must not perturb the system it observes.
 
 #### `dora replay`
 

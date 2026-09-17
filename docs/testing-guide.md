@@ -20,7 +20,7 @@ Run these three commands to validate that the workspace is healthy:
 cargo fmt --all -- --check
 
 # 2. Lint (~60s first run, cached after)
-cargo clippy --all \
+cargo clippy --all --all-targets \
   --exclude dora-node-api-python \
   --exclude dora-operator-api-python \
   --exclude dora-ros2-bridge-python \
@@ -41,7 +41,7 @@ All three must pass before opening a PR. Python packages are excluded because th
 | Tier | What it covers | Command | Speed |
 |------|---------------|---------|-------|
 | **Format** | Code style | `cargo fmt --all -- --check` | ~5s |
-| **Lint** | Warnings, correctness | `cargo clippy --all ...` | ~60s |
+| **Lint** | Warnings, correctness | `cargo clippy --all --all-targets ...` | ~60s |
 | **Unit** | Individual functions | `cargo test --all ...` | ~90s |
 | **CLI** | Command parsing, validation | `cargo test -p dora-cli` | ~5s |
 | **Integration** | Node I/O via env vars | `cargo test --test example-tests` | ~30s |
@@ -219,17 +219,18 @@ Topics covered: health check, list/stop/destroy requests, invalid JSON/params, c
 
 ## CI Pipeline
 
-Two workflows split by cadence (#1716):
+Two workflows split by cadence (#1716), plus one gated on a path:
 
 - **`.github/workflows/ci.yml`** — runs on every PR and push to `main`. Linux-only. **Blocks merge.** Target ~30-45 min critical path.
 - **`.github/workflows/nightly.yml`** — daily 06:40 UTC cron + manual dispatch. Cross-platform. **Does NOT block PRs**; auto-files `nightly-regression` issue on failure. ~3-4 hours wall-clock.
+- **`.github/workflows/docker-image.yml`** — only on `docker/**` changes, so most PRs never see it. Builds the `dora-slim` image, runs a dataflow inside it (`docker/slim/smoke.sh`), and publishes to `ghcr.io` on merges to `main`. Locally: `make qa-docker-slim`. It smokes the *published* `dora-rs-cli`, not the workspace — see `qa-runbook.md` §3.15 before reading a failure as yours.
 
 ### PR CI (`ci.yml`) — fast Linux-only gate
 
 | Job | Runner | What runs |
 |-----|--------|-----------|
 | **fmt** | ubuntu-latest | `cargo fmt --all -- --check` |
-| **clippy** | ubuntu-latest | `cargo clippy --all ... -- -D warnings` |
+| **clippy** | ubuntu-latest | `cargo clippy --all --all-targets ... -- -D warnings` |
 | **test** | ubuntu-latest | `cargo check`, `cargo build`, `cargo test --all ...` (excluding Python crates and `dora-examples`) plus fast CLI smoke/semantic checks |
 | **e2e** | ubuntu-latest | `ws-cli-e2e` and `fault-tolerance-e2e` |
 | **contract-tests** | ubuntu-latest | `tests/example-smoke.rs::contract_*` behavior contracts |
@@ -304,7 +305,7 @@ fn test_main_function() -> eyre::Result<()> {
     let inputs = TestingInput::Input(
         IntegrationTestInput::new("node_id".parse().unwrap(), events),
     );
-    let (tx, mut rx) = integration_testing::unbounded_channel();
+    let (tx, mut rx) = integration_testing::output_channel();
     let outputs = TestingOutput::ToChannel(tx);
     let options = TestingOptions { skip_output_time_offsets: true };
 

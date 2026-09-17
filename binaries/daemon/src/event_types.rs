@@ -272,6 +272,7 @@ pub(crate) struct ZenohOutbound {
     pub publisher: Arc<zenoh::pubsub::Publisher<'static>>,
     pub serialized: Vec<u8>,
     pub payload_len: u64,
+    pub timeout: Option<Duration>,
     pub net_bytes_sent: Arc<AtomicU64>,
     pub net_messages_sent: Arc<AtomicU64>,
     pub net_publish_failures: Arc<AtomicU64>,

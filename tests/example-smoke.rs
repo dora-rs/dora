@@ -351,6 +351,50 @@ fn smoke_rust_dataflow() {
     );
 }
 
+/// Regression test for the `dora run` log-flush fix: the printer thread that
+/// drains the log channel is joined (with a bounded wait) before `dora run`
+/// returns, so a short dataflow's final node output is not lost when the
+/// process exits out from under the previously-detached printer. Runs the
+/// rust-dataflow example locally, captures stdout, and asserts the sink's
+/// output line survived to exit. A hang here (rather than the missing-line
+/// assertion) would mean the bounded join regressed into an unbounded one.
+#[test]
+fn smoke_rust_dataflow_run_flushes_logs() {
+    ensure_cli_built();
+    ensure_rust_nodes_built();
+
+    let dora = dora_bin();
+    let manifest_dir = env!("CARGO_MANIFEST_DIR");
+    let full_yaml = Path::new(manifest_dir).join("examples/rust-dataflow/dataflow.yml");
+
+    let build_status = Command::new(&dora)
+        .args(["build", full_yaml.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .expect("failed to run dora build");
+    assert!(build_status.success(), "dora build failed");
+
+    let output = Command::new(&dora)
+        .args(["run", full_yaml.to_str().unwrap(), "--stop-after", "10s"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("failed to run dora run");
+
+    assert!(
+        output.status.success(),
+        "dora run failed\nstderr:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("sink received message:"),
+        "expected the sink's buffered stdout to be flushed by `dora run` before \
+         it returned, but the line was missing.\nstdout:\n{stdout}"
+    );
+}
+
 #[test]
 fn smoke_rust_dataflow_dynamic() {
     ensure_rust_nodes_built();
@@ -2035,16 +2079,18 @@ fn run_cross_local_smoke_test(name: &str, yaml_path: &str, timeout: Duration) {
     // Daemon A (listens on the zenoh peer port) and daemon B (dials it).
     // Each daemon also gets an explicit local listen port: two daemons on
     // one host would otherwise pick the same default and collide.
-    let mut local_listen_port = TcpListener::bind("127.0.0.1:0")
+    let base_listen_port = TcpListener::bind("127.0.0.1:0")
         .and_then(|l| l.local_addr())
         .map(|a| a.port())
         .expect("pick local listen port");
-    for (machine, dial) in [
+    for (offset, (machine, dial)) in [
         ("A", format!("tcp/0.0.0.0:{zenoh_port}")),
         ("B", format!("tcp/127.0.0.1:{zenoh_port}")),
-    ] {
-        let listen_port = local_listen_port;
-        local_listen_port += 1;
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let listen_port = base_listen_port + offset as u16;
         let log = tmp.join(format!("daemon-{machine}.log"));
         // The yml's `working_dir: .` is relative to
         // the daemon's cwd (the repo root, per the multiple-daemons
@@ -2266,3 +2312,31 @@ fn smoke_memory_pool_cuda2cuda() {
 //
 // "Covered" rows are listed so future refactors don't assume the examples
 // are entirely unexercised — they run in other CI jobs, just not this file.
+
+/// The shared ingress channel must not let timer pressure discard an input
+/// whose declared policy requires backpressure, before the scheduler sees it.
+#[test]
+fn contract_backpressure_commit_survives_timer_pressure() {
+    ensure_cli_built();
+    let status = Command::new("cargo")
+        .args([
+            "test",
+            "--locked",
+            "-p",
+            "dora-node-api",
+            "--test",
+            "backpressure_timer",
+            "slow_consumer_keeps_backpressure_commit",
+            "--",
+            "--ignored",
+            "--nocapture",
+        ])
+        .env("DORA_BACKPRESSURE_TEST_CLI", dora_bin())
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .status()
+        .expect("run backpressure dataflow regression");
+    assert!(
+        status.success(),
+        "backpressure commit was lost under timer pressure"
+    );
+}

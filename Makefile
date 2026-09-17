@@ -13,7 +13,7 @@
 #   make qa-nightly         ~3-4 hours  Full parity with .github/workflows/nightly.yml
 #                                        (qa-deep + proptest@1000 + miri + example-smoke
 #                                        + ci-nightly-jobs). After the #1716 rebalance,
-#                                        nightly.yml has 26 test jobs (re-counted
+#                                        nightly.yml has 27 test jobs (re-counted
 #                                        in #2999): example-smoke
 #                                        covers 4 (smoke-suite/log-sinks/service-action/
 #                                        streaming); scripts/qa/ci-nightly-jobs.sh drives
@@ -60,9 +60,14 @@
 # `make qa-tier1` is a back-compat alias for `make qa-deep`.
 
 .PHONY: qa qa-fast qa-full qa-deep qa-tier1 qa-nightly qa-release-gate qa-mutation-audit \
-        qa-examples qa-cluster-e2e qa-cluster-record-replay ros2-zenoh-humble ros2-zenoh-kilted \
-        qa-fmt qa-audit qa-unwrap qa-clippy qa-test qa-test-python qa-coverage qa-mutants qa-semver \
-        qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install
+        qa-examples qa-cluster-e2e qa-cluster-record-replay qa-docker-slim \
+        ros2-zenoh-humble ros2-zenoh-kilted \
+        qa-fmt qa-audit qa-unwrap qa-secret-files qa-publish-graph \
+        qa-package-includes qa-lockfile \
+        qa-ci-reporting qa-ci-reporting-selftest qa-clippy qa-test qa-test-python \
+        qa-test-python-node qa-coverage qa-mutants qa-semver qa-breaking qa-breaking-update \
+        qa-adversarial qa-kani qa-pgo qa-install qa-pgo-install qa-kani-install \
+        qa-verify-release
 
 qa: qa-fast
 
@@ -102,6 +107,15 @@ qa-mutation-audit:
 qa-examples:
 	@scripts/smoke-all.sh $(ARGS)
 
+# Build the `dora-slim` container image and run a dataflow inside it, the
+# same two steps `.github/workflows/docker-image.yml` gates on. Needs a working
+# Docker daemon; deliberately NOT in the qa-fast/full/deep ladder, since it
+# costs minutes and a daemon the ladder does not assume. Run it when you touch
+# `docker/`.
+qa-docker-slim:
+	@docker build docker/slim -t dora-slim:local
+	@docker run --rm -v "$$PWD/docker/slim/smoke.sh:/smoke.sh:ro" dora-slim:local bash /smoke.sh
+
 # Real-sshd end-to-end test of `dora cluster up/status/down`. Linux-only.
 # Hard-fails if openssh-server is not installed (install via
 # `sudo apt-get install -y openssh-server`). Subset of qa-nightly; this
@@ -129,8 +143,44 @@ qa-audit:
 qa-unwrap:
 	@scripts/qa/unwrap-budget.sh
 
+# Credential-file gate (#2194): fail if git tracks a file whose name says
+# it holds a secret. .gitignore did not stop `.adora-token` reaching the
+# public repo, because it only covers files git is not already tracking.
+qa-secret-files:
+	@scripts/qa/secret-files.sh
+
+# Manifest-only crates.io publish-graph gate (#3304): no published crate
+# may depend on a `publish = false` one, and release.yml's ordered list
+# must name every dependency before its dependents.
+qa-publish-graph:
+	@scripts/qa/publish-graph.sh
+
+# Build-time file inclusion gate (#3400): every `include_str!` /
+# `include_bytes!` target of a publishable crate must be a git-tracked
+# file inside that crate, or the published `.crate` will not have it.
+qa-package-includes:
+	@scripts/qa/package-includes.sh
+
+# Cargo.lock freshness gate (#3512): the committed lock must already
+# satisfy every workspace manifest. Plain cargo commands rewrite the lock
+# in place, so a stale entry is green locally and only surfaces 3-4 hours
+# later in the nightly's --locked builds (`msrv`, cluster `cargo install`).
+qa-lockfile:
+	@scripts/qa/lockfile.sh
+
+# Structural check on nightly.yml failure reporting. Parses the workflow
+# only -- runs no nightly job, takes well under a second.
+qa-ci-reporting:
+	@scripts/qa/ci-nightly-reporting.sh
+
+# The gate's own tests: feed known-broken workflows through the real script
+# and assert it goes red. A structural check that only ever prints OK is
+# indistinguishable from one that stopped parsing.
+qa-ci-reporting-selftest:
+	@python3 scripts/qa/tests/test_ci_nightly_reporting.py
+
 qa-clippy:
-	@cargo clippy --all \
+	@cargo clippy --all --all-targets \
 		--exclude dora-node-api-python \
 		--exclude dora-operator-api-python \
 		--exclude dora-ros2-bridge-python \
@@ -160,10 +210,19 @@ qa-test:
 # operators working under an embedded-Python daemon.
 qa-test-python:
 	@cargo test --lib \
+		-p dora-cli-api-python \
 		-p dora-node-api-python \
 		-p dora-operator-api-python \
 		-p dora-ros2-bridge-python \
 		-p dora-runtime-python
+
+# Python-level unit tests of the `dora` package under apis/python/node/tests/
+# (the `dora` compat shim, the `dora.builder` API, and `dora.testing.MockNode`).
+# These exercise the *installed* package, so they need `dora-rs` importable —
+# run inside a venv that has `uv pip install -e apis/python/node` (plus pytest).
+# CI runs this in ci.yml's `contract-tests` job, which sets that venv up (#3305).
+qa-test-python-node:
+	@python -m pytest apis/python/node/tests/
 
 qa-coverage:
 	@scripts/qa/coverage.sh
@@ -173,6 +232,37 @@ qa-mutants:
 
 qa-semver:
 	@scripts/qa/semver.sh
+
+# The dora 1.x compatibility gate: every surface the 1.0 guarantee freezes,
+# checked against the last released tag (docs/api-rust.md, "Stability scope
+# at 1.0"). `ARGS="--fast"` drops to the no-compile checks (seconds) -- that
+# subset is what PR CI runs and what `make qa-fast` includes; the default
+# adds cargo-semver-checks and the snapshot-freshness rebuild.
+#
+#   make qa-breaking
+#   make qa-breaking ARGS="--fast"
+#   make qa-breaking ARGS="--baseline v1.0.0"
+qa-breaking:
+	@scripts/qa/breaking-changes.sh $(ARGS)
+
+# Re-record the generated inputs the gate diffs: the `dora` command snapshot
+# and the JSON schemas. Run this when a PR *adds* to either surface, and
+# commit the result -- that diff is how the addition gets reviewed.
+qa-breaking-update:
+	@scripts/qa/breaking-changes.sh --update
+
+# Check that a published release is complete: every crate on release.yml's
+# publish list is on crates.io, both wheels are on PyPI with the full
+# platform matrix and an sdist, and the GitHub Release carries the CLI
+# binaries plus the 8 C/C++ archives. release.yml runs this as its last job;
+# run it by hand to audit an older tag. Pass VERSION=<x.y.z>.
+#
+# This reads back a *published* release. For the static publish-graph rules
+# (list vs. manifests, ordering), see `make qa-publish-graph` — that one runs
+# in PR CI and needs no network.
+qa-verify-release:
+	@test -n "$(VERSION)" || { echo "usage: make qa-verify-release VERSION=1.0.0-rc.5"; exit 2; }
+	@python3 scripts/release/verify-release.py --version "$(VERSION)" $(ARGS)
 
 # Adversarial LLM review of current diff (requires codex or claude CLI)
 qa-adversarial:

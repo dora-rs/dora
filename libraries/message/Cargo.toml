@@ -63,3 +63,12 @@ uuid = { workspace = true, features = ["v4"] }
 [[bench]]
 name = "message_serde"
 harness = false
+
+# TRANSITIONAL -- delete after the next release. Covers marking
+# `ControlRequest::TopicSubscribe` and
+# `DaemonCoordinatorEvent::StartTopicDebugStream` `#[non_exhaustive]` (see
+# "Stability scope at 1.0" in docs/api-rust.md for why). Once the baseline has
+# the attribute, `test_transitional_non_exhaustive_allow_is_retired` in
+# scripts/qa/tests/test_breaking_changes.py fails until this block is deleted.
+[package.metadata.cargo-semver-checks.lints]
+enum_variant_marked_non_exhaustive = "allow"

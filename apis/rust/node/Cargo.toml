@@ -74,6 +74,9 @@ criterion = { version = "0.5", features = ["html_reports"] }
 # they need the Arrow 59 accessors — enabled here rather than on the library so
 # the shipped `dora-node-api` keeps `default = []` for the Arrow features.
 dora-arrow-convert = { workspace = true, features = ["arrow-v59"] }
+# Property tests for the integration-testing record/replay codec. Nightly
+# re-runs every `proptest`-named test at 1000 cases (`scripts/qa/all.sh`).
+proptest = { workspace = true }
 
 [[bench]]
 name = "arrow_framing"

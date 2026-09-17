@@ -45,7 +45,7 @@ pub struct Replay {
     replace: Vec<String>,
 
     /// Playback speed multiplier (default: 1.0, 0 = fast as possible)
-    #[clap(long, default_value = "1.0")]
+    #[clap(long, default_value = "1.0", value_parser = parse_speed)]
     speed: f64,
 
     /// Loop the recording
@@ -62,6 +62,46 @@ impl Executable for Replay {
         // Run::execute() sets up its own tracing subscriber.
         run_replay(self)
     }
+}
+
+/// Smallest positive `--speed` we accept. Below this the pacing math
+/// (`(delta as f64 / speed) as u64` nanoseconds) saturates to a sleep of many
+/// years, which is never intended; `1e-6` still permits extreme slow-motion (a
+/// 1 s recorded gap stretched to ~11.6 days), so it rejects only pathological
+/// denormal-ish values, not any plausible debugging speed.
+const MIN_SPEED: f64 = 1e-6;
+
+/// clap `value_parser` for `--speed`.
+///
+/// A bare `f64` parse accepts `-1`, `nan`, and `inf`. The pacing math
+/// (`replay-node::pacing_sleep_nanos`) treats anything `<= 0.0` as "as fast as
+/// possible", a `NaN` slips through that guard (`NaN <= 0.0` is false) only to
+/// yield `0` from the `as u64` cast, and a tiny positive value saturates that
+/// cast to a multi-year sleep — so negatives, `NaN`, and absurdly small values
+/// all silently misbehave. Validate here, at parse time, before `run_replay`
+/// opens the recording:
+///
+/// - `0` and `inf` both mean "as fast as possible"; `inf` is normalized to
+///   `0.0` rather than rejected because `dora replay` already accepts and acts
+///   on it, and `dora-cli` is inside the 1.0 stability guarantee (an
+///   overflowing literal like `1e400` parses to `inf` and lands here too).
+/// - any finite multiplier `>= MIN_SPEED` is accepted;
+/// - everything else (negative, `NaN`, `-inf`, `0 < speed < MIN_SPEED`) is a
+///   clean clap usage error that echoes what the user typed.
+fn parse_speed(s: &str) -> Result<f64, String> {
+    let speed: f64 = s
+        .parse()
+        .map_err(|e| format!("`{s}` is not a number: {e}"))?;
+    if speed == f64::INFINITY || speed == 0.0 {
+        return Ok(0.0);
+    }
+    if speed.is_finite() && speed >= MIN_SPEED {
+        return Ok(speed);
+    }
+    Err(format!(
+        "`{s}` is not a valid --speed: use 0 or `inf` for as-fast-as-possible, \
+         or a finite multiplier >= {MIN_SPEED}"
+    ))
 }
 
 fn run_replay(args: Replay) -> eyre::Result<()> {
@@ -84,7 +124,9 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     // Discover which nodes produced recorded data and how many messages each
     // output carries (used to size receiver queues below).
     let mut recorded_counts: BTreeMap<String, BTreeMap<String, u64>> = BTreeMap::new();
-    while let Some(entry) = reader.next_entry()? {
+    // Only the ids are needed here; `next_entry_header` skips copying each
+    // entry's event payload out of the record buffer.
+    while let Some(entry) = reader.next_entry_header()? {
         *recorded_counts
             .entry(entry.node_id)
             .or_default()
@@ -147,7 +189,25 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         args.speed,
         args.r#loop,
     );
-    raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+    let backpressure_inputs =
+        raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+    if backpressure_inputs > 0 {
+        // Replay makes replayed inputs `backpressure` so one pass is buffered
+        // rather than silently dropped (#2144). Since #3429 that also pins each
+        // replayed producer's output to the daemon transport path, so replay
+        // runs without shared-memory zero-copy and any single recorded message
+        // larger than the daemon cap fails to replay. Surface it here instead
+        // of leaving a silent slowdown / an opaque send error (#3448).
+        eprintln!(
+            "warning: replayed inputs use queue_policy: backpressure, which pins each \
+             replayed producer's output to the daemon transport path. Replay therefore \
+             runs without shared-memory zero-copy, and any single recorded message larger \
+             than {} bytes ({} MiB) cannot be replayed (it exceeds the daemon transport \
+             limit). See dora-rs/dora#3448.",
+            dora_message::MAX_MESSAGE_BYTES,
+            dora_message::MAX_MESSAGE_BYTES / (1024 * 1024),
+        );
+    }
 
     let modified_yaml =
         serde_yaml::to_string(&descriptor).wrap_err("failed to serialize modified descriptor")?;
@@ -204,30 +264,10 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     run.execute()
 }
 
-/// Sizes receiver queues so a full-speed replay cannot silently drop messages.
-///
-/// Replay can outpace receivers — especially with `--speed 0` — and dora's
-/// real-time defaults drop under pressure: each input queue holds
-/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
-/// sized from the queue sizes. For every input fed by a replayed node, this
-/// sets `queue_size` to the recorded message count for that output and
-/// `queue_policy: backpressure`, so one pass of the recording fits entirely
-/// and any residual overflow is logged loudly instead of dropped silently
-/// (#2144).
-///
-/// Scope and limits:
-/// - Inputs with an explicit `queue_size` are left untouched: an explicit
-///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
-///   which replay should reproduce, not override.
-/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
-///   partial `--replace`, live intermediate nodes can re-emit at full speed
-///   into their own downstream consumers' default queues (warned at the call
-///   site).
-/// - The sizing bounds one pass of the recording; `--loop` can still
-///   overflow, at which point the backpressure policy logs errors at its
-///   hard cap instead of dropping silently.
-/// - Drops below this layer (zenoh congestion on multi-daemon replay) are
-///   not addressed here.
+/// Rewrites each recorded node in the descriptor into a replay node: swaps its
+/// `path` for the `dora-replay-node` binary, strips the build/source/operator
+/// keys and its `inputs`, republishes its recorded `outputs`, and injects the
+/// `DORA_REPLAY_*` env the replay node reads (file, node id, speed, loop).
 fn replace_recorded_nodes_with_replay(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
@@ -335,11 +375,50 @@ fn append_prefixed_outputs(
     }
 }
 
+/// Raises replayed inputs' node-level queue sizes so a full-speed replay does
+/// not drop messages *at the node input-queue layer*.
+///
+/// Replay can outpace receivers — especially with `--speed 0` — and dora's
+/// real-time defaults drop under pressure: each input queue holds
+/// `DEFAULT_QUEUE_SIZE` messages (drop-oldest), and the node event channel is
+/// sized from the queue sizes. For every input fed by a replayed node, this
+/// sets `queue_size` to the recorded message count for that output and
+/// `queue_policy: backpressure`, so one pass of the recording fits entirely
+/// and any residual overflow is logged loudly instead of dropped silently
+/// (#2144).
+///
+/// Scope and limits:
+/// - Inputs with an explicit `queue_size` are left untouched: an explicit
+///   size encodes deliberate freshness semantics (e.g. `queue_size: 1`),
+///   which replay should reproduce, not override.
+/// - Only inputs *directly* sourced from replayed nodes are adjusted. With a
+///   partial `--replace`, live intermediate nodes can re-emit at full speed
+///   into their own downstream consumers' default queues (warned at the call
+///   site).
+/// - The sizing bounds one pass of the recording; `--loop` can still
+///   overflow, at which point the backpressure policy logs errors at its
+///   hard cap instead of dropping silently.
+/// - This addresses only the node input-queue layer. A *replayed* producer's
+///   output no longer traverses the direct node-to-node zenoh data plane at
+///   all: since #3429 a `backpressure` input pins its producer's output to the
+///   daemon transport path (`daemon_only`, `binaries/daemon/src/output_
+///   routing.rs`). That trades the direct path's silent `CongestionControl::
+///   Drop` (#3397) for the daemon path's own limits — no shared-memory
+///   zero-copy, and a hard `MAX_MESSAGE_BYTES` (64 MiB) per-message cap that
+///   fails the replay of any larger recorded message (dora-rs/dora#3448). The
+///   caller surfaces this demotion via the returned count. A live intermediate
+///   node in a *partial* `--replace` still re-emits over the direct Drop path
+///   into its own downstream consumers' default queues, so the `--speed 0`
+///   drop of #3397 remains possible there (warned at the call site).
+///
+/// Returns the number of replayed-sourced inputs that ended up backpressured,
+/// i.e. the number of replayed outputs pinned to the daemon transport path.
 fn raise_replayed_input_queue_sizes(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
     recorded_counts: &BTreeMap<String, BTreeMap<String, u64>>,
-) {
+) -> usize {
+    let mut backpressure_inputs = 0;
     for node in nodes.iter_mut() {
         let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
         if nodes_to_replace.contains(node_id) {
@@ -357,28 +436,36 @@ fn raise_replayed_input_queue_sizes(
                 _ => holder.get_mut("inputs").and_then(|v| v.as_mapping_mut()),
             };
             if let Some(inputs) = inputs {
-                raise_input_queue_sizes(inputs, nodes_to_replace, recorded_counts);
+                backpressure_inputs +=
+                    raise_input_queue_sizes(inputs, nodes_to_replace, recorded_counts);
             }
         }
         if let Some(operators) = node.get_mut("operators").and_then(|v| v.as_sequence_mut()) {
             for operator in operators.iter_mut() {
                 if let Some(inputs) = operator.get_mut("inputs").and_then(|v| v.as_mapping_mut()) {
-                    raise_input_queue_sizes(inputs, nodes_to_replace, recorded_counts);
+                    backpressure_inputs +=
+                        raise_input_queue_sizes(inputs, nodes_to_replace, recorded_counts);
                 }
             }
         }
     }
+    backpressure_inputs
 }
 
+/// Returns the number of replayed-sourced inputs that end up under
+/// `queue_policy: backpressure` — i.e. the number of replayed producer outputs
+/// that will be pinned to the daemon transport path (see
+/// [`raise_replayed_input_queue_sizes`]).
 fn raise_input_queue_sizes(
     inputs: &mut serde_yaml::Mapping,
     nodes_to_replace: &BTreeSet<String>,
     recorded_counts: &BTreeMap<String, BTreeMap<String, u64>>,
-) {
+) -> usize {
     let source_key = serde_yaml::Value::String("source".to_string());
     let queue_size_key = serde_yaml::Value::String("queue_size".to_string());
     let queue_policy_key = serde_yaml::Value::String("queue_policy".to_string());
 
+    let mut backpressure_inputs = 0;
     for (_input_id, value) in inputs.iter_mut() {
         // Inputs are either a plain `node/output` string or a mapping with
         // a `source` key (plus optional queue_size/queue_policy/timeout).
@@ -426,13 +513,26 @@ fn raise_input_queue_sizes(
             queue_size_key.clone(),
             serde_yaml::Value::Number(new_size.into()),
         );
-        if !mapping.contains_key(&queue_policy_key) {
-            mapping.insert(
-                queue_policy_key.clone(),
-                serde_yaml::Value::String("backpressure".to_string()),
-            );
+        // `backpressure` is what keeps one replay pass lossless at the node
+        // queue (#2144), but since #3429 it also pins the *producer's* output
+        // to the daemon transport path (`output_routing.rs`). Count every
+        // replayed input that ends up backpressured — inserted here or already
+        // set by the user — so the caller can surface that demotion (#3448).
+        let policy_is_backpressure = match mapping.get(&queue_policy_key).and_then(|v| v.as_str()) {
+            Some(policy) => policy == "backpressure",
+            None => {
+                mapping.insert(
+                    queue_policy_key.clone(),
+                    serde_yaml::Value::String("backpressure".to_string()),
+                );
+                true
+            }
+        };
+        if policy_is_backpressure {
+            backpressure_inputs += 1;
         }
     }
+    backpressure_inputs
 }
 
 fn find_replay_node_binary() -> eyre::Result<PathBuf> {
@@ -444,6 +544,17 @@ mod tests {
     use super::*;
 
     fn run_rewrite(yaml: &str, replaced: &[&str], counts: &[(&str, &str, u64)]) -> String {
+        run_rewrite_counted(yaml, replaced, counts).0
+    }
+
+    /// Like [`run_rewrite`], but also returns the backpressured-input count that
+    /// `raise_replayed_input_queue_sizes` reports (what drives the daemon-path
+    /// demotion warning, #3448).
+    fn run_rewrite_counted(
+        yaml: &str,
+        replaced: &[&str],
+        counts: &[(&str, &str, u64)],
+    ) -> (String, usize) {
         let mut descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let nodes = descriptor
             .get_mut("nodes")
@@ -457,8 +568,12 @@ mod tests {
                 .or_default()
                 .insert(o.to_string(), *c);
         }
-        raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
-        serde_yaml::to_string(&descriptor).unwrap()
+        let backpressure_inputs =
+            raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+        (
+            serde_yaml::to_string(&descriptor).unwrap(),
+            backpressure_inputs,
+        )
     }
 
     fn replaced_with_replay(yaml: &str, replaced: &[&str]) -> String {
@@ -477,6 +592,57 @@ mod tests {
             false,
         );
         serde_yaml::to_string(&descriptor).unwrap()
+    }
+
+    #[test]
+    fn parse_speed_accepts_valid_and_rejects_invalid() {
+        // Valid: 0 (as fast as possible) and any finite positive multiplier.
+        assert_eq!(parse_speed("0").unwrap(), 0.0);
+        assert_eq!(parse_speed("1.0").unwrap(), 1.0);
+        assert_eq!(parse_speed("0.25").unwrap(), 0.25);
+        assert_eq!(parse_speed("1000").unwrap(), 1000.0);
+
+        // `inf` — and an overflowing literal, which parses to `inf` — mean
+        // "as fast as possible" and normalize to 0.0 rather than erroring
+        // (`dora replay` already accepts them; dora-cli is 1.0-stable).
+        assert_eq!(parse_speed("inf").unwrap(), 0.0);
+        assert_eq!(parse_speed("1e400").unwrap(), 0.0);
+
+        // Invalid: negative, NaN, -inf, and an absurdly small value that would
+        // saturate the pacing cast to a multi-year sleep — all previously
+        // silent misbehavior — plus non-numbers.
+        assert!(parse_speed("-1").is_err());
+        assert!(parse_speed("nan").is_err());
+        assert!(parse_speed("-inf").is_err());
+        assert!(parse_speed("1e-300").is_err());
+        assert!(parse_speed("fast").is_err());
+
+        // The error echoes what the user typed, not the parsed f64.
+        let err = parse_speed("1e-300").unwrap_err();
+        assert!(err.contains("1e-300"), "error should name the input: {err}");
+    }
+
+    /// Guards that `value_parser = parse_speed` is actually wired onto the
+    /// `--speed` arg: without it these would parse as a bare `f64` and the
+    /// invalid values would slip through, so this fails if the attribute is
+    /// dropped even though `parse_speed_accepts_valid_and_rejects_invalid`
+    /// would still pass.
+    #[test]
+    fn speed_value_parser_is_wired_onto_the_arg() {
+        use clap::Parser;
+
+        #[derive(Parser)]
+        struct Cli {
+            #[command(flatten)]
+            replay: Replay,
+        }
+
+        // Rejected at parse time (use `=` so the leading `-` isn't read as a flag).
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--speed=-1"]).is_err());
+        assert!(Cli::try_parse_from(["dora", "rec.drec", "--speed=nan"]).is_err());
+        // `inf` is accepted and normalized to as-fast-as-possible (0.0).
+        let cli = Cli::try_parse_from(["dora", "rec.drec", "--speed=inf"]).unwrap();
+        assert_eq!(cli.replay.speed, 0.0);
     }
 
     #[test]
@@ -554,6 +720,42 @@ mod tests {
         let input = &parsed["nodes"][0]["inputs"]["message"];
         assert_eq!(input["queue_size"].as_u64(), Some(100));
         assert_eq!(input["queue_policy"].as_str(), Some("drop_oldest"));
+    }
+
+    #[test]
+    fn backpressure_input_count_drives_the_daemon_path_warning() {
+        // Two replayed-sourced inputs get `backpressure` (each pins its
+        // producer's output to the daemon path), so the reported count is 2 —
+        // the signal the replay command uses to warn about the #3448 demotion.
+        let (_out, count) = run_rewrite_counted(
+            concat!(
+                "nodes:\n",
+                "- id: sink\n",
+                "  inputs:\n",
+                "    a: source/a\n",
+                "    b: source/b\n",
+            ),
+            &["source"],
+            &[("source", "a", 100), ("source", "b", 50)],
+        );
+        assert_eq!(count, 2);
+
+        // A replayed input the user pinned to `drop_oldest` is NOT counted:
+        // that edge keeps the direct path, so no daemon-path demotion.
+        let (_out, count) = run_rewrite_counted(
+            "nodes:\n- id: sink\n  inputs:\n    message:\n      source: source/status\n      queue_policy: drop_oldest\n",
+            &["source"],
+            &[("source", "status", 100)],
+        );
+        assert_eq!(count, 0);
+
+        // Nothing sourced from a replayed node -> nothing pinned, nothing to warn about.
+        let (_out, count) = run_rewrite_counted(
+            "nodes:\n- id: sink\n  inputs:\n    tick: dora/timer/millis/10\n    live: other/data\n",
+            &["source"],
+            &[("source", "status", 100)],
+        );
+        assert_eq!(count, 0);
     }
 
     #[test]
