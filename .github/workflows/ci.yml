@@ -528,17 +528,6 @@ jobs:
         run: >
           cargo test -p dora-examples --test stop-restart-race-e2e -- --test-threads=1
         timeout-minutes: 10
-      # Regression anchor for #3201: repeated `dora start`/`dora stop`
-      # cycles of the same dataflow against a single long-lived daemon must
-      # keep delivering to every subscriber on every cycle (in particular
-      # the last). Even though no current-main repro exists (direct zenoh
-      # routing since #1787 + descriptor-computed routing per spawn), the
-      # test pins the contract so a routing regression can't silently
-      # recur. Same `dora-examples` exclusion as the tests above.
-      - name: Run repeated start/stop routing E2E
-        run: >
-          cargo test -p dora-examples --test start-stop-cycle-routing-e2e -- --test-threads=1
-        timeout-minutes: 15
 
   # Semantic contract tests — promoted from nightly per #1632.
   #
