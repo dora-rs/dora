@@ -76,12 +76,21 @@ name = "rust-ros2-dataflow-service-client"
 path = "../../../examples/ros2-bridge/rust/service-client/run.rs"
 
 [[example]]
+name = "yaml-bridge-service"
+path = "../../../examples/ros2-bridge/yaml-bridge-service/run.rs"
+
+[[example]]
 name = "rust-ros2-dataflow-service-server"
 path = "../../../examples/ros2-bridge/rust/service-server/run.rs"
 
 [[example]]
 name = "rust-ros2-dataflow-action-client"
 path = "../../../examples/ros2-bridge/rust/action-client/run.rs"
+required-features = ["ros2-examples"]
+
+[[example]]
+name = "yaml-bridge-action"
+path = "../../../examples/ros2-bridge/yaml-bridge-action/run.rs"
 required-features = ["ros2-examples"]
 
 [[example]]

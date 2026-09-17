@@ -1989,7 +1989,7 @@ fn create_ros_node(
     ros2_client::Context,
     futures::executor::ThreadPool,
 )> {
-    let domain_id = parse_ros_domain_id(std::env::var("ROS_DOMAIN_ID").ok().as_deref());
+    let domain_id = current_ros_domain_id();
     let ros_context =
         create_ros_context(domain_id).map_err(|e| eyre!("failed to create ROS2 context: {e:?}"))?;
     let node_name = config
@@ -2020,30 +2020,7 @@ fn create_ros_node(
 }
 
 fn create_ros_context(domain_id: u16) -> rustdds::dds::CreateResult<ros2_client::Context> {
-    match ros_context_creation(domain_id) {
-        RosContextCreation::DefaultDomain => {
-            // ros2-client's default constructor is not equivalent to
-            // ContextOptions::domain_id(0) in FastDDS/Humble service discovery.
-            ros2_client::Context::new()
-        }
-        RosContextCreation::ExplicitDomain(domain_id) => ros2_client::Context::with_options(
-            ros2_client::ContextOptions::new().domain_id(domain_id),
-        ),
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RosContextCreation {
-    DefaultDomain,
-    ExplicitDomain(u16),
-}
-
-fn ros_context_creation(domain_id: u16) -> RosContextCreation {
-    if domain_id == 0 {
-        RosContextCreation::DefaultDomain
-    } else {
-        RosContextCreation::ExplicitDomain(domain_id)
-    }
+    ros2_client::Context::with_options(ros2_client::ContextOptions::new().domain_id(domain_id))
 }
 
 fn parse_ros_domain_id(value: Option<&str>) -> u16 {
@@ -2096,12 +2073,6 @@ fn default_service_qos_config() -> Ros2QosConfig {
 }
 
 fn service_or_action_qos(config: &Ros2QosConfig) -> rustdds::QosPolicies {
-    if !config.reliable && !config.is_default_topic_qos() {
-        tracing::warn!(
-            "service/action QoS keeps RELIABLE delivery even though the descriptor QoS uses topic-style best effort; ROS2 services require RELIABLE QoS"
-        );
-    }
-
     let mut qos = default_service_qos_config();
     if let Some(durability) = &config.durability {
         qos.durability = Some(durability.clone());
@@ -2300,17 +2271,6 @@ fn service_topic_names(service_name: &str) -> ServiceTopicNames {
         request: format!("rq/{service_name}Request"),
         response: format!("rr/{service_name}Reply"),
     }
-}
-
-#[cfg(test)]
-fn service_topics_discovered(service_name: &str, discovered_topics: &[String]) -> bool {
-    let topic_names = service_topic_names(service_name);
-    discovered_topics
-        .iter()
-        .any(|topic| topic == &topic_names.request)
-        && discovered_topics
-            .iter()
-            .any(|topic| topic == &topic_names.response)
 }
 
 fn service_unavailable_message_with_discovery(
@@ -2521,13 +2481,13 @@ impl IsDefaultTopicQos for Ros2QosConfig {
 #[cfg(test)]
 mod peer_failure_tests {
     use super::{
-        IsDefaultTopicQos, RosContextCreation, action_cancel_service_name,
-        action_goal_service_name, action_result_service_name, action_service_connected_message,
+        IsDefaultTopicQos, action_cancel_service_name, action_goal_service_name,
+        action_result_service_name, action_service_connected_message,
         action_service_unavailable_message, action_status_qos_config, default_service_qos_config,
-        parse_ros_domain_id, peer_value_or_warn, ros_context_creation, service_connected_message,
-        service_or_action_qos, service_topic_names, service_topics_discovered,
-        service_unavailable_message, service_unavailable_message_with_discovery,
-        warn_explicit_service_action_best_effort, warning_for_invalid_ros_domain_id,
+        parse_ros_domain_id, peer_value_or_warn, service_connected_message, service_or_action_qos,
+        service_topic_names, service_unavailable_message,
+        service_unavailable_message_with_discovery, warn_explicit_service_action_best_effort,
+        warning_for_invalid_ros_domain_id,
     };
     use dora_message::descriptor::Ros2QosConfig;
 
@@ -2554,15 +2514,6 @@ mod peer_failure_tests {
         assert_eq!(
             warning_for_invalid_ros_domain_id("not-a-number"),
             "invalid ROS_DOMAIN_ID `not-a-number`; defaulting to DDS domain 0"
-        );
-    }
-
-    #[test]
-    fn default_domain_uses_ros2_client_default_context_constructor() {
-        assert_eq!(ros_context_creation(0), RosContextCreation::DefaultDomain);
-        assert_eq!(
-            ros_context_creation(23),
-            RosContextCreation::ExplicitDomain(23)
         );
     }
 
@@ -2713,18 +2664,6 @@ mod peer_failure_tests {
 
         assert_eq!(names.request, "rq/add_two_intsRequest");
         assert_eq!(names.response, "rr/add_two_intsReply");
-    }
-
-    #[test]
-    fn service_topics_discovered_requires_request_and_response_topics() {
-        let topics = [
-            "rq/add_two_intsRequest".to_string(),
-            "rr/add_two_intsReply".to_string(),
-        ];
-        assert!(service_topics_discovered("/add_two_ints", &topics));
-
-        let request_only = ["rq/add_two_intsRequest".to_string()];
-        assert!(!service_topics_discovered("/add_two_ints", &request_only));
     }
 
     #[test]
