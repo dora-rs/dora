@@ -124,14 +124,6 @@ impl CoordinatorSender {
             .map_err(|_| eyre!("WS send channel closed"))
     }
 
-    pub fn try_send_event(&self, message: &[u8]) -> Result<(), TrySendEventError> {
-        let json = Self::format_event_message(message)?;
-        self.sender.try_send(json).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
-            mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
-        })
-    }
-
     /// Queue a topic debug frame for the coordinator, dropping it if the debug
     /// channel is full.
     ///
