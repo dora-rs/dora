@@ -28,7 +28,7 @@ python = []
 # unreachable through the `dora` binary. NOT covered by dora's 1.0
 # compatibility guarantees — see libraries/extensions/tensor-pool/README.md.
 tensor-pool = ["dora-daemon/tensor-pool"]
-redb-backend = ["dora-coordinator/redb-backend", "dep:fs2", "dep:libc"]
+redb-backend = ["dora-coordinator/redb-backend", "dep:fs2"]
 
 [dependencies]
 arrow = { workspace = true, features = ["ipc"] }
@@ -37,7 +37,7 @@ clap = { version = "4.6.1", features = ["derive", "string", "env"] }
 clap_complete = "4.6.7"
 eyre = { workspace = true }
 fs2 = { workspace = true, optional = true }
-libc = { version = "0.2", optional = true }
+libc = { version = "0.2" }
 dora-core = { workspace = true, features = ["zenoh"] }
 dora-hub-client = { workspace = true }
 dora-message = { workspace = true }
