@@ -830,6 +830,7 @@ impl Spawner {
                     logger,
                     n,
                     true,
+                    self.bind_nodes_to_parent,
                 )
                 .await?;
 

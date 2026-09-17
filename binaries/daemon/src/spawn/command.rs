@@ -21,6 +21,7 @@ pub(super) async fn path_spawn_command(
     logger: &mut NodeLogger<'_>,
     node: &dora_core::descriptor::CustomNode,
     permit_url: bool,
+    bind_nodes_to_parent: bool,
 ) -> eyre::Result<Option<Command>> {
     let cmd = match node.path.as_str() {
         DYNAMIC_SOURCE => return Ok(None),
@@ -42,14 +43,19 @@ pub(super) async fn path_spawn_command(
             if cfg!(target_os = "windows") {
                 let cmd = Command::new("cmd");
                 cmd.args(["/C", &node.args.clone().unwrap_or_default()])
-            } else {
+            } else if bind_nodes_to_parent {
                 let shell_args = node.args.clone().unwrap_or_default();
                 // Route shell commands through `dora __shell-guard` so the
                 // daemon can contain the shell's background forks (#3472).
-                // The guard becomes the direct child (and process-group
-                // leader) of the daemon and killpgs its group when the
-                // daemon disappears; a `sh -c 'cmd &'` background fork would
-                // otherwise outlive the daemon, orphaned to init. See
+                // Only on the in-process `dora run` / `Daemon::run_dataflow`
+                // spawn path: the guard exists to `killpg` the shell's group
+                // once the parent is gone, and that only makes sense when the
+                // nodes are bound to the parent (#2029 trees the same way —
+                // coordinator-attached nodes must outlive the daemon). The
+                // guard becomes the direct child (and process-group leader) of
+                // the daemon and killpgs its group when the daemon disappears;
+                // a `sh -c 'cmd &'` background fork would otherwise outlive
+                // the daemon, orphaned to init. See
                 // `binaries/cli/src/command/shell_guard.rs`.
                 match dora_guard_command(&shell_args) {
                     Some(cmd) => cmd,
@@ -71,6 +77,16 @@ pub(super) async fn path_spawn_command(
                         cmd.args(["-c", &shell_args])
                     }
                 }
+            } else {
+                // Coordinator-attached path (`dora up` + `dora start`): nodes
+                // are meant to outlive the daemon (#2029), and without the
+                // `DORA_RUN_PARENT_PID` marker the guard could never arm — it
+                // would be a pure passthrough adding a resident `dora` process
+                // per shell node for nothing. Spawn the shell directly.
+
+                let shell_args = node.args.clone().unwrap_or_default();
+                let cmd = Command::new("sh");
+                cmd.args(["-c", &shell_args])
             }
         }
         source => {
