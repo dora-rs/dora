@@ -104,17 +104,14 @@ impl Executable for LogsArgs {
 
         // --local always uses local file path
         if self.local {
-            if self.follow {
-                return follow_local_logs(&self);
-            }
-            return read_local_logs(&self);
+            return dispatch_local_logs(&self);
         }
 
         // Single node: try the coordinator first, then fall back to the local
         // `out/` directory when it is unavailable. This mirrors the all-nodes
         // path below so that after a plain `dora run` (which never binds a
         // coordinator) `dora logs --node <N>` works without forcing the user to
-        // discover `--local`; `read_local_logs` already honors `--node` through
+        // discover `--local`; the local readers already honor `--node` through
         // `find_node_log_files`.
         if let Some(ref node) = self.node {
             let node = node.clone();
@@ -135,7 +132,7 @@ impl Executable for LogsArgs {
                         &config,
                     )
                 }
-                Err(_) => read_local_logs(&self),
+                Err(_) => dispatch_local_logs(&self),
             };
         }
 
@@ -165,9 +162,24 @@ impl Executable for LogsArgs {
             }
             Err(_) => {
                 // Coordinator unavailable, fall back to local
-                read_local_logs(&self)
+                dispatch_local_logs(&self)
             }
         }
+    }
+}
+
+/// Read logs from the local `out/` directory, streaming when `--follow` is set.
+///
+/// Shared by the explicit `--local` path and by every coordinator-unavailable
+/// fallback, so all three honor `--follow` identically. Only `follow_local_logs`
+/// streams; `read_local_logs` prints once and returns, so dispatching here (not
+/// calling `read_local_logs` directly) is what keeps `--follow` working on the
+/// fallback paths.
+fn dispatch_local_logs(args: &LogsArgs) -> Result<()> {
+    if args.follow {
+        follow_local_logs(args)
+    } else {
+        read_local_logs(args)
     }
 }
 
