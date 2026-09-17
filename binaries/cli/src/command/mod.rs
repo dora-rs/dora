@@ -22,6 +22,7 @@ mod restart;
 mod run;
 mod runtime;
 mod self_;
+#[cfg(unix)]
 mod shell_guard;
 mod start;
 mod stop;
@@ -58,6 +59,7 @@ use replay::Replay;
 use restart::Restart;
 use runtime::Runtime;
 use self_::SelfSubCommand;
+#[cfg(unix)]
 use shell_guard::ShellGuardArgs;
 use start::Start;
 use stop::Stop;
@@ -173,6 +175,8 @@ pub enum Command {
     #[clap(hide = true)]
     Coordinator(Coordinator),
     /// Process-group supervisor for `path: shell` nodes, spawned by the daemon
+    /// on unix only (Windows shell spawns go through `cmd /C`, unchanged).
+    #[cfg(unix)]
     #[clap(name = "__shell-guard", hide = true)]
     ShellGuard(ShellGuardArgs),
     /// Real-time resource monitor (shortcut for `inspect top`)
@@ -231,6 +235,7 @@ impl Executable for Command {
             Command::Daemon(args) => args.execute(),
             Command::Runtime(args) => args.execute(),
             Command::Coordinator(args) => args.execute(),
+            #[cfg(unix)]
             Command::ShellGuard(args) => args.execute(),
             Command::Top(args) => args.execute(),
         }
@@ -875,6 +880,7 @@ mod tests {
         parse_err(&["dora", "foo"]);
     }
 
+    #[cfg(unix)]
     #[test]
     fn parse_shell_guard() {
         // The daemon spawns the guard hidden subcommand with a `--` separator,
