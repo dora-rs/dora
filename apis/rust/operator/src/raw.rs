@@ -90,6 +90,13 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
         Event::InputClosed { id: input_id }
     } else if event.stop {
         Event::Stop
+    } else if let Some(error) = &event.error {
+        // The runtime populates `RawEvent::error` for a stream-level
+        // `Event::Error` (a decode failure, a fatal stream error, …). Dispatch
+        // it to the operator like `InputParseError` rather than dropping it —
+        // it used to fall through to the "unknown event" arm below and vanish
+        // silently, with the operator never notified.
+        Event::Error { error }
     } else {
         // ignore unknown events
         return OnEventResult {

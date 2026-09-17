@@ -63,6 +63,9 @@ A module file has two sections:
 | `inputs_optional` | list | no | Optional input ports (silently skipped if not wired) |
 | `outputs` | list | no | Output port names exposed to the parent dataflow |
 
+Unknown fields in the module header are rejected whenever Dora loads the
+module, including `dora expand`, `dora build`, and `dora run`.
+
 ### `nodes:` list
 
 Standard node definitions, with one special syntax: **`_mod/port_name`** references a module input port. When expanded, `_mod/port_name` is replaced with whatever the parent wired to that port.
@@ -151,7 +154,7 @@ Parameters are also injected as environment variables (`PARAM_SPEED`, `PARAM_MOD
 2. Prefix all internal node IDs with `{module_id}.` (e.g., `nav_stack.planner`)
 3. Replace `_mod/port_name` references with the actual sources from the parent's input map
 4. Rewrite internal cross-references (e.g., `planner/path` becomes `nav_stack.planner/path`)
-5. Map module-declared outputs to internal node outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. An inner node may produce a declared output from its node-level `outputs:`, from an `operator:`/`operators:` block, or from a legacy `custom:` block. For an output produced by one operator of a multi-operator `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
+5. Map module-declared outputs to direct child outputs, so `nav_stack/cmd_vel` resolves to `nav_stack.controller/cmd_vel`. A direct child may be a standard node, a runtime `operator:`/`operators:` node, a legacy `custom:` node, or a nested module. For an output produced by one operator of a multi-operator `operators:` node, the resolved reference keeps the operator segment that runtime nodes require: `nav_stack/cmd_vel` resolves to `nav_stack.runtime/controller/cmd_vel`
 6. Replace the module node with the expanded flat nodes
 7. Substitute `params:` values in `args:` fields and inject as env vars
 
@@ -187,6 +190,11 @@ nodes:
 ```
 
 After expansion, node IDs are fully qualified: `outer.inner.some_node`.
+
+Only outputs declared by a nested module are visible to its parent. A parent
+module can wire or re-export `inner/processed` from the example above because
+`processed` is listed in `inner_module.yml`'s `module.outputs`; it cannot reach
+private outputs produced by nodes inside `inner_module.yml`.
 
 ## Optional Inputs
 
@@ -229,38 +237,47 @@ dora expand --module modules/transform_module.yml
 
 This checks:
 - Valid YAML structure
-- Module header is present with `name`, `inputs`, `outputs`
+- Module header is present with required `name`, optional `inputs`/`outputs`, and no unknown header fields
 - All `_mod/` references correspond to declared inputs or optional inputs
-- Every declared output is produced by some inner node (counting `operator:`/`operators:` and legacy `custom:` outputs)
+- Every declared output is produced by exactly one direct child node or nested module declared output (counting `operator:`/`operators:` and legacy `custom:` outputs)
 - No duplicate node IDs
 - Internal wiring is consistent
+- Nested module files exist, are relative paths, are acyclic, and stay within the nesting depth limit
 
-## Source-path resolution inside modules
+Every check above runs recursively: a nested module file is validated in full,
+not just read for its declared outputs.
 
-A module's inner-node `path:`, and its operators' `shared-library:`,
-`python:`, and `wasm:` values, are resolved relative to the **module file's**
-directory, not to the top-level dataflow. A module in `modules/nested/`
-declaring `python: op.py` refers to `modules/nested/op.py`.
+A declared output must have **exactly one** producer. If two inner nodes emit
+the same output name and that name is also listed in `module.outputs`,
+expansion fails rather than silently picking the first producer. `module.outputs`
+is a plain list with no `output: node/port` mapping syntax, so the fix is to
+rename the internal signal that is not being exported. This applies to
+`dora run` and `dora build`, not just `dora expand`.
 
-Exempt from the rewrite: URLs, absolute paths, and the `dynamic` and `shell`
-sentinels (which the daemon matches verbatim).
+## Fields on a module node
 
-Two consequences worth knowing:
+A module node references a sub-dataflow, so it has no source or per-node runtime
+configuration of its own. Only `module`, `inputs`, `params`, `env`, `build`, and
+`deploy` are meaningful on it. Every other node field is rejected at expansion
+time rather than silently dropped -- both the source/kind fields (`path`, `args`,
+`path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`, `operator`,
+`ros2`) and per-node runtime fields (`outputs`, `output_types`, `cpu_affinity`,
+`restart_policy`, `send_stdout_as`, ...). The same whitelist applies at every
+nesting level, so a nested module node is validated identically to a top-level
+one.
 
-- A resolved path that escapes the dataflow directory is rejected. A module
-  cannot reach a sibling project via `python: ../shared/op.py`, and the
-  `../../target/debug/<bin>` idiom used by the example dataflows cannot be
-  used from inside a module.
-- `build:` commands still run with the **dataflow** directory as their working
-  directory. An artifact a build produces must therefore be referenced from
-  where the build put it, which is not the module directory --- so
-  `build: cargo build -p my-op` paired with `shared-library: target/debug/my-op`
-  inside a module resolves to `modules/target/debug/my-op` and will not be
-  found. Use an absolute path or keep such nodes in the top-level dataflow.
+`env`, `build`, `deploy`, and `params` are accepted -- they propagate into the
+module's inner nodes.
+
+> **Breaking change.** These combinations parsed and ran before; the extra
+> fields were parsed, accepted, and then discarded when the module node was
+> replaced by its expansion. They now fail at expansion time, which means
+> `dora run`, `dora start`, `dora build`, `dora validate`, and
+> `dora expand --module` all reject them.
 
 ## Security
 
-- **Path confinement**: Module file paths must resolve within the dataflow's base directory. Absolute paths and directory traversal (`../`) outside the base are rejected.
+- **Path confinement**: Module file paths must resolve with lexical containment in the project root, plus physical containment in the root or in the target of an in-tree symlink. Absolute paths and directory traversal (`../`) that escape these boundaries are rejected.
 - **File size limit**: Module files are capped at 1 MB.
 - **Depth limit**: Recursive nesting is capped at 8 levels.
 - **Param key validation**: Parameter keys must be alphanumeric with underscores only.

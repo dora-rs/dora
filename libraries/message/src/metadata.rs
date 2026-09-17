@@ -8,10 +8,44 @@ use serde::{Deserialize, Serialize};
 /// Includes a timestamp and additional user-provided parameters. The payload is
 /// a self-describing Arrow IPC stream, so the message carries no separate type
 /// descriptor.
+///
+/// A node receives a `Metadata` alongside every input. The [`timestamp`] and
+/// [`metadata_version`] are read through accessors, while [`parameters`] — the
+/// user-provided key/value pairs — is a public field read and written directly.
+///
+/// [`timestamp`]: Self::timestamp
+/// [`metadata_version`]: Self::metadata_version
+/// [`parameters`]: Self::parameters
+///
+/// # Examples
+///
+/// ```
+/// use dora_message::metadata::{get_integer_param, Metadata, Parameter};
+///
+/// let timestamp = uhlc::HLC::default().new_timestamp();
+/// let mut metadata = Metadata::new(timestamp);
+///
+/// // A fresh `Metadata` carries the current wire-format version and no
+/// // user parameters.
+/// assert_eq!(metadata.metadata_version(), Metadata::CURRENT_VERSION);
+/// assert!(metadata.parameters.is_empty());
+///
+/// // Attach a typed parameter and read it back with the matching getter.
+/// metadata
+///     .parameters
+///     .insert("frame".to_string(), Parameter::Integer(7));
+/// assert_eq!(get_integer_param(&metadata.parameters, "frame"), Some(7));
+/// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Metadata {
     metadata_version: u16,
     timestamp: uhlc::Timestamp,
+    /// User-provided key/value parameters carried alongside the payload.
+    ///
+    /// A [`BTreeMap`] of [`Parameter`] values keyed by name. Read the common
+    /// scalar cases through the type-checked [`get_string_param`],
+    /// [`get_integer_param`], and [`get_bool_param`] helpers rather than
+    /// matching on the [`Parameter`] variant directly.
     pub parameters: MetadataParameters,
 }
 

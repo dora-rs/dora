@@ -4,7 +4,7 @@ use std::{
     pin::pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -21,7 +21,7 @@ use futures::{
     future::{Either, select},
 };
 use futures_timer::Delay;
-use scheduler::{NON_INPUT_EVENT, Scheduler};
+use scheduler::{NON_INPUT_EVENT, NON_INPUT_EVENT_QUEUE_SIZE, Scheduler};
 
 use self::thread::{EventItem, EventStreamThreadHandle};
 use crate::{
@@ -52,6 +52,56 @@ pub mod input_tracker;
 pub mod merged;
 mod scheduler;
 mod thread;
+
+/// Hand one zenoh-delivered event to the shared ingress channel, counting it as
+/// a drop if the channel is full.
+///
+/// The callback runs on zenoh's tokio IO worker, where `blocking_send` would
+/// panic, so the send is a `try_send` and a full channel means the payload is
+/// gone. That loss used to be log-only, which made `drain_drop_counts()` read
+/// zero while a node was losing every zero-copy message it could not keep up
+/// with (#3282).
+///
+/// A *closed* channel is not counted: it means the receiver is gone, i.e.
+/// ordinary shutdown, and counting it would have every node report phantom
+/// drops as it tears down.
+///
+/// Split out of the callback so the accounting is unit-testable without a live
+/// zenoh session.
+fn send_or_count_ingress_drop(
+    tx: &tokio::sync::mpsc::Sender<EventItem>,
+    item: EventItem,
+    input_id: &DataId,
+    dropped: &AtomicU64,
+) {
+    use tokio::sync::mpsc::error::TrySendError;
+    match tx.try_send(item) {
+        Ok(()) => {}
+        Err(TrySendError::Full(_)) => {
+            // Log once per drain window, not once per lost message. A formatted
+            // `warn!` with a subscriber attached measures ~1.6 us against ~1.7 ns
+            // for the counter, and this runs on zenoh's IO worker — the thread
+            // delivering every input of this node. Logging per drop would
+            // amplify the very backlog it reports.
+            //
+            // `fetch_add` returns the previous value, so the rate limit is free:
+            // zero when this is the first drop since the last
+            // `drain_drop_counts()` swapped the counter back to 0. The count
+            // itself is never rate-limited — that is what the counter is for.
+            if dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+                tracing::warn!(
+                    input = %input_id,
+                    "event channel full; dropping zenoh input. Raise this input's \
+                     queue_size — the ingress channel is sized from the sum of the \
+                     node's input queue_sizes."
+                );
+            }
+        }
+        Err(TrySendError::Closed(_)) => {
+            // Normal shutdown: the receiver is gone, nothing to report.
+        }
+    }
+}
 
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
 ///
@@ -101,6 +151,18 @@ pub struct EventStream {
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     scheduler: Scheduler,
+    /// Per-input counters for events dropped at the shared zenoh ingress
+    /// channel, before the scheduler ever sees them.
+    ///
+    /// The scheduler's own counters cover only what reached its per-input
+    /// queues. A zero-copy payload arriving on the direct zenoh path is
+    /// `try_send`-ed into one shared channel by a zenoh IO worker, and a full
+    /// channel drops it there — a site the scheduler cannot observe and, being
+    /// on another thread, cannot be given `&mut Scheduler` to report through.
+    /// One `AtomicU64` per input keeps the callback lock-free; `drain_drop_counts`
+    /// folds them in so callers see one number per input regardless of which
+    /// transport the payload took (#3282).
+    ingress_drops: HashMap<DataId, Arc<AtomicU64>>,
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
@@ -112,6 +174,14 @@ pub struct EventStream {
     /// for a correlation match. Drained first on the next `recv()` so
     /// the caller's main event loop never loses intermediate events
     /// (dora-rs/adora#148).
+    ///
+    /// Bounded via [`buffer_passthrough`](Self::buffer_passthrough): an event a
+    /// correlated wait pulls out of the scheduler and stashes here still counts
+    /// against a bound — `Event::Input`s against their input's `queue_size` /
+    /// `queue_policy`, control events against a shared non-input cap — so the
+    /// retention cannot grow without limit for a node that never reads its
+    /// events, and per-input queue policy means the same thing whether or not a
+    /// correlated receive touched the event (dora-rs/dora#3197).
     pending_passthrough: std::collections::VecDeque<Event>,
     /// Set to true after an `Event::Stop` has been delivered. Zenoh
     /// subscriber threads hold clones of the event channel sender, so
@@ -197,6 +267,29 @@ fn spawn_startup_acker(
     }
 }
 
+/// Open a fresh [`DaemonChannel`] to the daemon this node talks to.
+///
+/// `purpose` names the channel in the connection-error context (e.g. `"event
+/// stream"`), so a failure points at which of the node's channels could not be
+/// established.
+fn connect_daemon_channel(
+    daemon_communication: &DaemonCommunicationWrapper,
+    node_id: &NodeId,
+    purpose: &str,
+) -> eyre::Result<DaemonChannel> {
+    let channel = match daemon_communication {
+        DaemonCommunicationWrapper::Standard(daemon_communication) => match daemon_communication {
+            DaemonCommunication::Tcp { socket_addr } => DaemonChannel::new_tcp(*socket_addr)
+                .wrap_err_with(|| format!("failed to connect {purpose} for node `{node_id}`"))?,
+            DaemonCommunication::Interactive => DaemonChannel::Interactive(Default::default()),
+        },
+        DaemonCommunicationWrapper::Testing { channel, .. } => {
+            DaemonChannel::IntegrationTestChannel(channel.clone())
+        }
+    };
+    Ok(channel)
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
@@ -210,48 +303,15 @@ impl EventStream {
         write_events_to: Option<PathBuf>,
         zenoh_session: Option<&zenoh::Session>,
     ) -> eyre::Result<Self> {
-        let channel = match daemon_communication {
-            DaemonCommunicationWrapper::Standard(daemon_communication) => {
-                match daemon_communication {
-                    DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
-                            format!("failed to connect event stream for node `{node_id}`")
-                        })?
-                    }
-
-                    DaemonCommunication::Interactive => {
-                        DaemonChannel::Interactive(Default::default())
-                    }
-                }
-            }
-
-            DaemonCommunicationWrapper::Testing { channel, .. } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone())
-            }
-        };
+        let channel = connect_daemon_channel(daemon_communication, node_id, "event stream")?;
 
         let testing_shutdown = match daemon_communication {
             DaemonCommunicationWrapper::Testing { shutdown, .. } => Some(shutdown.clone()),
             _ => None,
         };
 
-        let close_channel = match daemon_communication {
-            DaemonCommunicationWrapper::Standard(daemon_communication) => {
-                match daemon_communication {
-                    DaemonCommunication::Tcp { socket_addr } => {
-                        DaemonChannel::new_tcp(*socket_addr).wrap_err_with(|| {
-                            format!("failed to connect event close channel for node `{node_id}`")
-                        })?
-                    }
-                    DaemonCommunication::Interactive => {
-                        DaemonChannel::Interactive(Default::default())
-                    }
-                }
-            }
-            DaemonCommunicationWrapper::Testing { channel, .. } => {
-                DaemonChannel::IntegrationTestChannel(channel.clone())
-            }
-        };
+        let close_channel =
+            connect_daemon_channel(daemon_communication, node_id, "event close channel")?;
 
         let mut queue_size_limit: HashMap<DataId, (usize, VecDeque<EventItem>)> = input_config
             .iter()
@@ -270,7 +330,7 @@ impl EventStream {
 
         queue_size_limit.insert(
             DataId::from(NON_INPUT_EVENT.to_string()),
-            (1_000, VecDeque::new()),
+            (NON_INPUT_EVENT_QUEUE_SIZE, VecDeque::new()),
         );
 
         let queue_policies: HashMap<DataId, dora_message::config::QueuePolicy> = input_config
@@ -404,6 +464,9 @@ impl EventStream {
         // a full queue just delays the ack until the producer's next marker.
         let (ack_tx, ack_rx) = tokio::sync::mpsc::channel::<DataId>(256);
         let mut ack_publishers: HashMap<DataId, zenoh::pubsub::Publisher<'static>> = HashMap::new();
+        // Populated per subscribed input below and moved into `EventStream`, so
+        // `drain_drop_counts` can read what the zenoh IO workers recorded.
+        let mut ingress_drops: HashMap<DataId, Arc<AtomicU64>> = HashMap::new();
         if let Some(session) = zenoh_session {
             use zenoh::Wait;
             use zenoh::qos::CongestionControl;
@@ -493,6 +556,8 @@ impl EventStream {
                     let ack_tx_cb = ack_tx.clone();
                     let tx_cb = tx.clone();
                     let input_id_cb = input_id.clone();
+                    let ingress_drops_cb =
+                        ingress_drops.entry(input_id.clone()).or_default().clone();
                     let decoder = decoder.clone();
                     let first_undecodable_cb = first_undecodable.clone();
                     let subscriber = session
@@ -666,28 +731,16 @@ impl EventStream {
                                             .lock()
                                             .unwrap_or_else(|p| p.into_inner()) = None;
                                     }
-                                    // Callback runs on zenoh's tokio IO worker —
-                                    // `blocking_send` panics from a tokio context, so
-                                    // use `try_send`. If the channel is full the event
-                                    // is dropped (logged); receiver-dropped also
-                                    // surfaces here, in which case there's nothing to do.
-                                    if let Err(e) = tx_cb.try_send(EventItem::ZenohInput {
-                                        id: input_id_cb.clone(),
-                                        metadata: std::sync::Arc::new(metadata),
-                                        data,
-                                    }) {
-                                        use tokio::sync::mpsc::error::TrySendError;
-                                        match e {
-                                            TrySendError::Full(_) => {
-                                                tracing::warn!(
-                                                    "event channel full; dropping zenoh input"
-                                                );
-                                            }
-                                            TrySendError::Closed(_) => {
-                                                // normal shutdown
-                                            }
-                                        }
-                                    }
+                                    send_or_count_ingress_drop(
+                                        &tx_cb,
+                                        EventItem::ZenohInput {
+                                            id: input_id_cb.clone(),
+                                            metadata: std::sync::Arc::new(metadata),
+                                            data,
+                                        },
+                                        &input_id_cb,
+                                        &ingress_drops_cb,
+                                    );
                                 }));
                             if result.is_err() {
                                 tracing::error!(
@@ -762,6 +815,7 @@ impl EventStream {
             start_timestamp: clock.new_timestamp(),
             clock,
             scheduler,
+            ingress_drops,
             write_events_to,
             use_scheduler,
             input_type_checks,
@@ -787,6 +841,28 @@ impl EventStream {
     /// If you want to receive the events in their original chronological order, use the
     /// asynchronous [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
     /// [`Stream`] trait).
+    ///
+    /// The canonical node loop drains this stream until it closes, reacting to
+    /// the events the node cares about (typically [`Event::Input`]) and ignoring
+    /// the rest:
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, Event};
+    ///
+    /// let (_node, mut events) = DoraNode::init_from_env()?;
+    ///
+    /// while let Some(event) = events.recv() {
+    ///     match event {
+    ///         Event::Input { id, metadata: _, data } => {
+    ///             // react to the input `id`, reading the Arrow `data`
+    ///             println!("received input `{id}` with {} element(s)", data.len());
+    ///         }
+    ///         Event::Stop(_) => break,
+    ///         _ => {}
+    ///     }
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn recv(&mut self) -> Option<Event> {
         futures::executor::block_on(self.recv_async())
     }
@@ -925,8 +1001,13 @@ impl EventStream {
     fn note_produced_event(&mut self, event: &Event) {
         // First-message type validation: check once per input, then remove.
         // `contains_key` short-circuits cheaply once the check is consumed, so
-        // steady-state topic messages pay a single map lookup (zero extra cost
-        // after the first message per input).
+        // steady-state topic messages pay a single map lookup after the check
+        // is consumed. The check is consumed on the first *non-`Null`* message
+        // (see the `Null` note below), so an input that only ever carries
+        // `Null` (an annotated timer, an empty-payload stream) keeps re-running
+        // this cheap, allocation-free inspection each message rather than a
+        // single lookup — the deliberate cost of not disabling validation on a
+        // `Null` first message.
         //
         // Skip the check (and keep it armed) when the message carries pattern
         // metadata (`request_id`, `goal_id`, or `goal_status`) — the input is
@@ -938,13 +1019,19 @@ impl EventStream {
         if let Event::Input { id, metadata, data } = event
             && self.input_type_checks.contains_key(id)
             && !crate::node::carries_pattern_correlation(&metadata.parameters)
-            && let Some(expected) = self.input_type_checks.remove(id)
         {
             let raw = dora_arrow_convert::internal::array_ref(data);
             let actual = raw.data_type();
-            // Skip check for Null type (timer ticks, empty payloads)
-            // to avoid spurious warnings on annotated timer inputs.
-            if *actual != arrow_schema::DataType::Null && *actual != expected {
+            // A `Null` first message (timer ticks, empty/metadata-only
+            // payloads) carries no type to validate. Skip it *without*
+            // consuming the one-shot check, so the first genuinely-typed
+            // message on this input is still validated instead of silently
+            // escaping the check. The check is consumed (`remove`) only once
+            // a non-`Null` payload has actually been inspected.
+            if *actual != arrow_schema::DataType::Null
+                && let Some(expected) = self.input_type_checks.remove(id)
+                && *actual != expected
+            {
                 tracing::warn!(
                     input = %id,
                     expected = ?expected,
@@ -967,13 +1054,30 @@ impl EventStream {
 
     /// Returns and resets the accumulated drop counts per input ID.
     ///
-    /// When inputs overflow their queue limits, the oldest messages are discarded.
-    /// For `drop_oldest` inputs this happens at `queue_size`. For `backpressure`
-    /// inputs this happens at a hard safety cap of 10x `queue_size`.
+    /// When inputs overflow their queue limits, events are discarded to keep memory bounded. For
+    /// `drop_oldest` inputs the cap is `queue_size` (clamped to at least 1); an overflow normally
+    /// evicts the oldest queued event, but correlated service/action messages and the `Stop` event
+    /// are preserved where possible, so the evicted event may instead be a newer one (or the
+    /// incoming event itself). For `backpressure` inputs the hard safety cap is
+    /// `max(10 × queue_size, 100)`.
     /// This method returns a map from input ID to the number of messages dropped
     /// since the last call.
+    /// Drops are reported per input across both loss sites — the scheduler's
+    /// per-input eviction and the shared zenoh ingress channel — so a caller
+    /// does not have to know which transport a payload took to learn it was
+    /// lost (#3282).
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
-        self.scheduler.drain_drop_counts()
+        let mut counts = self.scheduler.drain_drop_counts();
+        for (id, dropped) in &self.ingress_drops {
+            // Load before swapping: a node polling this every `recv()` pays a
+            // read-modify-write per input otherwise, and the counter is zero on
+            // every healthy call.
+            if dropped.load(Ordering::Relaxed) > 0 {
+                let n = dropped.swap(0, Ordering::Relaxed);
+                *counts.entry(id.clone()).or_insert(0) += n;
+            }
+        }
+        counts
     }
 
     fn add_event(&mut self, event: EventItem) {
@@ -1004,17 +1108,12 @@ impl EventStream {
         if let Some(write_events_to) = &mut self.write_events_to {
             let event_json = match event {
                 EventItem::NodeEvent { event, .. } => match event {
-                    NodeEvent::Stop => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "Stop",
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
+                    NodeEvent::Stop => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "Stop",
+                        None,
+                    )),
                     NodeEvent::Reload { .. } => None,
                     NodeEvent::Input { id, metadata, data } => {
                         let mut event_json = convert_output_to_json(
@@ -1027,53 +1126,30 @@ impl EventStream {
                         event_json.insert("type".into(), "Input".into());
                         Some(event_json.into())
                     }
-                    NodeEvent::InputClosed { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "InputClosed",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::InputRecovered { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "InputRecovered",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::NodeRestarted { id } => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "NodeRestarted",
-                            "id": id.to_string(),
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
-                    NodeEvent::AllInputsClosed => {
-                        let time_offset = self
-                            .clock
-                            .new_timestamp()
-                            .get_diff_duration(&self.start_timestamp);
-                        let event_json = serde_json::json!({
-                            "type": "AllInputsClosed",
-                            "time_offset_secs": time_offset.as_secs_f64(),
-                        });
-                        Some(event_json)
-                    }
+                    NodeEvent::InputClosed { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "InputClosed",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::InputRecovered { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "InputRecovered",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::NodeRestarted { id } => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "NodeRestarted",
+                        Some(id.to_string()),
+                    )),
+                    NodeEvent::AllInputsClosed => Some(control_event_json(
+                        &self.clock,
+                        &self.start_timestamp,
+                        "AllInputsClosed",
+                        None,
+                    )),
                     _ => None,
                 },
                 // Zenoh-delivered inputs surface to the user as `Event::Input`
@@ -1277,6 +1353,110 @@ impl EventStream {
         .await
     }
 
+    /// Stash an event that a pattern-aware wait consumed while searching for a
+    /// correlation match, so the caller's own event loop can still see it on
+    /// the next `recv()` / `recv_async()` / `next()`.
+    ///
+    /// The buffer escapes the scheduler's per-input `queue_size` /
+    /// `queue_policy` — an event that moves scheduler → passthrough left that
+    /// policy behind and, before dora-rs/dora#3197, was retained without limit
+    /// until someone read it. A node that lets pattern-aware waits own the
+    /// stream and never reads events itself has no drain, so a high-rate input
+    /// it never correlates for (or a flapping upstream spamming control events)
+    /// grew unbounded where the scheduler would have dropped oldest. We re-apply
+    /// a bound here (see [`enforce_passthrough_bound`](Self::enforce_passthrough_bound))
+    /// so the retention stays bounded and per-input policy means the same thing
+    /// whether or not a correlated receive touched the event.
+    fn buffer_passthrough(&mut self, event: Event) {
+        let (bucket, cap) = match &event {
+            Event::Input { id, .. } => {
+                let id = id.clone();
+                let cap = self.scheduler.effective_cap_for(&id);
+                (PassthroughBucket::Input(id), cap)
+            }
+            // Control events (`Reload`, a non-expected-server `NodeRestarted`,
+            // `ParamUpdate`, …) share one cap, mirroring the scheduler's single
+            // `NON_INPUT_EVENT` queue. `Stop` is exempt from eviction below.
+            _ => (PassthroughBucket::NonInput, NON_INPUT_EVENT_QUEUE_SIZE),
+        };
+        self.pending_passthrough.push_back(event);
+        self.enforce_passthrough_bound(&bucket, cap);
+    }
+
+    /// Enforce `bucket`'s bound over the buffered passthrough events belonging
+    /// to it, mirroring `Scheduler::select_eviction`: sacrifice the oldest
+    /// ordinary (non-correlated) event first so service responses and action
+    /// results survive; only when every buffered event in the bucket is
+    /// correlated do we drop the oldest correlated one, loudly — the same
+    /// request/response-contract-breaking last resort the scheduler logs
+    /// (dora-rs/adora#145, dora-rs/dora#3197). `Stop` is never dropped, matching
+    /// the scheduler's `is_stop`.
+    ///
+    /// `buffer_passthrough` calls this after every push, so the buffer is over
+    /// capacity by at most one and a single eviction restores the bound.
+    fn enforce_passthrough_bound(&mut self, bucket: &PassthroughBucket, cap: usize) {
+        use dora_message::metadata::carries_pattern_correlation;
+
+        let in_bucket = |event: &Event| match (bucket, event) {
+            (PassthroughBucket::Input(id), Event::Input { id: eid, .. }) => eid == id,
+            (PassthroughBucket::Input(_), _) => false,
+            // Non-input bucket: every non-input event counts (no correlation
+            // concept applies); `Stop` is handled as eviction-immune below.
+            (PassthroughBucket::NonInput, event) => !matches!(event, Event::Input { .. }),
+        };
+        let correlated = |event: &Event| {
+            matches!(event, Event::Input { metadata, .. }
+                if carries_pattern_correlation(&metadata.parameters))
+        };
+        // Droppable: in this bucket and not the eviction-immune `Stop` (matching
+        // the scheduler's `is_stop`).
+        let droppable = |event: &Event| in_bucket(event) && !matches!(event, Event::Stop(_));
+
+        if self
+            .pending_passthrough
+            .iter()
+            .filter(|e| in_bucket(e))
+            .count()
+            <= cap
+        {
+            return;
+        }
+
+        // Mirror `Scheduler::select_eviction`: sacrifice the oldest ordinary
+        // event first (`RemoveAt` / `DropIncoming`); only when the whole bucket
+        // is correlated drop the oldest correlated one, loudly
+        // (`DropCorrelatedLoud`).
+        let evict_at = self
+            .pending_passthrough
+            .iter()
+            .position(|e| droppable(e) && !correlated(e))
+            .or_else(|| self.pending_passthrough.iter().position(droppable));
+        let Some(evict_at) = evict_at else {
+            // Only a `Stop` in the bucket (at most one) — nothing to drop.
+            return;
+        };
+
+        // Log before removing; the immutable borrow ends with the `match`.
+        match self.pending_passthrough.get(evict_at) {
+            Some(Event::Input { id, metadata, .. })
+                if carries_pattern_correlation(&metadata.parameters) =>
+            {
+                scheduler::log_correlation_drop_params(id, &metadata.parameters);
+            }
+            Some(Event::Input { id, .. }) => {
+                tracing::warn!(input = %id, "discarding buffered input due to queue size limit");
+            }
+            _ => {
+                tracing::warn!("discarding buffered control event due to passthrough buffer limit");
+            }
+        }
+        self.pending_passthrough.remove(evict_at);
+        match bucket {
+            PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
+            PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
+        }
+    }
+
     /// Core loop for the pattern-aware helpers. Waits up to `timeout`
     /// for an event that satisfies `is_match(event, needle)`. Buffers
     /// every non-matching event so the caller's main event loop can
@@ -1334,11 +1514,11 @@ impl EventStream {
             match classify_correlation_event(&event, expected_server, |e| is_match(e, needle)) {
                 CorrelationOutcome::Match => return Ok(event),
                 CorrelationOutcome::ServerRestarted => {
-                    self.pending_passthrough.push_back(event);
+                    self.buffer_passthrough(event);
                     return Err(PatternError::ServerRestarted(expected_server.to_string()));
                 }
                 CorrelationOutcome::StreamEnded => {
-                    self.pending_passthrough.push_back(event);
+                    self.buffer_passthrough(event);
                     return Err(PatternError::StreamEnded);
                 }
                 CorrelationOutcome::StreamError => {
@@ -1348,11 +1528,42 @@ impl EventStream {
                     unreachable!("StreamError only returned for Event::Error");
                 }
                 CorrelationOutcome::Passthrough => {
-                    self.pending_passthrough.push_back(event);
+                    self.buffer_passthrough(event);
                 }
             }
         }
     }
+}
+
+/// Build the JSON for a "control" event that carries only a type tag, an
+/// optional input/node id, and the elapsed time offset since the node started.
+///
+/// Shared by the `Stop` / `InputClosed` / `InputRecovered` / `NodeRestarted` /
+/// `AllInputsClosed` arms of [`EventStream::record_event`], which differ only in
+/// the `"type"` string and whether an `"id"` field is present. A free function
+/// (rather than a `&self` method) so it can take the `clock` and
+/// `start_timestamp` fields by reference while `record_event` holds a mutable
+/// borrow of the sibling `write_events_to` field.
+fn control_event_json(
+    clock: &uhlc::HLC,
+    start_timestamp: &uhlc::Timestamp,
+    ty: &str,
+    id: Option<String>,
+) -> serde_json::Value {
+    let time_offset = clock.new_timestamp().get_diff_duration(start_timestamp);
+    // Build the map explicitly (rather than via `json!`) so the key order
+    // matches the previous per-arm literals byte-for-byte under serde_json's
+    // `preserve_order`: `type`, then the optional `id`, then `time_offset_secs`.
+    let mut event_json = serde_json::Map::new();
+    event_json.insert("type".to_owned(), ty.into());
+    if let Some(id) = id {
+        event_json.insert("id".to_owned(), serde_json::Value::String(id));
+    }
+    event_json.insert(
+        "time_offset_secs".to_owned(),
+        time_offset.as_secs_f64().into(),
+    );
+    serde_json::Value::Object(event_json)
 }
 
 /// Outcome of classifying a single event during a pattern-aware wait.
@@ -1389,6 +1600,16 @@ where
         Event::Error(_) => CorrelationOutcome::StreamError,
         _ => CorrelationOutcome::Passthrough,
     }
+}
+
+/// Which bound a buffered passthrough event counts against.
+enum PassthroughBucket {
+    /// An `Event::Input`, bounded by its input's effective `queue_size`.
+    Input(DataId),
+    /// Any non-input control event, bounded — like the scheduler's single
+    /// `NON_INPUT_EVENT` queue — by
+    /// [`NON_INPUT_EVENT_QUEUE_SIZE`](scheduler::NON_INPUT_EVENT_QUEUE_SIZE).
+    NonInput,
 }
 
 impl EventStream {
@@ -1688,15 +1909,10 @@ fn prime_in_band(
 pub fn data_to_arrow_array(
     data: Option<DataMessage>,
 ) -> eyre::Result<Arc<dyn arrow::array::Array>> {
-    let data: eyre::Result<Option<RawData>> = match data {
-        None => Ok(None),
-        Some(DataMessage::Vec(v)) => Ok(Some(RawData::Vec(v))),
-    };
-
-    data.and_then(|data| {
-        let raw_data = data.unwrap_or(RawData::Empty);
-        raw_data.into_arrow_array().map(arrow::array::make_array)
-    })
+    // `DataMessage` has a single infallible variant, so the conversion cannot
+    // fail; the only fallible step is `into_arrow_array`.
+    let raw_data = data.map_or(RawData::Empty, |DataMessage::Vec(v)| RawData::Vec(v));
+    raw_data.into_arrow_array().map(arrow::array::make_array)
 }
 
 impl Stream for EventStream {
@@ -1944,6 +2160,33 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn control_event_json_shape_and_key_order() {
+        let clock = uhlc::HLC::default();
+        let start = clock.new_timestamp();
+
+        // An id-bearing control event: keys in `type`, `id`, `time_offset_secs`
+        // order (serde_json's `preserve_order` makes the order observable).
+        let with_id = control_event_json(&clock, &start, "InputClosed", Some("cam".to_owned()));
+        let obj = with_id.as_object().expect("object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["type", "id", "time_offset_secs"]
+        );
+        assert_eq!(obj["type"], serde_json::json!("InputClosed"));
+        assert_eq!(obj["id"], serde_json::json!("cam"));
+        assert!(obj["time_offset_secs"].is_f64());
+
+        // A control event without an id omits the `id` field entirely.
+        let without_id = control_event_json(&clock, &start, "AllInputsClosed", None);
+        let obj = without_id.as_object().expect("object");
+        assert_eq!(
+            obj.keys().collect::<Vec<_>>(),
+            vec!["type", "time_offset_secs"]
+        );
+        assert_eq!(obj["type"], serde_json::json!("AllInputsClosed"));
+    }
 
     #[test]
     fn convert_param_update() {
@@ -2416,6 +2659,45 @@ mod tests {
         }
     }
 
+    /// A `Null` first message on a type-checked input must NOT consume the
+    /// one-shot first-message type check: the check has to survive so the
+    /// first genuinely-typed message is still validated. Before the fix the
+    /// check was `remove`d before the `Null` guard, so any input whose first
+    /// message was `Null` (a timer tick, an empty/metadata-only payload)
+    /// silently disabled type validation for all its later messages.
+    #[test]
+    fn null_first_message_does_not_consume_type_check() {
+        use arrow::array::{Int32Array, NullArray};
+        use dora_message::metadata::Metadata;
+
+        let (_node, mut events) = test_event_stream();
+        let id = DataId::from("cam".to_string());
+        events
+            .input_type_checks
+            .insert(id.clone(), arrow_schema::DataType::Int32);
+
+        let clock = dora_core::uhlc::HLC::default();
+        let input = |arr: std::sync::Arc<dyn arrow::array::Array>| Event::Input {
+            id: id.clone(),
+            metadata: Metadata::new(clock.new_timestamp()),
+            data: dora_arrow_convert::internal::from_array_ref(arr),
+        };
+
+        // A `Null` first message leaves the check armed.
+        events.note_produced_event(&input(std::sync::Arc::new(NullArray::new(1))));
+        assert!(
+            events.input_type_checks.contains_key(&id),
+            "a Null first message must not consume the type check"
+        );
+
+        // The first non-Null message consumes it (validation happened).
+        events.note_produced_event(&input(std::sync::Arc::new(Int32Array::from(vec![1]))));
+        assert!(
+            !events.input_type_checks.contains_key(&id),
+            "the first non-Null message must consume the one-shot type check"
+        );
+    }
+
     #[test]
     fn is_empty_reflects_pending_passthrough() {
         let (_node, mut events) = test_event_stream();
@@ -2479,6 +2761,177 @@ mod tests {
         assert!(
             matches!(second, Some(Event::Stop(_))),
             "expected Stop second, got {second:?}"
+        );
+    }
+
+    // ---- dora-rs/dora#3197: the passthrough buffer is bounded per input ----
+
+    /// Build an `Event::Input` for `id`, optionally tagged with a `request_id`
+    /// so `carries_pattern_correlation` treats it as a correlated response.
+    fn passthrough_input(id: &DataId, request_id: Option<&str>) -> Event {
+        use dora_message::metadata::{Metadata, MetadataParameters, Parameter, REQUEST_ID};
+        let mut params = MetadataParameters::new();
+        if let Some(request_id) = request_id {
+            params.insert(REQUEST_ID.into(), Parameter::String(request_id.to_string()));
+        }
+        let ts = dora_core::uhlc::HLC::default().new_timestamp();
+        Event::Input {
+            id: id.clone(),
+            metadata: Metadata::from_parameters(ts, params),
+            data: dora_arrow_convert::internal::from_array_ref(std::sync::Arc::new(
+                arrow::array::NullArray::new(1),
+            )),
+        }
+    }
+
+    fn count_buffered_for(events: &EventStream, id: &DataId) -> usize {
+        events
+            .pending_passthrough
+            .iter()
+            .filter(|e| matches!(e, Event::Input { id: eid, .. } if eid == id))
+            .count()
+    }
+
+    /// A node that lets pattern-aware waits own the stream and never reads
+    /// events itself must not accumulate an unbounded passthrough buffer: an
+    /// ordinary input stashed there is capped at its effective `queue_size`
+    /// (default 10, `drop_oldest`), and the overflow is accounted as drops.
+    #[test]
+    fn buffer_passthrough_bounds_ordinary_inputs_per_queue_size() {
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv(); // drain the initial Stop
+
+        let id = DataId::from("sensor".to_string());
+        let cap = 10; // unconfigured input -> DEFAULT_QUEUE_SIZE, drop_oldest
+        for _ in 0..(cap + 5) {
+            events.buffer_passthrough(passthrough_input(&id, None));
+        }
+
+        assert_eq!(
+            count_buffered_for(&events, &id),
+            cap,
+            "passthrough retention must be capped at the input's queue_size"
+        );
+        assert_eq!(
+            events.drain_drop_counts().get(&id),
+            Some(&5),
+            "over-cap passthrough events must be counted as drops for the input"
+        );
+    }
+
+    /// The passthrough bound honours the same correlation preference the
+    /// scheduler uses: when the buffer for an input is full of correlated
+    /// responses, an incoming ordinary event on that input is dropped rather
+    /// than a correlation — a client waiting on a `request_id` never loses its
+    /// response to unrelated traffic.
+    #[test]
+    fn buffer_passthrough_preserves_correlated_over_ordinary() {
+        use dora_message::metadata::{REQUEST_ID, get_string_param};
+
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv();
+
+        let id = DataId::from("svc".to_string());
+        let cap = 10;
+
+        for i in 0..cap {
+            events.buffer_passthrough(passthrough_input(&id, Some(&format!("req-{i}"))));
+        }
+        // Flood with ordinary events on the same input.
+        for _ in 0..20 {
+            events.buffer_passthrough(passthrough_input(&id, None));
+        }
+
+        let correlated = events
+            .pending_passthrough
+            .iter()
+            .filter(|e| {
+                matches!(e, Event::Input { metadata, .. }
+                if get_string_param(&metadata.parameters, REQUEST_ID).is_some())
+            })
+            .count();
+        assert_eq!(
+            correlated, cap,
+            "every correlated response must be preserved"
+        );
+        assert_eq!(
+            events.pending_passthrough.len(),
+            cap,
+            "ordinary floods must not push the buffer past the cap"
+        );
+    }
+
+    /// A buffered `Stop` has no input id and must never be evicted by an input
+    /// flooding the buffer — mirroring the scheduler, where `Stop` is
+    /// eviction-immune.
+    #[test]
+    fn buffer_passthrough_never_drops_stop() {
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv();
+
+        events.buffer_passthrough(Event::Stop(StopCause::Manual));
+
+        let id = DataId::from("flood".to_string());
+        for _ in 0..30 {
+            events.buffer_passthrough(passthrough_input(&id, None));
+        }
+
+        assert!(
+            events
+                .pending_passthrough
+                .iter()
+                .any(|e| matches!(e, Event::Stop(_))),
+            "a buffered Stop must survive an input flood"
+        );
+        assert_eq!(
+            count_buffered_for(&events, &id),
+            10,
+            "the flooding input is still capped at its queue_size"
+        );
+    }
+
+    /// Non-input control events (a flapping upstream's `NodeRestarted`,
+    /// `Reload`, `ParamUpdate`, …) that a pattern-aware wait keeps stashing are
+    /// also bounded — otherwise a never-reading node grows the buffer without
+    /// limit even though no input is involved (dora-rs/dora#3197). `Stop` still
+    /// survives.
+    #[test]
+    fn buffer_passthrough_bounds_control_events() {
+        let (_node, mut events) = test_event_stream();
+        let _ = events.recv();
+
+        // One eviction-immune `Stop` plus a control-event flood. The cap counts
+        // the `Stop` (as the scheduler's `NON_INPUT_EVENT` queue length does),
+        // so the bucket settles at `cap` = 1 `Stop` + (cap - 1) `Reload`s.
+        events.buffer_passthrough(Event::Stop(StopCause::Manual));
+        let pushed_reloads = NON_INPUT_EVENT_QUEUE_SIZE + 25;
+        for _ in 0..pushed_reloads {
+            events.buffer_passthrough(Event::Reload { operator_id: None });
+        }
+
+        let non_input = events
+            .pending_passthrough
+            .iter()
+            .filter(|e| !matches!(e, Event::Input { .. }))
+            .count();
+        assert_eq!(
+            non_input, NON_INPUT_EVENT_QUEUE_SIZE,
+            "buffered control events must be capped at the non-input limit"
+        );
+        assert!(
+            events
+                .pending_passthrough
+                .iter()
+                .any(|e| matches!(e, Event::Stop(_))),
+            "Stop must survive a control-event flood"
+        );
+        let expected_drops = (pushed_reloads + 1 - NON_INPUT_EVENT_QUEUE_SIZE) as u64;
+        assert_eq!(
+            events
+                .drain_drop_counts()
+                .get(&DataId::from(NON_INPUT_EVENT.to_string())),
+            Some(&expected_drops),
+            "control-event overflow must be accounted under the non-input key"
         );
     }
 
@@ -3023,6 +3476,79 @@ mod tests {
         assert!(
             second.is_none(),
             "Stream::next must yield None after Stop, got {second:?}"
+        );
+    }
+
+    // ---- #3282: zenoh-path ingress drops must reach drain_drop_counts() ----
+
+    fn zenoh_item(id: &str) -> EventItem {
+        use dora_arrow_convert::IntoArrow;
+        let ts = uhlc::HLC::default().new_timestamp();
+        EventItem::ZenohInput {
+            id: DataId::from(id.to_string()),
+            metadata: std::sync::Arc::new(Metadata::new(ts)),
+            data: dora_arrow_convert::internal::into_array_ref(().into_arrow()).to_data(),
+        }
+    }
+
+    /// A zero-copy payload never reaches the scheduler's per-input queue: the
+    /// zenoh callback `try_send`s it into the node's single shared ingress
+    /// channel, and a full channel drops it there. Before #3282 that site only
+    /// logged, so `drain_drop_counts()` — the one programmatic way a node can
+    /// learn it lost data — reported zero while data was being lost. This is the
+    /// audit item in `docs/audit-2026-06-04-soundness.md`.
+    #[test]
+    fn ingress_overflow_is_counted() {
+        let (tx, _rx) = tokio::sync::mpsc::channel::<EventItem>(1);
+        let id = DataId::from("camera".to_string());
+        let drops = std::sync::Arc::new(AtomicU64::new(0));
+
+        // First fits the capacity-1 channel.
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+
+        // The next two find it full and must be counted, not just logged.
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 2);
+    }
+
+    /// A closed channel is ordinary shutdown, not data loss — counting it would
+    /// make every node report phantom drops as it tears down.
+    #[test]
+    fn ingress_send_to_a_closed_channel_is_not_a_drop() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<EventItem>(1);
+        drop(rx);
+        let id = DataId::from("camera".to_string());
+        let drops = std::sync::Arc::new(AtomicU64::new(0));
+
+        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        assert_eq!(drops.load(Ordering::Relaxed), 0);
+    }
+
+    /// `drain_drop_counts()` must report one number per input, summing the
+    /// scheduler's per-input evictions and the ingress-channel drops — a caller
+    /// asking "did I lose anything on `camera`?" should not have to know which
+    /// transport the payload happened to take. And draining must reset, so two
+    /// calls don't double-count.
+    #[test]
+    fn drain_drop_counts_merges_ingress_and_scheduler_drops() {
+        let (_node, mut events) = test_event_stream();
+        let id = DataId::from("camera".to_string());
+
+        events.scheduler.record_drop(&id);
+        events
+            .ingress_drops
+            .entry(id.clone())
+            .or_default()
+            .fetch_add(2, Ordering::Relaxed);
+
+        let counts = events.drain_drop_counts();
+        assert_eq!(counts.get(&id), Some(&3));
+
+        assert!(
+            events.drain_drop_counts().is_empty(),
+            "drain must reset both sources"
         );
     }
 }

@@ -228,6 +228,10 @@ const ALL_CHECKABLE_FIELDS: &[CheckableField] = &[
         is_set: |node| node.health_check_timeout.is_some(),
     },
     CheckableField {
+        name: "startup_timeout",
+        is_set: |node| node.startup_timeout.is_some(),
+    },
+    CheckableField {
         name: "finish_grace_secs",
         is_set: |node| node.finish_grace_secs.is_some(),
     },
@@ -289,7 +293,7 @@ fn validate_against_whitelist(node: &Node, allowed: &[&str], kind_name: &str) ->
 /// inputs, outputs, output_types, input_types, output_framing,
 /// shared_memory_pool_size, restart_policy, max_restarts,
 /// restart_delay, max_restart_delay, restart_window,
-/// health_check_timeout, finish_grace_secs,
+/// health_check_timeout, startup_timeout, finish_grace_secs,
 /// send_stdout_as, send_logs_as, min_log_level, max_log_size, max_rotated_files,
 /// output_metadata, pattern, cpu_affinity
 const STANDARD_ALLOWED: &[&str] = &[
@@ -314,6 +318,7 @@ const STANDARD_ALLOWED: &[&str] = &[
     "max_restart_delay",
     "restart_window",
     "health_check_timeout",
+    "startup_timeout",
     "finish_grace_secs",
     "send_stdout_as",
     "send_logs_as",
@@ -355,7 +360,7 @@ fn check_operator(node: &Node) -> Result<()> {
 /// ros2, args, inputs, outputs, output_types, input_types,
 /// output_framing, shared_memory_pool_size,
 /// restart_policy, max_restarts, restart_delay, max_restart_delay,
-/// restart_window, health_check_timeout, finish_grace_secs,
+/// restart_window, health_check_timeout, startup_timeout, finish_grace_secs,
 /// send_stdout_as, send_logs_as, min_log_level, max_log_size, max_rotated_files,
 /// output_metadata, pattern, cpu_affinity (+ shared)
 const ROS2_ALLOWED: &[&str] = &[
@@ -373,6 +378,7 @@ const ROS2_ALLOWED: &[&str] = &[
     "max_restart_delay",
     "restart_window",
     "health_check_timeout",
+    "startup_timeout",
     "finish_grace_secs",
     "send_stdout_as",
     "send_logs_as",
@@ -391,11 +397,44 @@ fn check_ros2(node: &Node) -> Result<()> {
 }
 
 /// Module node whitelist:
-/// module, inputs, params (+ shared)
+/// module, inputs, params, build (+ shared)
 /// Note: module is the kind discriminator; params is compile-time substitution.
-const MODULE_ALLOWED: &[&str] = &["module", "inputs", "params"];
+/// `build` (like the shared `env`/`deploy`) propagates into the module's inner
+/// nodes -- see `expand::expand_modules` -- so it is accepted rather than
+/// rejected, matching the documented contract in `docs/modules.md` and the
+/// `Node::module` rustdoc.
+const MODULE_ALLOWED: &[&str] = &["module", "inputs", "params", "build"];
 
 pub(super) fn check_module(node: &Node) -> Result<()> {
+    // `validate_against_whitelist` only inspects `ALL_CHECKABLE_FIELDS`, which
+    // deliberately omits the kind discriminators (`operators`, `operator`,
+    // `ros2`, `module`). For ordinary nodes a second discriminator is rejected
+    // by `node.kind()`, but a module node never reaches `node.kind()` --
+    // `classify` bails on it ("must be expanded before resolution") -- so
+    // `check_module` is the sole validator. Reject a conflicting discriminator
+    // explicitly here; otherwise a `module:` node that also sets `operator:`
+    // would pass and have that block silently dropped during expansion.
+    let mut conflicts = Vec::new();
+    if node.operators.is_some() {
+        conflicts.push("operators");
+    }
+    if node.operator.is_some() {
+        conflicts.push("operator");
+    }
+    if node.ros2.is_some() {
+        conflicts.push("ros2");
+    }
+    if !conflicts.is_empty() {
+        bail!(
+            "node `{}` has fields that are not allowed on Module nodes: {}\n\
+             hint: a module node references a sub-dataflow and cannot also be an \
+             operator or ros2 node -- remove these fields, or drop `module:` if \
+             this was meant to be a regular node",
+            node.id,
+            conflicts.join(", ")
+        );
+    }
+
     let mut allowed = SHARED_FIELDS.to_vec();
     allowed.extend(MODULE_ALLOWED);
     validate_against_whitelist(node, &allowed, "Module")
@@ -509,6 +548,10 @@ hub: dora-yolo@^0.5
             (
                 "health_check_timeout",
                 "id: x\npath: ./node\nhealth_check_timeout: 10.0\n",
+            ),
+            (
+                "startup_timeout",
+                "id: x\npath: ./node\nstartup_timeout: 10.0\n",
             ),
             (
                 "finish_grace_secs",
@@ -649,19 +692,68 @@ git: https://github.com/example/node.git
             assert!(error.contains(expected_field), "{error}");
         }
 
-        let module = parse_node(
+        // `build` is accepted on a module node: like `env`/`deploy` it
+        // propagates into the module's inner nodes (see `expand::expand_modules`
+        // and `docs/modules.md`), so it must pass the whitelist.
+        let module_build = parse_node(
             r#"
 id: nav
 module: modules/nav.yml
 build: cargo build
 "#,
         );
+        check_module(&module_build).expect("module build should be accepted");
+
+        // A per-node runtime field like `outputs` has no meaning on a module
+        // node (a module declares its outputs in its own header) and is rejected
+        // rather than silently dropped during expansion.
+        let module_outputs = parse_node(
+            r#"
+id: nav
+module: modules/nav.yml
+outputs: [out]
+"#,
+        );
         let error = format!(
             "{:#}",
-            check_module(&module).expect_err("module build should be rejected")
+            check_module(&module_outputs).expect_err("module outputs should be rejected")
         );
         assert!(error.contains("Module"), "{error}");
-        assert!(error.contains("build"), "{error}");
+        assert!(error.contains("outputs"), "{error}");
+    }
+
+    #[test]
+    fn check_module_rejects_conflicting_kind_discriminator() {
+        // A module node that also sets another kind discriminator (`operator`,
+        // `operators`, `ros2`) must be rejected: these fields are not covered by
+        // `ALL_CHECKABLE_FIELDS`, and a module node never reaches
+        // `node.kind()`, so `check_module` is the only place the conflict can be
+        // caught. Without an explicit check the extra block would be silently
+        // dropped during expansion.
+        for (yaml, field) in [
+            (
+                "id: nav\nmodule: modules/nav.yml\noperator:\n  python: op.py\n",
+                "operator",
+            ),
+            (
+                "id: nav\nmodule: modules/nav.yml\noperators:\n  - id: op\n    python: op.py\n",
+                "operators",
+            ),
+            (
+                "id: nav\nmodule: modules/nav.yml\nros2:\n  topic: /odom\n  message_type: nav_msgs/msg/Odometry\n  direction: subscribe\n",
+                "ros2",
+            ),
+        ] {
+            let node = parse_node(yaml);
+            let error = format!(
+                "{:#}",
+                check_module(&node).expect_err("conflicting discriminator should be rejected")
+            );
+            assert!(
+                error.contains("Module") && error.contains(field),
+                "`module` + `{field}` should be rejected; got: {error}"
+            );
+        }
     }
 
     #[test]

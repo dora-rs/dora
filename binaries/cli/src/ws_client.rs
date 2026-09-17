@@ -202,11 +202,7 @@ impl WsSession {
         topics: Vec<(dora_message::id::NodeId, dora_message::id::DataId)>,
     ) -> eyre::Result<(Uuid, std_mpsc::Receiver<eyre::Result<Vec<u8>>>)> {
         let request = serde_json::to_vec(
-            &dora_message::cli_to_coordinator::ControlRequest::TopicSubscribe {
-                dataflow_id,
-                topics,
-                protocol_version: Some(dora_message::TOPIC_DATA_PROTOCOL_VERSION),
-            },
+            &dora_message::cli_to_coordinator::ControlRequest::topic_subscribe(dataflow_id, topics),
         )
         .map_err(|e| eyre!("failed to serialize TopicSubscribe: {e}"))?;
 

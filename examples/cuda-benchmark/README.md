@@ -11,7 +11,7 @@ conda install pyarrow "arrow-cpp-proc=*=cuda" -c conda-forge
 ## Test installation with
 python -c "import pyarrow.cuda"
 
-# Install torch if it's not already present (dora.cuda uses ctypes + libcudart,
+# Install torch if it's not already present (dora_tensor_pool uses ctypes + libcudart,
 # no numba dependency needed).
 pip install torch
 

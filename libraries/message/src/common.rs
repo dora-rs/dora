@@ -11,20 +11,38 @@ use crate::{BuildId, DataflowId, daemon_to_daemon::InterDaemonEvent, id::NodeId}
 
 pub use log::Level as LogLevel;
 
+/// A single log record delivered to `dora/logs` subscribers.
+///
+/// One of these is produced for every captured log line — a `tracing` event
+/// from a dora component or a line a node wrote to stdout/stderr — and carries
+/// both the message and the routing/provenance context a log consumer needs to
+/// attribute it (which dataflow, node, and daemon it came from).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
 #[must_use]
 pub struct LogMessage {
+    /// The build this record belongs to, when it originated during a build.
     pub build_id: Option<BuildId>,
+    /// The dataflow the emitting component was part of, if any.
     pub dataflow_id: Option<DataflowId>,
+    /// The node that emitted the record, if it came from a node.
     pub node_id: Option<NodeId>,
+    /// The daemon that captured and forwarded the record.
     pub daemon_id: Option<DaemonId>,
+    /// The severity, or [`LogLevelOrStdout::Stdout`] for a captured stdout line.
     pub level: LogLevelOrStdout,
+    /// The `tracing` target (typically the emitting module path), when known.
     pub target: Option<String>,
+    /// Source module path of the emitting code, when known.
     pub module_path: Option<String>,
+    /// Source file of the emitting code, when known.
     pub file: Option<String>,
+    /// Line within [`file`](Self::file) of the emitting code, when known.
     pub line: Option<u32>,
+    /// The log text itself.
     pub message: String,
+    /// When the record was produced.
     pub timestamp: DateTime<Utc>,
+    /// Structured key/value fields attached to a `tracing` event, if any.
     pub fields: Option<BTreeMap<String, String>>,
 }
 
@@ -47,33 +65,49 @@ pub struct LogMessageHelper {
 impl From<LogMessageHelper> for LogMessage {
     fn from(helper: LogMessageHelper) -> Self {
         let fields = helper.fields.as_ref();
+        // Use `or_else` throughout so each fallback (a `BTreeMap` lookup plus a
+        // `String` clone, and sometimes a parse) is computed only when the
+        // typed field is absent. `or` would evaluate every fallback eagerly and
+        // discard it whenever the typed field is already `Some`.
         LogMessage {
-            build_id: helper.build_id.or(fields
-                .and_then(|f| f.get("build_id").cloned())
-                .and_then(|id| BuildId::from_display_str(&id))),
-            dataflow_id: helper.dataflow_id.or(fields
-                .and_then(|f| f.get("dataflow_id").cloned())
-                .and_then(|id| Uuid::parse_str(&id).ok())),
-            node_id: helper.node_id.or(fields
-                .and_then(|f| f.get("node_id").cloned())
-                .and_then(|id| id.parse::<NodeId>().ok())),
-            daemon_id: helper.daemon_id.or(fields
-                .and_then(|f| f.get("daemon_id").cloned())
-                .and_then(|id| DaemonId::from_display_str(&id))),
+            build_id: helper.build_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("build_id").cloned())
+                    .and_then(|id| BuildId::from_display_str(&id))
+            }),
+            dataflow_id: helper.dataflow_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("dataflow_id").cloned())
+                    .and_then(|id| Uuid::parse_str(&id).ok())
+            }),
+            node_id: helper.node_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("node_id").cloned())
+                    .and_then(|id| id.parse::<NodeId>().ok())
+            }),
+            daemon_id: helper.daemon_id.or_else(|| {
+                fields
+                    .and_then(|f| f.get("daemon_id").cloned())
+                    .and_then(|id| DaemonId::from_display_str(&id))
+            }),
             level: helper.level,
             target: helper
                 .target
-                .or(fields.and_then(|f| f.get("target").cloned())),
+                .or_else(|| fields.and_then(|f| f.get("target").cloned())),
             module_path: helper
                 .module_path
-                .or(fields.and_then(|f| f.get("module_path").cloned())),
-            file: helper.file.or(fields.and_then(|f| f.get("file").cloned())),
-            line: helper.line.or(fields
-                .and_then(|f| f.get("line").cloned())
-                .and_then(|s| s.parse().ok())),
+                .or_else(|| fields.and_then(|f| f.get("module_path").cloned())),
+            file: helper
+                .file
+                .or_else(|| fields.and_then(|f| f.get("file").cloned())),
+            line: helper.line.or_else(|| {
+                fields
+                    .and_then(|f| f.get("line").cloned())
+                    .and_then(|s| s.parse().ok())
+            }),
             message: helper
                 .message
-                .or(fields.and_then(|f| f.get("message").cloned()))
+                .or_else(|| fields.and_then(|f| f.get("message").cloned()))
                 .unwrap_or_default(),
             fields: helper.fields,
             timestamp: helper.timestamp,
@@ -102,6 +136,27 @@ impl LogLevelOrStdout {
     /// - A `LogLevel` message always passes a `Stdout` filter (the most
     ///   permissive), and passes a `LogLevel` filter `min` when its severity is
     ///   at least as severe as `min` (`msg <= min` in log-crate ordering).
+    ///
+    /// ```
+    /// use dora_message::common::{LogLevel, LogLevelOrStdout};
+    ///
+    /// let stdout = LogLevelOrStdout::Stdout;
+    /// let info = LogLevelOrStdout::LogLevel(LogLevel::Info);
+    /// let error = LogLevelOrStdout::LogLevel(LogLevel::Error);
+    ///
+    /// // Severity: `Error` is more severe than `Info`, so it passes an `Info` filter...
+    /// assert!(error.passes(&info));
+    /// // ...while a less severe message is filtered out.
+    /// assert!(!info.passes(&error));
+    /// // A message passes a filter at its own level.
+    /// assert!(info.passes(&info));
+    ///
+    /// // A `LogLevel` message always passes the (most permissive) `Stdout` filter,
+    /// // but a `Stdout` message passes only a `Stdout` filter, never a severity one.
+    /// assert!(info.passes(&stdout));
+    /// assert!(stdout.passes(&stdout));
+    /// assert!(!stdout.passes(&info));
+    /// ```
     pub fn passes(&self, min: &LogLevelOrStdout) -> bool {
         match (self, min) {
             (LogLevelOrStdout::Stdout, LogLevelOrStdout::Stdout) => true,
@@ -196,16 +251,35 @@ pub enum NodeErrorCause {
     },
 }
 
+/// How a node process ended.
+///
+/// Built from the node process's [`ExitStatus`](std::process::ExitStatus) (see
+/// the [`From`] impl), so it distinguishes a clean exit, a non-zero exit code,
+/// a killing signal (Unix), and the case where the daemon could not even wait
+/// on the process ([`IoError`](Self::IoError)).
 #[derive(Debug, Clone, serde::Deserialize, serde::Serialize)]
 pub enum NodeExitStatus {
+    /// The process exited successfully (exit code 0).
     Success,
+    /// The daemon failed to launch or wait on the process.
     IoError(String),
+    /// The process exited with this non-zero code.
     ExitCode(i32),
+    /// The process was terminated by this signal (Unix only).
     Signal(i32),
+    /// The process ended in a way that is neither a code nor a signal.
     Unknown,
 }
 
 impl NodeExitStatus {
+    /// Whether the node exited cleanly (i.e. this is [`Success`](Self::Success)).
+    ///
+    /// ```
+    /// use dora_message::common::NodeExitStatus;
+    ///
+    /// assert!(NodeExitStatus::Success.is_success());
+    /// assert!(!NodeExitStatus::ExitCode(1).is_success());
+    /// ```
     pub fn is_success(&self) -> bool {
         matches!(self, NodeExitStatus::Success)
     }
@@ -268,6 +342,7 @@ impl DataMessage {
         }
     }
 
+    /// Whether the carried payload is empty (zero bytes).
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -284,6 +359,14 @@ impl fmt::Debug for DataMessage {
     }
 }
 
+/// Identity of a running daemon: an optional operator-supplied machine id
+/// paired with a per-process time-ordered UUIDv7.
+///
+/// The machine id (typically a hostname) makes the [`Display`](std::fmt::Display)
+/// form human-readable and lets the coordinator route by machine, while the UUID
+/// keeps the id unique even when two daemons share a machine id (or none is set).
+/// The `Display` form is `"{machine_id}-{uuid}"`, or a bare `"{uuid}"` when there
+/// is no machine id; [`from_display_str`](Self::from_display_str) is its inverse.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct DaemonId {
     machine_id: Option<String>,
@@ -291,6 +374,8 @@ pub struct DaemonId {
 }
 
 impl DaemonId {
+    /// Create a fresh daemon id for the given machine, assigning a new
+    /// time-ordered UUIDv7. Pass `None` when no machine id is configured.
     pub fn new(machine_id: Option<String>) -> Self {
         DaemonId {
             machine_id,
@@ -298,6 +383,9 @@ impl DaemonId {
         }
     }
 
+    /// Whether this daemon was created with exactly the given machine id.
+    ///
+    /// Always `false` for a daemon created without a machine id.
     pub fn matches_machine_id(&self, machine_id: &str) -> bool {
         self.machine_id
             .as_ref()
@@ -305,6 +393,7 @@ impl DaemonId {
             .unwrap_or_default()
     }
 
+    /// The machine id this daemon was created with, or `None` if none was set.
     pub fn machine_id(&self) -> Option<&str> {
         self.machine_id.as_deref()
     }
@@ -321,6 +410,24 @@ impl DaemonId {
     /// machine-id path requires the canonical 36-char UUID suffix that
     /// `Display` emits; the bare path accepts any form `Uuid::parse_str`
     /// recognizes (canonical / simple / urn / braced).
+    ///
+    /// ```
+    /// use dora_message::common::DaemonId;
+    ///
+    /// // A hyphenated machine id round-trips through `Display` (dora-rs/dora#2027)...
+    /// let id = DaemonId::new(Some("my-host".to_string()));
+    /// assert_eq!(DaemonId::from_display_str(&id.to_string()), Some(id.clone()));
+    /// assert_eq!(id.machine_id(), Some("my-host"));
+    /// assert!(id.matches_machine_id("my-host"));
+    ///
+    /// // ...as does a daemon with no machine id (a bare UUID).
+    /// let anon = DaemonId::new(None);
+    /// assert_eq!(DaemonId::from_display_str(&anon.to_string()), Some(anon.clone()));
+    /// assert_eq!(anon.machine_id(), None);
+    ///
+    /// // Garbage does not parse to a bogus id.
+    /// assert_eq!(DaemonId::from_display_str("not-a-daemon-id"), None);
+    /// ```
     pub fn from_display_str(s: &str) -> Option<Self> {
         // No machine id: the whole string is the UUID.
         if let Ok(uuid) = Uuid::parse_str(s) {

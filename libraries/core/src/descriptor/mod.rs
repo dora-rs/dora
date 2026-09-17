@@ -1,11 +1,12 @@
 use dora_message::{
-    config::{InputMapping, NodeRunConfig},
-    descriptor::{EnvValue, NodeSource},
+    config::{Input, InputMapping},
+    descriptor::{EnvValue, derive_port_id, single_topic_port_id},
     id::{DataId, NodeId, OperatorId},
 };
 use eyre::{Context, OptionExt, Result, bail};
 use std::{
-    collections::{BTreeMap, HashMap},
+    borrow::Cow,
+    collections::{BTreeMap, BTreeSet, HashMap},
     env::consts::EXE_EXTENSION,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -51,8 +52,49 @@ pub use expand::{
     expand_modules_with_boundaries,
 };
 
+/// Operations on a parsed [`Descriptor`].
+///
+/// These live on an extension trait rather than inherent methods because
+/// [`Descriptor`] is defined in `dora-message` (the wire-format crate), while
+/// the parsing, validation, resolution, and visualization logic belongs to
+/// `dora-core`. Import the trait to turn a descriptor into the resolved node
+/// map dora runs, validate it, or render it as a mermaid graph.
+///
+/// # Example
+///
+/// ```
+/// use dora_core::descriptor::{Descriptor, DescriptorExt};
+///
+/// let yaml = b"
+/// nodes:
+///   - id: source
+///     path: ./source
+///     outputs: [data]
+///   - id: sink
+///     path: ./sink
+///     inputs:
+///       value: source/data
+/// ";
+///
+/// // Parse the YAML into a descriptor...
+/// let descriptor = Descriptor::parse(yaml.to_vec())?;
+/// assert_eq!(descriptor.nodes.len(), 2);
+///
+/// // ...then resolve aliases and fill in defaults to get the node map dora runs.
+/// let resolved = descriptor.resolve_aliases_and_set_defaults()?;
+/// assert_eq!(resolved.len(), 2);
+/// # Ok::<(), eyre::Report>(())
+/// ```
 pub trait DescriptorExt {
+    /// Resolve the descriptor into the map of nodes dora runs.
+    ///
+    /// Fills in defaults, rewrites single-operator input references to the
+    /// operator-qualified output name, and returns the nodes keyed by id. The
+    /// descriptor must already be module-expanded (see [`expand`](Self::expand))
+    /// if it contains `module:` references.
     fn resolve_aliases_and_set_defaults(&self) -> eyre::Result<BTreeMap<NodeId, ResolvedNode>>;
+    /// Render the resolved dataflow as a mermaid `flowchart`, annotated with the
+    /// given module `boundaries` (from [`expand_with_boundaries`](Self::expand_with_boundaries)).
     fn visualize_as_mermaid_with_boundaries(
         &self,
         boundaries: &ModuleBoundaries,
@@ -71,8 +113,15 @@ pub trait DescriptorExt {
     /// updated.
     fn apply_exit_when_nodes_finish(&mut self, over: Option<bool>);
 
+    /// Read a descriptor from a YAML file at `path` and [`parse`](Self::parse) it.
     fn blocking_read(path: &Path) -> eyre::Result<Descriptor>;
+    /// Parse a descriptor from raw YAML bytes.
+    ///
+    /// This only deserializes; it does not expand modules or validate the
+    /// dataflow — use [`check`](Self::check) for that.
     fn parse(buf: Vec<u8>) -> eyre::Result<Descriptor>;
+    /// Expand modules and validate the whole dataflow (node ids, input wiring,
+    /// field combinations, …), resolving relative paths against `working_dir`.
     fn check(&self, working_dir: &Path) -> eyre::Result<()>;
     /// Expand all module references into flat nodes.
     ///
@@ -195,54 +244,52 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
             }
         }
 
-        // resolve nodes
+        // resolve nodes. The two custom-node arms drain the custom-node keys
+        // out of `node` with `CustomNode::from_node`; the node-level keys stay
+        // behind for `ResolvedNode::from_node` below.
         let kind = match node_class {
             classify::NodeClass::Standard { source } => {
-                let path = node.path.as_ref().ok_or_eyre("missing `path` attribute")?;
-                CoreNodeKind::Custom(CustomNode {
-                    path: path.clone(),
-                    source,
-                    path_sha256: node.path_sha256,
-                    args: node.args,
-                    build: node.build,
-                    send_stdout_as: node.send_stdout_as,
-                    send_logs_as: node.send_logs_as,
-                    min_log_level: node.min_log_level,
-                    max_log_size: node.max_log_size,
-                    max_rotated_files: node.max_rotated_files,
-                    run_config: NodeRunConfig {
-                        inputs: node.inputs,
-                        outputs: node.outputs,
-                        output_types: node.output_types,
-                        output_framing: node.output_framing,
-                        input_types: node.input_types,
-                        shared_memory_pool_size: node.shared_memory_pool_size,
-                    },
-                    envs: None,
-                    restart_policy: node.restart_policy,
-                    max_restarts: node.max_restarts,
-                    restart_delay: node.restart_delay,
-                    max_restart_delay: node.max_restart_delay,
-                    restart_window: node.restart_window,
-                    health_check_timeout: node.health_check_timeout,
-                    finish_grace_secs: node.finish_grace_secs,
-                })
+                let path = node.path.take().ok_or_eyre("missing `path` attribute")?;
+                let mut custom = CustomNode::from_node(&mut node, path);
+                custom.source = source;
+                CoreNodeKind::Custom(custom)
             }
             classify::NodeClass::Runtime => {
-                let runtime = node.operators.as_ref().ok_or_eyre("no operators")?;
-                CoreNodeKind::Runtime(runtime.clone())
+                // `node` is already an owned copy (see `desc.nodes.clone()`
+                // above) and `ResolvedNode::from_node` never reads
+                // `operators`, so move the operator subtree out instead of
+                // deep-cloning it a second time.
+                let runtime = node.operators.take().ok_or_eyre("no operators")?;
+                CoreNodeKind::Runtime(runtime)
             }
             classify::NodeClass::Operator => {
-                let op = node.operator.as_ref().ok_or_eyre("no operator")?;
+                // Move the operator out of the owned `node` rather than
+                // cloning its (potentially large) config; `from_node` does
+                // not read `operator`.
+                let op = node.operator.take().ok_or_eyre("no operator")?;
                 CoreNodeKind::Runtime(RuntimeNode {
                     operators: vec![OperatorDefinition {
-                        id: op.id.clone().unwrap_or_else(|| default_op_id.clone()),
-                        config: op.config.clone(),
+                        id: op.id.unwrap_or_else(|| default_op_id.clone()),
+                        config: op.config,
                     }],
                 })
             }
             classify::NodeClass::Ros2Bridge => {
                 let config = node.ros2.as_ref().ok_or_eyre("no ros2")?;
+                let config =
+                    resolve_ros2_single_topic(&node.id, config, &node.inputs, &node.outputs)?;
+                // `resolve_ros2_single_topic` checks single-topic port mappings
+                // and rewrites them into a one-entry `topics:` list; a config
+                // that already uses `topics:` passes through unchanged. Either
+                // way, verify every resolved topic maps to a declared port here
+                // on the resolution path, so the coordinator's `dora start` path
+                // — which resolves without running the validator — rejects an
+                // undeclared multi-topic mapping instead of silently dropping
+                // every message at runtime (dora-rs/dora#3484). Service/action
+                // configs leave `topics` unset and are skipped.
+                if let Some(topics) = &config.topics {
+                    validate_ros2_topic_ports(&node.id, topics, &node.inputs, &node.outputs)?;
+                }
                 let bridge_config_json = serde_json::to_string(&config)
                     .context("failed to serialize ROS2 bridge config")?;
 
@@ -252,34 +299,14 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                     EnvValue::String(bridge_config_json),
                 );
 
-                CoreNodeKind::Custom(CustomNode {
-                    path: "dora-ros2-bridge-node".to_string(),
-                    source: NodeSource::Local,
-                    path_sha256: None,
-                    args: node.args,
-                    build: None,
-                    send_stdout_as: node.send_stdout_as,
-                    send_logs_as: node.send_logs_as,
-                    min_log_level: node.min_log_level,
-                    max_log_size: node.max_log_size,
-                    max_rotated_files: node.max_rotated_files,
-                    run_config: NodeRunConfig {
-                        inputs: node.inputs,
-                        outputs: node.outputs,
-                        output_types: node.output_types,
-                        output_framing: node.output_framing,
-                        input_types: node.input_types,
-                        shared_memory_pool_size: node.shared_memory_pool_size,
-                    },
-                    envs: Some(envs),
-                    restart_policy: node.restart_policy,
-                    max_restarts: node.max_restarts,
-                    restart_delay: node.restart_delay,
-                    max_restart_delay: node.max_restart_delay,
-                    restart_window: node.restart_window,
-                    health_check_timeout: node.health_check_timeout,
-                    finish_grace_secs: node.finish_grace_secs,
-                })
+                // The bridge binary is fixed, so `path` is a constant and
+                // `source` stays at its default. `path_sha256` and `build` are
+                // not accepted on a `ros2:` node (classification rejects them),
+                // so `from_node` finds them unset.
+                let mut custom =
+                    CustomNode::from_node(&mut node, "dora-ros2-bridge-node".to_string());
+                custom.envs = Some(envs);
+                CoreNodeKind::Custom(custom)
             }
         };
 
@@ -289,25 +316,146 @@ pub fn resolve_aliases_and_set_defaults_in_topology(
                 node.id
             );
         }
-        resolved.insert(
-            node.id.clone(),
-            ResolvedNode {
-                id: node.id,
-                name: node.name,
-                description: node.description,
-                // Merge the dataflow-level `env` into the per-node `env`.
-                // Per-node keys win on conflict so a node can override a
-                // shared default (e.g. global `RUST_LOG=info` with one
-                // verbose node setting `RUST_LOG=debug`).
-                env: merge_env(desc.env.as_ref(), node.env),
-                cpu_affinity: node.cpu_affinity,
-                deploy: node.deploy,
-                kind,
-            },
-        );
+        let mut resolved_node = ResolvedNode::from_node(node, kind);
+        // Merge the dataflow-level `env` into the per-node `env`. Per-node keys
+        // win on conflict so a node can override a shared default (e.g. global
+        // `RUST_LOG=info` with one verbose node setting `RUST_LOG=debug`).
+        resolved_node.env = merge_env(desc.env.as_ref(), resolved_node.env.take());
+        resolved.insert(resolved_node.id.clone(), resolved_node);
     }
 
     Ok(resolved)
+}
+
+/// Fill a single-topic (`topic:`) ros2 bridge config's port mapping in, by
+/// rewriting it into the equivalent one-entry `topics:` form.
+///
+/// Single-topic mode has no `output:`/`input:` field, so without this the
+/// bridge falls back to the topic-derived id and binds to a port the node never
+/// declared — `/turtle1/pose` to `turtle1_pose` rather than to the documented
+/// `pose` (`docs/ros2-bridge.md`: "the node's declared `outputs` or `inputs` are
+/// used directly"), silently dropping every message.
+///
+/// This is also where an unresolvable mapping is *reported*, rather than in
+/// [`validate`] alone: `dora run` and `dora check` validate first, but the
+/// coordinator's `dora start` path resolves without validating, and there the
+/// only alternative to an error is the silent drop.
+pub(crate) fn resolve_ros2_single_topic<'a>(
+    node_id: &NodeId,
+    config: &'a Ros2BridgeConfig,
+    node_inputs: &BTreeMap<DataId, Input>,
+    node_outputs: &BTreeSet<DataId>,
+) -> eyre::Result<Cow<'a, Ros2BridgeConfig>> {
+    // A config that also sets `topics:` is rejected by the bridge itself
+    // ("exactly one of `topic` or `topics`"); overwriting the list here would
+    // turn that loud failure into a silent one.
+    let (Some(topic), Some(message_type), None) =
+        (&config.topic, &config.message_type, &config.topics)
+    else {
+        return Ok(Cow::Borrowed(config));
+    };
+    let (direction, port_kind, declared) = match config.direction {
+        Ros2Direction::Subscribe => (
+            "subscribe",
+            "output",
+            node_outputs
+                .iter()
+                .map(|id| id.as_str())
+                .collect::<Vec<_>>(),
+        ),
+        Ros2Direction::Publish => (
+            "publish",
+            "input",
+            node_inputs.keys().map(|id| id.as_str()).collect(),
+        ),
+    };
+    let Some(port) = single_topic_port_id(topic, &declared) else {
+        if declared.is_empty() {
+            bail!("node `{node_id}`: ros2 {direction} bridge requires at least one {port_kind}");
+        }
+        bail!(
+            "node `{node_id}`: ros2 {direction} topic `{topic}` has no unambiguous {port_kind} \
+             — single-topic mode binds to the node's declared {port_kind}, but it declares \
+             several: {}. Declare a single {port_kind}, name one of them after the topic \
+             (`{}`), or use `topics:` with an explicit `{port_kind}:`",
+            declared
+                .iter()
+                .map(|port| format!("`{port}`"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            derive_port_id(topic),
+        );
+    };
+    let (output, input) = match config.direction {
+        Ros2Direction::Subscribe => (Some(port), None),
+        Ros2Direction::Publish => (None, Some(port)),
+    };
+    let mut resolved = config.clone();
+    resolved.topic = None;
+    resolved.message_type = None;
+    resolved.topics = Some(vec![Ros2TopicConfig {
+        topic: topic.clone(),
+        message_type: message_type.clone(),
+        direction: config.direction.clone(),
+        output,
+        input,
+        // Per-topic QoS unset, so the topic inherits the bridge-level `qos`
+        // the single-topic form already carries.
+        qos: None,
+    }]);
+    Ok(Cow::Owned(resolved))
+}
+
+/// Verify that every entry of a multi-topic (`topics:`) ros2 bridge config maps
+/// to a port the node actually declares.
+///
+/// The bridge routes each topic to a dora port: a subscribe topic feeds an
+/// output, a publish topic consumes an input. When the mapping is not set
+/// explicitly the id is derived from the topic name
+/// ([`Ros2TopicConfig::output_port_id`] / [`input_port_id`]). Either way, the
+/// resulting id must be a declared port — otherwise data is silently dropped at
+/// runtime with no diagnostic: a subscribe `send_output` to an unknown id is
+/// ignored, and a publish topic bound to an unknown input never receives any
+/// data to publish.
+///
+/// Like [`resolve_ros2_single_topic`], this lives on the *resolution* path (and
+/// is delegated to from [`validate`]) rather than in the validator alone: `dora
+/// run` and `dora check` validate first, but the coordinator's `dora start` path
+/// resolves without validating, so a validator-only guard would still drop
+/// silently there (dora-rs/dora#3484).
+///
+/// [`input_port_id`]: Ros2TopicConfig::input_port_id
+pub(crate) fn validate_ros2_topic_ports(
+    node_id: &NodeId,
+    topics: &[Ros2TopicConfig],
+    node_inputs: &BTreeMap<DataId, Input>,
+    node_outputs: &BTreeSet<DataId>,
+) -> eyre::Result<()> {
+    for t in topics {
+        match &t.direction {
+            Ros2Direction::Subscribe => {
+                let output = t.output_port_id();
+                if !node_outputs.contains(output.as_str()) {
+                    bail!(
+                        "node `{node_id}`: ros2 subscribe topic `{}` maps to output \
+                         `{output}`, which is not declared in the node's `outputs`",
+                        t.topic
+                    );
+                }
+            }
+            Ros2Direction::Publish => {
+                let input = t.input_port_id();
+                if !node_inputs.contains_key(input.as_str()) {
+                    bail!(
+                        "node `{node_id}`: ros2 publish topic `{}` maps to input \
+                         `{input}`, which is not declared in the node's `inputs`",
+                        t.topic
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 impl DescriptorExt for Descriptor {
@@ -414,6 +562,21 @@ pub fn source_is_url(source: &str) -> bool {
     source.starts_with("https://") || source.starts_with("http://")
 }
 
+/// Resolve a node's executable `source` to an absolute path.
+///
+/// An extensionless `source` gets the platform executable extension. The path
+/// is then searched, in order:
+///
+/// 1. under `working_dir` (the dataflow's directory),
+/// 2. the `uv`-managed environment, when `uv` is on the host,
+/// 3. the ambient system `$PATH`.
+///
+/// The resolved path is absolutized but symlinks are **not** resolved (the
+/// binary is spawned at the path it was found). Unlike
+/// [`resolve_path_confined`], this has an ambient-`$PATH` fallback and does not
+/// confine the result to any root — it is the resolution used for local,
+/// trusted dataflow files, whereas confined resolution is for untrusted `hub:`
+/// nodes.
 pub fn resolve_path(source: &str, working_dir: &Path) -> Result<PathBuf> {
     let path = Path::new(&source);
     let path = if path.extension().is_none() {
@@ -555,7 +718,45 @@ fn resolve_path_via_uv(path: &Path) -> Result<PathBuf> {
         .with_context(|| format!("uv-resolved path {resolved} is not usable"))
 }
 
+/// Canonicalize the working dir for a dataflow, preferring an explicit
+/// override over the dataflow file's parent directory.
+///
+/// When falling back to the dataflow's parent directory, returns the lexical parent
+/// directory of the dataflow path as given, canonicalized — symlinks in the file
+/// are not resolved, so the project root matches where the entrypoint was invoked
+/// rather than the target's location.
+pub fn canonicalize_working_dir(
+    override_: Option<&Path>,
+    dataflow_path: &Path,
+) -> eyre::Result<PathBuf> {
+    match override_ {
+        Some(p) => dunce::canonicalize(p)
+            .with_context(|| format!("failed to canonicalize working_dir `{}`", p.display())),
+        None => {
+            let parent = dataflow_path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or_else(|| Path::new("."));
+            dunce::canonicalize(parent).with_context(|| {
+                format!(
+                    "failed to canonicalize dataflow parent directory `{}`",
+                    parent.display()
+                )
+            })
+        }
+    }
+}
+
+/// Classification of a [`Node`] by which of its mutually exclusive
+/// implementation fields is set.
 pub trait NodeExt {
+    /// Determine the node's [`NodeKind`].
+    ///
+    /// A node must set **exactly one** of `path`, `operators`, `operator`,
+    /// `ros2`, or `module`; this returns an error if none or more than one is
+    /// set. A node carrying an unresolved `hub:` reference is also rejected —
+    /// `hub:` is desugared into a concrete node earlier in the build, so
+    /// reaching `kind` with one still present means resolution was skipped.
     fn kind(&self) -> eyre::Result<NodeKind<'_>>;
 }
 
@@ -600,20 +801,170 @@ impl NodeExt for Node {
     }
 }
 
+/// The implementation kind of a [`Node`], returned by [`NodeExt::kind`].
+///
+/// Each variant borrows the one exclusive field that was set on the node.
 #[derive(Debug)]
 pub enum NodeKind<'a> {
+    /// A custom node run from an executable `path`.
     Standard(&'a String),
-    /// Dora runtime node
+    /// A dora runtime node hosting one or more in-process `operators`.
     Runtime(&'a RuntimeNode),
+    /// A node defined by a single inline `operator`.
     Operator(&'a SingleOperatorDefinition),
-    /// ROS2 bridge node
+    /// A ROS2 bridge node.
     Ros2Bridge(&'a Ros2BridgeConfig),
-    /// Module (sub-dataflow) reference — must be expanded before resolution
+    /// A `module` (sub-dataflow) reference — must be expanded before resolution.
     Module(&'a String),
 }
 
 #[cfg(test)]
 mod tests {
+    /// The `DORA_ROS2_BRIDGE_CONFIG` a resolved bridge node is spawned with.
+    fn resolved_bridge_config(yaml: &str) -> Ros2BridgeConfig {
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve");
+        let node = resolved.values().next().expect("one node");
+        let CoreNodeKind::Custom(custom) = &node.kind else {
+            panic!("ros2 bridge must resolve to a custom node");
+        };
+        let Some(EnvValue::String(json)) = custom
+            .envs
+            .as_ref()
+            .and_then(|envs| envs.get("DORA_ROS2_BRIDGE_CONFIG"))
+        else {
+            panic!("bridge node must carry DORA_ROS2_BRIDGE_CONFIG");
+        };
+        serde_json::from_str(json).expect("bridge config round-trips")
+    }
+
+    /// A single-topic subscribe bridge must bind to the declared `pose`, not to
+    /// the topic-derived `turtle1_pose` the bridge would otherwise fall back to
+    /// — nothing is wired to that id, so every message would be dropped.
+    #[test]
+    fn single_topic_subscribe_binds_the_declared_output() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: pose_bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+    outputs:
+      - pose
+",
+        );
+        let topics = config
+            .topics
+            .expect("single topic is resolved to a mapping");
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].topic, "/turtle1/pose");
+        assert_eq!(topics[0].output.as_deref(), Some("pose"));
+        assert_eq!(config.topic, None, "the unresolved form must not survive");
+    }
+
+    #[test]
+    fn single_topic_publish_binds_the_declared_input() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: cmd_bridge
+    ros2:
+      topic: /turtle1/cmd_vel
+      message_type: geometry_msgs/Twist
+      direction: publish
+    inputs:
+      cmd_vel: planner/cmd_vel
+",
+        );
+        let topics = config
+            .topics
+            .expect("single topic is resolved to a mapping");
+        assert_eq!(topics[0].input.as_deref(), Some("cmd_vel"));
+    }
+
+    /// Multi-topic configs already carry their mapping and must pass through.
+    #[test]
+    fn multi_topic_config_is_left_alone() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: turtle_bridge
+    ros2:
+      topics:
+        - topic: /turtle1/pose
+          message_type: turtlesim/Pose
+          direction: subscribe
+          output: pose
+    outputs:
+      - pose
+",
+        );
+        let topics = config.topics.expect("topics survive resolution");
+        assert_eq!(topics[0].output.as_deref(), Some("pose"));
+    }
+
+    /// Resolution, not just validation, has to reject an unresolvable mapping:
+    /// `dora start` resolves through the coordinator without running
+    /// `check_dataflow`, so a guard that lives only in the validator would let
+    /// the bridge bind to a port nothing is wired to.
+    #[test]
+    fn ambiguous_single_topic_is_rejected_during_resolution() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: pose_bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+    outputs:
+      - pose
+      - log
+",
+        )
+        .expect("parse");
+        let err = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect_err("an ambiguous port mapping must not resolve")
+            .to_string();
+        assert!(
+            err.contains("no unambiguous output") && err.contains("turtle1_pose"),
+            "error should explain the ambiguity, got: {err}"
+        );
+    }
+
+    /// Setting both `topic:` and `topics:` is rejected downstream by the bridge
+    /// ("exactly one of `topic` or `topics`"). Resolution must leave the list
+    /// alone rather than overwrite it and turn that into a silent drop.
+    #[test]
+    fn single_topic_rewrite_never_overwrites_an_explicit_topics_list() {
+        let config = resolved_bridge_config(
+            "\
+nodes:
+  - id: bridge
+    ros2:
+      topic: /turtle1/pose
+      message_type: turtlesim/Pose
+      direction: subscribe
+      topics:
+        - topic: /turtle1/other
+          message_type: turtlesim/Pose
+          direction: subscribe
+          output: pose
+    outputs:
+      - pose
+",
+        );
+        assert_eq!(config.topic.as_deref(), Some("/turtle1/pose"));
+        let topics = config.topics.expect("the explicit list survives");
+        assert_eq!(topics.len(), 1);
+        assert_eq!(topics[0].topic, "/turtle1/other");
+    }
+
     /// dora-rs/dora#2920: the command-line flag beats the descriptor in
     /// BOTH directions, and its absence beats neither.
     ///
@@ -660,6 +1011,8 @@ mod tests {
     }
 
     use super::*;
+    use dora_message::descriptor::{GitRepoRev, NodeSource};
+    use std::collections::BTreeSet;
 
     fn env(pairs: &[(&str, &str)]) -> BTreeMap<String, EnvValue> {
         pairs
@@ -785,6 +1138,59 @@ nodes:
                 assert_eq!(m.output, DataId::from("result".to_string()));
             }
             other => panic!("expected user mapping, got {other:?}"),
+        }
+    }
+
+    /// The operator subtree must survive resolution. The `Runtime`/`Operator`
+    /// arms move `node.operators` / `node.operator` out with `take()`, which
+    /// is only sound because `ResolvedNode::from_node` never reads those
+    /// fields. Pin that invariant: a regression that consumed the subtree
+    /// before building the `CoreNodeKind`, or a new `ResolvedNode` field
+    /// sourced from `node.operator` after the take (which would compile and
+    /// silently read `None`), surfaces here as a missing operator.
+    #[test]
+    fn resolve_preserves_operator_subtree() {
+        let desc: Descriptor = serde_yaml::from_str(
+            "\
+nodes:
+  - id: runtime_node
+    operators:
+      - id: op_a
+        python: a.py
+        outputs:
+          - out_a
+  - id: operator_node
+    operator:
+      python: b.py
+      outputs:
+        - out_b
+",
+        )
+        .expect("parse");
+
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+
+        // A `runtime:` (operators) node keeps every declared operator.
+        match &resolved[&NodeId::from("runtime_node".to_string())].kind {
+            CoreNodeKind::Runtime(rt) => {
+                let ids: Vec<_> = rt.operators.iter().map(|o| o.id.to_string()).collect();
+                assert_eq!(ids, ["op_a"], "runtime operators must survive resolution");
+            }
+            other => panic!("expected Runtime kind, got {other:?}"),
+        }
+
+        // A single-`operator:` node resolves to a one-operator runtime,
+        // defaulting the operator id to `op`.
+        match &resolved[&NodeId::from("operator_node".to_string())].kind {
+            CoreNodeKind::Runtime(rt) => {
+                assert_eq!(
+                    rt.operators.len(),
+                    1,
+                    "the operator must survive resolution"
+                );
+                assert_eq!(rt.operators[0].id.to_string(), SINGLE_OPERATOR_DEFAULT_ID);
+            }
+            other => panic!("expected Runtime kind, got {other:?}"),
         }
     }
 
@@ -1108,6 +1514,347 @@ nodes:
         assert!(
             msg.contains("duplicate node ID") && msg.contains("my-node"),
             "unexpected error message: {msg}"
+        );
+    }
+
+    /// Every `CustomNode` field name, taken from its JSON schema.
+    ///
+    /// A field marked `#[schemars(skip)]` would never appear in `properties`
+    /// and would slip past the carried-through tests below. `Node::deploy` is
+    /// exactly such a field, and the classify test compensates with a
+    /// hardcoded insert — do the same here if `CustomNode` ever gains one.
+    fn custom_node_field_names() -> BTreeSet<String> {
+        let schema = schemars::schema_for!(dora_message::descriptor::CustomNode);
+        let schema = serde_json::to_value(schema).expect("schema should serialize");
+        schema
+            .pointer("/$defs/CustomNode/properties")
+            .or_else(|| schema.pointer("/definitions/CustomNode/properties"))
+            .or_else(|| schema.pointer("/properties"))
+            .and_then(serde_json::Value::as_object)
+            .expect("CustomNode schema should expose properties")
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    /// The per-node keys every custom-node kind resolves identically, each set
+    /// to a value that differs from `CustomNode::new`'s default — a YAML
+    /// fragment to append to a `- id:` entry.
+    const SHARED_CUSTOM_NODE_KEYS: &str = r#"
+    args: --verbose
+    send_stdout_as: stdout-topic
+    send_logs_as: logs-topic
+    min_log_level: debug
+    max_log_size: 4MB
+    max_rotated_files: 3
+    restart_policy: always
+    max_restarts: 7
+    restart_delay: 1.5
+    max_restart_delay: 9.5
+    restart_window: 60.0
+    health_check_timeout: 2.5
+    startup_timeout: 4.5
+    finish_grace_secs: 3.5
+    shared_memory_pool_size: 8MB
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - out
+    output_types:
+      out: arrow.int32
+    output_framing:
+      out: arrow-ipc
+    input_types:
+      tick: arrow.uint64
+"#;
+
+    /// Resolve the single node in `yaml` and assert that every `CustomNode`
+    /// key outside `kind_specific` arrived carrying the value the YAML
+    /// declared — and that the YAML did set it to something other than
+    /// `CustomNode::new`'s default, so the comparison is never a trivial
+    /// `None == None`. Returns the resolved node for the kind-specific checks.
+    ///
+    /// `CustomNode::from_node` is a struct literal inside `dora-message`, so a
+    /// key added to `CustomNode` is already a compile error there. This is the
+    /// value-level half: it catches a key wired to the wrong `Node` field, or
+    /// left at its default. When it fails for a newly added key, carry the key
+    /// in `from_node` and give it a non-default value in
+    /// `SHARED_CUSTOM_NODE_KEYS`.
+    fn resolve_and_check_carried_through(yaml: &str, kind_specific: &[&str]) -> CustomNode {
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let declared = serde_json::to_value(&desc.nodes[0]).expect("serialize declared");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let node = resolved.values().next().expect("one node");
+        let CoreNodeKind::Custom(custom) = &node.kind else {
+            panic!("expected a custom node, got {:?}", node.kind);
+        };
+
+        let actual = serde_json::to_value(custom).expect("serialize resolved");
+        // A sentinel `path` that no YAML here uses, so `path` itself is checked
+        // like every other field rather than comparing equal to it.
+        let default =
+            serde_json::to_value(CustomNode::new("<unset>".to_owned())).expect("serialize default");
+
+        for field in custom_node_field_names() {
+            if kind_specific.contains(&field.as_str()) {
+                continue;
+            }
+            assert_ne!(
+                actual.get(&field),
+                default.get(&field),
+                "`{field}` is still at its `CustomNode::new` default after \
+                 resolution — either the YAML does not set it (add it to \
+                 `SHARED_CUSTOM_NODE_KEYS`) or the key is parsed and then \
+                 dropped (carry it in `CustomNode::from_node`)."
+            );
+            assert_eq!(
+                actual.get(&field),
+                declared.get(&field),
+                "`{field}` resolved to a different value than the YAML declared \
+                 — `CustomNode::from_node` copies it from the wrong `Node` field."
+            );
+        }
+        custom.clone()
+    }
+
+    /// A `path:` node: every shared key and the standard-only `path_sha256` /
+    /// `build` arrive. `source` resolves to `Local`, which is already the
+    /// default, and `envs` is set only by the ROS2-bridge arm — the two tests
+    /// below cover those.
+    #[test]
+    fn every_custom_node_field_is_carried_through() {
+        let yaml = format!(
+            "nodes:\n  - id: full\n    path: ./full-node\n    path_sha256: abc123\n    \
+             build: cargo build{SHARED_CUSTOM_NODE_KEYS}"
+        );
+        let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
+        assert!(
+            matches!(custom.source, NodeSource::Local),
+            "{:?}",
+            custom.source
+        );
+        assert!(custom.envs.is_none(), "{:?}", custom.envs);
+    }
+
+    /// The `source` a `git:` node classifies to must reach the resolved node:
+    /// it is the one assignment in the standard arm that `from_node` does not
+    /// cover, and dropping it would turn every git node into a local one.
+    #[test]
+    fn git_source_is_carried_through() {
+        let yaml = format!(
+            "nodes:\n  - id: full\n    path: node\n    path_sha256: abc123\n    \
+             build: cargo build\n    git: https://github.com/example/node.git\n    \
+             branch: main{SHARED_CUSTOM_NODE_KEYS}"
+        );
+        let custom = resolve_and_check_carried_through(&yaml, &["source", "envs"]);
+        assert!(
+            matches!(
+                &custom.source,
+                NodeSource::GitBranch { repo, rev: Some(GitRepoRev::Branch(branch)) }
+                    if repo == "https://github.com/example/node.git" && branch == "main"
+            ),
+            "{:?}",
+            custom.source
+        );
+        assert!(custom.envs.is_none(), "{:?}", custom.envs);
+    }
+
+    /// The ROS2-bridge arm: `path` is the bridge binary, `envs` carries the
+    /// bridge config the binary reads at startup, and every shared key still
+    /// arrives. `path_sha256` and `build` are rejected on a `ros2:` node by
+    /// classification, so they must stay unset.
+    #[test]
+    fn ros2_bridge_node_is_carried_through() {
+        let yaml = format!(
+            "nodes:\n  - id: bridge\n    ros2:\n      topic: /odom\n      \
+             message_type: nav_msgs/msg/Odometry\n      direction: subscribe\
+             {SHARED_CUSTOM_NODE_KEYS}"
+        );
+        let custom = resolve_and_check_carried_through(
+            &yaml,
+            &["path", "source", "path_sha256", "build", "envs"],
+        );
+        assert_eq!(custom.path, "dora-ros2-bridge-node");
+        assert!(
+            matches!(custom.source, NodeSource::Local),
+            "{:?}",
+            custom.source
+        );
+        assert!(custom.path_sha256.is_none(), "{:?}", custom.path_sha256);
+        assert!(custom.build.is_none(), "{:?}", custom.build);
+        let envs = custom
+            .envs
+            .expect("the bridge is configured through its environment");
+        let Some(EnvValue::String(config)) = envs.get("DORA_ROS2_BRIDGE_CONFIG") else {
+            panic!("DORA_ROS2_BRIDGE_CONFIG missing from {envs:?}");
+        };
+        assert!(config.contains("/odom"), "{config}");
+    }
+
+    /// The node-level keys — the ones `ResolvedNode::from_node` consumes once
+    /// `CustomNode::from_node` has drained the rest — must reach the resolved
+    /// node. `from_node` is a struct literal inside `dora-message`, so a new
+    /// `ResolvedNode` field is a compile error there; this checks the values,
+    /// including that the dataflow-level `env` is merged in with the per-node
+    /// key winning.
+    #[test]
+    fn node_level_keys_are_carried_through() {
+        let yaml = r#"
+env:
+  RUST_LOG: info
+  SHARED: global
+nodes:
+  - id: full
+    name: Full Node
+    description: Sets every node-level key
+    path: ./full-node
+    env:
+      SHARED: per-node
+    cpu_affinity: [0, 1]
+    deploy:
+      machine: gpu-box
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let node = resolved.values().next().expect("one node");
+
+        assert_eq!(node.id.to_string(), "full");
+        assert_eq!(node.name.as_deref(), Some("Full Node"));
+        assert_eq!(
+            node.description.as_deref(),
+            Some("Sets every node-level key")
+        );
+        assert_eq!(
+            node.env,
+            Some(env(&[("RUST_LOG", "info"), ("SHARED", "per-node")]))
+        );
+        assert_eq!(node.cpu_affinity, Some(vec![0, 1]));
+        assert_eq!(
+            node.deploy.as_ref().and_then(|d| d.machine.as_deref()),
+            Some("gpu-box")
+        );
+    }
+
+    /// A multi-operator runtime node whose id contains a `.` must emit a
+    /// Mermaid `subgraph` with a sanitized id (dots are invalid in subgraph
+    /// ids), mirroring the module-subgraph path. Node ids legally contain `.`,
+    /// and module expansion prefixes inner node ids with `{module_id}.`, so the
+    /// unsanitized `subgraph camera.front` this used to emit was an invalid
+    /// Mermaid document.
+    #[test]
+    fn runtime_node_subgraph_id_is_sanitized_for_dotted_ids() {
+        let yaml = r#"
+nodes:
+  - id: camera.front
+    operators:
+      - id: detect
+        python: detect.py
+        inputs:
+          tick: dora/timer/millis/100
+        outputs:
+          - bbox
+      - id: track
+        python: track.py
+        inputs:
+          bbox: camera.front/detect/bbox
+        outputs:
+          - tracks
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart =
+            visualize::visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("subgraph camera_front [camera.front]"),
+            "runtime-node subgraph id must be sanitized and labelled; got:\n{flowchart}"
+        );
+        assert!(
+            !flowchart.contains("subgraph camera.front"),
+            "an unsanitized dotted subgraph id is invalid Mermaid; got:\n{flowchart}"
+        );
+    }
+
+    /// A multi-topic (`topics:`) ros2 bridge that maps a topic to an undeclared
+    /// port must be rejected on the *resolution* path, not just by the
+    /// validator. The coordinator's `dora start` path resolves without running
+    /// the validator, so before dora-rs/dora#3484 an undeclared multi-topic
+    /// mapping passed here and silently dropped every message at runtime.
+    #[test]
+    fn resolve_rejects_undeclared_multi_topic_subscribe_output() {
+        let yaml = r#"
+nodes:
+  - id: lidar_bridge
+    outputs: [scan]
+    ros2:
+      topics:
+        - topic: /scan
+          message_type: sensor_msgs/LaserScan
+          direction: subscribe
+          output: scna
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("resolution must reject a topic mapped to an undeclared output")
+            .to_string();
+        assert!(
+            err.contains("scna") && err.contains("not declared"),
+            "error should name the undeclared output, got: {err}"
+        );
+    }
+
+    /// The publish counterpart: a topic bound to an undeclared input is rejected
+    /// on the resolution path too.
+    #[test]
+    fn resolve_rejects_undeclared_multi_topic_publish_input() {
+        let yaml = r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs: [cmd]
+  - id: cmd_bridge
+    inputs:
+      cmd: source/cmd
+    ros2:
+      topics:
+        - topic: /cmd_vel
+          message_type: geometry_msgs/Twist
+          direction: publish
+          input: typo_in
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let err = desc
+            .resolve_aliases_and_set_defaults()
+            .expect_err("resolution must reject a topic mapped to an undeclared input")
+            .to_string();
+        assert!(
+            err.contains("typo_in") && err.contains("not declared"),
+            "error should name the undeclared input, got: {err}"
+        );
+    }
+
+    /// Guard the other way: a multi-topic config whose mappings all reference
+    /// declared ports (explicit and topic-derived) still resolves.
+    #[test]
+    fn resolve_accepts_declared_multi_topic_ports() {
+        let yaml = r#"
+nodes:
+  - id: bridge
+    outputs: [scan, laser]
+    ros2:
+      topics:
+        - topic: /scan
+          message_type: sensor_msgs/LaserScan
+          direction: subscribe
+          output: scan
+        - topic: /laser
+          message_type: sensor_msgs/LaserScan
+          direction: subscribe
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        desc.resolve_aliases_and_set_defaults().expect(
+            "a multi-topic config mapping declared ports (explicit and derived) must resolve",
         );
     }
 }

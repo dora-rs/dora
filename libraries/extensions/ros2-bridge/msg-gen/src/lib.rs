@@ -19,6 +19,20 @@ pub mod types;
 pub use crate::parser::get_packages;
 use crate::types::Package;
 
+/// Format a generated token stream as Rust source.
+///
+/// Uses `syn` + `prettyplease` directly (with prettyplease's `verbatim`
+/// feature enabled in `Cargo.toml`) rather than going through `rust-format`.
+/// The generated `extern "C++"` blocks contain foreign type aliases such as
+/// `type CombinedEvents = crate::ffi::CombinedEvents;`, which `syn` represents
+/// as `ForeignItem::Verbatim`; prettyplease prints those instead of panicking
+/// only when the `verbatim` feature is on. See dora-rs/dora#2452.
+pub fn format_token_stream(tokens: proc_macro2::TokenStream) -> String {
+    let syntax_tree =
+        syn::parse2::<syn::File>(tokens).expect("generated ROS2 bindings must parse as valid Rust");
+    prettyplease::unparse(&syntax_tree)
+}
+
 /// Pick the `ros2_client::ServiceMapping` variant for the user's ROS2 middleware.
 ///
 /// Reads `RMW_IMPLEMENTATION` (primary) and `ROS_DISTRO` (fallback). Falls
@@ -238,7 +252,6 @@ pub fn generate<P>(paths: &[P], out_dir: &Path, create_cxx_bridge: bool) -> proc
 where
     P: AsRef<Path>,
 {
-    use rust_format::Formatter;
     let packages = get_packages(paths).unwrap();
     let mut mod_decl = vec![];
     let msg_dir = out_dir.join("msg");
@@ -248,9 +261,7 @@ where
     // generate mod
     for package in packages.iter() {
         let mod_impl = generate_package(package, create_cxx_bridge);
-        let generated_string = rust_format::PrettyPlease::default()
-            .format_tokens(mod_impl)
-            .unwrap();
+        let generated_string = format_token_stream(mod_impl);
         let package_name = &package.name;
         let file_path = msg_dir.join(format!("{}.rs", package_name));
         std::fs::write(&file_path, generated_string).unwrap();
@@ -264,9 +275,7 @@ where
 
     {
         let generated_default_impls = generate_default_impls(create_cxx_bridge);
-        let generated_string = rust_format::PrettyPlease::default()
-            .format_tokens(generated_default_impls)
-            .unwrap();
+        let generated_string = format_token_stream(generated_default_impls);
         let file_path = out_dir.join("impl.rs");
         std::fs::write(&file_path, generated_string).unwrap();
         let file_path_str = file_path.to_str().unwrap();
@@ -863,5 +872,27 @@ mod tests {
     fn cxx_package_modules_import_transport_neutral_node_type() {
         let imports = generate_package_rust_imports_for_cxx().to_string();
         assert!(imports.contains("GeneratedNode"));
+    }
+
+    /// The cxx-bridge codegen emits an `extern "C++"` block whose foreign type
+    /// aliases (`type CombinedEvents = crate::ffi::CombinedEvents;`) parse as
+    /// `syn::ForeignItem::Verbatim`. `format_token_stream` must print them
+    /// rather than panic — this only holds with prettyplease's `verbatim`
+    /// feature enabled, and no CI job builds this path against a real ROS 2
+    /// install, so guard it here. See dora-rs/dora#2452.
+    #[test]
+    fn format_token_stream_handles_cxx_bridge_foreign_type_aliases() {
+        use std::path::PathBuf;
+        let package = Package {
+            name: "test_pkg".to_string(),
+            path: PathBuf::new(),
+            dependencies: vec![],
+            messages: vec![],
+            services: vec![],
+            actions: vec![],
+        };
+        let formatted = format_token_stream(generate_package(&package, true));
+        assert!(formatted.contains("extern \"C++\""));
+        assert!(formatted.contains("type CombinedEvents = crate::ffi::CombinedEvents;"));
     }
 }

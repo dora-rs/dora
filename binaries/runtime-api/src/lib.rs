@@ -181,12 +181,12 @@ async fn run(
     // so it must be spawned rather than awaited inline. Mirrors the gating and
     // spawning used by the node API (`apis/rust/node/src/node/mod.rs`).
     #[cfg(feature = "metrics")]
-    if std::env::var("DORA_OTLP_ENDPOINT").is_ok() {
+    if let Ok(endpoint) = std::env::var("DORA_OTLP_ENDPOINT") {
         use dora_metrics::run_metrics_monitor;
 
         let meter_id = config.node_id.to_string();
         tokio::spawn(async move {
-            if let Err(e) = run_metrics_monitor(meter_id)
+            if let Err(e) = run_metrics_monitor(meter_id, &endpoint)
                 .await
                 .wrap_err("metrics monitor exited unexpectedly")
             {

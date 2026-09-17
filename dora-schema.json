@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "dora-rs specification",
-  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```yaml\nnodes:\n - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n```",
+  "description": "The main configuration structure for defining a Dora dataflow. Dataflows are\nspecified through YAML files that describe the nodes, their connections, and\nexecution parameters.\n\n## Structure\n\nA dataflow consists of:\n- **Nodes**: The computational units that process data\n- **Deployment**: Optional deployment configuration (unstable)\n- **Debug options**: Optional development and debugging settings (unstable)\n\n## Example\n\n```\n# fn main() -> Result<(), Box<dyn std::error::Error>> {\nuse dora_message::descriptor::Descriptor;\nlet yaml = r#\"\nnodes:\n  - id: webcam\n    operator:\n      python: webcam.py\n      inputs:\n        tick: dora/timer/millis/100\n      outputs:\n        - image\n  - id: plot\n    operator:\n      python: plot.py\n      inputs:\n        image: webcam/image\n\"#;\nlet descriptor: Descriptor = serde_yaml::from_str(yaml)?;\nassert_eq!(descriptor.nodes.len(), 2);\n# Ok(())\n# }\n```",
   "type": "object",
   "properties": {
     "env": {
@@ -357,12 +357,13 @@
           "minimum": 0
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {
@@ -373,7 +374,7 @@
           ]
         },
         "module": {
-          "description": "Path to a module definition file (e.g. `nav_module.yml`).\n\nA module is a reusable sub-dataflow: a group of nodes with declared\ninputs and outputs. At build time the module is expanded inline —\ninternal node IDs are prefixed with `{module_id}.` and all wiring is\nrewritten so the runtime sees only flat nodes.\n\nMutually exclusive with `path`, `operators`, `operator`, `custom`,\nand `ros2`.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    inputs:\n      goal_pose: localization/goal\n```",
+          "description": "Path to a module definition file (e.g. `nav_module.yml`).\n\nA module is a reusable sub-dataflow: a group of nodes with declared\ninputs and outputs. At build time the module is expanded inline —\ninternal node IDs are prefixed with `{module_id}.` and all wiring is\nrewritten so the runtime sees only flat nodes.\n\nA module node has no source or per-node runtime configuration of its own,\nso only `module`, `inputs`, `params`, `env`, `build`, and `deploy` are\nmeaningful on it. Every other node field is rejected at expansion time\nrather than silently discarded -- both the source/kind fields (`path`,\n`args`, `path_sha256`, `git`, `hub`, `branch`, `tag`, `rev`, `operators`,\n`operator`, `ros2`) and per-node runtime fields (`outputs`,\n`output_types`, `cpu_affinity`, `restart_policy`, ...). The same rule\napplies at every nesting level.\n\n`env`, `build`, `deploy`, and `params` *are* accepted: they propagate\ninto the module's inner nodes.\n\n## Example\n\n```yaml\nnodes:\n  - id: nav_stack\n    module: modules/navigation_module.yml\n    inputs:\n      goal_pose: localization/goal\n```",
           "type": [
             "string",
             "null"
@@ -533,6 +534,14 @@
             }
           ]
         },
+        "startup_timeout": {
+          "description": "Startup connection deadline in seconds.\n\nIf the node process fails to connect (subscribe to events) within this\nmany seconds after process spawn, the daemon kills the process and\nevaluates the `restart_policy`.\n\nEvaluated on each `health_check_interval` tick (default 5s).",
+          "type": [
+            "number",
+            "null"
+          ],
+          "format": "double"
+        },
         "tag": {
           "description": "Git tag to checkout after cloning.\n\nThe `tag` field is only allowed in combination with the [`git`](#git) field.\nIt specifies the git tag that should be checked out after cloning.\nOnly one of `branch`, `tag`, or `rev` can be specified.\n\n## Example\n\n```yaml\nnodes:\n  - id: rust-node\n    git: https://github.com/dora-rs/dora.git\n    tag: v0.1.0\n```",
           "type": [
@@ -594,12 +603,13 @@
           ]
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {
@@ -700,6 +710,7 @@
       ]
     },
     "OperatorId": {
+      "description": "The identifier of an operator running inside a `dora runtime` node.\n\nAn operator is addressed as `<node_id>/<operator_id>/<output_id>`, so an\n`OperatorId` is the middle segment of a runtime output's fully-qualified\nname.\n\nUnlike [`NodeId`] and [`DataId`], an `OperatorId` is **not** validated:\n[`FromStr`] is [`Infallible`] and [`From<String>`] accepts any string\nverbatim (this is why it derives `Deserialize` directly rather than through\na validating deserializer). Callers are responsible for not embedding a `/`\nin an operator id — a `/` collides with the `<node>/<operator>/<output>`\naddressing separator and makes the operator unaddressable (it would resolve\nto a different operator/output split).\n\n```\nuse dora_message::id::OperatorId;\n\n// Construction is infallible from both `&str` and `String`:\nlet from_str: OperatorId = \"detector\".parse().unwrap(); // FromStr is Infallible\nlet from_string = OperatorId::from(\"detector\".to_string());\nassert_eq!(from_str, from_string);\n\n// Display and AsRef expose the underlying id:\nassert_eq!(from_str.to_string(), \"detector\");\nassert_eq!(from_str.as_ref(), \"detector\");\n```",
       "type": "string"
     },
     "OutputFraming": {
@@ -1130,12 +1141,13 @@
           ]
         },
         "max_rotated_files": {
-          "description": "Maximum number of rotated log files to keep (default: 5)",
+          "description": "Maximum number of rotated log files to keep (default: 5, range: 0-100)\n\n`0` keeps the active log only, rotating the previous one away.",
           "type": [
             "integer",
             "null"
           ],
           "format": "uint32",
+          "maximum": 100,
           "minimum": 0
         },
         "min_log_level": {

@@ -17,19 +17,24 @@ telemetry = ["dora-runtime-python/telemetry"]
 [dependencies]
 dora-cli = { workspace = true, features = ["python"] }
 dora-runtime-python = { workspace = true, features = ["tracing", "metrics"] }
-dora-download = { workspace = true }
-dora-node-api = { workspace = true }
 eyre = { workspace = true }
 pyo3.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread"] }
 
 [build-dependencies]
-# Inherit the workspace dep so the `abi3-py311` feature (which the
-# workspace adds via Cargo.toml) is picked up here too. A bare
-# `pyo3-build-config = "0.28"` would silently drop that feature and
-# re-trigger the "no abi3-py3* feature" build-script error on hosts
-# with `PYO3_NO_PYTHON=1` set or no findable Python interpreter.
+# Since 0.29, `pyo3-build-config` has no build script and no `abi3-*` features
+# of its own: it reads the interpreter config resolved by `pyo3-ffi`, which
+# cargo forwards only to direct dependents of `pyo3`/`pyo3-ffi` — satisfied by
+# the `pyo3` dependency above. Inherit the workspace dep so the version stays
+# in lockstep with `pyo3`.
 pyo3-build-config.workspace = true
+
+[dev-dependencies]
+# `auto-initialize` lets the entry-point test start an interpreter so it can
+# import the real module. Same pattern as `dora-ros2-bridge-python`.
+pyo3 = { workspace = true, features = ["auto-initialize"] }
+# Parses `[project.scripts]` out of pyproject.toml, same as the hub commands
+# in `binaries/cli` do.
+toml = "1.1"
 
 [lib]
 name = "dora_cli"

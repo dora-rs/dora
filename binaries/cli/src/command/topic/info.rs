@@ -9,7 +9,10 @@ use dora_core::config::InputMapping;
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 
 use crate::{
-    command::{Executable, default_tracing, topic::selector::TopicSelector},
+    command::{
+        Executable, default_tracing,
+        topic::selector::{TopicSelector, node_topic_inputs},
+    },
     common::CoordinatorOptions,
 };
 
@@ -146,7 +149,7 @@ fn info(
     // Find subscribers
     let mut subscribers = Vec::new();
     for node in &descriptor.nodes {
-        for (input_id, input) in &node.inputs {
+        for (input_id, input) in node_topic_inputs(node) {
             if let InputMapping::User(user) = &input.mapping
                 && user.source == topic.node_id
                 && user.output == topic.data_id

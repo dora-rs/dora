@@ -9,7 +9,7 @@ import numpy as np
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import torch_to_ipc_buffer
+from dora_tensor_pool import torch_to_ipc_buffer
 
 torch.tensor([], device="cuda")
 

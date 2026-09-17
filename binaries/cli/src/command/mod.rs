@@ -32,6 +32,7 @@ mod validate;
 
 pub use build::{BuildConfig, build};
 pub use run::{Run, run};
+pub(crate) use up::set_python_executable_path;
 
 use build::Build;
 use clean::CleanArgs;
@@ -758,6 +759,33 @@ mod tests {
             "dataflow.yml",
             "--output-yaml",
             "modified.yml",
+        ]);
+    }
+
+    #[test]
+    fn parse_record_queue_size() {
+        parse_ok(&["dora", "record", "dataflow.yml", "--queue-size", "1000"]);
+    }
+
+    #[test]
+    fn reject_record_zero_queue_size() {
+        // A zero-depth input is clamped to 1 by `effective_cap`, i.e. it would
+        // not do what it says. Reject it at parse time rather than silently.
+        parse_err(&["dora", "record", "dataflow.yml", "--queue-size", "0"]);
+    }
+
+    #[test]
+    fn reject_record_queue_size_with_proxy() {
+        // `--proxy` records over the WebSocket and injects no node, so there is
+        // no input queue for this to size. Say so instead of accepting a flag
+        // that does nothing.
+        parse_err(&[
+            "dora",
+            "record",
+            "dataflow.yml",
+            "--proxy",
+            "--queue-size",
+            "1000",
         ]);
     }
 

@@ -7,7 +7,7 @@ import time
 import pyarrow as pa
 import torch
 from dora import Node
-from dora.cuda import ipc_buffer_to_ipc_handle, open_ipc_handle
+from dora_tensor_pool import ipc_buffer_to_ipc_handle, open_ipc_handle
 from helper import record_results
 from tqdm import tqdm
 
