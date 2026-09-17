@@ -184,7 +184,7 @@ async def main():
 asyncio.run(main())
 ```
 
-See [examples/python-async](../../../examples/python-async) for a complete example.
+See [examples/python-async](https://github.com/dora-rs/dora/tree/main/examples/python-async) for a complete example.
 
 ## Logging
 
@@ -201,7 +201,7 @@ import logging
 logging.info("Processing item %d", i)
 ```
 
-See [examples/python-logging](../../../examples/python-logging) for logging module integration.
+See [examples/python-logging](https://github.com/dora-rs/dora/tree/main/examples/python-logging) for logging module integration.
 
 ## Timers
 
@@ -226,5 +226,5 @@ Also available: `dora/timer/hz/30` for 30 Hz.
 
 - [Python API Reference](../languages/python.md) -- full API docs for Node, Operator, DataflowBuilder, CUDA
 - [Communication Patterns](../concepts/patterns.md) -- service (request/reply) and action (goal/feedback/result) patterns
-- [Examples](../../examples/) -- python-dataflow, python-async, python-drain, python-concurrent-rw, python-multiple-arrays
+- [Examples](https://github.com/dora-rs/dora/tree/main/examples) -- python-dataflow, python-async, python-drain, python-concurrent-rw, python-multiple-arrays
 - [Distributed Deployment](../operations/distributed.md) -- running across multiple machines with `dora up`

@@ -13,6 +13,23 @@ pub mod qos;
 #[cfg(feature = "rmw-zenoh")]
 pub mod service;
 
+/// Whether rmw-zenoh debug tracing (`DORA_ROS2_ZENOH_TRACE`) is enabled.
+///
+/// Read once, process-globally, rather than on every call: this is queried on
+/// the zenoh data path (the subscriber callback runs once per incoming ROS2
+/// message, potentially at high frequency), and `std::env::var_os` takes a
+/// process-global lock and scans the environment on each call. The flag is a
+/// debug switch set at process start, so caching it is behavior-equivalent and
+/// also gives a single source of truth instead of repeating the env-var name
+/// across call sites.
+#[cfg(feature = "rmw-zenoh")]
+pub(crate) fn trace_enabled() -> bool {
+    use std::sync::LazyLock;
+    static TRACE: LazyLock<bool> =
+        LazyLock::new(|| std::env::var_os("DORA_ROS2_ZENOH_TRACE").is_some());
+    *TRACE
+}
+
 #[cfg(feature = "rmw-zenoh")]
 pub fn serialize_cdr<T: serde::Serialize>(value: &T) -> Result<Vec<u8>, TransportCdrError> {
     let body = cdr_encoding::to_vec::<_, byteorder::LittleEndian>(value)
@@ -212,7 +229,7 @@ mod lifecycle {
                 .map_err(|error| ContextError::GraphInitialization(error.to_string()))?;
             while let Ok(reply) = replies.recv_async().await {
                 if let Ok(sample) = reply.result() {
-                    if std::env::var_os("DORA_ROS2_ZENOH_TRACE").is_some() {
+                    if super::trace_enabled() {
                         eprintln!("rmw_zenoh liveliness initial: {}", sample.key_expr());
                     }
                     let _ = graph.apply_put(sample.key_expr().as_str());
@@ -226,7 +243,7 @@ mod lifecycle {
                     futures::executor::block_on(async move {
                         use zenoh::sample::SampleKind;
                         while let Ok(sample) = subscriber.recv_async().await {
-                            if std::env::var_os("DORA_ROS2_ZENOH_TRACE").is_some() {
+                            if super::trace_enabled() {
                                 eprintln!(
                                     "rmw_zenoh liveliness {:?}: {}",
                                     sample.kind(),
@@ -404,7 +421,7 @@ mod lifecycle {
                 .declare_token(key.as_str())
                 .await
                 .map_err(|error| ContextError::Token(error.to_string()))?;
-            if std::env::var_os("DORA_ROS2_ZENOH_TRACE").is_some() {
+            if super::trace_enabled() {
                 eprintln!("dora rmw_zenoh liveliness declare: {}", key.as_str());
             }
             self.graph

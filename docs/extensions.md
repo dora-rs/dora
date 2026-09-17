@@ -123,6 +123,8 @@ by default) and **outside the 1.0 compatibility guarantees** — that combinatio
 is the point: a transport can ship in-tree, be built and used, and still not
 freeze anything into dora's stable surface.
 
+`dora-tensor-pool` is on crates.io even so, because `dora-daemon` is, and cargo will not publish a crate whose dependency is missing from the registry ([#3304](https://github.com/dora-rs/dora/issues/3304)). That changes where the crate is downloaded from and nothing about what it promises; the stability tiers are in [`docs/api-rust.md`](api-rust.md#stability-scope-at-10).
+
 Its daemon half — mirror segments, the DORADMA header, the seqlock, the
 direct-TCP data plane, CUDA IPC — lives in that same crate, behind its own
 `daemon` feature, and reaches the daemon only through `DaemonServices`. The

@@ -103,9 +103,12 @@ pub fn expand_modules_with_boundaries(
         });
     }
 
-    let canonical_base = base_dir
-        .canonicalize()
-        .with_context(|| format!("failed to resolve base directory: {}", base_dir.display()))?;
+    let project_root = normalize_path(dunce::simplified(
+        &std::path::absolute(base_dir)
+            .with_context(|| format!("failed to make base_dir absolute: {}", base_dir.display()))?,
+    ));
+    let canonical_project_root = dunce::canonicalize(&project_root)
+        .with_context(|| format!("failed to resolve project root: {}", project_root.display()))?;
     let mut seen = HashSet::new();
     let mut flat_nodes = Vec::new();
     let mut output_maps: BTreeMap<String, ModuleOutputMap> = BTreeMap::new();
@@ -113,12 +116,25 @@ pub fn expand_modules_with_boundaries(
 
     for node in &descriptor.nodes {
         if node.module.is_some() {
-            // Validate module node fields against the module whitelist
-            classify::check_module(node)
-                .with_context(|| format!("invalid module node `{}`", node.id))?;
-
-            let (expanded, omap) =
-                expand_module_node(node, base_dir, &canonical_base, 0, &mut seen)?;
+            // Field validation happens inside `expand_module_node`, so top-level
+            // and nested module nodes go through the same whitelist.
+            let (mut expanded, omap) = expand_module_node(
+                node,
+                base_dir,
+                &project_root,
+                &canonical_project_root,
+                0,
+                &mut seen,
+            )?;
+            // Propagate the module node's own `build` to each expanded leaf node,
+            // mirroring how a nested module node's build is propagated in Phase 2
+            // of `expand_module_node`. `check_module` accepts `build` for exactly
+            // this reason.
+            if let Some(ref outer_build) = node.build {
+                for expanded_node in &mut expanded {
+                    prepend_module_build_to_node(expanded_node, outer_build);
+                }
+            }
             let module_id = node.id.to_string();
             output_maps.insert(module_id.clone(), omap);
             let node_ids: Vec<String> = expanded.iter().map(|n| n.id.to_string()).collect();
@@ -143,17 +159,17 @@ pub fn expand_modules_with_boundaries(
         }
     }
 
+    // Expansion rewrites `nodes` and nothing else, so clone the source
+    // descriptor and swap that one field. Listing the dataflow-level options
+    // individually would silently drop any option added later — `Descriptor` is
+    // `#[non_exhaustive]`, so a missing field is no longer a compile error. This
+    // also keeps the with-modules path structurally identical to the early
+    // return above, which already clones.
+    let mut expanded = descriptor.clone();
+    expanded.nodes = flat_nodes;
+
     Ok(ExpandedDescriptor {
-        descriptor: Descriptor {
-            nodes: flat_nodes,
-            deploy: descriptor.deploy.clone(),
-            debug: descriptor.debug.clone(),
-            health_check_interval: descriptor.health_check_interval,
-            strict_types: descriptor.strict_types,
-            exit_when_nodes_finish: descriptor.exit_when_nodes_finish,
-            type_rules: descriptor.type_rules.clone(),
-            env: descriptor.env.clone(),
-        },
+        descriptor: expanded,
         boundaries,
     })
 }
@@ -251,10 +267,11 @@ fn check_module_file_inner(
                     node.id,
                 );
             }
-            // The same mutual-exclusion rule applies at every nesting level.
+            // The same field whitelist applies at every nesting level.
             // Without this, `dora expand --module m.yml` reports a file as
             // valid while `dora run` on a dataflow using it hard-fails.
-            validate_module_node_fields(node)?;
+            classify::check_module(node)
+                .with_context(|| format!("invalid module node `{}`", node.id))?;
             let nested = module_dir.join(mod_path);
             let nested_canonical = nested.canonicalize().with_context(|| {
                 format!(
@@ -265,7 +282,7 @@ fn check_module_file_inner(
             // Note: unlike `expand_module_node`, we intentionally do NOT reject
             // a nested reference that leaves `module_dir`. The real expansion
             // path confines nested modules to the *project root*
-            // (`canonical_base`, threaded through recursion), which routinely
+            // (`project_root`, threaded through recursion), which routinely
             // sits above an individual module's directory -- a module in
             // `modules/a/` may reference a sibling module in `modules/shared/`
             // via `../shared/base.yml`. This linter runs on a module file in
@@ -561,71 +578,14 @@ fn node_output_refs(node: &Node) -> Vec<(String, String)> {
     refs
 }
 
-/// Reject source/kind fields on a module node that are mutually exclusive with
-/// the module reference itself.
-fn validate_module_node_fields(node: &Node) -> eyre::Result<()> {
-    let mut conflicts = Vec::new();
-
-    if node.path.is_some() {
-        conflicts.push("path");
-    }
-    // `args` belongs to `path`: a module node has no executable to pass them
-    // to, and `expand_module_node` never reads them, so they are dropped just
-    // as silently. Arguments reach inner nodes through `params:` instead.
-    if node.args.is_some() {
-        conflicts.push("args");
-    }
-    if node.path_sha256.is_some() {
-        conflicts.push("path_sha256");
-    }
-    if node.git.is_some() {
-        conflicts.push("git");
-    }
-    if node.hub.is_some() {
-        conflicts.push("hub");
-    }
-    if node.branch.is_some() {
-        conflicts.push("branch");
-    }
-    if node.tag.is_some() {
-        conflicts.push("tag");
-    }
-    if node.rev.is_some() {
-        conflicts.push("rev");
-    }
-    if node.operators.is_some() {
-        conflicts.push("operators");
-    }
-    if node.operator.is_some() {
-        conflicts.push("operator");
-    }
-    if node.ros2.is_some() {
-        conflicts.push("ros2");
-    }
-
-    if !conflicts.is_empty() {
-        bail!(
-            "module node `{}` sets fields that are mutually exclusive with \
-             `module`: {}\n\
-             hint: a module node only references a sub-dataflow -- remove these \
-             fields, or drop `module:` if this was meant to be a regular node. \
-             To configure the module's inner nodes use `params:`, `env:`, \
-             `build:`, or `deploy:`.",
-            node.id,
-            conflicts.join(", ")
-        );
-    }
-
-    Ok(())
-}
-
 /// Expand a single module node into its constituent flat nodes.
 ///
 /// Returns `(expanded_nodes, output_map)`; see [`ModuleOutputMap`].
 fn expand_module_node(
     node: &Node,
     base_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
+    canonical_project_root: &Path,
     depth: u8,
     seen: &mut HashSet<PathBuf>,
 ) -> eyre::Result<(Vec<Node>, ModuleOutputMap)> {
@@ -637,7 +597,12 @@ fn expand_module_node(
         );
     }
 
-    validate_module_node_fields(node)?;
+    // Validate the module node's fields against the module whitelist. This is
+    // the single validation site for both top-level and nested module nodes, so
+    // a field that has no meaning on a module node (e.g. `outputs`,
+    // `cpu_affinity`) is rejected here rather than silently dropped during
+    // expansion, at every nesting level.
+    classify::check_module(node).with_context(|| format!("invalid module node `{}`", node.id))?;
 
     let module_path_str = node
         .module
@@ -653,14 +618,83 @@ fn expand_module_node(
         );
     }
 
+    // Find the canonical target of the first symlink component, if any
+    let mut current = base_dir.to_path_buf();
+    let mut symlink_target_root: Option<PathBuf> = None;
+    for component in Path::new(module_path_str).components() {
+        match component {
+            std::path::Component::Normal(c) => {
+                current.push(c);
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.is_symlink()
+                    && symlink_target_root.is_none()
+                {
+                    symlink_target_root = dunce::canonicalize(&current).ok();
+                }
+            }
+            std::path::Component::ParentDir => {
+                if let Ok(meta) = std::fs::symlink_metadata(&current)
+                    && meta.is_symlink()
+                {
+                    let target = dunce::canonicalize(&current).ok();
+                    let is_in_tree = target
+                        .as_ref()
+                        .is_some_and(|t| t.starts_with(canonical_project_root));
+                    if !is_in_tree {
+                        bail!(
+                            "module path `{}` escapes the project directory (node `{}`)",
+                            module_path_str,
+                            node.id
+                        );
+                    }
+                }
+                current.pop();
+            }
+            _ => {}
+        }
+    }
+
     let module_path = base_dir.join(module_path_str);
-    let canonical = module_path
-        .canonicalize()
+    let canonical = dunce::canonicalize(&module_path)
         .with_context(|| format!("module file not found: {}", module_path.display()))?;
 
-    if !canonical.starts_with(canonical_base) {
+    let absolute_module = normalize_path(dunce::simplified(
+        &std::path::absolute(&module_path).with_context(|| {
+            format!(
+                "failed to make module path absolute: {}",
+                module_path.display()
+            )
+        })?,
+    ));
+    if !absolute_module.starts_with(project_root) {
         bail!(
             "module path `{}` escapes the project directory (node `{}`)",
+            module_path_str,
+            node.id
+        );
+    }
+
+    // Lexical and physical resolutions must name the same file. This prevents
+    // `..` traversal over symlinks from escaping, while leaving in-tree symlinks working.
+    if dunce::canonicalize(&absolute_module).ok().as_ref() != Some(&canonical) {
+        bail!(
+            "module path `{}` escapes the project directory (node `{}`)",
+            module_path_str,
+            node.id
+        );
+    }
+
+    // Confinement: the loaded physical file must either reside within the
+    // canonical project root, or within the canonical target of a symlink
+    // located inside the project directory.
+    let in_project = canonical.starts_with(canonical_project_root);
+    let in_symlink = symlink_target_root
+        .as_ref()
+        .is_some_and(|target| canonical.starts_with(target));
+
+    if !in_project && !in_symlink {
+        bail!(
+            "module path `{}` physically escapes the project directory (node `{}`)",
             module_path_str,
             node.id
         );
@@ -679,7 +713,7 @@ fn expand_module_node(
     let module_file = load_module_file(&canonical)?;
     validate_module_header(&module_file.module)?;
     let module_id = node.id.to_string();
-    let module_dir = canonical
+    let module_dir = absolute_module
         .parent()
         .expect("module file must have a parent directory");
 
@@ -789,7 +823,7 @@ fn expand_module_node(
             )?;
         }
 
-        resolve_inner_node_paths(&mut inner_node, module_dir, canonical_base)?;
+        resolve_inner_node_paths(&mut inner_node, module_dir, project_root)?;
 
         // Propagate deploy from module node to inner nodes
         if inner_node.deploy.is_none() {
@@ -822,8 +856,14 @@ fn expand_module_node(
         if inner_node.module.is_some() {
             let nested_id = inner_node.id.to_string();
             let accumulated_build = inner_node.build.clone();
-            let (mut nested, nested_omap) =
-                expand_module_node(&inner_node, module_dir, canonical_base, depth + 1, seen)?;
+            let (mut nested, nested_omap) = expand_module_node(
+                &inner_node,
+                module_dir,
+                project_root,
+                canonical_project_root,
+                depth + 1,
+                seen,
+            )?;
             // Propagate the outer module's accumulated build to each nested leaf node,
             // mirroring how `deploy` is propagated through recursion.
             if let Some(ref outer_build) = accumulated_build {
@@ -841,11 +881,23 @@ fn expand_module_node(
             final_nodes.extend(nested);
         } else {
             for (name, output_ref) in node_output_refs(&inner_node) {
+                // `output_ref` may be an operator-qualified `<op_id>/<output>`
+                // form, and `OperatorId` is unvalidated, so parse fallibly
+                // instead of `output_ref.into()` — `DataId::from` panics on
+                // characters outside `[a-zA-Z0-9_./-]`, which would abort
+                // expansion on an otherwise-parseable descriptor. Mirrors
+                // `prefix_output_with_operator_id` in `descriptor/mod.rs`.
+                let output: DataId = output_ref.parse().map_err(|e| {
+                    eyre::eyre!(
+                        "node `{}` produces an invalid output id `{output_ref}`: {e}",
+                        inner_node.id
+                    )
+                })?;
                 direct_output_targets.entry(name).or_default().push((
-                    format!("{}/{}", inner_node.id, output_ref),
+                    format!("{}/{output}", inner_node.id),
                     UserInputMapping {
                         source: inner_node.id.clone(),
-                        output: output_ref.into(),
+                        output,
                     },
                 ));
             }
@@ -901,19 +953,19 @@ fn expand_module_node(
 fn resolve_inner_node_paths(
     node: &mut Node,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
     if let Some(ref mut path) = node.path {
-        resolve_module_relative_path(path, module_dir, canonical_base, &owner)?;
+        resolve_module_relative_path(path, module_dir, project_root, &owner)?;
     }
     if let Some(ref mut operators) = node.operators {
         for op in &mut operators.operators {
-            resolve_operator_source_paths(&mut op.config, module_dir, canonical_base, &owner)?;
+            resolve_operator_source_paths(&mut op.config, module_dir, project_root, &owner)?;
         }
     }
     if let Some(ref mut operator) = node.operator {
-        resolve_operator_source_paths(&mut operator.config, module_dir, canonical_base, &owner)?;
+        resolve_operator_source_paths(&mut operator.config, module_dir, project_root, &owner)?;
     }
     Ok(())
 }
@@ -921,15 +973,15 @@ fn resolve_inner_node_paths(
 fn resolve_operator_source_paths(
     config: &mut OperatorConfig,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
     owner: &str,
 ) -> eyre::Result<()> {
     match &mut config.source {
         OperatorSource::SharedLibrary(path) | OperatorSource::Wasm(path) => {
-            resolve_module_relative_path(path, module_dir, canonical_base, owner)
+            resolve_module_relative_path(path, module_dir, project_root, owner)
         }
         OperatorSource::Python(source) => {
-            resolve_module_relative_path(&mut source.source, module_dir, canonical_base, owner)
+            resolve_module_relative_path(&mut source.source, module_dir, project_root, owner)
         }
     }
 }
@@ -937,7 +989,7 @@ fn resolve_operator_source_paths(
 fn resolve_module_relative_path(
     path: &mut String,
     module_dir: &Path,
-    canonical_base: &Path,
+    project_root: &Path,
     owner: &str,
 ) -> eyre::Result<()> {
     // Resolve relative paths: make inner node/operator sources relative to
@@ -957,7 +1009,7 @@ fn resolve_module_relative_path(
     }
 
     let resolved = normalize_path(&module_dir.join(path.as_str()));
-    let relative = resolved.strip_prefix(canonical_base).map_err(|_| {
+    let relative = resolved.strip_prefix(project_root).map_err(|_| {
         eyre::eyre!(
             "module node `{}` path `{}` resolves outside the project \
                  directory (resolved to `{}`)",
@@ -971,13 +1023,21 @@ fn resolve_module_relative_path(
 }
 
 fn prepend_module_build_to_node(node: &mut Node, module_build: &str) {
-    // The node-level `build` is consumed only by `path:` nodes and by nested
-    // `module:` nodes (which forward it to their own leaves in Phase 2).
-    // Setting it on a runtime/operator/ROS2 node used to be a harmless dead
-    // value; the field classifier now rejects `build` on those kinds, so the
-    // module build has to land in the operator configs only -- which is where
-    // `build/mod.rs` reads it from for runtime nodes anyway.
-    if node.path.is_some() || node.module.is_some() {
+    // The node-level `build` is consumed by every standard node -- `path:`,
+    // `git:`, and `hub:` sourced -- (`build/mod.rs` reads `n.build` for all
+    // `CoreNodeKind::Custom` nodes) and by nested `module:` nodes (which
+    // forward it to their own leaves in Phase 2). It is *not* valid on
+    // runtime/operator/ROS2 nodes, where the field classifier rejects it, so
+    // for those the module build lands in the operator configs only.
+    //
+    // Do NOT key this off `node.path`: module expansion runs *before* git/hub
+    // source resolution, so a `git:`/`hub:`-sourced inner node still has
+    // `path == None` here. Keying off `path` silently dropped the module build
+    // for those nodes (#3296). Gate on "not a runtime/operator/ROS2 node"
+    // instead, which correctly includes git/hub standard leaves.
+    let is_standard_or_module = node.module.is_some()
+        || (node.operators.is_none() && node.operator.is_none() && node.ros2.is_none());
+    if is_standard_or_module {
         prepend_build(&mut node.build, module_build);
     }
     if let Some(ref mut operators) = node.operators {
@@ -1327,15 +1387,15 @@ mod tests {
         serde_yaml::from_str(yaml).unwrap()
     }
 
-    /// dora-rs/dora#2920: expansion rebuilds the `Descriptor` field by
-    /// field, so any dataflow-level setting it forgets to copy is
-    /// silently dropped for every dataflow that uses modules. The
-    /// completion policy decides whether the graph can ever end, so
-    /// losing it turns a batch run into a hang.
+    /// dora-rs/dora#2920: a dataflow-level setting that expansion drops is
+    /// silently lost for every dataflow that uses modules. The completion
+    /// policy decides whether the graph can ever end, so losing it turns a
+    /// batch run into a hang.
     ///
-    /// The descriptor MUST contain a module: without one,
-    /// `expand_modules_with_boundaries` short-circuits to a whole-struct
-    /// clone and never reaches the field-by-field rebuild this guards.
+    /// Both paths now clone the source descriptor, so this is a regression
+    /// guard rather than the primary defense. The descriptor MUST still
+    /// contain a module: without one, `expand_modules_with_boundaries`
+    /// short-circuits before the expansion path this exercises.
     #[test]
     fn expand_preserves_exit_when_nodes_finish() {
         let tmp = TempDir::new().unwrap();
@@ -1405,6 +1465,46 @@ nodes:
         assert_eq!(descriptor.exit_when_nodes_finish, None);
         let expanded = expand_modules(&descriptor, tmp.path()).unwrap();
         assert_eq!(expanded.exit_when_nodes_finish, None);
+    }
+
+    /// A module whose inner runtime node declares an operator with an id
+    /// containing characters outside `[a-zA-Z0-9_./-]` must surface a clean
+    /// descriptor error, not panic. `OperatorId` is unvalidated, so its id
+    /// flows verbatim into the `<op_id>/<output>` qualified output id, which
+    /// used to be built with `DataId::from` (panics) rather than a fallible
+    /// parse.
+    #[test]
+    fn expand_rejects_invalid_operator_output_id_without_panicking() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        write_file(
+            base,
+            "bad_module.yml",
+            r#"
+module:
+  name: bad
+  outputs: [data_out]
+
+nodes:
+  - id: runtime_node
+    operators:
+      - id: "bad id"
+        shared-library: op
+        outputs:
+          - data_out
+"#,
+        );
+        let descriptor = parse_descriptor(
+            r#"
+nodes:
+  - id: my_mod
+    module: bad_module.yml
+"#,
+        );
+        let err = expand_modules(&descriptor, base)
+            .expect_err("an invalid operator output id must be a clean error, not a panic");
+        let msg = err.to_string();
+        assert!(msg.contains("invalid output id"), "unexpected error: {msg}");
     }
 
     #[test]
@@ -2598,6 +2698,130 @@ nodes:
 
     // ---- Feature 5: module-level build ----
 
+    /// Regression for #3258 (defect 1): a `build:` set on the module node itself
+    /// (not the module file header) is accepted and propagates into the expanded
+    /// leaf nodes, matching the documented contract and the nested behavior.
+    #[test]
+    fn expand_top_level_module_build_propagated() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf
+  inputs: [data]
+  outputs: [out]
+
+nodes:
+  - id: proc
+    path: proc.py
+    inputs:
+      data: _mod/data
+    outputs:
+      - out
+    build: python setup.py build
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: m
+    module: leaf_module.yml
+    build: pip install foo
+    inputs:
+      data: src/val
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let proc = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.proc")
+            .unwrap();
+        let build = proc.build.as_deref().unwrap();
+        assert!(
+            build.starts_with("pip install foo"),
+            "the module node's own build must be prepended; got: {build}"
+        );
+        assert!(build.contains("python setup.py build"), "{build}");
+    }
+
+    /// Regression for #3258 (defect 2): a per-node runtime field that has no
+    /// meaning on a module node (here `outputs`) is rejected at expansion time
+    /// rather than silently dropped, at every nesting level.
+    #[test]
+    fn nested_module_node_rejects_disallowed_field() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "leaf_module.yml",
+            r#"
+module:
+  name: leaf
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        // `outputs` on the nested module node is not part of the module
+        // whitelist; expansion must reject it.
+        write_file(
+            base,
+            "outer_module.yml",
+            r#"
+module:
+  name: outer
+  inputs: [x]
+  outputs: [y]
+
+nodes:
+  - id: inner
+    module: leaf_module.yml
+    inputs:
+      x: _mod/x
+    outputs:
+      - y
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: src
+    path: src.py
+    outputs: [val]
+  - id: top
+    module: outer_module.yml
+    inputs:
+      x: src/val
+"#,
+        );
+
+        let error = format!("{:#}", expand_modules(&desc, base).unwrap_err());
+        assert!(
+            error.contains("outputs") && error.contains("Module"),
+            "nested module node with `outputs` should be rejected; got: {error}"
+        );
+    }
+
     #[test]
     fn expand_module_build_prepended() {
         let tmp = TempDir::new().unwrap();
@@ -2695,6 +2919,72 @@ nodes:
             .find(|n| n.id.to_string() == "m.proc")
             .unwrap();
         assert_eq!(proc.build.as_deref(), Some("make all"));
+    }
+
+    /// A module-level `build:` must reach `git:`/`hub:`-sourced inner nodes,
+    /// not just `path:`-sourced ones. Module expansion runs before git/hub
+    /// source resolution, so these nodes still have `path == None` at this
+    /// point; the build must be keyed off the node kind, not `node.path`
+    /// (#3296).
+    #[test]
+    fn expand_module_build_prepended_to_git_and_hub_inner_nodes() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+
+        write_file(
+            base,
+            "git_hub_module.yml",
+            r#"
+module:
+  name: git_hub
+  outputs: [from_git, from_hub]
+
+build: pip install -r requirements.txt
+
+nodes:
+  - id: worker
+    git: https://github.com/example/worker.git
+    outputs:
+      - from_git
+    build: cargo build --release
+  - id: fetched
+    hub: example/fetched
+    outputs:
+      - from_hub
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: git_hub_module.yml
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+
+        // git-sourced inner node: module build prepended before its own build.
+        let worker = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.worker")
+            .unwrap();
+        assert_eq!(
+            worker.build.as_deref(),
+            Some("pip install -r requirements.txt\ncargo build --release"),
+        );
+
+        // hub-sourced inner node with no own build: module build is set.
+        let fetched = expanded
+            .nodes
+            .iter()
+            .find(|n| n.id.to_string() == "m.fetched")
+            .unwrap();
+        assert_eq!(
+            fetched.build.as_deref(),
+            Some("pip install -r requirements.txt"),
+        );
     }
 
     /// A module-level `build:` must not make an operator inner node
@@ -3491,6 +3781,268 @@ nodes:
         assert!(result.is_err());
         let msg = result.unwrap_err().to_string();
         assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    // This test guards the fix for #3341: an in-tree module directory that is
+    // a symlink pointing outside the project root.
+    #[test]
+    fn expand_modules_accepts_symlinked_module_dir() {
+        let tmp = TempDir::new().unwrap();
+        let shared_dir = tmp.path().join("shared_modules");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        write_file(
+            &shared_dir,
+            "shared.yml",
+            r#"
+module:
+  name: shared
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared_dir, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&shared_dir, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/shared.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("modules/worker.py")
+        );
+    }
+
+    #[test]
+    fn expand_modules_accepts_in_tree_symlink_with_dotdot() {
+        let tmp = TempDir::new().unwrap();
+        let project_dir = tmp.path().join("project");
+        let real_modules = project_dir.join("real_modules");
+        std::fs::create_dir_all(&real_modules).unwrap();
+
+        write_file(
+            &project_dir,
+            "top.yml",
+            r#"
+module:
+  name: top
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&real_modules, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&real_modules, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        // `modules/../top.yml` traverses `..` over the in-tree symlink `modules`.
+        // Lexically and physically, it resolves to `project/top.yml`, within
+        // the project directory and must be accepted.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/../top.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("worker.py")
+        );
+    }
+
+    #[test]
+    fn reject_symlinked_module_dir_divergent_lexical_and_physical() {
+        let tmp = TempDir::new().unwrap();
+        let external_base = tmp.path().join("external");
+        let external_modules = external_base.join("modules");
+        let external_shared = external_base.join("shared");
+        std::fs::create_dir_all(&external_modules).unwrap();
+        std::fs::create_dir_all(&external_shared).unwrap();
+        write_file(
+            &external_shared,
+            "x.yml",
+            "module:\n  name: x\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&external_modules, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&external_modules, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        // Also create project/shared/x.yml so lexical resolution finds a file inside project
+        let project_shared = project_dir.join("shared");
+        std::fs::create_dir_all(&project_shared).unwrap();
+        write_file(
+            &project_shared,
+            "x.yml",
+            "module:\n  name: project_x\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        // `modules/../shared/x.yml`:
+        // Lexically resolves to `project/shared/x.yml`.
+        // Physically resolves to `external/shared/x.yml`.
+        // Lexical and physical resolutions diverge, so this must be rejected.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/../shared/x.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, &project_dir);
+        assert!(result.is_err(), "expected error but succeeded");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    fn reject_symlinked_module_dir_dotdot_escape() {
+        let tmp = TempDir::new().unwrap();
+        let shared_base = tmp.path().join("shared_base");
+        let shared_dir = shared_base.join("shared_modules");
+        std::fs::create_dir_all(&shared_dir).unwrap();
+        write_file(
+            &shared_dir,
+            "shared.yml",
+            "module:\n  name: shared\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        // Place escape.yml outside the symlink target (in shared_base)
+        write_file(
+            &shared_base,
+            "escape.yml",
+            "module:\n  name: escape\n  inputs: []\n  outputs: []\nnodes: []",
+        );
+
+        let project_dir = tmp.path().join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let symlink_path = project_dir.join("modules");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&shared_dir, &symlink_path).unwrap();
+        #[cfg(windows)]
+        if let Err(e) = std::os::windows::fs::symlink_dir(&shared_dir, &symlink_path) {
+            eprintln!("skipping symlink test: {e}");
+            return;
+        }
+
+        // `modules/../escape.yml` uses a single `..`.
+        // Lexically, `project/modules/..` collapses to `project/`, which
+        // would pass a purely lexical containment check.
+        // Physically, `modules` dereferences to `shared_modules`, and `..`
+        // escapes into `shared_base/escape.yml`.
+        // This must be rejected as an escape.
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/../escape.yml
+"#,
+        );
+
+        let result = expand_modules(&desc, &project_dir);
+        assert!(result.is_err(), "expected error but succeeded");
+        let msg = result.unwrap_err().to_string();
+        assert!(msg.contains("escapes"), "got: {msg}");
+    }
+
+    #[test]
+    fn expand_modules_accepts_dotdot_in_base_dir() {
+        let tmp = TempDir::new().unwrap();
+        let sub = tmp.path().join("sub");
+        std::fs::create_dir_all(&sub).unwrap();
+        let project_dir = sub.join("..").join("project");
+        std::fs::create_dir_all(&project_dir).unwrap();
+        write_file(
+            &project_dir,
+            "mod.yml",
+            r#"
+module:
+  name: inner
+  inputs: [in_val]
+  outputs: [out_val]
+
+nodes:
+  - id: worker
+    path: worker.py
+    inputs:
+      data: _mod/in_val
+    outputs:
+      - out_val
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: mod.yml
+    inputs:
+      in_val: source/data
+"#,
+        );
+
+        let expanded = expand_modules(&desc, &project_dir).unwrap();
+        assert_eq!(expanded.nodes.len(), 1);
+        assert_eq!(expanded.nodes[0].id.to_string(), "m.worker");
+        assert_eq!(
+            Path::new(expanded.nodes[0].path.as_ref().unwrap()),
+            Path::new("worker.py")
+        );
     }
 
     #[test]

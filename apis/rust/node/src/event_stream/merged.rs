@@ -45,7 +45,35 @@ pub trait MergeExternal<'a, E> {
     /// Merge the given stream into an existing event stream.
     ///
     /// Returns a new event stream that yields items from both streams.
-    /// The ordering between the two streams is not guaranteed.
+    /// The ordering between the two streams is not guaranteed. Each item is
+    /// wrapped in [`MergedEvent`] so the consumer can tell a dora [`Event`] from
+    /// an external one; note that a dora [`Event::Stop`] still has to be handled
+    /// explicitly to leave the loop.
+    ///
+    /// [`Event`]: super::Event
+    /// [`Event::Stop`]: super::Event::Stop
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, Event};
+    /// use dora_node_api::merged::{MergeExternal, MergedEvent};
+    /// use futures::StreamExt;
+    ///
+    /// let (_node, events) = DoraNode::init_from_env().unwrap();
+    ///
+    /// // Any `Stream` can be merged in; here a trivial external source.
+    /// let external = futures::stream::iter(["external-tick"]);
+    /// let mut merged = events.merge_external(external);
+    ///
+    /// futures::executor::block_on(async {
+    ///     while let Some(event) = merged.next().await {
+    ///         match event {
+    ///             MergedEvent::Dora(Event::Stop(_)) => break,
+    ///             MergedEvent::Dora(_dora_event) => { /* handle dora input, etc. */ }
+    ///             MergedEvent::External(_tick) => { /* handle external event */ }
+    ///         }
+    ///     }
+    /// });
+    /// ```
     fn merge_external(
         self,
         external_events: impl Stream<Item = E> + Unpin + 'a,

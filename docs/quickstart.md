@@ -62,7 +62,7 @@ Timer (1Hz) --> Talker --> Listener
 
 ## Networked Mode
 
-For production or multi-machine deployments, use the coordinator/daemon architecture:
+For production or multi-machine deployments, use the coordinator/daemon architecture (for more than one machine, see the [Multi-machine Guide](multi-machine.md)):
 
 ```bash
 # Terminal 1: start coordinator + daemon

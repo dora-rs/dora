@@ -510,10 +510,7 @@ mod codegen_tests {
     }
 
     fn format_valid_rust(tokens: impl ToTokens) -> String {
-        use rust_format::Formatter;
-        rust_format::PrettyPlease::default()
-            .format_tokens(tokens.into_token_stream())
-            .expect("generated ROS2 service code must parse as valid Rust")
+        crate::format_token_stream(tokens.into_token_stream())
     }
 
     // #2027: the generated client/server `create` fns used to

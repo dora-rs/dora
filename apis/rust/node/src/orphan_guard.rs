@@ -27,23 +27,27 @@
 //! interpreter behind — the same orphan, one level down — so the guard signals
 //! the group, exactly as the daemon's own reaper does.
 //!
-//! # Why not `PR_SET_PDEATHSIG`
+//! # The daemon's pre-`init` complement (`PR_SET_PDEATHSIG`)
 //!
-//! Linux can ask the kernel to signal a child when its parent dies, which
-//! needs no thread and covers a node that is killed before it reaches `init`.
-//! It is not enough on its own, and it is not free:
+//! This guard only covers a node from `init` onwards, so the daemon closes the
+//! window *before* `init` from its side: on Linux, on the same `dora run` spawn
+//! path, it asks the kernel to `SIGKILL` the spawned child when its parent (the
+//! `dora run` process) dies (dora-rs/dora#3473). That needs no dora code in the
+//! child, so it also covers a `path: shell` node that never runs any
+//! (dora-rs/dora#3472).
+//!
+//! It is a complement, not the mechanism, because it is neither complete nor
+//! free:
 //!
 //! - It reaches only the *direct* child. Under `--uv` that child is `uv run
-//!   python ...` and the node is one level down, so the interpreter is left
-//!   exactly as orphaned as before — the shape this issue was reported for.
+//!   python ...` and the node is one level down, so the interpreter is covered
+//!   only once *it* reaches `init` and this guard takes over.
 //! - It fires when the parent **thread** exits, not the parent process. The
-//!   daemon spawns from a tokio worker thread, so the guarantee is only as
-//!   stable as which thread happened to run the spawn — a spawn moved behind
-//!   `spawn_blocking` would start killing nodes early, silently.
-//! - It is Linux-only, and the report is from macOS.
-//!
-//! It remains a reasonable *complement* for the pre-`init` window (see
-//! "Coverage" below); it is not the mechanism.
+//!   daemon spawns from a tokio worker thread, so past `init` — where a healthy
+//!   node may live for hours — the poll guard below is the safer owner. This
+//!   module therefore clears the signal (see [`clear_parent_death_signal`]) the
+//!   moment that guard is running, bounding the fragile window to startup.
+//! - It is Linux-only; on macOS the pre-`init` window remains a gap.
 //!
 //! # Why `SIGKILL` rather than a `SIGTERM` grace period first
 //!
@@ -55,11 +59,13 @@
 //!
 //! # Coverage
 //!
-//! A node is guarded from [`DoraNode::init`][crate::DoraNode::init] onwards, so
-//! two gaps remain. A process killed *before* it gets there — a Python node
-//! still in `import torch`, a `uv run` still resolving dependencies — is
-//! orphaned as before. And a node that never calls `init` at all (a `path:
-//! shell` command) is never guarded, because nothing of dora's runs in it.
+//! This guard owns the window from [`DoraNode::init`][crate::DoraNode::init]
+//! onwards. The pre-`init` window — a Python node still in `import torch`, a
+//! `uv run` still resolving dependencies, a `path: shell` command that never
+//! runs any dora code — is covered on Linux by the daemon's `PR_SET_PDEATHSIG`
+//! (above), with two residual gaps: on macOS, which has no `PDEATHSIG`
+//! equivalent, and the interpreter under a `--uv` wrapper, which the signal
+//! reaches only once that interpreter reaches `init` here.
 //!
 //! Unix only; on Windows this module compiles to a no-op and the gap remains.
 //! Windows has no process groups in this sense, so a node cannot contain its
@@ -129,15 +135,51 @@ fn arm(parent: u32) {
                 }
             }
         });
-    if let Err(err) = spawned {
-        // Not fatal: the node works, it just loses the guarantee. Say so, since
-        // the symptom otherwise only appears much later as a stranded process.
-        warn(&format!(
-            "failed to start the orphan guard ({err}); this node may outlive a \
-             killed `dora run`"
-        ));
+    match spawned {
+        Ok(_handle) => {
+            // The poll guard now owns containment for this process's whole
+            // lifetime, and it is robust where the daemon's spawn-time
+            // `PR_SET_PDEATHSIG` is not: it tracks the parent *process* rather
+            // than the spawning thread, and re-derives its decision every
+            // interval. Drop that pre-`init` signal now so a healthy, long-lived
+            // node can never be SIGKILLed early were the daemon's spawning thread
+            // to exit (dora-rs/dora#3473). A no-op when it was never set: a
+            // wrapped node (`uv run python`) is a fork of the daemon's direct
+            // child, and `PDEATHSIG` is cleared across `fork`.
+            clear_parent_death_signal();
+        }
+        Err(err) => {
+            // Not fatal: the node works, it just loses the guarantee. Say so,
+            // since the symptom otherwise only appears much later as a stranded
+            // process. The daemon's `PR_SET_PDEATHSIG` is deliberately left armed
+            // here as the remaining fallback.
+            warn(&format!(
+                "failed to start the orphan guard ({err}); this node may outlive a \
+                 killed `dora run`"
+            ));
+        }
     }
 }
+
+/// Drop the parent-death signal the daemon set for the pre-`init` window.
+///
+/// The daemon arms `PR_SET_PDEATHSIG` at spawn so a node killed before it
+/// reaches [`arm_if_run_child`] is still contained (dora-rs/dora#3473). Once the
+/// poll guard is running that signal is not merely redundant but a liability —
+/// it fires on the death of the daemon *thread* that spawned this node, not the
+/// daemon process — so the guard drops it and contains the node alone.
+#[cfg(target_os = "linux")]
+fn clear_parent_death_signal() {
+    // SAFETY: `prctl` is async-signal-safe and this only clears this process's
+    // own parent-death setting.
+    unsafe {
+        libc::prctl(libc::PR_SET_PDEATHSIG, 0 as libc::c_ulong);
+    }
+}
+
+/// No parent-death signal is set outside Linux, so there is nothing to clear.
+#[cfg(all(unix, not(target_os = "linux")))]
+fn clear_parent_death_signal() {}
 
 /// What this node will do once `parent` is gone, decided while the parent is
 /// still alive and therefore still inspectable.

@@ -1,7 +1,6 @@
 use std::{
     net::SocketAddr,
     path::PathBuf,
-    process::Command,
     time::{Duration, Instant},
 };
 
@@ -9,17 +8,14 @@ use clap::Args;
 use eyre::Context;
 
 use crate::{
-    command::{
-        Executable, default_tracing,
-        up::{detach_process, dora_executable_path},
-    },
-    common::{connect_to_coordinator, connect_with_retry},
+    command::{Executable, default_tracing, up},
+    common::connect_to_coordinator,
 };
 
-use super::config::{ClusterConfig, ZenohMesh};
+use super::config::ClusterConfig;
 use super::{
     format_daemon_port_arg, format_labels_arg, format_zenoh_peer_arg, query_connected_daemons,
-    run_ssh, ssh_target,
+    resolve_zenoh_mesh_args, run_ssh, ssh_target,
 };
 
 /// Bring up a multi-machine cluster from a cluster.yml file.
@@ -52,32 +48,24 @@ impl Executable for Up {
                 s
             }
             Err(_) => {
-                start_coordinator(config.coordinator.port)?;
-                connect_with_retry(coordinator_addr, Duration::from_secs(10)).map_err(|err| {
-                    eyre::eyre!("timed out waiting for coordinator at {coordinator_addr}: {err}")
-                })?
+                // Shared with `dora up` so the two cannot drift apart again;
+                // the wildcard bind is what makes the coordinator reachable
+                // from the machines we are about to ssh into.
+                let startup = up::spawn_coordinator(up::CoordinatorSpawn {
+                    interface: Some(std::net::Ipv4Addr::UNSPECIFIED.into()),
+                    port: Some(config.coordinator.port),
+                    auth: false,
+                })
+                .wrap_err("failed to start dora coordinator")?;
+                up::wait_for_coordinator_start(coordinator_addr, config.coordinator.port, startup)?
             }
         };
 
         // 2. SSH into each machine to start a daemon
         let zenoh_peer_arg = format_zenoh_peer_arg(config.zenoh_peer.as_deref());
         // Wire the daemons into an explicit zenoh mesh where the config allows
-        // it. Falling back is deliberate: a partial mesh is worse than none,
-        // since explicit connect endpoints turn multicast scouting off for the
-        // daemons that have them while the rest still depend on it.
-        let zenoh_mesh_args = match config.zenoh_mesh_args() {
-            ZenohMesh::Derived(args) => Some(args),
-            ZenohMesh::NotNeeded => None,
-            ZenohMesh::Unavailable(reason) => {
-                eprintln!(
-                    "WARNING: {reason}, so the daemons are left to discover each other \
-                     by multicast. On a network without multicast — a mesh VPN carries \
-                     none — they will not find each other. Fix the field named above, \
-                     or configure a shared `zenoh_peer` rendezvous."
-                );
-                None
-            }
-        };
+        // it (shared with `dora cluster install`).
+        let zenoh_mesh_args = resolve_zenoh_mesh_args(&config);
         let mut ssh_failures: Vec<(String, String)> = Vec::new();
         for machine in &config.machines {
             let target = ssh_target(machine);
@@ -188,23 +176,6 @@ impl Executable for Up {
             )
         }
     }
-}
-
-fn start_coordinator(port: u16) -> eyre::Result<()> {
-    let path = dora_executable_path()?;
-    let mut cmd = Command::new(path);
-    cmd.args([
-        "coordinator",
-        "--interface",
-        "0.0.0.0",
-        "--port",
-        &port.to_string(),
-        "--quiet",
-    ]);
-    detach_process(&mut cmd);
-    cmd.spawn().wrap_err("failed to start dora coordinator")?;
-    println!("Started coordinator on 0.0.0.0:{port}");
-    Ok(())
 }
 
 /// Print the tail of each unreachable daemon's log.

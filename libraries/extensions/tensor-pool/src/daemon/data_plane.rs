@@ -322,14 +322,13 @@ pub(crate) async fn handle_cross_data_frame(
         // even generation over a truncated tensor that readers accept as
         // complete (the segment-length bound alone cannot catch it, since
         // the segment is created at the registered size + header).
-        let registered_size = {
-            let json_len = unsafe { read_header_u64(shmem_ptr.add(8)) } as usize;
-            let json_bytes =
-                unsafe { std::slice::from_raw_parts(shmem_ptr.add(DORADMA_HEADER_SIZE), json_len) };
-            serde_json::from_slice::<serde_json::Value>(json_bytes)
-                .ok()
-                .and_then(|v| v.get("size").and_then(|s| s.as_u64()))
-                .unwrap_or(0) as usize
+        let Some(registered_size) = read_registered_size(shmem_ptr, shmem.len()) else {
+            return Err(CrossFrameError::with_ack(
+                format!("{shared_memory_id} header JSON length exceeds segment"),
+                dataflow_id,
+                shared_memory_id.clone(),
+                seq,
+            ));
         };
         if size != registered_size {
             return Err(CrossFrameError::with_ack(

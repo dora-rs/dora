@@ -155,11 +155,18 @@ impl SharedLibraryOperator<'_> {
             // sample here and dropped at the end of this closure, on the
             // operator thread, so its `.so`-resident release callback never runs
             // on the runtime's event loop (dora-rs/dora#2742).
-            match self.handle.send_output(
-                DataId::from(String::from(output_id)),
-                parameters,
-                &arrow_array,
-            ) {
+            // Parse the operator-supplied output id fallibly. `DataId::from`
+            // panics on an invalid id (empty, a space, an empty path segment,
+            // any char outside `[a-zA-Z0-9_./-]`), and this closure runs inside
+            // the `extern "C"` send-output trampoline the operator calls — a
+            // panic here would unwind across the FFI boundary and abort the
+            // whole runtime process. An ordinary typo in an operator's
+            // `send_output` id must surface as a returned error instead.
+            let output_id = match String::from(output_id).parse::<DataId>() {
+                Ok(id) => id,
+                Err(err) => return DoraResult::from_error(format!("invalid output id: {err}")),
+            };
+            match self.handle.send_output(output_id, parameters, &arrow_array) {
                 Ok(()) => DoraResult::SUCCESS,
                 Err(err) => DoraResult::from_error(format!("{err}")),
             }

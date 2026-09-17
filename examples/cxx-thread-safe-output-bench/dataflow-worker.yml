@@ -1,0 +1,22 @@
+nodes:
+  - id: source
+    path: build/source
+    inputs:
+      fast: dora/timer/millis/10
+      slow: dora/timer/millis/1000
+    outputs:
+      - tick
+      - image
+
+  # Contestant 2: offloads the 200ms image work to a worker thread, which
+  # sends its result via the thread-safe SafeOutputSender. The main loop
+  # stays free to handle ticks.
+  - id: contestant
+    path: build/bench_node
+    inputs:
+      tick: source/tick
+      image: source/image
+    outputs:
+      - result
+    env:
+      BENCH_MODE: worker

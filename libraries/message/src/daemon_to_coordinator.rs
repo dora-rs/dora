@@ -69,10 +69,47 @@ pub struct DaemonRegisterRequest {
     /// decoding the frame that carries the field, never reaching the check.
     #[serde(default)]
     metadata_version: u16,
+
+    /// The zenoh endpoint this daemon is about to bind, so the coordinator can
+    /// hand it to daemons that register after this one.
+    ///
+    /// Carried *in the registration* rather than reported once the session is
+    /// open, and that timing is the whole point. The coordinator handles
+    /// registrations one at a time on its event loop, so an endpoint that
+    /// arrives with the registration is already on record before the next
+    /// daemon's reply is built — two daemons starting simultaneously are
+    /// ordered by that loop and the later one always learns about the earlier.
+    /// Reporting after the session opened instead left a window (register →
+    /// listener bound) in which both daemons could register, each be handed a
+    /// list without the other, and stay partitioned: zenoh reads
+    /// `connect/endpoints` once at session open, so neither could act on the
+    /// other's later report.
+    ///
+    /// The port is reserved before registering, so this is the endpoint the
+    /// daemon *will* bind rather than one it has bound. A bind that then fails
+    /// verification is withdrawn with
+    /// [`DaemonEvent::ZenohListenEndpoint`]`(None)`, so the coordinator never
+    /// keeps handing out an endpoint with nothing behind it for long.
+    ///
+    /// `None` for a daemon with no dialable listener — a single-machine
+    /// deployment (loopback, which would point a remote peer at its own host)
+    /// or a failed reservation.
+    #[serde(default)]
+    pub zenoh_listen_endpoint: Option<String>,
 }
 
 impl DaemonRegisterRequest {
     pub fn new(machine_id: Option<String>, labels: BTreeMap<String, String>) -> Self {
+        Self::with_zenoh_endpoint(machine_id, labels, None)
+    }
+
+    /// [`Self::new`] plus the zenoh endpoint this daemon will bind; see
+    /// [`Self::zenoh_listen_endpoint`].
+    pub fn with_zenoh_endpoint(
+        machine_id: Option<String>,
+        labels: BTreeMap<String, String>,
+        zenoh_listen_endpoint: Option<String>,
+    ) -> Self {
         Self {
             dora_version: current_crate_version(),
             machine_id,
@@ -80,6 +117,7 @@ impl DaemonRegisterRequest {
             // a daemon built from this crate understands hub git sources
             supports_hub_sources: true,
             metadata_version: Metadata::CURRENT_VERSION,
+            zenoh_listen_endpoint,
         }
     }
 
@@ -154,6 +192,7 @@ mod register_version_tests {
             labels: Default::default(),
             supports_hub_sources: true,
             metadata_version: Metadata::CURRENT_VERSION,
+            zenoh_listen_endpoint: None,
         }
     }
 
@@ -266,6 +305,28 @@ pub enum DaemonEvent {
     Heartbeat {
         #[serde(default)]
         ft_stats: Option<FaultToleranceSnapshot>,
+    },
+    /// The zenoh endpoint this daemon actually bound and is reachable at,
+    /// sent once its session is open.
+    ///
+    /// The coordinator records it and hands it to daemons that register later
+    /// (see `RegisterResult::Ok::peer_zenoh_endpoints`), which is what lets a
+    /// multi-machine deployment wire itself without every daemon being told
+    /// every other daemon's address.
+    ///
+    /// Confirms or withdraws the endpoint this daemon advertised in its
+    /// registration, once its zenoh session is open and the listener has been
+    /// verified against `info().locators()`.
+    ///
+    /// `Some(endpoint)` confirms (and would correct a differing one);
+    /// `None` withdraws, which is what a daemon whose listener did not bind
+    /// must do so the coordinator stops handing out a dead endpoint.
+    ///
+    /// The registration carries the endpoint in the first place — see
+    /// [`DaemonRegisterRequest::zenoh_listen_endpoint`] for why it cannot wait
+    /// until here. This is the correction, not the announcement.
+    ZenohListenEndpoint {
+        endpoint: Option<String>,
     },
     /// Sent by the daemon after registration to report its current state.
     /// Enables coordinator-daemon reconciliation on reconnect.

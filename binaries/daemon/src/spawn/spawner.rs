@@ -13,7 +13,7 @@ use dora_core::{
     topics::{
         DORA_RUN_PARENT_PID_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV, DORA_ZENOH_CONNECT_ENV,
         DORA_ZENOH_LISTEN_ENV, DORA_ZENOH_LISTEN_EXTRA_ENV, DORA_ZENOH_MULTICAST_ENV,
-        ZENOH_CONFIG_PATH_ENV,
+        DORA_ZENOH_OPEN_TIMEOUT_MS_ENV, ZENOH_CONFIG_PATH_ENV,
     },
     uhlc::HLC,
 };
@@ -32,7 +32,10 @@ use std::{
     future::Future,
     net::IpAddr,
     path::{Path, PathBuf},
-    sync::{Arc, atomic::AtomicU64},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64},
+    },
 };
 use tokio::sync::mpsc;
 
@@ -59,7 +62,11 @@ const SEARCH_PATH_ENV: &[&str] = &["LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH"];
 /// descriptor's `env:` like the control-plane wiring below, but deliberately
 /// still inherited (see [`deny_inherited_env`]), so one variable on the daemon
 /// covers every node it spawns.
-const DEPLOYMENT_ZENOH_ENV: &[&str] = &[ZENOH_CONFIG_PATH_ENV, DORA_ZENOH_CONFIG_OVERLAY_ENV];
+const DEPLOYMENT_ZENOH_ENV: &[&str] = &[
+    ZENOH_CONFIG_PATH_ENV,
+    DORA_ZENOH_CONFIG_OVERLAY_ENV,
+    DORA_ZENOH_OPEN_TIMEOUT_MS_ENV,
+];
 
 /// Control-plane variables the daemon injects into every node it spawns.
 /// Descriptor `env:` / `envs:` entries must not override them: they configure
@@ -683,6 +690,8 @@ impl Spawner {
             .await;
 
         let last_activity = Arc::new(AtomicU64::new(crate::node_communication::current_millis()));
+        let spawned_at = Arc::new(AtomicU64::new(0));
+        let startup_kill_sent = Arc::new(AtomicBool::new(false));
         // The incarnation identity for this spawn: assigned before the
         // listener is bound so every `Event::Node` from this process's
         // connection carries it (dora-rs/dora#2927).
@@ -736,6 +745,8 @@ impl Spawner {
                 node_config,
                 node_stderr_most_recent,
                 last_activity,
+                spawned_at,
+                startup_kill_sent,
             )
             .await
         };
@@ -757,6 +768,8 @@ impl Spawner {
         node_config: NodeConfig,
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         last_activity: Arc<AtomicU64>,
+        spawned_at: Arc<AtomicU64>,
+        startup_kill_sent: Arc<AtomicBool>,
     ) -> eyre::Result<PreparedNode> {
         std::fs::create_dir_all(&node_working_dir)
             .context("failed to create node working directory")?;
@@ -873,6 +886,8 @@ impl Spawner {
             daemon_tx: self.daemon_tx,
             node_stderr_most_recent,
             last_activity,
+            spawned_at,
+            startup_kill_sent,
             ft_stats: self.ft_stats,
         })
     }

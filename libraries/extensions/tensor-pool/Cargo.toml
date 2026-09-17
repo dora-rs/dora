@@ -4,11 +4,12 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 documentation.workspace = true
-readme.workspace = true
+# The crate has its own README carrying the 1.0-exemption warning; point at it
+# so crates.io renders that page instead of the workspace root README.
+readme = "README.md"
 description = "Daemon-side helper for the tensor-pool extension: reclaims orphaned /dev/shm segments. Not covered by dora's 1.0 compatibility guarantees — see libraries/extensions/tensor-pool/README.md."
 license.workspace = true
 repository.workspace = true
-publish = false
 
 [features]
 # The daemon half: mirror segments, the direct-TCP data plane, and the
