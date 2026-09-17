@@ -8,14 +8,18 @@ use libc::pid_t;
 /// Hidden subcommand: a process-group-aware supervisor for `path: shell` nodes.
 ///
 /// The daemon wraps shell node spawns with `dora __shell-guard -- sh -c <args>`
-/// on unix. The guard becomes the direct child (and process-group leader) of the
-/// daemon, spawns the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
+/// on unix, but only on the in-process `dora run` / `Daemon::run_dataflow`
+/// spawn path. The guard becomes the direct child (and process-group leader) of
+/// the daemon, spawns the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
 /// When the parent is gone, the guard `killpg`s its entire process group — which
 /// includes the shell and any background forks (dora-rs/dora#3472).
 ///
-/// On the coordinator-attached path (`dora up` + `dora start`),
-/// [`DORA_RUN_PARENT_PID`] is absent and the guard is a transparent passthrough:
-/// it spawns the shell, waits for it, and forwards the exit status.
+/// On the coordinator-attached path (`dora up` + `dora start`) the daemon does
+/// not use the guard at all — nodes there are meant to outlive the daemon
+/// (#2029) and would never carry [`DORA_RUN_PARENT_PID`]. Rendering the guard
+/// directly would add a resident `dora` process per shell node for nothing, so
+/// the daemon spawns `sh -c` itself. The passthrough below remains only as a
+/// bare fallback for a manually-invoked guard that finds the env var absent.
 #[derive(Debug, clap::Args)]
 pub struct ShellGuardArgs {
     /// The command to run under the guard, e.g. `sh -c <args>`.
