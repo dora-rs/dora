@@ -196,10 +196,14 @@ pub(crate) async fn collect_and_send_metrics_bg(
                 return Ok(());
             }
         };
+        // `without_tasks`: sysinfo lists threads as processes parented to the
+        // main pid, each reporting the whole RSS, which would multiply a node's
+        // memory by its thread count in the descendant walk below.
         let refresh_kind = ProcessRefreshKind::nothing()
             .with_cpu()
             .with_memory()
-            .with_disk_usage();
+            .with_disk_usage()
+            .without_tasks();
         match tokio::task::spawn_blocking(move || {
             let mut system = system;
             system.refresh_processes_specifics(ProcessesToUpdate::All, true, refresh_kind);
