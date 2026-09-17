@@ -531,6 +531,11 @@ fn merge_env(
     (!merged.is_empty()).then_some(merged)
 }
 
+/// Async counterpart of [`DescriptorExt::blocking_read`]: read a descriptor
+/// from the YAML file at `path` and [`parse`](DescriptorExt::parse) it.
+///
+/// Like `blocking_read`, this only reads and deserializes — it neither expands
+/// modules nor validates the dataflow (use [`DescriptorExt::check`] for that).
 pub async fn read_as_descriptor(path: &Path) -> eyre::Result<Descriptor> {
     let buf = tokio::fs::read(path)
         .await

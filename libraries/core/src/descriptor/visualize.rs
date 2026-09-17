@@ -69,6 +69,10 @@ pub fn visualize_nodes_with_boundaries(
     flowchart
 }
 
+/// Collect the distinct timer intervals every node in the resolved map
+/// subscribes to (via `dora/timer/...` inputs), deduplicated and sorted.
+///
+/// Used to render the built-in timer nodes in a dataflow visualization.
 pub fn collect_dora_timers(nodes: &BTreeMap<NodeId, ResolvedNode>) -> BTreeSet<Duration> {
     let mut dora_timers = BTreeSet::new();
     for node in nodes.values() {
