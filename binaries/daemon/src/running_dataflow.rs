@@ -1191,7 +1191,7 @@ impl RunningDataflow {
         if self.stop_sent {
             return Vec::new();
         }
-        let remote_blocked_nodes = self.nodes_blocked_by_open_remote_outputs();
+        let remote_blocked_nodes = self.nodes_blocked_by_open_remote_edges();
         select_finish_stragglers(
             self.running_nodes.iter().map(|(id, node)| {
                 let last = node.last_activity.load(atomic::Ordering::Acquire);
@@ -1223,7 +1223,7 @@ impl RunningDataflow {
         )
     }
 
-    fn nodes_blocked_by_open_remote_outputs(&self) -> BTreeSet<NodeId> {
+    fn nodes_blocked_by_open_remote_edges(&self) -> BTreeSet<NodeId> {
         let mut blocked = BTreeSet::new();
         let mut visited = BTreeSet::new();
         let mut queue = VecDeque::new();
@@ -1231,6 +1231,27 @@ impl RunningDataflow {
         for output in &self.open_external_mappings {
             if visited.insert(output.0.clone()) {
                 queue.push_back(output.0.clone());
+            }
+        }
+
+        for (output, receivers) in &self.mappings {
+            if self.running_nodes.contains_key(&output.0) {
+                continue;
+            }
+
+            for (receiver, input) in receivers {
+                let input_still_open = self
+                    .open_inputs
+                    .get(receiver)
+                    .is_some_and(|open_inputs| open_inputs.contains(input));
+                if !input_still_open {
+                    continue;
+                }
+
+                blocked.insert(receiver.clone());
+                if visited.insert(receiver.clone()) {
+                    queue.push_back(receiver.clone());
+                }
             }
         }
 
@@ -1329,8 +1350,8 @@ struct StragglerNode<'a> {
     /// from local finish escalation, but must not disable the watchdog for
     /// unrelated local nodes.
     remote_output_open: bool,
-    /// This node is still waiting on a local producer chain rooted at a node
-    /// held alive for an open remote output.
+    /// This node is still waiting on a local chain rooted at an open
+    /// cross-daemon edge.
     blocked_by_remote_output_chain: bool,
 }
 
@@ -1584,14 +1605,7 @@ mod tests {
             node_config: NodeConfig {
                 dataflow_id: uuid::Uuid::nil(),
                 node_id: node_id.clone(),
-                run_config: dora_core::config::NodeRunConfig {
-                    inputs: BTreeMap::new(),
-                    outputs: BTreeSet::new(),
-                    output_types: BTreeMap::new(),
-                    input_types: BTreeMap::new(),
-                    output_framing: BTreeMap::new(),
-                    shared_memory_pool_size: None,
-                },
+                run_config: dora_core::config::NodeRunConfig::default(),
                 daemon_communication: None,
                 dataflow_descriptor: serde_yaml::Value::Null,
                 dynamic: false,
@@ -1605,7 +1619,10 @@ mod tests {
             disable_restart: Arc::new(AtomicBool::new(false)),
             force_restart_next: Arc::new(AtomicBool::new(false)),
             last_activity: Arc::new(AtomicU64::new(0)),
+            spawned_at: Arc::new(AtomicU64::new(0)),
+            startup_kill_sent: Arc::new(AtomicBool::new(false)),
             health_check_timeout: None,
+            startup_timeout: None,
             finish_grace_secs: None,
         }
     }
@@ -2206,6 +2223,7 @@ mod tests {
             RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
         let producer = node_id("producer");
         let local_consumer = node_id("local_consumer");
+        let unrelated_stuck = node_id("unrelated_stuck");
         let upstream = node_id("upstream");
         let now = 10_000;
 
@@ -2215,6 +2233,10 @@ mod tests {
             .store(1, atomic::Ordering::Release);
         let consumer_running = test_running_node(&local_consumer);
         consumer_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let unrelated_running = test_running_node(&unrelated_stuck);
+        unrelated_running
             .last_activity
             .store(1, atomic::Ordering::Release);
 
@@ -2230,6 +2252,12 @@ mod tests {
             local_consumer.clone(),
             data_id("consumer_in"),
         );
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("unrelated_out"),
+            unrelated_stuck.clone(),
+            data_id("unrelated_in"),
+        );
 
         df.open_inputs
             .get_mut(&producer)
@@ -2237,20 +2265,32 @@ mod tests {
             .remove(&data_id("producer_in"));
         df.all_inputs_closed_at
             .insert(producer.clone(), Instant::now() - Duration::from_millis(2));
+        df.open_inputs
+            .get_mut(&unrelated_stuck)
+            .expect("unrelated input should be registered")
+            .remove(&data_id("unrelated_in"));
+        df.all_inputs_closed_at.insert(
+            unrelated_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
 
         df.running_nodes.insert(producer.clone(), producer_running);
         df.running_nodes
             .insert(local_consumer.clone(), consumer_running);
+        df.running_nodes
+            .insert(unrelated_stuck.clone(), unrelated_running);
         df.connected_nodes.insert(producer.clone());
         df.connected_nodes.insert(local_consumer.clone());
+        df.connected_nodes.insert(unrelated_stuck.clone());
         df.open_external_mappings
             .insert(OutputId(producer, data_id("fan_out")));
 
         assert_eq!(
             df.finish_stragglers(Duration::from_millis(1), now),
-            Vec::<NodeId>::new(),
+            vec![unrelated_stuck],
             "a local consumer of a producer held alive for remote-output flushing \
-             must not be escalated while that producer's output is still open"
+             must not be escalated while that producer's output is still open, \
+             but unrelated stragglers must stay watchdog-covered"
         );
     }
 
@@ -2261,6 +2301,7 @@ mod tests {
         let producer = node_id("producer");
         let middle = node_id("middle");
         let leaf = node_id("leaf");
+        let unrelated_stuck = node_id("unrelated_stuck");
         let upstream = node_id("upstream");
         let now = 10_000;
 
@@ -2274,6 +2315,10 @@ mod tests {
             .store(1, atomic::Ordering::Release);
         let leaf_running = test_running_node(&leaf);
         leaf_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let unrelated_running = test_running_node(&unrelated_stuck);
+        unrelated_running
             .last_activity
             .store(1, atomic::Ordering::Release);
 
@@ -2295,6 +2340,12 @@ mod tests {
             leaf.clone(),
             data_id("leaf_in"),
         );
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("unrelated_out"),
+            unrelated_stuck.clone(),
+            data_id("unrelated_in"),
+        );
 
         df.open_inputs
             .get_mut(&producer)
@@ -2302,21 +2353,91 @@ mod tests {
             .remove(&data_id("producer_in"));
         df.all_inputs_closed_at
             .insert(producer.clone(), Instant::now() - Duration::from_millis(2));
+        df.open_inputs
+            .get_mut(&unrelated_stuck)
+            .expect("unrelated input should be registered")
+            .remove(&data_id("unrelated_in"));
+        df.all_inputs_closed_at.insert(
+            unrelated_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
 
         df.running_nodes.insert(producer.clone(), producer_running);
         df.running_nodes.insert(middle.clone(), middle_running);
         df.running_nodes.insert(leaf.clone(), leaf_running);
+        df.running_nodes
+            .insert(unrelated_stuck.clone(), unrelated_running);
         df.connected_nodes.insert(producer.clone());
         df.connected_nodes.insert(middle);
         df.connected_nodes.insert(leaf);
+        df.connected_nodes.insert(unrelated_stuck.clone());
         df.open_external_mappings
             .insert(OutputId(producer, data_id("producer_out")));
 
         assert_eq!(
             df.finish_stragglers(Duration::from_millis(1), now),
-            Vec::<NodeId>::new(),
+            vec![unrelated_stuck],
             "all local consumers still waiting on a remote-held producer chain \
-             must stay out of finish-straggler escalation"
+             must stay out of finish-straggler escalation, while unrelated \
+             stragglers stay watchdog-covered"
+        );
+    }
+
+    #[test]
+    fn inbound_remote_source_keeps_local_consumer_from_escalating() {
+        let mut df =
+            RunningDataflow::new(uuid::Uuid::nil(), DaemonId::new(None), empty_descriptor());
+        let remote_source = node_id("remote_source");
+        let inbound_consumer = node_id("inbound_consumer");
+        let unrelated_stuck = node_id("unrelated_stuck");
+        let outbound_producer = node_id("outbound_producer");
+        let now = 10_000;
+
+        let inbound_running = test_running_node(&inbound_consumer);
+        inbound_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+        let unrelated_running = test_running_node(&unrelated_stuck);
+        unrelated_running
+            .last_activity
+            .store(1, atomic::Ordering::Release);
+
+        df.add_mapping(
+            remote_source,
+            data_id("remote_out"),
+            inbound_consumer.clone(),
+            data_id("inbound_in"),
+        );
+        df.add_mapping(
+            node_id("local_source"),
+            data_id("unrelated_out"),
+            unrelated_stuck.clone(),
+            data_id("unrelated_in"),
+        );
+        df.open_inputs
+            .get_mut(&unrelated_stuck)
+            .expect("unrelated input should be registered")
+            .remove(&data_id("unrelated_in"));
+        df.all_inputs_closed_at.insert(
+            unrelated_stuck.clone(),
+            Instant::now() - Duration::from_millis(2),
+        );
+
+        df.running_nodes
+            .insert(inbound_consumer.clone(), inbound_running);
+        df.running_nodes
+            .insert(unrelated_stuck.clone(), unrelated_running);
+        df.connected_nodes.insert(inbound_consumer);
+        df.connected_nodes.insert(unrelated_stuck.clone());
+        df.open_external_mappings
+            .insert(OutputId(outbound_producer, data_id("remote_out")));
+
+        assert_eq!(
+            df.finish_stragglers(Duration::from_millis(1), now),
+            vec![unrelated_stuck],
+            "a local consumer whose open input is fed by a remote source must \
+             stay out of finish-straggler escalation, while unrelated local \
+             stragglers remain covered"
         );
     }
 
