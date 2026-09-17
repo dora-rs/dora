@@ -43,8 +43,34 @@ pub(super) async fn path_spawn_command(
                 let cmd = Command::new("cmd");
                 cmd.args(["/C", &node.args.clone().unwrap_or_default()])
             } else {
-                let cmd = Command::new("sh");
-                cmd.args(["-c", &node.args.clone().unwrap_or_default()])
+                let shell_args = node.args.clone().unwrap_or_default();
+                // Route shell commands through `dora __shell-guard` so the
+                // daemon can contain the shell's background forks (#3472).
+                // The guard becomes the direct child (and process-group
+                // leader) of the daemon and killpgs its group when the
+                // daemon disappears; a `sh -c 'cmd &'` background fork would
+                // otherwise outlive the daemon, orphaned to init. See
+                // `binaries/cli/src/command/shell_guard.rs`.
+                match dora_guard_command(&shell_args) {
+                    Some(cmd) => cmd,
+                    None => {
+                        // No `dora` binary resolvable (e.g. an embedded daemon
+                        // runner): degrade to a plain `sh -c`. PDEATHSIG
+                        // (#3482) still contains the direct child, but a shell
+                        // that forks to the background is not.
+                        logger
+                            .log(
+                                LogLevel::Warn,
+                                Some("spawner".into()),
+                                "no `dora` binary found to guard shell node; \
+                                 background forks may outlive the daemon"
+                                    .to_string(),
+                            )
+                            .await;
+                        let cmd = Command::new("sh");
+                        cmd.args(["-c", &shell_args])
+                    }
+                }
             }
         }
         source => {
@@ -226,6 +252,44 @@ pub(super) async fn path_spawn_command(
     };
 
     Ok(Some(cmd))
+}
+
+/// Command to spawn `sh -c <shell_args>` under `dora __shell-guard`, if a
+/// `dora` binary can be resolved.
+#[cfg(unix)]
+fn dora_guard_command(shell_args: &str) -> Option<Command> {
+    let dora_bin = dora_executable()?;
+    let mut cmd = Command::new(dora_bin);
+    cmd = cmd.args(["__shell-guard", "--", "sh", "-c", shell_args]);
+    Some(cmd)
+}
+
+#[cfg(not(unix))]
+fn dora_guard_command(_shell_args: &str) -> Option<Command> {
+    None
+}
+
+/// Locate the `dora` binary to re-spawn for the shell guard, mirroring
+/// `native_runtime_command` in `runtime_registry.rs` (and #1805):
+/// `current_exe` when it is the `dora` binary, else a `PATH` lookup. On
+/// failure (e.g. an embedded daemon runner unaccompanied by `dora` on PATH),
+/// the shell node falls back to a plain `sh -c`.
+#[cfg(unix)]
+fn dora_executable() -> Option<std::path::PathBuf> {
+    let current_exe = std::env::current_exe().ok()?;
+    let mut file_name = current_exe.clone();
+    file_name.set_extension("");
+    let file_name = file_name.file_name().and_then(|s| s.to_str())?;
+    if file_name == "dora" {
+        // current_exe is the dora binary — use it so the guard always
+        // matches the daemon version.
+        Some(current_exe)
+    } else {
+        // current_exe is something else (an embedded runner, the python
+        // interpreter of the `dora-rs-cli` wheel console script, …): prefer a
+        // PATH lookup for the `dora` executable.
+        which::which("dora").ok()
+    }
 }
 
 #[cfg(test)]
