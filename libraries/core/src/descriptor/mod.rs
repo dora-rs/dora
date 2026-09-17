@@ -782,7 +782,7 @@ impl NodeExt for Node {
         ) {
             (None, None, None, None, None) => {
                 eyre::bail!(
-                    "node `{}` requires a `path`, `operators`, `ros2`, or `module` field",
+                    "node `{}` requires a `path`, `operators`, `operator`, `ros2`, or `module` field",
                     self.id
                 )
             }
@@ -1855,6 +1855,27 @@ nodes:
         let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
         desc.resolve_aliases_and_set_defaults().expect(
             "a multi-topic config mapping declared ports (explicit and derived) must resolve",
+        );
+    }
+
+    /// A node that sets none of its mutually exclusive implementation fields is
+    /// rejected, and the error must list every valid kind — including the
+    /// single-`operator` form. The message previously named only `path`,
+    /// `operators`, `ros2`, and `module`, silently omitting `operator` and so
+    /// steering a user who mistyped an `operator:` key away from the correct
+    /// fix (the sibling "multiple fields" error and the trait doc both list it).
+    #[test]
+    fn node_kind_error_lists_the_operator_field() {
+        let descriptor: Descriptor =
+            serde_yaml::from_str("nodes:\n  - id: lonely\n").expect("parse");
+        let node = descriptor.nodes.first().expect("one node");
+        let err = node
+            .kind()
+            .expect_err("a node with no implementation field must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("`operator`"),
+            "the error must list the single-`operator` kind, got: {msg}"
         );
     }
 }
