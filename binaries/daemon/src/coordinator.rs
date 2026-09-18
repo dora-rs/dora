@@ -3,7 +3,11 @@ use dora_core::uhlc::HLC;
 use dora_message::{
     common::{DaemonId, Timestamped},
     coordinator_to_daemon::RegisterResult,
-    daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonRegisterRequest},
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DaemonRegisterRequest,
+        MAX_DAEMON_TEXT_MESSAGE_BYTES, MAX_TOPIC_DEBUG_FRAME_BYTES, encode_topic_debug_frame,
+        topic_debug_frame_len,
+    },
     ws_protocol::WsResponse,
 };
 use eyre::eyre;
@@ -30,15 +34,35 @@ pub struct CoordinatorEvent {
     pub reply_tx: oneshot::Sender<Option<DaemonCoordinatorReply>>,
 }
 
-/// Wraps the WS send channel for fire-and-forget daemon events to the coordinator.
+/// Capacity of the outbound control channel (daemon events and replies).
+const CONTROL_CHANNEL_CAPACITY: usize = 64;
+/// Capacity of the outbound topic debug channel. Frames beyond it are dropped
+/// (see [`CoordinatorSender::try_send_topic_debug_frame`]).
+const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
+
+/// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]
 pub struct CoordinatorSender {
     sender: mpsc::Sender<String>,
+    /// Topic debug frames, kept off `sender` so they can never delay a control
+    /// message: the writer only drains this when the control side is empty.
+    topic_debug: mpsc::Sender<Message>,
+    /// Negotiated at registration (`RegisterResult::Ok::binary_debug_frames`):
+    /// send topic debug frames as WS binary messages rather than JSON
+    /// `TopicDebugData`.
+    binary_debug_frames: bool,
 }
 
 #[derive(Debug)]
 pub enum TrySendEventError {
     InvalidUtf8(std::str::Utf8Error),
+    Encode(eyre::Report),
+    /// Larger than the coordinator accepts; sending it would cost the
+    /// connection.
+    TooLarge {
+        bytes: usize,
+        limit: usize,
+    },
     Full,
     Closed,
 }
@@ -47,6 +71,11 @@ impl std::fmt::Display for TrySendEventError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidUtf8(err) => write!(f, "event message not UTF-8: {err}"),
+            Self::Encode(err) => write!(f, "failed to encode event message: {err}"),
+            Self::TooLarge { bytes, limit } => write!(
+                f,
+                "message of {bytes} bytes exceeds the coordinator's {limit}-byte limit"
+            ),
             Self::Full => write!(f, "WS send channel full"),
             Self::Closed => write!(f, "WS send channel closed"),
         }
@@ -95,9 +124,69 @@ impl CoordinatorSender {
             .map_err(|_| eyre!("WS send channel closed"))
     }
 
-    pub fn try_send_event(&self, message: &[u8]) -> Result<(), TrySendEventError> {
-        let json = Self::format_event_message(message)?;
-        self.sender.try_send(json).map_err(|err| match err {
+    /// Queue a topic debug frame for the coordinator, dropping it if the debug
+    /// channel is full.
+    ///
+    /// Encoded as a WS binary message when the coordinator negotiated
+    /// `binary_debug_frames`, otherwise as the JSON `TopicDebugData` event
+    /// every coordinator understands. Either way it goes on the debug channel,
+    /// which the writer serves only after the control channels.
+    ///
+    /// A frame larger than the coordinator accepts in that encoding is dropped
+    /// here (`TooLarge`): the coordinator closes the connection on an
+    /// oversized message, which would take the control plane down with it.
+    pub fn try_send_topic_debug_frame(
+        &self,
+        daemon_id: &DaemonId,
+        clock: &HLC,
+        dataflow_id: Uuid,
+        subscription_ids: Vec<Uuid>,
+        payload: Vec<u8>,
+    ) -> Result<(), TrySendEventError> {
+        let message = if self.binary_debug_frames {
+            let bytes = topic_debug_frame_len(subscription_ids.len(), payload.len());
+            if bytes > MAX_TOPIC_DEBUG_FRAME_BYTES {
+                return Err(TrySendEventError::TooLarge {
+                    bytes,
+                    limit: MAX_TOPIC_DEBUG_FRAME_BYTES,
+                });
+            }
+            let frame = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload)
+                .map_err(TrySendEventError::Encode)?;
+            Message::Binary(frame.into())
+        } else {
+            // Every payload byte takes at least two characters in the JSON
+            // number array (a digit and a separator), so a payload past half
+            // the limit cannot fit: skip rendering megabytes of text only to
+            // throw them away.
+            if payload.len() > MAX_DAEMON_TEXT_MESSAGE_BYTES / 2 {
+                return Err(TrySendEventError::TooLarge {
+                    bytes: payload.len().saturating_mul(2),
+                    limit: MAX_DAEMON_TEXT_MESSAGE_BYTES,
+                });
+            }
+            let event = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: daemon_id.clone(),
+                    event: DaemonEvent::TopicDebugData {
+                        dataflow_id,
+                        subscription_ids,
+                        payload,
+                    },
+                },
+                timestamp: clock.new_timestamp(),
+            })
+            .map_err(|err| TrySendEventError::Encode(err.into()))?;
+            let json = Self::format_event_message(&event)?;
+            if json.len() > MAX_DAEMON_TEXT_MESSAGE_BYTES {
+                return Err(TrySendEventError::TooLarge {
+                    bytes: json.len(),
+                    limit: MAX_DAEMON_TEXT_MESSAGE_BYTES,
+                });
+            }
+            Message::Text(json.into())
+        };
+        self.topic_debug.try_send(message).map_err(|err| match err {
             mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
             mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
         })
@@ -108,7 +197,15 @@ impl CoordinatorSender {
     #[cfg(test)]
     pub(crate) fn for_test() -> (Self, mpsc::Receiver<String>) {
         let (sender, rx) = mpsc::channel(8);
-        (Self { sender }, rx)
+        let (topic_debug, _) = mpsc::channel(1);
+        (
+            Self {
+                sender,
+                topic_debug,
+                binary_debug_frames: false,
+            },
+            rx,
+        )
     }
 }
 
@@ -208,7 +305,10 @@ pub async fn register(
     // Channel for outgoing messages (daemon events + command replies).
     // The coordinator sender writes to this, and the writer task below reads
     // and forwards to WS.
-    let (send_tx, send_rx) = mpsc::channel::<String>(64);
+    let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
+    // Topic debug frames get their own channel so they queue behind nothing
+    // but each other; see `run_coordinator_ws_writer`.
+    let (topic_debug_tx, topic_debug_rx) = mpsc::channel::<Message>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
     // Send Register request.
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
@@ -233,7 +333,7 @@ pub async fn register(
     // Wait for register reply with timeout.
     // The coordinator's register handler sends back Timestamped<RegisterResult>
     // wrapped in a WsRequest with method "daemon_event".
-    let (daemon_id, peer_zenoh_endpoints) = tokio::time::timeout(REGISTER_TIMEOUT, async {
+    let register_result = tokio::time::timeout(REGISTER_TIMEOUT, async {
         loop {
             let msg = ws_rx
                 .next()
@@ -256,11 +356,13 @@ pub async fn register(
                 tracing::warn!("failed to update timestamp after register: {err}");
             }
 
-            break result.inner.into_parts();
+            break eyre::Ok(result.inner);
         }
     })
     .await
     .map_err(|_| eyre!("timeout waiting for register reply from coordinator"))??;
+    let binary_debug_frames = register_result.binary_debug_frames();
+    let (daemon_id, peer_zenoh_endpoints) = register_result.into_parts()?;
 
     tracing::info!("Connected to dora-coordinator at ws://{addr}/api/daemon");
 
@@ -287,7 +389,12 @@ pub async fn register(
     // can form; only genuine peer backpressure can slow transmission.
     let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
 
-    tokio::spawn(run_coordinator_ws_writer(ws_tx, send_rx, internal_rx));
+    tokio::spawn(run_coordinator_ws_writer(
+        ws_tx,
+        send_rx,
+        internal_rx,
+        topic_debug_rx,
+    ));
 
     let task_clock = clock.clone();
     tokio::spawn(run_coordinator_ws_reader(
@@ -301,7 +408,11 @@ pub async fn register(
         daemon_id,
         reserved_listen_endpoint,
         peer_zenoh_endpoints,
-        CoordinatorSender { sender: send_tx },
+        CoordinatorSender {
+            sender: send_tx,
+            topic_debug: topic_debug_tx,
+            binary_debug_frames,
+        },
         ReceiverStream::new(rx),
     ))
 }
@@ -327,36 +438,66 @@ enum OutboundFrame {
 /// stops (dropping `internal_tx`), or a `DestroyNotify` frame ends it. Because
 /// this drain runs independently of command/reply processing, nothing the
 /// reader does can stall it — see `register` and dora-rs/dora#3164.
+///
+/// `topic_debug_rx` (topic debug frames) is served only when neither control
+/// channel has anything ready. A debug frame can be megabytes, so sharing a
+/// queue with control traffic let a `dora topic` subscription on a large
+/// output hold a stop reply or heartbeat behind a backlog of frames
+/// (dora-rs/dora#3535). Now a control message waits for at most the one debug
+/// frame already being written. The two control channels keep their existing
+/// unbiased interleaving with each other.
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<String>,
     mut internal_rx: mpsc::Receiver<OutboundFrame>,
+    mut topic_debug_rx: mpsc::Receiver<Message>,
 ) where
     Tx: Sink<Message> + Unpin,
 {
+    enum Control {
+        Internal(Option<OutboundFrame>),
+        Outgoing(Option<String>),
+    }
+
     loop {
         tokio::select! {
-            frame = internal_rx.recv() => match frame {
-                Some(OutboundFrame::Ws(msg)) => {
+            biased;
+            // Every `recv` here is cancel-safe, so losing the race to the
+            // debug arm drops no control message.
+            control = async {
+                tokio::select! {
+                    frame = internal_rx.recv() => Control::Internal(frame),
+                    outgoing = send_rx.recv() => Control::Outgoing(outgoing),
+                }
+            } => match control {
+                Control::Internal(Some(OutboundFrame::Ws(msg))) => {
                     if ws_tx.send(msg).await.is_err() {
                         break;
                     }
                 }
-                Some(OutboundFrame::DestroyNotify(notify)) => {
+                Control::Internal(Some(OutboundFrame::DestroyNotify(notify))) => {
                     let _ = notify.send(());
                     break;
                 }
                 // Reader stopped; all frames it queued (FIFO) are already
                 // flushed, so close the write half by dropping `ws_tx`.
-                None => break,
-            },
-            outgoing = send_rx.recv() => match outgoing {
-                Some(text) => {
+                Control::Internal(None) => break,
+                Control::Outgoing(Some(text)) => {
                     if ws_tx.send(Message::Text(text.into())).await.is_err() {
                         break;
                     }
                 }
                 // CoordinatorSender dropped: nothing more to send.
+                Control::Outgoing(None) => break,
+            },
+            debug = topic_debug_rx.recv() => match debug {
+                Some(msg) => {
+                    if ws_tx.send(msg).await.is_err() {
+                        break;
+                    }
+                }
+                // Dropped together with `send_rx`'s sender (both live in
+                // `CoordinatorSender`), so this is the same shutdown.
                 None => break,
             },
         }
@@ -753,8 +894,16 @@ mod tests {
         // the writer keeps draining `send_rx` concurrently.
         let (send_tx, send_rx) = mpsc::channel::<String>(64);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
+        // Held open for the test's duration: a closed debug channel ends the
+        // writer, just as dropping the `CoordinatorSender` does in production.
+        let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<Message>(1);
 
-        let writer = tokio::spawn(run_coordinator_ws_writer(ws_out_tx, send_rx, internal_rx));
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
         let reader = tokio::spawn(run_coordinator_ws_reader(
             ws_in,
             tx,
@@ -789,6 +938,187 @@ mod tests {
         })
         .await
         .expect("WS router deadlocked under outbound backpressure (#3164)");
+    }
+
+    /// Regression test for dora-rs/dora#3535: with the topic debug queue full,
+    /// a control message still goes out next — ahead of every queued debug
+    /// frame, not behind them.
+    ///
+    /// Everything is queued before the writer starts, so the order it writes
+    /// in is decided by its select priority alone, not by which task ran first.
+    #[tokio::test]
+    async fn ws_writer_sends_control_before_queued_topic_debug_frames() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::unbounded::<Message>();
+        let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<Message>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        let (debug_frame_count, big_frame) = (TOPIC_DEBUG_CHANNEL_CAPACITY, vec![0u8; 1 << 20]);
+        for _ in 0..debug_frame_count {
+            topic_debug_tx
+                .try_send(Message::Binary(big_frame.clone().into()))
+                .expect("debug queue has room up to its capacity");
+        }
+        assert!(
+            topic_debug_tx
+                .try_send(Message::Binary(big_frame.into()))
+                .is_err(),
+            "the debug queue must be full for this test to mean anything"
+        );
+        send_tx.try_send("stop-reply".to_owned()).unwrap();
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        let first = tokio::time::timeout(Duration::from_secs(5), ws_out_rx.next())
+            .await
+            .expect("writer must make progress")
+            .expect("writer must write a message");
+        assert_eq!(
+            first,
+            Message::Text("stop-reply".into()),
+            "a control message queued behind a full debug queue must be written first"
+        );
+
+        // The debug frames are still delivered once control is drained.
+        for _ in 0..debug_frame_count {
+            let msg = tokio::time::timeout(Duration::from_secs(5), ws_out_rx.next())
+                .await
+                .expect("writer must keep draining debug frames")
+                .expect("debug frame");
+            assert!(matches!(msg, Message::Binary(_)));
+        }
+
+        drop((send_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
+    }
+
+    fn debug_sender(binary_debug_frames: bool) -> (CoordinatorSender, mpsc::Receiver<Message>) {
+        let (sender, _) = mpsc::channel(1);
+        let (topic_debug, topic_debug_rx) = mpsc::channel(4);
+        (
+            CoordinatorSender {
+                sender,
+                topic_debug,
+                binary_debug_frames,
+            },
+            topic_debug_rx,
+        )
+    }
+
+    /// Without the negotiated flag the daemon must keep sending the JSON
+    /// `TopicDebugData` event: it is the only shape an older coordinator reads.
+    #[test]
+    fn topic_debug_frame_is_json_when_binary_frames_were_not_negotiated() {
+        let (sender, mut rx) = debug_sender(false);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let (dataflow_id, subscription_id) = (Uuid::new_v4(), Uuid::new_v4());
+        sender
+            .try_send_topic_debug_frame(
+                &daemon_id,
+                &HLC::default(),
+                dataflow_id,
+                vec![subscription_id],
+                vec![1, 2, 3],
+            )
+            .unwrap();
+
+        let Ok(Message::Text(text)) = rx.try_recv() else {
+            panic!("expected a JSON text frame");
+        };
+        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(raw["method"], "daemon_event");
+        let event = &raw["params"]["inner"]["Event"]["event"]["TopicDebugData"];
+        assert_eq!(event["dataflow_id"], dataflow_id.to_string());
+        assert_eq!(event["subscription_ids"][0], subscription_id.to_string());
+        assert_eq!(event["payload"], serde_json::json!([1, 2, 3]));
+    }
+
+    #[test]
+    fn topic_debug_frame_is_binary_when_binary_frames_were_negotiated() {
+        let (sender, mut rx) = debug_sender(true);
+        let (dataflow_id, subscription_id) = (Uuid::new_v4(), Uuid::new_v4());
+        sender
+            .try_send_topic_debug_frame(
+                &DaemonId::new(Some("A".to_string())),
+                &HLC::default(),
+                dataflow_id,
+                vec![subscription_id],
+                vec![1, 2, 3],
+            )
+            .unwrap();
+
+        let Ok(Message::Binary(data)) = rx.try_recv() else {
+            panic!("expected a binary frame");
+        };
+        let frame = dora_message::daemon_to_coordinator::decode_topic_debug_frame(&data).unwrap();
+        assert_eq!(frame.dataflow_id, dataflow_id);
+        assert_eq!(frame.subscription_ids, vec![subscription_id]);
+        assert_eq!(frame.payload, &[1, 2, 3]);
+    }
+
+    /// A full debug queue drops the frame (reported as `Full`) rather than
+    /// blocking the caller, which runs on the daemon's main loop.
+    #[test]
+    fn topic_debug_frame_is_dropped_when_the_debug_queue_is_full() {
+        let (sender, _rx) = debug_sender(true);
+        let send = || {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                Vec::new(),
+            )
+        };
+        for _ in 0..4 {
+            send().unwrap();
+        }
+        assert!(matches!(send(), Err(TrySendEventError::Full)));
+    }
+
+    /// A frame the coordinator would reject must be dropped at the daemon, not
+    /// sent: the coordinator closes the connection on an oversized message. In
+    /// JSON mode that limit is reached by payloads far below a camera frame.
+    #[test]
+    fn topic_debug_frame_beyond_the_coordinator_limit_is_dropped() {
+        let send = |binary: bool, payload_len: usize| {
+            let (sender, mut rx) = debug_sender(binary);
+            let result = sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![255; payload_len],
+            );
+            (result, rx.try_recv().ok())
+        };
+
+        // JSON: 300 KB renders to well over 1 MiB of text ...
+        let (result, sent) = send(false, 300 * 1024);
+        assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
+        assert!(sent.is_none());
+        // ... also when it only fails the exact check after rendering.
+        let (result, sent) = send(false, MAX_DAEMON_TEXT_MESSAGE_BYTES / 2);
+        assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
+        assert!(sent.is_none());
+        // ... while the same payload goes out fine as a binary frame.
+        let (result, sent) = send(true, 300 * 1024);
+        assert!(result.is_ok());
+        assert!(matches!(sent, Some(Message::Binary(_))));
+
+        // Binary: the frame limit includes the header.
+        let (result, sent) = send(true, MAX_TOPIC_DEBUG_FRAME_BYTES);
+        assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
+        assert!(sent.is_none());
     }
 
     /// Regression test for the reply routing `resolve_machine` depends on

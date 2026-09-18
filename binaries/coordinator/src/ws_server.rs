@@ -11,7 +11,7 @@ use axum::{
 };
 use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
-use dora_message::auth::AuthToken;
+use dora_message::{auth::AuthToken, daemon_to_coordinator::MAX_TOPIC_DEBUG_FRAME_BYTES};
 use std::{
     collections::HashMap,
     net::{IpAddr, SocketAddr},
@@ -179,8 +179,14 @@ async fn ws_daemon_handler(
     }
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
+    // Sized for binary topic debug frames (dora-rs/dora#3535), which carry
+    // node outputs as large as a camera image. Text messages from the daemon
+    // keep the control-message limit, enforced per message in `ws_daemon`.
+    // The frame limit is raised too: a WebSocket client sends each message as
+    // a single frame, and the default frame limit (16 MiB) is below it.
     Ok(ws
-        .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
+        .max_message_size(MAX_TOPIC_DEBUG_FRAME_BYTES)
+        .max_frame_size(MAX_TOPIC_DEBUG_FRAME_BYTES)
         .on_upgrade(move |socket| {
             handle_daemon_ws(
                 socket,

@@ -69,10 +69,16 @@ impl Coordinator {
                         // is not in the map yet and receives exactly the
                         // peers that preceded it; see
                         // `RegisterResult::Ok::peer_zenoh_endpoints`.
+                        //
+                        // Binary topic debug frames are always offered: this
+                        // coordinator decodes them in `ws_daemon`, and a daemon
+                        // that predates the flag ignores it and keeps sending
+                        // JSON, which is still accepted.
                         Ok(_) => RegisterResult::ok(
                             daemon_id.clone(),
                             self.daemon_connections.zenoh_endpoints_for(&daemon_id),
-                        ),
+                        )
+                        .with_binary_debug_frames(true),
                         Err(err) => RegisterResult::Err(err.clone()),
                     },
                     timestamp: self.clock.new_timestamp(),
