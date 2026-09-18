@@ -1,3 +1,4 @@
+use super::endpoint_exchange;
 use crate::{
     CoreNodeKindExt, Event,
     log::NodeLogger,
@@ -508,6 +509,52 @@ pub fn remote_sources_of_local_nodes(
             !local_nodes.contains(source) && nodes.get(source).is_some_and(|n| !n.kind.dynamic())
         })
         .collect()
+}
+
+/// [`remote_sources_of_local_nodes`] with where each node runs attached, in
+/// the shape `endpoint_exchange` asks for.
+pub fn wanted_remote_sources(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    local_nodes: &BTreeSet<NodeId>,
+) -> endpoint_exchange::Wanted {
+    remote_sources_of_local_nodes(nodes, local_nodes)
+        .into_iter()
+        .filter_map(|id| {
+            let placement = endpoint_exchange::Placement::of(nodes.get(&id)?);
+            Some((id, placement))
+        })
+        .collect()
+}
+
+/// Where the remote nodes that this daemon's nodes consume from run — the
+/// daemons `endpoint_exchange` expects an answer from.
+///
+/// Upstream only, on purpose. The coordinator spawns a dataflow one daemon at
+/// a time and waits for each reply, which includes the exchange, so a daemon
+/// can never hear from one that is spawned after it; a producer waiting for
+/// its consumers would always time out. A consumer is also the side that
+/// hangs when the link is missing — a producer's sends succeed regardless.
+/// Dynamic nodes count on both ends: a dynamic consumer still needs its
+/// sources' daemons, and a dynamic source's daemon answers like any other.
+pub fn remote_placements(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    local_nodes: &BTreeSet<NodeId>,
+) -> BTreeSet<endpoint_exchange::Placement> {
+    nodes
+        .iter()
+        .filter(|(id, _)| local_nodes.contains(*id))
+        .flat_map(|(_, consumer)| input_sources(consumer))
+        .filter(|source| !local_nodes.contains(source))
+        .filter_map(|source| Some(endpoint_exchange::Placement::of(nodes.get(&source)?)))
+        .collect()
+}
+
+/// Whether some node of the dataflow runs on another daemon.
+pub fn spans_daemons(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+    local_nodes: &BTreeSet<NodeId>,
+) -> bool {
+    nodes.keys().any(|id| !local_nodes.contains(id))
 }
 
 /// The nodes whose outputs `node` subscribes to (deduplicated).

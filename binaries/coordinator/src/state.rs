@@ -10,6 +10,7 @@ use dora_message::{
 };
 use eyre::eyre;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::{Mutex, mpsc, oneshot};
@@ -78,18 +79,46 @@ impl DaemonConnections {
     }
 
     /// Zenoh endpoints of every connected daemon except `joining`, for a
-    /// daemon that is registering now to dial.
+    /// daemon that is registering now (from `joining_addr`) to dial.
     ///
     /// `joining` is excluded so a re-registering daemon is not told to dial
     /// its own previous listener: `add` has not replaced its entry yet at the
     /// point the register reply is built, and that endpoint is either its own
     /// (a self-dial) or dead (the process restarted with a fresh ephemeral
     /// port).
-    pub(crate) fn zenoh_endpoints_for(&self, joining: &DaemonId) -> Vec<String> {
+    ///
+    /// A loopback endpoint is handed out only to a daemon on the same host,
+    /// which is decided by the address each of the two reached the coordinator
+    /// from: both loopback means both run where the coordinator runs. This is
+    /// what lets two daemons on one machine (`dora up` plus a second
+    /// `dora daemon`, or the `multiple-daemons` example) link without
+    /// multicast, while a daemon on another machine is never pointed at its
+    /// own loopback. The peer address is a proxy: a daemon that reaches the
+    /// coordinator through a local port forward (`ssh -L`, a container's
+    /// forwarded port) looks local too and is handed loopback endpoints it
+    /// cannot use — a futile dial, since discovered endpoints leave multicast
+    /// scouting on, but not a lost link.
+    pub(crate) fn zenoh_endpoints_for(
+        &self,
+        joining: &DaemonId,
+        joining_addr: Option<SocketAddr>,
+    ) -> Vec<String> {
+        // `to_canonical` so a dual-stack coordinator socket, which reports an
+        // IPv4 peer as `::ffff:127.0.0.1`, still recognizes it as loopback.
+        let is_local = |addr: Option<SocketAddr>| {
+            addr.is_some_and(|addr| addr.ip().to_canonical().is_loopback())
+        };
+        let joining_is_local = is_local(joining_addr);
         self.daemons
             .iter()
             .filter(|(id, _)| *id != joining)
-            .filter_map(|(_, conn)| conn.zenoh_listen_endpoint.clone())
+            .filter_map(|(_, conn)| {
+                let endpoint = conn.zenoh_listen_endpoint.clone()?;
+                if !zenoh_endpoint_is_loopback(&endpoint) {
+                    return Some(endpoint);
+                }
+                (joining_is_local && is_local(conn.peer_addr)).then_some(endpoint)
+            })
             .collect()
     }
 
@@ -804,6 +833,27 @@ mod send_and_receive_tests {
     }
 }
 
+/// Whether a zenoh endpoint (`tcp/127.0.0.1:5456`, `tcp/[::1]:5456`,
+/// `tcp/localhost:5456`, optionally with a `?config` suffix) names a loopback
+/// address — one that only reaches something on the host it was bound on.
+pub(crate) fn zenoh_endpoint_is_loopback(endpoint: &str) -> bool {
+    // zenoh's own parser strips the protocol and the `?metadata` / `#config`
+    // suffixes; what is left is `host:port`, bracketed for IPv6.
+    let Ok(endpoint) = endpoint.parse::<zenoh::config::EndPoint>() else {
+        return false;
+    };
+    let address = endpoint.address().as_str();
+    // `[v6]:port`, `[v6]`, `v4:port`, or a bare host.
+    let host = match address.strip_prefix('[') {
+        Some(rest) => rest.split(']').next().unwrap_or_default(),
+        None => address
+            .rsplit_once(':')
+            .map_or(address, |(host, _port)| host),
+    };
+    host.parse::<IpAddr>()
+        .map_or(host == "localhost", |ip| ip.to_canonical().is_loopback())
+}
+
 #[cfg(test)]
 mod zenoh_endpoint_registry_tests {
     use super::*;
@@ -829,7 +879,7 @@ mod zenoh_endpoint_registry_tests {
         connections.set_zenoh_endpoint(&a, Some("tcp/10.0.2.100:5456".into()));
         connections.set_zenoh_endpoint(&b, Some("tcp/10.0.2.101:5456".into()));
 
-        let mut given = connections.zenoh_endpoints_for(&daemon("C"));
+        let mut given = connections.zenoh_endpoints_for(&daemon("C"), None);
         given.sort();
         assert_eq!(given, ["tcp/10.0.2.100:5456", "tcp/10.0.2.101:5456"]);
     }
@@ -844,7 +894,7 @@ mod zenoh_endpoint_registry_tests {
         connections.add(a.clone(), connection());
         connections.set_zenoh_endpoint(&a, Some("tcp/10.0.2.100:5456".into()));
 
-        assert!(connections.zenoh_endpoints_for(&a).is_empty());
+        assert!(connections.zenoh_endpoints_for(&a, None).is_empty());
     }
 
     /// The ordering the whole mechanism rests on: a daemon's endpoint is set on
@@ -864,7 +914,7 @@ mod zenoh_endpoint_registry_tests {
 
         // B registers immediately afterwards, before A has confirmed anything.
         assert_eq!(
-            connections.zenoh_endpoints_for(&daemon("B")),
+            connections.zenoh_endpoints_for(&daemon("B"), None),
             ["tcp/10.0.2.100:5456"],
         );
     }
@@ -882,12 +932,15 @@ mod zenoh_endpoint_registry_tests {
 
         connections.set_zenoh_endpoint(&a, None);
 
-        assert!(connections.zenoh_endpoints_for(&daemon("B")).is_empty());
+        assert!(
+            connections
+                .zenoh_endpoints_for(&daemon("B"), None)
+                .is_empty()
+        );
     }
 
-    /// A daemon that has not reported an endpoint contributes none. It has
-    /// either not opened its session yet or bound loopback, and advertising a
-    /// loopback endpoint would point a remote peer at its own machine.
+    /// A daemon that has not reported an endpoint contributes none: it has
+    /// not opened its session yet, or its reservation failed.
     #[test]
     fn a_daemon_without_a_reported_endpoint_contributes_nothing() {
         let mut connections = DaemonConnections::default();
@@ -897,7 +950,7 @@ mod zenoh_endpoint_registry_tests {
         connections.set_zenoh_endpoint(&b, Some("tcp/10.0.2.101:5456".into()));
 
         assert_eq!(
-            connections.zenoh_endpoints_for(&daemon("C")),
+            connections.zenoh_endpoints_for(&daemon("C"), None),
             ["tcp/10.0.2.101:5456"]
         );
     }
@@ -913,7 +966,11 @@ mod zenoh_endpoint_registry_tests {
         connections.set_zenoh_endpoint(&a, Some("tcp/10.0.2.100:5456".into()));
         connections.remove(&a);
 
-        assert!(connections.zenoh_endpoints_for(&daemon("C")).is_empty());
+        assert!(
+            connections
+                .zenoh_endpoints_for(&daemon("C"), None)
+                .is_empty()
+        );
     }
 
     /// Setting an endpoint for a daemon that is not connected is a no-op
@@ -923,6 +980,117 @@ mod zenoh_endpoint_registry_tests {
     fn reporting_an_endpoint_for_an_unknown_daemon_is_ignored() {
         let mut connections = DaemonConnections::default();
         connections.set_zenoh_endpoint(&daemon("ghost"), Some("tcp/10.0.2.100:5456".into()));
-        assert!(connections.zenoh_endpoints_for(&daemon("C")).is_empty());
+        assert!(
+            connections
+                .zenoh_endpoints_for(&daemon("C"), None)
+                .is_empty()
+        );
+    }
+
+    fn local(port: u16) -> Option<SocketAddr> {
+        Some(SocketAddr::from(([127, 0, 0, 1], port)))
+    }
+
+    /// What a dual-stack (`::`) coordinator socket reports for a peer that
+    /// connected to `127.0.0.1`.
+    fn mapped_local(port: u16) -> Option<SocketAddr> {
+        Some(SocketAddr::from((
+            std::net::Ipv4Addr::LOCALHOST.to_ipv6_mapped(),
+            port,
+        )))
+    }
+
+    fn remote(port: u16) -> Option<SocketAddr> {
+        Some(SocketAddr::from(([10, 0, 2, 7], port)))
+    }
+
+    /// Two daemons that both reached the coordinator over loopback run on the
+    /// coordinator's host, so one's loopback listener is dialable by the
+    /// other. Without this, two same-host daemons only ever meet through
+    /// multicast scouting, and a dataflow spanning them hangs wherever that
+    /// is unavailable (dev containers, some CI runners).
+    #[test]
+    fn a_loopback_endpoint_is_handed_to_a_daemon_on_the_same_host() {
+        let mut connections = DaemonConnections::default();
+        let mut conn_a = connection();
+        conn_a.peer_addr = local(40001);
+        conn_a.zenoh_listen_endpoint = Some("tcp/127.0.0.1:5456".into());
+        connections.add(daemon("A"), conn_a);
+
+        assert_eq!(
+            connections.zenoh_endpoints_for(&daemon("B"), local(40002)),
+            ["tcp/127.0.0.1:5456"]
+        );
+        assert_eq!(
+            connections.zenoh_endpoints_for(&daemon("B"), mapped_local(40002)),
+            ["tcp/127.0.0.1:5456"]
+        );
+    }
+
+    /// A daemon on another machine must not be pointed at `127.0.0.1`: it
+    /// would dial its own loopback and reach nothing, or something unrelated.
+    /// Routable endpoints are unaffected.
+    #[test]
+    fn a_loopback_endpoint_is_withheld_from_a_daemon_on_another_host() {
+        let mut connections = DaemonConnections::default();
+        let mut conn_a = connection();
+        conn_a.peer_addr = local(40001);
+        conn_a.zenoh_listen_endpoint = Some("tcp/127.0.0.1:5456".into());
+        connections.add(daemon("A"), conn_a);
+        let mut conn_b = connection();
+        conn_b.peer_addr = remote(40002);
+        conn_b.zenoh_listen_endpoint = Some("tcp/10.0.2.7:5456".into());
+        connections.add(daemon("B"), conn_b);
+
+        assert_eq!(
+            connections.zenoh_endpoints_for(&daemon("C"), remote(40003)),
+            ["tcp/10.0.2.7:5456"]
+        );
+        // Unknown origin is treated as remote: never hand out loopback on a guess.
+        assert_eq!(
+            connections.zenoh_endpoints_for(&daemon("C"), None),
+            ["tcp/10.0.2.7:5456"]
+        );
+    }
+
+    /// The owner's side of the same-host test: a loopback endpoint reported by
+    /// a daemon that reached the coordinator from another address is not
+    /// dialable from the coordinator's host either.
+    #[test]
+    fn a_loopback_endpoint_of_a_remote_daemon_is_withheld_from_everyone() {
+        let mut connections = DaemonConnections::default();
+        let mut conn_a = connection();
+        conn_a.peer_addr = remote(40001);
+        conn_a.zenoh_listen_endpoint = Some("tcp/127.0.0.1:5456".into());
+        connections.add(daemon("A"), conn_a);
+
+        assert!(
+            connections
+                .zenoh_endpoints_for(&daemon("B"), local(40002))
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn loopback_endpoints_are_recognized_in_every_spelling() {
+        for endpoint in [
+            "tcp/127.0.0.1:5456",
+            "tcp/127.0.0.1:5456?iface=lo",
+            "tcp/[::1]:5456",
+            "tcp/[::1]",
+            "tcp/[::ffff:127.0.0.1]:5456",
+            "tcp/localhost:5456",
+            "udp/127.1.2.3:1",
+        ] {
+            assert!(zenoh_endpoint_is_loopback(endpoint), "{endpoint}");
+        }
+        for endpoint in [
+            "tcp/10.0.2.100:5456",
+            "tcp/[fd7a:1::2]:5456",
+            "tcp/robot-01.local:5456",
+            "tcp/0.0.0.0:5456",
+        ] {
+            assert!(!zenoh_endpoint_is_loopback(endpoint), "{endpoint}");
+        }
     }
 }

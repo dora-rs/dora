@@ -198,7 +198,6 @@ pub async fn register(
         None => crate::reserve_zenoh_listen_endpoint(zenoh.bind)?,
     };
     let advertised_listen_endpoint = match zenoh.advertise {
-        crate::AdvertiseListener::Never => None,
         crate::AdvertiseListener::Reserved => reserved_listen_endpoint.clone(),
         crate::AdvertiseListener::Bound(bound) => bound,
     };

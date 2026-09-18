@@ -17,15 +17,34 @@
 //! edges keep the daemon-forwarded path they use today, which is slower but
 //! lossless. That makes this an optimization that degrades, never a barrier that
 //! can fail a dataflow.
+//!
+//! The daemon path has one precondition the exchange can check for free: the
+//! two daemons' zenoh sessions must be linked at all. Every daemon in the
+//! dataflow declares its queryable, even with nothing to announce, so a reply
+//! is proof of the link and a daemon that never replies is one this daemon
+//! cannot reach. Nothing else in the daemon detects that state — the producer's
+//! sends succeed, the consumer just never hears anything, and the dataflow never
+//! finishes — so the exchange warns about it and keeps probing for a while
+//! (see [`LINK_PROBE_DEADLINE`]). A reply is attributed to a daemon by the key
+//! it answers on, which names the daemon; see [`Placement`] for what this
+//! daemon can and cannot expect from the descriptor alone.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt,
     time::Duration,
 };
 
-use dora_message::{common::DaemonId, id::NodeId};
+use dora_message::{
+    common::{DaemonId, LogLevel},
+    descriptor::ResolvedNode,
+    id::NodeId,
+};
+use tokio_util::task::AbortOnDropHandle;
 use uuid::Uuid;
 use zenoh::Wait;
+
+use crate::log::DataflowLogger;
 
 /// How long to keep asking peers for endpoints before spawning anyway.
 ///
@@ -43,6 +62,17 @@ const TIMEOUT_ENV: &str = "DORA_ZENOH_ENDPOINT_EXCHANGE_TIMEOUT_MS";
 /// How long to wait for replies to a single query before asking again.
 const QUERY_ROUND: Duration = Duration::from_millis(100);
 
+/// How long a daemon that did not answer within the exchange budget keeps being
+/// probed before the missing link is reported as an error.
+///
+/// Long enough for multicast scouting or a slow peer spawn to catch up (a
+/// second or two, ordinarily), short enough that an operator watching a
+/// dataflow that "does nothing" gets the diagnosis before giving up.
+const LINK_PROBE_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Pause between link probes.
+const LINK_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+
 /// Zenoh key a daemon answers its local nodes' endpoints on.
 ///
 /// The daemon id is sanitized into one key chunk: a machine id is operator
@@ -51,9 +81,13 @@ const QUERY_ROUND: Duration = Duration::from_millis(100);
 /// distinct daemons keep distinct keys even if their machine ids collapse to
 /// the same sanitized form.
 fn endpoints_key(dataflow_id: Uuid, daemon_id: &DaemonId) -> String {
-    let daemon: String = daemon_id
-        .to_string()
-        .chars()
+    let daemon = sanitize_chunk(&daemon_id.to_string());
+    format!("dora/default/{dataflow_id}/node-endpoints/{daemon}")
+}
+
+/// Map one key-expression chunk onto the characters zenoh accepts verbatim.
+fn sanitize_chunk(raw: &str) -> String {
+    raw.chars()
         .map(|c| {
             if c.is_ascii_alphanumeric() || c == '_' || c == '.' || c == '-' {
                 c
@@ -61,8 +95,7 @@ fn endpoints_key(dataflow_id: Uuid, daemon_id: &DaemonId) -> String {
                 '_'
             }
         })
-        .collect();
-    format!("dora/default/{dataflow_id}/node-endpoints/{daemon}")
+        .collect()
 }
 
 /// Selector matching every daemon's endpoints key for this dataflow.
@@ -81,34 +114,151 @@ fn timeout() -> Duration {
 /// remote consumer may need to dial.
 type Endpoints = BTreeMap<NodeId, String>;
 
-/// Keeps this daemon answering endpoint queries for one dataflow.
+/// Where a remote node runs, as far as this daemon can tell from the
+/// descriptor — which decides whether a reply can be attributed to its daemon.
+///
+/// The coordinator places nodes by `deploy.machine`, then by `deploy.labels`,
+/// then on the unnamed daemon. A daemon answers on a key that carries its own
+/// id (`<machine>-<uuid>`, or a bare uuid for an unnamed one), so the first
+/// and last placements are recognizable in a reply; a label-routed node's
+/// daemon is not, and such a node can only be waited for until its endpoint
+/// turns up.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Placement {
+    /// `deploy.machine` names the daemon.
+    Machine(String),
+    /// Neither machine nor labels: the unnamed daemon.
+    Unnamed,
+    /// Routed by `deploy.labels` to a daemon this daemon cannot name.
+    Unknown,
+}
+
+impl Placement {
+    pub fn of(node: &ResolvedNode) -> Self {
+        match &node.deploy {
+            Some(deploy) if deploy.machine.is_some() => {
+                Placement::Machine(deploy.machine.clone().unwrap_or_default())
+            }
+            Some(deploy) if !deploy.labels.is_empty() => Placement::Unknown,
+            _ => Placement::Unnamed,
+        }
+    }
+
+    /// Whether a reply on the key chunk `chunk` came from this placement's
+    /// daemon.
+    ///
+    /// The chunk is the daemon id sanitized as a whole; the uuid survives
+    /// sanitizing untouched, so it parses back into a daemon id whose machine
+    /// part is the sanitized machine id. Two machine ids that sanitize alike
+    /// (`a/b` and `a_b`) are told apart by nothing here — a name that needs
+    /// sanitizing is already one the key expression could not carry.
+    fn answered_by(&self, chunk: &str) -> bool {
+        let Some(id) = DaemonId::from_display_str(chunk) else {
+            return false;
+        };
+        match self {
+            Placement::Machine(machine) => id.matches_machine_id(&sanitize_chunk(machine)),
+            Placement::Unnamed => id.machine_id().is_none(),
+            Placement::Unknown => false,
+        }
+    }
+}
+
+impl fmt::Display for Placement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Placement::Machine(machine) => write!(f, "machine `{machine}`"),
+            Placement::Unnamed => f.write_str("the unnamed daemon"),
+            Placement::Unknown => f.write_str("a daemon chosen by labels"),
+        }
+    }
+}
+
+/// The remote nodes a daemon needs endpoints for, each with where it runs.
+pub type Wanted = BTreeMap<NodeId, Placement>;
+
+/// The placements in `expected` that no reply in `answered` came from.
+fn unanswered(expected: &BTreeSet<Placement>, answered: &BTreeSet<String>) -> BTreeSet<Placement> {
+    expected
+        .iter()
+        .filter(|placement| !answered.iter().any(|chunk| placement.answered_by(chunk)))
+        .cloned()
+        .collect()
+}
+
+fn list(placements: &BTreeSet<Placement>) -> String {
+    placements
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// What the exchange leaves running for one dataflow.
 ///
 /// Held for the dataflow's lifetime rather than just the exchange: a daemon
 /// that joins late (a restarted node, a second `dora start` against the same
 /// graph) asks the same question, and an undeclared queryable answers nothing.
 /// Dropped in `finish_dataflow`; an abandoned handle would keep the queryable,
-/// its session clone and its payload alive for the daemon's whole lifetime.
-pub struct EndpointQueryable {
-    _queryable: zenoh::query::Queryable<()>,
+/// its session clone and its payload alive for the daemon's whole lifetime,
+/// and the link probe logging about a dataflow that is already gone.
+pub struct ExchangeHandle {
+    _queryable: Option<zenoh::query::Queryable<()>>,
+    _link_probe: Option<AbortOnDropHandle<()>>,
+}
+
+/// What [`exchange`] found out, separated from its logging so it can be
+/// tested.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct Outcome {
+    /// Endpoints of the wanted remote nodes that a peer announced.
+    found: Endpoints,
+    /// Daemons that never answered: no zenoh link to them (yet).
+    unanswered: BTreeSet<Placement>,
+}
+
+/// Where the exchange reports: the daemon log, and the dataflow's own log
+/// when there is one, since that is what `dora start` and `dora logs` show
+/// while the daemon's tracing output goes to a file nobody is watching.
+struct Reporter(Option<DataflowLogger<'static>>);
+
+impl Reporter {
+    async fn report(&mut self, level: LogLevel, message: String) {
+        match level {
+            LogLevel::Error => tracing::error!("{message}"),
+            LogLevel::Warn => tracing::warn!("{message}"),
+            _ => tracing::info!("{message}"),
+        }
+        if let Some(logger) = &mut self.0 {
+            logger
+                .log(level, None, Some("daemon".into()), message)
+                .await;
+        }
+    }
 }
 
 /// Publish this daemon's node endpoints and collect the peers' — see the module
 /// docs.
 ///
 /// `local` maps each local node to the endpoint remote consumers should dial;
-/// `wanted` names the remote nodes this daemon's own consumers need. Returns
-/// the endpoints found (a subset of `wanted`) plus the queryable to keep alive.
+/// `wanted` names the remote nodes this daemon's own consumers need, and
+/// `peers` where the remote nodes this daemon consumes from run, so the daemons
+/// expected to answer are known. Returns the endpoints found (a subset of
+/// `wanted`) plus the handle to keep alive.
 ///
 /// Never fails the spawn: a zenoh error, an unanswered query or an expired
 /// deadline all resolve to "fewer endpoints than asked for", which leaves those
-/// edges on the daemon-forwarded path.
+/// edges on the daemon-forwarded path. A daemon that did not answer at all is
+/// reported, since the daemon path needs the link too.
 pub async fn exchange(
     session: zenoh::Session,
     dataflow_id: Uuid,
     daemon_id: DaemonId,
     local: Endpoints,
-    wanted: BTreeSet<NodeId>,
-) -> (Endpoints, Option<EndpointQueryable>) {
+    wanted: Wanted,
+    peers: BTreeSet<Placement>,
+    logger: Option<DataflowLogger<'static>>,
+) -> (Endpoints, Option<ExchangeHandle>) {
     let budget = timeout();
     if budget.is_zero() {
         // The documented off switch: every cross-machine edge keeps the daemon
@@ -116,6 +266,7 @@ pub async fn exchange(
         return (BTreeMap::new(), None);
     }
     let started = tokio::time::Instant::now();
+    let mut reporter = Reporter(logger);
 
     // `declare_queryable` is itself a zenoh operation that can block on a
     // degraded inter-daemon link, so it gets a deadline too — bounding only the
@@ -136,22 +287,24 @@ pub async fn exchange(
         };
 
     let remaining = budget.saturating_sub(started.elapsed());
-    if wanted.is_empty() || remaining.is_zero() {
+    let expected: BTreeSet<Placement> = peers
+        .into_iter()
+        .filter(|placement| *placement != Placement::Unknown)
+        .collect();
+    if (wanted.is_empty() && expected.is_empty()) || remaining.is_zero() {
         // Nothing to collect — but stay answerable, since peers that consume
         // from this daemon's nodes still need what was just declared.
-        return (BTreeMap::new(), queryable);
+        return (
+            BTreeMap::new(),
+            Some(ExchangeHandle {
+                _queryable: queryable,
+                _link_probe: None,
+            }),
+        );
     }
 
-    // Collecting is bounded twice over: `collect` stops asking at its deadline,
-    // and the timeout covers a single `get` that never resolves. The queryable
-    // survives either way, so peers keep getting answers even when this daemon
-    // gave up asking.
-    let found = tokio::time::timeout(
-        remaining,
-        collect(&session, dataflow_id, &wanted, remaining),
-    )
-    .await
-    .unwrap_or_default();
+    let Outcome { found, unanswered } =
+        run(&session, dataflow_id, &wanted, &expected, remaining).await;
 
     if !found.is_empty() {
         // The observable that says the mesh formed: every endpoint here is a
@@ -163,33 +316,156 @@ pub async fn exchange(
             found,
         );
     }
-    if found.len() < wanted.len() {
-        let missing: Vec<&NodeId> = wanted
-            .iter()
-            .filter(|id| !found.contains_key(*id))
-            .collect();
-        tracing::warn!(
-            "no zenoh endpoint for remote node(s) {missing:?} after {budget:?}; \
-             their outputs will reach this daemon's nodes over the daemon path \
-             instead of directly (set {TIMEOUT_ENV} to allow longer)"
+    // Nodes without an endpoint fall in two groups: those whose daemon
+    // answered, which therefore have no listener a remote consumer could dial
+    // (a daemon bound to loopback reserves none — the normal shape of two
+    // daemons on one host), and those whose daemon cannot be named, whose
+    // reply cannot be told apart from silence.
+    let (explained, unresolved): (Vec<_>, Vec<_>) = wanted
+        .iter()
+        .filter(|(id, _)| !found.contains_key(*id))
+        .partition(|(_, placement)| **placement != Placement::Unknown);
+    let explained: Vec<&NodeId> = explained.into_iter().map(|(id, _)| id).collect();
+    let unresolved: Vec<&NodeId> = unresolved.into_iter().map(|(id, _)| id).collect();
+    if !explained.is_empty() && unanswered.is_empty() {
+        tracing::info!(
+            "remote node(s) {explained:?} have no routable zenoh endpoint; their \
+             outputs reach this daemon's nodes over the daemon path instead of \
+             directly"
         );
     }
-    (found, queryable)
+    if !unresolved.is_empty() {
+        tracing::warn!(
+            "no zenoh endpoint for remote node(s) {unresolved:?} after {budget:?}; \
+             their outputs will reach this daemon's nodes over the daemon path \
+             instead of directly (set {TIMEOUT_ENV} to allow longer). Their daemon \
+             is chosen by labels, so whether it is reachable at all cannot be told \
+             from here"
+        );
+    }
+    let link_probe = if unanswered.is_empty() {
+        None
+    } else {
+        reporter
+            .report(
+                LogLevel::Warn,
+                format!(
+                    "{} did not answer the zenoh node-endpoint query within {budget:?}: \
+                     either it has not started this dataflow yet, or this daemon has no \
+                     zenoh link to it. Without the link nothing its nodes send can reach \
+                     the nodes here — not even over the daemon path — and the dataflow \
+                     cannot finish. Probing again for up to {LINK_PROBE_DEADLINE:?} (set \
+                     {TIMEOUT_ENV} to allow the exchange itself longer)",
+                    list(&unanswered)
+                ),
+            )
+            .await;
+        Some(AbortOnDropHandle::new(tokio::spawn(probe_link(
+            session.clone(),
+            dataflow_id,
+            unanswered,
+            reporter,
+        ))))
+    };
+    (
+        found,
+        Some(ExchangeHandle {
+            _queryable: queryable,
+            _link_probe: link_probe,
+        }),
+    )
+}
+
+/// Collect for up to `deadline`, then sort out what came back.
+async fn run(
+    session: &zenoh::Session,
+    dataflow_id: Uuid,
+    wanted: &Wanted,
+    expected: &BTreeSet<Placement>,
+    deadline: Duration,
+) -> Outcome {
+    // Bounded twice over: `collect` stops asking at its deadline, and the
+    // timeout covers a single `get` that never resolves. The outer bound is
+    // given one round of slack so it cannot beat `collect`'s own deadline by a
+    // timer tick and discard the answers that did arrive — which would turn
+    // every daemon that answered into an "unanswered" one. The queryable
+    // survives either way, so peers keep getting answers even when this daemon
+    // gave up asking.
+    let (found, answered) = tokio::time::timeout(
+        deadline + QUERY_ROUND,
+        collect(session, dataflow_id, wanted, expected, deadline),
+    )
+    .await
+    .unwrap_or_default();
+    Outcome {
+        found,
+        unanswered: unanswered(expected, &answered),
+    }
+}
+
+/// Keep asking the daemons that did not answer during the exchange, and say
+/// how it ended: the link formed late (the usual case with multicast
+/// scouting, which takes a moment), or it never did.
+async fn probe_link(
+    session: zenoh::Session,
+    dataflow_id: Uuid,
+    mut missing: BTreeSet<Placement>,
+    mut reporter: Reporter,
+) {
+    let started = tokio::time::Instant::now();
+    let no_nodes = Wanted::new();
+    loop {
+        tokio::time::sleep(LINK_PROBE_INTERVAL).await;
+        let (_, answered) = collect(&session, dataflow_id, &no_nodes, &missing, QUERY_ROUND).await;
+        missing = unanswered(&missing, &answered);
+        if missing.is_empty() {
+            reporter
+                .report(
+                    LogLevel::Info,
+                    format!(
+                        "zenoh link to the other daemon(s) of this dataflow established \
+                         after {:?}",
+                        started.elapsed()
+                    ),
+                )
+                .await;
+            return;
+        }
+        if started.elapsed() >= LINK_PROBE_DEADLINE {
+            reporter
+                .report(
+                    LogLevel::Error,
+                    format!(
+                        "still no zenoh link to {} after {:?}: this dataflow's inputs from \
+                         its nodes will never arrive and it will not finish. Daemons on one \
+                         host link through the coordinator as long as both reach it over \
+                         loopback; daemons on different hosts need the coordinator on a \
+                         routable address (`dora up --interface`), \
+                         `--zenoh-peer`/`--zenoh-listen`, or working multicast — see \
+                         docs/multi-machine.md. (A daemon from a dora release before this \
+                         check existed answers only when it has an endpoint to announce, \
+                         so with mixed versions this can also be a false alarm.)",
+                        list(&missing),
+                        started.elapsed()
+                    ),
+                )
+                .await;
+            return;
+        }
+    }
 }
 
 /// Declare the queryable that answers this daemon's endpoints.
+///
+/// Declared even when `local` is empty: peers read a reply — any reply — as
+/// proof that this daemon is reachable, and a silent daemon is reported as
+/// unlinked (see the module docs).
 async fn declare(
     session: &zenoh::Session,
     dataflow_id: Uuid,
     daemon_id: &DaemonId,
     local: Endpoints,
-) -> Option<EndpointQueryable> {
-    if local.is_empty() {
-        // No node here is consumed from another machine, so there is nothing to
-        // answer. Peers still query, and get no reply from us — which is the
-        // same answer an empty map would give them.
-        return None;
-    }
+) -> Option<zenoh::query::Queryable<()>> {
     let key = endpoints_key(dataflow_id, daemon_id);
     let payload = match serde_json::to_vec(&local) {
         Ok(payload) => payload,
@@ -209,9 +485,7 @@ async fn declare(
         })
         .await;
     match queryable {
-        Ok(queryable) => Some(EndpointQueryable {
-            _queryable: queryable,
-        }),
+        Ok(queryable) => Some(queryable),
         Err(err) => {
             // Peers keep their cross-machine edges on the daemon path, which is
             // where they are today.
@@ -221,24 +495,37 @@ async fn declare(
     }
 }
 
-/// Query peers until every wanted endpoint is known or the deadline expires.
+/// Query peers until the answers are settled or the deadline expires.
+///
+/// Settled means every expected daemon has answered — a daemon answering
+/// without a wanted endpoint has none to give, so waiting longer cannot help —
+/// and every wanted node whose daemon cannot be named has been found.
+///
+/// Returns the endpoints found and the daemon-id chunks of the keys that
+/// answered, the latter being what tells a linked daemon with nothing to
+/// announce from a daemon this session cannot reach.
 async fn collect(
     session: &zenoh::Session,
     dataflow_id: Uuid,
-    wanted: &BTreeSet<NodeId>,
+    wanted: &Wanted,
+    expected: &BTreeSet<Placement>,
     deadline: Duration,
-) -> Endpoints {
+) -> (Endpoints, BTreeSet<String>) {
     let selector = endpoints_selector(dataflow_id);
     let started = tokio::time::Instant::now();
     let mut found: Endpoints = BTreeMap::new();
+    let mut answered: BTreeSet<String> = BTreeSet::new();
     while started.elapsed() < deadline {
         // `timeout(QUERY_ROUND)` bounds how long a round *may* take, not how
         // long it does: a peer whose queryable is already declared answers at
         // once, so without pacing the loop would re-issue the query as fast as
         // replies arrive and turn the retry into a query storm on the
         // inter-daemon session. Round start is captured here and slept out at
-        // the bottom, so each round costs one `QUERY_ROUND` regardless.
+        // the bottom, so each round costs one `QUERY_ROUND` regardless. The
+        // last round is cut to what is left of the deadline, so a slow reply
+        // cannot push the whole collection past it.
         let round_started = tokio::time::Instant::now();
+        let round = QUERY_ROUND.min(deadline.saturating_sub(started.elapsed()));
         // A peer that has not processed its own spawn yet has no queryable to
         // answer with, so an empty round means "ask again", not "there is
         // nobody". `ConsolidationMode::None` because every daemon answers on
@@ -247,18 +534,21 @@ async fn collect(
         let replies = session
             .get(&selector)
             .consolidation(zenoh::query::ConsolidationMode::None)
-            .timeout(QUERY_ROUND)
+            .timeout(round)
             .await;
         match replies {
             Ok(replies) => {
                 while let Ok(reply) = replies.recv_async().await {
                     let Ok(sample) = reply.result() else { continue };
+                    if let Some(chunk) = sample.key_expr().as_str().rsplit('/').next() {
+                        answered.insert(chunk.to_owned());
+                    }
                     let payload = sample.payload().to_bytes();
                     match serde_json::from_slice::<Endpoints>(&payload) {
                         Ok(endpoints) => found.extend(
                             endpoints
                                 .into_iter()
-                                .filter(|(node_id, _)| wanted.contains(node_id)),
+                                .filter(|(node_id, _)| wanted.contains_key(node_id)),
                         ),
                         Err(err) => {
                             tracing::warn!("ignoring malformed zenoh node-endpoint reply: {err}")
@@ -268,10 +558,13 @@ async fn collect(
             }
             Err(err) => {
                 tracing::warn!("zenoh node-endpoint query failed: {err}");
-                return found;
+                return (found, answered);
             }
         }
-        if wanted.iter().all(|id| found.contains_key(id)) {
+        let settled = wanted
+            .iter()
+            .all(|(node, placement)| *placement != Placement::Unknown || found.contains_key(node));
+        if settled && unanswered(expected, &answered).is_empty() {
             break;
         }
         // Pace the next round. Capped at the remaining budget so pacing can
@@ -284,7 +577,7 @@ async fn collect(
         let till_next_round = QUERY_ROUND.saturating_sub(round_started.elapsed());
         tokio::time::sleep(till_next_round.min(remaining)).await;
     }
-    found
+    (found, answered)
 }
 
 #[cfg(test)]
@@ -339,5 +632,218 @@ mod tests {
         assert_eq!(parse(Some("nonsense")), DEFAULT_TIMEOUT);
         assert_eq!(parse(Some("0")), Duration::ZERO);
         assert_eq!(parse(Some("5000")), Duration::from_secs(5));
+    }
+
+    fn chunk_of(daemon_id: &DaemonId) -> String {
+        sanitize_chunk(&daemon_id.to_string())
+    }
+
+    /// A reply key names the answering daemon; a placement recognizes exactly
+    /// its own daemon's key.
+    #[test]
+    fn a_reply_chunk_is_attributed_to_its_placement() {
+        let a = chunk_of(&DaemonId::new(Some("A".into())));
+        assert!(Placement::Machine("A".into()).answered_by(&a));
+        assert!(!Placement::Machine("B".into()).answered_by(&a));
+        assert!(!Placement::Unnamed.answered_by(&a));
+        assert!(!Placement::Unknown.answered_by(&a));
+        // A machine id that is a prefix of another's must not claim its daemon.
+        let ab = chunk_of(&DaemonId::new(Some("a-b".into())));
+        assert!(!Placement::Machine("a".into()).answered_by(&ab));
+        // Sanitized the same way on both sides.
+        let hostile = chunk_of(&DaemonId::new(Some("a/b*c".into())));
+        assert!(Placement::Machine("a/b*c".into()).answered_by(&hostile));
+        // An unnamed daemon's chunk is a bare uuid.
+        let unnamed = chunk_of(&DaemonId::new(None));
+        assert!(Placement::Unnamed.answered_by(&unnamed));
+        assert!(!Placement::Machine("A".into()).answered_by(&unnamed));
+        assert!(!Placement::Unknown.answered_by(&unnamed));
+    }
+
+    #[test]
+    fn unanswered_is_what_no_reply_accounted_for() {
+        let expected: BTreeSet<Placement> =
+            [Placement::Machine("A".into()), Placement::Unnamed].into();
+        let answered: BTreeSet<String> = [chunk_of(&DaemonId::new(Some("A".into())))].into();
+        assert_eq!(
+            unanswered(&expected, &answered),
+            BTreeSet::from([Placement::Unnamed])
+        );
+        assert!(unanswered(&BTreeSet::new(), &answered).is_empty());
+    }
+
+    /// Two sessions on loopback with multicast off, linked only by an explicit
+    /// dial — the shape the coordinator now sets up for two daemons on one
+    /// host.
+    async fn linked_sessions() -> (zenoh::Session, zenoh::Session) {
+        let endpoint =
+            dora_core::topics::reserve_loopback_zenoh_endpoint().expect("reserve a loopback port");
+        let mut listener = zenoh::Config::default();
+        listener
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        listener
+            .insert_json5("listen/endpoints", &format!("[{endpoint:?}]"))
+            .unwrap();
+        let a = zenoh::open(listener).await.expect("open listening session");
+        let mut dialer = zenoh::Config::default();
+        dialer
+            .insert_json5("scouting/multicast/enabled", "false")
+            .unwrap();
+        dialer
+            .insert_json5("connect/endpoints", &format!("[{endpoint:?}]"))
+            .unwrap();
+        let b = zenoh::open(dialer).await.expect("open dialing session");
+        (a, b)
+    }
+
+    fn wanted(node: &str, placement: Placement) -> Wanted {
+        [(NodeId::from(node.to_string()), placement)].into()
+    }
+
+    fn on_machine(machine: &str) -> BTreeSet<Placement> {
+        [Placement::Machine(machine.into())].into()
+    }
+
+    /// A daemon with nothing to announce still answers, and that answer is what
+    /// tells the asking daemon the link exists: no endpoint for the node, but
+    /// nothing unanswered either — and no waiting for the deadline.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_linked_daemon_with_no_endpoints_counts_as_answered() {
+        let (a, b) = linked_sessions().await;
+        let dataflow = uuid();
+        let _queryable = declare(
+            &a,
+            dataflow,
+            &DaemonId::new(Some("A".into())),
+            BTreeMap::new(),
+        )
+        .await
+        .expect("declare on the listening session");
+
+        let started = tokio::time::Instant::now();
+        let outcome = run(
+            &b,
+            dataflow,
+            &wanted("n", Placement::Machine("A".into())),
+            &on_machine("A"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(outcome, Outcome::default());
+        assert!(started.elapsed() < Duration::from_secs(4), "settled early");
+    }
+
+    /// The unnamed daemon (`dora up`) is recognized by its bare-uuid key.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_unnamed_daemon_is_recognized() {
+        let (a, b) = linked_sessions().await;
+        let dataflow = uuid();
+        let _queryable = declare(&a, dataflow, &DaemonId::new(None), BTreeMap::new())
+            .await
+            .expect("declare on the listening session");
+
+        let outcome = run(
+            &b,
+            dataflow,
+            &wanted("n", Placement::Unnamed),
+            &[Placement::Unnamed].into(),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(outcome, Outcome::default());
+    }
+
+    /// The failure this module reports: the other daemon never answers. Here
+    /// because it declared nothing; in production because the sessions never
+    /// linked. Either way the daemon is named as unanswered.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_silent_daemon_is_reported_as_unanswered() {
+        let (_a, b) = linked_sessions().await;
+
+        let outcome = run(
+            &b,
+            uuid(),
+            &wanted("n", Placement::Machine("A".into())),
+            &on_machine("A"),
+            Duration::from_millis(400),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            Outcome {
+                found: BTreeMap::new(),
+                unanswered: on_machine("A"),
+            }
+        );
+    }
+
+    /// The exchange's original purpose still works through the same reply.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_announced_endpoint_is_found() {
+        let (a, b) = linked_sessions().await;
+        let dataflow = uuid();
+        let local: Endpoints = [(
+            NodeId::from("n".to_string()),
+            "tcp/10.0.2.7:7447".to_string(),
+        )]
+        .into();
+        let _queryable = declare(
+            &a,
+            dataflow,
+            &DaemonId::new(Some("A".into())),
+            local.clone(),
+        )
+        .await
+        .expect("declare on the listening session");
+
+        let outcome = run(
+            &b,
+            dataflow,
+            &wanted("n", Placement::Machine("A".into())),
+            &on_machine("A"),
+            Duration::from_secs(5),
+        )
+        .await;
+
+        assert_eq!(
+            outcome,
+            Outcome {
+                found: local,
+                unanswered: BTreeSet::new(),
+            }
+        );
+    }
+
+    /// The probe that runs after an unanswered exchange returns as soon as the
+    /// daemon does answer — the "linked late" case, which is what multicast
+    /// scouting or a slow peer spawn looks like.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_link_probe_ends_when_the_daemon_answers_late() {
+        let (a, b) = linked_sessions().await;
+        let dataflow = uuid();
+        let probe = tokio::spawn(probe_link(
+            b.clone(),
+            dataflow,
+            on_machine("A"),
+            Reporter(None),
+        ));
+        tokio::time::sleep(Duration::from_millis(300)).await;
+        let _queryable = declare(
+            &a,
+            dataflow,
+            &DaemonId::new(Some("A".into())),
+            BTreeMap::new(),
+        )
+        .await
+        .expect("declare on the listening session");
+
+        tokio::time::timeout(LINK_PROBE_INTERVAL * 3, probe)
+            .await
+            .expect("probe must return once the daemon answers")
+            .expect("probe task must not panic");
     }
 }
