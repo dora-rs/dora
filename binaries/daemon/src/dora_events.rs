@@ -11,12 +11,11 @@ use crate::{
 use dora_core::config::NodeId;
 use dora_message::{
     common::{DataMessage, LogLevel, NodeError, NodeErrorCause, NodeExitStatus},
-    daemon_to_coordinator::{CoordinatorRequest, DaemonEvent, DataflowDaemonResult},
+    daemon_to_coordinator::DataflowDaemonResult,
     daemon_to_node::NodeEvent,
     metadata::{self, MetadataParameters},
     node_to_daemon::Timestamped,
 };
-use eyre::Context;
 use std::{
     collections::BTreeSet,
     sync::{Arc, atomic},
@@ -220,22 +219,6 @@ impl Daemon {
             )
             .await;
 
-        if let Some(sender) = &self.coordinator_sender {
-            let msg = serde_json::to_vec(&Timestamped {
-                inner: CoordinatorRequest::Event {
-                    daemon_id: self.daemon_id.clone(),
-                    event: DaemonEvent::AllNodesFinished {
-                        dataflow_id,
-                        result,
-                    },
-                },
-                timestamp: self.clock.new_timestamp(),
-            })?;
-            sender
-                .send_event(&msg)
-                .await
-                .wrap_err("failed to report dataflow finish to dora-coordinator")?;
-        }
         // Signal all listener loops for this dataflow to shut down
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
@@ -248,6 +231,16 @@ impl Daemon {
         // tasks and can create duplicate consumers.
         #[cfg(feature = "tensor-pool")]
         self.pool_cleanup_dataflow(dataflow_id).await;
+
+        if let Some(sender) = &self.coordinator_sender
+            && let Err(err) = self
+                .send_all_nodes_finished(sender, dataflow_id, &result)
+                .await
+        {
+            self.pending_finished_dataflows.insert(dataflow_id, result);
+            return Err(err);
+        }
+
         Ok(())
     }
 
