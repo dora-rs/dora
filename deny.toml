@@ -20,11 +20,11 @@ ignore = [
     # All waived pending upstream migration by parent crates. Review quarterly.
     "RUSTSEC-2025-0141",  # bincode unmaintained. No longer a dora dep (migrated to postcard); now transitive via zenoh-ext 1.9 only. Waiting for zenoh to migrate. Review: 2026-09.
     "RUSTSEC-2024-0436",  # paste: transitive (safer_ffi / macro_rules_attribute). Low risk. Review: 2026-07.
-    "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained (thin wrapper over rustls-pki-types). Transitive via zenoh-link-commons 1.9; waiting for zenoh to migrate to rustls-pki-types PemObject. Review: 2026-09.
+    "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained (thin wrapper over rustls-pki-types). Transitive via zenoh-link-commons 1.10; waiting for zenoh to migrate to rustls-pki-types PemObject. Review: 2026-12.
     # --- Temporary vulnerability waivers ---
-    "RUSTSEC-2026-0041",  # lz4_flex 0.10 uninit-memory leak on invalid input. Transitive via zenoh-transport (pins ^0.10); dora doesn't enable zenoh compression. Waiting for upstream zenoh bump. Review: 2026-09.
-    "RUSTSEC-2026-0194",  # quick-xml <0.41 quadratic attribute check. Own parser (msg-gen) on fixed 0.41; rest transitive via self_update + mavlink-bindgen (build-time). Review: 2026-09.
-    "RUSTSEC-2026-0195",  # quick-xml <0.41 NsReader memory-exhaustion DoS. Same transitive parents as above. Review: 2026-09.
+    "RUSTSEC-2026-0041",  # lz4_flex 0.10 uninit-memory leak on invalid input. Transitive via zenoh-transport (pins ^0.10); dora doesn't enable zenoh compression. Waiting for upstream zenoh bump. Review: 2026-12.
+    "RUSTSEC-2026-0194",  # quick-xml <0.41 quadratic attribute check. Own parser (msg-gen) on fixed 0.41; rest transitive via self_update + mavlink-bindgen (build-time). Review: 2026-12.
+    "RUSTSEC-2026-0195",  # quick-xml <0.41 NsReader memory-exhaustion DoS. Same transitive parents as above. Review: 2026-12.
 ]
 
 # ----- Licenses -----

@@ -5,13 +5,13 @@ ignore = [
     # lz4_flex 0.10 uninitialized-memory leak on invalid input. Transitive
     # via zenoh-transport (pins ^0.10); dora does not enable zenoh's
     # compression, so the decompression path is not reachable. Waiting for
-    # upstream zenoh bump. Review: 2026-09.
+    # upstream zenoh bump. Review: 2026-12.
     "RUSTSEC-2026-0041",
     # quick-xml <0.41 quadratic attribute check / NsReader memory-exhaustion
     # DoS. Our own parser (ros2 msg-gen) is on fixed 0.41; remaining copies
     # are transitive via self_update (parses release listings during explicit
     # `dora self update`) and mavlink-bindgen (build-time codegen over local
-    # MAVLink XML). Waiting for upstream bumps. Review: 2026-09.
+    # MAVLink XML). Waiting for upstream bumps. Review: 2026-12.
     "RUSTSEC-2026-0194",
     "RUSTSEC-2026-0195",
 ]
