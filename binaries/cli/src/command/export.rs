@@ -192,8 +192,16 @@ mod tests {
     /// (`binaries/daemon/src/lib.rs`): a `Timestamped` envelope around the
     /// `InterDaemonEvent`, postcard-serialized into the entry's event bytes.
     fn output_event_bytes(node_id: &str, output_id: &str, payload: &[u8]) -> Vec<u8> {
-        let timestamp = sample_timestamp();
-        let metadata = Metadata::new(timestamp);
+        let producer_ts = sample_timestamp();
+        // The recording envelope carries the daemon's forward-time stamp,
+        // which is later than the producer's HLC stamp (the propagation
+        // delta). Keep the two distinct so the test genuinely pins the
+        // documented contract that MCAP `publish_time` comes from the
+        // producer's `metadata.timestamp()` -- not the envelope stamp, which
+        // would otherwise slip through unnoticed.
+        let envelope_ts =
+            Timestamp::new(*producer_ts.get_time() + 1_000_000, *producer_ts.get_id());
+        let metadata = Metadata::new(producer_ts);
         let event = InterDaemonEvent::Output {
             dataflow_id: Uuid::nil(),
             node_id: NodeId::from(node_id.to_string()),
@@ -205,7 +213,7 @@ mod tests {
         };
         Timestamped {
             inner: event,
-            timestamp,
+            timestamp: envelope_ts,
         }
         .serialize()
         .expect("serialize output event")
