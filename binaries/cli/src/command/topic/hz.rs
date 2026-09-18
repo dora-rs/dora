@@ -150,9 +150,16 @@ fn run_hz_oneshot(
 
     let topic_index = build_topic_index(&stats, descriptor);
 
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    while Instant::now() < deadline {
-        let remaining = deadline.saturating_duration_since(Instant::now());
+    // Track the window as a start instant plus elapsed comparison rather than
+    // `Instant::now() + Duration::from_secs(seconds)`: `seconds` comes straight
+    // from `--duration`, which clap bounds only from below (`range(1..)`), so a
+    // large-but-valid `u64` (e.g. `--duration 10000000000000000000`) would make
+    // `Instant + Duration` overflow the monotonic clock and panic. This mirrors
+    // the sibling `topic info` sampler, which measures the window the same way.
+    let duration = Duration::from_secs(seconds);
+    let start = Instant::now();
+    while start.elapsed() < duration {
+        let remaining = duration.saturating_sub(start.elapsed());
         match data_rx.recv_timeout(remaining) {
             Ok(Ok(payload)) => {
                 let event = match Timestamped::deserialize_inter_daemon_event(&payload) {
@@ -785,5 +792,31 @@ mod tests {
                 .intervals_ms_at(base + Duration::from_secs(2))
                 .is_empty()
         );
+    }
+
+    // `--duration` is bounded only from below (`range(1..)`), so a large-but-
+    // valid `u64` must not abort the non-interactive sampler. Previously
+    // `Instant::now() + Duration::from_secs(seconds)` overflowed the monotonic
+    // clock and panicked before the sampling loop even started. A disconnected
+    // receiver makes the loop break out immediately, so the only thing under
+    // test is that setting up the (huge) window does not panic.
+    #[test]
+    fn run_hz_oneshot_does_not_panic_on_oversized_duration() {
+        use dora_core::descriptor::DescriptorExt;
+        use std::collections::BTreeSet;
+
+        let descriptor = Descriptor::parse(b"nodes: []".to_vec()).unwrap();
+        let (tx, rx) = std::sync::mpsc::channel::<eyre::Result<Vec<u8>>>();
+        drop(tx); // disconnect so the sampler breaks out immediately
+
+        // 10^19 s is a valid u64 but overflows `Instant + Duration`.
+        run_hz_oneshot(
+            10,
+            BTreeSet::new(),
+            &descriptor,
+            rx,
+            10_000_000_000_000_000_000,
+        )
+        .expect("oversized --duration must not panic or error");
     }
 }
