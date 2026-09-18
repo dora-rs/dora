@@ -309,11 +309,13 @@ impl Daemon {
                 };
 
                 let Some(subscribers) = dataflow.mappings.get(&output_id) else {
-                    tracing::warn!(
-                        "No subscribers found for {:?} in {:?}",
-                        output_id,
-                        dataflow.mappings
-                    );
+                    // A node with `send_stdout_as`/`send_stderr_as` emits a
+                    // `Logs` event for every log line regardless of whether
+                    // anyone subscribes to the resulting output, so an output
+                    // with no consumer is a normal configuration — not a
+                    // warning. Return silently (previously this logged a WARN
+                    // per log line and `Debug`-formatted the entire edge map
+                    // on that hot path).
                     return Ok(());
                 };
 
@@ -322,7 +324,14 @@ impl Daemon {
                 let mut closed = Vec::new();
                 for (receiver_id, input_id) in subscribers {
                     let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-                        tracing::warn!("No subscriber channel found for {:?}", output_id);
+                        // A subscriber is mapped to this output but has no live
+                        // channel (e.g. not yet connected, or already gone).
+                        // Diagnosable at debug level without the per-log-line
+                        // WARN spam the previous `warn!` here produced.
+                        tracing::debug!(
+                            "no subscriber channel for `{receiver_id}` on {output_id:?}; \
+                             dropping log line"
+                        );
                         continue;
                     };
 
