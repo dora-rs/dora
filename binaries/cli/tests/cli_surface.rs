@@ -36,6 +36,11 @@ const HEADER: &str = "\
 #
 # One line per command, then one per argument. Hidden commands are included:
 # `dora daemon` and `dora coordinator` are undocumented but scripted against.
+# Internal subcommands whose name starts with `__` are excluded: they are
+# per-platform implementation details (the unix `dora __shell-guard` spawn
+# wrapper) that external scripts must not freeze into the 1.0 surface.
+# Feature-gated commands are excluded: the snapshot pins the default-build
+# surface, so a default `cargo install dora-cli` is what 1.0 freezes.
 # Removing any line is a breaking change; adding one is not.
 ";
 
@@ -56,6 +61,9 @@ fn walk(command: &Command, path: &str, lines: &mut BTreeSet<String>) {
         lines.insert(format!("{path} | {}", describe(arg)));
     }
     for sub in command.get_subcommands() {
+        if sub.get_name().starts_with("__") {
+            continue;
+        }
         walk(sub, &format!("{path} {}", sub.get_name()), lines);
     }
 }
