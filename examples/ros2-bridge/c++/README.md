@@ -30,10 +30,9 @@ spawned a result receiver per goal, and those receivers stole each other's
 ¹ A dora-hosted action server is not discoverable by a real `rcl` client
 ([ros2-client#4](https://github.com/jhelovuo/ros2-client/issues/4)), so the
 `action-server` example pairs a dora C++ server with a dora C++ client. The
-deferred `get_result` round-trip is flaky in upstream `ros2-client`/`rustdds`
-(it repeatedly hung the x86 nightly job and stalls on the arm64 dev harness), so
-the action examples are **not run in nightly CI** — validate them with
-`scripts/ros2dev.sh qa` on x86 Linux before a release ([#1170](https://github.com/dora-rs/dora/issues/1170)).
+action examples require full ROS2 runtime validation and are **not run in
+nightly CI** — validate them with `scripts/ros2dev.sh qa` on x86 Linux before a
+release ([#1170](https://github.com/dora-rs/dora/issues/1170)).
 See [`docs/ros2-bridge.md`](../../../docs/ros2-bridge.md).
 
 Service *client*, topic-only, and parameter examples are not provided in C++ —
