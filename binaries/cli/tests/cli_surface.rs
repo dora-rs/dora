@@ -36,6 +36,9 @@ const HEADER: &str = "\
 #
 # One line per command, then one per argument. Hidden commands are included:
 # `dora daemon` and `dora coordinator` are undocumented but scripted against.
+# Feature-gated commands (e.g. `dora export` behind `mcap-export`) are
+# excluded: the snapshot pins the default-build surface, so a default
+# `cargo install dora-cli` is what 1.0 freezes.
 # Removing any line is a breaking change; adding one is not.
 ";
 
