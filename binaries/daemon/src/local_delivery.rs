@@ -267,15 +267,24 @@ pub(crate) async fn send_output_to_local_receivers(
                     );
                 }
             }
-        } else if dataflow.running_nodes.contains_key(receiver_id) {
+        } else if dataflow.running_nodes.contains_key(receiver_id)
+            && !dataflow.dropped_event_streams.contains(receiver_id)
+        {
             // The receiver is registered in `mappings` AND still a live node,
-            // but has no daemon event stream: its channel was dropped (crash
-            // that never re-subscribed, `EventStreamDropped`, or a closed
-            // listener). This is the silent-routing-loss mode of
+            // but has no daemon event stream and did not drop it deliberately:
+            // its channel was dropped by a crash that never re-subscribed or a
+            // closed listener. This is the silent-routing-loss mode of
             // dora-rs/dora#3201 — the producer's send still "succeeds" but the
             // consumer receives nothing, indefinitely. Make it visible, once
             // per edge; the marker is cleared on (re)subscribe so an edge that
             // drops its stream again after reconnecting gets a fresh warning.
+            //
+            // A consumer that finished normally sends `EventStreamDropped` (so
+            // it is in `dropped_event_streams`) but is still in `running_nodes`
+            // until its process exit is observed. Producing to it in that
+            // window is expected, not a fault, so it falls through to the
+            // debug arm below instead of a misleading "failed to re-subscribe"
+            // warning (dora-rs/dora#3556).
             if dataflow
                 .missing_channel_warned
                 .insert((receiver_id.clone(), input_id.clone()))
@@ -303,20 +312,28 @@ pub(crate) async fn send_output_to_local_receivers(
                 );
             }
         } else {
-            // The receiver's node has already exited or been removed
-            // (`running_nodes` has no entry): a consumer that finished or was
-            // stopped before the dataflow tore down. Its receiver-edge mapping
-            // outlives the node until the dataflow finishes (lib.rs:
-            // handle_node_stop_inner), so an upstream that keeps sending still
-            // reaches here — expected, not a restart failure, so debug only.
+            // The receiver has no daemon event stream and either already exited
+            // (`running_nodes` has no entry) or finished normally and dropped
+            // its stream while its process exit is still pending (still in
+            // `running_nodes`, in `dropped_event_streams` — dora-rs/dora#3556).
+            // Either way its receiver-edge mapping outlives the node until the
+            // dataflow finishes (lib.rs: handle_node_stop_inner), so an upstream
+            // that keeps sending still reaches here — expected, not a restart
+            // failure, so debug only.
+            let finished_but_running = dataflow.running_nodes.contains_key(receiver_id);
             tracing::debug!(
                 receiver = %receiver_id,
                 input = %input_id,
                 output = %output_id.1,
-                "dropping `{}/{}` to `{receiver_id}`: node has exited (no \
-                 daemon event stream, no running node)",
+                "dropping `{}/{}` to `{receiver_id}`: node has {} (no daemon \
+                 event stream)",
                 output_id.0,
                 output_id.1,
+                if finished_but_running {
+                    "finished but not yet exited"
+                } else {
+                    "exited"
+                },
             );
         }
     }
