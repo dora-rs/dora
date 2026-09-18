@@ -1789,6 +1789,62 @@ fn finished_receiver_does_not_warn() {
     });
 }
 
+/// A consumer that finished normally sends `EventStreamDropped`, which removes
+/// its `subscribe_channels` entry but leaves it in `running_nodes` until its
+/// process exit is observed. In that window an upstream still producing to it
+/// must NOT WARN — it is a deliberate drop, not the silent-routing-loss of
+/// #3201. This is the gap `finished_receiver_does_not_warn` misses: there the
+/// node is already out of `running_nodes`, so it never exercises the
+/// still-running window (dora-rs/dora#3556).
+#[test]
+fn finished_but_still_running_receiver_does_not_warn() {
+    let capture = LevelCapture::default();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let finished: NodeId = "finished".to_string().into();
+            let input: DataId = "input".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(finished.clone(), input.clone())]),
+            );
+            // Mirror the `EventStreamDropped` handler: the node is still a live
+            // process (in `running_nodes`) but has dropped its stream (no
+            // `subscribe_channels` entry, recorded in `dropped_event_streams`).
+            df.running_nodes
+                .insert(finished.clone(), test_running_node());
+            df.dropped_event_streams.insert(finished.clone());
+
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            send_output_to_local_receivers(
+                &output_id, &mut df, &metadata, None, &clock, None, false,
+            )
+            .await
+            .unwrap();
+
+            let levels = capture.levels.lock().unwrap();
+            let warns = levels
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 0,
+                "a consumer that dropped its stream but is still running must \
+                 not WARN, got {levels:?}"
+            );
+        });
+    });
+}
+
 // -- Test 8: Full circuit breaker cycle: open -> break -> recover --
 
 #[tokio::test]
