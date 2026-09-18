@@ -844,7 +844,7 @@ impl Daemon {
                     for output_id in outputs_to_remove {
                         if let Some(receivers) = dataflow.mappings.remove(&output_id) {
                             for (receiver_id, input_id) in receivers {
-                                close_input(dataflow, &receiver_id, &input_id, &self.clock);
+                                let _ = close_input(dataflow, &receiver_id, &input_id, &self.clock);
                             }
                         }
                     }
@@ -1382,7 +1382,7 @@ impl Daemon {
                         .map(|r| r.remove(&(target_node.clone(), target_input.clone())))
                         .unwrap_or(false);
                     if removed {
-                        close_input(dataflow, &target_node, &target_input, &self.clock);
+                        let _ = close_input(dataflow, &target_node, &target_input, &self.clock);
                         Ok(())
                     } else {
                         Err(format!(

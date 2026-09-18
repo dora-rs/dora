@@ -681,7 +681,7 @@ fn close_input_removes_from_open_inputs() {
     df.subscribe_channels.insert(node_a.clone(), tx);
 
     // Act: permanently close input_x
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     // Assert: input_x removed, input_y still open
     let open = df.open_inputs(&node_a);
@@ -692,6 +692,94 @@ fn close_input_removes_from_open_inputs() {
     let events = drain_events(&mut rx);
     assert_eq!(events.len(), 1);
     assert!(matches_event(&events[0], "InputClosed"));
+}
+
+#[test]
+fn close_input_returns_error_when_receiver_channel_is_full() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node_a: NodeId = "node_a".to_string().into();
+    let input_x: DataId = "input_x".to_string().into();
+
+    df.open_inputs
+        .entry(node_a.clone())
+        .or_default()
+        .insert(input_x.clone());
+    let (tx, mut rx) = mpsc::channel(1);
+    tx.try_send(Timestamped {
+        inner: NodeEvent::AllInputsClosed,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(node_a.clone(), tx);
+
+    let err = close_input(&mut df, &node_a, &input_x, &clock)
+        .expect_err("full receiver channel must surface a control-delivery error");
+
+    assert!(
+        err.to_string().contains("channel full"),
+        "unexpected error: {err:?}"
+    );
+    assert!(
+        !df.open_inputs(&node_a).contains(&input_x),
+        "the input is still closed even when notifying the node fails"
+    );
+    let events = drain_events(&mut rx);
+    assert_eq!(events.len(), 1);
+    assert!(matches_event(&events[0], "AllInputsClosed"));
+}
+
+#[test]
+fn close_inputs_best_effort_continues_after_error() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node_a: NodeId = "node_a".to_string().into();
+    let node_b: NodeId = "node_b".to_string().into();
+    let input_a: DataId = "input_a".to_string().into();
+    let input_b: DataId = "input_b".to_string().into();
+    let input_b_guard: DataId = "input_b_guard".to_string().into();
+
+    df.open_inputs
+        .entry(node_a.clone())
+        .or_default()
+        .insert(input_a.clone());
+    df.open_inputs
+        .entry(node_b.clone())
+        .or_default()
+        .extend([input_b.clone(), input_b_guard.clone()]);
+
+    let (tx_a, mut rx_a) = mpsc::channel(1);
+    tx_a.try_send(Timestamped {
+        inner: NodeEvent::AllInputsClosed,
+        timestamp: clock.new_timestamp(),
+    })
+    .unwrap();
+    df.subscribe_channels.insert(node_a.clone(), tx_a);
+
+    let (tx_b, mut rx_b) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    df.subscribe_channels.insert(node_b.clone(), tx_b);
+
+    close_inputs_best_effort(
+        &mut df,
+        [
+            (node_a.clone(), input_a.clone()),
+            (node_b.clone(), input_b.clone()),
+        ],
+        &clock,
+        "test",
+    );
+
+    assert!(!df.open_inputs(&node_a).contains(&input_a));
+    assert!(!df.open_inputs(&node_b).contains(&input_b));
+    assert!(df.open_inputs(&node_b).contains(&input_b_guard));
+
+    let events_a = drain_events(&mut rx_a);
+    assert_eq!(events_a.len(), 1);
+    assert!(matches_event(&events_a[0], "AllInputsClosed"));
+
+    let events_b = drain_events(&mut rx_b);
+    assert_eq!(events_b.len(), 1);
+    assert!(matches_event(&events_b[0], "InputClosed"));
 }
 
 // -- dora#2270: finish-straggler watchdog must spare timer/log-fed nodes --
@@ -959,7 +1047,7 @@ fn close_input_sends_all_inputs_closed() {
     let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_a.clone(), tx);
 
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     assert!(df.open_inputs(&node_a).is_empty());
 
@@ -1006,7 +1094,7 @@ fn opt_in_drains_node_with_open_timer_and_disables_its_restart() {
     let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_a.clone(), tx);
 
-    close_input(&mut df, &node_a, &data_in, &clock);
+    close_input(&mut df, &node_a, &data_in, &clock).unwrap();
 
     assert!(
         df.open_inputs(&node_a).contains(&timer_in),
@@ -1049,7 +1137,7 @@ fn opt_in_still_disables_restart_for_source_nodes() {
     let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
     df.subscribe_channels.insert(node_a.clone(), tx);
 
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     assert!(
         disable_restart.load(atomic::Ordering::Acquire),
@@ -1092,6 +1180,9 @@ fn forget_node_bookkeeping_purges_only_that_node() {
             OutputId(node.clone(), output_m.clone()),
             BTreeSet::from([uuid::Uuid::new_v4()]),
         );
+        let (publish_tx, _publish_rx) = mpsc::channel(1);
+        df.remote_output_queues
+            .insert(OutputId(node.clone(), output_m.clone()), publish_tx);
     }
 
     df.forget_node_bookkeeping(&node_a);
@@ -1124,6 +1215,10 @@ fn forget_node_bookkeeping_purges_only_that_node() {
              every path, so a remove+re-add or ReplaceNode keeps an active \
              debug stream alive"
     );
+    assert!(
+        !df.remote_output_queues
+            .contains_key(&OutputId(node_a.clone(), output_m.clone()))
+    );
 
     // … while node_b's are untouched.
     assert!(
@@ -1141,6 +1236,10 @@ fn forget_node_bookkeeping_purges_only_that_node() {
     );
     assert!(
         df.debug_topic_watchers
+            .contains_key(&OutputId(node_b.clone(), output_m.clone()))
+    );
+    assert!(
+        df.remote_output_queues
             .contains_key(&OutputId(node_b.clone(), output_m.clone()))
     );
 }
@@ -1171,7 +1270,7 @@ fn close_input_deferred_by_broken_inputs() {
     df.subscribe_channels.insert(node_a.clone(), tx);
 
     // Close last open input — but broken input still exists
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     let events = drain_events(&mut rx);
     // Only InputClosed, NO AllInputsClosed (broken input might recover)
@@ -1201,7 +1300,7 @@ fn close_input_on_already_broken_input() {
     df.subscribe_channels.insert(node_a.clone(), tx);
 
     // Permanently close the broken input (upstream exited)
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     // broken_inputs cleaned up
     assert!(
@@ -1243,7 +1342,7 @@ fn close_input_drops_armed_deadline() {
         },
     );
 
-    close_input(&mut df, &node_a, &input_x, &clock);
+    close_input(&mut df, &node_a, &input_x, &clock).unwrap();
 
     assert!(
         !df.input_deadlines
@@ -1285,7 +1384,7 @@ fn drained_node_finishes_despite_stale_deadline_timeout() {
     df.subscribe_channels.insert(node_c.clone(), tx);
 
     // 1. Producer of input_a exits.
-    close_input(&mut df, &node_c, &input_a, &clock);
+    close_input(&mut df, &node_c, &input_a, &clock).unwrap();
 
     // 2. Simulate the stale-deadline timeout firing as `check_input_timeouts`
     //    would: it inserts a broken record then calls break_input. With the
@@ -1301,7 +1400,7 @@ fn drained_node_finishes_despite_stale_deadline_timeout() {
     );
 
     // 3. Producer of input_b exits — node is now fully drained.
-    close_input(&mut df, &node_c, &input_b, &clock);
+    close_input(&mut df, &node_c, &input_b, &clock).unwrap();
 
     let events = drain_events(&mut rx);
     assert!(
