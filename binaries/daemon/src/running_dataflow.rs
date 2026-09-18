@@ -321,6 +321,18 @@ pub struct RunningDataflow {
     /// message; cleared when the receiver (re)subscribes, so an edge that drops
     /// again after reconnecting gets a fresh warning (dora-rs/dora#3201).
     pub(crate) missing_channel_warned: BTreeSet<(NodeId, DataId)>,
+    /// Nodes that deliberately dropped their daemon event stream
+    /// (`EventStreamDropped`, sent by `EventStream::drop` on normal shutdown)
+    /// but are still in `running_nodes` because their process exit has not been
+    /// observed yet. In that window an upstream still producing to such a
+    /// consumer routes to a receiver with no `subscribe_channels` entry, which
+    /// would otherwise hit the "may still be starting up / failed to
+    /// re-subscribe" warning — a false positive for a consumer that simply
+    /// finished. Demotes that case to `debug`, keeping the warning for the true
+    /// silent-routing-loss mode of dora-rs/dora#3201 (a receiver that never
+    /// dropped its stream). Cleared on (re)subscribe and on node removal, so a
+    /// re-added node ID starts a fresh incarnation (dora-rs/dora#3556).
+    pub(crate) dropped_event_streams: BTreeSet<NodeId>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
@@ -429,6 +441,7 @@ impl RunningDataflow {
             pending_messages: HashMap::new(),
             mappings: HashMap::new(),
             missing_channel_warned: BTreeSet::new(),
+            dropped_event_streams: BTreeSet::new(),
             timers: BTreeMap::new(),
             log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
@@ -515,6 +528,7 @@ impl RunningDataflow {
         self.cascading_error_causes.forget(node_id);
         retain_other_nodes(&mut self.publishers, node_id);
         self.missing_channel_warned.retain(|(n, _)| n != node_id);
+        self.dropped_event_streams.remove(node_id);
     }
 
     /// Whether a startup-barrier completion (reported as
