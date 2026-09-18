@@ -1274,18 +1274,34 @@ impl EventStream {
     ///
     /// # Example
     ///
-    /// ```ignore
-    /// let request_id = node.send_service_request(...)?;
+    /// ```no_run
+    /// # async fn run() -> eyre::Result<()> {
+    /// use dora_node_api::{DoraNode, Event, MetadataParameters, PatternError};
+    /// use dora_core::config::{DataId, NodeId};
+    /// use std::time::Duration;
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    /// let server = NodeId::from("service_server".to_owned());
+    ///
+    /// // `send_service_request` returns the id this response is matched against.
+    /// let request_id = node.send_service_request(
+    ///     DataId::from("request".to_owned()),
+    ///     MetadataParameters::default(),
+    ///     vec![1u8, 2, 3],
+    /// )?;
+    ///
     /// match events
-    ///     .recv_service_response(&request_id, &server_id, Duration::from_secs(5))
+    ///     .recv_service_response(&request_id, &server, Duration::from_secs(5))
     ///     .await
     /// {
-    ///     Ok(Event::Input { data, .. }) => handle_response(data),
-    ///     Err(PatternError::Timeout) => fallback_path(),
-    ///     Err(PatternError::ServerRestarted(_)) => retry_with_new_instance(),
+    ///     Ok(Event::Input { data, .. }) => { let _ = data; /* handle the response */ }
+    ///     Err(PatternError::Timeout) => { /* no response in time; take a fallback path */ }
+    ///     Err(PatternError::ServerRestarted(_)) => { /* retry against the new instance */ }
     ///     Err(e) => return Err(e.into()),
-    ///     _ => unreachable!(),
+    ///     _ => {}
     /// }
+    /// # Ok(())
+    /// # }
     /// ```
     pub async fn recv_service_response(
         &mut self,

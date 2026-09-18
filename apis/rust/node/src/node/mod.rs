@@ -2423,6 +2423,25 @@ impl DoraNode {
     /// # Errors
     ///
     /// Propagates any error from [`send_output`](Self::send_output).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, MetadataParameters};
+    /// use dora_core::config::DataId;
+    ///
+    /// let (mut node, _events) = DoraNode::init_from_env()?;
+    ///
+    /// // Keep the returned id to correlate the eventual response (see
+    /// // [`EventStream::recv_service_response`](dora_node_api::EventStream::recv_service_response)).
+    /// let request_id = node.send_service_request(
+    ///     DataId::from("request".to_owned()),
+    ///     MetadataParameters::default(),
+    ///     vec![1u8, 2, 3],
+    /// )?;
+    /// let _ = request_id;
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn send_service_request(
         &mut self,
         output_id: DataId,
@@ -2444,7 +2463,31 @@ impl DoraNode {
     /// Send a service response. This is a semantic alias for [`send_output`](Self::send_output).
     ///
     /// The caller is expected to pass through the `request_id` parameter from
-    /// the incoming request's metadata.
+    /// the incoming request's metadata — that echo is what lets the client
+    /// correlate the response back to its request.
+    ///
+    /// # Example
+    ///
+    /// A server echoes the incoming request's `request_id` into the response:
+    ///
+    /// ```no_run
+    /// use dora_node_api::{DoraNode, Event, MetadataParameters};
+    /// use dora_core::config::DataId;
+    /// use dora_message::metadata::{Parameter, REQUEST_ID, get_string_param};
+    ///
+    /// let (mut node, mut events) = DoraNode::init_from_env()?;
+    ///
+    /// while let Some(event) = events.recv() {
+    ///     if let Event::Input { metadata, .. } = event {
+    ///         let mut params = MetadataParameters::default();
+    ///         if let Some(request_id) = get_string_param(&metadata.parameters, REQUEST_ID) {
+    ///             params.insert(REQUEST_ID.to_string(), Parameter::String(request_id.to_owned()));
+    ///         }
+    ///         node.send_service_response(DataId::from("reply".to_owned()), params, vec![0u8])?;
+    ///     }
+    /// }
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn send_service_response(
         &mut self,
         output_id: DataId,
