@@ -12,10 +12,19 @@ links = "dora-ros2-bridge"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [features]
-default = ["generate-messages"]
+default = ["generate-messages", "ros2-humble"]
 generate-messages = ["dep:dora-ros2-bridge-msg-gen"]
 ros2-examples = []
 rmw-zenoh = ["dep:zenoh", "dep:zenoh-ext"]
+# ROS distro, forwarded to `ros2-client`. Its features form a chain (each
+# enables the older distros), so selecting a newer one also turns on the older
+# flags and `ros2-client::COMPILED_ROS_DISTRO` reports the newest. That means
+# the default `ros2-humble` does not have to be turned off to build for jazzy:
+# `ros2-humble` plus `ros2-jazzy` still selects the 16-byte `Gid` of jazzy.
+ros2-humble = ["ros2-client/humble"]
+ros2-iron = ["ros2-client/iron"]
+ros2-jazzy = ["ros2-client/jazzy"]
+ros2-kilted = ["ros2-client/kilted"]
 
 [dependencies]
 array-init = "2.1.0"
@@ -24,7 +33,8 @@ dora-ros2-bridge-msg-gen = { workspace = true }
 serde = { workspace = true }
 serde-big-array = "0.5.1"
 widestring = "1.2.1"
-# Version + ROS distro feature are set in `[workspace.dependencies]`.
+# Version comes from `[workspace.dependencies]`; the ROS distro is selected by
+# the `ros2-*` features above.
 ros2-client = { workspace = true }
 # No longer pinned to `=0.11.4`. That pin existed because rustdds 0.11.5-0.13.x
 # depended unconditionally on `pnet`, whose `pnet_datalink` links `Packet.lib`
