@@ -1495,7 +1495,12 @@ impl EventStream {
             return Ok(event);
         }
 
-        let deadline = std::time::Instant::now() + timeout;
+        // Compute the wait deadline, clamping a `timeout` so large that the
+        // addition would overflow the monotonic clock, so a caller passing e.g.
+        // `Duration::MAX` (a natural way to say "wait effectively forever") gets
+        // the longest representable wait instead of aborting the process. See
+        // `representable_wait_deadline`.
+        let deadline = representable_wait_deadline(timeout);
         loop {
             let remaining = deadline.saturating_duration_since(std::time::Instant::now());
             if remaining.is_zero() {
@@ -1533,6 +1538,28 @@ impl EventStream {
             }
         }
     }
+}
+
+/// Compute the wait deadline `now + timeout`, clamping a `timeout` so large that
+/// the addition would overflow the monotonic clock by halving it until the sum
+/// is representable. Reads the clock exactly once, so the `now` used to validate
+/// the clamp is the same `now` the deadline is built from.
+///
+/// The pattern-wait helpers ([`EventStream::recv_service_response`],
+/// [`EventStream::recv_action_result`]) take a caller-supplied [`Duration`] and
+/// wait until this deadline. A very large value — e.g. `Duration::MAX`, a
+/// natural way to express "wait effectively forever" — would otherwise panic
+/// (`overflow when adding duration to instant`) and abort the process. Clamping
+/// yields the longest representable deadline instead. The C++ binding's
+/// `clamp_pattern_timeout` guards the identical computation on the FFI side;
+/// this covers the Rust-native callers.
+fn representable_wait_deadline(timeout: Duration) -> Instant {
+    let now = Instant::now();
+    let mut timeout = timeout;
+    while !timeout.is_zero() && now.checked_add(timeout).is_none() {
+        timeout /= 2;
+    }
+    now + timeout
 }
 
 /// Build the JSON for a "control" event that carries only a type tag, an
@@ -2160,6 +2187,32 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // A caller may pass a very large `Duration` to a pattern-wait helper to mean
+    // "wait effectively forever". The `Instant::now() + timeout` deadline used to
+    // panic on such a value (monotonic-clock overflow), aborting the process.
+    // `representable_wait_deadline` clamps it to the longest representable wait.
+    #[test]
+    fn representable_wait_deadline_clamps_overflow_without_panic() {
+        // A normal timeout lands roughly `timeout` in the future (not clamped).
+        let before = Instant::now();
+        let deadline = representable_wait_deadline(Duration::from_secs(5));
+        assert!(
+            deadline > before,
+            "a real timeout must produce a future deadline"
+        );
+        assert!(
+            deadline <= Instant::now() + Duration::from_secs(6),
+            "a small timeout must not be clamped to a huge one"
+        );
+        // `Duration::MAX` would overflow `Instant::now() + timeout`; the clamp
+        // yields a real future deadline instead of panicking.
+        let deadline_max = representable_wait_deadline(Duration::MAX);
+        assert!(
+            deadline_max > Instant::now(),
+            "an overflowing timeout must still produce a future deadline"
+        );
+    }
 
     #[test]
     fn control_event_json_shape_and_key_order() {
