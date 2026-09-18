@@ -252,6 +252,61 @@ async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
     assert!(retried.contains(&dataflow_id.to_string()), "{retried}");
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
+    let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    drop(coordinator_rx);
+
+    let clock = Arc::new(HLC::default());
+    let (mut daemon, _events_rx) = Daemon::build_daemon(
+        None,
+        Some(coordinator_sender),
+        DaemonId::new(None),
+        None,
+        clock.clone(),
+        None,
+        BTreeMap::new(),
+        LogDestination::Tracing,
+        None,
+        Vec::new(),
+        None,
+        Vec::new(),
+        ZenohBind::Derived(LOCALHOST),
+        false,
+        false,
+    )
+    .await
+    .expect("daemon should build");
+
+    let dataflow_id = Uuid::new_v4();
+    daemon.pending_finished_dataflows.insert(
+        dataflow_id,
+        DataflowDaemonResult {
+            timestamp: clock.new_timestamp(),
+            node_results: BTreeMap::new(),
+        },
+    );
+
+    let external_events = futures::stream::iter([Timestamped {
+        inner: Event::CtrlC,
+        timestamp: clock.new_timestamp(),
+    }]);
+    let (_dora_events_tx, mut dora_events_rx) = mpsc::channel(1);
+
+    let result = daemon
+        .run_inner(external_events, &mut dora_events_rx, None)
+        .await;
+
+    assert!(
+        result.is_ok(),
+        "a failed pending finish retry must not abort the reconnect cycle: {result:?}"
+    );
+    assert!(
+        daemon.pending_finished_dataflows.contains_key(&dataflow_id),
+        "failed retry must keep the finish report pending for the next reconnect"
+    );
+}
+
 fn test_running_node() -> RunningNode {
     RunningNode {
         process: None,

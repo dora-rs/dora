@@ -1477,8 +1477,8 @@ impl Daemon {
             .merge();
 
         // Send status report to coordinator so it can reconcile dataflow state.
-        if self.coordinator_sender.is_some() {
-            self.report_pending_finished_dataflows().await?;
+        if let Err(err) = self.report_pending_finished_dataflows().await {
+            tracing::warn!("failed to retry pending dataflow finish reports: {err:#}");
         }
         if let Some(sender) = &self.coordinator_sender {
             let running_dataflows: Vec<_> = self
