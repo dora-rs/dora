@@ -154,6 +154,24 @@ Your user nodes never link against ROS2 -- all ROS2 communication is isolated in
 - **For action client**: A ROS2 action server must be running *before* starting the dataflow (no `wait_for_action_server` mechanism)
 - **For action server**: A ROS2 action client sends goals to the bridge (e.g., `ros2 action send_goal`)
 
+### Building for your ROS distro
+
+Published bridge builds target Humble. On another distro, build with the matching feature before running a dataflow, or the bridge logs `ROS_DISTRO='jazzy' but ros2-client was built for 'humble'`.
+
+- **YAML bridge**: `dora-ros2-bridge-node` isn't shipped with the CLI, so install it for your distro and keep it on `PATH` (the resolver spawns it by name):
+
+  ```bash
+  cargo install --git https://github.com/dora-rs/dora dora-ros2-bridge-node --features ros2-jazzy
+  ```
+
+- **In-process Python (`from dora import Ros2Context`)**: the `dora-rs` wheel links the bridge, so rebuild it with maturin:
+
+  ```bash
+  maturin build -m apis/python/node/Cargo.toml --features ros2-jazzy
+  ```
+
+`ros2-iron`, `ros2-jazzy`, and `ros2-kilted` are accepted; they map to `ros2-client`'s matching feature, and a newer distro enables the older ones, so the Humble default doesn't need to be turned off.
+
 ---
 
 ## Topic Bridge
