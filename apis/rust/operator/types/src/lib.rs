@@ -141,13 +141,37 @@ pub struct OnEventResult {
     pub status: DoraStatus,
 }
 
+/// What an operator wants the runtime to do after handling an event.
+///
+/// Returned from an operator's `on_event` handler (as part of
+/// [`OnEventResult`]). The discriminants are part of the C ABI, so the
+/// language-neutral runtimes (Python, shared-library) map their integer return
+/// codes onto these values.
+///
+/// ```
+/// use dora_operator_api_types::DoraStatus;
+///
+/// // The discriminants are the stable C-ABI codes the runtimes read back.
+/// assert_eq!(DoraStatus::Continue as u8, 0);
+/// assert_eq!(DoraStatus::Stop as u8, 1);
+/// assert_eq!(DoraStatus::StopAll as u8, 2);
+/// ```
 #[derive_ReprC]
 #[ffi_export]
 #[derive(Debug)]
 #[repr(u8)]
 pub enum DoraStatus {
+    /// Keep the operator running and deliver the next event.
     Continue = 0,
+    /// Stop *this* operator: the runtime finishes it (flushing outputs and
+    /// closing it down) while the rest of the dataflow keeps running.
     Stop = 1,
+    /// Request that the *entire* dataflow stop, not just this operator.
+    ///
+    /// Note: this is not yet implemented — an operator that returns `StopAll`
+    /// currently causes its runtime to report an error rather than tearing
+    /// down the dataflow. Return [`Stop`](Self::Stop) to shut down just this
+    /// operator.
     StopAll = 2,
 }
 
