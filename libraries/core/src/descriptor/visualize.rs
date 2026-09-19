@@ -162,7 +162,7 @@ fn visualize_custom_node(
 
 fn visualize_runtime_node(
     node_id: &NodeId,
-    _description: String,
+    description: String,
     operators: &[OperatorDefinition],
     flowchart: &mut String,
 ) {
@@ -173,16 +173,25 @@ fn visualize_runtime_node(
         // Use the operator id here rather than a second literal `op` so the two
         // can never drift apart if `SINGLE_OPERATOR_DEFAULT_ID` changes.
         let operator_id = &operator.id;
+        // Only quote the label (and append the description) when there is a
+        // description, so a node without one renders exactly as before. The
+        // description already carries its own `<hr/>` separator and is escaped
+        // for the quoted Mermaid label by `visualize_node`.
+        let label = if description.is_empty() {
+            node_id.to_string()
+        } else {
+            format!("\"{node_id}{description}\"")
+        };
         // single operator node
         if operator.config.inputs.is_empty() {
             // source node
-            writeln!(flowchart, "  {node_id}/{operator_id}[\\{node_id}/]").unwrap();
+            writeln!(flowchart, "  {node_id}/{operator_id}[\\{label}/]").unwrap();
         } else if operator.config.outputs.is_empty() {
             // sink node
-            writeln!(flowchart, "  {node_id}/{operator_id}[/{node_id}\\]").unwrap();
+            writeln!(flowchart, "  {node_id}/{operator_id}[/{label}\\]").unwrap();
         } else {
             // normal node
-            writeln!(flowchart, "  {node_id}/{operator_id}[{node_id}]").unwrap();
+            writeln!(flowchart, "  {node_id}/{operator_id}[{label}]").unwrap();
         }
     } else {
         // Sanitize the id for Mermaid the same way the module-subgraph path
@@ -194,7 +203,15 @@ fn visualize_runtime_node(
         // nodes keep their raw `{node_id}/{operator_id}` ids (dots are valid in
         // node ids, only subgraph ids), so edges still line up.
         let safe_id = node_id.as_ref().replace('.', "_");
-        writeln!(flowchart, "subgraph {safe_id} [{node_id}]").unwrap();
+        // Quote the subgraph title only when a description must be appended, so
+        // a node without one keeps its previous unquoted title (same shape as
+        // the single-operator `label` above).
+        let title = if description.is_empty() {
+            node_id.to_string()
+        } else {
+            format!("\"{node_id}{description}\"")
+        };
+        writeln!(flowchart, "subgraph {safe_id} [{title}]").unwrap();
         for operator in operators {
             let operator_id = &operator.id;
             if operator.config.inputs.is_empty() {
@@ -382,6 +399,99 @@ nodes:
         assert!(
             !split_line,
             "the description must not split the Mermaid statement across lines; got:\n{flowchart}"
+        );
+    }
+
+    /// A single-`operator:` node is a `Runtime` node, and its `description`
+    /// must reach the Mermaid label the same way a custom node's does — the
+    /// `_description` parameter used to be discarded, silently dropping the
+    /// field for operator nodes. Reverting the fix (dropping the description in
+    /// `visualize_runtime_node`) fails this test.
+    #[test]
+    fn single_operator_node_description_reaches_the_label() {
+        let yaml = r#"
+nodes:
+  - id: detector
+    description: 'Finds "objects"'
+    operator:
+      python: detector.py
+      inputs:
+        image: camera/image
+      outputs:
+        - bbox
+  - id: camera
+    path: ./camera
+    outputs:
+      - image
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        // The single operator defaults to id `op`, and the label carries the
+        // escaped description inside a quoted, `<hr/>`-separated Mermaid label.
+        assert!(
+            flowchart.contains(r#"detector/op["detector<hr/>*Finds #quot;objects#quot;*"]"#),
+            "the operator node's description must reach its Mermaid label; got:\n{flowchart}"
+        );
+    }
+
+    /// A runtime node without a description keeps its previous unquoted label,
+    /// so the fix does not change existing `dora graph` output for the common
+    /// no-description case.
+    #[test]
+    fn operator_node_without_description_stays_unquoted() {
+        let yaml = r#"
+nodes:
+  - id: detector
+    operator:
+      python: detector.py
+      inputs:
+        image: camera/image
+      outputs:
+        - bbox
+  - id: camera
+    path: ./camera
+    outputs:
+      - image
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains("detector/op[detector]"),
+            "a description-less operator node must render unquoted as before; got:\n{flowchart}"
+        );
+    }
+
+    /// A multi-`operators:` node renders as a subgraph; its node-level
+    /// `description` must appear in the subgraph title (it was dropped before).
+    #[test]
+    fn multi_operator_subgraph_title_carries_the_description() {
+        let yaml = r#"
+nodes:
+  - id: pipeline
+    description: Two stage
+    operators:
+      - id: stage1
+        python: s1.py
+        outputs:
+          - mid
+      - id: stage2
+        python: s2.py
+        inputs:
+          mid: pipeline/stage1/mid
+        outputs:
+          - out
+"#;
+        let desc: Descriptor = serde_yaml::from_str(yaml).expect("parse");
+        let resolved = desc.resolve_aliases_and_set_defaults().expect("resolve");
+        let flowchart = visualize_nodes_with_boundaries(&resolved, &ModuleBoundaries::default());
+
+        assert!(
+            flowchart.contains(r#"subgraph pipeline ["pipeline<hr/>*Two stage*"]"#),
+            "the subgraph title must carry the node description; got:\n{flowchart}"
         );
     }
 
