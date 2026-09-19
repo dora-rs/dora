@@ -151,8 +151,10 @@ pub trait DoraOperator: Default {
     /// Handle a single [`Event`].
     ///
     /// Return [`DoraStatus::Continue`] to keep running or [`DoraStatus::Stop`]
-    /// to shut the operator down. Returning `Err` reports a fatal error to the
-    /// runtime and stops the operator.
+    /// to shut this operator down (the rest of the dataflow keeps running).
+    /// [`DoraStatus::StopAll`] is reserved for stopping the whole dataflow but
+    /// is not yet implemented — see its documentation. Returning `Err` reports
+    /// a fatal error to the runtime and stops the operator.
     #[allow(clippy::result_unit_err)] // we use a () error type only for testing
     fn on_event(
         &mut self,
