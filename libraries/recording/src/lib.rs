@@ -103,6 +103,18 @@ pub struct RecordEntry {
 }
 
 impl RecordEntry {
+    /// The on-disk length of this entry's record body — the value stored in the
+    /// 4-byte record-length prefix, i.e. everything after that prefix: the two
+    /// length-prefixed ids, the 8-byte timestamp, the 4-byte payload length, and
+    /// the payload itself.
+    ///
+    /// Callers use this to check an entry against [`MAX_RECORD_BYTES`] *before*
+    /// writing, so an oversized message can be skipped rather than aborting the
+    /// whole recording (see [`RecordingWriter::write_entry_skip_oversized`]).
+    pub fn encoded_len(&self) -> usize {
+        2 + self.node_id.len() + 2 + self.output_id.len() + 8 + 4 + self.event_bytes.len()
+    }
+
     /// Assemble an owned entry from the borrowed fields produced by
     /// `parse_record`, copying the ids and payload out of the record buffer.
     fn owned(
@@ -161,8 +173,7 @@ impl<W: Write> RecordingWriter<W> {
         let node_id_bytes = entry.node_id.as_bytes();
         let output_id_bytes = entry.output_id.as_bytes();
         // Compute as usize first to avoid u32 truncation before the cap check.
-        let record_len_usize =
-            2 + node_id_bytes.len() + 2 + output_id_bytes.len() + 8 + 4 + entry.event_bytes.len();
+        let record_len_usize = entry.encoded_len();
         if record_len_usize > MAX_RECORD_BYTES {
             eyre::bail!(
                 "record too large to write: {record_len_usize} bytes (max {MAX_RECORD_BYTES})"
@@ -200,6 +211,33 @@ impl<W: Write> RecordingWriter<W> {
         self.total_messages += 1;
         self.total_bytes += record_len as u64 + 4; // +4 for record_len field itself
         Ok(())
+    }
+
+    /// Append an entry, but tolerate one that is too large to encode instead of
+    /// failing the whole recording.
+    ///
+    /// Returns `Ok(None)` when the entry was written, or `Ok(Some(len))` — with
+    /// `len` its [`RecordEntry::encoded_len`] — when it exceeded
+    /// [`MAX_RECORD_BYTES`] and was skipped. Nothing is written in the skip case
+    /// and the writer stays usable for subsequent entries. Genuine I/O errors
+    /// still propagate as `Err`.
+    ///
+    /// Recorders attach to a live dataflow whose direct node-to-node zero-copy
+    /// path has no per-message size cap, so a single oversized frame (a large
+    /// image or point cloud) must not abort a capture that is otherwise
+    /// succeeding — the same skip-and-continue resilience the reader and
+    /// `replay-node` already apply. The caller should count the skip and report
+    /// the recording as incomplete.
+    pub fn write_entry_skip_oversized(
+        &mut self,
+        entry: &RecordEntry,
+    ) -> eyre::Result<Option<usize>> {
+        let record_len = entry.encoded_len();
+        if record_len > MAX_RECORD_BYTES {
+            return Ok(Some(record_len));
+        }
+        self.write_entry(entry)?;
+        Ok(None)
     }
 
     /// Write the footer (message/byte totals), flush, and consume the writer.
@@ -727,6 +765,65 @@ mod tests {
             err.to_string().contains("too large"),
             "expected 'too large' error, got: {err}"
         );
+    }
+
+    #[test]
+    fn write_entry_skip_oversized_skips_and_keeps_writing() {
+        let header = sample_header();
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+
+        // A normal entry is written and reported as such.
+        let small = sample_entry("n", "o", 0, b"hello");
+        assert_eq!(writer.write_entry_skip_oversized(&small).unwrap(), None);
+
+        // An oversized entry is skipped (not written), returning its length,
+        // and the writer stays usable.
+        let big = sample_entry("n", "o", 1, &vec![0u8; MAX_RECORD_BYTES + 1]);
+        assert_eq!(
+            writer.write_entry_skip_oversized(&big).unwrap(),
+            Some(big.encoded_len())
+        );
+
+        // A second normal entry still writes after the skip.
+        let small2 = sample_entry("n", "o", 2, b"world");
+        assert_eq!(writer.write_entry_skip_oversized(&small2).unwrap(), None);
+
+        let footer = writer.finish().unwrap();
+        assert_eq!(
+            footer.total_messages, 2,
+            "the oversized entry is not counted"
+        );
+
+        // The recording reads back with exactly the two small entries.
+        let mut reader = RecordingReader::open(std::io::Cursor::new(&buf)).unwrap();
+        let first = reader.next_entry().unwrap().unwrap();
+        assert_eq!(first.event_bytes, b"hello");
+        let second = reader.next_entry().unwrap().unwrap();
+        assert_eq!(second.event_bytes, b"world");
+        assert!(reader.next_entry().unwrap().is_none());
+    }
+
+    #[test]
+    fn encoded_len_matches_written_record_body() {
+        // `encoded_len` must equal the record-body length the writer stamps into
+        // the 4-byte length prefix, so the pre-write size check is exact.
+        let header = sample_header();
+        let entry = sample_entry("node", "output", 7, b"payload-bytes");
+        let mut buf = Vec::new();
+        let mut writer = RecordingWriter::new(&mut buf, &header).unwrap();
+        writer.write_entry(&entry).unwrap();
+        writer.finish().unwrap();
+
+        // The record-body length prefix sits right after the header.
+        let header_len = {
+            let mut cursor = std::io::Cursor::new(&buf);
+            read_header(&mut cursor).unwrap();
+            cursor.position() as usize
+        };
+        let stamped =
+            u32::from_le_bytes(buf[header_len..header_len + 4].try_into().unwrap()) as usize;
+        assert_eq!(stamped, entry.encoded_len());
     }
 
     #[test]
