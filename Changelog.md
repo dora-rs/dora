@@ -9,6 +9,9 @@
 ### Added
 
 - **`dora record --queue-size`** ([#3282](https://github.com/dora-rs/dora/issues/3282)). Sets the `queue_size` of every topic the recorder subscribes to, default 100 — roughly one flush window of slack per topic. Raise it to ride out longer write stalls; peak memory is about `2 x queue_size x payload size` per topic. Rejected together with `--proxy`, which does not route through those queues.
+- **`send_service_request_with_id`** ([#3046](https://github.com/dora-rs/dora/issues/3046)), in both the Rust and C++ node APIs. `send_service_request` mints a fresh `request_id` per call, so it cannot express one logical request fanned out to several servers: each publish carries a different correlation and no single receive can await "whichever answers first". The new variant takes the id from the caller, so every copy shares one.
+
+- **Fan-out service and action requests** ([#3046](https://github.com/dora-rs/dora/issues/3046)). `ExpectedServers` (`One` / `AnyOf` / `Any`) and the new `recv_service_response_from` / `recv_action_result_from` let one request go to several servers under a single `request_id`, with the first reply winning. The set governs only restart detection — which reply matches is still decided by the correlation id alone. Exposed to C++ as a `Vec<String>` of acceptable responders; an empty vector means any node.
 
 ### Fixed
 
