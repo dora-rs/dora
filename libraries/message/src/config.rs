@@ -12,6 +12,16 @@ use crate::descriptor;
 pub use crate::id::{DataId, NodeId, OperatorId};
 
 /// Filter for the `dora/logs` virtual input.
+///
+/// The wire form parsed by [`FromStr`] / rendered by [`Display`](fmt::Display)
+/// is `dora/logs/{level}/{node}`, so a `node_filter` can only be expressed
+/// together with a `min_level`. Parsing therefore never produces a filter with
+/// `node_filter: Some(_)` while `min_level` is `None`. That combination is still
+/// constructible directly (both fields are public); when it is rendered, the
+/// least-severe level `trace` is emitted to keep the node restriction — see the
+/// [`Display`](fmt::Display) impl of [`InputMapping`]. Because `stdout` is a
+/// separate channel that a `trace` filter excludes, such a value round-trips to
+/// `{ min_level: Some(trace), node_filter }`, not exactly back to itself.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct LogSubscriptionFilter {
     /// Minimum log level to receive. `None` means all levels (including stdout).
@@ -280,11 +290,26 @@ impl fmt::Display for InputMapping {
             }
             InputMapping::Logs(filter) => {
                 write!(f, "dora/logs")?;
-                if let Some(level) = &filter.min_level {
-                    write!(f, "/{}", format_log_level(level))?;
-                    if let Some(node) = &filter.node_filter {
-                        write!(f, "/{node}")?;
+                // The wire grammar is `dora/logs/{level}/{node}`, so a node
+                // segment can only follow a level segment. A filter that
+                // restricts the node but leaves `min_level` unset must still
+                // render the node, otherwise the restriction is silently
+                // dropped and the subscription widens to every node (the more
+                // dangerous loss). Render the least-severe level `trace` in
+                // that case: every severity level passes a `trace` filter, so
+                // it preserves the node scope. `stdout` is a separate channel
+                // that a `trace` filter excludes (see `LogSubscriptionFilter`),
+                // so this round-trips to `{ trace, node }` rather than exactly
+                // back to `{ None, node }`.
+                match (&filter.min_level, &filter.node_filter) {
+                    (Some(level), node_filter) => {
+                        write!(f, "/{}", format_log_level(level))?;
+                        if let Some(node) = node_filter {
+                            write!(f, "/{node}")?;
+                        }
                     }
+                    (None, Some(node)) => write!(f, "/trace/{node}")?,
+                    (None, None) => {}
                 }
                 Ok(())
             }
@@ -1041,6 +1066,34 @@ mod tests {
     fn display_roundtrip_logs_with_level_and_node() {
         let mapping: InputMapping = "dora/logs/debug/camera".parse().unwrap();
         assert_eq!(mapping.to_string(), "dora/logs/debug/camera");
+    }
+
+    #[test]
+    fn display_logs_node_without_level_keeps_node() {
+        use crate::common::{LogLevel, LogLevelOrStdout};
+
+        // `{ min_level: None, node_filter: Some(_) }` is not producible via
+        // `FromStr` but is freely constructible directly. `Display` must not
+        // drop the node restriction (which would silently widen the
+        // subscription to every node); it renders the all-severity `trace`
+        // level so the node stays in the output.
+        let filter = InputMapping::Logs(LogSubscriptionFilter {
+            min_level: None,
+            node_filter: Some("mynode".parse().unwrap()),
+        });
+        assert_eq!(filter.to_string(), "dora/logs/trace/mynode");
+
+        // The rendered form parses back to the node-scoped filter (at `trace`,
+        // since `stdout` is a separate channel) and is idempotent afterwards.
+        let round: InputMapping = filter.to_string().parse().unwrap();
+        assert_eq!(
+            round,
+            InputMapping::Logs(LogSubscriptionFilter {
+                min_level: Some(LogLevelOrStdout::LogLevel(LogLevel::Trace)),
+                node_filter: Some("mynode".parse().unwrap()),
+            })
+        );
+        assert_eq!(round.to_string(), "dora/logs/trace/mynode");
     }
 
     #[test]
