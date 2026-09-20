@@ -285,6 +285,12 @@ impl fmt::Display for InputMapping {
                     if let Some(node) = &filter.node_filter {
                         write!(f, "/{node}")?;
                     }
+                } else if let Some(node) = &filter.node_filter {
+                    // `min_level: None` means "all levels, including stdout", which the
+                    // `dora/logs/{level}/{node}` grammar cannot express. Render the
+                    // all-inclusive level `trace` so the node restriction survives the
+                    // round trip instead of being silently dropped (dora-rs#3567).
+                    write!(f, "/trace/{node}")?;
                 }
                 Ok(())
             }
@@ -1041,6 +1047,36 @@ mod tests {
     fn display_roundtrip_logs_with_level_and_node() {
         let mapping: InputMapping = "dora/logs/debug/camera".parse().unwrap();
         assert_eq!(mapping.to_string(), "dora/logs/debug/camera");
+    }
+
+    #[test]
+    fn display_logs_node_filter_without_level_keeps_node() {
+        use crate::common::{LogLevel, LogLevelOrStdout};
+        // `{ min_level: None, node_filter: Some(_) }` is freely constructible (both
+        // fields are `pub`) but `Display` used to render it as the bare
+        // `"dora/logs"`, silently dropping the node restriction. It now renders the
+        // all-inclusive level so the filter survives the round trip (dora-rs#3567).
+        let mapping = InputMapping::Logs(LogSubscriptionFilter {
+            min_level: None,
+            node_filter: Some(NodeId("camera".to_string())),
+        });
+        assert_eq!(mapping.to_string(), "dora/logs/trace/camera");
+
+        let round: InputMapping = mapping.to_string().parse().unwrap();
+        match round {
+            InputMapping::Logs(f) => {
+                assert_eq!(
+                    f.min_level,
+                    Some(LogLevelOrStdout::LogLevel(LogLevel::Trace))
+                );
+                assert_eq!(f.node_filter, Some(NodeId("camera".to_string())));
+            }
+            _ => panic!("expected Logs variant"),
+        }
+
+        // `Serialize` delegates to `Display`, so it must carry the node too.
+        let json = serde_json::to_string(&mapping).unwrap();
+        assert_eq!(json, "\"dora/logs/trace/camera\"");
     }
 
     #[test]
