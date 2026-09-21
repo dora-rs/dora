@@ -78,19 +78,28 @@ fn send_or_count_ingress_drop(
     match tx.try_send(item) {
         Ok(()) => {}
         Err(TrySendError::Full(_)) => {
-            // Log once per drain window, not once per lost message. A formatted
+            // Rate-limit the log, but not on `drain_drop_counts()`: a formatted
             // `warn!` with a subscriber attached measures ~1.6 us against ~1.7 ns
             // for the counter, and this runs on zenoh's IO worker — the thread
-            // delivering every input of this node. Logging per drop would
-            // amplify the very backlog it reports.
+            // delivering every input of this node — so logging per drop would
+            // amplify the very backlog it reports. Earlier this fired only on the
+            // first drop since a `drain_drop_counts()` swap reset the counter, but
+            // the only production caller that drains is the record node (#3555):
+            // every other node warned once at the first drop and then went silent
+            // forever, however long it kept losing input.
             //
-            // `fetch_add` returns the previous value, so the rate limit is free:
-            // zero when this is the first drop since the last
-            // `drain_drop_counts()` swapped the counter back to 0. The count
-            // itself is never rate-limited — that is what the counter is for.
-            if dropped.fetch_add(1, Ordering::Relaxed) == 0 {
+            // `fetch_add` returns the previous value; warn whenever the running
+            // count is a power of two (1, 2, 4, 8, …). That is drain-independent,
+            // so the message recurs while loss continues for a node that never
+            // drains, yet only O(log N) times for N drops so the log cost stays
+            // bounded. A node that *does* drain resets the counter each window,
+            // restoring the once-per-drain-window cadence. The count itself is
+            // never rate-limited — that is what the counter is for.
+            let count = dropped.fetch_add(1, Ordering::Relaxed) + 1;
+            if should_warn_ingress_drop(count) {
                 tracing::warn!(
                     input = %input_id,
+                    drops = count,
                     "event channel full; dropping zenoh input. Raise this input's \
                      queue_size — the ingress channel is sized from the sum of the \
                      node's input queue_sizes."
@@ -101,6 +110,16 @@ fn send_or_count_ingress_drop(
             // Normal shutdown: the receiver is gone, nothing to report.
         }
     }
+}
+
+/// Whether a zenoh ingress drop that brings the running drop count to `count`
+/// should be logged.
+///
+/// Power-of-two cadence (1, 2, 4, 8, …): drain-independent so it recurs while a
+/// node keeps losing input, but only O(log N) times for N drops so the log cost
+/// on the zenoh IO worker stays bounded. See `send_or_count_ingress_drop`.
+fn should_warn_ingress_drop(count: u64) -> bool {
+    count.is_power_of_two()
 }
 
 /// Asynchronous iterator over the incoming [`Event`]s destined for this node.
@@ -3619,6 +3638,27 @@ mod tests {
         send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
         send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
+    }
+
+    /// The ingress-drop `warn!` must recur while a node keeps losing input, not
+    /// go silent after the first drop (#3555). The log re-arm is decoupled from
+    /// `drain_drop_counts()` — the only production caller of which is the record
+    /// node — and follows a power-of-two cadence instead, so a node that never
+    /// drains still gets ongoing (if sparse) evidence of loss.
+    #[test]
+    fn ingress_drop_warning_recurs_without_draining() {
+        // First drop always warns…
+        assert!(should_warn_ingress_drop(1));
+        // …and it must keep warning as loss continues, even though the counter
+        // is never reset by a drain call. Before the fix only count 1 warned.
+        assert!(should_warn_ingress_drop(2));
+        assert!(should_warn_ingress_drop(4));
+        assert!(should_warn_ingress_drop(1024));
+        // But not on every drop — the cadence is logarithmic so the ~1.6 us
+        // `warn!` cannot amplify the backlog it reports on the IO worker.
+        assert!(!should_warn_ingress_drop(3));
+        assert!(!should_warn_ingress_drop(5));
+        assert!(!should_warn_ingress_drop(1000));
     }
 
     /// A closed channel is ordinary shutdown, not data loss — counting it would
