@@ -411,9 +411,7 @@ impl Daemon {
                     None => {
                         tracing::warn!("received Logs for unknown dataflow (ID `{dataflow_id}`)");
                         let _ = reply_tx.send(None).map_err(|_| {
-                            error!(
-                                "could not send `AllNodesReady` reply from daemon to coordinator"
-                            )
+                            error!("could not send Logs reply from daemon to coordinator")
                         });
                     }
                 }
