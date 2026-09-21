@@ -93,10 +93,10 @@ pub struct Build {
     /// Port number of the coordinator control server
     #[clap(long, value_name = "PORT", env = "DORA_COORDINATOR_PORT")]
     coordinator_port: Option<u16>,
-    // Use UV to build nodes.
+    /// Use `uv` to build nodes
     #[clap(long, action)]
     uv: bool,
-    // Run build on local machine
+    /// Run build on local machine
     #[clap(long, action)]
     local: bool,
     /// Treat type warnings as errors

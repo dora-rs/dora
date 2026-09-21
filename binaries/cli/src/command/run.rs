@@ -39,7 +39,7 @@ pub struct Run {
     /// Path to the dataflow descriptor file
     #[clap(value_name = "PATH")]
     pub dataflow: String,
-    // Use UV to run nodes.
+    /// Use `uv` to run nodes
     #[clap(long, action)]
     pub uv: bool,
     /// Automatically stop the dataflow after the given duration
