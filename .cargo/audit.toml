@@ -2,6 +2,12 @@
 # (cargo-deny enforces the same policy; both run in `make qa-audit`).
 [advisories]
 ignore = [
+    # owned-alloc 0.2 double-free if a value's Drop panics inside
+    # OwnedAlloc::drop_in_place. Transitive via zenoh-transport -> lockfree's
+    # shared-memory queue; lockfree does not call either affected
+    # drop_in_place API. No fixed release; waiting for Zenoh to replace the
+    # abandoned dependency chain. Review: 2026-12.
+    "RUSTSEC-2026-0291",
     # lz4_flex 0.10 uninitialized-memory leak on invalid input. Transitive
     # via zenoh-transport (pins ^0.10); dora does not enable zenoh's
     # compression, so the decompression path is not reachable. Waiting for
