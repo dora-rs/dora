@@ -1,9 +1,10 @@
 use super::{Executable, default_tracing};
 use crate::common::parse_duration;
-use crate::common::{CoordinatorOptions, query_running_dataflows};
+use crate::common::{
+    CoordinatorOptions, expect_reply, query_running_dataflows, send_control_request,
+};
 use crate::ws_client::WsSession;
 use dora_message::cli_to_coordinator::ControlRequest;
-use dora_message::coordinator_to_cli::ControlRequestReply;
 use eyre::{Context, bail};
 use std::io::IsTerminal;
 use std::time::Duration;
@@ -81,26 +82,17 @@ fn restart_dataflow(
     force: bool,
     session: &WsSession,
 ) -> eyre::Result<()> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::Restart {
-                dataflow_uuid: uuid,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow restart message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowRestarted { old_uuid, new_uuid } => {
-            println!("dataflow restarted: {old_uuid} -> {new_uuid}");
-            Ok(())
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected restart dataflow reply: {other:?}"),
-    }
+    let reply = send_control_request(
+        session,
+        &ControlRequest::Restart {
+            dataflow_uuid: uuid,
+            grace_duration,
+            force,
+        },
+    )?;
+    let (old_uuid, new_uuid) = expect_reply!(reply, DataflowRestarted { old_uuid, new_uuid })?;
+    println!("dataflow restarted: {old_uuid} -> {new_uuid}");
+    Ok(())
 }
 
 fn restart_dataflow_by_name(
@@ -109,24 +101,15 @@ fn restart_dataflow_by_name(
     force: bool,
     session: &WsSession,
 ) -> eyre::Result<()> {
-    let reply_raw = session
-        .request(
-            &serde_json::to_vec(&ControlRequest::RestartByName {
-                name,
-                grace_duration,
-                force,
-            })
-            .unwrap(),
-        )
-        .wrap_err("failed to send dataflow restart_by_name message")?;
-    let result: ControlRequestReply =
-        serde_json::from_slice(&reply_raw).wrap_err("failed to parse reply")?;
-    match result {
-        ControlRequestReply::DataflowRestarted { old_uuid, new_uuid } => {
-            println!("dataflow restarted: {old_uuid} -> {new_uuid}");
-            Ok(())
-        }
-        ControlRequestReply::Error(err) => bail!("{err}"),
-        other => bail!("unexpected restart dataflow reply: {other:?}"),
-    }
+    let reply = send_control_request(
+        session,
+        &ControlRequest::RestartByName {
+            name,
+            grace_duration,
+            force,
+        },
+    )?;
+    let (old_uuid, new_uuid) = expect_reply!(reply, DataflowRestarted { old_uuid, new_uuid })?;
+    println!("dataflow restarted: {old_uuid} -> {new_uuid}");
+    Ok(())
 }
