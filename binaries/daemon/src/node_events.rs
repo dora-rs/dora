@@ -46,45 +46,41 @@ impl Daemon {
                 event: DynamicNodeEvent::NodeConfig { node_id },
                 reply_tx,
             } => {
-                let number_node_id = self
+                // Scan the running dataflows once (no allocation) instead of
+                // walking `self.running` twice — once to count, once to locate
+                // — with a duplicated predicate. Pulling two matches is enough
+                // to tell apart the none/one/many cases.
+                let mut matching = self
                     .running
                     .iter()
-                    .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
-                    .count();
+                    .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id));
+                let first = matching.next();
+                let has_more = matching.next().is_some();
 
-                let node_config = match number_node_id {
-                    2.. => Err(format!(
+                let node_config = match first {
+                    None => Err(format!("no node with ID `{node_id}`")),
+                    Some(_) if has_more => Err(format!(
                         "multiple dataflows contain dynamic node id {node_id}. \
                         Please only have one running dataflow with the specified \
                         node id if you want to use dynamic node",
                     )),
-                    1 => self
-                        .running
-                        .iter()
-                        .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id))
-                        .map(|(id, dataflow)| -> Result<NodeConfig> {
-                            let node_config = dataflow
-                                .running_nodes
-                                .get(&node_id)
-                                .with_context(|| {
-                                    format!("no node with ID `{node_id}` within the given dataflow")
-                                })?
-                                .node_config
-                                .clone();
-                            if !node_config.dynamic {
-                                bail!("node with ID `{node_id}` in {id} is not dynamic");
-                            }
-                            Ok(node_config)
-                        })
-                        .next()
-                        .ok_or_else(|| eyre!("no node with ID `{node_id}`"))
-                        .and_then(|r| r)
-                        .map_err(|err| {
-                            format!(
-                                "failed to get dynamic node config within given dataflow: {err}"
-                            )
-                        }),
-                    0 => Err(format!("no node with ID `{node_id}`")),
+                    Some((id, dataflow)) => (|| -> Result<NodeConfig> {
+                        let node_config = dataflow
+                            .running_nodes
+                            .get(&node_id)
+                            .with_context(|| {
+                                format!("no node with ID `{node_id}` within the given dataflow")
+                            })?
+                            .node_config
+                            .clone();
+                        if !node_config.dynamic {
+                            bail!("node with ID `{node_id}` in {id} is not dynamic");
+                        }
+                        Ok(node_config)
+                    })()
+                    .map_err(|err| {
+                        format!("failed to get dynamic node config within given dataflow: {err}")
+                    }),
                 };
 
                 let reply = DaemonReply::NodeConfig {
