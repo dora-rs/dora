@@ -224,7 +224,12 @@ impl std::fmt::Display for NodeError {
                 f,
                 ". This error occurred because node `{caused_by_node}` exited before connecting to dora."
             )?,
-            NodeErrorCause::FailedToSpawn(_) => unreachable!(), // handled above
+            // Rendered by the early return at the top of this function. Render
+            // it here too rather than `unreachable!()`: a `Display` impl must
+            // never panic (it runs implicitly on every log/`to_string()` of a
+            // `NodeError`, including on shutdown paths), and nothing structural
+            // ties this arm to that distant early return.
+            NodeErrorCause::FailedToSpawn(err) => write!(f, "failed to spawn node: {err}")?,
             NodeErrorCause::Other { stderr } if stderr.is_empty() => {}
             NodeErrorCause::Other { stderr } => {
                 let line: &str = "---------------------------------------------------------------------------------\n";
