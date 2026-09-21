@@ -953,7 +953,14 @@ impl EventStream {
                             ..
                         } | EventItem::ZenohInput { .. }
                     ) {
-                        return Some(Self::convert_event_item(item));
+                        // Route through the shared post-process helper, exactly
+                        // like the normal receive path (below) and `poll_next`,
+                        // so the one-shot first-message type check still runs for
+                        // inputs drained after `Stop`. The three paths must stay
+                        // in lockstep (dora-rs/adora#172, #174).
+                        let event = Self::convert_event_item(item);
+                        self.note_produced_event(&event);
+                        return Some(event);
                     }
                 }
             }
@@ -3211,6 +3218,54 @@ mod tests {
         );
         // ...then close (no second Stop ever surfaces).
         assert!(events.recv().is_none(), "stream must close after the input");
+    }
+
+    /// The post-`Stop` scheduler drain must run the same first-message
+    /// bookkeeping (`note_produced_event`) as the normal receive path — the two
+    /// paths are documented to stay in lockstep (dora-rs/adora#172, #174). An
+    /// input buffered before `Stop` and drained after it used to be returned
+    /// directly, bypassing that call, so its one-shot first-message type check
+    /// was never consumed and a type mismatch on such an input never warned.
+    /// Regression guard: reverting the fix (returning the item without
+    /// `note_produced_event`) leaves the check armed and fails this test.
+    #[test]
+    fn post_stop_drain_runs_first_message_type_check() {
+        use crate::event_stream::thread::EventItem;
+        use dora_message::metadata::Metadata;
+
+        let (_node, mut events) = test_event_stream();
+        let id = DataId::from("cam".to_string());
+        events
+            .input_type_checks
+            .insert(id.clone(), arrow_schema::DataType::Int32);
+
+        // Deliver the seeded Stop (sets `stop_received`).
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+
+        // An input the scheduler held back behind the prioritized Stop, carrying
+        // a real (non-`Null`) typed payload so the one-shot check is consumed.
+        events.use_scheduler = true;
+        events.scheduler.add_event(EventItem::ZenohInput {
+            id: id.clone(),
+            metadata: std::sync::Arc::new(Metadata::new(
+                dora_core::uhlc::HLC::default().new_timestamp(),
+            )),
+            data: {
+                use arrow::array::Array;
+                arrow::array::Int32Array::from(vec![1]).into_data()
+            },
+        });
+
+        let drained = events.recv();
+        assert!(
+            matches!(&drained, Some(Event::Input { id: got, .. }) if got == &id),
+            "buffered input must be drained after Stop, got {drained:?}"
+        );
+        assert!(
+            !events.input_type_checks.contains_key(&id),
+            "the post-Stop drain must consume the one-shot type check, \
+             staying in lockstep with the normal receive path"
+        );
     }
 
     /// The zenoh receive path is Arrow-IPC-only. An empty payload is a
