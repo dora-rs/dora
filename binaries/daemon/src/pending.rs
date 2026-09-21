@@ -335,13 +335,12 @@ impl PendingNodes {
         exited_before_subscribe_external: Vec<NodeId>,
         cascading_errors: &mut CascadingErrorCauses,
     ) {
-        let node_exited_before_subscribe = match self.exited_before_subscribe.as_slice() {
-            [first, ..] => Some(first),
-            [] => match exited_before_subscribe_external.as_slice() {
-                [first, ..] => Some(first),
-                [] => None,
-            },
-        };
+        // Prefer this daemon's local `exited_before_subscribe`, falling back to
+        // the external list, and take the first node from whichever applies.
+        let node_exited_before_subscribe = self
+            .exited_before_subscribe
+            .first()
+            .or(exited_before_subscribe_external.first());
 
         let result = match &node_exited_before_subscribe {
             Some(causing_node) => Err(format!(
@@ -354,7 +353,7 @@ impl PendingNodes {
 
         // answer all subscribe requests
         let subscribe_replies = std::mem::take(&mut self.waiting_subscribers);
-        for (node_id, reply_sender) in subscribe_replies.into_iter() {
+        for (node_id, reply_sender) in subscribe_replies {
             // A startup failure belongs to the startup cohort, not to
             // the dataflow forever after. Reporting it to a node that
             // was never in that cohort — a runtime `dora node add`, or a
