@@ -1763,13 +1763,6 @@ pub enum TryRecvError {
     Closed,
 }
 
-/// Convert a zenoh `ZBytes` payload into an Arrow array without copying
-/// for contiguous buffers (e.g. Zenoh SHM).
-///
-/// For `Cow::Borrowed` payloads (SHM), the Arrow `Buffer` is backed by
-/// the original `ZBytes` allocation via `Buffer::from_custom_allocation`,
-/// achieving true zero-copy. For `Cow::Owned` (normal network path),
-/// copy into Dora's aligned buffer type before reconstructing Arrow arrays.
 /// Newtype that owns a Zenoh [`ZBytes`](zenoh::bytes::ZBytes) payload so it can
 /// back an Arrow `Buffer` via `Buffer::from_custom_allocation`. Keeping the
 /// `ZBytes` alive keeps the underlying SHM mapping (or heap buffer) valid for
@@ -1782,11 +1775,6 @@ unsafe impl Sync for ZBytesAllocation {}
 unsafe impl Send for ZBytesAllocation {}
 impl std::panic::RefUnwindSafe for ZBytesAllocation {}
 
-/// Convert a zenoh payload to an Arrow array (dora-rs/adora#132).
-///
-/// Every data-plane payload is a self-describing Arrow IPC stream, so the
-/// decode needs no type sidecar. An empty payload is a metadata-only message
-/// and maps to the unit array.
 /// Wrap a zenoh payload as an Arrow `Buffer` — aliasing the zenoh SHM mapping
 /// for borrowed payloads (zero-copy), owning the materialized `Vec` otherwise.
 fn zenoh_payload_to_buffer(payload: zenoh::bytes::ZBytes) -> arrow::buffer::Buffer {
