@@ -32,7 +32,7 @@ fn epoch_nanos() -> u64 {
 ///
 /// Ten times dora's real-time `DEFAULT_QUEUE_SIZE`, because the recorder's work
 /// is disk I/O: a producer burst or a stalled write makes it fall behind for a
-/// moment, and a 10-deep queue turns that moment into buffered slack instead of
+/// moment, and a 100-deep queue turns that moment into buffered slack instead of
 /// lost messages. That depth matches the record node's own flush cadence
 /// (`FLUSH_EVERY_N_RECORDS` 100, `FLUSH_INTERVAL` 1 s) — about one flush window
 /// of slack per topic, enough to ride out the stalled write that the flush
