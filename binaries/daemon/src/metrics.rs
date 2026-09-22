@@ -686,23 +686,32 @@ mod process_tree_tests {
             let thread_ids = own_thread_ids();
             assert!(thread_ids.len() > 1, "expected a multi-threaded process");
 
-            // Two refreshes: `cpu_usage()` is a delta, so the first one has none.
+            // `cpu_usage()` is a delta against the previous refresh, and sysinfo
+            // skips it while both previous tick counts are still zero — it needs
+            // a first sample to subtract. A freshly spawned process can report
+            // 0.0 for its first one or two refreshes, so keep sampling instead
+            // of assuming one interval is enough.
             let mut system = refresh_all();
-            thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
-            system.refresh_processes_specifics(
-                sysinfo::ProcessesToUpdate::All,
-                true,
-                metrics_refresh_kind(),
-            );
-
-            // The node itself is still sampled: excluding threads must not take
-            // CPU or memory with it.
-            let process = system.process(own_pid).expect("the node is refreshed");
-            assert!(process.memory() > 0, "the node's memory is still reported");
-            assert!(
-                process.cpu_usage() > 0.0,
-                "the node's CPU is still reported"
-            );
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                // The node itself is still sampled: excluding threads must not
+                // take CPU or memory with it.
+                let process = system.process(own_pid).expect("the node is refreshed");
+                assert!(process.memory() > 0, "the node's memory is still reported");
+                if process.cpu_usage() > 0.0 {
+                    break;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "the node's CPU was never reported"
+                );
+                thread::sleep(sysinfo::MINIMUM_CPU_UPDATE_INTERVAL);
+                system.refresh_processes_specifics(
+                    sysinfo::ProcessesToUpdate::All,
+                    true,
+                    metrics_refresh_kind(),
+                );
+            }
 
             // Every thread is a task of this process, not a process of its own,
             // so the descendant walk cannot add the node's RSS once per thread.
