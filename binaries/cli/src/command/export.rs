@@ -75,15 +75,24 @@ fn parse_topic_filter(topics: &[String]) -> eyre::Result<Vec<(String, String)>> 
 fn run_export(args: Export) -> eyre::Result<()> {
     let filter = parse_topic_filter(&args.topics)?;
 
-    let file = File::open(&args.input)
+    let input_file = File::open(&args.input)
         .wrap_err_with(|| eyre!("failed to open recording `{}`", args.input))?;
-    let mut reader =
-        RecordingReader::open(file).wrap_err("failed to initialise recording reader")?;
-    let start_nanos: u64 = reader.header().start_nanos;
 
     let output = args
         .output
         .unwrap_or_else(|| format!("{}.mcap", args.input));
+    if same_file(&input_file, &args.input, &output)? {
+        return Err(eyre!(
+            "output `{output}` is the input recording `{}` (or an alias of it); \
+             refusing to truncate the source",
+            args.input
+        ));
+    }
+
+    let mut reader =
+        RecordingReader::open(input_file).wrap_err("failed to initialise recording reader")?;
+    let start_nanos: u64 = reader.header().start_nanos;
+
     let out_file =
         File::create(&output).wrap_err_with(|| eyre!("failed to create output `{}`", output))?;
     let mut writer =
@@ -155,6 +164,57 @@ fn run_export(args: Export) -> eyre::Result<()> {
         "Exported {message_count} messages to `{output}` (publish_time = producer HLC stamp, matching `dora topic hz`)"
     );
     Ok(())
+}
+
+/// Normalizes `path` without requiring the file to exist yet: the parent
+/// directory is canonicalized (resolving symlinks and `.`/`..`), then the
+/// final component is re-applied.
+fn normalized(path: &std::path::Path) -> eyre::Result<std::path::PathBuf> {
+    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
+    let name = path.file_name();
+    let resolved = std::fs::canonicalize(parent)
+        .wrap_err_with(|| eyre!("failed to resolve parent directory of `{}`", path.display()))?;
+    Ok(match name {
+        Some(name) => resolved.join(name),
+        None => resolved,
+    })
+}
+
+/// The platform's stable file identity (device + inode on Unix).
+#[cfg(unix)]
+fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::unix::fs::MetadataExt;
+    (meta.dev(), meta.ino())
+}
+
+/// The platform's stable file identity (volume + file index on Windows).
+#[cfg(windows)]
+fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
+    use std::os::windows::fs::MetadataExt;
+    (meta.volume_serial_number(), meta.file_index())
+}
+
+/// Whether `output` refers to the same file as the open `input` recording —
+/// via an identical path or an existing hardlink/symlink alias. `File::create`
+/// would truncate such an output before the recording were read, destroying
+/// the source, so this is checked before any output file is opened.
+fn same_file(input: &File, input_path: &str, output: &str) -> eyre::Result<bool> {
+    if normalized(std::path::Path::new(input_path))? == normalized(std::path::Path::new(output))? {
+        return Ok(true);
+    }
+
+    // An output that already exists may be a hardlink or symlink alias of the
+    // input; compare file identity rather than path strings.
+    match std::fs::metadata(output) {
+        Ok(out_meta) => {
+            let in_meta = input
+                .metadata()
+                .wrap_err("failed to stat the input recording")?;
+            Ok(file_identity(&in_meta) == file_identity(&out_meta))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e).wrap_err_with(|| eyre!("failed to stat output `{output}`")),
+    }
 }
 
 #[cfg(test)]
@@ -398,5 +458,108 @@ mod tests {
     fn parse_topic_filter_defaults_to_all_when_empty() {
         let filter = super::parse_topic_filter(&[]).expect("parse");
         assert!(filter.is_empty());
+    }
+
+    /// Write a single-entry recording; enough for the same-file guard tests,
+    /// which only run far enough to hit the rejection.
+    fn write_minimal_recording(path: &std::path::Path) {
+        let header = RecordingHeader {
+            version: FORMAT_VERSION,
+            start_nanos: 1_000_000_000,
+            dataflow_id: Uuid::nil(),
+            descriptor_yaml: b"nodes: []".to_vec(),
+        };
+        let file = fs::File::create(path).expect("create recording");
+        let mut writer = RecordingWriter::new(BufWriter::new(file), &header).expect("init writer");
+        writer
+            .write_entry(&RecordEntry {
+                node_id: "camera".to_string(),
+                output_id: "image".to_string(),
+                timestamp_offset_nanos: 100,
+                event_bytes: output_event_bytes("camera", "image", b"camera-payload"),
+            })
+            .expect("write entry");
+        writer.finish().expect("finish recording");
+    }
+
+    fn same_file_err(args: Export) -> String {
+        run_export(args)
+            .expect_err("export must refuse an output aliasing the input")
+            .to_string()
+    }
+
+    #[test]
+    fn export_rejects_output_matching_input() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sample.drec");
+        write_minimal_recording(&path);
+
+        let err = same_file_err(Export {
+            input: path.to_string_lossy().into(),
+            output: Some(path.to_string_lossy().into()),
+            topics: vec![],
+        });
+        assert!(
+            err.contains("refusing to truncate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_rejects_output_hardlinked_to_input() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sample.drec");
+        write_minimal_recording(&path);
+
+        let alias = dir.path().join("alias.mcap");
+        fs::hard_link(&path, &alias).expect("create hard link");
+
+        let err = same_file_err(Export {
+            input: path.to_string_lossy().into(),
+            output: Some(alias.to_string_lossy().into()),
+            topics: vec![],
+        });
+        assert!(
+            err.contains("refusing to truncate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn export_rejects_output_symlinked_to_input() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sample.drec");
+        write_minimal_recording(&path);
+
+        let alias = dir.path().join("alias.mcap");
+        std::os::unix::fs::symlink(&path, &alias).expect("create symlink");
+
+        let err = same_file_err(Export {
+            input: path.to_string_lossy().into(),
+            output: Some(alias.to_string_lossy().into()),
+            topics: vec![],
+        });
+        assert!(
+            err.contains("refusing to truncate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn export_allows_distinct_fresh_output() {
+        let dir = tempdir().expect("tempdir");
+        let path = dir.path().join("sample.drec");
+        write_minimal_recording(&path);
+
+        let out = dir.path().join("fresh.mcap");
+        let args = Export {
+            input: path.to_string_lossy().into(),
+            output: Some(out.to_string_lossy().into()),
+            topics: vec![],
+        };
+        run_export(args).expect("fresh output must succeed");
+        assert!(fs::read(&out).expect("read mcap").len() > 0);
     }
 }
