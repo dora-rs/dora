@@ -253,6 +253,11 @@ fn main() -> eyre::Result<()> {
     let mut flush_policy = FlushPolicy::new();
     let mut drops = DropTally::default();
     let mut warned_about_drops = false;
+    // Messages skipped because a single frame exceeded the recording format's
+    // per-record size limit (see the write site below). Tracked separately from
+    // queue drops: it makes the recording incomplete but no queue depth fixes it.
+    let mut oversized_dropped: u64 = 0;
+    let mut warned_about_oversized = false;
 
     eprintln!("dora-record-node: recording to {output_file}");
 
@@ -344,7 +349,26 @@ fn main() -> eyre::Result<()> {
                     timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
                     event_bytes,
                 };
-                writer.write_entry(&entry)?;
+                // A recorder attaches to a live dataflow whose direct
+                // node-to-node zero-copy path has no per-message size cap (unlike
+                // the 64 MiB daemon transport limit). A single frame larger than
+                // the recording format's `MAX_RECORD_BYTES` — a big image or point
+                // cloud — must not abort a capture that is otherwise succeeding, so
+                // skip it and note the recording is incomplete rather than
+                // propagating the error out of `main` (which would lose every
+                // later message too). Genuine I/O errors still propagate.
+                if let Some(oversized_len) = writer.write_entry_skip_oversized(&entry)? {
+                    oversized_dropped += 1;
+                    if !warned_about_oversized {
+                        warned_about_oversized = true;
+                        eprintln!(
+                            "dora-record-node: WARNING: skipping a {oversized_len}-byte message \
+                             from {source_node}/{source_output} that exceeds the per-record \
+                             limit — this recording will be incomplete."
+                        );
+                    }
+                    continue;
+                }
                 msg_count += 1;
                 flush_policy.after_write(&mut writer)?;
 
@@ -392,7 +416,7 @@ fn main() -> eyre::Result<()> {
     // be discarded in zenoh's egress and never reach this node's counters at
     // all. Zero drops here means "nothing was dropped on any path this node can
     // see", which is the honest statement.
-    if drops.recorded_total(&reverse_map) == 0 {
+    if drops.recorded_total(&reverse_map) == 0 && oversized_dropped == 0 {
         eprintln!("dora-record-node: recording finished, no dropped messages detected");
     } else {
         eprintln!("dora-record-node: recording finished INCOMPLETE");
@@ -402,6 +426,14 @@ fn main() -> eyre::Result<()> {
     eprintln!("  File:     {output_file}");
     if let Some(report) = drops.report(&reverse_map) {
         eprint!("{report}");
+    }
+    if oversized_dropped > 0 {
+        eprintln!(
+            "  WARNING:  {oversized_dropped} message(s) exceeded the per-record size limit \
+             and were skipped.\n\
+             \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
+             the `.drec` format regardless of `--queue-size`."
+        );
     }
 
     Ok(())
