@@ -225,6 +225,32 @@ impl DropTally {
     }
 }
 
+/// Whether the end-of-run report should be flagged INCOMPLETE. Two independent
+/// causes leave the `.drec` short of the source stream: a drop on an id the
+/// recorder writes (counted by [`DropTally::recorded_total`]), or a frame
+/// skipped for exceeding the per-record size limit. Kept as a pure function so
+/// the completeness decision is unit-tested alongside `DropTally`'s report,
+/// rather than only exercised through `main`.
+fn recording_incomplete(recorded_drops: u64, oversized_dropped: u64) -> bool {
+    recorded_drops > 0 || oversized_dropped > 0
+}
+
+/// The end-of-run warning for frames skipped because they exceeded
+/// `MAX_RECORD_BYTES`, or `None` when none were skipped. Split out of `main` so
+/// its wording stays pinned by tests: the count, the INCOMPLETE banner, and
+/// that no `--queue-size` can help (the cap is on a single record, not the
+/// queue).
+fn oversized_skip_warning(oversized_dropped: u64) -> Option<String> {
+    (oversized_dropped > 0).then(|| {
+        format!(
+            "  WARNING:  {oversized_dropped} message(s) exceeded the per-record size limit \
+             and were skipped.\n\
+             \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
+             the `.drec` format regardless of `--queue-size`."
+        )
+    })
+}
+
 fn main() -> eyre::Result<()> {
     let output_file =
         std::env::var("DORA_RECORD_FILE").wrap_err("DORA_RECORD_FILE env var not set")?;
@@ -416,10 +442,10 @@ fn main() -> eyre::Result<()> {
     // be discarded in zenoh's egress and never reach this node's counters at
     // all. Zero drops here means "nothing was dropped on any path this node can
     // see", which is the honest statement.
-    if drops.recorded_total(&reverse_map) == 0 && oversized_dropped == 0 {
-        eprintln!("dora-record-node: recording finished, no dropped messages detected");
-    } else {
+    if recording_incomplete(drops.recorded_total(&reverse_map), oversized_dropped) {
         eprintln!("dora-record-node: recording finished INCOMPLETE");
+    } else {
+        eprintln!("dora-record-node: recording finished, no dropped messages detected");
     }
     eprintln!("  Messages: {msg_count}");
     eprintln!("  Bytes:    {}", footer.total_bytes);
@@ -427,13 +453,8 @@ fn main() -> eyre::Result<()> {
     if let Some(report) = drops.report(&reverse_map) {
         eprint!("{report}");
     }
-    if oversized_dropped > 0 {
-        eprintln!(
-            "  WARNING:  {oversized_dropped} message(s) exceeded the per-record size limit \
-             and were skipped.\n\
-             \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
-             the `.drec` format regardless of `--queue-size`."
-        );
+    if let Some(warning) = oversized_skip_warning(oversized_dropped) {
+        eprintln!("{warning}");
     }
 
     Ok(())
@@ -474,6 +495,43 @@ mod tests {
     #[test]
     fn a_clean_run_reports_nothing() {
         assert!(DropTally::default().report(&camera_lidar_map()).is_none());
+    }
+
+    #[test]
+    fn a_clean_run_is_not_incomplete() {
+        assert!(!recording_incomplete(0, 0));
+    }
+
+    #[test]
+    fn recorded_drops_make_the_run_incomplete() {
+        assert!(recording_incomplete(3, 0));
+    }
+
+    #[test]
+    fn an_oversized_skip_alone_makes_the_run_incomplete() {
+        // A frame too large to write leaves the `.drec` short even when no queue
+        // drop was counted, so the run must still report INCOMPLETE — the
+        // oversized path is a second, independent cause of incompleteness.
+        assert!(recording_incomplete(0, 1));
+    }
+
+    #[test]
+    fn no_oversized_skips_emits_no_warning() {
+        assert_eq!(oversized_skip_warning(0), None);
+    }
+
+    #[test]
+    fn oversized_warning_names_the_count_and_flags_incomplete() {
+        let warning = oversized_skip_warning(2).expect("a warning when frames were skipped");
+        assert!(warning.contains("2 message(s)"), "got: {warning}");
+        assert!(warning.contains("per-record size limit"), "got: {warning}");
+        assert!(warning.contains("INCOMPLETE"), "got: {warning}");
+        // The reader must not be pointed at `--queue-size`, which cannot resize
+        // the hard per-record cap.
+        assert!(
+            warning.contains("regardless of `--queue-size`"),
+            "got: {warning}"
+        );
     }
 
     #[test]
