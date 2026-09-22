@@ -2292,8 +2292,24 @@ impl DoraNode {
     /// Outputs a JSONL line to stdout that the daemon parses automatically.
     /// Works with `min_log_level` filtering and `send_logs_as` routing.
     ///
-    /// `level` should be one of: `"error"`, `"warn"`, `"info"`, `"debug"`, `"trace"`.
-    /// Unknown levels default to `"info"`.
+    /// `level` is matched case-insensitively and should be one of `"error"`,
+    /// `"warn"` (or `"warning"`), `"info"`, `"debug"`, or `"trace"`. Any other
+    /// value is treated as `"info"`. For the common levels, prefer the
+    /// dedicated helpers ([`log_error`](Self::log_error),
+    /// [`log_warn`](Self::log_warn), [`log_info`](Self::log_info),
+    /// [`log_debug`](Self::log_debug), [`log_trace`](Self::log_trace)).
+    ///
+    /// # Example
+    ///
+    /// ```no_run
+    /// use dora_node_api::DoraNode;
+    ///
+    /// let (node, _events) = DoraNode::init_from_env()?;
+    ///
+    /// // `target` groups related messages; pass `None` to omit it.
+    /// node.log("info", "node started", Some("startup"));
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn log(&self, level: &str, message: &str, target: Option<&str>) {
         self.log_with_fields(level, message, target, None);
     }
