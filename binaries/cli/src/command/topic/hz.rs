@@ -190,12 +190,10 @@ fn run_hz_oneshot(
 
     println!("topic\tavg_ms\tavg_hz\tmin_ms\tmax_ms\tstd_ms\tsamples");
     for (label, hz_stats) in &stats {
-        let samples = hz_stats
-            .samples
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
-        match hz_stats.calculate() {
+        // Read the count and the stats from one pruned snapshot so they always
+        // describe the same set of samples (dora-rs/dora#3568).
+        let (samples, computed) = hz_stats.report_snapshot();
+        match computed {
             Some(s) => println!(
                 "{}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{:.2}\t{}",
                 label, s.avg_ms, s.avg_hz, s.min_ms, s.max_ms, s.std_ms, samples
@@ -275,6 +273,12 @@ impl HzStats {
     fn intervals_ms_at(&self, now: Instant) -> Vec<f64> {
         let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
         self.prune(&mut samples, now);
+        Self::intervals_from(&samples)
+    }
+
+    /// Producer-stamp intervals (ms) between consecutive samples, skipping any
+    /// non-positive delta (duplicate or out-of-order stamps).
+    fn intervals_from(samples: &VecDeque<Sample>) -> Vec<f64> {
         samples
             .iter()
             .tuple_windows()
@@ -290,7 +294,32 @@ impl HzStats {
     }
 
     fn calculate(&self) -> Option<Stats> {
-        let intervals = self.intervals_ms();
+        Self::stats_from_intervals(&self.intervals_ms())
+    }
+
+    /// Summary snapshot for the non-interactive (`--duration`) report.
+    ///
+    /// The live TUI's [`calculate`](Self::calculate) prunes relative to
+    /// `Instant::now()`, so a stalled publisher decays to 0 Hz — the right
+    /// behavior for the interactive gauge. The oneshot report instead
+    /// summarizes the whole run, so it anchors the prune to the *last arrival*
+    /// (which the record-time pruning already applied): samples observed before
+    /// a mid-run stall are kept rather than dropped just because the report is
+    /// printed more than one window after the last frame.
+    ///
+    /// Returns the sample count and the stats computed from the **same** pruned
+    /// snapshot, so the printed count can never contradict the statistics — a
+    /// positive count with all-dash stats (dora-rs/dora#3568) is impossible.
+    fn report_snapshot(&self) -> (usize, Option<Stats>) {
+        let mut samples = self.samples.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(&last) = samples.back() {
+            self.prune(&mut samples, last.arrived_at);
+        }
+        let intervals = Self::intervals_from(&samples);
+        (samples.len(), Self::stats_from_intervals(&intervals))
+    }
+
+    fn stats_from_intervals(intervals: &[f64]) -> Option<Stats> {
         if intervals.is_empty() {
             return None;
         }
@@ -792,6 +821,52 @@ mod tests {
                 .intervals_ms_at(base + Duration::from_secs(2))
                 .is_empty()
         );
+    }
+
+    // Regression for dora-rs/dora#3568: the oneshot (`--duration`) report must
+    // never print a positive sample count with all-dash statistics. The count
+    // and the stats come from one snapshot anchored to the *last arrival*, so a
+    // publisher that stalled well before the report is printed still yields
+    // stats consistent with the reported count — unlike the live gauge, which
+    // (correctly) prunes to `now` and would report nothing.
+    #[test]
+    fn report_snapshot_count_and_stats_stay_consistent_after_stall() {
+        let stats = HzStats::new(1); // 1 s window
+        let base = Instant::now();
+        // Two frames 100 ms apart (producer timeline), arriving ~50 ms apart.
+        stats.record(Duration::from_millis(1_000), base);
+        stats.record(
+            Duration::from_millis(1_100),
+            base + Duration::from_millis(50),
+        );
+
+        // The oneshot report keeps both samples (anchored to the last arrival),
+        // so the count and the stats agree: no "2 samples, dash stats" row.
+        let (count, computed) = stats.report_snapshot();
+        assert_eq!(count, 2);
+        let s = computed.expect("stats must be present when samples remain");
+        assert!((s.avg_ms - 100.0).abs() < 1.0, "avg_ms = {}", s.avg_ms);
+
+        // For contrast, the live path anchored to a `now` past the window prunes
+        // everything (the decaying TUI gauge) — the exact report-time prune that
+        // made the oneshot summary self-contradictory before the fix.
+        assert!(
+            stats
+                .intervals_ms_at(base + Duration::from_secs(5))
+                .is_empty()
+        );
+    }
+
+    // With a single frame there is no interval to compute, so dash stats with a
+    // sample count of 1 is honest (not the #3568 contradiction): the count and
+    // the empty stat set describe the same one-sample snapshot.
+    #[test]
+    fn report_snapshot_single_sample_reports_one_with_dash_stats() {
+        let stats = HzStats::new(10);
+        stats.record(Duration::from_millis(1_000), Instant::now());
+        let (count, computed) = stats.report_snapshot();
+        assert_eq!(count, 1);
+        assert!(computed.is_none());
     }
 
     // `--duration` is bounded only from below (`range(1..)`), so a large-but-
