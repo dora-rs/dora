@@ -8,6 +8,11 @@ ignore = [
     # drop_in_place API. No fixed release; waiting for Zenoh to replace the
     # abandoned dependency chain. Review: 2026-12.
     "RUSTSEC-2026-0291",
+    # owned-alloc unmaintained: no release since 2018 and the maintainer is
+    # unresponsive. Same abandoned crate as RUSTSEC-2026-0291 above, reached
+    # through the same zenoh-transport -> lockfree SHM queue; no safe upgrade
+    # exists. Waiting for Zenoh to replace the dependency chain. Review: 2026-12.
+    "RUSTSEC-2026-0299",
     # lz4_flex 0.10 uninitialized-memory leak on invalid input. Transitive
     # via zenoh-transport (pins ^0.10); dora does not enable zenoh's
     # compression, so the decompression path is not reachable. Waiting for
