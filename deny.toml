@@ -23,6 +23,7 @@ ignore = [
     "RUSTSEC-2025-0134",  # rustls-pemfile unmaintained (thin wrapper over rustls-pki-types). Transitive via zenoh-link-commons 1.10; waiting for zenoh to migrate to rustls-pki-types PemObject. Review: 2026-12.
     # --- Temporary vulnerability waivers ---
     "RUSTSEC-2026-0291",  # owned-alloc 0.2 double-free in drop_in_place. Transitive via zenoh-transport -> lockfree SHM queue, which does not call the affected APIs. No fixed release; waiting for Zenoh replacement. Review: 2026-12.
+    "RUSTSEC-2026-0299",  # owned-alloc unmaintained (no release since 2018). Same crate/path as RUSTSEC-2026-0291 above (zenoh-transport -> lockfree). No safe upgrade; waiting for Zenoh replacement. Review: 2026-12.
     "RUSTSEC-2026-0041",  # lz4_flex 0.10 uninit-memory leak on invalid input. Transitive via zenoh-transport (pins ^0.10); dora doesn't enable zenoh compression. Waiting for upstream zenoh bump. Review: 2026-12.
     "RUSTSEC-2026-0194",  # quick-xml <0.41 quadratic attribute check. Own parser (msg-gen) on fixed 0.41; rest transitive via self_update + mavlink-bindgen (build-time). Review: 2026-12.
     "RUSTSEC-2026-0195",  # quick-xml <0.41 NsReader memory-exhaustion DoS. Same transitive parents as above. Review: 2026-12.
