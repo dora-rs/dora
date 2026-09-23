@@ -350,6 +350,11 @@ fn render_array_json(array: arrow::array::ArrayData, buf: &mut Vec<u8>) -> eyre:
 /// plane is Arrow-IPC-only, so `dora topic echo` decodes the same self-describing
 /// stream every node receives. The default `require_alignment = false` decoder
 /// realigns under-aligned input rather than erroring.
+///
+/// Like that decoder, this rejects a multi-batch stream and trailing bytes
+/// after the end-of-stream marker rather than silently returning only the first
+/// batch — `dora topic echo` must not misrepresent a malformed payload as a
+/// clean single value.
 fn decode_arrow_ipc_zero_copy(
     mut buffer: arrow::buffer::Buffer,
 ) -> eyre::Result<arrow::array::ArrayData> {
@@ -359,19 +364,39 @@ fn decode_arrow_ipc_zero_copy(
     let mut batch = None;
     while !buffer.is_empty() {
         let before = buffer.len();
-        if let Some(b) = decoder
-            .decode(&mut buffer)
-            .context("failed to decode Arrow IPC stream")?
-        {
-            batch = Some(b);
-            break;
-        }
-        // Guard against a crafted/truncated payload that yields no batch without
-        // consuming bytes — otherwise this loop spins forever.
-        if buffer.len() == before {
-            return Err(eyre!(
-                "Arrow IPC decoder made no progress on a partial/corrupt stream"
-            ));
+        let decoded = match decoder.decode(&mut buffer) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                // `decode` consumes the end-of-stream marker and then errors on
+                // any byte after it, so once we already hold the batch a decode
+                // error means the stream carried trailing bytes after a complete
+                // single-batch stream. Reject them explicitly rather than
+                // truncating to the first batch (matching the node-api decoder).
+                let context = if batch.is_some() {
+                    "unexpected trailing bytes after the record batch in IPC stream"
+                } else {
+                    "failed to decode Arrow IPC stream"
+                };
+                return Err::<arrow::array::ArrayData, _>(e).context(context);
+            }
+        };
+        match decoded {
+            Some(b) => {
+                // A second batch means the stream is malformed; reject it rather
+                // than silently dropping everything after the first batch.
+                if batch.replace(b).is_some() {
+                    return Err(eyre!(
+                        "expected exactly one record batch in IPC stream, but found more than one"
+                    ));
+                }
+            }
+            // No batch and no progress: a crafted/truncated payload. Stop so the
+            // loop cannot spin forever on a partial/corrupt stream.
+            None if buffer.len() == before => break,
+            // Progress without a batch: the schema message before the batch, or
+            // the end-of-stream marker after it. Keep going; the loop ends when
+            // the buffer is drained.
+            None => {}
         }
     }
 
@@ -477,6 +502,56 @@ mod tests {
         let err =
             decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(vec![0u8; 16])).unwrap_err();
         assert!(!err.to_string().is_empty());
+    }
+
+    /// Encode the same single-column batch twice into one stream, to exercise
+    /// the multi-batch rejection.
+    fn encode_two_batch_ipc(array: &dyn Array) -> Vec<u8> {
+        use arrow::datatypes::{Field, Schema};
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            array.data_type().clone(),
+            true,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![arrow::array::make_array(array.to_data())],
+        )
+        .unwrap();
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+        buf
+    }
+
+    /// A multi-batch stream must be rejected rather than silently truncated to
+    /// its first batch — otherwise `dora topic echo` would render a malformed
+    /// payload as a clean single value.
+    #[test]
+    fn multi_batch_stream_is_rejected() {
+        let array = Int32Array::from(vec![1, 2, 3]);
+        let encoded = encode_two_batch_ipc(&array);
+        let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap_err();
+        assert!(err.to_string().contains("more than one"), "got: {err}");
+    }
+
+    /// A valid single-batch stream with extra bytes after its end-of-stream
+    /// marker must be rejected too, matching the node-api decoder.
+    #[test]
+    fn trailing_bytes_are_rejected() {
+        let array = Int32Array::from(vec![1, 2, 3]);
+        let mut encoded = encode_ipc(&array);
+        encoded.extend_from_slice(&[0u8; 16]);
+        let err = decode_arrow_ipc_zero_copy(arrow::buffer::Buffer::from_vec(encoded)).unwrap_err();
+        assert!(err.to_string().contains("trailing bytes"), "got: {err}");
     }
 
     #[test]
