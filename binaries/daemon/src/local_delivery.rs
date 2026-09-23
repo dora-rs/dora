@@ -376,7 +376,7 @@ pub(crate) fn close_input(
     receiver_id: &NodeId,
     input_id: &DataId,
     clock: &HLC,
-) {
+) -> eyre::Result<()> {
     // Clean up broken state if this input was circuit-broken
     let was_broken = dataflow
         .broken_inputs
@@ -400,25 +400,65 @@ pub(crate) fn close_input(
         .unwrap_or(false);
 
     if !was_open && !was_broken {
-        return;
+        return Ok(());
     }
 
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
-        && was_open
-        && send_with_timestamp(
-            channel,
-            NodeEvent::InputClosed {
-                id: input_id.clone(),
-            },
-            clock,
-        )
-        .ok()
-            == Some(true)
-    {
-        dataflow.inc_pending(receiver_id);
+    let mut result = Ok(());
+    if was_open && let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        result = Err(err);
+    }
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+        if result.is_ok() {
+            result = Err(err);
+        } else {
+            tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
+        }
     }
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+    result
+}
+
+pub(crate) fn close_inputs_best_effort<I>(
+    dataflow: &mut RunningDataflow,
+    inputs: I,
+    clock: &HLC,
+    context: &'static str,
+) where
+    I: IntoIterator<Item = (NodeId, DataId)>,
+{
+    for (receiver_id, input_id) in inputs {
+        if let Err(err) = close_input(dataflow, &receiver_id, &input_id, clock) {
+            tracing::warn!(%receiver_id, %input_id, "{context}: {err:?}");
+        }
+    }
+}
+
+fn send_input_closed_strict(
+    dataflow: &mut RunningDataflow,
+    receiver_id: &NodeId,
+    input_id: &DataId,
+    clock: &HLC,
+) -> eyre::Result<()> {
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
+    match send_with_timestamp(
+        channel,
+        NodeEvent::InputClosed {
+            id: input_id.clone(),
+        },
+        clock,
+    ) {
+        Ok(true) => {
+            dataflow.inc_pending(receiver_id);
+            Ok(())
+        }
+        Ok(false) => Err(eyre::eyre!("node `{receiver_id}` channel full")),
+        Err(_) => {
+            dataflow.subscribe_channels.remove(receiver_id);
+            Err(eyre::eyre!("node `{receiver_id}` channel closed"))
+        }
+    }
 }
 
 /// If `receiver_id` has finished, disable its restart policy and notify it
@@ -429,32 +469,43 @@ pub(crate) fn close_input(
 /// while a timer keeps ticking.
 ///
 /// Shared drain-completion tail of [`close_input`] and [`break_input`]; a
-/// no-op if the node still has open/broken inputs or has no subscribe channel.
-pub(crate) fn signal_all_inputs_closed_if_drained(
+/// no-op if the node still has open/broken inputs. Restart bookkeeping is
+/// independent from the node event channel; only the `AllInputsClosed` send
+/// requires a live channel.
+fn signal_all_inputs_closed_if_drained(
     dataflow: &mut RunningDataflow,
     receiver_id: &NodeId,
     clock: &HLC,
-) {
-    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
-        return;
-    };
+) -> eyre::Result<()> {
     // As at the subscribe site: either "nothing left open" (pre-existing
     // behavior, and true for a source) or "drained" (the node we are about
     // to tell to finish) disables restart.
-    if (dataflow.open_inputs(receiver_id).is_empty() || dataflow.is_drained(receiver_id))
-        && !dataflow.has_broken_input(receiver_id)
-        && let Some(node) = dataflow.running_nodes.get_mut(receiver_id)
-    {
+    let should_disable_restart = (dataflow.open_inputs(receiver_id).is_empty()
+        || dataflow.is_drained(receiver_id))
+        && !dataflow.has_broken_input(receiver_id);
+    if should_disable_restart && let Some(node) = dataflow.running_nodes.get_mut(receiver_id) {
         node.disable_restart();
     }
+
+    let Some(channel) = dataflow.subscribe_channels.get(receiver_id) else {
+        return Ok(());
+    };
     if dataflow.is_finished(receiver_id)
-        && send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock).ok() == Some(true)
+        && match send_with_timestamp(channel, NodeEvent::AllInputsClosed, clock) {
+            Ok(true) => true,
+            Ok(false) => return Err(eyre::eyre!("node `{receiver_id}` channel full")),
+            Err(_) => {
+                dataflow.subscribe_channels.remove(receiver_id);
+                return Err(eyre::eyre!("node `{receiver_id}` channel closed"));
+            }
+        }
     {
         dataflow.inc_pending(receiver_id);
         dataflow
             .all_inputs_closed_at
             .insert(receiver_id.clone(), Instant::now());
     }
+    Ok(())
 }
 
 /// Circuit-breaker version of close_input: closes the input but keeps it recoverable.
@@ -478,19 +529,11 @@ pub(crate) fn break_input(
             .remove(&(receiver_id.clone(), input_id.clone()));
         return;
     }
-    if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
-        && send_with_timestamp(
-            channel,
-            NodeEvent::InputClosed {
-                id: input_id.clone(),
-            },
-            clock,
-        )
-        .ok()
-            == Some(true)
-    {
-        dataflow.inc_pending(receiver_id);
+    if let Err(err) = send_input_closed_strict(dataflow, receiver_id, input_id, clock) {
+        tracing::warn!("failed to break input `{receiver_id}/{input_id}`: {err:?}");
     }
 
-    signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock);
+    if let Err(err) = signal_all_inputs_closed_if_drained(dataflow, receiver_id, clock) {
+        tracing::warn!("failed to signal drained input `{receiver_id}/{input_id}`: {err:?}");
+    }
 }

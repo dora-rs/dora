@@ -171,8 +171,9 @@ pub(crate) use event_types::{
 };
 pub(crate) use fault_tolerance::{CascadingErrorCauses, FaultToleranceStats};
 pub(crate) use local_delivery::{
-    break_input, close_input, node_inputs, note_output_sent_to_local_receivers,
-    reject_unpinnable_backpressure_inputs, send_output_to_local_receivers,
+    break_input, close_input, close_inputs_best_effort, node_inputs,
+    note_output_sent_to_local_receivers, reject_unpinnable_backpressure_inputs,
+    send_output_to_local_receivers,
 };
 pub(crate) use metrics::{METRICS_INTERVAL, MetricsState};
 pub(crate) use node_exit::{
@@ -192,9 +193,13 @@ pub(crate) use zenoh_bind::{
 use crate::extension_table::{ExtensionKey, ExtensionTable};
 
 const STDERR_LOG_LINES_MAX: usize = 500;
-/// Capacity of the Zenoh publish drain channel. Large enough for burst
-/// patterns; messages are dropped with a warning when full.
-const ZENOH_PUBLISH_CHANNEL_CAPACITY: usize = 256;
+/// Per-output Zenoh publish queue capacity. Keeping this smaller than the old
+/// daemon-wide queue bounds memory while preserving FIFO ordering for each
+/// output's data and close events.
+const ZENOH_OUTPUT_QUEUE_CAPACITY: usize = 32;
+/// Bound blocking control publishes so a stuck Zenoh put cannot hold a
+/// per-output drain task forever. Regular data-plane publishes do not use this.
+const ZENOH_PUBLISH_TIMEOUT: Duration = Duration::from_secs(1);
 /// How long the daemon keeps trying to (re)connect to the coordinator before
 /// giving up and exiting. Bounds the orphan-daemon window when the coordinator
 /// is permanently gone (dora-rs/dora#1996); a reachable coordinator connects
@@ -414,7 +419,6 @@ pub struct Daemon {
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
-    pub(crate) zenoh_publish_tx: mpsc::Sender<ZenohOutbound>,
     pub(crate) remote_daemon_events_tx:
         Option<flume::Sender<eyre::Result<Timestamped<InterDaemonEvent>>>>,
     pub(crate) logger: DaemonLogger,
@@ -1282,29 +1286,6 @@ impl Daemon {
         // Use a large channel capacity to prevent deadlock
         let (dora_events_tx, dora_events_rx) = mpsc::channel(1000);
 
-        // Zenoh publish drain task: offloads .put().await from the main event loop.
-        // The main loop sends ZenohOutbound messages via try_send; this task
-        // performs the actual network I/O without blocking event processing.
-        let (zenoh_publish_tx, mut zenoh_publish_rx) =
-            mpsc::channel::<ZenohOutbound>(ZENOH_PUBLISH_CHANNEL_CAPACITY);
-        let _zenoh_drain_handle = tokio::spawn(async move {
-            while let Some(msg) = zenoh_publish_rx.recv().await {
-                if let Err(e) = msg.publisher.put(msg.serialized).await {
-                    tracing::error!("zenoh publish failed: {e}");
-                    msg.net_publish_failures
-                        .fetch_add(1, atomic::Ordering::Relaxed);
-                    continue;
-                }
-                // Relaxed ordering is correct: counters are read-only for metrics
-                // reporting and never used as synchronization guards.
-                msg.net_bytes_sent
-                    .fetch_add(msg.payload_len, atomic::Ordering::Relaxed);
-                msg.net_messages_sent
-                    .fetch_add(1, atomic::Ordering::Relaxed);
-            }
-            tracing::debug!("zenoh publish drain task exiting");
-        });
-
         let daemon = Self {
             machine_id,
             logger: Logger {
@@ -1333,7 +1314,6 @@ impl Daemon {
             disable_multicast,
             bind_nodes_to_parent,
             pending_destroy: None,
-            zenoh_publish_tx,
             remote_daemon_events_tx,
             git_manager: Default::default(),
             extensions: ExtensionTable::new(),
@@ -2005,9 +1985,12 @@ impl Daemon {
                     })?;
 
                     if let Some(inputs) = dataflow.mappings.get(&output_id).cloned() {
-                        for (receiver_id, input_id) in &inputs {
-                            close_input(dataflow, receiver_id, input_id, &self.clock);
-                        }
+                        close_inputs_best_effort(
+                            dataflow,
+                            inputs,
+                            &self.clock,
+                            "failed to handle OutputClosed for input",
+                        );
                     }
                     Result::<(), eyre::Report>::Ok(())
                 };

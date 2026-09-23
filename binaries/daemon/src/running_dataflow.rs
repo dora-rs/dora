@@ -1,7 +1,7 @@
 //! Running dataflow state and associated types.
 
 use crate::{
-    DoraEvent, OutputId, coordinator,
+    DoraEvent, OutputId, ZenohOutbound, coordinator,
     fault_tolerance::CascadingErrorCauses,
     pending::{DataflowStatus, PendingNodes},
     send_with_timestamp,
@@ -381,6 +381,8 @@ pub struct RunningDataflow {
     pub(crate) startup_timeout_kills: Arc<crossbeam_skiplist::SkipSet<(NodeId, u64)>>,
     pub(crate) node_stderr_most_recent: BTreeMap<NodeId, Arc<ArrayQueue<String>>>,
     pub(crate) publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
+    pub(crate) control_publishers: BTreeMap<OutputId, Arc<zenoh::pubsub::Publisher<'static>>>,
+    pub(crate) remote_output_queues: BTreeMap<OutputId, Sender<ZenohOutbound>>,
     /// Reverse index from output to the set of CLI subscribers watching it.
     /// Hot-path read on every node output dispatch (`send_topic_debug_frames`)
     /// and on the `has_debug_watchers` check. Unsubscribe scans this map
@@ -451,6 +453,8 @@ impl RunningDataflow {
             startup_timeout_kills: Default::default(),
             node_stderr_most_recent: BTreeMap::new(),
             publishers: Default::default(),
+            control_publishers: Default::default(),
+            remote_output_queues: Default::default(),
             debug_topic_watchers: Default::default(),
             finished_tx,
             listener_shutdown_tx,
@@ -514,6 +518,8 @@ impl RunningDataflow {
         self.node_stderr_most_recent.remove(node_id);
         self.cascading_error_causes.forget(node_id);
         retain_other_nodes(&mut self.publishers, node_id);
+        retain_other_nodes(&mut self.control_publishers, node_id);
+        retain_other_nodes(&mut self.remote_output_queues, node_id);
         self.missing_channel_warned.retain(|(n, _)| n != node_id);
     }
 
