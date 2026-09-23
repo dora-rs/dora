@@ -62,7 +62,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -216,7 +216,7 @@ jobs:
           - { target: x86_64-pc-windows-msvc,    runner: windows-2022 }
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
@@ -277,7 +277,7 @@ jobs:
           cp install.sh release-assets/dora-cli-installer.sh
           cp install.ps1 release-assets/dora-cli-installer.ps1
       - name: Generate changelog
-        uses: orhun/git-cliff-action@3d96a18cc4ec17e9dc69ddcc424ccafaf1f78ce2 # v4.9.0
+        uses: orhun/git-cliff-action@a9a95522b26fe6403f7bb24031f21fb573d0f5ff # v4.9.1
         id: cliff
         with:
           config: cliff.toml

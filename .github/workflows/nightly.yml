@@ -86,7 +86,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -133,7 +133,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -154,7 +154,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -213,7 +213,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -235,7 +235,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -281,7 +281,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -352,7 +352,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -423,7 +423,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -513,7 +513,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -555,7 +555,7 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -604,7 +604,7 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -838,7 +838,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -892,7 +892,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -991,7 +991,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1080,7 +1080,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1107,7 +1107,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1190,7 +1190,7 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1217,7 +1217,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1340,14 +1340,14 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         if: runner.os == 'Linux'
         with:
           tool-cache: true
@@ -1458,14 +1458,14 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         if: runner.os == 'Linux'
         with:
           tool-cache: true
@@ -1615,14 +1615,14 @@ jobs:
     timeout-minutes: 120
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space (Ubuntu)
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         if: runner.os == 'Linux'
         with:
           tool-cache: true
@@ -1821,7 +1821,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
@@ -1882,7 +1882,7 @@ jobs:
       fail-fast: false
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
           targets: ${{ matrix.target }}
@@ -1930,14 +1930,14 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: Swatinem/rust-cache@v2
         with:
           save-if: false
       - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # v2.0.0
         with:
           tool-cache: false
           android: true
@@ -1990,7 +1990,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       # `ros2-zenoh-interop.sh` builds the ROS2 bridge wheel with maturin
@@ -2017,7 +2017,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       - uses: actions/setup-python@v7
@@ -2041,7 +2041,7 @@ jobs:
     # (PR-CI gate removed; runs independently in nightly)
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+      - uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # v1
         with:
           toolchain: ${{ env.RUST_VERSION }}
       # PyO3's abi3-py311 floor still needs a real interpreter when checking
