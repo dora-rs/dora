@@ -531,6 +531,18 @@ impl RunningDataflow {
         self.dropped_event_streams.remove(node_id);
     }
 
+    /// Record that a node deliberately dropped its daemon event stream on
+    /// normal shutdown (`EventStreamDropped`): remove its send channel and mark
+    /// it so an upstream still producing to it — while its `running_nodes`
+    /// entry lingers until the process exit is observed — does not trigger the
+    /// #3201 "failed to re-subscribe" warning for what is an intentional drop.
+    /// The marker is cleared on (re)subscribe, on restart, and on node removal
+    /// (dora-rs/dora#3556).
+    pub(crate) fn mark_event_stream_dropped(&mut self, node_id: &NodeId) {
+        self.subscribe_channels.remove(node_id);
+        self.dropped_event_streams.insert(node_id.clone());
+    }
+
     /// Whether a startup-barrier completion (reported as
     /// [`DataflowStatus::AllNodesReady`]) should start this dataflow.
     ///
@@ -894,6 +906,13 @@ impl RunningDataflow {
         // (dora-rs/dora#2270).
         self.all_inputs_closed_at.remove(node_id);
         self.connected_nodes.remove(node_id);
+        // The exiting incarnation's clean `EventStream::drop` set a
+        // `dropped_event_streams` marker (it keeps its `running_nodes` entry
+        // across a restart). Clear it so the fresh incarnation is expected to
+        // re-subscribe: if it never does, upstream deliveries surface the
+        // #3201 "failed to re-subscribe" warning instead of being silenced as
+        // an intentional drop (dora-rs/dora#3558).
+        self.dropped_event_streams.remove(node_id);
         self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
             node_id,

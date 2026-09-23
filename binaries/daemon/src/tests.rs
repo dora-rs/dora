@@ -911,6 +911,80 @@ async fn restart_clears_connected_marker() {
     );
 }
 
+/// A restart respawns the node in place, keeping its `running_nodes` entry, so
+/// the `dropped_event_streams` marker set by the exiting incarnation's clean
+/// `EventStream::drop` must be cleared — otherwise the fresh incarnation that
+/// never re-subscribes would have its upstream deliveries silenced as an
+/// intentional drop instead of surfacing the #3201 "failed to re-subscribe"
+/// warning (dora-rs/dora#3558).
+#[test]
+fn restart_clears_dropped_event_stream_marker() {
+    use crate::running_dataflow::{ProcessHandle, ProcessOperation};
+
+    let capture = LevelCapture::default();
+    // `restart_single_node` schedules a kill via tokio timers, so the runtime
+    // needs time enabled; `with_default` wraps the whole run so the delivery's
+    // WARN is captured.
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let node_a: NodeId = "node_a".to_string().into();
+            let input: DataId = "input".to_string().into();
+
+            let mut running = test_running_node();
+            let (op_tx, _op_rx) = flume::unbounded::<ProcessOperation>();
+            running.process = Some(ProcessHandle::new(op_tx));
+            df.running_nodes.insert(node_a.clone(), running);
+            // The exiting incarnation cleanly dropped its stream before exit.
+            df.dropped_event_streams.insert(node_a.clone());
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(node_a.clone(), input.clone())]),
+            );
+
+            df.restart_single_node(&node_a, &clock, None).unwrap();
+
+            assert!(
+                !df.dropped_event_streams.contains(&node_a),
+                "restart must clear the deliberate-drop marker so a fresh \
+                 incarnation that fails to re-subscribe is diagnosed"
+            );
+
+            // The node is still in `running_nodes` (restart keeps it) but has no
+            // channel and is no longer marked as a deliberate drop, so an
+            // upstream delivery must WARN — the #3201 case the marker would
+            // otherwise hide.
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            send_output_to_local_receivers(
+                &output_id, &mut df, &metadata, None, &clock, None, false,
+            )
+            .await
+            .unwrap();
+
+            let warns = capture
+                .levels
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 1,
+                "a restarted node that never re-subscribed must WARN on delivery"
+            );
+        });
+    });
+}
+
 #[test]
 fn finish_drain_grace_defaults_on_with_opt_out() {
     // unset → enabled at the default grace (on by default, dora#2270 step 3)
@@ -1816,12 +1890,20 @@ fn finished_but_still_running_receiver_does_not_warn() {
                 OutputId(sender.clone(), output.clone()),
                 BTreeSet::from([(finished.clone(), input.clone())]),
             );
-            // Mirror the `EventStreamDropped` handler: the node is still a live
-            // process (in `running_nodes`) but has dropped its stream (no
-            // `subscribe_channels` entry, recorded in `dropped_event_streams`).
+            // The node is still a live process (in `running_nodes`) and had an
+            // event stream, then dropped it. Drive the real bookkeeping the
+            // `EventStreamDropped` handler runs so this test covers that path
+            // rather than reproducing its effect by hand.
             df.running_nodes
                 .insert(finished.clone(), test_running_node());
-            df.dropped_event_streams.insert(finished.clone());
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            df.subscribe_channels.insert(finished.clone(), tx);
+            df.mark_event_stream_dropped(&finished);
+            assert!(
+                !df.subscribe_channels.contains_key(&finished)
+                    && df.dropped_event_streams.contains(&finished),
+                "mark_event_stream_dropped must drop the channel and set the marker"
+            );
 
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);

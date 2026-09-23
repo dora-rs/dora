@@ -287,12 +287,12 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                    dataflow.subscribe_channels.remove(&node_id);
-                    // Remember this was a deliberate drop on normal shutdown, so
-                    // an upstream still producing to this consumer in the window
-                    // before its process exit is observed does not trigger the
-                    // "failed to re-subscribe" warning (dora-rs/dora#3556).
-                    dataflow.dropped_event_streams.insert(node_id.clone());
+                    // Remove the send channel and mark this as a deliberate drop
+                    // on normal shutdown, so an upstream still producing to this
+                    // consumer in the window before its process exit is observed
+                    // does not trigger the "failed to re-subscribe" warning
+                    // (dora-rs/dora#3556).
+                    dataflow.mark_event_stream_dropped(&node_id);
                     Result::<_, eyre::Error>::Ok(())
                 };
 
