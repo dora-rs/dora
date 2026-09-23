@@ -194,6 +194,28 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<DoraArray> {
     decode_arrow_ipc_data(ipc_buf).map(from_array_data)
 }
 
+/// Error for a stream that carries more than one record batch. The encoder
+/// always writes exactly one, so extras are malformed (or crafted): both
+/// decoders reject them rather than silently returning only the first batch's
+/// data, which would drop payload with no error.
+const MULTI_BATCH_ERROR: &str =
+    "expected exactly one record batch in IPC stream, but found more than one";
+
+/// Extract the single column's [`ArrayData`] from a decoded batch, rejecting a
+/// batch whose column count is not exactly one. Shared by both decoders so the
+/// column-count check and the extraction cannot drift apart.
+fn array_from_single_column_batch(
+    batch: arrow::record_batch::RecordBatch,
+) -> eyre::Result<ArrayData> {
+    if batch.num_columns() != 1 {
+        eyre::bail!(
+            "expected 1 column in IPC record batch, got {}",
+            batch.num_columns()
+        );
+    }
+    Ok(batch.column(0).to_data())
+}
+
 /// Same, for dora-internal callers that want the raw [`ArrayData`].
 pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
     use arrow::ipc::reader::StreamReader;
@@ -215,22 +237,12 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
         .ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?
         .context("failed to read RecordBatch from IPC stream")?;
 
-    if batch.num_columns() != 1 {
-        eyre::bail!(
-            "expected 1 column in IPC record batch, got {}",
-            batch.num_columns()
-        );
-    }
-
-    // The encoder always writes exactly one record batch, so a stream carrying
-    // a second one is malformed (or crafted). Reject it rather than silently
-    // returning only the first batch's data — the doc promises "exactly one
-    // record batch", and a silent truncation would drop payload with no error.
+    // Reject a trailing batch (see `MULTI_BATCH_ERROR`).
     if reader.next().is_some() {
-        eyre::bail!("expected exactly one record batch in IPC stream, but found more than one");
+        eyre::bail!(MULTI_BATCH_ERROR);
     }
 
-    Ok(batch.column(0).to_data())
+    array_from_single_column_batch(batch)
 }
 
 /// Decode an Arrow IPC stream from an Arrow [`Buffer`] **without copying** the
@@ -304,34 +316,25 @@ pub(crate) fn decode_arrow_ipc_zero_copy_raw(
             .decode(&mut buffer)
             .context("failed to decode Arrow IPC stream")?
         {
-            if batch.is_some() {
-                eyre::bail!(
-                    "expected exactly one record batch in IPC stream, but found more than one"
-                );
+            // `replace` both stores the batch and tells us whether one was
+            // already present, so a second batch is detected and rejected
+            // rather than silently dropped.
+            if batch.replace(b).is_some() {
+                eyre::bail!(MULTI_BATCH_ERROR);
             }
-            batch = Some(b);
-            continue;
-        }
-        // `decode` yielded no batch. If it also consumed nothing, stop: before
-        // the first batch a crafted/truncated payload would otherwise spin this
-        // loop forever on the zenoh IO worker (surfaced below as "no record
-        // batches"); after the batch it is just trailing bytes the decoder will
-        // not consume, so there is nothing more to read.
-        if buffer.len() == before {
+        } else if buffer.len() == before {
+            // `decode` yielded no batch and consumed nothing, so stop: before
+            // the first batch a crafted/truncated payload would otherwise spin
+            // this loop forever on the zenoh IO worker (surfaced below as "no
+            // record batches"); after the batch it is just trailing bytes the
+            // decoder will not consume, so there is nothing more to read.
             break;
         }
     }
 
     let batch = batch.ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?;
 
-    if batch.num_columns() != 1 {
-        eyre::bail!(
-            "expected 1 column in IPC record batch, got {}",
-            batch.num_columns()
-        );
-    }
-
-    Ok(batch.column(0).to_data())
+    array_from_single_column_batch(batch)
 }
 
 #[cfg(test)]
