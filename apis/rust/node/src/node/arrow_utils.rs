@@ -169,10 +169,12 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
 
 /// Decode an Arrow IPC stream byte buffer back into [`ArrayData`].
 ///
-/// Expects the buffer to contain exactly one record batch with a single
-/// column named `"data"`, as produced by [`encode_arrow_ipc`]. Returns an
-/// error for an empty, truncated, or otherwise malformed stream, and for any
-/// payload larger than 256 MB.
+/// Expects the stream to contain exactly one record batch with a single
+/// column, as produced by [`encode_arrow_ipc`] (which writes a single batch
+/// whose one column is named `"data"`). The array is taken from that column by
+/// position; the column *name* is not inspected. Returns an error for an empty,
+/// truncated, multi-batch, or otherwise malformed stream, for a batch whose
+/// column count is not exactly one, and for any payload larger than 256 MB.
 ///
 /// # Example
 ///
@@ -218,6 +220,14 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
             "expected 1 column in IPC record batch, got {}",
             batch.num_columns()
         );
+    }
+
+    // The encoder always writes exactly one record batch, so a stream carrying
+    // a second one is malformed (or crafted). Reject it rather than silently
+    // returning only the first batch's data — the doc promises "exactly one
+    // record batch", and a silent truncation would drop payload with no error.
+    if reader.next().is_some() {
+        eyre::bail!("expected exactly one record batch in IPC stream, but found more than one");
     }
 
     Ok(batch.column(0).to_data())
@@ -326,6 +336,44 @@ mod tests {
         let encoded = encode_arrow_ipc_data(&data).unwrap();
         let decoded = decode_arrow_ipc_data(&encoded).unwrap();
         assert_eq!(data, decoded);
+    }
+
+    /// A stream carrying more than one record batch must be rejected rather
+    /// than silently decoded down to its first batch, which would drop the rest
+    /// of the payload with no error. `decode_arrow_ipc` documents "exactly one
+    /// record batch".
+    #[test]
+    fn ipc_decode_rejects_multiple_batches() {
+        use arrow::array::ArrayRef;
+        use arrow::ipc::writer::StreamWriter;
+        use arrow::record_batch::RecordBatch;
+        use arrow_schema::{Field, Schema};
+        use std::sync::Arc;
+
+        let array = UInt64Array::from(vec![1, 2, 3]);
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "data",
+            array.data_type().clone(),
+            true,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(array) as ArrayRef]).unwrap();
+
+        // Write the same batch twice into one stream.
+        let mut buf = Vec::new();
+        {
+            let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
+            writer.write(&batch).unwrap();
+            writer.write(&batch).unwrap();
+            writer.finish().unwrap();
+        }
+
+        let err =
+            decode_arrow_ipc_data(&buf).expect_err("a multi-batch IPC stream must be rejected");
+        assert!(
+            err.to_string().contains("more than one"),
+            "unexpected error: {err}"
+        );
     }
 
     /// An array whose IPC stream exceeds `MAX_IPC_BYTES` must fail at encode
