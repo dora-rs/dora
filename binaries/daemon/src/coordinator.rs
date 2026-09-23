@@ -260,6 +260,7 @@ pub async fn register(
     })
     .await
     .map_err(|_| eyre!("timeout waiting for register reply from coordinator"))??;
+    let peer_zenoh_endpoints = usable_peer_endpoints(addr, peer_zenoh_endpoints);
 
     tracing::info!("Connected to dora-coordinator at ws://{addr}/api/daemon");
 
@@ -303,6 +304,23 @@ pub async fn register(
         CoordinatorSender { sender: send_tx },
         ReceiverStream::new(rx),
     ))
+}
+
+/// Drop loopback endpoints from the peer list unless this daemon reached the
+/// coordinator (at `coordinator`) over loopback itself.
+///
+/// The coordinator already hands loopback endpoints only to same-host daemons
+/// (`DaemonConnections::zenoh_endpoints_for`), but a 1.0.x coordinator hands
+/// out whatever it was told, and daemons now report loopback listeners too. A
+/// daemon on another host would dial its own loopback.
+fn usable_peer_endpoints(coordinator: SocketAddr, endpoints: Vec<String>) -> Vec<String> {
+    if coordinator.ip().to_canonical().is_loopback() {
+        return endpoints;
+    }
+    endpoints
+        .into_iter()
+        .filter(|endpoint| !dora_core::topics::zenoh_endpoint_is_loopback(endpoint))
+        .collect()
 }
 
 /// A frame the reader hands to the writer for transmission. The writer is the
@@ -622,6 +640,26 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// What a 1.0.x coordinator may hand out: a same-host daemon's loopback
+    /// listener next to a routable one. Only a daemon on the coordinator's
+    /// host keeps the loopback entry.
+    #[test]
+    fn loopback_peer_endpoints_are_kept_only_next_to_the_coordinator() {
+        let endpoints = || {
+            vec![
+                "tcp/127.0.0.1:5456".to_string(),
+                "tcp/10.0.2.7:5456".to_string(),
+            ]
+        };
+        let remote = SocketAddr::from(([10, 0, 2, 1], 6012));
+        assert_eq!(
+            usable_peer_endpoints(remote, endpoints()),
+            ["tcp/10.0.2.7:5456"]
+        );
+        let local = SocketAddr::from(([127, 0, 0, 1], 6012));
+        assert_eq!(usable_peer_endpoints(local, endpoints()), endpoints());
+    }
 
     #[tokio::test]
     async fn send_event_with_id_sends_single_layer_envelope_with_caller_id() {

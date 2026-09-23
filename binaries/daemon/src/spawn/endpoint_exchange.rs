@@ -24,8 +24,9 @@
 //! is proof of the link and a daemon that never replies is one this daemon
 //! cannot reach. Nothing else in the daemon detects that state — the producer's
 //! sends succeed, the consumer just never hears anything, and the dataflow never
-//! finishes — so the exchange warns about it and keeps probing for a while
-//! (see [`LINK_PROBE_DEADLINE`]). A reply is attributed to a daemon by the key
+//! finishes — so a daemon still silent once every daemon has spawned is warned
+//! about and probed for a while (see [`ExchangeHandle::check_link`] and
+//! [`LINK_PROBE_DEADLINE`]). A reply is attributed to a daemon by the key
 //! it answers on, which names the daemon; see [`Placement`] for what this
 //! daemon can and cannot expect from the descriptor alone.
 
@@ -63,10 +64,11 @@ const TIMEOUT_ENV: &str = "DORA_ZENOH_ENDPOINT_EXCHANGE_TIMEOUT_MS";
 const QUERY_ROUND: Duration = Duration::from_millis(100);
 
 /// How long a daemon that did not answer within the exchange budget keeps being
-/// probed before the missing link is reported as an error.
+/// probed, counted from when every daemon has spawned, before the missing link
+/// is reported as an error.
 ///
-/// Long enough for multicast scouting or a slow peer spawn to catch up (a
-/// second or two, ordinarily), short enough that an operator watching a
+/// Long enough for multicast scouting to catch up (a second or two,
+/// ordinarily), short enough that an operator watching a
 /// dataflow that "does nothing" gets the diagnosis before giving up.
 const LINK_PROBE_DEADLINE: Duration = Duration::from_secs(30);
 
@@ -204,7 +206,18 @@ fn list(placements: &BTreeSet<Placement>) -> String {
 /// and the link probe logging about a dataflow that is already gone.
 pub struct ExchangeHandle {
     _queryable: Option<zenoh::query::Queryable<()>>,
+    /// Daemons that did not answer during the exchange, waiting for
+    /// [`ExchangeHandle::check_link`].
+    link_check: Option<LinkCheck>,
     _link_probe: Option<AbortOnDropHandle<()>>,
+}
+
+/// What [`probe_link`] needs, parked until every daemon has spawned.
+struct LinkCheck {
+    session: zenoh::Session,
+    dataflow_id: Uuid,
+    missing: BTreeSet<Placement>,
+    reporter: Reporter,
 }
 
 /// What [`exchange`] found out, separated from its logging so it can be
@@ -249,7 +262,8 @@ impl Reporter {
 /// Never fails the spawn: a zenoh error, an unanswered query or an expired
 /// deadline all resolve to "fewer endpoints than asked for", which leaves those
 /// edges on the daemon-forwarded path. A daemon that did not answer at all is
-/// reported, since the daemon path needs the link too.
+/// kept for [`ExchangeHandle::check_link`], since the daemon path needs the
+/// link too.
 pub async fn exchange(
     session: zenoh::Session,
     dataflow_id: Uuid,
@@ -266,7 +280,6 @@ pub async fn exchange(
         return (BTreeMap::new(), None);
     }
     let started = tokio::time::Instant::now();
-    let mut reporter = Reporter(logger);
 
     // `declare_queryable` is itself a zenoh operation that can block on a
     // degraded inter-daemon link, so it gets a deadline too — bounding only the
@@ -298,6 +311,7 @@ pub async fn exchange(
             BTreeMap::new(),
             Some(ExchangeHandle {
                 _queryable: queryable,
+                link_check: None,
                 _link_probe: None,
             }),
         );
@@ -343,37 +357,71 @@ pub async fn exchange(
              from here"
         );
     }
-    let link_probe = if unanswered.is_empty() {
+    // Silence here is not yet a diagnosis: the coordinator spawns daemons one
+    // at a time in daemon-id order, not producer before consumer, so a
+    // producer's daemon may simply not have reached this dataflow yet. The
+    // check is held until every daemon has spawned (`check_link`).
+    let link_check = if unanswered.is_empty() {
         None
     } else {
-        reporter
-            .report(
-                LogLevel::Warn,
-                format!(
-                    "{} did not answer the zenoh node-endpoint query within {budget:?}: \
-                     either it has not started this dataflow yet, or this daemon has no \
-                     zenoh link to it. Without the link nothing its nodes send can reach \
-                     the nodes here — not even over the daemon path — and the dataflow \
-                     cannot finish. Probing again for up to {LINK_PROBE_DEADLINE:?} (set \
-                     {TIMEOUT_ENV} to allow the exchange itself longer)",
-                    list(&unanswered)
-                ),
-            )
-            .await;
-        Some(AbortOnDropHandle::new(tokio::spawn(probe_link(
-            session.clone(),
+        tracing::debug!(
+            "{} did not answer the zenoh node-endpoint query within {budget:?}; \
+             checking the link once every daemon of the dataflow has spawned",
+            list(&unanswered)
+        );
+        Some(LinkCheck {
+            session: session.clone(),
             dataflow_id,
-            unanswered,
-            reporter,
-        ))))
+            missing: unanswered,
+            reporter: Reporter(logger),
+        })
     };
     (
         found,
         Some(ExchangeHandle {
             _queryable: queryable,
-            _link_probe: link_probe,
+            link_check,
+            _link_probe: None,
         }),
     )
+}
+
+impl ExchangeHandle {
+    /// Start probing the daemons that did not answer during the exchange.
+    ///
+    /// Called on `AllNodesReady`: that arrives over the coordinator's
+    /// WebSocket, so it does not depend on the zenoh link, and by then every
+    /// daemon of the dataflow has spawned and declared its queryable — silence
+    /// can only mean there is no link. Idempotent, since the coordinator
+    /// replays `AllNodesReady` to a daemon that reconnects.
+    pub fn check_link(&mut self) {
+        if let Some(check) = self.link_check.take() {
+            self._link_probe = Some(AbortOnDropHandle::new(tokio::spawn(probe_link(
+                check.session,
+                check.dataflow_id,
+                check.missing,
+                check.reporter,
+            ))));
+        }
+    }
+
+    /// Release the handle of a dataflow whose nodes on this daemon have all
+    /// finished, but keep answering for as long as a peer may still probe.
+    ///
+    /// A producer can finish within moments of `AllNodesReady`, before a
+    /// consumer's daemon has sent its first probe; dropping the queryable at
+    /// once would make a linked daemon look unreachable, and the consumer
+    /// would log a missing link for data that did arrive. This daemon's own
+    /// probe stops here, since the dataflow is done on this side.
+    pub fn linger(self) {
+        let Some(queryable) = self._queryable else {
+            return;
+        };
+        tokio::spawn(async move {
+            tokio::time::sleep(LINK_PROBE_DEADLINE + timeout()).await;
+            drop(queryable);
+        });
+    }
 }
 
 /// Collect for up to `deadline`, then sort out what came back.
@@ -403,9 +451,10 @@ async fn run(
     }
 }
 
-/// Keep asking the daemons that did not answer during the exchange, and say
-/// how it ended: the link formed late (the usual case with multicast
-/// scouting, which takes a moment), or it never did.
+/// Ask the daemons that did not answer during the exchange again, now that all
+/// of them have spawned, and say how it ended: answered at once (they were
+/// merely spawned after this daemon — nothing to report), linked late (the
+/// usual case with multicast scouting, which takes a moment), or never.
 async fn probe_link(
     session: zenoh::Session,
     dataflow_id: Uuid,
@@ -414,22 +463,41 @@ async fn probe_link(
 ) {
     let started = tokio::time::Instant::now();
     let no_nodes = Wanted::new();
+    let mut warned = false;
     loop {
-        tokio::time::sleep(LINK_PROBE_INTERVAL).await;
-        let (_, answered) = collect(&session, dataflow_id, &no_nodes, &missing, QUERY_ROUND).await;
-        missing = unanswered(&missing, &answered);
+        missing = run(&session, dataflow_id, &no_nodes, &missing, timeout())
+            .await
+            .unanswered;
         if missing.is_empty() {
+            if warned {
+                reporter
+                    .report(
+                        LogLevel::Info,
+                        format!(
+                            "zenoh link to the other daemon(s) of this dataflow established \
+                             after {:?}",
+                            started.elapsed()
+                        ),
+                    )
+                    .await;
+            }
+            return;
+        }
+        if !warned {
+            warned = true;
             reporter
                 .report(
-                    LogLevel::Info,
+                    LogLevel::Warn,
                     format!(
-                        "zenoh link to the other daemon(s) of this dataflow established \
-                         after {:?}",
-                        started.elapsed()
+                        "{} does not answer the zenoh node-endpoint query although every \
+                         daemon of this dataflow has spawned: this daemon has no zenoh link \
+                         to it (yet). Without the link nothing its nodes send can reach the \
+                         nodes here — not even over the daemon path — and the dataflow \
+                         cannot finish. Probing again for up to {LINK_PROBE_DEADLINE:?}",
+                        list(&missing)
                     ),
                 )
                 .await;
-            return;
         }
         if started.elapsed() >= LINK_PROBE_DEADLINE {
             reporter
@@ -452,6 +520,7 @@ async fn probe_link(
                 .await;
             return;
         }
+        tokio::time::sleep(LINK_PROBE_INTERVAL).await;
     }
 }
 

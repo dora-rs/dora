@@ -240,7 +240,13 @@ impl Daemon {
         if let Some(df) = self.running.get(&dataflow_id) {
             let _ = df.listener_shutdown_tx.send(true);
         }
-        self.running.remove(&dataflow_id);
+        if let Some(exchange) = self
+            .running
+            .remove(&dataflow_id)
+            .and_then(|df| df.endpoint_exchange)
+        {
+            exchange.linger();
+        }
 
         // The memory-pool subscriber task has no shutdown branch of its
         // own — terminate it, releasing its session clone and event

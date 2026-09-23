@@ -165,6 +165,12 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
+        // Before anything below touches state keyed by the dataflow id (the
+        // pool subscriber, the endpoint queryable), all of which belongs to the
+        // live dataflow.
+        if self.running.contains_key(&dataflow_id) {
+            bail!("there is already a running dataflow with ID `{dataflow_id}`")
+        }
         // Reclaim `/dev/shm` segments a previous crash of this dataflow's
         // nodes left behind. Scoped to the nodes this daemon spawns, since
         // a co-located daemon may be starting the other half of the same
@@ -237,16 +243,9 @@ impl Daemon {
                 exchange_logger,
             )));
         }
-        let dataflow = match self.running.entry(dataflow_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                self.working_dir
-                    .insert(dataflow_id, base_working_dir.clone());
-                entry.insert(dataflow)
-            }
-            std::collections::hash_map::Entry::Occupied(_) => {
-                bail!("there is already a running dataflow with ID `{dataflow_id}`")
-            }
-        };
+        self.working_dir
+            .insert(dataflow_id, base_working_dir.clone());
+        let dataflow = self.running.entry(dataflow_id).or_insert(dataflow);
 
         let mut stopped = Vec::new();
 

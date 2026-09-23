@@ -591,15 +591,43 @@ fn cross_machine_nodes_link_directly_over_an_explicit_mesh() {
 /// is proof the cross-machine edge carried data.
 #[test]
 fn daemons_discover_each_other_through_the_coordinator_without_zenoh_config() {
-    ensure_built();
-
-    // The daemons derive their zenoh bind from the coordinator address, and a
-    // loopback coordinator yields a loopback bind that no peer may be handed.
-    // Without a routable address there is nothing to test.
+    // The daemons derive their zenoh bind from the coordinator address, so a
+    // routable one is needed for them to bind a routable listener. Without one
+    // there is nothing to test here (the loopback case is the test below).
     let Some(routable) = routable_local_addr() else {
         eprintln!("skipping: no routable local address on this host");
         return;
     };
+    // Wildcard so the daemons can reach it at `routable` while the test's own
+    // helpers keep using loopback — the same bind `dora cluster up` uses.
+    two_daemons_link_through_the_coordinator("0.0.0.0", routable, "zero-config-discovery");
+}
+
+/// The same-host shape of the test above: coordinator and both daemons on
+/// loopback, as with `dora up` plus a second `dora daemon --machine-id`.
+///
+/// A daemon bound to loopback used to report no endpoint at all, so two of
+/// them on one machine met only through multicast scouting — and with
+/// multicast off, as here, never: the dataflow hung. The coordinator now hands
+/// a loopback listener to daemons that also reached it over loopback.
+#[test]
+fn same_host_daemons_link_through_the_coordinator_without_multicast() {
+    two_daemons_link_through_the_coordinator(
+        "127.0.0.1",
+        std::net::Ipv4Addr::LOCALHOST.into(),
+        "same-host-discovery",
+    );
+}
+
+/// Coordinator on `interface`, daemons `A` and `B` pointed at it at
+/// `coordinator_addr` with multicast off and no zenoh flags, and a dataflow
+/// whose only producer→sink edge crosses from A to B. Fails unless it finishes.
+fn two_daemons_link_through_the_coordinator(
+    interface: &str,
+    coordinator_addr: std::net::IpAddr,
+    name: &str,
+) {
+    ensure_built();
 
     let dora = bin("dora");
     let tmp = tempfile::tempdir().expect("create tempdir");
@@ -640,11 +668,8 @@ fn daemons_discover_each_other_through_the_coordinator_without_zenoh_config() {
         children: vec![
             Command::new(&dora)
                 .arg("coordinator")
-                // Wildcard so the daemons can reach it at `routable` while the
-                // test's own helpers keep using loopback — the same bind
-                // `dora cluster up` uses.
                 .arg("--interface")
-                .arg("0.0.0.0")
+                .arg(interface)
                 .arg("--port")
                 .arg(coordinator_port.to_string())
                 .arg("--store")
@@ -688,7 +713,7 @@ fn daemons_discover_each_other_through_the_coordinator_without_zenoh_config() {
             // The *only* address configured anywhere. Everything zenoh needs is
             // derived from it or learned from the coordinator.
             .arg("--coordinator-addr")
-            .arg(routable.to_string())
+            .arg(coordinator_addr.to_string())
             .arg("--coordinator-port")
             .arg(coordinator_port.to_string())
             // Proves the coordinator registry did the wiring: with scouting off
@@ -730,7 +755,7 @@ fn daemons_discover_each_other_through_the_coordinator_without_zenoh_config() {
         .arg(&dataflow_yml)
         .arg("--attach")
         .arg("--name")
-        .arg("zero-config-discovery")
+        .arg(name)
         .arg("--coordinator-port")
         .arg(coordinator_port.to_string())
         .stdout(Stdio::piped())
