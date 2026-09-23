@@ -1089,6 +1089,29 @@ jobs:
       - name: Run multi-daemon late-subscriber E2E
         run: cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1
 
+  repeated-start-stop-routing:
+    # Regression anchor for #3201: repeated `dora start`/`dora stop` cycles of
+    # the same dataflow against a single long-lived daemon must keep
+    # delivering to every subscriber on every cycle (in particular the last).
+    # The reported failure class is not reachable on current main (direct
+    # zenoh routing since #1787 + descriptor-recomputed routing per spawn), so
+    # the test is a contract anchor that cannot currently fail — it belongs on
+    # nightlies rather than in the lean PR `e2e` tier (CLAUDE.md). Same slot
+    # model as `multi-daemon-late-subscriber`: builds its own CLI + fixtures.
+    name: repeated start/stop routing end-to-end
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # v1
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: false
+      - name: Run repeated start/stop routing E2E
+        run: cargo test -p dora-examples --test start-stop-cycle-routing-e2e -- --test-threads=1
+
   state-reconstruction-smoke:
     # Partial regression test for #255. Validates what the current redb
     # backend + recovery path actually delivers on coord restart: store
@@ -2083,6 +2106,7 @@ jobs:
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
       - multi-daemon-late-subscriber
+      - repeated-start-stop-routing
       - kani-proofs
       - test-cross-platform
       - examples
@@ -2161,6 +2185,9 @@ jobs:
                 ;;
               multi-daemon-late-subscriber)
                 echo 'cargo test -p dora-examples --test multi-daemon-e2e -- --test-threads=1'
+                ;;
+              repeated-start-stop-routing)
+                echo 'cargo test -p dora-examples --test start-stop-cycle-routing-e2e -- --test-threads=1'
                 ;;
               record-replay)
                 echo 'scripts/qa/ci-nightly-jobs.sh record-replay'
@@ -2245,6 +2272,7 @@ jobs:
               daemon-reconnect-smoke) echo '^daemon auto-reconnect end-to-end \(Linux\)$' ;;
               state-reconstruction-smoke) echo '^state reconstruction end-to-end \(partial\)$' ;;
               multi-daemon-late-subscriber) echo '^multi-daemon late subscriber end-to-end$' ;;
+              repeated-start-stop-routing) echo '^repeated start/stop routing end-to-end$' ;;
               kani-proofs) echo '^Kani formal-verification proofs$' ;;
               test-cross-platform) echo '^Test \(.+\) \[nightly\]$' ;;
               examples) echo '^Examples \(.+\)$' ;;
@@ -2650,6 +2678,7 @@ jobs:
       - daemon-reconnect-smoke
       - state-reconstruction-smoke
       - multi-daemon-late-subscriber
+      - repeated-start-stop-routing
       - kani-proofs
       - test-cross-platform
       - examples
