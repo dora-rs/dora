@@ -13,7 +13,17 @@ use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 use tokio::io::AsyncWriteExt;
+
+/// Time allowed to establish the TCP/TLS connection to the download host.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Maximum idle time waiting for the next chunk of the response body. This is a
+/// per-read timeout, not a total-download deadline, so it does not penalize a
+/// legitimately large (multi-GB) but steadily-progressing artifact — it only
+/// trips when a peer accepts the connection (or the initial response) and then
+/// goes silent mid-transfer.
+const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// Extract the `filename` parameter from a `Content-Disposition` header value.
 ///
@@ -235,7 +245,21 @@ where
         .await
         .wrap_err("failed to create parent folder")?;
 
-    let response = reqwest::get(url)
+    // Build an explicit client with connect + read timeouts. `reqwest::get`
+    // uses reqwest's default configuration, which sets neither, so a peer that
+    // accepts the connection and then stalls (a slow-loris mirror, a hung CDN
+    // edge, or a connection that goes silent mid-body) would wedge the caller
+    // forever with no diagnostic. Because this runs on the node/daemon path
+    // that fetches operator artifacts, one unresponsive host must not be able
+    // to hang node startup indefinitely.
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .read_timeout(READ_TIMEOUT)
+        .build()
+        .wrap_err("failed to build HTTP client")?;
+    let response = client
+        .get(url)
+        .send()
         .await
         .wrap_err_with(|| format!("failed to request operator from `{url}`"))?;
 
