@@ -13,7 +13,6 @@ use sha2::{Digest, Sha256};
 #[cfg(unix)]
 use std::os::unix::prelude::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
 use std::time::Duration;
 use tokio::io::AsyncWriteExt;
 
@@ -22,32 +21,33 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 /// Maximum idle time waiting for the next chunk of the response body. This is a
 /// per-read timeout (it resets on every chunk), not a total-download deadline,
 /// so it does not penalize a legitimately large (multi-GB) but
-/// steadily-progressing artifact. It bounds the common failure this guards
-/// against — a peer that accepts the connection (or the initial response) and
-/// then sends no further data — but not an adversary that dribbles bytes just
+/// steadily-progressing artifact. reqwest's defaults already set TCP keepalive
+/// and `tcp_user_timeout`, so a peer whose connection *dies* is already caught;
+/// the failure this adds cover for is a live peer that keeps the socket open but
+/// stops sending — a slow-loris mirror or a stalled CDN edge — which no default
+/// catches. It does not defend against an adversary that dribbles bytes just
 /// under the interval; a total deadline can't do that either without capping
 /// legitimate large transfers, so it is deliberately left out.
 const READ_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Shared HTTP client, built once with the timeouts above.
+/// Build an HTTP client with the given connect and read timeouts.
 ///
-/// `reqwest::Client` owns a connection pool and TLS/root-certificate setup and
-/// is meant to be reused; building one per download would repeat that setup and
-/// discard pooled connections between artifacts. The build can only fail on TLS
-/// backend initialization, so the error is cached and re-reported rather than
-/// retried.
-fn http_client() -> eyre::Result<&'static reqwest::Client> {
-    static CLIENT: OnceLock<Result<reqwest::Client, String>> = OnceLock::new();
-    CLIENT
-        .get_or_init(|| {
-            reqwest::Client::builder()
-                .connect_timeout(CONNECT_TIMEOUT)
-                .read_timeout(READ_TIMEOUT)
-                .build()
-                .map_err(|e| e.to_string())
-        })
-        .as_ref()
-        .map_err(|e| eyre::eyre!("failed to build HTTP client: {e}"))
+/// A client is built per download rather than shared in a `static`: the only
+/// benefit of reuse — a warm connection pool — is worthless on this
+/// once-per-artifact path, and `runtime-python` / `runtime-shared-lib` each
+/// spin up and tear down a `current_thread` runtime per operator download, so a
+/// pooled client outliving the runtime that created its connections is a known
+/// reqwest footgun. Building fresh (as the previous `reqwest::get` did) keeps
+/// each client bound to the runtime that uses it.
+fn build_client(
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> eyre::Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout)
+        .build()
+        .wrap_err("failed to build HTTP client")
 }
 
 /// Extract the `filename` parameter from a `Content-Disposition` header value.
@@ -266,17 +266,32 @@ pub async fn download_file<T>(
 where
     T: reqwest::IntoUrl + std::fmt::Display + Copy,
 {
+    // A client with connect + read timeouts. `reqwest::get` uses reqwest's
+    // default configuration, which sets no read timeout, so a peer that accepts
+    // the connection and then goes silent mid-body (a slow-loris mirror or a
+    // stalled CDN edge) would wedge the caller with no diagnostic. This runs on
+    // the node/daemon path that fetches operator artifacts, so one silent host
+    // must not stall node startup.
+    let client = build_client(CONNECT_TIMEOUT, READ_TIMEOUT)?;
+    download_with(&client, url, target_dir, expected_sha256).await
+}
+
+/// Download `url` into `target_dir` using an already-built `client`, so the
+/// timeout behavior can be exercised in tests with a short read timeout.
+async fn download_with<T>(
+    client: &reqwest::Client,
+    url: T,
+    target_dir: &Path,
+    expected_sha256: Option<&str>,
+) -> Result<PathBuf, eyre::ErrReport>
+where
+    T: reqwest::IntoUrl + std::fmt::Display + Copy,
+{
     tokio::fs::create_dir_all(&target_dir)
         .await
         .wrap_err("failed to create parent folder")?;
 
-    // Use a client with connect + read timeouts. `reqwest::get` uses reqwest's
-    // default configuration, which sets neither, so a peer that accepts the
-    // connection and then goes silent (a slow-loris mirror, a hung CDN edge, or
-    // a connection that stalls mid-body) would wedge the caller with no
-    // diagnostic. This runs on the node/daemon path that fetches operator
-    // artifacts, so one silent host must not stall node startup.
-    let response = http_client()?
+    let response = client
         .get(url)
         .send()
         .await
@@ -707,5 +722,83 @@ mod tests {
         // A name that is nothing but dots/spaces trims to empty and is rejected.
         assert_eq!(sanitize_filename("..."), None);
         assert_eq!(sanitize_filename("   "), None);
+    }
+
+    // --- read timeout (stalled body) ---
+
+    #[tokio::test]
+    async fn read_timeout_aborts_a_stalled_body_and_cleans_up() {
+        use std::time::Duration;
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // A server that sends the response headers plus a few body bytes and
+        // then stalls forever, holding the connection open without sending the
+        // rest of the body it promised via Content-Length. This is the "live
+        // peer that stops sending" case that no TCP-level keepalive catches.
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            // Drain the request so the client's `send()` completes.
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\n\
+                      Content-Length: 1048576\r\n\
+                      \r\n\
+                      partial",
+                )
+                .await
+                .unwrap();
+            socket.flush().await.unwrap();
+            // Stall: keep the socket open but never send the remaining bytes.
+            std::future::pending::<()>().await;
+        });
+
+        let target_dir = std::env::temp_dir().join(format!(
+            "dora-download-timeout-{}-{}",
+            std::process::id(),
+            addr.port()
+        ));
+
+        // A short read timeout and `no_proxy()` so the loopback request is not
+        // routed through any ambient HTTP proxy.
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_millis(200))
+            .no_proxy()
+            .build()
+            .unwrap();
+        let url = format!("http://{addr}/model.bin");
+
+        // The outer timeout is a backstop: it must NOT fire, because the read
+        // timeout is what makes the download fail. On `main` (no read timeout)
+        // this download hangs and the outer timeout is what would trip.
+        let result = tokio::time::timeout(
+            Duration::from_secs(10),
+            super::download_with(&client, url.as_str(), &target_dir, None),
+        )
+        .await
+        .expect("download hung — the read timeout did not fire");
+        assert!(
+            result.is_err(),
+            "a stalled download should return an error, got {result:?}"
+        );
+
+        // The interrupted download must not leave a `.dora-download-*.partial`
+        // (or any other) file behind.
+        let mut leftovers = Vec::new();
+        let mut entries = tokio::fs::read_dir(&target_dir).await.unwrap();
+        while let Some(entry) = entries.next_entry().await.unwrap() {
+            leftovers.push(entry.file_name().to_string_lossy().into_owned());
+        }
+        assert!(
+            leftovers.is_empty(),
+            "stalled download left files behind: {leftovers:?}"
+        );
+
+        server.abort();
+        let _ = tokio::fs::remove_dir_all(&target_dir).await;
     }
 }
