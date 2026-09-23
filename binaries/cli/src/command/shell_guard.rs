@@ -1,4 +1,5 @@
 use eyre::Context;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use super::Executable;
@@ -13,6 +14,16 @@ use libc::pid_t;
 /// the daemon, spawns the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
 /// When the parent is gone, the guard `killpg`s its entire process group — which
 /// includes the shell and any background forks (dora-rs/dora#3472).
+///
+/// On the *normal* stop path (a terminal `dora run`, `--stop-after`, …) the
+/// daemon SIGTERMs the whole group. The guard survives those signals — it
+/// installs SIGTERM/SIGINT/SIGHUP handlers in armed mode, forwards the signal
+/// to the shell, and only exits once the shell is gone — so a shell that
+/// ignores SIGTERM is never reparented to init when the guard dies first.
+/// Without the handlers the guard exits on the first SIGTERM, the node is
+/// unregistered, and the daemon skips the group-SIGKILL escalation for a node
+/// it believes already stopped: the TERM-ignoring shell and its background
+/// forks live on as orphans (dora-rs/dora#3472 review).
 ///
 /// On the coordinator-attached path (`dora up` + `dora start`) the daemon does
 /// not use the guard at all — nodes there are meant to outlive the daemon
@@ -70,11 +81,13 @@ fn passthrough(program: &str, args: &[String]) -> eyre::Result<()> {
 }
 
 /// Armed mode: the guard clears `PR_SET_PDEATHSIG` (set on it by the daemon's
-/// pre_exec), spawns the child, and polls the parent.  When the parent is gone,
-/// the guard `killpg`s its own process group — which, because the daemon wraps
-/// the guard with `ProcessGroup::leader()`, contains the shell and all of its
-/// background forks.
+/// pre_exec), spawns the child, and polls the parent.  A dedicated reaper
+/// thread blocks on the shell's exit, so nothing delays node teardown; when
+/// the parent is gone, the poll thread `killpg`s its own process group —
+/// which, because the daemon wraps the guard with `ProcessGroup::leader()`,
+/// contains the shell and all of its background forks.
 fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
+    use std::os::unix::process::ExitStatusExt as _;
     use std::process::Command;
 
     // Whether the guard is the daemon's direct child.  This is the common case
@@ -91,6 +104,17 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
     // in-node guard (`clear_parent_death_signal`).
     clear_parent_death_signal();
 
+    // Install stop-signal handlers BEFORE spawning the child: the daemon's stop
+    // ladder sends SIGTERM to the whole node process group, landing on the
+    // guard and the shell at once.  With the default disposition the guard
+    // dies first and is unregistered, the daemon then skips the SIGKILL
+    // escalation for a node it thinks already stopped, and a shell that
+    // ignores SIGTERM survives — reparented to init.  The handler keeps the
+    // guard alive to stay registered and reap the shell (dora-rs/dora#3472
+    // review).  A real handler rather than `SIG_IGN`: ignored dispositions
+    // survive `exec` and would be inherited by the shell.
+    install_stop_signal_handlers()?;
+
     // Check the parent *before* spawning the child — if it is already gone
     // there is nothing to contain and we should exit immediately.  The guard
     // has not spawned anything yet, so its group is (only) itself.
@@ -102,11 +126,41 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
         .args(args)
         .spawn()
         .wrap_err_with(|| format!("failed to spawn `{program}` under guard"))?;
+    let child_pid = child.id() as pid_t;
 
-    loop {
-        // Forward the child's exit status when it exits normally.
-        if let Some(status) = child.try_wait().wrap_err("try_wait failed")? {
+    // Reaper thread: block on the shell's exit and propagate its status, so a
+    // node's normal teardown is not delayed by a poll interval.  When the
+    // shell dies by a signal, die the same way — the daemon classifies stops
+    // by the signal (e.g. `143` for SIGTERM) — and otherwise with its code.
+    std::thread::spawn(move || match child.wait() {
+        Ok(status) => {
+            if let Some(signal) = status.signal() {
+                re_raise(signal);
+            }
             std::process::exit(status.code().unwrap_or(1));
+        }
+        Err(e) => {
+            eprintln!("shell guard: failed to reap guarded process: {e}");
+            std::process::exit(1);
+        }
+    });
+
+    // Poll the parent for the containment side: when it is gone (e.g. a
+    // SIGKILLed `dora run`), take down the whole group — the shell, its
+    // background forks, and this guard.  The reaper thread owns the child, so
+    // this group `killpg` is what ends a shell that outlives the daemon.
+    loop {
+        if let Some(signal) = pending_signal() {
+            // Forward the stop signal to the shell.  On the normal stop path
+            // the daemon already SIGTERMs the whole group, so this is a
+            // harmless re-delivery that also covers a signal sent to the
+            // guard on its own.
+            // SAFETY: `kill` forwards to the shell; its pid came from this
+            // guard's own spawn, and the reaper thread has not reaped it (the
+            // process would have exited first).
+            unsafe {
+                libc::kill(child_pid, signal);
+            }
         }
 
         // Contain background forks when the parent is gone.
@@ -116,6 +170,57 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
 
         std::thread::sleep(POLL_INTERVAL);
     }
+}
+
+/// The stop signals the guard must survive so it can reap the shell they were
+/// sent to stop.
+const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
+
+/// The most recent stop signal received, if any.  Written by the async-signal
+/// handler, read by the poll loop.
+static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
+
+/// Signal handler: record the signal; the poll loop does the forwarding.
+/// Nothing else runs here — `kill`, `wait`, `_exit` etc. all live in
+/// `std::process`/`libc` calls that may allocate and are not safe in a handler.
+extern "C" fn record_stop_signal(signal: libc::c_int) {
+    PENDING_SIGNAL.store(signal, Ordering::SeqCst);
+}
+
+fn install_stop_signal_handlers() -> eyre::Result<()> {
+    for signal in STOP_SIGNALS {
+        // SAFETY: `signal` installs a handler that only stores to an atomic.
+        // The handler never allocates or touches non-async-signal-safe state.
+        let prev = unsafe {
+            libc::signal(
+                signal,
+                record_stop_signal as *const () as libc::sighandler_t,
+            )
+        };
+        if prev == libc::SIG_ERR {
+            eyre::bail!("failed to install a handler for signal {signal}");
+        }
+    }
+    Ok(())
+}
+
+fn pending_signal() -> Option<i32> {
+    let signal = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
+    (signal != 0).then_some(signal)
+}
+
+/// Reset `signal` to its default action and re-raise it, so the process dies
+/// from the signal rather than the handler swallowing it.
+fn re_raise(signal: i32) -> ! {
+    // SAFETY: `signal` and `raise` are async-signal-safe, and resetting to the
+    // default first is what makes a second delivery terminal.
+    unsafe {
+        libc::signal(signal, libc::SIG_DFL);
+        libc::raise(signal);
+    }
+    // Defensive: if the signal was somehow blocked after re-raising, fall back
+    // to the shell convention for "killed by signal N".
+    std::process::exit(128 + signal);
 }
 
 /// Whether the process identified by `parent` has exited.

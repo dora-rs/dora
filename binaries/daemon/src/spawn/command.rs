@@ -285,27 +285,22 @@ fn dora_guard_command(_shell_args: &str) -> Option<Command> {
     None
 }
 
-/// Locate the `dora` binary to re-spawn for the shell guard, mirroring
-/// `native_runtime_command` in `runtime_registry.rs` (and #1805):
-/// `current_exe` when it is the `dora` binary, else a `PATH` lookup. On
-/// failure (e.g. an embedded daemon runner unaccompanied by `dora` on PATH),
-/// the shell node falls back to a plain `sh -c`.
+/// Locate the `dora` binary to re-spawn for the shell guard.
+///
+/// Only the `current_exe` — where the daemon IS the `dora` binary, as on the
+/// `dora run` spawn path this guard serves — is trusted. Anything else
+/// (an embedded daemon runner unaccompanied by `dora`, the python interpreter
+/// of the `dora-rs-cli` wheel console script, …) falls back to a plain
+/// `sh -c` rather than a PATH lookup: a PATH-provided `dora` could be a
+/// different version without `__shell-guard`, or an unrelated binary entirely
+/// (#3472 review).
 #[cfg(unix)]
 fn dora_executable() -> Option<std::path::PathBuf> {
     let current_exe = std::env::current_exe().ok()?;
     let mut file_name = current_exe.clone();
     file_name.set_extension("");
     let file_name = file_name.file_name().and_then(|s| s.to_str())?;
-    if file_name == "dora" {
-        // current_exe is the dora binary — use it so the guard always
-        // matches the daemon version.
-        Some(current_exe)
-    } else {
-        // current_exe is something else (an embedded runner, the python
-        // interpreter of the `dora-rs-cli` wheel console script, …): prefer a
-        // PATH lookup for the `dora` executable.
-        which::which("dora").ok()
-    }
+    (file_name == "dora").then_some(current_exe)
 }
 
 #[cfg(test)]

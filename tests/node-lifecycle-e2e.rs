@@ -2475,6 +2475,53 @@ fn run_killed_by_sigkill_does_not_orphan_shell_nodes() {
     }
 }
 
+/// dora-rs/dora#3472 (review): the normal stop path must not orphan a shell
+/// that ignores the daemon's SIGTERM.
+///
+/// The daemon stops a node with SIGTERM to its whole process group, then —
+/// only if the node is *still registered* after the grace period — SIGKILL to
+/// that group. A bare guard dies on the first SIGTERM, the node is
+/// unregistered, the SIGKILL escalation is skipped, and a TERM-ignoring shell
+/// (plus its background forks) survives, reparented to init. The guard now
+/// catches the stop signals, forwards them to the shell, and stays alive to
+/// reap it, so the node is still registered when the group SIGKILL lands and
+/// nothing survives the stop.
+#[test]
+#[cfg(unix)]
+fn run_stop_does_not_orphan_termingnoring_shell_nodes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start_term_ignoring(Duration::from_secs(3));
+    let (shell_pid, child_pid) = run.wait_for_shell_and_child();
+
+    // Normal stop via `--stop-after`: wait for the CLI to exit on its own.
+    // With the 10s default stop grace, the full ladder is roughly 3s (stop)
+    // + 10s (SIGTERM) + 5s (SIGKILL escalation), so 60s is generous slack for
+    // a loaded runner.
+    let status = run.cli.wait().expect("failed to reap `dora run`");
+    run.cli_reaped = true;
+
+    // The fixture shell ignores SIGTERM, so only the group SIGKILL can have
+    // ended it; both pids must be gone shortly after the CLI exits.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    for (pid, what) in [
+        (shell_pid, "the shell"),
+        (child_pid, "its background child"),
+    ] {
+        while process_alive(&pid.to_string()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} {pid} outlived a stopped `dora run` ({status}) by 30s: a \
+                 TERM-ignoring shell node is not contained by the normal stop \
+                 path (#3472)\n\
+                 stderr tail:\n{}",
+                run.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
 /// A `dora run` of a shell fixture that forks a long-lived background child,
 /// plus the RAII teardown it needs. Teardown kills the CLI (while unreaped),
 /// then — identity-checked so a recycled pid is never signalled — kills a
@@ -2507,6 +2554,16 @@ fn still_our_shell(pid: u32) -> bool {
 #[cfg(unix)]
 impl ShellOrphanRun {
     fn start() -> Self {
+        Self::start_with(None, false)
+    }
+
+    /// A variant whose shell ignores SIGTERM/SIGINT/SIGHUP and which stops the
+    /// `dora run` on its own via `--stop-after` (the normal stop path).
+    fn start_term_ignoring(stop_after: Duration) -> Self {
+        Self::start_with(Some(stop_after), true)
+    }
+
+    fn start_with(stop_after: Option<Duration>, ignore_term_signals: bool) -> Self {
         use std::os::unix::process::CommandExt as _;
 
         ensure_cli_built();
@@ -2537,10 +2594,17 @@ impl ShellOrphanRun {
         );
 
         // The fixture forks a background `sleep` and then `wait`s so it stays
-        // up. Paths are single-quoted so spaces in `$CARGO_TARGET_DIR` cannot
-        // break out of the redirect (mirroring `write_shell_dataflow`).
+        // up. In the stop variant it additionally ignores the stop signals, so
+        // only the daemon's SIGKILL escalation can end it. Paths are
+        // single-quoted so spaces in `$CARGO_TARGET_DIR` cannot break out of
+        // the redirect (mirroring `write_shell_dataflow`).
+        let ignore = if ignore_term_signals {
+            "trap '' INT HUP TERM; "
+        } else {
+            ""
+        };
         let shell_args = format!(
-            "echo $$ > '{}'; sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'; wait",
+            "{ignore}echo $$ > '{}'; sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'; wait",
             shell_pid_file.display(),
             child_pid_file.display(),
         );
@@ -2559,6 +2623,9 @@ impl ShellOrphanRun {
             // Its own process group, so that nothing the daemon or a node does
             // on the way down can be delivered to the test harness's group.
             .process_group(0);
+        if let Some(stop_after) = stop_after {
+            command.args(["--stop-after", &format!("{}s", stop_after.as_secs())]);
+        }
         let cli = command.spawn().expect("failed to spawn dora run");
 
         Self {
