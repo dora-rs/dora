@@ -173,8 +173,12 @@ pub(crate) fn encode_arrow_ipc_data(arrow_array: &ArrayData) -> eyre::Result<Vec
 /// column, as produced by [`encode_arrow_ipc`] (which writes a single batch
 /// whose one column is named `"data"`). The array is taken from that column by
 /// position; the column *name* is not inspected. Returns an error for an empty,
-/// truncated, multi-batch, or otherwise malformed stream, for a batch whose
-/// column count is not exactly one, and for any payload larger than 256 MB.
+/// truncated, multi-batch, or otherwise malformed stream, for a stream with
+/// trailing bytes after its end-of-stream marker, for a batch whose column
+/// count is not exactly one, and for any payload larger than 256 MB.
+///
+/// The trailing-byte rejection matches [`decode_arrow_ipc_zero_copy`], so both
+/// decoders accept and reject exactly the same streams.
 ///
 /// # Example
 ///
@@ -200,6 +204,14 @@ pub fn decode_arrow_ipc(ipc_buf: &[u8]) -> eyre::Result<DoraArray> {
 /// data, which would drop payload with no error.
 const MULTI_BATCH_ERROR: &str =
     "expected exactly one record batch in IPC stream, but found more than one";
+
+/// Error for a stream that carries extra bytes after the single record batch and
+/// its end-of-stream marker. The encoder sizes every stream exactly, so trailing
+/// bytes are malformed (or crafted). Both decoders reject them, so the daemon
+/// (`decode_arrow_ipc_data`) and inter-node (`decode_arrow_ipc_zero_copy_raw`)
+/// paths agree on the same input rather than one accepting what the other
+/// rejects.
+const TRAILING_BYTES_ERROR: &str = "unexpected trailing bytes after the record batch in IPC stream";
 
 /// Extract the single column's [`ArrayData`] from a decoded batch, rejecting a
 /// batch whose column count is not exactly one. Shared by both decoders so the
@@ -237,9 +249,25 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
         .ok_or_else(|| eyre::eyre!("Arrow IPC stream contained no record batches"))?
         .context("failed to read RecordBatch from IPC stream")?;
 
-    // Reject a trailing batch (see `MULTI_BATCH_ERROR`).
-    if reader.next().is_some() {
-        eyre::bail!(MULTI_BATCH_ERROR);
+    // Inspect what follows the first batch. A second decoded batch is a
+    // multi-batch stream; a decode *error* on the next message must be reported
+    // as such rather than mislabeled as "more than one batch"; `None` is the
+    // end-of-stream marker.
+    match reader.next() {
+        Some(Ok(_)) => eyre::bail!(MULTI_BATCH_ERROR),
+        Some(Err(e)) => {
+            return Err(e).context("failed to read RecordBatch from IPC stream");
+        }
+        None => {}
+    }
+
+    // Reject bytes after the end-of-stream marker so this path agrees with the
+    // zero-copy decoder (see `TRAILING_BYTES_ERROR`). `StreamReader` stops at the
+    // marker and would otherwise silently ignore anything after it; the inner
+    // `Cursor`'s position is how many bytes it consumed reaching that point.
+    let consumed = reader.get_ref().position() as usize;
+    if consumed != ipc_buf.len() {
+        eyre::bail!(TRAILING_BYTES_ERROR);
     }
 
     array_from_single_column_batch(batch)
@@ -265,9 +293,10 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 /// # Errors
 ///
 /// Like [`decode_arrow_ipc`], returns an error for an empty, truncated,
-/// multi-batch, or otherwise malformed stream, for a batch whose column count
-/// is not exactly one, and for any payload larger than 256 MB — it never panics
-/// on bad input.
+/// multi-batch, or otherwise malformed stream, for a stream with trailing bytes
+/// after its end-of-stream marker, for a batch whose column count is not exactly
+/// one, and for any payload larger than 256 MB — it never panics on bad input.
+/// It accepts and rejects exactly the same streams as [`decode_arrow_ipc`].
 ///
 /// # Example
 ///
@@ -312,23 +341,47 @@ pub(crate) fn decode_arrow_ipc_zero_copy_raw(
     // writes exactly one batch; a stream with more is malformed or crafted).
     while !buffer.is_empty() {
         let before = buffer.len();
-        if let Some(b) = decoder
-            .decode(&mut buffer)
-            .context("failed to decode Arrow IPC stream")?
-        {
-            // `replace` both stores the batch and tells us whether one was
-            // already present, so a second batch is detected and rejected
-            // rather than silently dropped.
-            if batch.replace(b).is_some() {
-                eyre::bail!(MULTI_BATCH_ERROR);
+        let decoded = match decoder.decode(&mut buffer) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                // `decode` consumes the 8-byte end-of-stream marker and enters
+                // its `Finished` state, then errors on any byte after it. So
+                // once we already hold the batch, a decode error means the
+                // stream had extra bytes after a complete single-batch stream:
+                // report that as trailing garbage (matching the `StreamReader`
+                // path) rather than a generic decode failure. Before the batch,
+                // it is a genuinely malformed/truncated stream.
+                let context = if batch.is_some() {
+                    TRAILING_BYTES_ERROR
+                } else {
+                    "failed to decode Arrow IPC stream"
+                };
+                return Err::<arrow::array::ArrayData, _>(e).context(context);
             }
-        } else if buffer.len() == before {
-            // `decode` yielded no batch and consumed nothing, so stop: before
-            // the first batch a crafted/truncated payload would otherwise spin
-            // this loop forever on the zenoh IO worker (surfaced below as "no
-            // record batches"); after the batch it is just trailing bytes the
-            // decoder will not consume, so there is nothing more to read.
-            break;
+        };
+        match decoded {
+            Some(b) => {
+                // `replace` both stores the batch and tells us whether one was
+                // already present, so a second batch is detected and rejected
+                // rather than silently dropped.
+                if batch.replace(b).is_some() {
+                    eyre::bail!(MULTI_BATCH_ERROR);
+                }
+            }
+            None if buffer.len() == before => {
+                // `decode` yielded no batch and consumed nothing. Before the
+                // first batch this is a crafted/truncated payload that would
+                // otherwise spin this loop forever on the zenoh IO worker
+                // (surfaced below as "no record batches"), so stop. `decode`
+                // otherwise only returns `None` once it has drained the buffer,
+                // so trailing bytes after the marker never reach here — they hit
+                // the `Err` arm above.
+                break;
+            }
+            // Progress without a batch: the schema message before the batch, or
+            // the end-of-stream marker after it. Keep going; the loop ends when
+            // the buffer is drained.
+            None => {}
         }
     }
 
@@ -404,6 +457,36 @@ mod tests {
             .expect_err("a multi-batch IPC stream must be rejected");
         assert!(
             err.to_string().contains("more than one"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// A valid single-batch stream with extra bytes appended after its
+    /// end-of-stream marker must be rejected by *both* decoders. The arrow-ipc
+    /// `StreamDecoder` consumes the 8-byte end-of-stream marker and then errors
+    /// on any further byte, and `StreamReader` stops at the marker; without an
+    /// explicit check the two paths would disagree (one rejecting, one silently
+    /// ignoring the tail). No in-tree sender produces trailing bytes, so
+    /// rejecting them keeps the two decoders in lockstep on the same input.
+    #[test]
+    fn ipc_decode_rejects_trailing_bytes() {
+        let array = UInt64Array::from(vec![1, 2, 3]);
+        let mut encoded = encode_arrow_ipc_data(&array.into_data()).unwrap();
+        // Distinct from the `0xFF..` end-of-stream continuation marker, so these
+        // are unambiguously bytes *after* a complete stream.
+        encoded.extend_from_slice(&[0u8; 16]);
+
+        let err = decode_arrow_ipc_data(&encoded)
+            .expect_err("a stream with trailing bytes must be rejected (StreamReader)");
+        assert!(
+            err.to_string().contains("trailing bytes"),
+            "unexpected error: {err}"
+        );
+
+        let err = decode_arrow_ipc_zero_copy_raw(arrow::buffer::Buffer::from_vec(encoded))
+            .expect_err("a stream with trailing bytes must be rejected (zero-copy)");
+        assert!(
+            err.to_string().contains("trailing bytes"),
             "unexpected error: {err}"
         );
     }
