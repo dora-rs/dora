@@ -2488,7 +2488,7 @@ fn run_killed_by_sigkill_does_not_orphan_shell_nodes() {
 /// nothing survives the stop.
 #[test]
 #[cfg(unix)]
-fn run_stop_does_not_orphan_termingnoring_shell_nodes() {
+fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
     let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
 
     let mut run = ShellOrphanRun::start_term_ignoring(Duration::from_secs(3));
@@ -2497,8 +2497,25 @@ fn run_stop_does_not_orphan_termingnoring_shell_nodes() {
     // Normal stop via `--stop-after`: wait for the CLI to exit on its own.
     // With the 10s default stop grace, the full ladder is roughly 3s (stop)
     // + 10s (SIGTERM) + 5s (SIGKILL escalation), so 60s is generous slack for
-    // a loaded runner.
-    let status = run.cli.wait().expect("failed to reap `dora run`");
+    // a loaded runner. A regression that never completes (e.g. the guard
+    // stopping to trap signals, leaving `dora run` held open) must FAIL here
+    // with the stderr tail instead of hanging the CI job until its timeout.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        match run.cli.try_wait().expect("try_wait failed") {
+            Some(status) => break status,
+            None => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "`dora run` did not exit within 60s of its normal stop path; \
+                     a TERM-ignoring shell node stuck the stop ladder (#3472)\n\
+                     stderr tail:\n{}",
+                    run.stderr_tail()
+                );
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    };
     run.cli_reaped = true;
 
     // The fixture shell ignores SIGTERM, so only the group SIGKILL can have

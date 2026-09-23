@@ -66,7 +66,7 @@ pub(super) async fn path_spawn_command(
                         // that forks to the background is not.
                         logger
                             .log(
-                                LogLevel::Warn,
+                                LogLevel::Debug,
                                 Some("spawner".into()),
                                 "no `dora` binary found to guard shell node; \
                                  background forks may outlive the daemon"
