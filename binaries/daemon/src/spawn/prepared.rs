@@ -161,6 +161,21 @@ fn line_to_forward(raw: Vec<u8>) -> Option<Vec<u8>> {
     (!raw.is_empty()).then_some(raw)
 }
 
+/// The value of the in-process `dora run` parent marker on `command`, if any.
+///
+/// `bind_nodes_to_parent` injects `DORA_RUN_PARENT_PID` only on the in-process
+/// `dora run` / `Daemon::run_dataflow` spawn path, never on the
+/// coordinator-attached `dora up` path. The Linux `PR_SET_PDEATHSIG` arm and the
+/// Windows kill-on-close Job Object both key off it, so a daemon restart does
+/// not take `dora up`'s nodes down (dora-rs/dora#2029, dora-rs/dora#3474).
+#[cfg(any(target_os = "linux", windows, test))]
+fn run_parent_marker(command: &std::process::Command) -> Option<&std::ffi::OsStr> {
+    command
+        .get_envs()
+        .find(|(key, _)| *key == std::ffi::OsStr::new(dora_core::topics::DORA_RUN_PARENT_PID_ENV))
+        .and_then(|(_, value)| value)
+}
+
 #[derive(Clone, Default)]
 struct RestartConfig {
     max_restarts: u32,
@@ -723,12 +738,7 @@ impl PreparedNode {
                 {
                     use std::os::unix::process::CommandExt as _;
 
-                    let run_parent_pid: Option<libc::pid_t> = std_command
-                        .get_envs()
-                        .find(|(key, _)| {
-                            *key == std::ffi::OsStr::new(dora_core::topics::DORA_RUN_PARENT_PID_ENV)
-                        })
-                        .and_then(|(_, value)| value)
+                    let run_parent_pid: Option<libc::pid_t> = run_parent_marker(&std_command)
                         .and_then(|value| value.to_str())
                         .and_then(|value| value.trim().parse::<libc::pid_t>().ok());
 
@@ -764,6 +774,15 @@ impl PreparedNode {
                     }
                 }
 
+                // The marker the spawner injects only on the in-process
+                // `dora run` / `Daemon::run_dataflow` spawn path
+                // (`bind_nodes_to_parent`), never on the coordinator-attached
+                // `dora up` path. The Linux `PR_SET_PDEATHSIG` arm above reads
+                // it too; the Windows Job Object limit below is gated on it so
+                // a daemon restart does not take its nodes down (#2029).
+                #[cfg(windows)]
+                let bind_to_run_parent = run_parent_marker(&std_command).is_some();
+
                 let mut command = CommandWrap::from(tokio::process::Command::from(std_command));
 
                 #[cfg(unix)]
@@ -780,6 +799,20 @@ impl PreparedNode {
                             windows::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP,
                         ))
                         .wrap(process_wrap::tokio::JobObject);
+
+                    // On the in-process `dora run` path, make the Job Object
+                    // kill-on-close. Closing the daemon's job handle — which is
+                    // what a hard kill (`taskkill /F`, Task Manager
+                    // end-process, supervisor timeout) does — then terminates
+                    // the whole tree, where `dora run` otherwise strands every
+                    // node it spawned. `KillOnDrop` is what makes process-wrap
+                    // set `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE`; it is added only
+                    // under this gate, so the coordinator-attached `dora up`
+                    // path keeps its nodes across a daemon restart (#2029,
+                    // dora-rs/dora#3474).
+                    if bind_to_run_parent {
+                        command.wrap(process_wrap::tokio::KillOnDrop);
+                    }
                 }
 
                 command.spawn().wrap_err(self.spawn_error_msg)?
@@ -1306,6 +1339,26 @@ mod tests {
                 "mismatch for {case:?}"
             );
         }
+    }
+
+    #[test]
+    fn run_parent_marker_reads_only_the_in_process_run_signal() {
+        // `bind_nodes_to_parent` sets this marker; the coordinator-attached
+        // path does not. Kept in one place so the Linux `PR_SET_PDEATHSIG` arm
+        // and the Windows kill-on-close gate cannot drift apart.
+        let mut absent = std::process::Command::new("noop");
+        assert_eq!(run_parent_marker(&absent), None);
+
+        absent.env(dora_core::topics::DORA_RUN_PARENT_PID_ENV, "4242");
+        assert_eq!(
+            run_parent_marker(&absent),
+            Some(std::ffi::OsStr::new("4242"))
+        );
+
+        // A different env var must not be mistaken for the marker.
+        let mut other = std::process::Command::new("noop");
+        other.env("DORA_SOME_OTHER_MARKER", "4242");
+        assert_eq!(run_parent_marker(&other), None);
     }
 
     /// Deserialize from YAML (mirroring `dora_core::build` tests) to avoid
