@@ -252,9 +252,10 @@ pub(crate) fn decode_arrow_ipc_data(ipc_buf: &[u8]) -> eyre::Result<ArrayData> {
 ///
 /// # Errors
 ///
-/// Like [`decode_arrow_ipc`], returns an error for an empty, truncated, or
-/// otherwise malformed stream, for a batch whose column count is not exactly
-/// one, and for any payload larger than 256 MB — it never panics on bad input.
+/// Like [`decode_arrow_ipc`], returns an error for an empty, truncated,
+/// multi-batch, or otherwise malformed stream, for a batch whose column count
+/// is not exactly one, and for any payload larger than 256 MB — it never panics
+/// on bad input.
 ///
 /// # Example
 ///
@@ -294,21 +295,30 @@ pub(crate) fn decode_arrow_ipc_zero_copy_raw(
     let mut batch = None;
     // `decode` is push-based: it may consume the schema message and return
     // `None` before yielding the record batch, so loop until we get a batch or
-    // exhaust the input.
+    // exhaust the input. Keep draining after the first batch so a second one is
+    // detected and rejected rather than silently dropped (the encoder always
+    // writes exactly one batch; a stream with more is malformed or crafted).
     while !buffer.is_empty() {
         let before = buffer.len();
         if let Some(b) = decoder
             .decode(&mut buffer)
             .context("failed to decode Arrow IPC stream")?
         {
+            if batch.is_some() {
+                eyre::bail!(
+                    "expected exactly one record batch in IPC stream, but found more than one"
+                );
+            }
             batch = Some(b);
-            break;
+            continue;
         }
-        // `decode` must consume bytes when it yields no batch; a crafted or
-        // truncated payload that leaves the buffer unchanged would otherwise
-        // spin this loop forever on the zenoh IO worker. Bail instead.
+        // `decode` yielded no batch. If it also consumed nothing, stop: before
+        // the first batch a crafted/truncated payload would otherwise spin this
+        // loop forever on the zenoh IO worker (surfaced below as "no record
+        // batches"); after the batch it is just trailing bytes the decoder will
+        // not consume, so there is nothing more to read.
         if buffer.len() == before {
-            eyre::bail!("Arrow IPC decoder made no progress on a partial/corrupt stream");
+            break;
         }
     }
 
@@ -338,12 +348,9 @@ mod tests {
         assert_eq!(data, decoded);
     }
 
-    /// A stream carrying more than one record batch must be rejected rather
-    /// than silently decoded down to its first batch, which would drop the rest
-    /// of the payload with no error. `decode_arrow_ipc` documents "exactly one
-    /// record batch".
-    #[test]
-    fn ipc_decode_rejects_multiple_batches() {
+    /// Build an IPC stream that (invalidly) carries the same single-column
+    /// batch twice, to exercise the multi-batch rejection on both decoders.
+    fn two_batch_ipc_stream() -> Vec<u8> {
         use arrow::array::ArrayRef;
         use arrow::ipc::writer::StreamWriter;
         use arrow::record_batch::RecordBatch;
@@ -359,7 +366,6 @@ mod tests {
         let batch =
             RecordBatch::try_new(schema.clone(), vec![Arc::new(array) as ArrayRef]).unwrap();
 
-        // Write the same batch twice into one stream.
         let mut buf = Vec::new();
         {
             let mut writer = StreamWriter::try_new(&mut buf, &schema).unwrap();
@@ -367,9 +373,32 @@ mod tests {
             writer.write(&batch).unwrap();
             writer.finish().unwrap();
         }
+        buf
+    }
 
+    /// A stream carrying more than one record batch must be rejected rather
+    /// than silently decoded down to its first batch, which would drop the rest
+    /// of the payload with no error. `decode_arrow_ipc` documents "exactly one
+    /// record batch".
+    #[test]
+    fn ipc_decode_rejects_multiple_batches() {
+        let buf = two_batch_ipc_stream();
         let err =
             decode_arrow_ipc_data(&buf).expect_err("a multi-batch IPC stream must be rejected");
+        assert!(
+            err.to_string().contains("more than one"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// The zero-copy decoder backs the actual inter-node receive path, so it
+    /// must reject a multi-batch stream too rather than silently returning only
+    /// the first batch.
+    #[test]
+    fn ipc_zero_copy_decode_rejects_multiple_batches() {
+        let buf = two_batch_ipc_stream();
+        let err = decode_arrow_ipc_zero_copy_raw(arrow::buffer::Buffer::from_vec(buf))
+            .expect_err("a multi-batch IPC stream must be rejected");
         assert!(
             err.to_string().contains("more than one"),
             "unexpected error: {err}"
