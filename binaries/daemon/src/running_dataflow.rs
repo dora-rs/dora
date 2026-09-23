@@ -321,6 +321,18 @@ pub struct RunningDataflow {
     /// message; cleared when the receiver (re)subscribes, so an edge that drops
     /// again after reconnecting gets a fresh warning (dora-rs/dora#3201).
     pub(crate) missing_channel_warned: BTreeSet<(NodeId, DataId)>,
+    /// Nodes that deliberately dropped their daemon event stream
+    /// (`EventStreamDropped`, sent by `EventStream::drop` on normal shutdown)
+    /// but are still in `running_nodes` because their process exit has not been
+    /// observed yet. In that window an upstream still producing to such a
+    /// consumer routes to a receiver with no `subscribe_channels` entry, which
+    /// would otherwise hit the "may still be starting up / failed to
+    /// re-subscribe" warning — a false positive for a consumer that simply
+    /// finished. Demotes that case to `debug`, keeping the warning for the true
+    /// silent-routing-loss mode of dora-rs/dora#3201 (a receiver that never
+    /// dropped its stream). Cleared on (re)subscribe and on node removal, so a
+    /// re-added node ID starts a fresh incarnation (dora-rs/dora#3556).
+    pub(crate) dropped_event_streams: BTreeSet<NodeId>,
     pub(crate) timers: BTreeMap<Duration, BTreeSet<(NodeId, DataId)>>,
     /// Nodes subscribing to `dora/logs` virtual input.
     pub(crate) log_subscribers: Vec<LogSubscriber>,
@@ -429,6 +441,7 @@ impl RunningDataflow {
             pending_messages: HashMap::new(),
             mappings: HashMap::new(),
             missing_channel_warned: BTreeSet::new(),
+            dropped_event_streams: BTreeSet::new(),
             timers: BTreeMap::new(),
             log_subscribers: Vec::new(),
             open_inputs: BTreeMap::new(),
@@ -515,6 +528,51 @@ impl RunningDataflow {
         self.cascading_error_causes.forget(node_id);
         retain_other_nodes(&mut self.publishers, node_id);
         self.missing_channel_warned.retain(|(n, _)| n != node_id);
+        self.dropped_event_streams.remove(node_id);
+    }
+
+    /// Record that a node deliberately dropped its daemon event stream on
+    /// normal shutdown (`EventStreamDropped`): remove its send channel and mark
+    /// it so an upstream still producing to it — while its `running_nodes`
+    /// entry lingers until the process exit is observed — does not trigger the
+    /// #3201 "failed to re-subscribe" warning for what is an intentional drop.
+    /// The marker is cleared on (re)subscribe, on restart, and on node removal
+    /// (dora-rs/dora#3556).
+    pub(crate) fn mark_event_stream_dropped(&mut self, node_id: &NodeId) {
+        self.subscribe_channels.remove(node_id);
+        self.dropped_event_streams.insert(node_id.clone());
+    }
+
+    /// Reset the per-incarnation bookkeeping when a node's process exit is
+    /// observed, so a respawn under the same id starts fresh. Runs on every
+    /// exit, before the restart decision, and both restart paths (a
+    /// `restart_policy` respawn and `dora node restart`) reach it once the exit
+    /// is observed — after the exiting node's blocking `EventStreamDropped` has
+    /// been handled, so clearing `dropped_event_streams` here is not undone by a
+    /// late marker from the old incarnation (dora-rs/dora#3558).
+    ///
+    /// `grace_duration_kills` / `startup_timeout_kills` are keyed by
+    /// `(node_id, generation)`, so a successor can no longer inherit its
+    /// predecessor's marker structurally — removal here is hygiene for this
+    /// incarnation's own entry (consumed classifying this exit). The drain clock
+    /// and the connected marker are cleared for the same "respawn re-subscribes
+    /// from scratch" reason (dora-rs/dora#2270). `finish_escalated` is
+    /// deliberately NOT cleared here — it is consumed later by
+    /// `handle_node_stop_inner` to keep the coordinator-facing `clean_stop` flag
+    /// honest, and an escalated node never restarts.
+    pub(crate) fn reset_incarnation_state(&mut self, node_id: &NodeId, generation: u64) {
+        self.grace_duration_kills
+            .remove(&(node_id.clone(), generation));
+        self.startup_timeout_kills
+            .remove(&(node_id.clone(), generation));
+        self.all_inputs_closed_at.remove(node_id);
+        self.connected_nodes.remove(node_id);
+        // The exiting incarnation's clean `EventStream::drop` set this marker
+        // (it keeps its `running_nodes` entry across a restart). Clear it so the
+        // fresh incarnation is expected to re-subscribe: if it never does,
+        // upstream deliveries surface the #3201 "failed to re-subscribe"
+        // warning instead of being silenced as an intentional drop.
+        self.dropped_event_streams.remove(node_id);
     }
 
     /// Whether a startup-barrier completion (reported as

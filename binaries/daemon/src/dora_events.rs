@@ -705,31 +705,13 @@ impl Daemon {
                     }
                 };
 
-                // Drop the consumed kill marker. `grace_duration_kills` is
-                // keyed by `(node_id, generation)`, so a successor can no
-                // longer inherit its predecessor's marker structurally —
-                // removal here is hygiene for this incarnation's own entry
-                // (it was consumed classifying this exit), not the
-                // cross-incarnation leak protection it used to be. Same for
-                // the drain clock: a respawned node under the same id must
-                // start fresh.
-                // (`finish_escalated` is NOT cleared here — it is read
-                // and consumed by `handle_node_stop_inner` below to keep
-                // the coordinator-facing `clean_stop` flag honest; an
-                // escalated node never restarts, so it cannot leak into
-                // a next incarnation.)
+                // Reset per-incarnation bookkeeping so a respawn under the same
+                // id starts fresh (kill markers, drain clock, connected marker,
+                // and the deliberate-drop marker). See
+                // `RunningDataflow::reset_incarnation_state` for the rationale
+                // and why `finish_escalated` is left for `handle_node_stop_inner`.
                 if let Some(dataflow) = self.running.get_mut(&dataflow_id) {
-                    dataflow
-                        .grace_duration_kills
-                        .remove(&(node_id.clone(), generation));
-                    dataflow
-                        .startup_timeout_kills
-                        .remove(&(node_id.clone(), generation));
-                    dataflow.all_inputs_closed_at.remove(&node_id);
-                    // a respawned node must re-subscribe before it counts as
-                    // connected, else a slow restart could be silence-escalated
-                    // mid-startup (dora-rs/dora#2270).
-                    dataflow.connected_nodes.remove(&node_id);
+                    dataflow.reset_incarnation_state(&node_id, generation);
                 }
 
                 // A node that crashed cannot withdraw its own descriptors.

@@ -287,7 +287,12 @@ impl Daemon {
                         .running
                         .get_mut(&dataflow_id)
                         .wrap_err_with(|| format!("no running dataflow with ID `{dataflow_id}`"))?;
-                    dataflow.subscribe_channels.remove(&node_id);
+                    // Remove the send channel and mark this as a deliberate drop
+                    // on normal shutdown, so an upstream still producing to this
+                    // consumer in the window before its process exit is observed
+                    // does not trigger the "failed to re-subscribe" warning
+                    // (dora-rs/dora#3556).
+                    dataflow.mark_event_stream_dropped(&node_id);
                     Result::<_, eyre::Error>::Ok(())
                 };
 
@@ -780,10 +785,13 @@ impl Daemon {
 
         // The receiver is back: forget its stale missing-stream markers so a
         // later drop of the newly-installed channel warns again (dora-rs/
-        // dora#3201).
+        // dora#3201), and clear any deliberate-drop marker so a genuine later
+        // starvation of this fresh channel is diagnosed, not silenced
+        // (dora-rs/dora#3556).
         dataflow
             .missing_channel_warned
             .retain(|(node, _)| node != &node_id);
+        dataflow.dropped_event_streams.remove(&node_id);
         dataflow.subscribe_channels.insert(node_id, event_sender);
     }
 

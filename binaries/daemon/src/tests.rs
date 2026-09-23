@@ -1050,6 +1050,83 @@ async fn restart_clears_connected_marker() {
     );
 }
 
+/// When a node's process exit is observed for a restart, the exit handler
+/// resets the incarnation's bookkeeping via `reset_incarnation_state`. That
+/// must clear the `dropped_event_streams` marker the exiting incarnation set on
+/// its clean `EventStream::drop` — otherwise the respawned node that never
+/// re-subscribes would have its upstream deliveries silenced as an intentional
+/// drop instead of surfacing the #3201 "failed to re-subscribe" warning.
+///
+/// The marker is set first (mirroring the real order: the old process only
+/// drops its stream after being told to stop, so `EventStreamDropped` runs
+/// before the exit is observed), then the exit-path reset runs and must clear
+/// it (dora-rs/dora#3558). This exercises the shared exit-handler path, which
+/// covers both a `restart_policy` respawn and `dora node restart`.
+#[test]
+fn restart_exit_reset_clears_dropped_event_stream_marker() {
+    let capture = LevelCapture::default();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let node_a: NodeId = "node_a".to_string().into();
+            let input: DataId = "input".to_string().into();
+
+            // The node is still a live process (in `running_nodes`) and its old
+            // incarnation cleanly dropped its stream before exit — set the
+            // marker via the same handler bookkeeping.
+            df.running_nodes.insert(node_a.clone(), test_running_node());
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            df.subscribe_channels.insert(node_a.clone(), tx);
+            df.mark_event_stream_dropped(&node_a);
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(node_a.clone(), input.clone())]),
+            );
+
+            // The process exit is observed and the node will be restarted: the
+            // exit handler resets the incarnation state.
+            df.reset_incarnation_state(&node_a, 0);
+
+            assert!(
+                !df.dropped_event_streams.contains(&node_a),
+                "the restart exit reset must clear the deliberate-drop marker so \
+                 a fresh incarnation that fails to re-subscribe is diagnosed"
+            );
+
+            // The node is still in `running_nodes` (restart keeps it) but has no
+            // channel and is no longer marked as a deliberate drop, so an
+            // upstream delivery must WARN — the #3201 case the marker would
+            // otherwise hide.
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            send_output_to_local_receivers(
+                &output_id, &mut df, &metadata, None, &clock, None, false,
+            )
+            .await
+            .unwrap();
+
+            let warns = capture
+                .levels
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 1,
+                "a restarted node that never re-subscribed must WARN on delivery"
+            );
+        });
+    });
+}
+
 #[test]
 fn finish_drain_grace_defaults_on_with_opt_out() {
     // unset → enabled at the default grace (on by default, dora#2270 step 3)
@@ -1923,6 +2000,70 @@ fn finished_receiver_does_not_warn() {
             assert_eq!(
                 warns, 0,
                 "a finished (no longer running) receiver must not WARN, got {levels:?}"
+            );
+        });
+    });
+}
+
+/// A consumer that finished normally sends `EventStreamDropped`, which removes
+/// its `subscribe_channels` entry but leaves it in `running_nodes` until its
+/// process exit is observed. In that window an upstream still producing to it
+/// must NOT WARN — it is a deliberate drop, not the silent-routing-loss of
+/// #3201. This is the gap `finished_receiver_does_not_warn` misses: there the
+/// node is already out of `running_nodes`, so it never exercises the
+/// still-running window (dora-rs/dora#3556).
+#[test]
+fn finished_but_still_running_receiver_does_not_warn() {
+    let capture = LevelCapture::default();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let finished: NodeId = "finished".to_string().into();
+            let input: DataId = "input".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(finished.clone(), input.clone())]),
+            );
+            // The node is still a live process (in `running_nodes`) and had an
+            // event stream, then dropped it. Drive the real bookkeeping the
+            // `EventStreamDropped` handler runs so this test covers that path
+            // rather than reproducing its effect by hand.
+            df.running_nodes
+                .insert(finished.clone(), test_running_node());
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            df.subscribe_channels.insert(finished.clone(), tx);
+            df.mark_event_stream_dropped(&finished);
+            assert!(
+                !df.subscribe_channels.contains_key(&finished)
+                    && df.dropped_event_streams.contains(&finished),
+                "mark_event_stream_dropped must drop the channel and set the marker"
+            );
+
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            send_output_to_local_receivers(
+                &output_id, &mut df, &metadata, None, &clock, None, false,
+            )
+            .await
+            .unwrap();
+
+            let levels = capture.levels.lock().unwrap();
+            let warns = levels
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 0,
+                "a consumer that dropped its stream but is still running must \
+                 not WARN, got {levels:?}"
             );
         });
     });
