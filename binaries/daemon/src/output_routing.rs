@@ -13,12 +13,15 @@
 //!   Direct zenoh callbacks `try_send` into the receiver's shared ingress
 //!   channel and drop when it is full, before the per-input scheduler ever
 //!   sees the event, so a timer or a busier input can discard a backpressure
-//!   input outright. The daemon path feeds that channel with a blocking send.
-//!   It is a much deeper buffer, not a guarantee: the daemon still drops data
-//!   for a receiver whose per-node channel and listener queue are both full
-//!   (`send_output_to_local_receivers`), and cross-daemon forwarding is a
-//!   bounded `try_send` too. The pin applies to every fan-out consumer of the
-//!   output, and the daemon path carries the daemon message size limit.
+//!   input outright. The daemon path feeds that channel with a blocking send,
+//!   and when the receiver's per-node channel is full too, the producer's
+//!   listener holds the producer's send until there is room
+//!   (`DeferredDelivery` in `local_delivery.rs`, [`backpressured_outputs`]),
+//!   so a local producer stalls rather than loses the message. Cross-daemon
+//!   forwarding is still a bounded `try_send`: a remote producer cannot be
+//!   held, so that drop is counted and logged instead. The pin applies to
+//!   every fan-out consumer of the output, and the daemon path carries the
+//!   daemon message size limit.
 //! - a **static** consumer becomes a required acker, wherever it runs: the
 //!   producer keeps the output on the lossless daemon path until this
 //!   consumer's startup ack proves the direct zenoh route end-to-end. The
@@ -64,6 +67,60 @@ use crate::{CoreNodeKindExt, OutputId, node_inputs};
 /// the live-dataflow routing and the add/replace admission check cannot drift.
 pub fn input_is_backpressure(input: &Input) -> bool {
     input.queue_policy == Some(dora_message::config::QueuePolicy::Backpressure)
+}
+
+/// The outputs of every producer in `nodes` that feed at least one
+/// `queue_policy: backpressure` input, keyed by producer — the outputs a
+/// producer's listener asks the daemon loop to hand back rather than drop
+/// (`DeferredDelivery`). Producers on other daemons are included and simply
+/// never looked up.
+pub fn backpressured_outputs(
+    nodes: &BTreeMap<NodeId, ResolvedNode>,
+) -> BTreeMap<NodeId, BTreeSet<DataId>> {
+    let mut outputs: BTreeMap<NodeId, BTreeSet<DataId>> = BTreeMap::new();
+    for consumer in nodes.values() {
+        for (_, input) in node_inputs(consumer) {
+            if !input_is_backpressure(&input) {
+                continue;
+            }
+            let InputMapping::User(mapping) = input.mapping else {
+                continue;
+            };
+            outputs
+                .entry(mapping.source)
+                .or_default()
+                .insert(mapping.output);
+        }
+    }
+    outputs
+}
+
+/// [`backpressured_outputs`] for one node entering a running dataflow, judged
+/// from the live routing table: the outputs among `outputs` with a current
+/// receiver whose input `requires_backpressure`. A backpressure consumer
+/// added *later* behind a running producer is not in that producer's set:
+/// `unpinnable_backpressure_input` refuses it unless the output is already
+/// on the daemon path, and in that case its overflow is a counted drop
+/// rather than a held producer.
+pub fn added_node_backpressured_outputs(
+    node_id: &NodeId,
+    outputs: &BTreeSet<DataId>,
+    mappings: &HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
+    requires_backpressure: impl Fn(&NodeId, &DataId) -> bool,
+) -> BTreeSet<DataId> {
+    outputs
+        .iter()
+        .filter(|output_id| {
+            mappings
+                .get(&OutputId(node_id.clone(), (*output_id).clone()))
+                .is_some_and(|receivers| {
+                    receivers
+                        .iter()
+                        .any(|(receiver, input_id)| requires_backpressure(receiver, input_id))
+                })
+        })
+        .cloned()
+        .collect()
 }
 
 /// Computes the per-output routing for every producer in `local_nodes`, from
@@ -273,6 +330,86 @@ mod tests {
             .map(|id| NodeId::from(id.to_string()))
             .collect();
         compute_output_routing(&nodes, &local_nodes, &routable_producers)
+    }
+
+    /// `backpressured_outputs` names exactly the outputs with a backpressure
+    /// consumer, keyed by producer, whatever else consumes them.
+    #[test]
+    fn backpressured_outputs_are_keyed_by_producer() {
+        let descriptor: Descriptor = serde_yaml::from_str(
+            r#"
+nodes:
+  - id: source
+    path: ./source
+    outputs: [image, depth, unconsumed]
+  - id: viewer
+    path: ./viewer
+    inputs:
+      camera: source/image
+  - id: recorder
+    path: ./recorder
+    inputs:
+      camera:
+        source: source/image
+        queue_policy: backpressure
+      depth:
+        source: source/depth
+        queue_policy: drop_oldest
+  - id: other
+    path: ./other
+    outputs: [status]
+"#,
+        )
+        .expect("parse descriptor");
+        let nodes = descriptor
+            .resolve_aliases_and_set_defaults()
+            .expect("resolve descriptor");
+        let outputs = backpressured_outputs(&nodes);
+        assert_eq!(
+            outputs,
+            BTreeMap::from([(
+                NodeId::from("source".to_string()),
+                BTreeSet::from([DataId::from("image".to_string())]),
+            )]),
+            "only `image` has a backpressure consumer; `depth` (drop_oldest), `unconsumed` \
+             and the consumer-less `other` node must not appear"
+        );
+    }
+
+    /// The live variant reads the routing table and the caller's policy
+    /// predicate, for a node added to a running dataflow.
+    #[test]
+    fn added_node_backpressured_outputs_follow_the_live_receivers() {
+        let source = NodeId::from("source".to_string());
+        let image = DataId::from("image".to_string());
+        let depth = DataId::from("depth".to_string());
+        let recorder = NodeId::from("recorder".to_string());
+        let viewer = NodeId::from("viewer".to_string());
+        let camera = DataId::from("camera".to_string());
+        let mappings = HashMap::from([
+            (
+                OutputId(source.clone(), image.clone()),
+                BTreeSet::from([
+                    (viewer.clone(), camera.clone()),
+                    (recorder.clone(), camera.clone()),
+                ]),
+            ),
+            (
+                OutputId(source.clone(), depth.clone()),
+                BTreeSet::from([(recorder.clone(), depth.clone())]),
+            ),
+        ]);
+        let outputs = added_node_backpressured_outputs(
+            &source,
+            &BTreeSet::from([
+                image.clone(),
+                depth.clone(),
+                DataId::from("unconsumed".to_string()),
+            ]),
+            &mappings,
+            |receiver, input_id| *receiver == recorder && *input_id == camera,
+        );
+        assert_eq!(outputs, BTreeSet::from([image]));
     }
 
     #[test]

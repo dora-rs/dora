@@ -1095,3 +1095,89 @@ async fn planned_stop_sigterm_reports_clean() {
         "fire-and-forget node SIGTERMed during operator-requested stop should be reported as Ok(()); got {node_result:?}"
     );
 }
+
+/// An unpaced burst into a slow `queue_policy: backpressure` consumer is
+/// delivered without loss (dora-rs/dora#3397).
+///
+/// This is the shape of `dora replay --speed 0`: the replay CLI puts every
+/// replayed input under `backpressure` (which pins the producer to the
+/// daemon path, #3429) and sizes its queue to the recorded count, then the
+/// replay node emits the whole recording as fast as the daemon accepts it.
+/// The daemon path's own buffers for the edge — the 1000-slot per-node
+/// channel plus the listener's queue — hold far less than a real recording,
+/// and `send_output_to_local_receivers` used to `try_send` and drop with a
+/// warning when they were full, while the producer's `send_output` still
+/// returned `Ok` and the run exited 0.
+///
+/// Fixture: 6000 numbered messages into a consumer that stalls for 3 s on
+/// the first one. Its ingress channel (sized from its queue sizes) and the
+/// daemon-side buffers hold about 4000 between them, so the tail of the
+/// burst arrives while everything is full. The sink records how many
+/// messages it received and how many sequence gaps it saw; both must be
+/// exact — `received == 6000` alone would pass a run that dropped one
+/// message and duplicated another.
+#[tokio::test(flavor = "multi_thread")]
+async fn backpressure_edge_delivers_unpaced_burst_without_loss() {
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "burst-source-node",
+            "-p",
+            "slow-sequence-sink-node",
+        ])
+        .status()
+        .expect("failed to build backpressure burst test nodes");
+    assert!(
+        status.success(),
+        "backpressure burst test nodes build failed"
+    );
+
+    let record = Path::new("/tmp/dora-backpressure-burst-delivery.log");
+    let _ = std::fs::remove_file(record);
+
+    let dataflow_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/dataflows/backpressure-burst-delivery.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // The sink stalls 3 s, then drains at full speed; the source closes
+        // its output when it exits, so the run ends on its own well before
+        // this.
+        Some(Duration::from_secs(60)),
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    for (id, r) in &dr.node_results {
+        eprintln!("  {id}: {r:?}");
+    }
+    assert!(
+        dr.node_results.values().all(|r| r.is_ok()),
+        "every node should exit cleanly: {:?}",
+        dr.node_results
+    );
+
+    let contents = std::fs::read_to_string(record)
+        .expect("sink record should exist — the sink writes it when its input closes");
+    let _ = std::fs::remove_file(record);
+    let (received, gaps) = contents
+        .trim()
+        .split_once(' ')
+        .expect("sink record is `<received> <gaps>`");
+    assert_eq!(
+        (received, gaps),
+        ("6000", "0"),
+        "the backpressure edge lost data: sink received {received} of 6000 messages with \
+         {gaps} sequence gaps (a daemon-path drop while the producer's send_output reported Ok)"
+    );
+}

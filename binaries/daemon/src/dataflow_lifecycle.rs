@@ -555,6 +555,7 @@ impl Daemon {
             .collect();
         let mut output_routing =
             output_routing::compute_output_routing(&nodes, &spawn_nodes, &routable_producers);
+        let mut backpressured_outputs = output_routing::backpressured_outputs(&nodes);
 
         let mut tasks = Vec::new();
 
@@ -638,6 +639,7 @@ impl Daemon {
                         node_stderr_most_recent,
                         node_write_events_to,
                         output_routing.remove(&node_id).unwrap_or_default(),
+                        backpressured_outputs.remove(&node_id).unwrap_or_default(),
                         &mut logger,
                     )
                     .await

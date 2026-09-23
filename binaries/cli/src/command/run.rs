@@ -187,6 +187,16 @@ pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
 
 impl Executable for Run {
     fn execute(self) -> eyre::Result<()> {
+        self.execute_with(false)
+    }
+}
+
+impl Run {
+    /// Runs the dataflow. With `fail_on_lost_backpressure_messages`, a run
+    /// in which the daemon dropped a message on a `queue_policy: backpressure`
+    /// input exits non-zero instead of merely warning (`dora replay`,
+    /// dora-rs/dora#3397). Crate-internal so the public `Run` type is unchanged.
+    pub(crate) fn execute_with(self, fail_on_lost_backpressure_messages: bool) -> eyre::Result<()> {
         if self.allow_shell_nodes {
             // SAFETY: Called before spawning any threads (tokio runtime not yet built),
             // so there are no concurrent reads of environment variables.
@@ -313,7 +323,8 @@ impl Executable for Run {
                 match exit_when_nodes_finish {
                     Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
                     None => RunDataflowOptions::default(),
-                },
+                }
+                .fail_on_lost_backpressure_messages(fail_on_lost_backpressure_messages),
             )
             .await
         });

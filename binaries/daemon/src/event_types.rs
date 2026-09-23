@@ -129,6 +129,9 @@ pub enum DaemonNodeEvent {
     Subscribe {
         event_sender: mpsc::Sender<Timestamped<NodeEvent>>,
         pending_counter: Arc<AtomicU64>,
+        /// Notified whenever the subscribing listener takes an event out of
+        /// `event_sender`'s channel (`RunningDataflow::drain_signals`).
+        drained: Arc<tokio::sync::Notify>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
@@ -139,6 +142,10 @@ pub enum DaemonNodeEvent {
         output_id: DataId,
         metadata: metadata::Metadata,
         data: Option<DataMessage>,
+        /// Where the daemon loop hands back what it could not deliver on a
+        /// backpressure edge (see `DeferredDelivery`); `None` for outputs
+        /// without such a consumer.
+        deferred_reply: Option<oneshot::Sender<Vec<crate::local_delivery::DeferredDelivery>>>,
     },
     OutputSent {
         output_id: DataId,
