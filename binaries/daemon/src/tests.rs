@@ -911,22 +911,22 @@ async fn restart_clears_connected_marker() {
     );
 }
 
-/// A restart respawns the node in place, keeping its `running_nodes` entry, so
-/// the `dropped_event_streams` marker set by the exiting incarnation's clean
-/// `EventStream::drop` must be cleared — otherwise the fresh incarnation that
-/// never re-subscribes would have its upstream deliveries silenced as an
-/// intentional drop instead of surfacing the #3201 "failed to re-subscribe"
-/// warning (dora-rs/dora#3558).
+/// When a node's process exit is observed for a restart, the exit handler
+/// resets the incarnation's bookkeeping via `reset_incarnation_state`. That
+/// must clear the `dropped_event_streams` marker the exiting incarnation set on
+/// its clean `EventStream::drop` — otherwise the respawned node that never
+/// re-subscribes would have its upstream deliveries silenced as an intentional
+/// drop instead of surfacing the #3201 "failed to re-subscribe" warning.
+///
+/// The marker is set first (mirroring the real order: the old process only
+/// drops its stream after being told to stop, so `EventStreamDropped` runs
+/// before the exit is observed), then the exit-path reset runs and must clear
+/// it (dora-rs/dora#3558). This exercises the shared exit-handler path, which
+/// covers both a `restart_policy` respawn and `dora node restart`.
 #[test]
-fn restart_clears_dropped_event_stream_marker() {
-    use crate::running_dataflow::{ProcessHandle, ProcessOperation};
-
+fn restart_exit_reset_clears_dropped_event_stream_marker() {
     let capture = LevelCapture::default();
-    // `restart_single_node` schedules a kill via tokio timers, so the runtime
-    // needs time enabled; `with_default` wraps the whole run so the delivery's
-    // WARN is captured.
     let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
         .build()
         .unwrap();
 
@@ -939,23 +939,26 @@ fn restart_clears_dropped_event_stream_marker() {
             let node_a: NodeId = "node_a".to_string().into();
             let input: DataId = "input".to_string().into();
 
-            let mut running = test_running_node();
-            let (op_tx, _op_rx) = flume::unbounded::<ProcessOperation>();
-            running.process = Some(ProcessHandle::new(op_tx));
-            df.running_nodes.insert(node_a.clone(), running);
-            // The exiting incarnation cleanly dropped its stream before exit.
-            df.dropped_event_streams.insert(node_a.clone());
+            // The node is still a live process (in `running_nodes`) and its old
+            // incarnation cleanly dropped its stream before exit — set the
+            // marker via the same handler bookkeeping.
+            df.running_nodes.insert(node_a.clone(), test_running_node());
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            df.subscribe_channels.insert(node_a.clone(), tx);
+            df.mark_event_stream_dropped(&node_a);
             df.mappings.insert(
                 OutputId(sender.clone(), output.clone()),
                 BTreeSet::from([(node_a.clone(), input.clone())]),
             );
 
-            df.restart_single_node(&node_a, &clock, None).unwrap();
+            // The process exit is observed and the node will be restarted: the
+            // exit handler resets the incarnation state.
+            df.reset_incarnation_state(&node_a, 0);
 
             assert!(
                 !df.dropped_event_streams.contains(&node_a),
-                "restart must clear the deliberate-drop marker so a fresh \
-                 incarnation that fails to re-subscribe is diagnosed"
+                "the restart exit reset must clear the deliberate-drop marker so \
+                 a fresh incarnation that fails to re-subscribe is diagnosed"
             );
 
             // The node is still in `running_nodes` (restart keeps it) but has no

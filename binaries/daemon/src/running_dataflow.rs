@@ -543,6 +543,38 @@ impl RunningDataflow {
         self.dropped_event_streams.insert(node_id.clone());
     }
 
+    /// Reset the per-incarnation bookkeeping when a node's process exit is
+    /// observed, so a respawn under the same id starts fresh. Runs on every
+    /// exit, before the restart decision, and both restart paths (a
+    /// `restart_policy` respawn and `dora node restart`) reach it once the exit
+    /// is observed — after the exiting node's blocking `EventStreamDropped` has
+    /// been handled, so clearing `dropped_event_streams` here is not undone by a
+    /// late marker from the old incarnation (dora-rs/dora#3558).
+    ///
+    /// `grace_duration_kills` / `startup_timeout_kills` are keyed by
+    /// `(node_id, generation)`, so a successor can no longer inherit its
+    /// predecessor's marker structurally — removal here is hygiene for this
+    /// incarnation's own entry (consumed classifying this exit). The drain clock
+    /// and the connected marker are cleared for the same "respawn re-subscribes
+    /// from scratch" reason (dora-rs/dora#2270). `finish_escalated` is
+    /// deliberately NOT cleared here — it is consumed later by
+    /// `handle_node_stop_inner` to keep the coordinator-facing `clean_stop` flag
+    /// honest, and an escalated node never restarts.
+    pub(crate) fn reset_incarnation_state(&mut self, node_id: &NodeId, generation: u64) {
+        self.grace_duration_kills
+            .remove(&(node_id.clone(), generation));
+        self.startup_timeout_kills
+            .remove(&(node_id.clone(), generation));
+        self.all_inputs_closed_at.remove(node_id);
+        self.connected_nodes.remove(node_id);
+        // The exiting incarnation's clean `EventStream::drop` set this marker
+        // (it keeps its `running_nodes` entry across a restart). Clear it so the
+        // fresh incarnation is expected to re-subscribe: if it never does,
+        // upstream deliveries surface the #3201 "failed to re-subscribe"
+        // warning instead of being silenced as an intentional drop.
+        self.dropped_event_streams.remove(node_id);
+    }
+
     /// Whether a startup-barrier completion (reported as
     /// [`DataflowStatus::AllNodesReady`]) should start this dataflow.
     ///
@@ -906,13 +938,6 @@ impl RunningDataflow {
         // (dora-rs/dora#2270).
         self.all_inputs_closed_at.remove(node_id);
         self.connected_nodes.remove(node_id);
-        // The exiting incarnation's clean `EventStream::drop` set a
-        // `dropped_event_streams` marker (it keeps its `running_nodes` entry
-        // across a restart). Clear it so the fresh incarnation is expected to
-        // re-subscribe: if it never does, upstream deliveries surface the
-        // #3201 "failed to re-subscribe" warning instead of being silenced as
-        // an intentional drop (dora-rs/dora#3558).
-        self.dropped_event_streams.remove(node_id);
         self.finish_escalated.remove(node_id);
         self.send_stop_and_schedule_kill(
             node_id,
