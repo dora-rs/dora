@@ -339,6 +339,115 @@ fn test_running_node() -> RunningNode {
     }
 }
 
+fn add_input(df: &mut RunningDataflow, consumer: &str, input: &str, source: &str) {
+    df.running_nodes
+        .get_mut(&NodeId::from(consumer.to_owned()))
+        .unwrap()
+        .node_config
+        .run_config
+        .inputs
+        .insert(input.to_owned().into(), user_input(source, "out", None));
+}
+
+#[test]
+fn dynamic_join_dials_both_local_producers_and_consumers() {
+    let mut df = test_dataflow();
+    for name in ["producer", "joining", "consumer", "unrelated"] {
+        let id = NodeId::from(name.to_owned());
+        let mut node = test_running_node();
+        node.node_config.node_id = id.clone();
+        node.node_config.dynamic = name == "joining";
+        df.running_nodes.insert(id, node);
+    }
+    let joining = NodeId::from("joining".to_owned());
+    add_input(&mut df, "joining", "in", "producer");
+    add_input(&mut df, "consumer", "in", "joining");
+    // A remote producer is deliberately absent from the local running set.
+    add_input(&mut df, "joining", "remote", "remote");
+    for (name, port) in [
+        ("producer", 12001),
+        ("consumer", 12002),
+        ("unrelated", 12003),
+        ("remote", 12004),
+    ] {
+        Arc::make_mut(&mut df.zenoh_peering).insert(
+            name.to_owned().into(),
+            crate::spawn::NodeZenohPeering {
+                listen: vec![format!("tcp/127.0.0.1:{port}")],
+                connect: vec![],
+                routable: false,
+            },
+        );
+    }
+    let (_, plan) = df
+        .dynamic_node_config(&joining, Some("tcp/127.0.0.1:12000"))
+        .unwrap();
+    assert_eq!(
+        plan.connect,
+        [
+            "tcp/127.0.0.1:12000",
+            "tcp/127.0.0.1:12001",
+            "tcp/127.0.0.1:12002"
+        ]
+    );
+    assert!(plan.listen.starts_with("tcp/127.0.0.1:"));
+    let again = df.dynamic_node_config(&joining, None).unwrap().1;
+    assert_ne!(
+        again.listen, plan.listen,
+        "a restarted node must not inherit a port nothing held while it was down"
+    );
+    assert_eq!(df.zenoh_peering[&joining].listen, [again.listen]);
+}
+
+#[test]
+fn dynamic_join_publishes_listener_before_next_configuration_request() {
+    let mut df = test_dataflow();
+    let a = NodeId::from("a".to_owned());
+    let b = NodeId::from("b".to_owned());
+    for id in [&a, &b] {
+        let mut node = test_running_node();
+        node.node_config.node_id = id.clone();
+        node.node_config.dynamic = true;
+        df.running_nodes.insert(id.clone(), node);
+    }
+    add_input(&mut df, "b", "in", "a");
+    let first = df.dynamic_node_config(&a, None).unwrap().1;
+    let second = df.dynamic_node_config(&b, None).unwrap().1;
+    assert_eq!(
+        second.connect.as_slice(),
+        std::slice::from_ref(&first.listen)
+    );
+    assert_ne!(first.listen, second.listen);
+    // Once both have asked, either order of reconnect has explicit endpoints.
+    assert_eq!(
+        df.dynamic_node_config(&a, None).unwrap().1.connect,
+        [second.listen]
+    );
+}
+
+#[test]
+fn dynamic_join_rejects_static_nodes_and_stopping_dataflows() {
+    let mut df = test_dataflow();
+    let id = NodeId::from("test".to_owned());
+    df.running_nodes.insert(id.clone(), test_running_node());
+    assert!(
+        df.dynamic_node_config(&id, None)
+            .unwrap_err()
+            .to_string()
+            .contains("not dynamic")
+    );
+    assert!(df.zenoh_peering.is_empty());
+    df.running_nodes.get_mut(&id).unwrap().node_config.dynamic = true;
+    df.stop_sent = true;
+    assert!(
+        df.dynamic_node_config(&id, None)
+            .unwrap_err()
+            .to_string()
+            .contains("stopping")
+    );
+    assert!(df.zenoh_peering.is_empty());
+}
+
 fn user_input(
     source: &str,
     output: &str,

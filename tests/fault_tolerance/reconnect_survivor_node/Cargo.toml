@@ -20,6 +20,10 @@ publish = false
 name = "reconnect-survivor-node"
 path = "src/main.rs"
 
+[[bin]]
+name = "dynamic-peering-node"
+path = "src/peering.rs"
+
 [dependencies]
 dora-node-api = { workspace = true, default-features = false }
 eyre = { workspace = true }

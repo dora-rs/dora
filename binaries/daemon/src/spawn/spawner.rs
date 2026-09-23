@@ -244,6 +244,7 @@ pub struct NodeZenohPeering {
     /// get an endpoint they can actually dial.
     pub listen: Vec<String>,
     /// Endpoints this node dials: the daemon, plus each node it consumes from.
+    /// A joining dynamic node also dials its already-planned local consumers.
     pub connect: Vec<String>,
     /// Whether one of `listen` is an address other machines can dial.
     ///

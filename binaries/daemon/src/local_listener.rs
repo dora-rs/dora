@@ -1,6 +1,7 @@
 use crate::socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send};
 use dora_message::{
     daemon_to_node::DaemonReply,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DaemonRequest, DynamicNodeEvent, Timestamped},
 };
 use eyre::Context;
@@ -13,7 +14,7 @@ use tokio::{
 #[derive(Debug)]
 pub struct DynamicNodeEventWrapper {
     pub event: DynamicNodeEvent,
-    pub reply_tx: oneshot::Sender<Option<DaemonReply>>,
+    pub reply_tx: oneshot::Sender<Option<DynamicNodeConfigReply>>,
 }
 
 pub async fn spawn_listener_loop(

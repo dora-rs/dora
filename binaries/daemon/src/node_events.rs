@@ -17,11 +17,12 @@ use dora_message::{
     DataflowId,
     common::{DataMessage, LogLevel},
     daemon_to_coordinator::{CoordinatorRequest, DaemonEvent},
-    daemon_to_node::{DaemonReply, NodeConfig, NodeEvent},
+    daemon_to_node::{DaemonReply, NodeEvent},
     descriptor::RestartPolicy,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DynamicNodeEvent, Timestamped},
 };
-use eyre::{Context, ContextCompat, Result, bail, eyre};
+use eyre::{Context, ContextCompat, Result, eyre};
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
 use tokio::sync::mpsc;
 use tracing::error;
@@ -52,7 +53,7 @@ impl Daemon {
                 // to tell apart the none/one/many cases.
                 let mut matching = self
                     .running
-                    .iter()
+                    .iter_mut()
                     .filter(|(_id, dataflow)| dataflow.running_nodes.contains_key(&node_id));
                 let first = matching.next();
                 let has_more = matching.next().is_some();
@@ -64,28 +65,20 @@ impl Daemon {
                         Please only have one running dataflow with the specified \
                         node id if you want to use dynamic node",
                     )),
-                    Some((id, dataflow)) => (|| -> Result<NodeConfig> {
-                        let node_config = dataflow
-                            .running_nodes
-                            .get(&node_id)
-                            .with_context(|| {
-                                format!("no node with ID `{node_id}` within the given dataflow")
-                            })?
-                            .node_config
-                            .clone();
-                        if !node_config.dynamic {
-                            bail!("node with ID `{node_id}` in {id} is not dynamic");
-                        }
-                        Ok(node_config)
-                    })()
-                    .map_err(|err| {
-                        format!("failed to get dynamic node config within given dataflow: {err}")
-                    }),
+                    Some((_, dataflow)) => dataflow
+                        .dynamic_node_config(&node_id, self.zenoh_listen_endpoint.as_deref())
+                        .map_err(|err| {
+                            format!(
+                                "failed to get dynamic node config within given dataflow: {err}"
+                            )
+                        }),
                 };
 
-                let reply = DaemonReply::NodeConfig {
-                    result: node_config,
+                let (result, zenoh) = match node_config {
+                    Ok((config, peering)) => (Ok(config), Some(peering)),
+                    Err(err) => (Err(err), None),
                 };
+                let reply = DynamicNodeConfigReply::NodeConfig { result, zenoh };
                 let _ = reply_tx.send(Some(reply)).map_err(|_| {
                     error!("could not send node info reply from daemon to coordinator")
                 });
