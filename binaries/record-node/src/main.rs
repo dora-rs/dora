@@ -225,30 +225,98 @@ impl DropTally {
     }
 }
 
-/// Whether the end-of-run report should be flagged INCOMPLETE. Two independent
-/// causes leave the `.drec` short of the source stream: a drop on an id the
-/// recorder writes (counted by [`DropTally::recorded_total`]), or a frame
-/// skipped for exceeding the per-record size limit. Kept as a pure function so
-/// the completeness decision is unit-tested alongside `DropTally`'s report,
-/// rather than only exercised through `main`.
-fn recording_incomplete(recorded_drops: u64, oversized_dropped: u64) -> bool {
-    recorded_drops > 0 || oversized_dropped > 0
+/// Everything the end-of-run report is built from: queue/ingress drops
+/// ([`DropTally`]), the number of frames skipped for exceeding the per-record
+/// size limit, and the number of records written. Owning all three in one place
+/// lets [`is_incomplete`](Self::is_incomplete) and the [`report`](Self::report)
+/// text be unit-tested directly, rather than only through `main`'s event loop —
+/// the report headline, the drop breakdown and the oversized warning are then
+/// pinned the same way `DropTally`'s report already is.
+#[derive(Debug, Default)]
+struct RunSummary {
+    drops: DropTally,
+    oversized_dropped: u64,
+    msg_count: u64,
 }
 
-/// The end-of-run warning for frames skipped because they exceeded
-/// `MAX_RECORD_BYTES`, or `None` when none were skipped. Split out of `main` so
-/// its wording stays pinned by tests: the count, the INCOMPLETE banner, and
-/// that no `--queue-size` can help (the cap is on a single record, not the
-/// queue).
-fn oversized_skip_warning(oversized_dropped: u64) -> Option<String> {
-    (oversized_dropped > 0).then(|| {
-        format!(
-            "  WARNING:  {oversized_dropped} message(s) exceeded the per-record size limit \
-             and were skipped.\n\
-             \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
-             the `.drec` format regardless of `--queue-size`."
-        )
-    })
+impl RunSummary {
+    /// One record was written to the file.
+    fn note_written(&mut self) {
+        self.msg_count += 1;
+    }
+
+    /// One frame was skipped for exceeding `MAX_RECORD_BYTES`. Counted apart
+    /// from queue drops because no `--queue-size` can rescue it.
+    fn note_oversized(&mut self) {
+        self.oversized_dropped += 1;
+    }
+
+    /// Whether the capture fell short of the source stream — a drop on an id the
+    /// recorder writes, or a skipped oversized frame. Either leaves the `.drec`
+    /// incomplete.
+    fn is_incomplete(&self, reverse_map: &HashMap<String, (NodeId, DataId)>) -> bool {
+        self.drops.recorded_total(reverse_map) > 0 || self.oversized_dropped > 0
+    }
+
+    /// The full end-of-run report printed to stderr: the completeness headline,
+    /// the `Messages`/`Bytes`/`File` lines, the per-topic drop breakdown, and a
+    /// warning for any oversized frames that were skipped (with the reminder
+    /// that `--queue-size` cannot help). Built as one string so its exact
+    /// wording — including the INCOMPLETE-vs-clean headline — stays under test.
+    fn report(
+        &self,
+        reverse_map: &HashMap<String, (NodeId, DataId)>,
+        total_bytes: u64,
+        output_file: &str,
+    ) -> String {
+        use std::fmt::Write as _;
+        let mut out = String::new();
+        if self.is_incomplete(reverse_map) {
+            out.push_str("dora-record-node: recording finished INCOMPLETE\n");
+        } else {
+            out.push_str("dora-record-node: recording finished, no dropped messages detected\n");
+        }
+        let _ = writeln!(out, "  Messages: {}", self.msg_count);
+        let _ = writeln!(out, "  Bytes:    {total_bytes}");
+        let _ = writeln!(out, "  File:     {output_file}");
+        if let Some(report) = self.drops.report(reverse_map) {
+            out.push_str(&report);
+        }
+        if self.oversized_dropped > 0 {
+            let _ = writeln!(
+                out,
+                "  WARNING:  {} message(s) exceeded the per-record size limit and were \
+                 skipped.\n\
+                 \x20           THIS RECORDING IS INCOMPLETE. Such frames cannot be recorded in \
+                 the `.drec` format regardless of `--queue-size`.",
+                self.oversized_dropped
+            );
+        }
+        out
+    }
+}
+
+/// Write one entry, skipping it when it exceeds `MAX_RECORD_BYTES`. Returns the
+/// skipped frame's encoded length (`Some`) so the caller can warn about it with
+/// context, or `None` once the entry was written. Updates `summary` either way
+/// — the written count or the oversized count — so the same counting path
+/// `main` relies on is exercised directly by tests. Genuine I/O errors
+/// propagate.
+fn record_entry<W: Write>(
+    writer: &mut RecordingWriter<W>,
+    entry: &RecordEntry,
+    summary: &mut RunSummary,
+) -> eyre::Result<Option<usize>> {
+    match writer.write_entry_skip_oversized(entry)? {
+        Some(oversized_len) => {
+            summary.note_oversized();
+            Ok(Some(oversized_len))
+        }
+        None => {
+            summary.note_written();
+            Ok(None)
+        }
+    }
 }
 
 fn main() -> eyre::Result<()> {
@@ -275,14 +343,13 @@ fn main() -> eyre::Result<()> {
     let file =
         File::create(&output_file).wrap_err_with(|| format!("failed to create {output_file}"))?;
     let mut writer = RecordingWriter::new(file, &header)?;
-    let mut msg_count: u64 = 0;
     let mut flush_policy = FlushPolicy::new();
-    let mut drops = DropTally::default();
+    // Queue/ingress drops, oversized skips, and the written-record count — the
+    // data the end-of-run report is built from. See the write site below for why
+    // an oversized skip is tracked apart from queue drops (no queue depth fixes
+    // it).
+    let mut summary = RunSummary::default();
     let mut warned_about_drops = false;
-    // Messages skipped because a single frame exceeded the recording format's
-    // per-record size limit (see the write site below). Tracked separately from
-    // queue drops: it makes the recording incomplete but no queue depth fixes it.
-    let mut oversized_dropped: u64 = 0;
     let mut warned_about_oversized = false;
 
     eprintln!("dora-record-node: recording to {output_file}");
@@ -383,8 +450,7 @@ fn main() -> eyre::Result<()> {
                 // skip it and note the recording is incomplete rather than
                 // propagating the error out of `main` (which would lose every
                 // later message too). Genuine I/O errors still propagate.
-                if let Some(oversized_len) = writer.write_entry_skip_oversized(&entry)? {
-                    oversized_dropped += 1;
+                if let Some(oversized_len) = record_entry(&mut writer, &entry, &mut summary)? {
                     if !warned_about_oversized {
                         warned_about_oversized = true;
                         eprintln!(
@@ -395,16 +461,15 @@ fn main() -> eyre::Result<()> {
                     }
                     continue;
                 }
-                msg_count += 1;
                 flush_policy.after_write(&mut writer)?;
 
                 // Poll for drops periodically rather than per event. The final
                 // drain after the loop is what makes the totals exact; this
                 // exists only so a multi-hour capture says something before it
                 // ends.
-                if msg_count.is_multiple_of(FLUSH_EVERY_N_RECORDS) {
-                    drops.absorb(events.drain_drop_counts());
-                    if !warned_about_drops && drops.recorded_total(&reverse_map) > 0 {
+                if summary.msg_count.is_multiple_of(FLUSH_EVERY_N_RECORDS) {
+                    summary.drops.absorb(events.drain_drop_counts());
+                    if !warned_about_drops && summary.drops.recorded_total(&reverse_map) > 0 {
                         warned_about_drops = true;
                         eprintln!(
                             "dora-record-node: WARNING: dropping messages — this recording \
@@ -432,7 +497,7 @@ fn main() -> eyre::Result<()> {
 
     // Final drain: everything dropped since the last flush boundary, plus any
     // drop on a run too short to have flushed at all.
-    drops.absorb(events.drain_drop_counts());
+    summary.drops.absorb(events.drain_drop_counts());
 
     let footer = writer.finish()?;
     // Claim only what was measured. `Messages:` counts what was written, so on
@@ -442,20 +507,10 @@ fn main() -> eyre::Result<()> {
     // be discarded in zenoh's egress and never reach this node's counters at
     // all. Zero drops here means "nothing was dropped on any path this node can
     // see", which is the honest statement.
-    if recording_incomplete(drops.recorded_total(&reverse_map), oversized_dropped) {
-        eprintln!("dora-record-node: recording finished INCOMPLETE");
-    } else {
-        eprintln!("dora-record-node: recording finished, no dropped messages detected");
-    }
-    eprintln!("  Messages: {msg_count}");
-    eprintln!("  Bytes:    {}", footer.total_bytes);
-    eprintln!("  File:     {output_file}");
-    if let Some(report) = drops.report(&reverse_map) {
-        eprint!("{report}");
-    }
-    if let Some(warning) = oversized_skip_warning(oversized_dropped) {
-        eprintln!("{warning}");
-    }
+    eprint!(
+        "{}",
+        summary.report(&reverse_map, footer.total_bytes, &output_file)
+    );
 
     Ok(())
 }
@@ -497,41 +552,130 @@ mod tests {
         assert!(DropTally::default().report(&camera_lidar_map()).is_none());
     }
 
-    #[test]
-    fn a_clean_run_is_not_incomplete() {
-        assert!(!recording_incomplete(0, 0));
+    // Per-record size limit; kept in sync with `dora_recording`'s private
+    // `MAX_RECORD_BYTES` (64 MiB). A frame one byte past it must be skipped.
+    const OVER_LIMIT_PAYLOAD: usize = 64 * 1024 * 1024 + 1;
+
+    fn writer_over_vec() -> RecordingWriter<Vec<u8>> {
+        let header = RecordingHeader {
+            version: dora_recording::FORMAT_VERSION,
+            start_nanos: 0,
+            dataflow_id: uuid::Uuid::nil(),
+            descriptor_yaml: Vec::new(),
+        };
+        RecordingWriter::new(Vec::new(), &header).expect("in-memory writer")
+    }
+
+    fn entry(node: &str, output: &str, payload: Vec<u8>) -> RecordEntry {
+        RecordEntry {
+            node_id: node.to_string(),
+            output_id: output.to_string(),
+            timestamp_offset_nanos: 0,
+            event_bytes: payload,
+        }
     }
 
     #[test]
-    fn recorded_drops_make_the_run_incomplete() {
-        assert!(recording_incomplete(3, 0));
+    fn record_entry_counts_written_and_oversized_frames_separately() {
+        // Drives the same write path `main` uses, so the counting — not just the
+        // helpers — is under test: a written frame bumps `msg_count`, an
+        // oversized one bumps `oversized_dropped` and writes nothing.
+        let mut writer = writer_over_vec();
+        let mut summary = RunSummary::default();
+
+        assert_eq!(
+            record_entry(
+                &mut writer,
+                &entry("camera", "image", vec![1, 2, 3]),
+                &mut summary
+            )
+            .unwrap(),
+            None,
+        );
+        assert_eq!(summary.msg_count, 1);
+        assert_eq!(summary.oversized_dropped, 0);
+
+        let big = entry("camera", "image", vec![0u8; OVER_LIMIT_PAYLOAD]);
+        assert_eq!(
+            record_entry(&mut writer, &big, &mut summary).unwrap(),
+            Some(big.encoded_len()),
+        );
+        assert_eq!(
+            summary.msg_count, 1,
+            "an oversized frame must not count as written"
+        );
+        assert_eq!(summary.oversized_dropped, 1);
     }
 
     #[test]
-    fn an_oversized_skip_alone_makes_the_run_incomplete() {
-        // A frame too large to write leaves the `.drec` short even when no queue
-        // drop was counted, so the run must still report INCOMPLETE — the
-        // oversized path is a second, independent cause of incompleteness.
-        assert!(recording_incomplete(0, 1));
+    fn report_is_clean_when_nothing_was_lost() {
+        let summary = RunSummary {
+            msg_count: 5,
+            ..Default::default()
+        };
+        let report = summary.report(&camera_lidar_map(), 1234, "out.drec");
+        assert!(
+            report.contains("no dropped messages detected"),
+            "got: {report}"
+        );
+        assert!(!report.contains("INCOMPLETE"), "got: {report}");
+        assert!(!report.contains("WARNING"), "got: {report}");
+        assert!(report.contains("Messages: 5"), "got: {report}");
+        assert!(report.contains("Bytes:    1234"), "got: {report}");
+        assert!(report.contains("out.drec"), "got: {report}");
     }
 
     #[test]
-    fn no_oversized_skips_emits_no_warning() {
-        assert_eq!(oversized_skip_warning(0), None);
-    }
-
-    #[test]
-    fn oversized_warning_names_the_count_and_flags_incomplete() {
-        let warning = oversized_skip_warning(2).expect("a warning when frames were skipped");
-        assert!(warning.contains("2 message(s)"), "got: {warning}");
-        assert!(warning.contains("per-record size limit"), "got: {warning}");
-        assert!(warning.contains("INCOMPLETE"), "got: {warning}");
+    fn report_flags_incomplete_and_warns_for_an_oversized_only_run() {
+        // Zero queue drops, one oversized skip: the report `main` actually prints
+        // must still say INCOMPLETE and carry the oversized warning. A test of a
+        // pure `a > 0 || b > 0` helper would pass even if `main` never wired the
+        // count in — this asserts the rendered output instead.
+        let mut summary = RunSummary {
+            msg_count: 2,
+            ..Default::default()
+        };
+        summary.note_oversized();
+        let report = summary.report(&camera_lidar_map(), 0, "out.drec");
+        assert!(
+            report.contains("recording finished INCOMPLETE"),
+            "got: {report}"
+        );
+        assert!(
+            !report.contains("no dropped messages detected"),
+            "got: {report}"
+        );
+        assert!(
+            report.contains("1 message(s) exceeded the per-record size limit"),
+            "got: {report}"
+        );
         // The reader must not be pointed at `--queue-size`, which cannot resize
         // the hard per-record cap.
         assert!(
-            warning.contains("regardless of `--queue-size`"),
-            "got: {warning}"
+            report.contains("regardless of `--queue-size`"),
+            "got: {report}"
         );
+    }
+
+    #[test]
+    fn report_flags_incomplete_on_recorded_drops_without_an_oversized_warning() {
+        let mut summary = RunSummary {
+            msg_count: 3,
+            ..Default::default()
+        };
+        summary.drops.absorb(HashMap::from([(
+            DataId::from("camera___image".to_string()),
+            4,
+        )]));
+        let report = summary.report(&camera_lidar_map(), 0, "out.drec");
+        assert!(
+            report.contains("recording finished INCOMPLETE"),
+            "got: {report}"
+        );
+        // The drop breakdown names the source topic, not the mangled input id.
+        assert!(report.contains("camera/image"), "got: {report}");
+        // No oversized frames, so no per-record-limit warning.
+        assert!(!report.contains("per-record size limit"), "got: {report}");
     }
 
     #[test]
