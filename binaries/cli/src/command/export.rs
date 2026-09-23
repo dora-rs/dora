@@ -36,7 +36,9 @@ use std::{
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use dora_recording::RecordingReader;
 use eyre::{WrapErr, eyre};
+use mcap::records::Metadata;
 use mcap::{Channel, Message, Writer};
+use same_file::is_same_file;
 
 #[derive(Debug, clap::Args)]
 pub struct Export {
@@ -81,7 +83,7 @@ fn run_export(args: Export) -> eyre::Result<()> {
     let output = args
         .output
         .unwrap_or_else(|| format!("{}.mcap", args.input));
-    if same_file(&input_file, &args.input, &output)? {
+    if output_aliases_input(&args.input, &output)? {
         return Err(eyre!(
             "output `{output}` is the input recording `{}` (or an alias of it); \
              refusing to truncate the source",
@@ -91,12 +93,25 @@ fn run_export(args: Export) -> eyre::Result<()> {
 
     let mut reader =
         RecordingReader::open(input_file).wrap_err("failed to initialise recording reader")?;
-    let start_nanos: u64 = reader.header().start_nanos;
+    let header = reader.header();
+    let start_nanos: u64 = header.start_nanos;
 
     let out_file =
         File::create(&output).wrap_err_with(|| eyre!("failed to create output `{}`", output))?;
     let mut writer =
         Writer::new(BufWriter::new(out_file)).wrap_err("failed to initialise MCAP writer")?;
+    writer
+        .write_metadata(&Metadata {
+            name: "dora-recording".to_string(),
+            metadata: BTreeMap::from([
+                ("dataflow_id".to_string(), header.dataflow_id.to_string()),
+                (
+                    "descriptor_yaml".to_string(),
+                    String::from_utf8_lossy(&header.descriptor_yaml).into_owned(),
+                ),
+            ]),
+        })
+        .wrap_err("failed to write MCAP metadata")?;
 
     let mut channel_ids: HashMap<(String, String), u16> = HashMap::new();
     let mut sequences: HashMap<(String, String), u64> = HashMap::new();
@@ -137,6 +152,8 @@ fn run_export(args: Export) -> eyre::Result<()> {
             .entry((node_id.clone(), output_id.clone()))
             .or_insert(0);
         *sequence += 1;
+        let sequence = u32::try_from(*sequence)
+            .wrap_err("recording has more than 2^32 messages on one topic")?;
 
         let log_time = start_nanos.saturating_add(entry.timestamp_offset_nanos);
 
@@ -148,7 +165,7 @@ fn run_export(args: Export) -> eyre::Result<()> {
                 message_encoding: "arrow-ipc".to_string(),
                 metadata: BTreeMap::new(),
             }),
-            sequence: *sequence as u32,
+            sequence,
             log_time,
             publish_time,
             data: Cow::Borrowed(publish_data.as_deref().unwrap_or(&[])),
@@ -166,54 +183,19 @@ fn run_export(args: Export) -> eyre::Result<()> {
     Ok(())
 }
 
-/// Normalizes `path` without requiring the file to exist yet: the parent
-/// directory is canonicalized (resolving symlinks and `.`/`..`), then the
-/// final component is re-applied.
-fn normalized(path: &std::path::Path) -> eyre::Result<std::path::PathBuf> {
-    let parent = path.parent().unwrap_or_else(|| std::path::Path::new("."));
-    let name = path.file_name();
-    let resolved = std::fs::canonicalize(parent)
-        .wrap_err_with(|| eyre!("failed to resolve parent directory of `{}`", path.display()))?;
-    Ok(match name {
-        Some(name) => resolved.join(name),
-        None => resolved,
-    })
-}
-
-/// The platform's stable file identity (device + inode on Unix).
-#[cfg(unix)]
-fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
-    use std::os::unix::fs::MetadataExt;
-    (meta.dev(), meta.ino())
-}
-
-/// The platform's stable file identity (volume + file index on Windows).
-#[cfg(windows)]
-fn file_identity(meta: &std::fs::Metadata) -> (u64, u64) {
-    use std::os::windows::fs::MetadataExt;
-    (meta.volume_serial_number(), meta.file_index())
-}
-
-/// Whether `output` refers to the same file as the open `input` recording —
-/// via an identical path or an existing hardlink/symlink alias. `File::create`
+/// Whether `output` refers to the same file as the `input` recording — via
+/// the identical path or an existing hardlink/symlink alias. `File::create`
 /// would truncate such an output before the recording were read, destroying
 /// the source, so this is checked before any output file is opened.
-fn same_file(input: &File, input_path: &str, output: &str) -> eyre::Result<bool> {
-    if normalized(std::path::Path::new(input_path))? == normalized(std::path::Path::new(output))? {
-        return Ok(true);
-    }
-
-    // An output that already exists may be a hardlink or symlink alias of the
-    // input; compare file identity rather than path strings.
-    match std::fs::metadata(output) {
-        Ok(out_meta) => {
-            let in_meta = input
-                .metadata()
-                .wrap_err("failed to stat the input recording")?;
-            Ok(file_identity(&in_meta) == file_identity(&out_meta))
-        }
+///
+/// Uses `same_file::is_same_file`, which compares device + inode (Unix) or
+/// volume + file index (Windows) and works with bare relative paths. An
+/// output that does not exist yet cannot be an alias of the input.
+fn output_aliases_input(input: &str, output: &str) -> eyre::Result<bool> {
+    match is_same_file(input, output) {
+        Ok(same) => Ok(same),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
-        Err(e) => Err(e).wrap_err_with(|| eyre!("failed to stat output `{output}`")),
+        Err(e) => Err(e).wrap_err_with(|| eyre!("failed to compare `{output}` with the input")),
     }
 }
 
@@ -384,6 +366,12 @@ mod tests {
         assert_eq!(messages[2].log_time, 1_000_000_300);
         assert_eq!(messages[2].publish_time, publish_nanos);
         assert_eq!(messages[2].data.as_ref(), &payload_c[..]);
+
+        let summary = mcap::Summary::read(&mcap_bytes)
+            .expect("read summary")
+            .expect("summary section present");
+        assert_eq!(summary.metadata_indexes.len(), 1);
+        assert_eq!(summary.metadata_indexes[0].name, "dora-recording");
     }
 
     #[test]
@@ -561,5 +549,50 @@ mod tests {
         };
         run_export(args).expect("fresh output must succeed");
         assert!(fs::read(&out).expect("read mcap").len() > 0);
+    }
+
+    /// Serializes tests that change the process working directory.
+    static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    #[test]
+    fn export_rejects_bare_relative_output_matching_input() {
+        let _lock = CWD_LOCK.lock().expect("cwd lock");
+        let dir = tempdir().expect("tempdir");
+        write_minimal_recording(&dir.path().join("sample.drec"));
+
+        let old_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(dir.path()).expect("chdir to tempdir");
+        let err = run_export(Export {
+            input: "sample.drec".to_string(),
+            output: Some("sample.drec".to_string()),
+            topics: vec![],
+        })
+        .expect_err("must refuse output = input")
+        .to_string();
+        std::env::set_current_dir(&old_cwd).expect("restore cwd");
+
+        assert!(
+            err.contains("refusing to truncate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn export_allows_bare_relative_fresh_output() {
+        let _lock = CWD_LOCK.lock().expect("cwd lock");
+        let dir = tempdir().expect("tempdir");
+        write_minimal_recording(&dir.path().join("sample.drec"));
+
+        let old_cwd = std::env::current_dir().expect("current dir");
+        std::env::set_current_dir(dir.path()).expect("chdir to tempdir");
+        let result = run_export(Export {
+            input: "sample.drec".to_string(),
+            output: Some("fresh.mcap".to_string()),
+            topics: vec![],
+        });
+        std::env::set_current_dir(&old_cwd).expect("restore cwd");
+
+        result.expect("fresh bare-relative output must succeed");
+        assert!(dir.path().join("fresh.mcap").exists(), "output written");
     }
 }

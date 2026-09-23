@@ -131,33 +131,33 @@ pub enum Command {
     #[clap(display_order = 18)]
     Export(Export),
     /// View coordinator tracing spans
-    #[clap(subcommand, display_order = 18)]
+    #[clap(subcommand, display_order = 19)]
     Trace(Trace),
 
     // -- Setup --
     /// Check system health
-    #[clap(alias = "check", display_order = 20)]
+    #[clap(alias = "check", display_order = 21)]
     Status(system::status::Status),
     /// Run comprehensive system diagnostics
-    #[clap(display_order = 19)]
+    #[clap(display_order = 20)]
     Doctor(Doctor),
     /// Generate a new project or node
-    #[clap(display_order = 21)]
+    #[clap(display_order = 22)]
     New(NewArgs),
     /// Visualize a dataflow as a graph
-    #[clap(display_order = 22)]
+    #[clap(display_order = 23)]
     Graph(Graph),
     /// Expand module references and print the flat dataflow YAML
-    #[clap(display_order = 23)]
+    #[clap(display_order = 24)]
     Expand(Expand),
     /// Validate a dataflow YAML file and check type annotations
-    #[clap(display_order = 24)]
+    #[clap(display_order = 25)]
     Validate(Validate),
     /// System management commands
-    #[clap(subcommand, display_order = 25)]
+    #[clap(subcommand, display_order = 26)]
     System(System),
     /// Package, discover, and use dora nodes (unstable)
-    #[clap(subcommand, display_order = 26)]
+    #[clap(subcommand, display_order = 27)]
     Hub(Hub),
 
     // -- Utility --

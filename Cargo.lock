@@ -2165,6 +2165,7 @@ dependencies = [
  "mcap",
  "notify",
  "ratatui",
+ "same-file",
  "self-replace",
  "self_update",
  "serde",

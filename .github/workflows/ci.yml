@@ -326,9 +326,9 @@ jobs:
       # `dora export` is an opt-in feature (see binaries/cli/Cargo.toml), so
       # the `cargo test --all` step above compiles the module out and its
       # remux round-trip tests never run. Same deal as the tensor-pool half
-      # above: a Homebrew Unix tool that would otherwise silently rot. The
-      # feature does not change the frozen 1.0 surface, so the surface
-      # snapshot stays valid here -- only `--lib export` is exercised.
+      # above: a feature gated off by default that would otherwise silently
+      # rot. The feature does not change the frozen 1.0 surface, so the
+      # surface snapshot stays valid here -- only `--lib export` is exercised.
       - name: Test (mcap export)
         run: cargo test -p dora-cli --features mcap-export --lib export
 
