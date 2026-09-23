@@ -19,6 +19,31 @@ pub struct PackageRef {
 
 impl PackageRef {
     /// Parse a reference like `dora-yolo@^0.5` or `acme/lidar-fusion@2.1`.
+    ///
+    /// A bare name (no `namespace/` prefix) is shorthand for the official
+    /// [`OFFICIAL_NAMESPACE`](crate::OFFICIAL_NAMESPACE), and an omitted
+    /// `@version-req` means "any version" ([`VersionReq::STAR`]).
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use dora_hub_client::reference::PackageRef;
+    /// use dora_hub_client::semver::VersionReq;
+    ///
+    /// // Bare name → official-namespace shorthand.
+    /// let bare = PackageRef::parse("dora-yolo@^0.5")?;
+    /// assert_eq!(bare.namespace, "dora-rs");
+    /// assert_eq!(bare.name, "dora-yolo");
+    /// assert_eq!(bare.key(), "dora-rs/dora-yolo");
+    ///
+    /// // Explicit namespace is kept as-is.
+    /// let namespaced = PackageRef::parse("acme/lidar-fusion@2.1")?;
+    /// assert_eq!(namespaced.key(), "acme/lidar-fusion");
+    ///
+    /// // No `@version-req` means any version.
+    /// assert_eq!(PackageRef::parse("dora-yolo")?.requirement, VersionReq::STAR);
+    /// # Ok::<(), eyre::Report>(())
+    /// ```
     pub fn parse(reference: &str) -> eyre::Result<Self> {
         let (path, requirement) = match reference.split_once('@') {
             Some((path, req)) => {
