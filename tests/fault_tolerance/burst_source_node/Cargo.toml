@@ -1,0 +1,23 @@
+[package]
+name = "burst-source-node"
+edition.workspace = true
+rust-version.workspace = true
+version.workspace = true
+description.workspace = true
+documentation.workspace = true
+license.workspace = true
+publish = false
+
+# Test-only node: on its first tick, emits `$DORA_TEST_BURST_COUNT`
+# sequence-numbered `value` outputs as fast as the daemon accepts them,
+# then exits. Paired with `slow-sequence-sink-node` to prove a
+# `queue_policy: backpressure` edge on the daemon path delivers an
+# unpaced burst without loss (dora-rs/dora#3397).
+
+[[bin]]
+name = "burst-source-node"
+path = "src/main.rs"
+
+[dependencies]
+dora-node-api = { workspace = true, default-features = false }
+eyre = { workspace = true }

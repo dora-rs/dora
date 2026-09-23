@@ -1,5 +1,12 @@
-use crate::{DaemonNodeEvent, Event, NODE_EVENT_CHANNEL_CAPACITY};
-use dora_core::{config::NodeId, topics::LOCALHOST, uhlc};
+use crate::{
+    CONTROL_EVENT_HEADROOM, DaemonNodeEvent, Event, FaultToleranceStats,
+    NODE_EVENT_CHANNEL_CAPACITY, local_delivery::DeferredDelivery,
+};
+use dora_core::{
+    config::{DataId, NodeId},
+    topics::LOCALHOST,
+    uhlc,
+};
 use dora_message::{
     DataflowId,
     common::Timestamped,
@@ -9,22 +16,47 @@ use dora_message::{
 use eyre::{Context, eyre};
 use futures::{Future, future, task};
 use std::{
-    collections::VecDeque,
+    collections::{BTreeSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
     task::Poll,
+    time::Duration,
 };
 use tokio::{
     net::TcpListener,
     sync::{
+        Notify,
         mpsc::{self, Receiver},
         oneshot,
     },
 };
 
 pub mod tcp;
+
+/// What a producer's listener needs to hold the producer on a backpressure
+/// edge instead of letting the daemon drop (dora-rs/dora#3397).
+#[derive(Debug)]
+pub(crate) struct BackpressureConfig {
+    /// Outputs of this node that feed a `queue_policy: backpressure` input
+    /// (`output_routing::backpressured_outputs`).
+    pub outputs: BTreeSet<DataId>,
+    pub ft_stats: Arc<FaultToleranceStats>,
+}
+
+/// How long a held producer may wait for a receiver that frees no slot at
+/// all before the event is dropped instead. A receiver that is merely slow
+/// frees a slot per event it processes and never trips this; one that
+/// stopped draining altogether — wedged, or blocked on its own producer in
+/// a backpressure cycle — would otherwise hold the producer forever. The
+/// drop is an `error!` and counts as a lost backpressure message.
+const BACKPRESSURE_STALL_LIMIT: Duration = Duration::from_secs(60);
+
+/// The wait is cut into ticks of this length so the held producer's
+/// `last_activity` keeps advancing: it is silent because the daemon holds
+/// it, not because it hung, and the health check must not kill it for that.
+const BACKPRESSURE_STALL_TICK: Duration = Duration::from_secs(1);
 
 pub fn current_millis() -> u64 {
     std::time::SystemTime::now()
@@ -33,6 +65,8 @@ pub fn current_millis() -> u64 {
         .as_millis() as u64
 }
 
+/// `backpressure` names this node's outputs with at least one
+/// `queue_policy: backpressure` consumer; see [`Listener::backpressure`].
 #[allow(clippy::too_many_arguments)]
 pub async fn spawn_listener_loop(
     dataflow_id: &DataflowId,
@@ -43,6 +77,7 @@ pub async fn spawn_listener_loop(
     last_activity: Arc<AtomicU64>,
     shutdown: tokio::sync::watch::Receiver<bool>,
     node_shutdown: tokio::sync::watch::Receiver<bool>,
+    backpressure: Arc<BackpressureConfig>,
 ) -> eyre::Result<DaemonCommunication> {
     let socket = match TcpListener::bind((LOCALHOST, 0)).await {
         Ok(socket) => socket,
@@ -64,6 +99,7 @@ pub async fn spawn_listener_loop(
             daemon_tx,
             clock,
             last_activity,
+            backpressure,
             shutdown,
             node_shutdown,
         )
@@ -149,6 +185,17 @@ struct Listener {
     queued_bytes: usize,
     clock: Arc<uhlc::HLC>,
     last_activity: Arc<AtomicU64>,
+    /// A `SendMessage` on one of `backpressure.outputs` asks the daemon loop
+    /// for what it could not deliver (`DeferredDelivery`); the answer is
+    /// parked in `pending_deferred` and settled before the node's next
+    /// ordering-relevant request is served (`flush_deferred`), so the reply
+    /// to the request itself stays immediate.
+    backpressure: Arc<BackpressureConfig>,
+    pending_deferred: Option<oneshot::Receiver<Vec<DeferredDelivery>>>,
+    /// Notified whenever this listener takes an event out of
+    /// `subscribed_events`; a producer held for this node's full channel
+    /// waits on it (`RunningDataflow::drain_signals`).
+    drained: Arc<Notify>,
 }
 
 impl Listener {
@@ -158,6 +205,7 @@ impl Listener {
         daemon_tx: mpsc::Sender<Timestamped<Event>>,
         hlc: Arc<uhlc::HLC>,
         last_activity: Arc<AtomicU64>,
+        backpressure: Arc<BackpressureConfig>,
     ) {
         // receive the first message
         let message = match connection
@@ -208,6 +256,9 @@ impl Listener {
                             queued_bytes: 0,
                             clock: hlc.clone(),
                             last_activity,
+                            backpressure,
+                            pending_deferred: None,
+                            drained: Arc::new(Notify::new()),
                         };
                         match listener
                             .run_inner(connection)
@@ -217,6 +268,10 @@ impl Listener {
                             Ok(()) => {}
                             Err(err) => tracing::error!("{err:?}"),
                         }
+                        // The subscribe channel's receiver goes with this
+                        // listener: wake anyone waiting for room in it so
+                        // they see it closed.
+                        listener.drained.notify_waiters();
                     }
                     (Err(err), _) => {
                         tracing::warn!("failed to register node {dataflow_id}/{node_id}: {err}");
@@ -255,6 +310,7 @@ impl Listener {
                     future::Either::Right((message, _)) => break message,
                 };
 
+                self.note_drained();
                 self.enqueue(event);
                 self.handle_events().await?;
             };
@@ -269,6 +325,9 @@ impl Listener {
                     tracing::warn!("{err:?}");
                 }
                 Ok(None) => {
+                    // The node's last `SendMessage` may still have deliveries
+                    // waiting for room; it is gone, but they need not be.
+                    self.flush_deferred().await;
                     break; // disconnected
                 }
             }
@@ -287,6 +346,7 @@ impl Listener {
             if let Some(counter) = &self.pending_counter {
                 counter.fetch_sub(1, Ordering::Relaxed);
             }
+            self.note_drained();
             self.enqueue(event);
         }
         Ok(())
@@ -358,6 +418,18 @@ impl Listener {
         if let Err(err) = self.clock.update_with_timestamp(&timestamp) {
             tracing::warn!("failed to update HLC: {err}");
         }
+        // Settle the previous `SendMessage`'s deferred deliveries before
+        // anything that must land after them, so a held producer cannot get
+        // ahead of the event still waiting for room. Other requests need no
+        // ordering against it and are not made to wait.
+        if matches!(
+            message.inner,
+            DaemonRequest::SendMessage { .. }
+                | DaemonRequest::OutputsDone
+                | DaemonRequest::CloseOutputs(_)
+        ) {
+            self.flush_deferred().await;
+        }
         match message.inner {
             DaemonRequest::Register { .. } => {
                 let reply = DaemonReply::Result(Err("unexpected register message".into()));
@@ -397,12 +469,21 @@ impl Listener {
                 metadata,
                 data,
             } => {
+                let (deferred_reply, deferred) = if self.backpressure.outputs.contains(&output_id) {
+                    let (tx, rx) = oneshot::channel();
+                    (Some(tx), Some(rx))
+                } else {
+                    (None, None)
+                };
                 let event = crate::DaemonNodeEvent::SendOut {
                     output_id,
                     metadata,
                     data,
+                    deferred_reply,
                 };
-                self.process_daemon_event(event, None, connection).await?;
+                self.forward_to_daemon(event).await?;
+                self.pending_deferred = deferred;
+                self.send_reply(DaemonReply::Empty, connection).await?;
             }
             DaemonRequest::OutputSent {
                 output_id,
@@ -422,6 +503,7 @@ impl Listener {
                     DaemonNodeEvent::Subscribe {
                         event_sender: tx,
                         pending_counter: pending_counter.clone(),
+                        drained: self.drained.clone(),
                         reply_sender,
                     },
                     Some(reply),
@@ -443,6 +525,7 @@ impl Listener {
                                 if let Some(counter) = &self.pending_counter {
                                     counter.fetch_sub(1, Ordering::Relaxed);
                                 }
+                                self.note_drained();
                                 DaemonReply::NextEvents(vec![event])
                             }
                             None => DaemonReply::NextEvents(vec![]),
@@ -552,7 +635,20 @@ impl Listener {
         reply: Option<oneshot::Receiver<DaemonReply>>,
         connection: &mut C,
     ) -> eyre::Result<()> {
-        // send NodeEvent to daemon main loop
+        self.forward_to_daemon(event).await?;
+        let reply = if let Some(reply) = reply {
+            reply
+                .await
+                .map_err(|_| eyre!("failed to receive reply from daemon"))?
+        } else {
+            DaemonReply::Empty
+        };
+        self.send_reply(reply, connection).await?;
+        Ok(())
+    }
+
+    /// Sends a `NodeEvent` to the daemon main loop.
+    async fn forward_to_daemon(&mut self, event: DaemonNodeEvent) -> eyre::Result<()> {
         let event = Event::Node {
             dataflow_id: self.dataflow_id,
             node_id: self.node_id.clone(),
@@ -566,16 +662,101 @@ impl Listener {
         self.daemon_tx
             .send(event)
             .await
-            .map_err(|_| eyre!("failed to send event to daemon"))?;
-        let reply = if let Some(reply) = reply {
-            reply
-                .await
-                .map_err(|_| eyre!("failed to receive reply from daemon"))?
-        } else {
-            DaemonReply::Empty
-        };
-        self.send_reply(reply, connection).await?;
-        Ok(())
+            .map_err(|_| eyre!("failed to send event to daemon"))
+    }
+
+    /// Settles the deliveries the daemon loop handed back for the previous
+    /// `SendMessage`, if any, waiting for room on each receiver's channel.
+    /// A dropped sender means the daemon loop never routed the event
+    /// (dataflow gone, delivery failed): nothing to wait for.
+    async fn flush_deferred(&mut self) {
+        if let Some(pending) = self.pending_deferred.take()
+            && let Ok(deferred) = pending.await
+        {
+            for delivery in deferred {
+                self.deliver_when_room(delivery).await;
+            }
+        }
+    }
+
+    /// Wakes a producer held for this node's full channel
+    /// (`DeferredDelivery::drained`). Only worth the waiter-list lock while
+    /// one could be waiting, i.e. while the channel is at or below the
+    /// headroom a delivery waits for.
+    fn note_drained(&self) {
+        if self
+            .subscribed_events
+            .as_ref()
+            .is_some_and(|events| events.capacity() <= CONTROL_EVENT_HEADROOM)
+        {
+            self.drained.notify_waiters();
+        }
+    }
+
+    /// Delivers one event the daemon loop could not, once
+    /// `CONTROL_EVENT_HEADROOM` slots are free — the rule the daemon loop
+    /// applies. This runs on the producer's own listener task, so the wait
+    /// stalls only that producer and never the daemon loop, and it is a
+    /// wait on the receiver's drain signal rather than on a channel permit,
+    /// so control events keep finding room meanwhile. A receiver whose
+    /// event stream closed is gone with its node — the same outcome as a
+    /// `Closed` on the daemon loop's `try_send`. A receiver that frees
+    /// nothing for `BACKPRESSURE_STALL_LIMIT` is not waited for any longer:
+    /// the event is dropped, loudly, and counted as lost.
+    async fn deliver_when_room(&self, delivery: DeferredDelivery) {
+        let DeferredDelivery {
+            receiver,
+            channel,
+            pending,
+            drained,
+            mut event,
+        } = delivery;
+        let mut stalled = Duration::ZERO;
+        loop {
+            // Register before looking, so a drain between the look and the
+            // wait is not lost.
+            let notified = drained.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if channel.capacity() >= CONTROL_EVENT_HEADROOM {
+                match channel.try_send(event) {
+                    Ok(()) => {
+                        if let Some(pending) = &pending {
+                            pending.fetch_add(1, Ordering::Relaxed);
+                        }
+                        return;
+                    }
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    Err(mpsc::error::TrySendError::Full(returned)) => event = returned,
+                }
+            }
+            if channel.is_closed() {
+                break;
+            }
+            match tokio::time::timeout(BACKPRESSURE_STALL_TICK, notified).await {
+                Ok(()) => stalled = Duration::ZERO,
+                Err(_elapsed) => {
+                    self.last_activity
+                        .store(current_millis(), Ordering::Release);
+                    stalled += BACKPRESSURE_STALL_TICK;
+                    if stalled >= BACKPRESSURE_STALL_LIMIT {
+                        tracing::error!(
+                            node = %receiver,
+                            "receiver freed no room in {:?}: dropping a message its input \
+                             (queue_policy: backpressure) was promised — it is wedged, or \
+                             blocked on its own producer in a backpressure cycle",
+                            BACKPRESSURE_STALL_LIMIT,
+                        );
+                        self.backpressure.ft_stats.record_drop(1, true);
+                        return;
+                    }
+                }
+            }
+        }
+        tracing::debug!(
+            receiver = %receiver,
+            "receiver's event stream closed before a deferred delivery could complete"
+        );
     }
 
     async fn send_reply<C: Connection>(
@@ -680,6 +861,12 @@ mod tests {
             queued_bytes: 0,
             clock: Arc::new(uhlc::HLC::default()),
             last_activity: Arc::new(AtomicU64::new(0)),
+            backpressure: Arc::new(BackpressureConfig {
+                outputs: Default::default(),
+                ft_stats: Default::default(),
+            }),
+            pending_deferred: None,
+            drained: Arc::new(Notify::new()),
         };
         (listener, tx)
     }
@@ -699,6 +886,96 @@ mod tests {
             },
             timestamp: clock.new_timestamp(),
         }
+    }
+
+    fn deferred(
+        channel: &mpsc::Sender<Timestamped<NodeEvent>>,
+        drained: &Arc<Notify>,
+        event: Timestamped<NodeEvent>,
+    ) -> (DeferredDelivery, Arc<AtomicU64>) {
+        let pending = Arc::new(AtomicU64::new(0));
+        let delivery = DeferredDelivery {
+            receiver: NodeId::from("sink".to_string()),
+            channel: channel.clone(),
+            pending: Some(pending.clone()),
+            drained: drained.clone(),
+            event,
+        };
+        (delivery, pending)
+    }
+
+    /// A deferred delivery lands only once the receiver's channel has the
+    /// control-event headroom free again — the same rule the daemon loop's
+    /// `try_send` path applies — and bumps the receiver's pending counter.
+    /// While it waits it holds no permit, so a control event still gets
+    /// through (a `reserve_many` wait would have been handed every freed
+    /// slot first and starved them).
+    #[tokio::test]
+    async fn deferred_delivery_waits_for_control_headroom() {
+        let (listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        let drained = Arc::new(Notify::new());
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        // One slot short of the headroom: the daemon loop would not deliver
+        // here, and neither may the listener.
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
+            tx.try_send(input(&clock, 0)).unwrap();
+        }
+        let (delivery, pending) = deferred(&tx, &drained, metadata_heavy_input(&clock, 7));
+
+        let complete = listener.deliver_when_room(delivery);
+        let receiver_side = async {
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            assert_eq!(pending.load(Ordering::Relaxed), 0, "still waiting");
+            // Control events find room while the delivery waits.
+            assert!(
+                crate::send_with_timestamp(&tx, NodeEvent::Stop, &clock).unwrap(),
+                "a control event must not be starved by a waiting delivery"
+            );
+            rx.recv().await.expect("a queued event");
+            rx.recv().await.expect("a queued event");
+            drained.notify_waiters();
+        };
+        let started = std::time::Instant::now();
+        tokio::join!(complete, receiver_side);
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(100),
+            "the delivery must wait for the receiver to make room"
+        );
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
+
+        // The deferred event is the newest one in the channel.
+        let mut last = None;
+        while let Ok(event) = rx.try_recv() {
+            last = Some(event);
+        }
+        let last = last.expect("the deferred event landed");
+        match &last.inner {
+            NodeEvent::Input { metadata, .. } => {
+                assert!(metadata.parameters.contains_key("blob"));
+            }
+            other => panic!("unexpected event {other:?}"),
+        }
+    }
+
+    /// A receiver whose event stream is gone cannot be waited for: the
+    /// delivery is abandoned, like a `Closed` on the daemon loop's `try_send`,
+    /// and the producer is not held.
+    #[tokio::test]
+    async fn deferred_delivery_to_a_closed_receiver_is_abandoned() {
+        let (listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        let drained = Arc::new(Notify::new());
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        let (delivery, pending) = deferred(&tx, &drained, input(&clock, 0));
+        drop(rx);
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            listener.deliver_when_room(delivery),
+        )
+        .await
+        .expect("must not wait on a closed receiver");
+        assert_eq!(pending.load(Ordering::Relaxed), 0);
     }
 
     /// A stalled receiver's backlog used to come back in ONE reply; past the
