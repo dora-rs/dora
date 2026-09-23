@@ -12,6 +12,19 @@ use crate::descriptor;
 pub use crate::id::{DataId, NodeId, OperatorId};
 
 /// Filter for the `dora/logs` virtual input.
+///
+/// The wire form parsed by [`FromStr`] / rendered by [`Display`](fmt::Display)
+/// is `dora/logs/{level}/{node}`, so a `node_filter` can only be expressed
+/// together with a `min_level`. Parsing therefore never produces a filter with
+/// `node_filter: Some(_)` while `min_level` is `None`. That combination is still
+/// constructible directly (both fields are public); when it is rendered, the
+/// `stdout` level is emitted to keep the node restriction — see the
+/// [`Display`](fmt::Display) impl of [`InputMapping`]. A `Stdout` minimum is the
+/// most permissive level filter ([`LogLevelOrStdout::passes`](crate::common::LogLevelOrStdout::passes)
+/// lets every message through it), so it delivers the same messages as `None`
+/// (all levels, including stdout); such a value round-trips to
+/// `{ min_level: Some(stdout), node_filter }`, which is behaviorally equivalent
+/// to the original rather than exactly equal to it.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, JsonSchema)]
 pub struct LogSubscriptionFilter {
     /// Minimum log level to receive. `None` means all levels (including stdout).
@@ -280,11 +293,27 @@ impl fmt::Display for InputMapping {
             }
             InputMapping::Logs(filter) => {
                 write!(f, "dora/logs")?;
-                if let Some(level) = &filter.min_level {
-                    write!(f, "/{}", format_log_level(level))?;
-                    if let Some(node) = &filter.node_filter {
-                        write!(f, "/{node}")?;
+                // The wire grammar is `dora/logs/{level}/{node}`, so a node
+                // segment can only follow a level segment. A filter that
+                // restricts the node but leaves `min_level` unset must still
+                // render the node, otherwise the restriction is silently
+                // dropped and the subscription widens to every node (the more
+                // dangerous loss). Render `stdout` in that case: the daemon's
+                // level filter treats a `Stdout` minimum as the most permissive
+                // one (`LogLevelOrStdout::passes` lets every message through
+                // it), so `Some(Stdout)` delivers exactly what `None` does --
+                // all levels, including stdout -- while preserving the node
+                // scope. (`trace` would instead drop the node's stdout lines on
+                // re-parse, the same kind of silent change this guards against.)
+                match (&filter.min_level, &filter.node_filter) {
+                    (Some(level), node_filter) => {
+                        write!(f, "/{}", format_log_level(level))?;
+                        if let Some(node) = node_filter {
+                            write!(f, "/{node}")?;
+                        }
                     }
+                    (None, Some(node)) => write!(f, "/stdout/{node}")?,
+                    (None, None) => {}
                 }
                 Ok(())
             }
@@ -1041,6 +1070,36 @@ mod tests {
     fn display_roundtrip_logs_with_level_and_node() {
         let mapping: InputMapping = "dora/logs/debug/camera".parse().unwrap();
         assert_eq!(mapping.to_string(), "dora/logs/debug/camera");
+    }
+
+    #[test]
+    fn display_logs_node_without_level_keeps_node() {
+        use crate::common::LogLevelOrStdout;
+
+        // `{ min_level: None, node_filter: Some(_) }` is not producible via
+        // `FromStr` but is freely constructible directly. `Display` must not
+        // drop the node restriction (which would silently widen the
+        // subscription to every node); it renders the `stdout` level, which the
+        // daemon's filter treats as the most permissive one, so the node stays
+        // in the output without changing which messages are delivered.
+        let filter = InputMapping::Logs(LogSubscriptionFilter {
+            min_level: None,
+            node_filter: Some("mynode".parse().unwrap()),
+        });
+        assert_eq!(filter.to_string(), "dora/logs/stdout/mynode");
+
+        // The rendered form parses back to the node-scoped filter at `stdout`,
+        // which is behaviorally equivalent to `None` (all levels pass), and is
+        // idempotent afterwards.
+        let round: InputMapping = filter.to_string().parse().unwrap();
+        assert_eq!(
+            round,
+            InputMapping::Logs(LogSubscriptionFilter {
+                min_level: Some(LogLevelOrStdout::Stdout),
+                node_filter: Some("mynode".parse().unwrap()),
+            })
+        );
+        assert_eq!(round.to_string(), "dora/logs/stdout/mynode");
     }
 
     #[test]
