@@ -207,7 +207,7 @@
       ]
     },
     "LogSubscriptionFilter": {
-      "description": "Filter for the `dora/logs` virtual input.",
+      "description": "Filter for the `dora/logs` virtual input.\n\nThe wire form parsed by [`FromStr`] / rendered by [`Display`](fmt::Display)\nis `dora/logs/{level}/{node}`, so a `node_filter` can only be expressed\ntogether with a `min_level`. Parsing therefore never produces a filter with\n`node_filter: Some(_)` while `min_level` is `None`. That combination is still\nconstructible directly (both fields are public); when it is rendered, the\n`stdout` level is emitted to keep the node restriction — see the\n[`Display`](fmt::Display) impl of [`InputMapping`]. A `Stdout` minimum is the\nmost permissive level filter ([`LogLevelOrStdout::passes`](crate::common::LogLevelOrStdout::passes)\nlets every message through it), so it delivers the same messages as `None`\n(all levels, including stdout); such a value round-trips to\n`{ min_level: Some(stdout), node_filter }`, which is behaviorally equivalent\nto the original rather than exactly equal to it.",
       "type": "object",
       "properties": {
         "min_level": {
