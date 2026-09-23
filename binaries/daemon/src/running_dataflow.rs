@@ -318,6 +318,11 @@ pub struct RunningDataflow {
     /// deferred delivery for a full channel waits on it instead of polling
     /// (see `DeferredDelivery`).
     pub(crate) drain_signals: HashMap<NodeId, Arc<Notify>>,
+    /// Outputs with a `queue_policy: backpressure` consumer on another
+    /// daemon. A cross-daemon forward cannot hold its producer, so a
+    /// forward of one of these that is dropped is a lost backpressure
+    /// message (`FaultToleranceStats::lost_backpressure_messages`).
+    pub(crate) remote_backpressured_outputs: BTreeSet<OutputId>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     /// Edges seen routed with the receiver missing from `subscribe_channels` —
     /// i.e. the receiver's daemon event stream was gone (dropped or closed)
@@ -445,6 +450,7 @@ impl RunningDataflow {
             subscribe_channels: HashMap::new(),
             pending_messages: HashMap::new(),
             drain_signals: HashMap::new(),
+            remote_backpressured_outputs: BTreeSet::new(),
             mappings: HashMap::new(),
             missing_channel_warned: BTreeSet::new(),
             dropped_event_streams: BTreeSet::new(),

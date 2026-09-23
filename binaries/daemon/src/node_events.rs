@@ -606,6 +606,8 @@ impl Daemon {
                     "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}), \
                      dropping inter-daemon message"
                 );
+                self.ft_stats
+                    .record_drop(1, dataflow.remote_backpressured_outputs.contains(output_id));
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 tracing::error!("zenoh drain task is gone — inter-daemon publish channel closed");

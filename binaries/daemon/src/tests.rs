@@ -1966,6 +1966,78 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
     });
 }
 
+/// A message to a live receiver with no event stream (the #3201 mode: mid-
+/// restart, or failed to re-subscribe) is a counted drop — and a lost one on
+/// a backpressure input — so `fail_on_lost_backpressure_messages` sees it.
+/// A receiver that finished and dropped its stream on purpose is not.
+#[test]
+fn missing_event_stream_drops_are_counted_per_message() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        df.mappings.insert(
+            OutputId(sender.clone(), output.clone()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        let inputs = BTreeMap::from([(
+            input.clone(),
+            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+        )]);
+        df.running_nodes
+            .insert(receiver.clone(), running_node_with(inputs, None));
+
+        let ft_stats = FaultToleranceStats::default();
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
+        let output_id = OutputId(sender, output);
+        for _ in 0..2 {
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            ft_stats
+                .lost_backpressure_messages
+                .load(atomic::Ordering::Relaxed),
+            2,
+            "every message to the streamless receiver is a lost promise, not just the warned one"
+        );
+
+        // Finished normally: not a drop anyone promised against.
+        df.dropped_event_streams.insert(receiver.clone());
+        send_output_to_local_receivers(
+            &output_id,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+            Some(&ft_stats),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
+    });
+}
+
 /// A receiver recorded in `mappings` but missing from
 /// `subscribe_channels` gets routed to *nothing*: `send_output_to_local_receivers`
 /// cannot deliver, and the producer's send still "succeeds". The missing

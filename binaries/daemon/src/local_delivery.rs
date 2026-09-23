@@ -377,6 +377,16 @@ pub(crate) async fn send_output_to_local_receivers(
             // window is expected, not a fault, so it falls through to the
             // debug arm below instead of a misleading "failed to re-subscribe"
             // warning (dora-rs/dora#3556).
+            //
+            // Every such message is a counted drop — and a lost one on a
+            // backpressure input — so a run that promised delivery
+            // (`fail_on_lost_backpressure_messages`) cannot pass over it.
+            if let Some(stats) = ft_stats {
+                stats.record_drop(
+                    1,
+                    dataflow.input_requires_backpressure(receiver_id, input_id),
+                );
+            }
             if dataflow
                 .missing_channel_warned
                 .insert((receiver_id.clone(), input_id.clone()))

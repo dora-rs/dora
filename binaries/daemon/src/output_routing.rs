@@ -70,15 +70,18 @@ pub fn input_is_backpressure(input: &Input) -> bool {
 }
 
 /// The outputs of every producer in `nodes` that feed at least one
-/// `queue_policy: backpressure` input, keyed by producer — the outputs a
+/// `queue_policy: backpressure` input of a consumer accepted by `consumers`,
+/// keyed by producer. With every consumer, these are the outputs a
 /// producer's listener asks the daemon loop to hand back rather than drop
-/// (`DeferredDelivery`). Producers on other daemons are included and simply
-/// never looked up.
+/// (`DeferredDelivery`); with only the consumers on other daemons, the
+/// outputs whose cross-daemon forward must not be lost quietly. Producers on
+/// other daemons are included and simply never looked up.
 pub fn backpressured_outputs(
     nodes: &BTreeMap<NodeId, ResolvedNode>,
+    consumers: impl Fn(&NodeId) -> bool,
 ) -> BTreeMap<NodeId, BTreeSet<DataId>> {
     let mut outputs: BTreeMap<NodeId, BTreeSet<DataId>> = BTreeMap::new();
-    for consumer in nodes.values() {
+    for consumer in nodes.values().filter(|consumer| consumers(&consumer.id)) {
         for (_, input) in node_inputs(consumer) {
             if !input_is_backpressure(&input) {
                 continue;
@@ -364,7 +367,7 @@ nodes:
         let nodes = descriptor
             .resolve_aliases_and_set_defaults()
             .expect("resolve descriptor");
-        let outputs = backpressured_outputs(&nodes);
+        let outputs = backpressured_outputs(&nodes, |_| true);
         assert_eq!(
             outputs,
             BTreeMap::from([(
@@ -373,6 +376,10 @@ nodes:
             )]),
             "only `image` has a backpressure consumer; `depth` (drop_oldest), `unconsumed` \
              and the consumer-less `other` node must not appear"
+        );
+        assert!(
+            backpressured_outputs(&nodes, |consumer| consumer.as_ref() != "recorder").is_empty(),
+            "the consumer filter decides which inputs count"
         );
     }
 
