@@ -548,11 +548,21 @@ mod tests {
             topics: vec![],
         };
         run_export(args).expect("fresh output must succeed");
-        assert!(fs::read(&out).expect("read mcap").len() > 0);
+        assert!(!fs::read(&out).expect("read mcap").is_empty());
     }
 
     /// Serializes tests that change the process working directory.
     static CWD_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    /// Restores the process working directory on `Drop`, so a failing
+    /// assertion after `set_current_dir` cannot leak the tempdir as the
+    /// next test's cwd.
+    struct CwdGuard(std::path::PathBuf);
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.0);
+        }
+    }
 
     #[test]
     fn export_rejects_bare_relative_output_matching_input() {
@@ -560,7 +570,7 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write_minimal_recording(&dir.path().join("sample.drec"));
 
-        let old_cwd = std::env::current_dir().expect("current dir");
+        let _guard = CwdGuard(std::env::current_dir().expect("current dir"));
         std::env::set_current_dir(dir.path()).expect("chdir to tempdir");
         let err = run_export(Export {
             input: "sample.drec".to_string(),
@@ -569,7 +579,6 @@ mod tests {
         })
         .expect_err("must refuse output = input")
         .to_string();
-        std::env::set_current_dir(&old_cwd).expect("restore cwd");
 
         assert!(
             err.contains("refusing to truncate"),
@@ -583,14 +592,13 @@ mod tests {
         let dir = tempdir().expect("tempdir");
         write_minimal_recording(&dir.path().join("sample.drec"));
 
-        let old_cwd = std::env::current_dir().expect("current dir");
+        let _guard = CwdGuard(std::env::current_dir().expect("current dir"));
         std::env::set_current_dir(dir.path()).expect("chdir to tempdir");
         let result = run_export(Export {
             input: "sample.drec".to_string(),
             output: Some("fresh.mcap".to_string()),
             topics: vec![],
         });
-        std::env::set_current_dir(&old_cwd).expect("restore cwd");
 
         result.expect("fresh bare-relative output must succeed");
         assert!(dir.path().join("fresh.mcap").exists(), "output written");
