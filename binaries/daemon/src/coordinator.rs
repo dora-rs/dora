@@ -13,7 +13,7 @@ use dora_message::{
 use eyre::eyre;
 use futures::{Sink, SinkExt, StreamExt};
 use std::{net::SocketAddr, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -39,6 +39,25 @@ const CONTROL_CHANNEL_CAPACITY: usize = 64;
 /// Capacity of the outbound topic debug channel. Frames beyond it are dropped
 /// (see [`CoordinatorSender::try_send_topic_debug_frame`]).
 const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
+/// Memory the queued topic debug frames may hold in total.
+///
+/// Debug frames are variable-sized — a few bytes for a scalar output, up to
+/// [`MAX_TOPIC_DEBUG_FRAME_BYTES`] for a camera one — so a message count is not
+/// a memory bound on its own: the channel capacity alone would admit several
+/// GiB of camera frames whenever the coordinator falls behind. Each frame takes
+/// one permit per byte before it is queued and releases them once it has been
+/// written, so this is the real ceiling and the capacity above only caps the
+/// number of tiny frames. Sized to still admit one largest-possible frame when
+/// the queue is empty.
+const TOPIC_DEBUG_QUEUE_BYTES: usize = MAX_TOPIC_DEBUG_FRAME_BYTES;
+
+/// A topic debug frame waiting to be written, holding its share of
+/// [`TOPIC_DEBUG_QUEUE_BYTES`] until it has been.
+struct QueuedDebugFrame {
+    message: Message,
+    /// Released on drop, i.e. once the writer is done with `message`.
+    _budget: OwnedSemaphorePermit,
+}
 
 /// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]
@@ -46,7 +65,10 @@ pub struct CoordinatorSender {
     sender: mpsc::Sender<String>,
     /// Topic debug frames, kept off `sender` so they can never delay a control
     /// message: the writer only drains this when the control side is empty.
-    topic_debug: mpsc::Sender<Message>,
+    topic_debug: mpsc::Sender<QueuedDebugFrame>,
+    /// One permit per byte of [`TOPIC_DEBUG_QUEUE_BYTES`], held by each queued
+    /// frame for its own size.
+    topic_debug_budget: Arc<Semaphore>,
     /// Negotiated at registration (`RegisterResult::Ok::binary_debug_frames`):
     /// send topic debug frames as WS binary messages rather than JSON
     /// `TopicDebugData`.
@@ -125,7 +147,8 @@ impl CoordinatorSender {
     }
 
     /// Queue a topic debug frame for the coordinator, dropping it if the debug
-    /// channel is full.
+    /// queue is full — either on its message count or, for large frames, on its
+    /// [`TOPIC_DEBUG_QUEUE_BYTES`] budget.
     ///
     /// Encoded as a WS binary message when the coordinator negotiated
     /// `binary_debug_frames`, otherwise as the JSON `TopicDebugData` event
@@ -186,10 +209,22 @@ impl CoordinatorSender {
             }
             Message::Text(json.into())
         };
-        self.topic_debug.try_send(message).map_err(|err| match err {
-            mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
-            mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
-        })
+        // Reserve this frame's bytes before queueing it; the permit rides with
+        // it and frees them once it has been written. A frame that does not fit
+        // in what is left is dropped like any other the queue has no room for.
+        let bytes = u32::try_from(message.len()).map_err(|_| TrySendEventError::Full)?;
+        let budget = Arc::clone(&self.topic_debug_budget)
+            .try_acquire_many_owned(bytes)
+            .map_err(|_| TrySendEventError::Full)?;
+        self.topic_debug
+            .try_send(QueuedDebugFrame {
+                message,
+                _budget: budget,
+            })
+            .map_err(|err| match err {
+                mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
+                mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
+            })
     }
 
     /// Build a detached sender (and its receiver) for tests that only need a
@@ -202,6 +237,7 @@ impl CoordinatorSender {
             Self {
                 sender,
                 topic_debug,
+                topic_debug_budget: Arc::new(Semaphore::new(TOPIC_DEBUG_QUEUE_BYTES)),
                 binary_debug_frames: false,
             },
             rx,
@@ -307,7 +343,9 @@ pub async fn register(
     let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
     // Topic debug frames get their own channel so they queue behind nothing
     // but each other; see `run_coordinator_ws_writer`.
-    let (topic_debug_tx, topic_debug_rx) = mpsc::channel::<Message>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+    let (topic_debug_tx, topic_debug_rx) =
+        mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+    let topic_debug_budget = Arc::new(Semaphore::new(TOPIC_DEBUG_QUEUE_BYTES));
 
     // Send Register request.
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
@@ -411,6 +449,7 @@ pub async fn register(
         CoordinatorSender {
             sender: send_tx,
             topic_debug: topic_debug_tx,
+            topic_debug_budget,
             binary_debug_frames,
         },
         ReceiverStream::new(rx),
@@ -462,12 +501,13 @@ enum OutboundFrame {
 /// output hold a stop reply or heartbeat behind a backlog of frames
 /// (dora-rs/dora#3535). Now a control message waits for at most the one debug
 /// frame already being written. The two control channels keep their existing
-/// unbiased interleaving with each other.
+/// unbiased interleaving with each other. What may pile up behind that is
+/// bounded by bytes, not just by frames — see [`TOPIC_DEBUG_QUEUE_BYTES`].
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<String>,
     mut internal_rx: mpsc::Receiver<OutboundFrame>,
-    mut topic_debug_rx: mpsc::Receiver<Message>,
+    mut topic_debug_rx: mpsc::Receiver<QueuedDebugFrame>,
 ) where
     Tx: Sink<Message> + Unpin,
 {
@@ -508,8 +548,10 @@ async fn run_coordinator_ws_writer<Tx>(
                 Control::Outgoing(None) => break,
             },
             debug = topic_debug_rx.recv() => match debug {
-                Some(msg) => {
-                    if ws_tx.send(msg).await.is_err() {
+                // `_budget` drops with `frame` at the end of this arm, giving
+                // the queue back this frame's bytes only once it is written.
+                Some(frame) => {
+                    if ws_tx.send(frame.message).await.is_err() {
                         break;
                     }
                 }
@@ -933,7 +975,7 @@ mod tests {
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
         // Held open for the test's duration: a closed debug channel ends the
         // writer, just as dropping the `CoordinatorSender` does in production.
-        let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<Message>(1);
+        let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<QueuedDebugFrame>(1);
 
         let writer = tokio::spawn(run_coordinator_ws_writer(
             ws_out_tx,
@@ -989,18 +1031,24 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<Message>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+        let budget = Arc::new(Semaphore::new(TOPIC_DEBUG_QUEUE_BYTES));
 
-        let (debug_frame_count, big_frame) = (TOPIC_DEBUG_CHANNEL_CAPACITY, vec![0u8; 1 << 20]);
-        for _ in 0..debug_frame_count {
+        let (debug_frame_count, big_frame) = (TOPIC_DEBUG_CHANNEL_CAPACITY, vec![0u8; 1 << 10]);
+        let queue = |message: Message| {
+            let _budget = Arc::clone(&budget)
+                .try_acquire_many_owned(message.len() as u32)
+                .ok()?;
             topic_debug_tx
-                .try_send(Message::Binary(big_frame.clone().into()))
+                .try_send(QueuedDebugFrame { message, _budget })
+                .ok()
+        };
+        for _ in 0..debug_frame_count {
+            queue(Message::Binary(big_frame.clone().into()))
                 .expect("debug queue has room up to its capacity");
         }
         assert!(
-            topic_debug_tx
-                .try_send(Message::Binary(big_frame.into()))
-                .is_err(),
+            queue(Message::Binary(big_frame.into())).is_none(),
             "the debug queue must be full for this test to mean anything"
         );
         send_tx.try_send("stop-reply".to_owned()).unwrap();
@@ -1038,13 +1086,23 @@ mod tests {
             .unwrap();
     }
 
-    fn debug_sender(binary_debug_frames: bool) -> (CoordinatorSender, mpsc::Receiver<Message>) {
+    fn debug_sender(
+        binary_debug_frames: bool,
+    ) -> (CoordinatorSender, mpsc::Receiver<QueuedDebugFrame>) {
+        debug_sender_with_budget(binary_debug_frames, TOPIC_DEBUG_QUEUE_BYTES)
+    }
+
+    fn debug_sender_with_budget(
+        binary_debug_frames: bool,
+        budget_bytes: usize,
+    ) -> (CoordinatorSender, mpsc::Receiver<QueuedDebugFrame>) {
         let (sender, _) = mpsc::channel(1);
         let (topic_debug, topic_debug_rx) = mpsc::channel(4);
         (
             CoordinatorSender {
                 sender,
                 topic_debug,
+                topic_debug_budget: Arc::new(Semaphore::new(budget_bytes)),
                 binary_debug_frames,
             },
             topic_debug_rx,
@@ -1068,7 +1126,7 @@ mod tests {
             )
             .unwrap();
 
-        let Ok(Message::Text(text)) = rx.try_recv() else {
+        let Ok(Message::Text(text)) = rx.try_recv().map(|frame| frame.message) else {
             panic!("expected a JSON text frame");
         };
         let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
@@ -1093,7 +1151,7 @@ mod tests {
             )
             .unwrap();
 
-        let Ok(Message::Binary(data)) = rx.try_recv() else {
+        let Ok(Message::Binary(data)) = rx.try_recv().map(|frame| frame.message) else {
             panic!("expected a binary frame");
         };
         let frame = dora_message::daemon_to_coordinator::decode_topic_debug_frame(&data).unwrap();
@@ -1122,6 +1180,40 @@ mod tests {
         assert!(matches!(send(), Err(TrySendEventError::Full)));
     }
 
+    /// The queue is bounded in bytes as well as in frames: a handful of camera
+    /// frames must not be able to hold hundreds of MiB just because the message
+    /// count is still under its capacity (dora-rs/dora#3535 review).
+    #[test]
+    fn topic_debug_frames_are_dropped_once_the_queue_byte_budget_is_spent() {
+        let payload_len = 4 * 1024;
+        // Room for two of these frames, not three, while the channel capacity
+        // (4 messages) is nowhere near reached.
+        let (sender, mut rx) = debug_sender_with_budget(
+            true,
+            2 * topic_debug_frame_len(1, payload_len) + payload_len / 2,
+        );
+        let send = || {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![7; payload_len],
+            )
+        };
+
+        send().unwrap();
+        send().unwrap();
+        assert!(
+            matches!(send(), Err(TrySendEventError::Full)),
+            "a frame past the byte budget must be dropped, not queued"
+        );
+
+        // Writing a queued frame returns its bytes, so the queue recovers.
+        drop(rx.try_recv().expect("a queued frame"));
+        send().expect("the budget frees up once a frame has been written");
+    }
+
     /// A frame the coordinator would reject must be dropped at the daemon, not
     /// sent: the coordinator closes the connection on an oversized message. In
     /// JSON mode that limit is reached by payloads far below a camera frame.
@@ -1136,7 +1228,7 @@ mod tests {
                 vec![Uuid::new_v4()],
                 vec![255; payload_len],
             );
-            (result, rx.try_recv().ok())
+            (result, rx.try_recv().ok().map(|frame| frame.message))
         };
 
         // JSON: 300 KB renders to well over 1 MiB of text ...

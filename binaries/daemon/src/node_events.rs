@@ -641,7 +641,7 @@ impl Daemon {
                     %dataflow_id,
                     output = %format!("{}/{}", output_id.0, output_id.1),
                     subscriptions = subscription_count,
-                    "dropping topic debug frame because the coordinator topic debug channel is full"
+                    "dropping topic debug frame because the topic debug queue is full (message count or byte budget)"
                 );
             }
             Err(err @ crate::coordinator::TrySendEventError::TooLarge { .. }) => {

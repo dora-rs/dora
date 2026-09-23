@@ -43,6 +43,8 @@ pub(crate) async fn handle_daemon_ws(
     // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
     let mut tracked_connection_id: Option<Uuid> = None;
+    // Topic debug frames this connection had to drop; see `DroppedDebugFrames`.
+    let mut dropped_debug_frames = DroppedDebugFrames::default();
 
     loop {
         tokio::select! {
@@ -64,9 +66,12 @@ pub(crate) async fn handle_daemon_ws(
                     }
                     Ok(Message::Text(text)) => text,
                     Ok(Message::Binary(data)) => {
-                        if !handle_daemon_binary_frame(&data, &event_tx, tracked_daemon_id.as_ref())
-                            .await
-                        {
+                        if !handle_daemon_binary_frame(
+                            &data,
+                            &event_tx,
+                            tracked_daemon_id.as_ref(),
+                            &mut dropped_debug_frames,
+                        ) {
                             break;
                         }
                         continue;
@@ -151,20 +156,68 @@ pub(crate) async fn handle_daemon_ws(
 /// `handle_daemon_request` treats an unregistered daemon's events. A frame
 /// that fails to decode is dropped with a warning; losing one debug frame is
 /// not worth a daemon's connection.
-async fn handle_daemon_binary_frame(
+///
+/// The forward is a `try_send`, never an await: `event_tx` is the coordinator's
+/// shared event channel, and a frame can be up to
+/// `MAX_TOPIC_DEBUG_FRAME_BYTES`. Waiting for room in it would stop this
+/// connection from reading the socket at all — including the daemon's next stop
+/// reply — whenever the main loop falls behind (it can spend up to 100 ms per
+/// subscriber per frame in `send_topic_frames`), which is the same head-of-line
+/// block on the ingress side that the daemon's writer avoids on egress. Debug
+/// frames are droppable, so a full channel drops the frame instead.
+fn handle_daemon_binary_frame(
     data: &[u8],
     event_tx: &mpsc::Sender<Event>,
     tracked_daemon_id: Option<&DaemonId>,
+    dropped: &mut DroppedDebugFrames,
 ) -> bool {
     if tracked_daemon_id.is_none() {
         tracing::warn!("daemon sent binary frame before registering — closing connection");
         return false;
     }
     match decode_daemon_binary_frame(data) {
-        Ok(event) => event_tx.send(event).await.is_ok(),
+        Ok(event) => match event_tx.try_send(event) {
+            Ok(()) => true,
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                dropped.record();
+                true
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => false,
+        },
         Err(err) => {
             tracing::warn!("dropping malformed topic debug frame from daemon: {err}");
             true
+        }
+    }
+}
+
+/// Shortest gap between warnings about dropped topic debug frames. A backlog
+/// produces them at the subscription's rate, so each connection reports at most
+/// one line per interval, with the count since the last one.
+const TOPIC_DEBUG_DROP_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Rate-limited accounting of topic debug frames dropped because the
+/// coordinator's event channel was full, kept per daemon connection.
+#[derive(Default)]
+struct DroppedDebugFrames {
+    since_last_log: u64,
+    last_log: Option<std::time::Instant>,
+}
+
+impl DroppedDebugFrames {
+    fn record(&mut self) {
+        self.since_last_log += 1;
+        let now = std::time::Instant::now();
+        if self
+            .last_log
+            .is_none_or(|last| now.duration_since(last) >= TOPIC_DEBUG_DROP_LOG_INTERVAL)
+        {
+            tracing::warn!(
+                "dropped {} topic debug frame(s): coordinator event channel is full",
+                self.since_last_log
+            );
+            self.since_last_log = 0;
+            self.last_log = Some(now);
         }
     }
 }
@@ -553,35 +606,95 @@ mod topic_debug_frame_tests {
         assert_eq!(from_binary, from_json);
     }
 
-    #[tokio::test]
-    async fn a_binary_frame_is_forwarded_once_the_daemon_is_registered() {
+    #[test]
+    fn a_binary_frame_is_forwarded_once_the_daemon_is_registered() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         let daemon_id = DaemonId::new(Some("A".to_string()));
         let dataflow_id = Uuid::new_v4();
         let frame = encode_topic_debug_frame(dataflow_id, &[Uuid::new_v4()], b"data").unwrap();
 
-        assert!(handle_daemon_binary_frame(&frame, &event_tx, Some(&daemon_id)).await);
+        assert!(handle_daemon_binary_frame(
+            &frame,
+            &event_tx,
+            Some(&daemon_id),
+            &mut DroppedDebugFrames::default()
+        ));
         let (forwarded_dataflow, _, payload) = topic_debug_data(event_rx.try_recv().ok());
         assert_eq!(forwarded_dataflow, dataflow_id);
         assert_eq!(payload, b"data");
     }
 
-    #[tokio::test]
-    async fn a_binary_frame_before_registration_closes_the_connection() {
+    #[test]
+    fn a_binary_frame_before_registration_closes_the_connection() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         let frame = encode_topic_debug_frame(Uuid::new_v4(), &[], b"data").unwrap();
 
-        assert!(!handle_daemon_binary_frame(&frame, &event_tx, None).await);
+        assert!(!handle_daemon_binary_frame(
+            &frame,
+            &event_tx,
+            None,
+            &mut DroppedDebugFrames::default()
+        ));
         assert!(event_rx.try_recv().is_err());
     }
 
-    #[tokio::test]
-    async fn a_malformed_binary_frame_is_dropped_without_closing() {
+    #[test]
+    fn a_malformed_binary_frame_is_dropped_without_closing() {
         let (event_tx, mut event_rx) = mpsc::channel(1);
         let daemon_id = DaemonId::new(Some("A".to_string()));
 
-        assert!(handle_daemon_binary_frame(&[1, 2, 3], &event_tx, Some(&daemon_id)).await);
+        assert!(handle_daemon_binary_frame(
+            &[1, 2, 3],
+            &event_tx,
+            Some(&daemon_id),
+            &mut DroppedDebugFrames::default()
+        ));
         assert!(event_rx.try_recv().is_err());
+    }
+
+    /// With the coordinator's event channel full, a debug frame is dropped and
+    /// the connection stays open: the alternative is waiting for room while the
+    /// daemon's control traffic — a stop reply among it — goes unread.
+    #[test]
+    fn a_binary_frame_is_dropped_rather_than_awaited_when_the_event_channel_is_full() {
+        let (event_tx, mut event_rx) = mpsc::channel(1);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[Uuid::new_v4()], b"data").unwrap();
+        let mut dropped = DroppedDebugFrames::default();
+
+        assert!(handle_daemon_binary_frame(
+            &frame,
+            &event_tx,
+            Some(&daemon_id),
+            &mut dropped
+        ));
+        assert!(handle_daemon_binary_frame(
+            &frame,
+            &event_tx,
+            Some(&daemon_id),
+            &mut dropped
+        ));
+
+        // The first frame is queued, the second dropped — not blocked on.
+        assert!(event_rx.try_recv().is_ok());
+        assert!(event_rx.try_recv().is_err());
+    }
+
+    /// A closed event channel means the coordinator is gone: close the socket
+    /// instead of dropping frames into it forever.
+    #[test]
+    fn a_binary_frame_on_a_closed_event_channel_closes_the_connection() {
+        let (event_tx, event_rx) = mpsc::channel(1);
+        drop(event_rx);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[], b"data").unwrap();
+
+        assert!(!handle_daemon_binary_frame(
+            &frame,
+            &event_tx,
+            Some(&daemon_id),
+            &mut DroppedDebugFrames::default()
+        ));
     }
 }
 
