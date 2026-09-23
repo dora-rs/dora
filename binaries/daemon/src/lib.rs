@@ -27,7 +27,9 @@ use dora_message::{
     common::{DaemonId, DataMessage, LogLevel, NodeError},
     coordinator_to_cli::DataflowResult,
     coordinator_to_daemon::{DaemonCoordinatorEvent, SpawnDataflowNodes},
-    daemon_to_coordinator::{CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent},
+    daemon_to_coordinator::{
+        CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DataflowDaemonResult,
+    },
     daemon_to_node::NodeEvent,
     descriptor::NodeSource,
     node_to_daemon::Timestamped,
@@ -385,6 +387,7 @@ pub struct Daemon {
     pub(crate) exit_when_done: Option<BTreeSet<(Uuid, NodeId)>>,
     pub(crate) exit_when_all_finished: bool,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
+    pub(crate) pending_finished_dataflows: BTreeMap<Uuid, DataflowDaemonResult>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
@@ -1322,6 +1325,7 @@ impl Daemon {
             exit_when_done,
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
+            pending_finished_dataflows: BTreeMap::new(),
             warned_late_outputs: HashSet::new(),
             clock,
             ft_stats: Default::default(),
@@ -1345,6 +1349,48 @@ impl Daemon {
         };
 
         Ok((daemon, dora_events_rx))
+    }
+
+    pub(crate) async fn report_pending_finished_dataflows(&mut self) -> eyre::Result<()> {
+        let Some(sender) = &self.coordinator_sender else {
+            return Ok(());
+        };
+
+        let pending: Vec<_> = self
+            .pending_finished_dataflows
+            .iter()
+            .map(|(dataflow_id, result)| (*dataflow_id, result.clone()))
+            .collect();
+        for (dataflow_id, result) in pending {
+            self.send_all_nodes_finished(sender, dataflow_id, &result)
+                .await
+                .wrap_err("failed to retry dataflow finish report to dora-coordinator")?;
+            self.pending_finished_dataflows.remove(&dataflow_id);
+        }
+
+        Ok(())
+    }
+
+    pub(crate) async fn send_all_nodes_finished(
+        &self,
+        sender: &coordinator::CoordinatorSender,
+        dataflow_id: Uuid,
+        result: &DataflowDaemonResult,
+    ) -> eyre::Result<()> {
+        let msg = serde_json::to_vec(&Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: self.daemon_id.clone(),
+                event: DaemonEvent::AllNodesFinished {
+                    dataflow_id,
+                    result: result.clone(),
+                },
+            },
+            timestamp: self.clock.new_timestamp(),
+        })?;
+        sender
+            .send_event(&msg)
+            .await
+            .wrap_err("failed to report dataflow finish to dora-coordinator")
     }
 
     /// Run the daemon event loop for one coordinator connection.
@@ -1431,6 +1477,9 @@ impl Daemon {
             .merge();
 
         // Send status report to coordinator so it can reconcile dataflow state.
+        if let Err(err) = self.report_pending_finished_dataflows().await {
+            tracing::warn!("failed to retry pending dataflow finish reports: {err:#}");
+        }
         if let Some(sender) = &self.coordinator_sender {
             let running_dataflows: Vec<_> = self
                 .running
