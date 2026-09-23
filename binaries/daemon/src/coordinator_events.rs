@@ -258,6 +258,9 @@ impl Daemon {
             }) => {
                 let base_working_dir = self.base_working_dir(local_working_dir, session_id)?;
 
+                // A duplicate spawn bails on the existing entry, which belongs
+                // to the live dataflow and must survive the cleanup below.
+                let already_running = self.running.contains_key(&dataflow_id);
                 let result = self
                     .spawn_dataflow(
                         build_id,
@@ -273,14 +276,22 @@ impl Daemon {
                 let (trigger_result, result_task) = match result {
                     Ok(result_task) => (Ok(()), Some(result_task)),
                     Err(err) => {
-                        // The spawn failed after the memory-pool subscriber
-                        // task was started (it is spawned before the node
-                        // build): the dataflow never reaches `self.running`,
-                        // so `finish_dataflow` will not run — terminate the
-                        // subscriber here or it leaks for the daemon's
-                        // lifetime.
-                        #[cfg(feature = "tensor-pool")]
-                        self.pool.abort_subscriber(&dataflow_id);
+                        // `finish_dataflow` never runs for a spawn that failed,
+                        // so whatever `spawn_dataflow` registered before it
+                        // bailed is released here: the memory-pool subscriber
+                        // task (started before the node build), and the
+                        // `RunningDataflow` entry with its endpoint queryable
+                        // and pending link check (inserted before the per-node checks
+                        // that can still fail — no node has been spawned by
+                        // then). Left in place, the entry would answer and
+                        // probe for a dataflow the coordinator already
+                        // considers failed.
+                        if !already_running {
+                            #[cfg(feature = "tensor-pool")]
+                            self.pool.abort_subscriber(&dataflow_id);
+                            self.running.remove(&dataflow_id);
+                            self.working_dir.remove(&dataflow_id);
+                        }
                         (Err(format!("{err:?}")), None)
                     }
                 };
@@ -324,6 +335,11 @@ impl Daemon {
                 )).await;
                 match self.running.get_mut(&dataflow_id) {
                     Some(dataflow) => {
+                        // Every daemon of the dataflow has spawned by now, so
+                        // one that still does not answer has no zenoh link.
+                        if let Some(exchange) = &mut dataflow.endpoint_exchange {
+                            exchange.check_link();
+                        }
                         // The verdict must fold in this daemon's local
                         // `exited_before_subscribe`, not just the coordinator's
                         // external list: a cohort member that died before

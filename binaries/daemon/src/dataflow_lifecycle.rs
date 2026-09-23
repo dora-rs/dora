@@ -165,6 +165,12 @@ impl Daemon {
         uv: bool,
         write_events_to: Option<PathBuf>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<()>> + use<>> {
+        // Before anything below touches state keyed by the dataflow id (the
+        // pool subscriber, the endpoint queryable), all of which belongs to the
+        // live dataflow.
+        if self.running.contains_key(&dataflow_id) {
+            bail!("there is already a running dataflow with ID `{dataflow_id}`")
+        }
         // Reclaim `/dev/shm` segments a previous crash of this dataflow's
         // nodes left behind. Scoped to the nodes this daemon spawns, since
         // a co-located daemon may be starting the other half of the same
@@ -212,32 +218,34 @@ impl Daemon {
         // stalling the event loop on its own. Same reason the memory-pool
         // subscriber above runs off the loop: a degraded inter-daemon link must
         // not wedge this spawn handler and every event queued behind it.
-        let wanted = crate::spawn::remote_sources_of_local_nodes(&nodes, &spawn_nodes);
+        let wanted = crate::spawn::wanted_remote_sources(&nodes, &spawn_nodes);
         let local_endpoints: BTreeMap<NodeId, String> = listeners
             .iter()
             .filter_map(|(id, l)| Some((id.clone(), l.routable()?.to_string())))
             .collect();
-        let endpoint_exchange = (!wanted.is_empty() || !local_endpoints.is_empty()).then(|| {
+        // Every daemon of a dataflow that spans more than one takes part, even
+        // with nothing to announce or ask: its reply is what tells the others
+        // they can reach it at all (see `endpoint_exchange`). A daemon with no
+        // upstream elsewhere declares and returns at once.
+        let peers = crate::spawn::remote_placements(&nodes, &spawn_nodes);
+        let mut endpoint_exchange = None;
+        if crate::spawn::spans_daemons(&nodes, &spawn_nodes) {
             let session = self.zenoh_session.clone();
             let daemon_id = self.daemon_id.clone();
-            tokio::spawn(crate::spawn::endpoint_exchange::exchange(
+            let exchange_logger = logger.try_clone().await.ok();
+            endpoint_exchange = Some(tokio::spawn(crate::spawn::endpoint_exchange::exchange(
                 session,
                 dataflow_id,
                 daemon_id,
                 local_endpoints,
                 wanted,
-            ))
-        });
-        let dataflow = match self.running.entry(dataflow_id) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                self.working_dir
-                    .insert(dataflow_id, base_working_dir.clone());
-                entry.insert(dataflow)
-            }
-            std::collections::hash_map::Entry::Occupied(_) => {
-                bail!("there is already a running dataflow with ID `{dataflow_id}`")
-            }
-        };
+                peers,
+                exchange_logger,
+            )));
+        }
+        self.working_dir
+            .insert(dataflow_id, base_working_dir.clone());
+        let dataflow = self.running.entry(dataflow_id).or_insert(dataflow);
 
         let mut stopped = Vec::new();
 
@@ -503,7 +511,7 @@ impl Daemon {
         // before nodes spawn, and a node reads its dial list once at startup.
         // A task that panicked or was cancelled resolves to "no remote
         // endpoints", which is the same degradation as an expired deadline.
-        let (remote_endpoints, endpoint_queryable) = match endpoint_exchange {
+        let (remote_endpoints, exchange_handle) = match endpoint_exchange {
             Some(task) => task.await.unwrap_or_else(|err| {
                 tracing::warn!("zenoh node-endpoint exchange failed: {err}");
                 Default::default()
@@ -516,7 +524,7 @@ impl Daemon {
             self.zenoh_listen_endpoint.as_deref(),
             &remote_endpoints,
         ));
-        dataflow.endpoint_queryable = endpoint_queryable;
+        dataflow.endpoint_exchange = exchange_handle;
 
         let spawner = Spawner {
             dataflow_id,
