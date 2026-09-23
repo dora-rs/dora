@@ -1170,14 +1170,104 @@ async fn backpressure_edge_delivers_unpaced_burst_without_loss() {
     let contents = std::fs::read_to_string(record)
         .expect("sink record should exist — the sink writes it when its input closes");
     let _ = std::fs::remove_file(record);
-    let (received, gaps) = contents
-        .trim()
-        .split_once(' ')
-        .expect("sink record is `<received> <gaps>`");
+    let (received, gaps, _elapsed_ms, _others) = parse_sink_record(&contents);
     assert_eq!(
         (received, gaps),
         ("6000", "0"),
         "the backpressure edge lost data: sink received {received} of 6000 messages with \
          {gaps} sequence gaps (a daemon-path drop while the producer's send_output reported Ok)"
+    );
+}
+
+/// `<received> <gaps> <elapsed_ms> <others>`, as `slow-sequence-sink-node`
+/// writes it.
+fn parse_sink_record(contents: &str) -> (&str, &str, u64, &str) {
+    let mut fields = contents.trim().split(' ');
+    let received = fields.next().expect("received count");
+    let gaps = fields.next().expect("gap count");
+    let elapsed_ms = fields
+        .next()
+        .and_then(|ms| ms.parse().ok())
+        .expect("elapsed ms");
+    let others = fields.next().expect("other-input count");
+    (received, gaps, elapsed_ms, others)
+}
+
+/// A held message is delivered as the consumer makes room, not when its
+/// producer next sends or exits (PR #3590 review).
+///
+/// Same burst and stall as above, plus a second producer that sends one
+/// message on its own backpressure edge while the burst has the consumer's
+/// channel full, and then stays alive and idle. A held delivery that only
+/// progressed on its producer's own next request would sit until the run's
+/// `stop_after` makes that producer exit — and a producer waiting for a
+/// reply from the very receiver it is held for would wait forever. The
+/// sink records the time from its first input to its last on any input:
+/// with the 3 s stall that is a few seconds, not the 20 s `stop_after`.
+#[tokio::test(flavor = "multi_thread")]
+async fn backpressure_edge_delivers_held_tail_while_producer_is_idle() {
+    let status = std::process::Command::new("cargo")
+        .args([
+            "build",
+            "-p",
+            "burst-source-node",
+            "-p",
+            "slow-sequence-sink-node",
+        ])
+        .status()
+        .expect("failed to build backpressure burst test nodes");
+    assert!(
+        status.success(),
+        "backpressure burst test nodes build failed"
+    );
+
+    let record = Path::new("/tmp/dora-backpressure-burst-idle-producer.log");
+    let _ = std::fs::remove_file(record);
+
+    let dataflow_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/dataflows/backpressure-burst-idle-producer.yml");
+
+    let result = Daemon::run_dataflow(
+        &dataflow_path,
+        None,
+        None,
+        SessionId::generate(),
+        false,
+        LogDestination::Tracing,
+        None,
+        // The producer never exits on its own; this is what ends the run.
+        Some(Duration::from_secs(20)),
+        false,
+        None,
+        None,
+    )
+    .await;
+
+    let dr = result.expect("dataflow should complete");
+    assert!(
+        dr.node_results.values().all(|r| r.is_ok()),
+        "every node should exit cleanly: {:?}",
+        dr.node_results
+    );
+
+    let contents = std::fs::read_to_string(record)
+        .expect("sink record should exist — the sink writes it when its stream ends");
+    let _ = std::fs::remove_file(record);
+    let (received, gaps, elapsed_ms, others) = parse_sink_record(&contents);
+    eprintln!("sink record: {received} received, {gaps} gaps, {elapsed_ms} ms, {others} other");
+    assert_eq!(
+        (received, gaps),
+        ("6000", "0"),
+        "the backpressure edge lost data"
+    );
+    assert_eq!(
+        others, "1",
+        "the sporadic producer's held message never reached the sink: it waited for its \
+         producer's next request, which never came"
+    );
+    assert!(
+        elapsed_ms < 10_000,
+        "the held message arrived only after {elapsed_ms} ms — it waited for its producer's \
+         exit at stop_after instead of for the receiver to make room"
     );
 }

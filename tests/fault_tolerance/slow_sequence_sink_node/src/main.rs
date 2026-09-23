@@ -8,8 +8,11 @@
 //! channel. What the daemon does when the last of those is full is the
 //! property under test.
 //!
-//! Writes `<received> <gaps>` to `$DORA_TEST_SINK_RECORD` once the event
-//! stream ends. It deliberately keeps receiving through `InputClosed` and
+//! Writes `<received> <gaps> <elapsed_ms> <others>` to
+//! `$DORA_TEST_SINK_RECORD` once the event stream ends: `received` and
+//! `gaps` describe the numbered `value` input, `others` counts inputs on
+//! any other id, and `elapsed_ms` is the time from the first input to the
+//! last on any input — how long everything took to arrive in full. It deliberately keeps receiving through `InputClosed` and
 //! `Stop`: the scheduler yields lifecycle events ahead of the inputs still
 //! queued behind them, so exiting on either would cut the count short for
 //! a reason unrelated to delivery. The stream returns `None` once the
@@ -18,7 +21,7 @@
 //! dropped message anywhere in the stream is visible even when the
 //! total looks plausible.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use dora_node_api::{DoraNode, Event, arrow_v59::array::Int64Array};
 use eyre::{Context, ContextCompat};
@@ -39,11 +42,18 @@ fn main() -> eyre::Result<()> {
     let mut received: u64 = 0;
     let mut gaps: u64 = 0;
     let mut expected: i64 = 0;
+    let mut others: u64 = 0;
+    let mut first: Option<Instant> = None;
+    let mut elapsed = Duration::ZERO;
     while let Some(event) = events.recv() {
         let Event::Input { id, data, .. } = event else {
             continue;
         };
+        let first = *first.get_or_insert_with(Instant::now);
+        elapsed = first.elapsed();
         if id.as_str() != "value" {
+            others += 1;
+            eprintln!("slow-sink: `{id}` arrived after {} ms", elapsed.as_millis());
             continue;
         }
         let seq = data
@@ -63,8 +73,9 @@ fn main() -> eyre::Result<()> {
         }
     }
 
-    eprintln!("slow-sink: received {received} messages, {gaps} gaps");
-    std::fs::write(&record, format!("{received} {gaps}"))
+    let elapsed_ms = elapsed.as_millis();
+    eprintln!("slow-sink: received {received} messages, {gaps} gaps, over {elapsed_ms} ms");
+    std::fs::write(&record, format!("{received} {gaps} {elapsed_ms} {others}"))
         .with_context(|| format!("failed to write sink record to {record}"))?;
     Ok(())
 }
