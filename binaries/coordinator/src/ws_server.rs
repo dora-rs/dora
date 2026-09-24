@@ -18,13 +18,24 @@ use std::{
     sync::{Arc, Mutex},
     time::Instant,
 };
-use tokio::{net::TcpListener, sync::mpsc};
+use tokio::{
+    net::TcpListener,
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc},
+};
 use tower::{ServiceBuilder, limit::ConcurrencyLimitLayer};
 
 /// Maximum message size for control plane JSON messages (1 MiB).
 const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 
-/// Maximum concurrent WebSocket connections.
+/// Maximum concurrent WebSocket connections, per endpoint.
+///
+/// Enforced by [`WsState::control_connections`] and
+/// [`WsState::daemon_connections`] for the lifetime of each upgraded socket.
+/// The two budgets are separate so a flood of control (CLI) connections
+/// cannot lock daemons out of registering. The router's `ConcurrencyLimitLayer` alone cannot do that: tower
+/// releases its permit once the handler's response (the `101 Switching
+/// Protocols`) is produced, while the socket itself lives on in the spawned
+/// `on_upgrade` task.
 const MAX_WS_CONNECTIONS: usize = 256;
 
 /// Maximum new connections per IP within the rate window.
@@ -87,6 +98,23 @@ pub(crate) struct WsState {
     /// DaemonId -> WS peer address (set at registration). Lets daemons
     /// reach each other's direct-TCP memory-pool data listeners.
     pub daemon_peer_addrs: Arc<std::sync::RwLock<std::collections::HashMap<String, SocketAddr>>>,
+    /// Open `/api/control` sockets (`MAX_WS_CONNECTIONS` permits). A permit
+    /// is moved into each `on_upgrade` task and released when the socket
+    /// closes.
+    pub control_connections: Arc<Semaphore>,
+    /// Open `/api/daemon` sockets, budgeted like `control_connections`.
+    pub daemon_connections: Arc<Semaphore>,
+}
+
+/// Reserve a slot for a new WebSocket connection, or reject it with `503`
+/// when `MAX_WS_CONNECTIONS` sockets are already open.
+fn acquire_ws_slot(connections: &Arc<Semaphore>) -> Result<OwnedSemaphorePermit, StatusCode> {
+    connections.clone().try_acquire_owned().map_err(|_| {
+        tracing::warn!(
+            "rejected WebSocket connection: {MAX_WS_CONNECTIONS} connections already open on this endpoint"
+        );
+        StatusCode::SERVICE_UNAVAILABLE
+    })
 }
 
 /// Query parameters for backward compatibility — old clients may send `?token=...`.
@@ -139,6 +167,8 @@ pub(crate) fn router(state: WsState) -> Router {
         .route("/api/artifacts/{build_id}/{node_id}", get(artifact_handler))
         .route("/health", get(health))
         .with_state(Arc::new(state))
+        // Bounds requests *in flight* (handshakes, artifact downloads); open
+        // WebSocket sockets are capped separately by the `WsState` semaphores.
         .layer(ServiceBuilder::new().layer(ConcurrencyLimitLayer::new(MAX_WS_CONNECTIONS)))
 }
 
@@ -159,10 +189,12 @@ async fn ws_control_handler(
     }
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
+    let permit = acquire_ws_slot(&state.control_connections)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
-        .on_upgrade(move |socket| {
-            handle_control_ws(socket, state.event_tx.clone(), state.clock.clone())
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
+            handle_control_ws(socket, state.event_tx.clone(), state.clock.clone()).await
         }))
 }
 
@@ -179,9 +211,11 @@ async fn ws_daemon_handler(
     }
     let token = extract_token(&headers);
     validate_token(&state.auth_token, &token)?;
+    let permit = acquire_ws_slot(&state.daemon_connections)?;
     Ok(ws
         .max_message_size(MAX_CONTROL_MESSAGE_BYTES)
-        .on_upgrade(move |socket| {
+        .on_upgrade(move |socket| async move {
+            let _permit = permit;
             handle_daemon_ws(
                 socket,
                 state.event_tx.clone(),
@@ -190,6 +224,7 @@ async fn ws_daemon_handler(
                 addr,
                 state.daemon_peer_addrs.clone(),
             )
+            .await
         }))
 }
 
@@ -251,6 +286,8 @@ pub(crate) async fn serve(
         store,
         rate_limiter: IpRateLimiter::new(),
         daemon_peer_addrs,
+        control_connections: Arc::new(Semaphore::new(MAX_WS_CONNECTIONS)),
+        daemon_connections: Arc::new(Semaphore::new(MAX_WS_CONNECTIONS)),
     };
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -283,6 +320,20 @@ impl ShutdownTrigger {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The connection cap rejects with 503 once every slot is held, and a
+    /// slot frees up again when its permit (owned by the socket task) drops.
+    #[test]
+    fn ws_slot_rejects_when_full_and_frees_on_drop() {
+        let connections = Arc::new(Semaphore::new(1));
+        let held = acquire_ws_slot(&connections).expect("first slot is free");
+        assert_eq!(
+            acquire_ws_slot(&connections).err(),
+            Some(StatusCode::SERVICE_UNAVAILABLE)
+        );
+        drop(held);
+        assert!(acquire_ws_slot(&connections).is_ok());
+    }
 
     // --- coordinator WebSocket auth (dora-rs/dora#2027 verified test gap) ---
 

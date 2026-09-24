@@ -10,7 +10,7 @@ Dora's control plane uses WebSocket connections for all communication between th
 | Wire format | JSON text frames + binary frames for topic data |
 | Protocol | UUID-correlated request-reply + fire-and-forget events |
 | Message size limit | 1 MiB (`MAX_CONTROL_MESSAGE_BYTES`) |
-| Concurrency limit | 256 connections (`MAX_WS_CONNECTIONS`) |
+| Concurrency limit | 256 open connections per endpoint (`MAX_WS_CONNECTIONS`) |
 | Server framework | Axum + Tower middleware |
 | Client library | `tokio-tungstenite` (integration tests, daemon), custom `WsSession` (CLI) |
 | Security | Re-register guard, daemon ID verification, machine ID length limit |
@@ -295,7 +295,7 @@ The `machine_id` field in `DaemonRegisterRequest` is limited to 256 bytes. Overs
 | Limit | Value | Enforced by |
 |-------|-------|-------------|
 | Max message size | 1 MiB | `WebSocketUpgrade::max_message_size` |
-| Max concurrent connections | 256 | Tower `ConcurrencyLimitLayer` |
+| Max concurrent connections | 256 per endpoint (`/api/control`, `/api/daemon`) | Semaphore permit held for the socket's lifetime |
 
 ---
 
@@ -436,7 +436,7 @@ CLI                    WsSession              Coordinator
 | Constant | Value | File | Purpose |
 |----------|-------|------|---------|
 | `MAX_CONTROL_MESSAGE_BYTES` | 1 MiB (1,048,576) | `ws_server.rs` | Max WebSocket frame size |
-| `MAX_WS_CONNECTIONS` | 256 | `ws_server.rs` | Tower concurrency limit |
+| `MAX_WS_CONNECTIONS` | 256 | `ws_server.rs` | Open WebSocket connections per endpoint |
 
 ### Server setup
 
