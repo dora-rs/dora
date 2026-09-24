@@ -2520,6 +2520,19 @@ fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
     };
     run.cli_reaped = true;
 
+    // The fixture's `TERM` trap appends one line per SIGTERM the shell got.
+    // The daemon group-kill delivers SIGTERM to the shell directly, so the
+    // guard must not re-forward it: that would run the trap twice, turning a
+    // graceful stop into a "force" for anything that counts deliveries
+    // (dora-rs/dora#3472 review).
+    assert_eq!(
+        run.count_terms(),
+        1,
+        "the stop ladder must deliver SIGTERM to the shell exactly once; a \
+         re-forward by the shell guard makes it twice (#3472)\nstderr tail:\n{}",
+        run.stderr_tail()
+    );
+
     // The fixture shell ignores SIGTERM, so only the group SIGKILL can have
     // ended it; both pids must be gone shortly after the CLI exits.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
@@ -2598,6 +2611,7 @@ struct ShellOrphanRun {
     log: std::path::PathBuf,
     shell_pid_file: std::path::PathBuf,
     child_pid_file: std::path::PathBuf,
+    terms_file: std::path::PathBuf,
     files: Vec<std::path::PathBuf>,
 }
 
@@ -2660,10 +2674,11 @@ impl ShellOrphanRun {
         }
         let scratch =
             |ext: &str| target.join(format!("dora-3472-shell-{}.{ext}", std::process::id()));
-        let (yaml, shell_pid_file, child_pid_file, log) = (
+        let (yaml, shell_pid_file, child_pid_file, terms_file, log) = (
             scratch("yml"),
             scratch("shell.pid"),
             scratch("child.pid"),
+            scratch("terms.txt"),
             scratch("log"),
         );
 
@@ -2672,13 +2687,17 @@ impl ShellOrphanRun {
         // abandoned-fork fixture skips both: shell pid and `wait` are absent,
         // so the shell exits the moment the fork is handed off. In the stop
         // variant the shell additionally ignores the stop signals, so only the
-        // daemon's SIGKILL escalation can end it. Paths are single-quoted so
-        // spaces in `$CARGO_TARGET_DIR` cannot break out of the redirect
-        // (mirroring `write_shell_dataflow`).
+        // daemon's SIGKILL escalation can end it; a `TERM` trap there counts
+        // SIGTERM deliveries, so the test can pin the stop ladder to a single
+        // one. Paths are single-quoted so spaces in `$CARGO_TARGET_DIR` cannot
+        // break out of the redirect (mirroring `write_shell_dataflow`).
         let ignore = if ignore_term_signals && !abandon_fork {
-            "trap '' INT HUP TERM; "
+            format!(
+                "trap '' INT HUP; trap 'echo t >> '{}'' TERM; ",
+                terms_file.display(),
+            )
         } else {
-            ""
+            String::new()
         };
         let shell_args = if abandon_fork {
             format!(
@@ -2720,7 +2739,8 @@ impl ShellOrphanRun {
             log: log.clone(),
             shell_pid_file: shell_pid_file.clone(),
             child_pid_file: child_pid_file.clone(),
-            files: vec![yaml, shell_pid_file, child_pid_file, log],
+            terms_file: terms_file.clone(),
+            files: vec![yaml, shell_pid_file, child_pid_file, terms_file, log],
         }
     }
 
@@ -2728,6 +2748,14 @@ impl ShellOrphanRun {
         fs::read_to_string(&self.log)
             .map(|s| s.lines().rev().take(20).collect::<Vec<_>>().join("\n"))
             .unwrap_or_else(|e| format!("<could not read {}: {e}>", self.log.display()))
+    }
+
+    /// How many times the fixture's shell recorded receiving SIGTERM, if the
+    /// trap ever ran. `0` if the stop ladder never delivered SIGTERM at all.
+    fn count_terms(&self) -> usize {
+        fs::read_to_string(&self.terms_file)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
     }
 
     /// Block until both the shell and its background child have published

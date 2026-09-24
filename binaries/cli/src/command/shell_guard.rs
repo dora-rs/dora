@@ -1,5 +1,4 @@
 use eyre::Context;
-use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
 use super::Executable;
@@ -17,14 +16,14 @@ use libc::pid_t;
 /// shell and its background forks *while the guard is alive* (dora-rs/dora#3472).
 ///
 /// On the *normal* stop path (a terminal `dora run`, `--stop-after`, …) the
-/// daemon SIGTERMs the whole group. The guard survives those signals — it
-/// installs SIGTERM/SIGINT/SIGHUP handlers in armed mode, forwards the signal
-/// to the shell, and only exits once the shell is gone — so a shell that
-/// ignores SIGTERM is never reparented to init when the guard dies first.
-/// Without the handlers the guard exits on the first SIGTERM, the node is
-/// unregistered, and the daemon skips the group-SIGKILL escalation for a node
-/// it believes already stopped: the TERM-ignoring shell and its background
-/// forks live on as orphans (dora-rs/dora#3472 review).
+/// daemon SIGTERMs the whole group — the shell gets the signal directly from
+/// that group kill, so the guard forwards nothing. The guard only has to
+/// survive those signals — it swallows SIGTERM/SIGINT/SIGHUP in armed mode so
+/// it stays registered and can reap the shell before exiting — because without
+/// the handlers it exits on the first SIGTERM, the node is unregistered, and
+/// the daemon skips the group-SIGKILL escalation for a node it believes
+/// already stopped: the TERM-ignoring shell and its background forks live on
+/// as orphans (dora-rs/dora#3472 review).
 ///
 /// The guard can only contain forks while it is running. A background fork
 /// abandoned by a shell that already exited (`sh -c 'cmd &'` — the shell
@@ -135,7 +134,6 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
         .args(args)
         .spawn()
         .wrap_err_with(|| format!("failed to spawn `{program}` under guard"))?;
-    let child_pid = child.id() as pid_t;
 
     // Reaper thread: block on the shell's exit and propagate its status, so a
     // node's normal teardown is not delayed by a poll interval.  When the
@@ -157,21 +155,11 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
     // Poll the parent for the containment side: when it is gone (e.g. a
     // SIGKILLed `dora run`), take down the whole group — the shell, its
     // background forks, and this guard.  The reaper thread owns the child, so
-    // this group `killpg` is what ends a shell that outlives the daemon.
+    // this group `killpg` is what ends a shell that outlives the daemon.  The
+    // loop only ever fires here: stop signals need no action (the group kill
+    // already reaches the shell), so the handlers above exist solely to keep
+    // the guard alive until the reaper thread exits.
     loop {
-        if let Some(signal) = pending_signal() {
-            // Forward the stop signal to the shell.  On the normal stop path
-            // the daemon already SIGTERMs the whole group, so this is a
-            // harmless re-delivery that also covers a signal sent to the
-            // guard on its own.
-            // SAFETY: `kill` forwards to the shell; its pid came from this
-            // guard's own spawn, and the reaper thread has not reaped it (the
-            // process would have exited first).
-            unsafe {
-                libc::kill(child_pid, signal);
-            }
-        }
-
         // Contain background forks when the parent is gone.
         if parent_is_gone(parent, direct_child) {
             contain();
@@ -185,25 +173,23 @@ fn armed(program: &str, args: &[String], parent: u32) -> eyre::Result<()> {
 /// sent to stop.
 const STOP_SIGNALS: [libc::c_int; 3] = [libc::SIGTERM, libc::SIGINT, libc::SIGHUP];
 
-/// The most recent stop signal received, if any.  Written by the async-signal
-/// handler, read by the poll loop.
-static PENDING_SIGNAL: AtomicI32 = AtomicI32::new(0);
-
-/// Signal handler: record the signal; the poll loop does the forwarding.
-/// Nothing else runs here — `kill`, `wait`, `_exit` etc. all live in
-/// `std::process`/`libc` calls that may allocate and are not safe in a handler.
-extern "C" fn record_stop_signal(signal: libc::c_int) {
-    PENDING_SIGNAL.store(signal, Ordering::SeqCst);
-}
+/// Signal handler: swallow the signal.  The guard's only job on a stop signal
+/// is to stay alive — the daemon group-kills the shell itself, so there is
+/// nothing to re-forward, and the reaper thread ends the guard once the shell
+/// is gone.  `SIG_IGN` would also work for staying alive but must not be used:
+/// ignored dispositions survive `exec` and would be inherited by the shell,
+/// changing shell semantics (e.g. rustup/sccache proxies that expect TERM to
+/// hurt).
+extern "C" fn swallow_stop_signal(_signal: libc::c_int) {}
 
 fn install_stop_signal_handlers() -> eyre::Result<()> {
     for signal in STOP_SIGNALS {
-        // SAFETY: `signal` installs a handler that only stores to an atomic.
-        // The handler never allocates or touches non-async-signal-safe state.
+        // SAFETY: `signal` installs a handler that touches no state.  The
+        // handler never allocates or calls anything non-async-signal-safe.
         let prev = unsafe {
             libc::signal(
                 signal,
-                record_stop_signal as *const () as libc::sighandler_t,
+                swallow_stop_signal as *const () as libc::sighandler_t,
             )
         };
         if prev == libc::SIG_ERR {
@@ -211,11 +197,6 @@ fn install_stop_signal_handlers() -> eyre::Result<()> {
         }
     }
     Ok(())
-}
-
-fn pending_signal() -> Option<i32> {
-    let signal = PENDING_SIGNAL.swap(0, Ordering::SeqCst);
-    (signal != 0).then_some(signal)
 }
 
 /// Reset `signal` to its default action and re-raise it, so the process dies
