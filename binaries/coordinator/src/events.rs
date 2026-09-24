@@ -12,7 +12,7 @@ use dora_message::{
 use eyre::WrapErr;
 use futures::Stream;
 use std::collections::BTreeMap;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use uuid::Uuid;
 
@@ -69,6 +69,16 @@ pub enum Event {
         dataflow_id: Uuid,
         subscription_ids: Vec<Uuid>,
         payload: Vec<u8>,
+        /// This frame's share of the coordinator's topic debug ingress budget,
+        /// held until the event has been handled (dora-rs/dora#3535). The
+        /// channel carrying this event is bounded by message count, so without
+        /// a byte budget its debug share alone would be 64 frames of up to
+        /// `MAX_TOPIC_DEBUG_FRAME_BYTES` each.
+        ///
+        /// `None` when the frame arrived as a JSON `DaemonEvent::TopicDebugData`
+        /// from a daemon that did not negotiate binary frames: the daemon text
+        /// message limit already caps those at 1 MiB apiece.
+        budget: Option<OwnedSemaphorePermit>,
     },
     DaemonStatusReport {
         daemon_id: DaemonId,

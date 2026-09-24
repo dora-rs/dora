@@ -1,6 +1,8 @@
 use crate::{
-    artifacts::ArtifactStore, events::Event, ws_control::handle_control_ws,
-    ws_daemon::handle_daemon_ws,
+    artifacts::ArtifactStore,
+    events::Event,
+    ws_control::handle_control_ws,
+    ws_daemon::{TOPIC_DEBUG_INGRESS_BYTES, handle_daemon_ws},
 };
 use axum::{
     Router,
@@ -93,6 +95,10 @@ impl IpRateLimiter {
 #[derive(Clone)]
 pub(crate) struct WsState {
     pub event_tx: mpsc::Sender<Event>,
+    /// Bounds the topic debug data resident in `event_tx` in bytes, which its
+    /// message capacity cannot: see `ws_daemon::TOPIC_DEBUG_INGRESS_BYTES`.
+    /// Shared by every daemon connection, because the channel is.
+    pub topic_debug_budget: Arc<Semaphore>,
     pub clock: Arc<HLC>,
     pub auth_token: Option<AuthToken>,
     pub artifact_store: Arc<ArtifactStore>,
@@ -228,6 +234,7 @@ async fn ws_daemon_handler(
             handle_daemon_ws(
                 socket,
                 state.event_tx.clone(),
+                state.topic_debug_budget.clone(),
                 state.clock.clone(),
                 state.store.clone(),
                 addr,
@@ -289,6 +296,7 @@ pub(crate) async fn serve(
     let port = listener.local_addr()?.port();
     let state = WsState {
         event_tx,
+        topic_debug_budget: Arc::new(Semaphore::new(TOPIC_DEBUG_INGRESS_BYTES)),
         clock,
         auth_token,
         artifact_store,

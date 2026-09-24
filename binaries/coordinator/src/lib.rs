@@ -268,7 +268,13 @@ async fn start_with_events(
 
     let mut tasks = FuturesUnordered::new();
 
-    // Setup WS event channel (used by axum WS handlers)
+    // Setup WS event channel (used by axum WS handlers).
+    //
+    // The capacity is a message count, which bounds memory only because every
+    // event on it is itself size-bounded — by the daemon and control text
+    // message limits. Binary topic debug frames are the exception, so they are
+    // admitted against `ws_daemon::TOPIC_DEBUG_INGRESS_BYTES` instead and hold
+    // their share of it until handled below.
     let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
     let ws_events = ReceiverStream::new(ws_event_rx);
 
@@ -507,6 +513,10 @@ async fn start_inner(
                 dataflow_id,
                 subscription_ids,
                 payload,
+                // Bound to the arm rather than dropped at the destructure, so
+                // the frame's bytes stay reserved until it has been handed to
+                // its subscribers.
+                budget: _budget,
             } => {
                 coordinator
                     .handle_topic_debug_data(dataflow_id, subscription_ids, payload)
