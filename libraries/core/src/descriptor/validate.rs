@@ -5,7 +5,7 @@ use crate::{
 };
 
 use dora_message::{
-    config::{Input, InputMapping, UserInputMapping},
+    config::{ByteSize, Input, InputMapping, UserInputMapping},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
@@ -464,48 +464,15 @@ impl ResolvedNodeExt for ResolvedNode {
 }
 
 fn parse_byte_size(s: &str) -> eyre::Result<u64> {
-    let s = s.trim();
-    let (num_str, unit) = match s.find(|c: char| c.is_ascii_alphabetic()) {
-        Some(pos) => (&s[..pos], s[pos..].trim().to_uppercase()),
-        None => {
-            return s
-                .parse::<u64>()
-                .map_err(|_| eyre!("invalid byte size: '{s}'"));
-        }
-    };
-    let num_str = num_str.trim();
-    let multiplier: u64 = match unit.as_str() {
-        "B" => 1,
-        "KB" | "K" => 1024,
-        "MB" | "M" => 1024 * 1024,
-        "GB" | "G" => 1024 * 1024 * 1024,
-        _ => bail!("unknown byte size unit: '{unit}', expected B, KB, MB, or GB"),
-    };
-    // Use integer parse when possible to avoid float rounding
-    if let Ok(num) = num_str.parse::<u64>() {
-        return num
-            .checked_mul(multiplier)
-            .ok_or_else(|| eyre!("byte size '{num_str}{unit}' overflows u64"));
-    }
-    let num: f64 = num_str
-        .parse()
-        .map_err(|_| eyre!("invalid byte size number: '{num_str}'"))?;
-    // Casting a negative or non-finite f64 to u64 saturates (negatives and
-    // NaN to 0, +inf to u64::MAX) instead of erroring, so reject them up front.
-    if !num.is_finite() || num < 0.0 {
-        bail!("byte size must be a non-negative, finite number: '{s}'");
-    }
-    let bytes = num * multiplier as f64;
-    // A finite product can still exceed u64::MAX (e.g. "99999999999999999999GB"),
-    // and casting an out-of-range f64 to u64 saturates to u64::MAX instead of
-    // erroring, silently turning an absurd limit into the maximum. `u64::MAX as
-    // f64` rounds up to 2^64 and no f64 values exist between u64::MAX and 2^64,
-    // so `>=` rejects exactly the products that overflow u64. Mirrors the guard
-    // in `ByteSize::from_str` (dora-message).
-    if bytes >= u64::MAX as f64 {
-        bail!("byte size '{s}' overflows u64");
-    }
-    Ok(bytes as u64)
+    // Delegate to `dora_message::config::ByteSize`, which implements the exact
+    // same `<number><unit>` grammar (units B/KB/MB/GB, integer fast-path before
+    // the f64 path, and rejection of negative/non-finite/overflowing values).
+    // Keeping a single parser here avoids the two copies silently drifting
+    // apart when the grammar changes. `ByteSize` stores a `usize`, which on the
+    // 64-bit targets dora runs on is identical to the previous `u64` path.
+    s.parse::<ByteSize>()
+        .map(|b| b.as_bytes() as u64)
+        .map_err(|e| eyre!("{e}"))
 }
 
 fn parse_log_level(s: &str) -> eyre::Result<dora_message::common::LogLevelOrStdout> {
