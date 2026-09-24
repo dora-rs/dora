@@ -2475,17 +2475,19 @@ fn run_killed_by_sigkill_does_not_orphan_shell_nodes() {
     }
 }
 
-/// dora-rs/dora#3472 (review): the normal stop path must not orphan a shell
-/// that ignores the daemon's SIGTERM.
+/// dora-rs/dora#3472 (review): a shell that ignores the daemon's SIGTERM must
+/// not orphan under the *normal* stop path.
 ///
 /// The daemon stops a node with SIGTERM to its whole process group, then —
 /// only if the node is *still registered* after the grace period — SIGKILL to
-/// that group. A bare guard dies on the first SIGTERM, the node is
-/// unregistered, the SIGKILL escalation is skipped, and a TERM-ignoring shell
-/// (plus its background forks) survives, reparented to init. The guard now
-/// catches the stop signals, forwards them to the shell, and stays alive to
-/// reap it, so the node is still registered when the group SIGKILL lands and
-/// nothing survives the stop.
+/// that group. Without the guard, the node's shell is directly group-killed
+/// by that escalation. With the guard, the kill targets the guard's group, so
+/// the guard must survive the first SIGTERM (installing handlers before the
+/// spawn) to keep the node registered until the group SIGKILL lands; a guard
+/// that dies on the TERM would be unregistered, the escalation skipped, and a
+/// TERM-ignoring shell (plus its forks) survive reparented to init. This test
+/// pins that guard behavior: it exercises the guard's stop-path handling, so
+/// on `main` — where no guard runs in this path — it passes by construction.
 #[test]
 #[cfg(unix)]
 fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
@@ -2539,6 +2541,49 @@ fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
     }
 }
 
+/// dora-rs/dora#3472 (review): a background fork abandoned by a shell that
+/// exits immediately (`sh -c 'cmd &'`, no `wait`) must not orphan.
+///
+/// The shell-guard's own containment runs only while the guard is alive: the
+/// shell exits at once, the reaper thread exits the guard, and no `killpg`
+/// ever fires from the guard's side — the remaining fork is reachable only
+/// from the daemon. The node's process-wait task (`prepared.rs`) `killpg`s
+/// the node's process group the moment the node process exits; on a branch
+/// without that daemon-side kill, the fork survives reparented to init until
+/// teardown.
+///
+/// The fork keeps the node's log drain (and hence the dataflow, and with it
+/// `dora run` itself) open while it lives, so the CLI's exit is downstream of
+/// containment — watching the FORK is the honest assertion, not watching the
+/// CLI. The fork must be gone shortly after the pid file lands: the pid file
+/// is written by the shell before it exits, and the daemon's kill fires once
+/// the (already-exited) node process is reaped, so the ordering is
+/// deterministic.
+#[test]
+#[cfg(unix)]
+fn shell_node_abandoned_background_fork_is_contained_on_normal_exit() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start_abandoned_fork();
+    let child_pid = run.wait_for_abandoned_child();
+
+    // The node process is the only thing keeping the fork in check, and it
+    // exits with the shell. The daemon must have contained the fork already
+    // by now; 30s is slack for a loaded runner while still bounding it (an
+    // orphan is forever, not slow).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while process_alive(&child_pid.to_string()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "abandoned background fork {child_pid} outlived the node that spawned \
+             it by 30s: a `sh -c 'cmd &'` fork is not contained on the node's \
+             normal exit (#3472)\nstderr tail:\n{}",
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 /// A `dora run` of a shell fixture that forks a long-lived background child,
 /// plus the RAII teardown it needs. Teardown kills the CLI (while unreaped),
 /// then — identity-checked so a recycled pid is never signalled — kills a
@@ -2571,16 +2616,28 @@ fn still_our_shell(pid: u32) -> bool {
 #[cfg(unix)]
 impl ShellOrphanRun {
     fn start() -> Self {
-        Self::start_with(None, false)
+        Self::start_with(None, false, false)
     }
 
     /// A variant whose shell ignores SIGTERM/SIGINT/SIGHUP and which stops the
     /// `dora run` on its own via `--stop-after` (the normal stop path).
     fn start_term_ignoring(stop_after: Duration) -> Self {
-        Self::start_with(Some(stop_after), true)
+        Self::start_with(Some(stop_after), true, false)
     }
 
-    fn start_with(stop_after: Option<Duration>, ignore_term_signals: bool) -> Self {
+    /// A variant whose shell backgrounds a child and RETURNS IMMEDIATELY
+    /// (`sh -c 'cmd &'`, no trailing `wait`). The shell exits, the node
+    /// finishes, and the only thing left containing the fork is the daemon's
+    /// exit-time `killpg` of the node's process group (`prepared.rs`).
+    fn start_abandoned_fork() -> Self {
+        Self::start_with(None, false, true)
+    }
+
+    fn start_with(
+        stop_after: Option<Duration>,
+        ignore_term_signals: bool,
+        abandon_fork: bool,
+    ) -> Self {
         use std::os::unix::process::CommandExt as _;
 
         ensure_cli_built();
@@ -2610,21 +2667,31 @@ impl ShellOrphanRun {
             scratch("log"),
         );
 
-        // The fixture forks a background `sleep` and then `wait`s so it stays
-        // up. In the stop variant it additionally ignores the stop signals, so
-        // only the daemon's SIGKILL escalation can end it. Paths are
-        // single-quoted so spaces in `$CARGO_TARGET_DIR` cannot break out of
-        // the redirect (mirroring `write_shell_dataflow`).
-        let ignore = if ignore_term_signals {
+        // The keep-alive fixture forks a background `sleep` and then `wait`s so
+        // it stays up, and the shell pid is published for teardown. The
+        // abandoned-fork fixture skips both: shell pid and `wait` are absent,
+        // so the shell exits the moment the fork is handed off. In the stop
+        // variant the shell additionally ignores the stop signals, so only the
+        // daemon's SIGKILL escalation can end it. Paths are single-quoted so
+        // spaces in `$CARGO_TARGET_DIR` cannot break out of the redirect
+        // (mirroring `write_shell_dataflow`).
+        let ignore = if ignore_term_signals && !abandon_fork {
             "trap '' INT HUP TERM; "
         } else {
             ""
         };
-        let shell_args = format!(
-            "{ignore}echo $$ > '{}'; sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'; wait",
-            shell_pid_file.display(),
-            child_pid_file.display(),
-        );
+        let shell_args = if abandon_fork {
+            format!(
+                "{ignore}sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'",
+                child_pid_file.display(),
+            )
+        } else {
+            format!(
+                "{ignore}echo $$ > '{}'; sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'; wait",
+                shell_pid_file.display(),
+                child_pid_file.display(),
+            )
+        };
         fs::write(
             &yaml,
             format!("nodes:\n  - id: shell-orphan\n    path: shell\n    args: \"{shell_args}\"\n"),
@@ -2711,6 +2778,30 @@ impl ShellOrphanRun {
             );
         }
         (shell_pid, child_pid)
+    }
+
+    /// Block until the abandoned fork published its pid to disk. There is no
+    /// shell to wait for: the shell exits as soon as the fork is handed off.
+    /// The caller must not read from `self.cli` inside the loop — the node
+    /// finishing is what closes the fork's containment window.
+    fn wait_for_abandoned_child(&mut self) -> u32 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let child_pid = loop {
+            if let Some(raw) = fs::read_to_string(&self.child_pid_file).ok()
+                && let Ok(child) = raw.trim().parse::<u32>()
+            {
+                break child;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture never published the abandoned fork pid to {}\nstderr tail:\n{}",
+                self.child_pid_file.display(),
+                self.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        self.child_pid = Some(child_pid);
+        child_pid
     }
 }
 

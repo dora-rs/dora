@@ -12,8 +12,9 @@ use libc::pid_t;
 /// on unix, but only on the in-process `dora run` / `Daemon::run_dataflow`
 /// spawn path. The guard becomes the direct child (and process-group leader) of
 /// the daemon, spawns the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
-/// When the parent is gone, the guard `killpg`s its entire process group — which
-/// includes the shell and any background forks (dora-rs/dora#3472).
+/// When the parent is gone, the guard `killpg`s its entire process group —
+/// which, because the daemon wrapped it as `ProcessGroup::leader()`, covers the
+/// shell and its background forks *while the guard is alive* (dora-rs/dora#3472).
 ///
 /// On the *normal* stop path (a terminal `dora run`, `--stop-after`, …) the
 /// daemon SIGTERMs the whole group. The guard survives those signals — it
@@ -24,6 +25,14 @@ use libc::pid_t;
 /// unregistered, and the daemon skips the group-SIGKILL escalation for a node
 /// it believes already stopped: the TERM-ignoring shell and its background
 /// forks live on as orphans (dora-rs/dora#3472 review).
+///
+/// The guard can only contain forks while it is running. A background fork
+/// abandoned by a shell that already exited (`sh -c 'cmd &'` — the shell
+/// returns immediately, the guard reaps it and exits) survives the guard, so
+/// the daemon additionally `killpg`s a node's group the moment the node
+/// process exits (`binaries/daemon/src/spawn/prepared.rs`, the node's
+/// process-wait task); every node is spawned as its own group leader, so that
+/// is the one place a finished node's stragglers are still reachable.
 ///
 /// On the coordinator-attached path (`dora up` + `dora start`) the daemon does
 /// not use the guard at all — nodes there are meant to outlive the daemon

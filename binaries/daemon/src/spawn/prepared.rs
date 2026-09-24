@@ -1010,6 +1010,24 @@ impl PreparedNode {
                 }
             };
 
+            // Contain stragglers the gone node left in its process group:
+            // every node is spawned as its own group leader (prepared.rs
+            // `ProcessGroup::leader()`), so pgid == node pid. A fire-and-forget
+            // background fork (`sh -c 'cmd &'`) survives the node process and is
+            // unreachable by the stop ladder's group kill once the node already
+            // exited on its own — kill it here, the moment the kernel reports
+            // the node dead, WITHOUT waiting for the log drain below: a straggler
+            // still holding the node's stdout/stderr pipes keeps the drain open,
+            // so gating the kill on it would deadlock (dora-rs/dora#3472 review).
+            // The in-node/shell-guard containment only runs while the node
+            // process is alive, so this is the one place that catches a fork
+            // abandoned by a node that finished normally. Best effort: an
+            // already-empty group just yields ESRCH.
+            #[cfg(unix)]
+            unsafe {
+                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+            }
+
             let _ = log_finish_rx.await;
             // Drop `op_rx` here so any grace-kill task still holding
             // the paired `op_tx` sees a closed channel on the next
