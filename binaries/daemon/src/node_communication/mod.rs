@@ -800,10 +800,13 @@ async fn deliver_when_room(
         if channel.is_closed() {
             break;
         }
+        // Every pass through here is the producer being held, not hanging —
+        // whether the receiver is draining (but not yet up to the headroom)
+        // or not — and the health check must see it that way.
+        last_activity.store(current_millis(), Ordering::Release);
         match tokio::time::timeout(BACKPRESSURE_STALL_TICK, notified).await {
             Ok(()) => stalled = Duration::ZERO,
             Err(_elapsed) => {
-                last_activity.store(current_millis(), Ordering::Release);
                 stalled += BACKPRESSURE_STALL_TICK;
                 if stalled >= BACKPRESSURE_STALL_LIMIT {
                     tracing::error!(
@@ -1024,6 +1027,55 @@ mod tests {
             .await
             .expect("flush must not block once the task is done");
         assert!(listener.pending_deferred.is_none());
+    }
+
+    /// A held producer looks idle to the health check — its listener is
+    /// parked — so `deliver_when_room` keeps its `last_activity` moving for
+    /// as long as it waits, including while the receiver drains without ever
+    /// reaching the headroom (fan-in keeps refilling the channel): that path
+    /// never hits the stall tick, and used to leave the stamp frozen until
+    /// the watchdog killed a producer that was making progress (PR #3590
+    /// review).
+    #[tokio::test]
+    async fn held_producer_stays_alive_to_the_health_check_while_the_receiver_drains() {
+        let (listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        let drained = Arc::new(Notify::new());
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
+            tx.try_send(input(&clock, 0)).unwrap();
+        }
+        let (delivery, pending) = deferred(&tx, &drained, input(&clock, 0));
+        let last_activity = Arc::new(AtomicU64::new(0));
+
+        let deliver = deliver_when_room(delivery, &last_activity, &listener.backpressure.ft_stats);
+        // The receiver drains one event and is refilled by someone else, over
+        // and over: notifications keep coming, room never reaches the
+        // headroom, and no stall tick ever elapses.
+        let churn = async {
+            for _ in 0..6 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                rx.recv().await.expect("a queued event");
+                tx.try_send(input(&clock, 0)).unwrap();
+                drained.notify_waiters();
+            }
+            assert_eq!(pending.load(Ordering::Relaxed), 0, "still held");
+            assert!(
+                last_activity.load(Ordering::Relaxed) > 0,
+                "the held producer's last_activity must advance while it waits"
+            );
+            // Free the headroom so the delivery completes and the test ends.
+            for _ in 0..CONTROL_EVENT_HEADROOM {
+                rx.recv().await.expect("a queued event");
+            }
+            drained.notify_waiters();
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(deliver, churn)
+        })
+        .await
+        .expect("the delivery completes once the headroom is free");
+        assert_eq!(pending.load(Ordering::Relaxed), 1);
     }
 
     /// A receiver whose event stream is gone cannot be waited for: the
