@@ -290,18 +290,78 @@ pub(crate) async fn stop_topic_debug_stream(
     subscription_id: Uuid,
     clock: &HLC,
 ) -> eyre::Result<()> {
-    let Some((dataflow_id, outputs_by_daemon)) =
-        running_dataflows.iter_mut().find_map(|(id, df)| {
-            df.topic_subscribers
-                .remove(&subscription_id)
-                .map(|subscriber| (*id, subscriber.outputs_by_daemon().clone()))
-        })
-    else {
+    let Some((dataflow_id, subscriber)) = running_dataflows.iter_mut().find_map(|(id, df)| {
+        df.topic_subscribers
+            .remove(&subscription_id)
+            .map(|subscriber| (*id, subscriber))
+    }) else {
         return Ok(());
     };
+    teardown_topic_debug_stream(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        subscriber.outputs_by_daemon().keys().cloned(),
+        clock,
+    )
+    .await
+}
 
+/// Forward a daemon's topic debug frame to its CLI subscribers.
+///
+/// A subscriber that got closed on the way (its CLI went away, or it stayed
+/// too slow for too long) is removed from the dataflow by
+/// [`send_topic_frames`](crate::handlers::send_topic_frames); stop its daemon
+/// streams here too. Otherwise the daemons keep serializing and shipping every
+/// matching output to the coordinator until the dataflow ends, and a later
+/// `TopicUnsubscribe` for the id no longer finds anything to tear down.
+pub(crate) async fn forward_topic_frames(
+    running_dataflows: &mut HashMap<DataflowId, RunningDataflow>,
+    daemon_connections: &mut DaemonConnections,
+    dataflow_id: DataflowId,
+    subscription_ids: Vec<Uuid>,
+    payload: Vec<u8>,
+    clock: &HLC,
+) {
+    let Some(dataflow) = running_dataflows.get_mut(&dataflow_id) else {
+        return;
+    };
+    let evicted = crate::handlers::send_topic_frames(
+        &mut dataflow.topic_subscribers,
+        subscription_ids,
+        payload,
+    )
+    .await;
+    for (subscription_id, subscriber) in evicted {
+        if let Err(err) = teardown_topic_debug_stream(
+            daemon_connections,
+            dataflow_id,
+            subscription_id,
+            subscriber.outputs_by_daemon().keys().cloned(),
+            clock,
+        )
+        .await
+        {
+            tracing::warn!(
+                %subscription_id,
+                "failed to stop topic debug stream of a closed subscriber: {err:?}"
+            );
+        }
+    }
+}
+
+/// Send `StopTopicDebugStream` for `subscription_id` to every daemon in
+/// `daemon_ids`. The subscriber must already be removed from the dataflow's
+/// `topic_subscribers`.
+async fn teardown_topic_debug_stream(
+    daemon_connections: &mut DaemonConnections,
+    dataflow_id: DataflowId,
+    subscription_id: Uuid,
+    daemon_ids: impl IntoIterator<Item = DaemonId>,
+    clock: &HLC,
+) -> eyre::Result<()> {
     let mut stop_requests = Vec::new();
-    for (daemon_id, _) in outputs_by_daemon {
+    for daemon_id in daemon_ids {
         let Some(connection) = daemon_connections.get_mut(&daemon_id).cloned() else {
             tracing::warn!(
                 %daemon_id,

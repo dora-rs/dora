@@ -113,18 +113,24 @@ pub(crate) async fn send_log_message(
     log_subscribers.retain(|s| !s.is_closed());
 }
 
+/// Forward a topic debug frame to its subscribers, then remove every closed
+/// subscriber and return them.
+///
+/// The daemons keep streaming to a removed subscriber until they get a
+/// `StopTopicDebugStream`, so the caller must tear the returned subscriptions
+/// down — see [`crate::topic_debug::forward_topic_frames`].
 pub(crate) async fn send_topic_frames(
     topic_subscribers: &mut BTreeMap<Uuid, TopicSubscriber>,
     subscription_ids: Vec<Uuid>,
     payload: Vec<u8>,
-) {
+) -> Vec<(Uuid, TopicSubscriber)> {
     if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
         tracing::warn!(
             "dropping oversized topic debug payload ({} bytes) for {} subscription(s)",
             payload.len(),
             subscription_ids.len()
         );
-        return;
+        return Vec::new();
     }
     let shared_payload: std::sync::Arc<[u8]> = payload.into();
     const MAX_CONSECUTIVE_TOPIC_SEND_TIMEOUTS: usize = 100;
@@ -164,7 +170,9 @@ pub(crate) async fn send_topic_frames(
             }
         }
     }
-    topic_subscribers.retain(|_, s| !s.is_closed());
+    topic_subscribers
+        .extract_if(.., |_, s| s.is_closed())
+        .collect()
 }
 
 pub(crate) fn dataflow_result(
@@ -1210,6 +1218,60 @@ mod tests {
             subscribers[0].record_timeout(),
             3,
             "a filtered message must not reset the timeout streak"
+        );
+    }
+
+    /// A topic subscriber that got closed (its CLI went away) is evicted when
+    /// the next frame arrives; its daemon streams must be stopped at the same
+    /// time. Evicting it silently left the daemons streaming until the
+    /// dataflow ended, and a later `TopicUnsubscribe` found nothing to stop.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn closed_topic_subscriber_stops_its_daemon_streams() {
+        let dataflow_uuid = Uuid::new_v4();
+        let daemon = DaemonId::new(Some("healthy".to_string()));
+        let mut daemon_connections = DaemonConnections::default();
+        let (conn, received) = healthy_daemon();
+        daemon_connections.add(daemon.clone(), conn);
+
+        let subscription_id = Uuid::new_v4();
+        let (tx, rx) = tokio::sync::mpsc::channel(4);
+        drop(rx); // the CLI side is gone
+        let subscriber = TopicSubscriber::new(
+            BTreeMap::from([(
+                daemon.clone(),
+                vec![(NodeId::from("sender".to_string()), "message".into())],
+            )]),
+            tx,
+        );
+        let mut dataflow = dataflow_on(dataflow_uuid, [daemon]);
+        dataflow
+            .topic_subscribers
+            .insert(subscription_id, subscriber);
+        let mut running_dataflows = HashMap::from([(dataflow_uuid, dataflow)]);
+
+        crate::topic_debug::forward_topic_frames(
+            &mut running_dataflows,
+            &mut daemon_connections,
+            dataflow_uuid,
+            vec![subscription_id],
+            vec![1, 2, 3],
+            &HLC::default(),
+        )
+        .await;
+
+        assert!(
+            running_dataflows[&dataflow_uuid]
+                .topic_subscribers
+                .is_empty(),
+            "the closed subscriber must be evicted"
+        );
+        let received = received.lock().await;
+        assert_eq!(received.len(), 1, "expected one stop request: {received:?}");
+        assert!(
+            received[0].contains("StopTopicDebugStream")
+                && received[0].contains(&subscription_id.to_string()),
+            "daemon must be told to stop the evicted stream, got {}",
+            received[0]
         );
     }
 }
