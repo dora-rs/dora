@@ -185,6 +185,11 @@ pub struct EventStream {
     write_events_to: Option<WriteEventsTo>,
     start_timestamp: uhlc::Timestamp,
     use_scheduler: bool,
+    /// Set whenever an event is added to `scheduler`; cleared by `poll_next`
+    /// once the scheduler has run dry. Lets the Stream path skip
+    /// `Scheduler::next()` (O(#inputs) when empty) on every poll when nothing
+    /// was ever buffered there.
+    scheduler_maybe_nonempty: bool,
     /// Expected input types from YAML descriptor (for first-message validation).
     /// Each input is checked once; after the first message, the entry is removed.
     input_type_checks: HashMap<DataId, arrow_schema::DataType>,
@@ -837,6 +842,7 @@ impl EventStream {
             ingress_drops,
             write_events_to,
             use_scheduler,
+            scheduler_maybe_nonempty: false,
             input_type_checks,
             pending_passthrough: std::collections::VecDeque::new(),
             stop_received: false,
@@ -963,27 +969,7 @@ impl EventStream {
             // events from `receiver`; the dataflow is stopping, and on the
             // non-scheduler path returning `None` closes the stream against
             // zenoh-held senders.
-            if self.use_scheduler {
-                while let Some(item) = self.scheduler.next() {
-                    if matches!(
-                        &item,
-                        EventItem::NodeEvent {
-                            event: NodeEvent::Input { .. },
-                            ..
-                        } | EventItem::ZenohInput { .. }
-                    ) {
-                        // Route through the shared post-process helper, exactly
-                        // like the normal receive path (below) and `poll_next`,
-                        // so the one-shot first-message type check still runs for
-                        // inputs drained after `Stop`. The three paths must stay
-                        // in lockstep (dora-rs/adora#172, #174).
-                        let event = Self::convert_event_item(item);
-                        self.note_produced_event(&event);
-                        return Some(event);
-                    }
-                }
-            }
-            return None;
+            return self.pop_scheduled(true);
         }
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
@@ -1018,6 +1004,36 @@ impl EventStream {
             self.note_produced_event(event);
         }
         event
+    }
+
+    /// Pop the next event buffered in the scheduler, converted and
+    /// post-processed. With `inputs_only` (the post-`Stop` drain, see
+    /// `recv_from_stream`), control events are discarded instead of returned.
+    fn pop_scheduled(&mut self, inputs_only: bool) -> Option<Event> {
+        if !self.use_scheduler {
+            return None;
+        }
+        while let Some(item) = self.scheduler.next() {
+            if inputs_only
+                && !matches!(
+                    &item,
+                    EventItem::NodeEvent {
+                        event: NodeEvent::Input { .. },
+                        ..
+                    } | EventItem::ZenohInput { .. }
+                )
+            {
+                continue;
+            }
+            // Route through the shared post-process helper, exactly like the
+            // other receive paths, so the one-shot first-message type check
+            // still runs. The paths must stay in lockstep
+            // (dora-rs/adora#172, #174).
+            let event = Self::convert_event_item(item);
+            self.note_produced_event(&event);
+            return Some(event);
+        }
+        None
     }
 
     /// Post-process an event just produced by `recv_async` / `poll_next`: run
@@ -1128,6 +1144,7 @@ impl EventStream {
             }
         }
         self.scheduler.add_event(event);
+        self.scheduler_maybe_nonempty = true;
     }
 
     fn record_event(&mut self, event: &EventItem) -> eyre::Result<()> {
@@ -1991,8 +2008,22 @@ impl Stream for EventStream {
 
         // Close the stream after a Stop event: zenoh subscriber threads
         // hold sender clones that would otherwise keep `receiver` open.
+        // Inputs still buffered in the scheduler are delivered first, as
+        // `recv_async` does.
         if self.stop_received {
-            return std::task::Poll::Ready(None);
+            return std::task::Poll::Ready(self.pop_scheduled(true));
+        }
+
+        // `recv_async` / `try_recv` and the pattern-aware wait helpers drain
+        // the receiver into the scheduler and take one event out of it; the
+        // rest stay buffered there. They arrived before anything still in
+        // `receiver`, so hand them out first — otherwise a node that mixes
+        // those calls with `StreamExt::next()` never sees them.
+        if self.scheduler_maybe_nonempty {
+            if let Some(event) = self.pop_scheduled(false) {
+                return std::task::Poll::Ready(Some(event));
+            }
+            self.scheduler_maybe_nonempty = false;
         }
 
         let poll = self
@@ -2192,7 +2223,7 @@ impl EventStream {
         use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
         self.use_scheduler = true;
         let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
-        self.scheduler.add_event(EventItem::NodeEvent {
+        self.add_event(EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: id.into(),
                 metadata: std::sync::Arc::new(meta),
@@ -2208,7 +2239,7 @@ impl EventStream {
         use crate::event_stream::thread::EventItem;
         use dora_message::daemon_to_node::NodeEvent;
         self.use_scheduler = true;
-        self.scheduler.add_event(EventItem::NodeEvent {
+        self.add_event(EventItem::NodeEvent {
             event: NodeEvent::Stop,
         });
     }
@@ -3214,6 +3245,46 @@ mod tests {
         // Once the scheduler is empty the stream closes.
         assert!(
             events.recv().is_none(),
+            "stream must close after draining buffered inputs"
+        );
+    }
+
+    /// Inputs left in the scheduler by `recv`/`try_recv` or the pattern-aware
+    /// wait helpers (which drain the receiver into it) must still come out of
+    /// `StreamExt::next()`; `poll_next` used to only poll the receiver, so a
+    /// node mixing the two APIs silently lost them.
+    #[test]
+    fn stream_next_delivers_inputs_buffered_in_scheduler() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events) = test_event_stream();
+        events.push_scheduler_input_for_testing("cam");
+
+        let next = events.next().now_or_never();
+        assert!(
+            matches!(&next, Some(Some(Event::Input { id, .. })) if id.as_str() == "cam"),
+            "buffered input must be delivered by the Stream path, got {next:?}"
+        );
+    }
+
+    /// The Stream path must drain buffered inputs after `Stop` exactly like
+    /// `recv` does (see `recv_drains_buffered_scheduler_inputs_after_stop`).
+    #[test]
+    fn stream_next_drains_buffered_inputs_after_stop() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events) = test_event_stream();
+        assert!(matches!(events.recv(), Some(Event::Stop(_))));
+        events.push_scheduler_stop_for_testing();
+        events.push_scheduler_input_for_testing("cam");
+
+        let drained = events.next().now_or_never();
+        assert!(
+            matches!(&drained, Some(Some(Event::Input { id, .. })) if id.as_str() == "cam"),
+            "buffered input must be drained after Stop, got {drained:?}"
+        );
+        assert!(
+            matches!(events.next().now_or_never(), Some(None)),
             "stream must close after draining buffered inputs"
         );
     }
