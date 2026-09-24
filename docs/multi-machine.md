@@ -119,11 +119,10 @@ Such a machine announces the address of the interface that is used to reach the 
 
 ### Multicast, and what to do without it
 
-Nothing above depends on multicast. Zenoh's multicast discovery stays enabled by default, and on a network that supports it, it repairs three rare situations that the coordinator mechanism does not:
+Nothing above depends on multicast. Zenoh's multicast discovery stays enabled by default, and on a network that supports it, it repairs two rare situations that the coordinator mechanism does not:
 
 - A daemon that registers while the coordinator is down or restarting gets the list that the coordinator has at that moment, which may be empty. Daemons that are already running are not affected, because their connections do not go through the coordinator.
 - A daemon gets the addresses of its peers only once, when it registers. If one of these addresses is no longer valid, that daemon keeps the invalid address. A daemon whose listener could not be created withdraws its address, so this only affects daemons that already received it.
-- A dynamic node that you start by hand finds the daemon's zenoh session through multicast, unless `DORA_ZENOH_CONNECT` is set in its environment.
 
 These networks usually do not support multicast: guest or company Wi-Fi with client isolation, Docker's default bridge network, dev containers, cloud VPCs, and all VPN or mesh tunnels. On such a network, the first two situations are not repaired automatically. Restart the affected daemon in both cases. There is also a third situation that only the explicit configuration below can handle: only the new daemon opens connections, so on a network that allows connections in one direction only, the connection only works if the daemon that can connect registers second.
 
@@ -137,7 +136,32 @@ dora daemon --coordinator-addr 100.64.0.1 --machine-id robot \
 
 `dora cluster up` creates this configuration from a `cluster.yml` file whose `host:` fields are the tunnel addresses. It also provides SSH-based management, systemd installation and rolling upgrades. See the [cluster configuration reference](distributed-deployment.md#cluster-configuration-reference).
 
-Setting connect endpoints turns multicast discovery off for that daemon and its nodes, because they no longer need it. You can also turn it off with `--zenoh-no-multicast`. This is optional: on a network without multicast, discovery finds nothing and only uses a socket. But in some environments zenoh cannot even open its multicast socket (usually because of a busy DDS/ROS 2 setup on the same machine), and then the zenoh session fails to start; the flag avoids that. Dynamic nodes that you start by hand then need `DORA_ZENOH_CONNECT=<the daemon's listen endpoint>` in their environment.
+Setting connect endpoints turns multicast discovery off for that daemon and its nodes, because they no longer need it. You can also turn it off with `--zenoh-no-multicast`. This is optional: on a network without multicast, discovery finds nothing and only uses a socket. But in some environments zenoh cannot even open its multicast socket (usually because of a busy DDS/ROS 2 setup on the same machine), and then the zenoh session fails to start; the flag avoids that.
+
+### Dynamic nodes
+
+A node started by hand with `DoraNode::init_from_node_id`, the Rust builder,
+or Python's dynamic-node API gets its local Zenoh connections from the daemon
+when it requests its configuration. No `DORA_ZENOH_CONNECT` setting or multicast
+is needed with a current daemon and node API. The joining node connects to both
+its local producers and its local consumers, retaining direct peer-to-peer data
+and shared-memory transport. Nodes under another daemon continue to use the
+existing daemon forwarding policy for dynamic consumers.
+
+The daemon assigns each joining node a fresh loopback listener and records it
+before answering the request, so concurrent joiners learn about each other. A
+restarted node gets a new listener and dials its neighbours again. If the
+assigned listener cannot bind, initialization fails instead of silently relying
+on discovery; starting the node again assigns another port. Messages sent before
+a consumer joins are not replayed.
+
+Older daemons omit this bootstrap information, so a new node API falls back to
+the previous discovery behaviour. Older node APIs ignore the additional JSON
+field. Upgrade both sides to get explicit dynamic peering. `ZENOH_CONFIG` still
+replaces the entire session configuration and disables automatic peering; use
+`DORA_ZENOH_CONFIG_OVERLAY` for settings that should preserve these connections.
+An externally started node needs its own overlay environment setting if the
+network requires custom Zenoh configuration.
 
 ## 2. Isolated subnets joined by zenoh routers
 

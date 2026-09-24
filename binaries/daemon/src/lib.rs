@@ -145,6 +145,7 @@ mod coordinator_events;
 mod dataflow_lifecycle;
 mod debug_topic;
 mod dora_events;
+mod dynamic_peering;
 pub(crate) mod event_types;
 mod extension_table;
 mod extract_err_from_stderr;

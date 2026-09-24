@@ -302,7 +302,9 @@ pub struct RunningDataflow {
     pub(crate) descriptor: Descriptor,
     /// Per-node zenoh listener + dial-list, so the node↔node links this dataflow
     /// needs are established deterministically rather than left to gossip.
-    /// Populated when the dataflow is spawned; see `spawn::build_peering_plan`.
+    /// Populated for static nodes at spawn and for dynamic nodes on each
+    /// configuration request; see `spawn::build_peering_plan` and
+    /// `dynamic_peering`.
     pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
     /// Keeps this daemon answering other daemons' node-endpoint queries (and
     /// probing for the ones it could not reach) for as long as the dataflow

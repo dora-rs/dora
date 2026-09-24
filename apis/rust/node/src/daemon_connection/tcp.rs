@@ -1,29 +1,34 @@
 use dora_message::{
     daemon_to_node::DaemonReply,
+    dynamic_node::DynamicNodeConfigReply,
     node_to_daemon::{DaemonRequest, Timestamped},
 };
-use eyre::{Context, eyre};
+use eyre::Context;
 use std::{
     io::{Read, Write},
     net::TcpStream,
 };
 
-enum Serializer {
-    Postcard,
-    SerdeJson,
+/// The configuration reply is JSON and may carry additive bootstrap fields
+/// that the ordinary (binary-compatible) `DaemonReply` deliberately omits.
+pub(super) fn request_dynamic_node_config(
+    connection: &mut TcpStream,
+    request: &Timestamped<DaemonRequest>,
+) -> eyre::Result<DynamicNodeConfigReply> {
+    send_message(connection, request)?;
+    receive_reply(connection, |raw| Ok(serde_json::from_slice(raw)?))
 }
+
 pub fn request(
     connection: &mut TcpStream,
     request: &Timestamped<DaemonRequest>,
 ) -> eyre::Result<DaemonReply> {
     send_message(connection, request)?;
     if request.inner.expects_tcp_binary_reply() {
-        receive_reply(connection, Serializer::Postcard)
-            .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
+        receive_reply(connection, |raw| dora_message::decode(raw))
     // Use serde json for message with variable length
     } else if request.inner.expects_tcp_json_reply() {
-        receive_reply(connection, Serializer::SerdeJson)
-            .and_then(|reply| reply.ok_or_else(|| eyre!("server disconnected unexpectedly")))
+        receive_reply(connection, |raw| Ok(serde_json::from_slice(raw)?))
     } else {
         Ok(DaemonReply::Empty)
     }
@@ -39,16 +44,16 @@ fn send_message(
     Ok(())
 }
 
-fn receive_reply(
+fn receive_reply<T>(
     connection: &mut TcpStream,
-    serializer: Serializer,
-) -> eyre::Result<Option<DaemonReply>> {
+    decode: impl FnOnce(&[u8]) -> eyre::Result<T>,
+) -> eyre::Result<T> {
     let raw =
         match tcp_receive(connection) {
             Ok(raw) => raw,
             Err(err) => match err.kind() {
                 std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionAborted => {
-                    return Ok(None);
+                    eyre::bail!("server disconnected unexpectedly");
                 }
                 other => return Err(err).with_context(|| {
                     format!(
@@ -57,14 +62,7 @@ fn receive_reply(
                 }),
             },
         };
-    match serializer {
-        Serializer::Postcard => dora_message::decode(&raw)
-            .wrap_err("failed to deserialize DaemonReply")
-            .map(Some),
-        Serializer::SerdeJson => serde_json::from_slice(&raw)
-            .wrap_err("failed to deserialize DaemonReply")
-            .map(Some),
-    }
+    decode(&raw).wrap_err("failed to deserialize DaemonReply")
 }
 
 /// Payload size (excluding the 8-byte header) at or below which `tcp_send`

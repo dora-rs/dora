@@ -879,7 +879,13 @@ impl Daemon {
                         .retain(|sub| sub.node_id != node_id);
 
                     // Clean up remaining state for this node.
-                    dataflow.running_nodes.remove(&node_id);
+                    if dataflow
+                        .running_nodes
+                        .remove(&node_id)
+                        .is_some_and(|node| node.node_config.dynamic)
+                    {
+                        Arc::make_mut(&mut dataflow.zenoh_peering).remove(&node_id);
+                    }
                     dataflow.open_inputs.remove(&node_id);
                     dataflow.data_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
