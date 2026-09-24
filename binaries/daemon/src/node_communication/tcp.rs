@@ -3,7 +3,7 @@ use std::{
     sync::{Arc, atomic::AtomicU64},
 };
 
-use super::{Connection, Listener};
+use super::{BackpressureConfig, Connection, Listener};
 use crate::{
     Event,
     socket_stream_utils::{socket_stream_receive_with_header_timeout, socket_stream_send},
@@ -18,13 +18,18 @@ use tokio::{
     sync::mpsc,
 };
 
-#[tracing::instrument(skip(listener, daemon_tx, clock, last_activity), level = "trace")]
+#[tracing::instrument(
+    skip(listener, daemon_tx, clock, last_activity, backpressure),
+    level = "trace"
+)]
+#[allow(clippy::too_many_arguments)]
 pub async fn listener_loop(
     listener: TcpListener,
     generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    backpressure: Arc<BackpressureConfig>,
     mut shutdown: tokio::sync::watch::Receiver<bool>,
     mut node_shutdown: tokio::sync::watch::Receiver<bool>,
 ) {
@@ -40,6 +45,7 @@ pub async fn listener_loop(
                             daemon_tx.clone(),
                             clock.clone(),
                             last_activity.clone(),
+                            backpressure.clone(),
                         ));
                     }
                 }
@@ -65,13 +71,17 @@ pub async fn listener_loop(
     }
 }
 
-#[tracing::instrument(skip(connection, daemon_tx, clock, last_activity), level = "trace")]
+#[tracing::instrument(
+    skip(connection, daemon_tx, clock, last_activity, backpressure),
+    level = "trace"
+)]
 async fn handle_connection_loop(
     connection: TcpStream,
     generation: Arc<AtomicU64>,
     daemon_tx: mpsc::Sender<Timestamped<Event>>,
     clock: Arc<HLC>,
     last_activity: Arc<AtomicU64>,
+    backpressure: Arc<BackpressureConfig>,
 ) {
     if let Err(err) = connection.set_nodelay(true) {
         tracing::warn!("failed to set nodelay for connection: {err}");
@@ -83,6 +93,7 @@ async fn handle_connection_loop(
         daemon_tx,
         clock,
         last_activity,
+        backpressure,
     )
     .await
 }

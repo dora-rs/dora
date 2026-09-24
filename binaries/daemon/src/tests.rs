@@ -1216,7 +1216,7 @@ fn restart_exit_reset_clears_dropped_event_stream_marker() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -1828,9 +1828,10 @@ async fn circuit_breaker_recovery() {
     let metadata = metadata::Metadata::new(clock.new_timestamp());
 
     let output_id = OutputId(sender, output);
-    let result =
-        send_output_to_local_receivers(&output_id, &mut df, &metadata, None, &clock, None, false)
-            .await;
+    let result = send_output_to_local_receivers(
+        &output_id, &mut df, &metadata, None, &clock, None, false, None,
+    )
+    .await;
     assert!(result.is_ok());
 
     // Assert: broken input recovered
@@ -1881,6 +1882,7 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
         &clock,
         None,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -1908,6 +1910,7 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
         &clock,
         None,
         true,
+        None,
     )
     .await
     .unwrap();
@@ -1941,6 +1944,207 @@ impl tracing::Subscriber for LevelCapture {
     }
     fn enter(&self, _span: &tracing::span::Id) {}
     fn exit(&self, _span: &tracing::span::Id) {}
+}
+
+/// With the receiver's event channel full, a `backpressure` input's message
+/// is handed back for the producer's listener to deliver once there is room,
+/// while a `drop_oldest` input's is dropped, warned about and counted — and
+/// with no listener to hand it to (a remote forward), the backpressure one is
+/// dropped and counted as well (dora-rs/dora#3397).
+#[test]
+fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
+    use dora_message::config::QueuePolicy;
+    let capture = LevelCapture::default();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let input: DataId = "input".to_string().into();
+            let patient: NodeId = "patient".to_string().into();
+            let hasty: NodeId = "hasty".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([
+                    (patient.clone(), input.clone()),
+                    (hasty.clone(), input.clone()),
+                ]),
+            );
+            let mut receivers = Vec::new();
+            for (receiver, policy) in [
+                (&patient, QueuePolicy::Backpressure),
+                (&hasty, QueuePolicy::DropOldest),
+            ] {
+                let inputs =
+                    BTreeMap::from([(input.clone(), user_input("sender", "output", Some(policy)))]);
+                df.running_nodes
+                    .insert(receiver.clone(), running_node_with(inputs, None));
+                let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+                // Leave fewer free slots than the control-event headroom.
+                for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - CONTROL_EVENT_HEADROOM + 1 {
+                    tx.try_send(Timestamped {
+                        inner: NodeEvent::Stop,
+                        timestamp: clock.new_timestamp(),
+                    })
+                    .unwrap();
+                }
+                df.subscribe_channels.insert(receiver.clone(), tx);
+                df.pending_messages
+                    .insert(receiver.clone(), Arc::new(AtomicU64::new(0)));
+                df.drain_signals
+                    .insert(receiver.clone(), Arc::new(tokio::sync::Notify::new()));
+                receivers.push(rx);
+            }
+
+            let ft_stats = FaultToleranceStats::default();
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+
+            let mut deferred = Vec::new();
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                Some(&mut deferred),
+            )
+            .await
+            .unwrap();
+            assert_eq!(deferred.len(), 1, "only the backpressure edge is deferred");
+            assert_eq!(deferred[0].receiver, patient);
+            assert!(deferred[0].pending.is_some());
+            assert_eq!(
+                ft_stats.dropped_messages.load(atomic::Ordering::Relaxed),
+                1,
+                "the drop_oldest edge's message is dropped and counted"
+            );
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                0,
+                "nothing promised was lost"
+            );
+            assert_eq!(
+                df.pending_messages[&patient].load(atomic::Ordering::Relaxed),
+                0,
+                "a deferred delivery is not pending until it lands"
+            );
+
+            // No one to wait for room: both are dropped and counted.
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+            assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 3);
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                1,
+                "only the backpressure edge's drop breaks a promise"
+            );
+
+            let levels = capture.levels.lock().unwrap();
+            let warns = levels
+                .iter()
+                .filter(|level| **level == tracing::Level::WARN)
+                .count();
+            assert_eq!(
+                warns, 3,
+                "one warning per drop, none for the deferral: {levels:?}"
+            );
+        });
+    });
+}
+
+/// A message to a live receiver with no event stream (the #3201 mode: mid-
+/// restart, or failed to re-subscribe) is a counted drop — and a lost one on
+/// a backpressure input — so `fail_on_lost_backpressure_messages` sees it.
+/// A receiver that finished and dropped its stream on purpose is not.
+#[test]
+fn missing_event_stream_drops_are_counted_per_message() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        df.mappings.insert(
+            OutputId(sender.clone(), output.clone()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        let inputs = BTreeMap::from([(
+            input.clone(),
+            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+        )]);
+        df.running_nodes
+            .insert(receiver.clone(), running_node_with(inputs, None));
+
+        let ft_stats = FaultToleranceStats::default();
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
+        let output_id = OutputId(sender, output);
+        for _ in 0..2 {
+            send_output_to_local_receivers(
+                &output_id,
+                &mut df,
+                &metadata,
+                None,
+                &clock,
+                Some(&ft_stats),
+                false,
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
+        assert_eq!(
+            ft_stats
+                .lost_backpressure_messages
+                .load(atomic::Ordering::Relaxed),
+            2,
+            "every message to the streamless receiver is a lost promise, not just the warned one"
+        );
+
+        // Finished normally: not a drop anyone promised against.
+        df.dropped_event_streams.insert(receiver.clone());
+        send_output_to_local_receivers(
+            &output_id,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+            Some(&ft_stats),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 2);
+    });
 }
 
 /// A receiver recorded in `mappings` but missing from
@@ -1979,13 +2183,13 @@ fn receiver_missing_channel_is_skipped_with_once_per_edge_warning() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
             // And again: the *second* drop of the same edge must not warn.
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -2041,7 +2245,7 @@ fn healthy_receiver_still_receives_when_peer_channel_is_missing() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -2096,7 +2300,7 @@ fn finished_receiver_does_not_warn() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -2159,7 +2363,7 @@ fn finished_but_still_running_receiver_does_not_warn() {
             let metadata = metadata::Metadata::new(clock.new_timestamp());
             let output_id = OutputId(sender, output);
             send_output_to_local_receivers(
-                &output_id, &mut df, &metadata, None, &clock, None, false,
+                &output_id, &mut df, &metadata, None, &clock, None, false, None,
             )
             .await
             .unwrap();
@@ -2239,9 +2443,10 @@ async fn full_circuit_breaker_cycle() {
     let metadata = metadata::Metadata::new(clock.new_timestamp());
 
     let output_id = OutputId(sender, output);
-    let result =
-        send_output_to_local_receivers(&output_id, &mut df, &metadata, None, &clock, None, false)
-            .await;
+    let result = send_output_to_local_receivers(
+        &output_id, &mut df, &metadata, None, &clock, None, false, None,
+    )
+    .await;
     assert!(result.is_ok());
 
     // Verify recovered state

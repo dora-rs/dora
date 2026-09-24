@@ -5,8 +5,8 @@ use crate::local_listener::DynamicNodeEventWrapper;
 use crate::{
     Daemon, DaemonNodeEvent, Event, InterDaemonEvent, OutputId, RunningDataflow,
     ZENOH_PUBLISH_CHANNEL_CAPACITY, ZenohOutbound, close_input, drop_extension_and_notify,
-    extension_table::ExtensionKey, note_output_sent_to_local_receivers,
-    send_output_to_local_receivers, send_with_timestamp,
+    extension_table::ExtensionKey, local_delivery::DeferredDelivery,
+    note_output_sent_to_local_receivers, send_output_to_local_receivers, send_with_timestamp,
 };
 use dora_core::{
     config::{DataId, NodeId, OperatorId},
@@ -24,7 +24,7 @@ use dora_message::{
 };
 use eyre::{Context, ContextCompat, Result, eyre};
 use std::{collections::BTreeSet, sync::Arc, time::Instant};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::error;
 use uuid::Uuid;
 use zenoh::qos::{CongestionControl, Priority};
@@ -106,6 +106,7 @@ impl Daemon {
             DaemonNodeEvent::Subscribe {
                 event_sender,
                 pending_counter,
+                drained,
                 reply_sender,
             } => {
                 let mut logger = self.logger.for_dataflow(dataflow_id);
@@ -130,6 +131,7 @@ impl Daemon {
                         dataflow
                             .pending_messages
                             .insert(node_id.clone(), pending_counter);
+                        dataflow.drain_signals.insert(node_id.clone(), drained);
                         Self::subscribe(dataflow, node_id.clone(), event_sender, &self.clock).await;
 
                         let status = dataflow
@@ -206,8 +208,16 @@ impl Daemon {
                 output_id,
                 metadata,
                 data,
+                deferred_reply,
             } => self
-                .send_out(dataflow_id, node_id, output_id, metadata, data)
+                .send_out(
+                    dataflow_id,
+                    node_id,
+                    output_id,
+                    metadata,
+                    data,
+                    deferred_reply,
+                )
                 .await
                 .context("failed to send out")?,
             DaemonNodeEvent::OutputSent {
@@ -423,6 +433,10 @@ impl Daemon {
         }
     }
 
+    /// `deferred_reply`, when given, receives the deliveries local routing
+    /// could not complete (see `DeferredDelivery`). Dropping it unanswered —
+    /// the dataflow is gone, delivery failed — tells the waiting listener
+    /// there is nothing to wait for.
     pub(crate) async fn send_out(
         &mut self,
         dataflow_id: Uuid,
@@ -430,6 +444,7 @@ impl Daemon {
         output_id: DataId,
         metadata: dora_message::metadata::Metadata,
         data: Option<DataMessage>,
+        deferred_reply: Option<oneshot::Sender<Vec<DeferredDelivery>>>,
     ) -> Result<(), eyre::ErrReport> {
         let Some(dataflow) = self.running.get_mut(&dataflow_id) else {
             self.log_late_node_output(&dataflow_id, &node_id, &output_id, "send out");
@@ -445,6 +460,7 @@ impl Daemon {
         let remote_receivers = dataflow.open_external_mappings.contains(&output_id_key)
             || dataflow.enable_debug_inspection;
         let has_debug_watchers = dataflow.debug_topic_watchers.contains_key(&output_id_key);
+        let mut deferred = Vec::new();
         let data_bytes = send_output_to_local_receivers(
             &output_id_key,
             dataflow,
@@ -453,8 +469,25 @@ impl Daemon {
             &self.clock,
             Some(&self.ft_stats),
             remote_receivers || has_debug_watchers,
+            deferred_reply.is_some().then_some(&mut deferred),
         )
         .await?;
+        if let Some(reply) = deferred_reply
+            && let Err(deferred) = reply.send(deferred)
+        {
+            // The producer's listener went away with its node before it could
+            // take these over: they are lost, on edges that were promised not
+            // to lose anything.
+            for delivery in &deferred {
+                tracing::warn!(
+                    node = %delivery.receiver,
+                    "producer `{}` exited while `{}` was waiting for room: dropping message",
+                    output_id_key.0,
+                    output_id_key.1,
+                );
+            }
+            self.ft_stats.record_drop(deferred.len() as u64, true);
+        }
 
         if !remote_receivers && !has_debug_watchers {
             return Ok(());
@@ -566,6 +599,8 @@ impl Daemon {
                     "zenoh publish channel full ({ZENOH_PUBLISH_CHANNEL_CAPACITY}), \
                      dropping inter-daemon message"
                 );
+                self.ft_stats
+                    .record_drop(1, dataflow.remote_backpressured_outputs.contains(output_id));
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
                 tracing::error!("zenoh drain task is gone — inter-daemon publish channel closed");

@@ -170,11 +170,15 @@ A `backpressure` input keeps its producer's output on the daemon path instead
 of the direct zenoh path. The direct path's callback drops at the receiver's
 shared ingress channel when that channel is full, so a timer or a busier input
 can discard the message before the per-input policy ever applies; the daemon
-path feeds the same channel with a blocking send. That is a much deeper buffer,
-not a delivery guarantee: the daemon still drops data, with a warning, for a
-receiver whose per-node channel (1000 events) and daemon-side queue (1000 events
-or 256 MiB of payload) are both full, and cross-daemon forwarding is bounded as
-well. The routing applies to the producer's entire output, so every consumer of
+path feeds the same channel with a blocking send, and when the receiver's
+per-node channel (1000 events) is full as well, the daemon holds the producer's
+send until there is room, so the producer's `send_output` blocks instead of the
+message being dropped. Two cases still drop, each logged and counted: a
+producer on another machine cannot be held, so a message forwarded across
+daemons to a full receiver is dropped; and a receiver that frees no room at all
+for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
+stops holding the producer, which then loses that message. The routing applies
+to the producer's entire output, so every consumer of
 that output leaves the zero-copy path, and the daemon path carries the 64 MiB
 per-message limit. A producer learns its routing when it starts, so
 `dora node add` and `dora node replace` refuse a `backpressure` input whose

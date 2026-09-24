@@ -725,6 +725,7 @@ impl Spawner {
         node_stderr_most_recent: Arc<ArrayQueue<String>>,
         write_events_to: Option<PathBuf>,
         output_routing: BTreeMap<DataId, OutputRouting>,
+        backpressured_outputs: BTreeSet<DataId>,
         logger: &mut NodeLogger<'_>,
     ) -> eyre::Result<impl Future<Output = eyre::Result<PreparedNode>> + use<>> {
         let dataflow_id = self.dataflow_id;
@@ -759,6 +760,10 @@ impl Spawner {
             last_activity.clone(),
             self.shutdown.clone(),
             node_shutdown_rx,
+            Arc::new(crate::node_communication::BackpressureConfig {
+                outputs: backpressured_outputs,
+                ft_stats: self.ft_stats.clone(),
+            }),
         )
         .await?;
 
