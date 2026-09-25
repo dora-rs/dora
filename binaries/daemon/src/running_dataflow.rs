@@ -40,7 +40,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{
-    Notify, broadcast,
+    broadcast,
     mpsc::{self, Sender},
     oneshot,
 };
@@ -319,7 +319,7 @@ pub struct RunningDataflow {
     /// signal, installed with the channel. A producer's listener holding a
     /// deferred delivery for a full channel waits on it instead of polling
     /// (see `DeferredDelivery`).
-    pub(crate) drain_signals: HashMap<NodeId, Arc<Notify>>,
+    pub(crate) drain_signals: HashMap<NodeId, Arc<crate::local_delivery::DrainSignal>>,
     /// Outputs with a `queue_policy: backpressure` consumer on another
     /// daemon. A cross-daemon forward cannot hold its producer, so a
     /// forward of one of these that is dropped is a lost backpressure

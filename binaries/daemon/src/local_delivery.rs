@@ -17,7 +17,10 @@ use dora_message::{
 use eyre::Result;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::{Arc, atomic, atomic::AtomicU64},
+    sync::{
+        Arc, atomic,
+        atomic::{AtomicBool, AtomicU64},
+    },
     time::Instant,
 };
 use tokio::sync::mpsc;
@@ -41,9 +44,28 @@ pub(crate) struct DeferredDelivery {
     pub channel: mpsc::Sender<Timestamped<NodeEvent>>,
     /// The receiver's pending-message counter, bumped once the event is in.
     pub pending: Option<Arc<AtomicU64>>,
-    /// Fires when the receiver's listener takes an event out of `channel`.
-    pub drained: Arc<tokio::sync::Notify>,
+    /// The receiver's side of the hold.
+    pub drained: Arc<DrainSignal>,
     pub event: Timestamped<NodeEvent>,
+}
+
+/// What a producer held for a full backpressure receiver shares with that
+/// receiver's listener (`RunningDataflow::drain_signals`). One per listener,
+/// so a restarted node starts with a fresh one.
+#[derive(Debug, Default)]
+pub(crate) struct DrainSignal {
+    /// Fires when the receiver's listener takes an event out of its channel.
+    pub notify: tokio::sync::Notify,
+    /// Set when a held delivery to this receiver ran into the stall limit:
+    /// the receiver is wedged, or blocked on its own producer in a
+    /// backpressure cycle. While set, deliveries to its full channel are
+    /// dropped and counted instead of holding their producer for another
+    /// stall limit each — once is enough to know (dora-rs/dora#3601).
+    /// Cleared as soon as the receiver takes an event again.
+    pub gave_up: AtomicBool,
+    /// Set when the node dropped its event stream deliberately, so a held
+    /// delivery that finds its channel closed afterwards is not a loss.
+    pub stream_dropped: AtomicBool,
 }
 
 pub(crate) fn note_output_sent_to_local_receivers(
@@ -213,7 +235,10 @@ fn offer_event<'a>(
     let requires_backpressure = dataflow.input_requires_backpressure(receiver_id, input_id);
     let deferred = deferred
         .filter(|_| requires_backpressure)
-        .and_then(|deferred| Some((deferred, dataflow.drain_signals.get(receiver_id)?.clone())));
+        .and_then(|deferred| Some((deferred, dataflow.drain_signals.get(receiver_id)?.clone())))
+        // A receiver that already let a held delivery run into the stall
+        // limit is not waited for again until it drains.
+        .filter(|(_, drained)| !drained.gave_up.load(atomic::Ordering::Acquire));
     match deferred {
         Some((deferred, drained)) => {
             tracing::debug!(

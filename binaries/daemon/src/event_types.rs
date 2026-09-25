@@ -131,7 +131,7 @@ pub enum DaemonNodeEvent {
         pending_counter: Arc<AtomicU64>,
         /// Notified whenever the subscribing listener takes an event out of
         /// `event_sender`'s channel (`RunningDataflow::drain_signals`).
-        drained: Arc<tokio::sync::Notify>,
+        drained: Arc<crate::local_delivery::DrainSignal>,
         reply_sender: oneshot::Sender<DaemonReply>,
     },
     CloseOutputs {
