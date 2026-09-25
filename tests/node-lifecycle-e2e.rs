@@ -2533,8 +2533,9 @@ fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
         run.stderr_tail()
     );
 
-    // The fixture shell ignores SIGTERM, so only the group SIGKILL can have
-    // ended it; both pids must be gone shortly after the CLI exits.
+    // The fixture shell ignores SIGTERM, and so does its background child, so
+    // only the group SIGKILL can have ended them; both pids must be gone
+    // shortly after the CLI exits.
     let deadline = std::time::Instant::now() + Duration::from_secs(30);
     for (pid, what) in [
         (shell_pid, "the shell"),
@@ -2552,6 +2553,83 @@ fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
             std::thread::sleep(Duration::from_millis(250));
         }
     }
+}
+
+/// dora-rs/dora#3472 (review, 2026-09-24): the exit-time `killpg` that contains
+/// a node's abandoned forks must NOT cut short the stop grace period.
+///
+/// Fixture: a shell node whose own `wait` is interrupted by the stop's SIGTERM,
+/// so the group leader dies immediately, while a background child runs a
+/// cleanup that outlives it. With the containment firing on the leader's exit,
+/// the child is SIGKILLed mid-cleanup; with the grace period intact it finishes
+/// and writes the marker.
+#[test]
+#[cfg(unix)]
+fn run_stop_grace_lets_a_stopped_nodes_child_finish_its_cleanup() {
+    use std::os::unix::process::CommandExt as _;
+
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    ensure_cli_built();
+    let dora = dora_bin();
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let stamp = std::process::id();
+    let marker = target.join(format!("dora-3472-cleanup-{stamp}.txt"));
+    let yaml = target.join(format!("dora-3472-cleanup-{stamp}.yml"));
+    let log = target.join(format!("dora-3472-cleanup-{stamp}.log"));
+    for path in [&marker, &yaml, &log] {
+        let _ = fs::remove_file(path);
+    }
+
+    // The outer shell has no TERM trap, so the stop's group SIGTERM kills it
+    // right away (leader dies during the stop). The child traps TERM, cleans
+    // up for 2s — well inside the 5s between the ladder's SIGTERM and its
+    // SIGKILL escalation — and records that it got to finish.
+    let body = format!(
+        "(trap 'sleep 2; echo cleaned > {}' TERM; sleep 30) & wait",
+        marker.display()
+    );
+    fs::write(
+        &yaml,
+        format!("nodes:\n  - id: cleanup\n    path: shell\n    args: \"{body}\"\n"),
+    )
+    .expect("failed to write cleanup dataflow YAML");
+
+    let log_file = fs::File::create(&log).expect("failed to create log file");
+    let output = Command::new(&dora)
+        .args([
+            "run",
+            yaml.to_str().unwrap(),
+            "--allow-shell-nodes",
+            "--stop-after",
+            "1s",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log_file))
+        .process_group(0)
+        .output()
+        .expect("failed to run dora run");
+
+    let stderr_tail = fs::read_to_string(&log).unwrap_or_default();
+    let cleaned = marker.exists();
+    let _ = fs::remove_file(&yaml);
+    let _ = fs::remove_file(&log);
+    let _ = fs::remove_file(&marker);
+
+    assert!(
+        cleaned,
+        "a node's child must finish its cleanup after the stop's SIGTERM: the \
+         exit-time group kill fired while the child was still cleaning up, \
+         cutting the stop grace period short (#3472 review)\n\
+         `dora run` status: {}\nstderr tail:\n{}",
+        output.status,
+        stderr_tail
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 }
 
 /// dora-rs/dora#3472 (review): a background fork abandoned by a shell that
@@ -2699,14 +2777,23 @@ impl ShellOrphanRun {
         } else {
             String::new()
         };
+        // In the stop variant the background child also ignores SIGTERM — the
+        // fixture shell already does — so the daemon's group-SIGKILL escalation
+        // is the only thing that can end either, and the test genuinely
+        // exercises the escalation instead of passing on the group SIGTERM
+        // alone (#3472 review P2). `trap '' TERM` runs in a subshell so only
+        // this process stops ignoring it, and SIG_IGN survives the `exec`,
+        // reaching the sleep itself. The other variants keep a plain child.
+        let child = if ignore_term_signals {
+            format!("(trap '' TERM; exec sleep {SHELL_FIXTURE_MARKER})")
+        } else {
+            format!("sleep {SHELL_FIXTURE_MARKER}")
+        };
         let shell_args = if abandon_fork {
-            format!(
-                "{ignore}sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'",
-                child_pid_file.display(),
-            )
+            format!("{ignore}{child} & echo $! > '{}'", child_pid_file.display(),)
         } else {
             format!(
-                "{ignore}echo $$ > '{}'; sleep {SHELL_FIXTURE_MARKER} & echo $! > '{}'; wait",
+                "{ignore}echo $$ > '{}'; {child} & echo $! > '{}'; wait",
                 shell_pid_file.display(),
                 child_pid_file.display(),
             )

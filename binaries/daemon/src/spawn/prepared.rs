@@ -993,6 +993,7 @@ impl PreparedNode {
         let dataflow_id = self.dataflow_id;
 
         tokio::spawn(async move {
+            let mut stop_sent = false;
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
                     status = child.wait() => {
@@ -1000,7 +1001,13 @@ impl PreparedNode {
                     }
                     result = op_rx.recv_async() => {
                         match result {
-                            Ok(op) => op.execute(child.as_mut()),
+                            Ok(op) => {
+                                stop_sent = matches!(
+                                    op,
+                                    ProcessOperation::SoftKill | ProcessOperation::Kill
+                                );
+                                op.execute(child.as_mut());
+                            }
                             Err(_) => {
                                 // Sender dropped
                                 break child.wait().await.into();
@@ -1024,16 +1031,42 @@ impl PreparedNode {
             // abandoned by a node that finished normally. Best effort: an
             // already-empty group just yields ESRCH.
             #[cfg(unix)]
-            unsafe {
-                libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+            if stop_sent {
+                // The stop already SIGTERMed this group, so its children may
+                // be mid-cleanup; killing the group here would cut the stop
+                // grace period short for every one of them (dora-rs/dora#3472
+                // review, 2026-09-24). The leader's exit above ends this loop,
+                // so hand the escalation to the ladder's grace-period `Kill`:
+                // keep the receiver alive and SIGKILL the group when it
+                // arrives, exactly as if the leader had outlived the stop.
+                let stop_rx = op_rx;
+                tokio::spawn(async move {
+                    while let Ok(op) = stop_rx.recv_async().await {
+                        if matches!(op, ProcessOperation::Kill) {
+                            break;
+                        }
+                    }
+                    // SAFETY: `killpg` on the group this process spawned as its
+                    // leader; best effort, an empty group just yields ESRCH.
+                    unsafe {
+                        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                    }
+                });
+            } else {
+                // SAFETY: as above.
+                unsafe {
+                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
+                }
+                // Drop `op_rx` here so any grace-kill task still holding
+                // the paired `op_tx` sees a closed channel on the next
+                // `submit()` instead of routing operations to the
+                // subsequent incarnation (dora-rs/adora#152).
+                drop(op_rx);
             }
 
-            let _ = log_finish_rx.await;
-            // Drop `op_rx` here so any grace-kill task still holding
-            // the paired `op_tx` sees a closed channel on the next
-            // `submit()` instead of routing operations to the
-            // subsequent incarnation (dora-rs/adora#152).
+            #[cfg(not(unix))]
             drop(op_rx);
+            let _ = log_finish_rx.await;
             let _ = finished_tx.send(NodeProcessFinished { exit_status, pid });
         });
 
