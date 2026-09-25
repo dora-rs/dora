@@ -206,8 +206,11 @@ macro_rules! register_array_handlers {
         /// The per-element cast goes through [`num::NumCast`]/[`num::ToPrimitive`],
         /// so it is **lossy exactly where an `as` cast is**: a float source with a
         /// fractional part is truncated toward zero into an integer target — it is
-        /// **not** rounded, and it does **not** error. Converting between integer
-        /// types that both hold the value, or widening an integer to a float, is
+        /// **not** rounded, and it does **not** error. Likewise an integer is
+        /// rounded to the nearest representable float without error, which is
+        /// only exact while it fits the float's mantissa: up to 2^53 in magnitude
+        /// for `f64`, 2^24 for `f32` (so e.g. `u64`/`i64` → `f64` can lose low
+        /// bits). Converting between integer types that both hold the value is
         /// exact.
         ///
         /// # Errors
@@ -230,6 +233,15 @@ macro_rules! register_array_handlers {
         /// // Float -> integer truncates toward zero (it does not round or error).
         /// let floats = vec![1.9f64, -2.9].into_arrow();
         /// assert_eq!(into_vec::<i64>(&floats).ok(), Some(vec![1, -2]));
+        ///
+        /// // Integer -> float rounds once the value exceeds the mantissa:
+        /// // 2^53 + 1 has no exact `f64` representation.
+        /// let big = vec![(1u64 << 53) + 1].into_arrow();
+        /// assert_eq!(into_vec::<f64>(&big).ok(), Some(vec![(1u64 << 53) as f64]));
+        ///
+        /// // NaN is out of range for an integer target, so it errors.
+        /// let nan = vec![f64::NAN].into_arrow();
+        /// assert!(into_vec::<i64>(&nan).is_err());
         ///
         /// // Unsupported (non-numeric) array types are rejected.
         /// let strings = vec!["a".to_string(), "b".to_string()].into_arrow();
