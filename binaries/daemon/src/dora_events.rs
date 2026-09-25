@@ -19,6 +19,7 @@ use dora_message::{
 use std::{
     collections::BTreeSet,
     sync::{Arc, atomic},
+    time::Instant,
 };
 use uuid::Uuid;
 
@@ -238,13 +239,22 @@ impl Daemon {
         #[cfg(feature = "tensor-pool")]
         self.pool_cleanup_dataflow(dataflow_id).await;
 
-        if let Some(sender) = &self.coordinator_sender
-            && let Err(err) = self
+        if let Some(sender) = &self.coordinator_sender {
+            match self
                 .send_all_nodes_finished(sender, dataflow_id, &result)
                 .await
-        {
-            self.pending_finished_dataflows.insert(dataflow_id, result);
-            return Err(err);
+            {
+                // Queued, not yet known to be delivered: kept for a resend
+                // should this connection turn out to have lost it.
+                Ok(()) => {
+                    self.unconfirmed_finished_dataflows
+                        .insert(dataflow_id, (result, Instant::now()));
+                }
+                Err(err) => {
+                    self.pending_finished_dataflows.insert(dataflow_id, result);
+                    return Err(err);
+                }
+            }
         }
 
         Ok(())
