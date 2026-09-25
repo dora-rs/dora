@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, StatusCode},
     response::IntoResponse,
     routing::get,
+    serve::ListenerExt,
 };
 use dora_coordinator_store::CoordinatorStore;
 use dora_core::uhlc::HLC;
@@ -37,6 +38,8 @@ const MAX_CONTROL_MESSAGE_BYTES: usize = 1024 * 1024;
 /// Protocols`) is produced, while the socket itself lives on in the spawned
 /// `on_upgrade` task.
 const MAX_WS_CONNECTIONS: usize = 256;
+/// Idle time before the kernel starts probing a WS peer with TCP keepalive.
+const WS_TCP_KEEPALIVE_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
 
 /// Maximum new connections per IP within the rate window.
 const MAX_CONNECTIONS_PER_IP: u32 = 20;
@@ -291,6 +294,17 @@ pub(crate) async fn serve(
     };
     let app = router(state);
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
+
+    // Each open WebSocket holds one of `MAX_WS_CONNECTIONS` slots until it
+    // closes. Neither the CLI nor the daemon pings, so a peer that vanished
+    // without a FIN (sleep, partition, NAT timeout) would keep its slot
+    // forever; TCP keepalive lets the kernel detect it and error the socket.
+    let listener = listener.tap_io(|tcp| {
+        let keepalive = socket2::TcpKeepalive::new().with_time(WS_TCP_KEEPALIVE_IDLE);
+        if let Err(err) = socket2::SockRef::from(&*tcp).set_tcp_keepalive(&keepalive) {
+            tracing::warn!("failed to enable TCP keepalive on WS connection: {err}");
+        }
+    });
 
     let future = async move {
         axum::serve(
