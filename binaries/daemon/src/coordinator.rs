@@ -5,8 +5,8 @@ use dora_message::{
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DaemonRegisterRequest,
-        MAX_DAEMON_TEXT_MESSAGE_BYTES, MAX_TOPIC_DEBUG_FRAME_BYTES, encode_topic_debug_frame,
-        topic_debug_frame_len,
+        MAX_DAEMON_TEXT_MESSAGE_BYTES, MAX_TOPIC_DEBUG_FRAME_BYTES, MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
+        encode_topic_debug_frame, topic_debug_frame_len,
     },
     ws_protocol::WsResponse,
 };
@@ -42,14 +42,22 @@ const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
 /// Memory the queued topic debug frames may hold in total.
 ///
 /// Debug frames are variable-sized — a few bytes for a scalar output, up to
-/// [`MAX_TOPIC_DEBUG_FRAME_BYTES`] for a camera one — so a message count is not
-/// a memory bound on its own: the channel capacity alone would admit several
-/// GiB of camera frames whenever the coordinator falls behind. Each frame takes
-/// one permit per byte before it is queued and releases them once it has been
-/// written, so this is the real ceiling and the capacity above only caps the
-/// number of tiny frames. Sized to still admit one largest-possible frame when
-/// the queue is empty.
-const TOPIC_DEBUG_QUEUE_BYTES: usize = MAX_TOPIC_DEBUG_FRAME_BYTES;
+/// [`MAX_TOPIC_DEBUG_FRAME_BYTES`] for a camera one — so a message count is
+/// not a memory bound on its own: the capacity above would admit a gigabyte of
+/// camera frames whenever the coordinator falls behind. Each frame takes one
+/// permit per byte before it is queued and releases them once it has been
+/// written, so this is the real ceiling and the capacity only caps how many
+/// tiny frames can queue.
+///
+/// Four largest-possible frames, which leaves those slots to the frames a byte
+/// bound is beside the point for. Depth is worth having here because this
+/// queue's consumer is the socket writer, which does nothing but write:
+/// absorbing a burst while one write is in flight is what the queue is for.
+/// The coordinator's ingress queue is bounded the other way round — one frame,
+/// no byte budget (`ws_daemon::TOPIC_DEBUG_CHANNEL_CAPACITY` there) — because
+/// its consumer is the main event loop, where a queued debug frame is work
+/// done ahead of control events rather than behind them.
+const TOPIC_DEBUG_QUEUE_BYTES: usize = 4 * MAX_TOPIC_DEBUG_FRAME_BYTES;
 
 /// A topic debug frame waiting to be written, holding its share of
 /// [`TOPIC_DEBUG_QUEUE_BYTES`] until it has been.
@@ -79,8 +87,9 @@ pub struct CoordinatorSender {
 pub enum TrySendEventError {
     InvalidUtf8(std::str::Utf8Error),
     Encode(eyre::Report),
-    /// Larger than the coordinator accepts; sending it would cost the
-    /// connection.
+    /// Larger than some hop on the way to the subscriber accepts: sending it
+    /// would cost the coordinator connection (an oversized message closes it)
+    /// or the subscription (an oversized frame fails the CLI's socket).
     TooLarge {
         bytes: usize,
         limit: usize,
@@ -96,7 +105,7 @@ impl std::fmt::Display for TrySendEventError {
             Self::Encode(err) => write!(f, "failed to encode event message: {err}"),
             Self::TooLarge { bytes, limit } => write!(
                 f,
-                "message of {bytes} bytes exceeds the coordinator's {limit}-byte limit"
+                "{bytes} bytes exceeds the {limit}-byte limit a topic debug frame has to fit"
             ),
             Self::Full => write!(f, "WS send channel full"),
             Self::Closed => write!(f, "WS send channel closed"),
@@ -155,9 +164,18 @@ impl CoordinatorSender {
     /// every coordinator understands. Either way it goes on the debug channel,
     /// which the writer serves only after the control channels.
     ///
-    /// A frame larger than the coordinator accepts in that encoding is dropped
-    /// here (`TooLarge`): the coordinator closes the connection on an
-    /// oversized message, which would take the control plane down with it.
+    /// Nothing is copied until the frame has somewhere to go: the queue slot
+    /// and, in binary mode, the frame's bytes are taken first, so a frame that
+    /// will be dropped never costs a multi-megabyte encode. Both are given
+    /// back if a later step fails, and a reserved slot cannot be taken by
+    /// anyone else, so the queueing at the end cannot fail.
+    ///
+    /// A frame larger than the coordinator accepts in that encoding — or than
+    /// the CLI can be handed afterwards ([`MAX_TOPIC_DEBUG_PAYLOAD_BYTES`]) —
+    /// is dropped here (`TooLarge`): the coordinator closes the connection on
+    /// an oversized message, which would take the control plane down with it,
+    /// and an oversized *payload* would fail the subscriber's socket on the
+    /// next hop.
     pub fn try_send_topic_debug_frame(
         &self,
         daemon_id: &DaemonId,
@@ -166,7 +184,20 @@ impl CoordinatorSender {
         subscription_ids: Vec<Uuid>,
         payload: Vec<u8>,
     ) -> Result<(), TrySendEventError> {
-        let message = if self.binary_debug_frames {
+        // Queue space first, before anything is rendered or copied.
+        let slot = self.topic_debug.try_reserve().map_err(|err| match err {
+            mpsc::error::TrySendError::Full(()) => TrySendEventError::Full,
+            mpsc::error::TrySendError::Closed(()) => TrySendEventError::Closed,
+        })?;
+        let (message, budget) = if self.binary_debug_frames {
+            // A binary frame's size follows from the payload, so both limits
+            // and the byte budget are settled before the payload is copied.
+            if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
+                return Err(TrySendEventError::TooLarge {
+                    bytes: payload.len(),
+                    limit: MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
+                });
+            }
             let bytes = topic_debug_frame_len(subscription_ids.len(), payload.len());
             if bytes > MAX_TOPIC_DEBUG_FRAME_BYTES {
                 return Err(TrySendEventError::TooLarge {
@@ -174,9 +205,10 @@ impl CoordinatorSender {
                     limit: MAX_TOPIC_DEBUG_FRAME_BYTES,
                 });
             }
+            let budget = self.reserve_debug_bytes(bytes)?;
             let frame = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload)
                 .map_err(TrySendEventError::Encode)?;
-            Message::Binary(frame.into())
+            (Message::Binary(frame.into()), budget)
         } else {
             // Every payload byte takes at least two characters in the JSON
             // number array (a digit and a separator), so a payload past half
@@ -207,24 +239,27 @@ impl CoordinatorSender {
                     limit: MAX_DAEMON_TEXT_MESSAGE_BYTES,
                 });
             }
-            Message::Text(json.into())
+            // A JSON message's length is only known once it is rendered, but
+            // the check above keeps that bounded by the 1 MiB text limit — the
+            // copy this path can waste is nothing like a camera frame.
+            let budget = self.reserve_debug_bytes(json.len())?;
+            (Message::Text(json.into()), budget)
         };
-        // Reserve this frame's bytes before queueing it; the permit rides with
-        // it and frees them once it has been written. A frame that does not fit
-        // in what is left is dropped like any other the queue has no room for.
-        let bytes = u32::try_from(message.len()).map_err(|_| TrySendEventError::Full)?;
-        let budget = Arc::clone(&self.topic_debug_budget)
+        slot.send(QueuedDebugFrame {
+            message,
+            _budget: budget,
+        });
+        Ok(())
+    }
+
+    /// Take `bytes` off the queue's [`TOPIC_DEBUG_QUEUE_BYTES`] budget, or
+    /// report `Full` if that much is not left. The permit rides with the queued
+    /// frame and frees the bytes once it has been written.
+    fn reserve_debug_bytes(&self, bytes: usize) -> Result<OwnedSemaphorePermit, TrySendEventError> {
+        let bytes = u32::try_from(bytes).map_err(|_| TrySendEventError::Full)?;
+        Arc::clone(&self.topic_debug_budget)
             .try_acquire_many_owned(bytes)
-            .map_err(|_| TrySendEventError::Full)?;
-        self.topic_debug
-            .try_send(QueuedDebugFrame {
-                message,
-                _budget: budget,
-            })
-            .map_err(|err| match err {
-                mpsc::error::TrySendError::Full(_) => TrySendEventError::Full,
-                mpsc::error::TrySendError::Closed(_) => TrySendEventError::Closed,
-            })
+            .map_err(|_| TrySendEventError::Full)
     }
 
     /// Build a detached sender (and its receiver) for tests that only need a
@@ -1214,9 +1249,50 @@ mod tests {
         send().expect("the budget frees up once a frame has been written");
     }
 
+    /// Nothing is copied for a frame that will not be queued: the slot and the
+    /// bytes are taken before the frame is built and given back if it turns out
+    /// not to fit, so a dropped frame leaves the queue exactly as it found it.
+    #[test]
+    fn a_dropped_frame_leaves_neither_a_queue_slot_nor_budget_behind() {
+        let (sender, _rx) = debug_sender(true);
+        let free = sender.topic_debug_budget.available_permits();
+        let send = |payload_len: usize| {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![0; payload_len],
+            )
+        };
+
+        assert!(matches!(
+            send(MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 1),
+            Err(TrySendEventError::TooLarge { .. })
+        ));
+        assert_eq!(
+            sender.topic_debug_budget.available_permits(),
+            free,
+            "a frame that was never queued must not hold any of the byte budget"
+        );
+
+        // The slot it reserved is back too: the queue still takes its full
+        // capacity afterwards.
+        for _ in 0..4 {
+            send(8).expect("the queue is still empty");
+        }
+        assert!(matches!(send(8), Err(TrySendEventError::Full)));
+    }
+
     /// A frame the coordinator would reject must be dropped at the daemon, not
     /// sent: the coordinator closes the connection on an oversized message. In
     /// JSON mode that limit is reached by payloads far below a camera frame.
+    ///
+    /// A payload the *CLI* could not be handed is dropped here too: the
+    /// coordinator forwards it as a single frame, so one past
+    /// `MAX_TOPIC_DEBUG_PAYLOAD_BYTES` would fail the subscriber's socket
+    /// rather than be skipped by it — and there is no point putting those
+    /// bytes on the wire for the coordinator to drop.
     #[test]
     fn topic_debug_frame_beyond_the_coordinator_limit_is_dropped() {
         let send = |binary: bool, payload_len: usize| {
@@ -1248,6 +1324,18 @@ mod tests {
         let (result, sent) = send(true, MAX_TOPIC_DEBUG_FRAME_BYTES);
         assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
         assert!(sent.is_none());
+        // ... and a payload the last hop could not deliver is dropped on that
+        // limit, which is the stricter of the two.
+        let (result, sent) = send(true, MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 1);
+        assert!(matches!(
+            result,
+            Err(TrySendEventError::TooLarge { limit, .. }) if limit == MAX_TOPIC_DEBUG_PAYLOAD_BYTES
+        ));
+        assert!(sent.is_none());
+        // The largest payload that does fit still goes out.
+        let (result, sent) = send(true, MAX_TOPIC_DEBUG_PAYLOAD_BYTES);
+        assert!(result.is_ok());
+        assert!(matches!(sent, Some(Message::Binary(_))));
     }
 
     /// Regression test for the reply routing `resolve_machine` depends on
