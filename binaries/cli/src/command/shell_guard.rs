@@ -9,8 +9,12 @@ use libc::pid_t;
 ///
 /// The daemon wraps shell node spawns with `dora __shell-guard -- sh -c <args>`
 /// on unix, but only on the in-process `dora run` / `Daemon::run_dataflow`
-/// spawn path. The guard becomes the direct child (and process-group leader) of
-/// the daemon, spawns the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
+/// spawn path. The `dora` executable to re-spawn is the CLI host itself —
+/// `current_exe` for the standalone binary, the recorded `sys.argv[0]`
+/// console-script path for the `dora-rs-cli` wheel, whose interpreter is not a
+/// `dora` binary (see `binaries/daemon/src/spawn/command.rs`). The guard
+/// becomes the direct child (and process-group leader) of the daemon, spawns
+/// the shell as its own child, and polls [`DORA_RUN_PARENT_PID`].
 /// When the parent is gone, the guard `killpg`s its entire process group —
 /// which, because the daemon wrapped it as `ProcessGroup::leader()`, covers the
 /// shell and its background forks *while the guard is alive* (dora-rs/dora#3472).
