@@ -172,25 +172,7 @@ async fn barrier_completion_does_not_start_a_stopping_dataflow() {
 async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
     let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
     drop(coordinator_rx);
-    let (mut daemon, _events_rx) = Daemon::build_daemon(
-        None,
-        Some(coordinator_sender),
-        DaemonId::new(None),
-        None,
-        Arc::new(HLC::default()),
-        None,
-        BTreeMap::new(),
-        LogDestination::Tracing,
-        None,
-        Vec::new(),
-        None,
-        Vec::new(),
-        ZenohBind::Derived(LOCALHOST),
-        false,
-        false,
-    )
-    .await
-    .expect("daemon should build");
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
 
     let dataflow_id = Uuid::new_v4();
     let dataflow = test_dataflow();
@@ -258,25 +240,7 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     drop(coordinator_rx);
 
     let clock = Arc::new(HLC::default());
-    let (mut daemon, _events_rx) = Daemon::build_daemon(
-        None,
-        Some(coordinator_sender),
-        DaemonId::new(None),
-        None,
-        clock.clone(),
-        None,
-        BTreeMap::new(),
-        LogDestination::Tracing,
-        None,
-        Vec::new(),
-        None,
-        Vec::new(),
-        ZenohBind::Derived(LOCALHOST),
-        false,
-        false,
-    )
-    .await
-    .expect("daemon should build");
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
 
     let dataflow_id = Uuid::new_v4();
     daemon.pending_finished_dataflows.insert(
@@ -304,6 +268,144 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     assert!(
         daemon.pending_finished_dataflows.contains_key(&dataflow_id),
         "failed retry must keep the finish report pending for the next reconnect"
+    );
+}
+
+/// A daemon whose coordinator connection is `coordinator_sender`. The one
+/// place these tests call `build_daemon`, so a signature change touches only
+/// this.
+async fn daemon_reporting_to(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> Daemon {
+    let (daemon, _events_rx) = Daemon::build_daemon(
+        None,
+        Some(coordinator_sender),
+        DaemonId::new(None),
+        None,
+        clock,
+        None,
+        BTreeMap::new(),
+        LogDestination::Tracing,
+        None,
+        Vec::new(),
+        None,
+        Vec::new(),
+        ZenohBind::Derived(LOCALHOST),
+        false,
+        false,
+    )
+    .await
+    .expect("daemon should build");
+    daemon
+}
+
+/// A finish report the WS writer accepted can still be lost with the
+/// connection — a failing socket write drops it, a half-open link swallows
+/// it. It is resent on the next connection, ahead of the `StatusReport`, so
+/// the coordinator never reads the dataflow's absence as a crash and
+/// re-spawns a dataflow that finished normally (dora-rs/dora#3602).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_report_queued_on_a_lost_connection_is_resent_before_the_status_report() {
+    let (coordinator_sender, lost_link) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    daemon.running.insert(dataflow_id, test_dataflow());
+    daemon
+        .finish_dataflow(dataflow_id)
+        .await
+        .expect("the report is queued for the writer");
+    // The writer dies with the frame still queued.
+    drop(lost_link);
+    assert!(
+        daemon.pending_finished_dataflows.is_empty(),
+        "a queued report is not a failed one"
+    );
+    assert!(
+        daemon
+            .unconfirmed_finished_dataflows
+            .contains_key(&dataflow_id),
+        "but it is not known to be delivered either"
+    );
+
+    // Reconnect.
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    let clock = daemon.clock.clone();
+    let external_events = futures::stream::iter([Timestamped {
+        inner: Event::CtrlC,
+        timestamp: clock.new_timestamp(),
+    }]);
+    let (_dora_events_tx, mut dora_events_rx) = mpsc::channel(1);
+    daemon
+        .run_inner(external_events, &mut dora_events_rx, None)
+        .await
+        .expect("run the new connection");
+
+    let mut sent = Vec::new();
+    while let Ok(message) = coordinator_rx.try_recv() {
+        sent.push(message);
+    }
+    let finished = sent
+        .iter()
+        .position(|m| m.contains("AllNodesFinished") && m.contains(&dataflow_id.to_string()))
+        .unwrap_or_else(|| panic!("the finish report must be resent: {sent:#?}"));
+    let status = sent
+        .iter()
+        .position(|m| m.contains("StatusReport"))
+        .unwrap_or_else(|| panic!("the connection starts with a status report: {sent:#?}"));
+    assert!(
+        finished < status,
+        "the resent finish report must precede the status report: {sent:#?}"
+    );
+    assert!(
+        daemon
+            .unconfirmed_finished_dataflows
+            .contains_key(&dataflow_id),
+        "resent on a fresh connection, it is unconfirmed again"
+    );
+}
+
+/// A finish report whose connection stayed up well past the heartbeat
+/// timeout reached the coordinator, and is not resent on a later reconnect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_report_is_confirmed_once_its_connection_outlives_the_heartbeat_timeout() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let clock = daemon.clock.clone();
+    let result = || DataflowDaemonResult {
+        timestamp: clock.new_timestamp(),
+        node_results: BTreeMap::new(),
+    };
+    let (old, recent) = (Uuid::new_v4(), Uuid::new_v4());
+    let Some(long_ago) = Instant::now().checked_sub(FINISH_REPORT_CONFIRM_AFTER) else {
+        return; // Monotonic clock too close to its origin to go back that far.
+    };
+    daemon
+        .unconfirmed_finished_dataflows
+        .insert(old, (result(), long_ago));
+    daemon
+        .unconfirmed_finished_dataflows
+        .insert(recent, (result(), Instant::now()));
+
+    daemon.confirm_finished_dataflow_reports();
+    assert!(!daemon.unconfirmed_finished_dataflows.contains_key(&old));
+    assert!(daemon.unconfirmed_finished_dataflows.contains_key(&recent));
+
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    daemon
+        .report_pending_finished_dataflows()
+        .await
+        .expect("resend");
+    let resent = coordinator_rx
+        .try_recv()
+        .expect("the recent report is resent");
+    assert!(resent.contains(&recent.to_string()), "{resent}");
+    assert!(
+        coordinator_rx.try_recv().is_err(),
+        "the confirmed report is not resent"
     );
 }
 
