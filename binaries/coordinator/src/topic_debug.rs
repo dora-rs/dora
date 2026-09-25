@@ -333,26 +333,44 @@ pub(crate) async fn forward_topic_frames(
     )
     .await;
     for (subscription_id, subscriber) in evicted {
-        if let Err(err) = teardown_topic_debug_stream(
+        let stop_requests = match topic_stop_requests(
             daemon_connections,
             dataflow_id,
             subscription_id,
             subscriber.outputs_by_daemon().keys().cloned(),
             clock,
-        )
-        .await
-        {
-            tracing::warn!(
-                %subscription_id,
-                "failed to stop topic debug stream of a closed subscriber: {err:?}"
-            );
-        }
+        ) {
+            Ok(requests) => requests,
+            Err(err) => {
+                tracing::warn!(
+                    %subscription_id,
+                    "failed to stop topic debug stream of a closed subscriber: {err:?}"
+                );
+                continue;
+            }
+        };
+        // Don't wait for the replies here: this runs inside the serial
+        // coordinator event loop, and the daemon streaming these frames may
+        // have its WS task blocked on a full event channel. That task can
+        // then neither forward the stop nor read the reply, so awaiting it
+        // would stall the whole coordinator until `TCP_READ_TIMEOUT`.
+        tokio::spawn(async move {
+            for (daemon_id, result) in join_all(stop_requests).await {
+                if let Err(err) = result {
+                    tracing::warn!(
+                        %daemon_id,
+                        %subscription_id,
+                        "failed to stop topic debug stream of a closed subscriber: {err}"
+                    );
+                }
+            }
+        });
     }
 }
 
 /// Send `StopTopicDebugStream` for `subscription_id` to every daemon in
-/// `daemon_ids`. The subscriber must already be removed from the dataflow's
-/// `topic_subscribers`.
+/// `daemon_ids` and wait for their replies. The subscriber must already be
+/// removed from the dataflow's `topic_subscribers`.
 async fn teardown_topic_debug_stream(
     daemon_connections: &mut DaemonConnections,
     dataflow_id: DataflowId,
@@ -360,6 +378,45 @@ async fn teardown_topic_debug_stream(
     daemon_ids: impl IntoIterator<Item = DaemonId>,
     clock: &HLC,
 ) -> eyre::Result<()> {
+    let stop_requests = topic_stop_requests(
+        daemon_connections,
+        dataflow_id,
+        subscription_id,
+        daemon_ids,
+        clock,
+    )?;
+
+    let mut first_error = None;
+    for (daemon_id, result) in join_all(stop_requests).await {
+        if let Err(err) = result {
+            tracing::warn!(
+                %daemon_id,
+                %subscription_id,
+                "failed to stop topic debug stream on daemon: {err}"
+            );
+            if first_error.is_none() {
+                first_error = Some(err);
+            }
+        }
+    }
+
+    if let Some(err) = first_error {
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+/// Build one `StopTopicDebugStream` request per daemon in `daemon_ids`. Each
+/// future owns its connection handle, so it can be awaited in place or
+/// spawned.
+fn topic_stop_requests(
+    daemon_connections: &mut DaemonConnections,
+    dataflow_id: DataflowId,
+    subscription_id: Uuid,
+    daemon_ids: impl IntoIterator<Item = DaemonId>,
+    clock: &HLC,
+) -> eyre::Result<Vec<impl Future<Output = (DaemonId, eyre::Result<()>)> + Send + 'static>> {
     let mut stop_requests = Vec::new();
     for daemon_id in daemon_ids {
         let Some(connection) = daemon_connections.get_mut(&daemon_id).cloned() else {
@@ -395,26 +452,7 @@ async fn teardown_topic_debug_stream(
             (daemon_id, result)
         });
     }
-
-    let mut first_error = None;
-    for (daemon_id, result) in join_all(stop_requests).await {
-        if let Err(err) = result {
-            tracing::warn!(
-                %daemon_id,
-                %subscription_id,
-                "failed to stop topic debug stream on daemon: {err}"
-            );
-            if first_error.is_none() {
-                first_error = Some(err);
-            }
-        }
-    }
-
-    if let Some(err) = first_error {
-        return Err(err);
-    }
-
-    Ok(())
+    Ok(stop_requests)
 }
 
 /// Close every CLI topic-subscriber channel on a finished dataflow so the

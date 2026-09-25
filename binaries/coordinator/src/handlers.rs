@@ -1265,6 +1265,11 @@ mod tests {
                 .is_empty(),
             "the closed subscriber must be evicted"
         );
+        // The stop is sent from a spawned task; give it a moment to arrive.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while received.lock().await.is_empty() && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let received = received.lock().await;
         assert_eq!(received.len(), 1, "expected one stop request: {received:?}");
         assert!(
@@ -1272,6 +1277,64 @@ mod tests {
                 && received[0].contains(&subscription_id.to_string()),
             "daemon must be told to stop the evicted stream, got {}",
             received[0]
+        );
+    }
+
+    /// Evicting a subscriber must not wait for the daemon's reply. The daemon
+    /// streaming the frames may have its WS task blocked on the full event
+    /// channel, where it can neither forward the stop nor read the reply;
+    /// awaiting it inside the event loop would stall the whole coordinator
+    /// until `TCP_READ_TIMEOUT`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn evicting_a_topic_subscriber_does_not_wait_for_the_daemon() {
+        let dataflow_uuid = Uuid::new_v4();
+        let daemon = DaemonId::new(Some("stalled".to_string()));
+        // Accepts outgoing commands but never replies, like a daemon WS task
+        // that is blocked on `event_tx.send`.
+        let (tx, _stalled_rx) = tokio::sync::mpsc::channel::<String>(8);
+        let mut daemon_connections = DaemonConnections::default();
+        daemon_connections.add(
+            daemon.clone(),
+            DaemonConnection::new(
+                tx,
+                std::sync::Arc::new(tokio::sync::Mutex::new(HashMap::new())),
+                BTreeMap::new(),
+            ),
+        );
+
+        let subscription_id = Uuid::new_v4();
+        let (sub_tx, sub_rx) = tokio::sync::mpsc::channel(4);
+        drop(sub_rx);
+        let subscriber = TopicSubscriber::new(
+            BTreeMap::from([(
+                daemon.clone(),
+                vec![(NodeId::from("sender".to_string()), "message".into())],
+            )]),
+            sub_tx,
+        );
+        let mut dataflow = dataflow_on(dataflow_uuid, [daemon]);
+        dataflow
+            .topic_subscribers
+            .insert(subscription_id, subscriber);
+        let mut running_dataflows = HashMap::from([(dataflow_uuid, dataflow)]);
+
+        tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            crate::topic_debug::forward_topic_frames(
+                &mut running_dataflows,
+                &mut daemon_connections,
+                dataflow_uuid,
+                vec![subscription_id],
+                vec![1, 2, 3],
+                &HLC::default(),
+            ),
+        )
+        .await
+        .expect("frame forwarding must not block on the evicted subscriber's teardown");
+        assert!(
+            running_dataflows[&dataflow_uuid]
+                .topic_subscribers
+                .is_empty()
         );
     }
 }
