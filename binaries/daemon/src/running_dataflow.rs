@@ -552,9 +552,20 @@ impl RunningDataflow {
     /// #3201 "failed to re-subscribe" warning for what is an intentional drop.
     /// The marker is cleared on (re)subscribe, on restart, and on node removal
     /// (dora-rs/dora#3556).
+    ///
+    /// Also marks the node's drain signal, so a producer held for its full
+    /// channel does not count the coming close as a lost backpressure
+    /// message. It has to be this registered signal: the node sends
+    /// `EventStreamDropped` over its separate close connection, whose
+    /// listener has a drain signal no held delivery waits on.
     pub(crate) fn mark_event_stream_dropped(&mut self, node_id: &NodeId) {
         self.subscribe_channels.remove(node_id);
         self.dropped_event_streams.insert(node_id.clone());
+        if let Some(drained) = self.drain_signals.get(node_id) {
+            drained
+                .stream_dropped
+                .store(true, std::sync::atomic::Ordering::Release);
+        }
     }
 
     /// Reset the per-incarnation bookkeeping when a node's process exit is

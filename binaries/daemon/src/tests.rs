@@ -2429,11 +2429,21 @@ fn finished_but_still_running_receiver_does_not_warn() {
                 .insert(finished.clone(), test_running_node());
             let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
             df.subscribe_channels.insert(finished.clone(), tx);
+            let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(finished.clone(), drained.clone());
             df.mark_event_stream_dropped(&finished);
             assert!(
                 !df.subscribe_channels.contains_key(&finished)
                     && df.dropped_event_streams.contains(&finished),
                 "mark_event_stream_dropped must drop the channel and set the marker"
+            );
+            // The drain signal the node subscribed with is the one a held
+            // delivery reads: a close after this is not a lost message.
+            assert!(
+                drained
+                    .stream_dropped
+                    .load(std::sync::atomic::Ordering::Acquire),
+                "mark_event_stream_dropped must mark the subscribed drain signal"
             );
 
             let metadata = metadata::Metadata::new(clock.new_timestamp());

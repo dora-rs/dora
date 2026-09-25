@@ -548,8 +548,10 @@ impl Listener {
             }
             DaemonRequest::EventStreamDropped => {
                 // Deliberate: a held delivery that finds the channel closed
-                // from here on is not a loss.
-                self.drained.stream_dropped.store(true, Ordering::Release);
+                // from here on is not a loss. The daemon loop marks the drain
+                // signal the node subscribed with
+                // (`RunningDataflow::mark_event_stream_dropped`); this request
+                // arrives on the node's close connection, not that one.
                 let (reply_sender, reply) = oneshot::channel();
                 self.process_daemon_event(
                     DaemonNodeEvent::EventStreamDropped { reply_sender },
@@ -708,19 +710,23 @@ impl Listener {
     /// one could be waiting, i.e. while the channel is at or below the
     /// headroom a delivery waits for.
     fn note_drained(&self) {
-        // Taking an event is progress: hold producers for this node again.
-        if self.drained.gave_up.load(Ordering::Relaxed) {
+        let Some(events) = self.subscribed_events.as_ref() else {
+            return;
+        };
+        let room = events.capacity();
+        // Hold producers for this node again only once it has made the room
+        // a held delivery waits for. Clearing on any single take would re-arm
+        // the hold while the channel is still full, so a receiver that frees
+        // a few slots per read (large payloads) would stall its producer for
+        // another full stall limit after every read (dora-rs/dora#3601).
+        if room >= CONTROL_EVENT_HEADROOM && self.drained.gave_up.load(Ordering::Relaxed) {
             self.drained.gave_up.store(false, Ordering::Release);
             tracing::info!(
                 node = %self.node_id,
                 "receiver is draining again: holding its backpressure producers again"
             );
         }
-        if self
-            .subscribed_events
-            .as_ref()
-            .is_some_and(|events| events.capacity() <= CONTROL_EVENT_HEADROOM)
-        {
+        if room <= CONTROL_EVENT_HEADROOM {
             self.drained.notify.notify_waiters();
         }
     }
@@ -1225,7 +1231,19 @@ mod tests {
         assert!(started.elapsed() <= BACKPRESSURE_STALL_TICK);
         assert_eq!(lost(), 2);
 
-        // The receiver takes an event: it is draining, so hold for it again.
+        // One take frees one slot, which is not the room a held delivery
+        // waits for: holding a producer now would stall it for another full
+        // stall limit, so the mark stays.
+        listener
+            .subscribed_events
+            .as_mut()
+            .unwrap()
+            .try_recv()
+            .expect("a queued event");
+        listener.note_drained();
+        assert!(listener.drained.gave_up.load(Ordering::Relaxed));
+
+        // The receiver drains up to the headroom: hold for it again.
         listener.handle_events().await.unwrap();
         assert!(!listener.drained.gave_up.load(Ordering::Relaxed));
     }
