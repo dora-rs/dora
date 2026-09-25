@@ -2161,6 +2161,7 @@ dependencies = [
  "petname",
  "serde",
  "serde_json",
+ "socket2 0.6.5",
  "tokio",
  "tokio-stream",
  "tokio-tungstenite",
