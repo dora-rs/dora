@@ -78,12 +78,12 @@ const LINK_PROBE_DEADLINE: Duration = Duration::from_secs(30);
 /// Pause between link probes.
 const LINK_PROBE_INTERVAL: Duration = Duration::from_secs(2);
 
-/// How long one link probe collects answers. At least [`DEFAULT_TIMEOUT`]:
-/// the probe runs after spawn, off the event loop, so lowering the exchange
-/// budget to spawn faster must not make probe rounds shorter than the
-/// round-trip time and report a working link as missing.
-fn link_probe_round() -> Duration {
-    timeout().max(DEFAULT_TIMEOUT)
+/// How long one link probe collects answers, given the exchange `budget`. At
+/// least [`DEFAULT_TIMEOUT`]: the probe runs after spawn, off the event loop,
+/// so lowering the exchange budget to spawn faster must not make probe rounds
+/// shorter than the round-trip time and report a working link as missing.
+fn link_probe_round(budget: Duration) -> Duration {
+    budget.max(DEFAULT_TIMEOUT)
 }
 
 /// Zenoh key a daemon answers its local nodes' endpoints on.
@@ -513,7 +513,7 @@ async fn probe_link(
             dataflow_id,
             &no_nodes,
             &missing,
-            link_probe_round(),
+            link_probe_round(timeout()),
         )
         .await
         .unanswered;
@@ -582,9 +582,24 @@ fn spawn_declare(
     daemon_id: DaemonId,
     local: Endpoints,
 ) -> (AbortOnDropHandle<()>, tokio::sync::oneshot::Receiver<()>) {
+    spawn_holding(async move {
+        // The session is held with the queryable: if this is its last
+        // handle, dropping it closes the session and undeclares the
+        // queryable with it.
+        let queryable = declare(&session, dataflow_id, &daemon_id, local).await?;
+        Some((session, queryable))
+    })
+}
+
+/// Run `declaring` on its own task and hold what it declares until the
+/// returned handle is dropped — whether or not anyone still waits for the
+/// receiver, which resolves once `declaring` has finished.
+fn spawn_holding<T: Send + 'static>(
+    declaring: impl Future<Output = Option<T>> + Send + 'static,
+) -> (AbortOnDropHandle<()>, tokio::sync::oneshot::Receiver<()>) {
     let (declared_tx, declared) = tokio::sync::oneshot::channel();
     let task = tokio::spawn(async move {
-        let queryable = declare(&session, dataflow_id, &daemon_id, local).await;
+        let queryable = declaring.await;
         let _ = declared_tx.send(());
         if queryable.is_some() {
             // Hold it until the handle is dropped, which aborts this task and
@@ -984,7 +999,7 @@ mod tests {
             dataflow,
             &wanted("n", Placement::Machine("A".into())),
             &on_machine("A"),
-            link_probe_round(),
+            DEFAULT_TIMEOUT,
         )
         .await;
         assert!(
@@ -995,10 +1010,71 @@ mod tests {
     }
 
     /// Lowering the exchange budget to spawn faster must not shorten the
-    /// link probe's rounds below what a WAN round trip needs.
+    /// link probe's rounds below what a WAN round trip needs; raising it
+    /// lengthens them.
     #[test]
-    fn the_link_probe_round_is_never_shorter_than_the_default() {
-        assert!(link_probe_round() >= DEFAULT_TIMEOUT);
+    fn a_short_exchange_budget_does_not_shorten_the_link_probe_round() {
+        assert_eq!(link_probe_round(Duration::ZERO), DEFAULT_TIMEOUT);
+        assert_eq!(link_probe_round(Duration::from_millis(50)), DEFAULT_TIMEOUT);
+        let long = DEFAULT_TIMEOUT * 4;
+        assert_eq!(link_probe_round(long), long);
+    }
+
+    /// A declare that outlives the exchange budget keeps going in the
+    /// background: `exchange_within` stops waiting for it, yet the queryable
+    /// still gets declared and answers peers for as long as the handle lives,
+    /// and stops once it is dropped (dora-rs/dora#3603). The declare is held
+    /// back on purpose, since one on loopback finishes before any budget
+    /// could run out.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_declare_past_the_budget_still_answers() {
+        let (a, b) = linked_sessions().await;
+        let dataflow = uuid();
+        let (handle, declared) = spawn_holding(async move {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+            let queryable = declare(
+                &a,
+                dataflow,
+                &DaemonId::new(Some("A".into())),
+                Endpoints::new(),
+            )
+            .await?;
+            Some((a, queryable))
+        });
+        // What `exchange_within` does with its budget.
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), declared)
+                .await
+                .is_err(),
+            "the declare must still be running when the budget runs out"
+        );
+
+        let (_, answered) = collect(
+            &b,
+            dataflow,
+            &Wanted::new(),
+            &on_machine("A"),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(
+            unanswered(&on_machine("A"), &answered).is_empty(),
+            "the declare must finish after its waiter gave up: {answered:?}"
+        );
+
+        drop(handle);
+        let (_, answered) = collect(
+            &b,
+            dataflow,
+            &Wanted::new(),
+            &on_machine("A"),
+            Duration::from_millis(500),
+        )
+        .await;
+        assert!(
+            answered.is_empty(),
+            "dropping the handle undeclares the queryable: {answered:?}"
+        );
     }
 
     /// The probe that runs after an unanswered exchange returns as soon as the
