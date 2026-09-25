@@ -221,9 +221,12 @@ const COORDINATOR_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
 /// How long a connection must stay up after a finish report was queued on it
 /// before the report counts as delivered. A report the connection lost —
 /// dropped by a failing writer, or swallowed by a half-open link — ends the
-/// connection within [`COORDINATOR_HEARTBEAT_TIMEOUT`] (plus a heartbeat
-/// interval) of being sent, so twice that leaves margin.
-const FINISH_REPORT_CONFIRM_AFTER: Duration = Duration::from_secs(40);
+/// connection on this side only once the coordinator has been silent for
+/// [`COORDINATOR_HEARTBEAT_TIMEOUT`]. If only the daemon→coordinator
+/// direction is dead, the coordinator keeps sending heartbeats (every 3 s)
+/// until its own 30 s daemon timeout, so the worst case is 30 s + 3 s + 20 s
+/// plus one watchdog tick (5 s): 58 s. This leaves margin above that.
+const FINISH_REPORT_CONFIRM_AFTER: Duration = Duration::from_secs(75);
 
 /// Records a failed reconnect attempt and reports whether the retry window has
 /// elapsed (so the daemon should give up and exit). `deadline` tracks the

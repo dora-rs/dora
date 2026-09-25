@@ -172,25 +172,7 @@ async fn barrier_completion_does_not_start_a_stopping_dataflow() {
 async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
     let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
     drop(coordinator_rx);
-    let (mut daemon, _events_rx) = Daemon::build_daemon(
-        None,
-        Some(coordinator_sender),
-        DaemonId::new(None),
-        None,
-        Arc::new(HLC::default()),
-        None,
-        BTreeMap::new(),
-        LogDestination::Tracing,
-        None,
-        Vec::new(),
-        None,
-        Vec::new(),
-        ZenohBind::Derived(LOCALHOST),
-        false,
-        false,
-    )
-    .await
-    .expect("daemon should build");
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
 
     let dataflow_id = Uuid::new_v4();
     let dataflow = test_dataflow();
@@ -258,25 +240,7 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     drop(coordinator_rx);
 
     let clock = Arc::new(HLC::default());
-    let (mut daemon, _events_rx) = Daemon::build_daemon(
-        None,
-        Some(coordinator_sender),
-        DaemonId::new(None),
-        None,
-        clock.clone(),
-        None,
-        BTreeMap::new(),
-        LogDestination::Tracing,
-        None,
-        Vec::new(),
-        None,
-        Vec::new(),
-        ZenohBind::Derived(LOCALHOST),
-        false,
-        false,
-    )
-    .await
-    .expect("daemon should build");
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
 
     let dataflow_id = Uuid::new_v4();
     daemon.pending_finished_dataflows.insert(
@@ -307,13 +271,19 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     );
 }
 
-async fn daemon_reporting_to(coordinator_sender: coordinator::CoordinatorSender) -> Daemon {
+/// A daemon whose coordinator connection is `coordinator_sender`. The one
+/// place these tests call `build_daemon`, so a signature change touches only
+/// this.
+async fn daemon_reporting_to(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> Daemon {
     let (daemon, _events_rx) = Daemon::build_daemon(
         None,
         Some(coordinator_sender),
         DaemonId::new(None),
         None,
-        Arc::new(HLC::default()),
+        clock,
         None,
         BTreeMap::new(),
         LogDestination::Tracing,
@@ -338,7 +308,7 @@ async fn daemon_reporting_to(coordinator_sender: coordinator::CoordinatorSender)
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn finish_report_queued_on_a_lost_connection_is_resent_before_the_status_report() {
     let (coordinator_sender, lost_link) = coordinator::CoordinatorSender::for_test();
-    let mut daemon = daemon_reporting_to(coordinator_sender).await;
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
 
     let dataflow_id = Uuid::new_v4();
     daemon.running.insert(dataflow_id, test_dataflow());
@@ -402,7 +372,7 @@ async fn finish_report_queued_on_a_lost_connection_is_resent_before_the_status_r
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn finish_report_is_confirmed_once_its_connection_outlives_the_heartbeat_timeout() {
     let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
-    let mut daemon = daemon_reporting_to(coordinator_sender).await;
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
     let clock = daemon.clock.clone();
     let result = || DataflowDaemonResult {
         timestamp: clock.new_timestamp(),
