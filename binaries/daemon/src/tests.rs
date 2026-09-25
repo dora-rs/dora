@@ -2100,7 +2100,7 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
                 df.pending_messages
                     .insert(receiver.clone(), Arc::new(AtomicU64::new(0)));
                 df.drain_signals
-                    .insert(receiver.clone(), Arc::new(tokio::sync::Notify::new()));
+                    .insert(receiver.clone(), Default::default());
                 receivers.push(rx);
             }
 
@@ -2174,6 +2174,97 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
                 "one warning per drop, none for the deferral: {levels:?}"
             );
         });
+    });
+}
+
+/// A backpressure receiver that already let a held delivery run into the
+/// stall limit is not waited for again until it drains: the next message to
+/// its full channel is dropped and counted instead of holding the producer
+/// for another stall limit (dora-rs/dora#3601).
+#[test]
+fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
+    use dora_message::config::QueuePolicy;
+    // Run under a scoped subscriber like the other tests that reach
+    // `send_output_to_local_receivers`: a first hit of its log callsites on a
+    // thread with none caches their interest as `never`, and a concurrently
+    // running test's `LevelCapture` then sees none of their events.
+    let capture = LevelCapture::default();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let input: DataId = "input".to_string().into();
+            let receiver: NodeId = "receiver".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(receiver.clone(), input.clone())]),
+            );
+            let inputs = BTreeMap::from([(
+                input.clone(),
+                user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+            )]);
+            df.running_nodes
+                .insert(receiver.clone(), running_node_with(inputs, None));
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+                tx.try_send(Timestamped {
+                    inner: NodeEvent::Stop,
+                    timestamp: clock.new_timestamp(),
+                })
+                .unwrap();
+            }
+            df.subscribe_channels.insert(receiver.clone(), tx);
+            let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(receiver.clone(), signal.clone());
+
+            let ft_stats = FaultToleranceStats::default();
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            let mut send = async |deferred: &mut Vec<_>| {
+                send_output_to_local_receivers(
+                    &output_id,
+                    &mut df,
+                    &metadata,
+                    None,
+                    &clock,
+                    Some(&ft_stats),
+                    false,
+                    Some(deferred),
+                )
+                .await
+                .unwrap();
+            };
+
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert_eq!(deferred.len(), 1, "a live receiver holds the producer");
+
+            signal.gave_up.store(true, atomic::Ordering::Relaxed);
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert!(deferred.is_empty(), "a given-up receiver does not");
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                1,
+                "the message is dropped and counted as lost"
+            );
+        });
+
+        let levels = capture.levels.lock().unwrap();
+        let warns = levels
+            .iter()
+            .filter(|level| **level == tracing::Level::WARN)
+            .count();
+        assert_eq!(warns, 1, "one warning for the dropped message: {levels:?}");
     });
 }
 
@@ -2455,11 +2546,21 @@ fn finished_but_still_running_receiver_does_not_warn() {
                 .insert(finished.clone(), test_running_node());
             let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
             df.subscribe_channels.insert(finished.clone(), tx);
+            let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(finished.clone(), drained.clone());
             df.mark_event_stream_dropped(&finished);
             assert!(
                 !df.subscribe_channels.contains_key(&finished)
                     && df.dropped_event_streams.contains(&finished),
                 "mark_event_stream_dropped must drop the channel and set the marker"
+            );
+            // The drain signal the node subscribed with is the one a held
+            // delivery reads: a close after this is not a lost message.
+            assert!(
+                drained
+                    .stream_dropped
+                    .load(std::sync::atomic::Ordering::Acquire),
+                "mark_event_stream_dropped must mark the subscribed drain signal"
             );
 
             let metadata = metadata::Metadata::new(clock.new_timestamp());

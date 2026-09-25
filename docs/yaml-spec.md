@@ -177,7 +177,9 @@ message being dropped. Two cases still drop, each logged and counted: a
 producer on another machine cannot be held, so a message forwarded across
 daemons to a full receiver is dropped; and a receiver that frees no room at all
 for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
-stops holding the producer, which then loses that message. The routing applies
+stops holding the producer, which then loses that message, and every further
+message to that receiver's full channel is dropped the same way, without
+another 60-second hold, until the receiver takes an event again. The routing applies
 to the producer's entire output, so every consumer of
 that output leaves the zero-copy path, and the daemon path carries the 64 MiB
 per-message limit. A producer learns its routing when it starts, so
