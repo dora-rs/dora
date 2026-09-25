@@ -188,6 +188,7 @@ async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
         ZenohBind::Derived(LOCALHOST),
         false,
         false,
+        None,
     )
     .await
     .expect("daemon should build");
@@ -274,6 +275,7 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
         ZenohBind::Derived(LOCALHOST),
         false,
         false,
+        None,
     )
     .await
     .expect("daemon should build");

@@ -336,6 +336,15 @@ pub struct RunDataflowOptions {
     /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
     /// timer is exactly what keeps it alive.
     pub exit_when_nodes_finish: Option<bool>,
+    /// The `dora` CLI executable to re-spawn as a shell node's guard on the
+    /// `run_dataflow` spawn path, forwarded from the caller so the guard works
+    /// under the `dora-rs-cli` wheel too, where the daemon runs in the python
+    /// interpreter and `current_exe` is not a `dora` binary (#3472 review).
+    /// Resolved by the CLI as `current_exe` (standalone) or the recorded
+    /// `sys.argv[0]` console-script path (wheel). `None` — the default —
+    /// leaves the daemon to its `current_exe`-named-`dora` fallback, then a
+    /// plain `sh -c` for an embedded host that provides neither.
+    pub shell_guard_host: Option<PathBuf>,
 }
 
 impl RunDataflowOptions {
@@ -347,6 +356,12 @@ impl RunDataflowOptions {
     /// breaking them.
     pub fn exit_when_nodes_finish(mut self, exit_when_nodes_finish: bool) -> Self {
         self.exit_when_nodes_finish = Some(exit_when_nodes_finish);
+        self
+    }
+
+    /// Sets [`Self::shell_guard_host`]. See the field docs for when to pass it.
+    pub fn shell_guard_host(mut self, shell_guard_host: PathBuf) -> Self {
+        self.shell_guard_host = Some(shell_guard_host);
         self
     }
 }
@@ -414,6 +429,15 @@ pub struct Daemon {
     /// the `dora up` daemon, whose nodes are deliberately decoupled from it
     /// (#2029).
     pub(crate) bind_nodes_to_parent: bool,
+    /// The `dora` CLI executable to re-spawn as a shell node's guard
+    /// (`dora __shell-guard`), on the in-process `run_dataflow` spawn path.
+    /// Resolved by the CLI itself — `current_exe` for the standalone binary,
+    /// the recorded `sys.argv[0]` console-script path for the `dora-rs-cli`
+    /// wheel — because only the caller knows which executable hosts it. `None`
+    /// on paths that never run the guard (an embedded daemon, the `dora up`
+    /// daemon), which then fall back to the daemon-side `current_exe` check or
+    /// a plain `sh -c` (#3472 review).
+    pub(crate) shell_guard_host: Option<PathBuf>,
     /// A `Destroy` that is holding its reply until this daemon's node
     /// processes are gone (#2980).
     pub(crate) pending_destroy: Option<PendingDestroy>,
@@ -779,10 +803,15 @@ impl Daemon {
                                 peer_zenoh_endpoints,
                                 zenoh_bind,
                                 disable_multicast,
+                                // This is a real standalone daemon binary, not
+                                // an in-process `dora run` host, so `current_exe`
+                                // already names a `dora` binary: no wheel
+                                // consolation is needed (#3472).
+                                false,
                                 // A standalone daemon outlives nothing its
                                 // nodes depend on: they survive coordinator
                                 // drops and reconnects on purpose (#2029).
-                                false,
+                                None,
                             )
                             .await?;
                             daemon = Some(built);
@@ -929,6 +958,7 @@ impl Daemon {
     ) -> eyre::Result<DataflowResult> {
         let RunDataflowOptions {
             exit_when_nodes_finish,
+            shell_guard_host,
         } = options;
         let working_dir = dora_core::descriptor::canonicalize_working_dir(
             working_dir_override.as_deref(),
@@ -1078,6 +1108,7 @@ impl Daemon {
             // Local dataflow runs (one daemon, no cluster) never need
             // cross-daemon Zenoh discovery; the rendezvous is irrelevant.
             None,
+            shell_guard_host,
             // `dora run` is single-machine by construction, and every node it
             // spawns is handed `DORA_ZENOH_CONNECT`, so all links are explicit
             // and multicast scouting buys nothing — while still exposing us to
@@ -1136,6 +1167,7 @@ impl Daemon {
         log_destination: LogDestination,
         health_check_interval_duration: Option<Duration>,
         inter_daemon_peer: Option<String>,
+        shell_guard_host: Option<PathBuf>,
         disable_multicast: bool,
     ) -> eyre::Result<DaemonRunResult> {
         // Single-shot path (`dora run`): build the daemon and run one event
@@ -1168,6 +1200,7 @@ impl Daemon {
             ZenohBind::Derived(LOCALHOST),
             disable_multicast,
             bind_nodes_to_parent,
+            shell_guard_host,
         )
         .await?;
         daemon
@@ -1210,6 +1243,7 @@ impl Daemon {
         zenoh_bind: ZenohBind,
         disable_multicast: bool,
         bind_nodes_to_parent: bool,
+        shell_guard_host: Option<PathBuf>,
     ) -> eyre::Result<(Self, mpsc::Receiver<Timestamped<Event>>)> {
         // Fold in `DORA_ZENOH_MULTICAST` so this is the daemon's *effective*
         // decision, not just its flag. The zenoh session honors the variable on
@@ -1336,6 +1370,7 @@ impl Daemon {
             zenoh_routable_addr: Some(zenoh_bind.addr()).filter(|addr| !addr.is_loopback()),
             disable_multicast,
             bind_nodes_to_parent,
+            shell_guard_host,
             pending_destroy: None,
             zenoh_publish_tx,
             remote_daemon_events_tx,

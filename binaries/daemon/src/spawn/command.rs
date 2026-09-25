@@ -22,6 +22,7 @@ pub(super) async fn path_spawn_command(
     node: &dora_core::descriptor::CustomNode,
     permit_url: bool,
     bind_nodes_to_parent: bool,
+    shell_guard_host: Option<&Path>,
 ) -> eyre::Result<Option<Command>> {
     let cmd = match node.path.as_str() {
         DYNAMIC_SOURCE => return Ok(None),
@@ -57,13 +58,14 @@ pub(super) async fn path_spawn_command(
                 // a `sh -c 'cmd &'` background fork would otherwise outlive
                 // the daemon, orphaned to init. See
                 // `binaries/cli/src/command/shell_guard.rs`.
-                match dora_guard_command(&shell_args) {
+                match dora_guard_command(&shell_args, shell_guard_host) {
                     Some(cmd) => cmd,
                     None => {
-                        // No `dora` binary resolvable (e.g. an embedded daemon
-                        // runner): degrade to a plain `sh -c`. PDEATHSIG
-                        // (#3482) still contains the direct child, but a shell
-                        // that forks to the background is not.
+                        // No `dora` executable resolvable (e.g. an embedded
+                        // daemon runner that is not the CLI): degrade to a
+                        // plain `sh -c`. PDEATHSIG (#3482) still contains the
+                        // direct child, but a shell that forks to the
+                        // background is not.
                         logger
                             .log(
                                 LogLevel::Debug,
@@ -271,21 +273,31 @@ pub(super) async fn path_spawn_command(
 }
 
 /// Command to spawn `sh -c <shell_args>` under `dora __shell-guard`, if a
-/// `dora` binary can be resolved.
+/// `dora` executable can be resolved.
+///
+/// `shell_guard_host` is the one the CLI asked for — `current_exe` for the
+/// standalone binary, the recorded `sys.argv[0]` console-script path for the
+/// `dora-rs-cli` wheel, whose interpreter is not a `dora` binary. It takes
+/// precedence over the daemon-side [`dora_executable`] check, which covers the
+/// `dora daemon --run-dataflow` shape where the daemon *is* a `dora` binary
+/// but no host was passed (#3472 review).
 #[cfg(unix)]
-fn dora_guard_command(shell_args: &str) -> Option<Command> {
-    let dora_bin = dora_executable()?;
+fn dora_guard_command(shell_args: &str, shell_guard_host: Option<&Path>) -> Option<Command> {
+    let dora_bin = shell_guard_host
+        .map(Path::to_path_buf)
+        .or_else(dora_executable)?;
     let mut cmd = Command::new(dora_bin);
     cmd = cmd.args(["__shell-guard", "--", "sh", "-c", shell_args]);
     Some(cmd)
 }
 
 #[cfg(not(unix))]
-fn dora_guard_command(_shell_args: &str) -> Option<Command> {
+fn dora_guard_command(_shell_args: &str, _shell_guard_host: Option<&Path>) -> Option<Command> {
     None
 }
 
-/// Locate the `dora` binary to re-spawn for the shell guard.
+/// Locate the `dora` binary to re-spawn for the shell guard, from the daemon's
+/// own `current_exe`.
 ///
 /// Only the `current_exe` — where the daemon IS the `dora` binary, as on the
 /// `dora run` spawn path this guard serves — is trusted. Anything else
@@ -293,7 +305,8 @@ fn dora_guard_command(_shell_args: &str) -> Option<Command> {
 /// of the `dora-rs-cli` wheel console script, …) falls back to a plain
 /// `sh -c` rather than a PATH lookup: a PATH-provided `dora` could be a
 /// different version without `__shell-guard`, or an unrelated binary entirely
-/// (#3472 review).
+/// (#3472 review). The wheel's own `dora` is recovered by the caller instead,
+/// which forwards it as `shell_guard_host`.
 #[cfg(unix)]
 fn dora_executable() -> Option<std::path::PathBuf> {
     let current_exe = std::env::current_exe().ok()?;
@@ -305,6 +318,8 @@ fn dora_executable() -> Option<std::path::PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
     #[test]
     fn shlex_splits_quoted_args() {
         let input = "--foo 'hello world' --bar";
@@ -316,5 +331,37 @@ mod tests {
     fn shlex_rejects_unmatched_quote() {
         let input = "--foo 'unclosed";
         assert!(shlex::split(input).is_none());
+    }
+
+    /// The guard must be spawned from the host the CLI named — for the wheel
+    /// that is the recorded `sys.argv[0]` console script, not the daemon's
+    /// `current_exe` (the python interpreter), which `current_exe`-based
+    /// detection would reject (#3472 review P1).
+    #[cfg(unix)]
+    #[test]
+    fn shell_guard_uses_the_caller_supplied_cli_host() {
+        let cmd = dora_guard_command("sleep 9527 & wait", Some(Path::new("/opt/venv/bin/dora")))
+            .expect("an explicit host must always produce a guard");
+        let cmd = std::process::Command::from(&cmd);
+        assert_eq!(cmd.get_program(), "/opt/venv/bin/dora");
+        let args: Vec<_> = cmd.get_args().collect();
+        assert_eq!(
+            args,
+            ["__shell-guard", "--", "sh", "-c", "sleep 9527 & wait"],
+            "the guard is the hidden `__shell-guard` CLI subcommand, with the \
+             shell behind a `--`"
+        );
+    }
+
+    /// Without a passed host and with a `current_exe` that is not a `dora`
+    /// binary (the test harness), no guard is spawned — the caller is not the
+    /// CLI, and a PATH lookup would be indistinguishable in kind.
+    #[cfg(unix)]
+    #[test]
+    fn shell_guard_is_skipped_when_no_cli_host_resolves() {
+        assert!(
+            dora_guard_command("sleep 9527", None).is_none(),
+            "an embedded daemon runner must not get a guard from a PATH lookup"
+        );
     }
 }
