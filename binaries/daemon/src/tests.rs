@@ -2082,72 +2082,87 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
 #[test]
 fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
     use dora_message::config::QueuePolicy;
+    // Run under a scoped subscriber like the other tests that reach
+    // `send_output_to_local_receivers`: a first hit of its log callsites on a
+    // thread with none caches their interest as `never`, and a concurrently
+    // running test's `LevelCapture` then sees none of their events.
+    let capture = LevelCapture::default();
     let rt = tokio::runtime::Builder::new_current_thread()
         .build()
         .unwrap();
-    rt.block_on(async {
-        let mut df = test_dataflow();
-        let clock = test_clock();
-        let sender: NodeId = "sender".to_string().into();
-        let output: DataId = "output".to_string().into();
-        let input: DataId = "input".to_string().into();
-        let receiver: NodeId = "receiver".to_string().into();
 
-        df.mappings.insert(
-            OutputId(sender.clone(), output.clone()),
-            BTreeSet::from([(receiver.clone(), input.clone())]),
-        );
-        let inputs = BTreeMap::from([(
-            input.clone(),
-            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
-        )]);
-        df.running_nodes
-            .insert(receiver.clone(), running_node_with(inputs, None));
-        let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
-        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
-            tx.try_send(Timestamped {
-                inner: NodeEvent::Stop,
-                timestamp: clock.new_timestamp(),
-            })
-            .unwrap();
-        }
-        df.subscribe_channels.insert(receiver.clone(), tx);
-        let signal = Arc::new(crate::local_delivery::DrainSignal::default());
-        df.drain_signals.insert(receiver.clone(), signal.clone());
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let input: DataId = "input".to_string().into();
+            let receiver: NodeId = "receiver".to_string().into();
 
-        let ft_stats = FaultToleranceStats::default();
-        let metadata = metadata::Metadata::new(clock.new_timestamp());
-        let output_id = OutputId(sender, output);
-        let mut send = async |deferred: &mut Vec<_>| {
-            send_output_to_local_receivers(
-                &output_id,
-                &mut df,
-                &metadata,
-                None,
-                &clock,
-                Some(&ft_stats),
-                false,
-                Some(deferred),
-            )
-            .await
-            .unwrap();
-        };
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(receiver.clone(), input.clone())]),
+            );
+            let inputs = BTreeMap::from([(
+                input.clone(),
+                user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+            )]);
+            df.running_nodes
+                .insert(receiver.clone(), running_node_with(inputs, None));
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+                tx.try_send(Timestamped {
+                    inner: NodeEvent::Stop,
+                    timestamp: clock.new_timestamp(),
+                })
+                .unwrap();
+            }
+            df.subscribe_channels.insert(receiver.clone(), tx);
+            let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(receiver.clone(), signal.clone());
 
-        let mut deferred = Vec::new();
-        send(&mut deferred).await;
-        assert_eq!(deferred.len(), 1, "a live receiver holds the producer");
+            let ft_stats = FaultToleranceStats::default();
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            let mut send = async |deferred: &mut Vec<_>| {
+                send_output_to_local_receivers(
+                    &output_id,
+                    &mut df,
+                    &metadata,
+                    None,
+                    &clock,
+                    Some(&ft_stats),
+                    false,
+                    Some(deferred),
+                )
+                .await
+                .unwrap();
+            };
 
-        signal.gave_up.store(true, atomic::Ordering::Relaxed);
-        let mut deferred = Vec::new();
-        send(&mut deferred).await;
-        assert!(deferred.is_empty(), "a given-up receiver does not");
-        assert_eq!(
-            ft_stats
-                .lost_backpressure_messages
-                .load(atomic::Ordering::Relaxed),
-            1,
-            "the message is dropped and counted as lost"
-        );
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert_eq!(deferred.len(), 1, "a live receiver holds the producer");
+
+            signal.gave_up.store(true, atomic::Ordering::Relaxed);
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert!(deferred.is_empty(), "a given-up receiver does not");
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                1,
+                "the message is dropped and counted as lost"
+            );
+        });
+
+        let levels = capture.levels.lock().unwrap();
+        let warns = levels
+            .iter()
+            .filter(|level| **level == tracing::Level::WARN)
+            .count();
+        assert_eq!(warns, 1, "one warning for the dropped message: {levels:?}");
     });
 }
 
