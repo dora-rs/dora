@@ -56,8 +56,11 @@ const DEFAULT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Env var overriding [`DEFAULT_TIMEOUT`], in milliseconds.
 ///
-/// A slow or congested link may need longer; `0` skips the exchange entirely
-/// and keeps every cross-machine edge on the daemon path.
+/// A slow or congested link may need longer; `0` skips collecting peers'
+/// endpoints and announces none of this daemon's, so every cross-machine edge
+/// touching this daemon keeps the daemon path. The daemon still answers
+/// queries (with no endpoints), since a peer reads the answer as proof that
+/// the zenoh link exists.
 const TIMEOUT_ENV: &str = "DORA_ZENOH_ENDPOINT_EXCHANGE_TIMEOUT_MS";
 
 /// How long to wait for replies to a single query before asking again.
@@ -74,6 +77,14 @@ const LINK_PROBE_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Pause between link probes.
 const LINK_PROBE_INTERVAL: Duration = Duration::from_secs(2);
+
+/// How long one link probe collects answers. At least [`DEFAULT_TIMEOUT`]:
+/// the probe runs after spawn, off the event loop, so lowering the exchange
+/// budget to spawn faster must not make probe rounds shorter than the
+/// round-trip time and report a working link as missing.
+fn link_probe_round() -> Duration {
+    timeout().max(DEFAULT_TIMEOUT)
+}
 
 /// Zenoh key a daemon answers its local nodes' endpoints on.
 ///
@@ -205,7 +216,8 @@ fn list(placements: &BTreeSet<Placement>) -> String {
 /// its session clone and its payload alive for the daemon's whole lifetime,
 /// and the link probe logging about a dataflow that is already gone.
 pub struct ExchangeHandle {
-    _queryable: Option<zenoh::query::Queryable<()>>,
+    /// Declares the queryable, and keeps it declared until aborted.
+    _queryable: AbortOnDropHandle<()>,
     /// Daemons that did not answer during the exchange, waiting for
     /// [`ExchangeHandle::check_link`].
     link_check: Option<LinkCheck>,
@@ -273,31 +285,64 @@ pub async fn exchange(
     peers: BTreeSet<Placement>,
     logger: Option<DataflowLogger<'static>>,
 ) -> (Endpoints, Option<ExchangeHandle>) {
-    let budget = timeout();
+    exchange_within(
+        timeout(),
+        session,
+        dataflow_id,
+        daemon_id,
+        local,
+        wanted,
+        peers,
+        logger,
+    )
+    .await
+}
+
+/// [`exchange`] with an explicit budget instead of the env var.
+#[allow(clippy::too_many_arguments)]
+async fn exchange_within(
+    budget: Duration,
+    session: zenoh::Session,
+    dataflow_id: Uuid,
+    daemon_id: DaemonId,
+    local: Endpoints,
+    wanted: Wanted,
+    peers: BTreeSet<Placement>,
+    logger: Option<DataflowLogger<'static>>,
+) -> (Endpoints, Option<ExchangeHandle>) {
     if budget.is_zero() {
         // The documented off switch: every cross-machine edge keeps the daemon
-        // path, and nothing is declared or asked.
-        return (BTreeMap::new(), None);
+        // path, and nothing is asked. Still answer — with no endpoints, so no
+        // peer dials a node here directly — because a peer with the exchange
+        // on reads silence as a missing link and reports that the dataflow
+        // can never finish (dora-rs/dora#3603).
+        let (queryable, _declared) =
+            spawn_declare(session, dataflow_id, daemon_id, Endpoints::new());
+        return (
+            BTreeMap::new(),
+            Some(ExchangeHandle {
+                _queryable: queryable,
+                link_check: None,
+                _link_probe: None,
+            }),
+        );
     }
     let started = tokio::time::Instant::now();
 
     // `declare_queryable` is itself a zenoh operation that can block on a
     // degraded inter-daemon link, so it gets a deadline too — bounding only the
     // query would leave the caller waiting with no limit at all, on the path
-    // that must finish before any node spawns.
-    let queryable =
-        match tokio::time::timeout(budget, declare(&session, dataflow_id, &daemon_id, local)).await
-        {
-            Ok(queryable) => queryable,
-            Err(_) => {
-                tracing::warn!(
-                    "declaring the zenoh node-endpoint queryable did not finish within \
-                 {budget:?}; consumers on other daemons will receive this daemon's \
-                 outputs over the daemon path"
-                );
-                None
-            }
-        };
+    // that must finish before any node spawns. Past the deadline the declare
+    // keeps going in the background: until it lands, peers that probe the link
+    // would see this daemon as unreachable (dora-rs/dora#3603).
+    let (queryable, declared) = spawn_declare(session.clone(), dataflow_id, daemon_id, local);
+    if tokio::time::timeout(budget, declared).await.is_err() {
+        tracing::warn!(
+            "declaring the zenoh node-endpoint queryable did not finish within \
+             {budget:?}; consumers on other daemons will receive this daemon's \
+             outputs over the daemon path. Still declaring it in the background"
+        );
+    }
 
     let remaining = budget.saturating_sub(started.elapsed());
     let expected: BTreeSet<Placement> = peers
@@ -414,9 +459,7 @@ impl ExchangeHandle {
     /// would log a missing link for data that did arrive. This daemon's own
     /// probe stops here, since the dataflow is done on this side.
     pub fn linger(self) {
-        let Some(queryable) = self._queryable else {
-            return;
-        };
+        let queryable = self._queryable;
         tokio::spawn(async move {
             tokio::time::sleep(LINK_PROBE_DEADLINE + timeout()).await;
             drop(queryable);
@@ -465,9 +508,15 @@ async fn probe_link(
     let no_nodes = Wanted::new();
     let mut warned = false;
     loop {
-        missing = run(&session, dataflow_id, &no_nodes, &missing, timeout())
-            .await
-            .unanswered;
+        missing = run(
+            &session,
+            dataflow_id,
+            &no_nodes,
+            &missing,
+            link_probe_round(),
+        )
+        .await
+        .unanswered;
         if missing.is_empty() {
             if warned {
                 reporter
@@ -522,6 +571,28 @@ async fn probe_link(
         }
         tokio::time::sleep(LINK_PROBE_INTERVAL).await;
     }
+}
+
+/// Declare the queryable on its own task, which keeps it declared until the
+/// returned handle is dropped. The receiver resolves once the declare has
+/// finished, successfully or not.
+fn spawn_declare(
+    session: zenoh::Session,
+    dataflow_id: Uuid,
+    daemon_id: DaemonId,
+    local: Endpoints,
+) -> (AbortOnDropHandle<()>, tokio::sync::oneshot::Receiver<()>) {
+    let (declared_tx, declared) = tokio::sync::oneshot::channel();
+    let task = tokio::spawn(async move {
+        let queryable = declare(&session, dataflow_id, &daemon_id, local).await;
+        let _ = declared_tx.send(());
+        if queryable.is_some() {
+            // Hold it until the handle is dropped, which aborts this task and
+            // undeclares the queryable with it.
+            std::future::pending::<()>().await;
+        }
+    });
+    (AbortOnDropHandle::new(task), declared)
 }
 
 /// Declare the queryable that answers this daemon's endpoints.
@@ -885,6 +956,49 @@ mod tests {
                 unanswered: BTreeSet::new(),
             }
         );
+    }
+
+    /// A daemon with the exchange switched off still answers the link probe
+    /// of a peer that has it on — with no endpoints — or that peer would
+    /// report a working link as missing (dora-rs/dora#3603).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_daemon_with_the_exchange_off_still_answers() {
+        let (a, b) = linked_sessions().await;
+        let dataflow = uuid();
+        let (found, handle) = exchange_within(
+            Duration::ZERO,
+            a,
+            dataflow,
+            DaemonId::new(Some("A".into())),
+            [(NodeId::from("n".to_string()), "tcp/10.0.0.1:1".to_string())].into(),
+            Wanted::new(),
+            on_machine("B"),
+            None,
+        )
+        .await;
+        assert!(found.is_empty());
+        let _handle = handle.expect("the off switch still keeps the queryable declared");
+
+        let (found, answered) = collect(
+            &b,
+            dataflow,
+            &wanted("n", Placement::Machine("A".into())),
+            &on_machine("A"),
+            link_probe_round(),
+        )
+        .await;
+        assert!(
+            unanswered(&on_machine("A"), &answered).is_empty(),
+            "daemon A must answer: {answered:?}"
+        );
+        assert!(found.is_empty(), "the off switch announces no endpoints");
+    }
+
+    /// Lowering the exchange budget to spawn faster must not shorten the
+    /// link probe's rounds below what a WAN round trip needs.
+    #[test]
+    fn the_link_probe_round_is_never_shorter_than_the_default() {
+        assert!(link_probe_round() >= DEFAULT_TIMEOUT);
     }
 
     /// The probe that runs after an unanswered exchange returns as soon as the
