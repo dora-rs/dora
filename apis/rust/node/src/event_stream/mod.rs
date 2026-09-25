@@ -169,7 +169,13 @@ pub struct EventStream {
     startup_acker: Option<std::thread::JoinHandle<()>>,
     close_channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
-    scheduler: Scheduler,
+    /// Shared with the zenoh subscriber callbacks, which file samples straight
+    /// into it so each input's `queue_size` applies when a sample arrives rather
+    /// than when the node next polls. A sample evicted there is dropped at once,
+    /// releasing the producer's shared-memory chunk.
+    scheduler: Arc<std::sync::Mutex<Scheduler>>,
+    /// Woken by the callbacks after they add to `scheduler`.
+    arrival_notify: Arc<tokio::sync::Notify>,
     /// Per-input counters for events dropped at the shared zenoh ingress
     /// channel, before the scheduler ever sees them.
     ///
@@ -458,6 +464,8 @@ impl EventStream {
     ) -> eyre::Result<Self> {
         channel.register(dataflow_id, node_id.clone(), clock.new_timestamp())?;
         let (tx, rx) = tokio::sync::mpsc::channel(channel_capacity);
+        let scheduler = Arc::new(std::sync::Mutex::new(scheduler));
+        let arrival_notify = Arc::new(tokio::sync::Notify::new());
 
         let use_scheduler = match &channel {
             DaemonChannel::IntegrationTestChannel(_) => {
@@ -574,6 +582,9 @@ impl EventStream {
 
                     let ack_tx_cb = ack_tx.clone();
                     let tx_cb = tx.clone();
+                    let scheduler_cb = scheduler.clone();
+                    let notify_cb = arrival_notify.clone();
+                    let use_scheduler_cb = use_scheduler;
                     let input_id_cb = input_id.clone();
                     let ingress_drops_cb =
                         ingress_drops.entry(input_id.clone()).or_default().clone();
@@ -750,16 +761,31 @@ impl EventStream {
                                             .lock()
                                             .unwrap_or_else(|p| p.into_inner()) = None;
                                     }
-                                    send_or_count_ingress_drop(
-                                        &tx_cb,
-                                        EventItem::ZenohInput {
-                                            id: input_id_cb.clone(),
-                                            metadata: std::sync::Arc::new(metadata),
-                                            data,
-                                        },
-                                        &input_id_cb,
-                                        &ingress_drops_cb,
-                                    );
+                                    let item = EventItem::ZenohInput {
+                                        id: input_id_cb.clone(),
+                                        metadata: std::sync::Arc::new(metadata),
+                                        data,
+                                    };
+                                    if use_scheduler_cb {
+                                        // Apply this input's `queue_size` now, while
+                                        // the sample still holds the producer's
+                                        // shared-memory chunk. An evicted sample is
+                                        // dropped here and its chunk released, instead
+                                        // of waiting in the event channel until the
+                                        // node polls. The scheduler counts the drop.
+                                        scheduler_cb
+                                            .lock()
+                                            .unwrap_or_else(|p| p.into_inner())
+                                            .add_event(item);
+                                        notify_cb.notify_one();
+                                    } else {
+                                        send_or_count_ingress_drop(
+                                            &tx_cb,
+                                            item,
+                                            &input_id_cb,
+                                            &ingress_drops_cb,
+                                        );
+                                    }
                                 }));
                             if result.is_err() {
                                 tracing::error!(
@@ -834,6 +860,7 @@ impl EventStream {
             start_timestamp: clock.new_timestamp(),
             clock,
             scheduler,
+            arrival_notify,
             ingress_drops,
             write_events_to,
             use_scheduler,
@@ -964,7 +991,7 @@ impl EventStream {
             // non-scheduler path returning `None` closes the stream against
             // zenoh-held senders.
             if self.use_scheduler {
-                while let Some(item) = self.scheduler.next() {
+                while let Some(item) = self.scheduler_next() {
                     if matches!(
                         &item,
                         EventItem::NodeEvent {
@@ -988,30 +1015,34 @@ impl EventStream {
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
         } else {
-            // Block for the first event while the scheduler is empty, then drain
-            // the rest non-blocking. The old code re-checked `is_empty()` on
-            // every iteration; `Scheduler::is_empty()` scans every input queue
-            // (O(#inputs)), so draining K events cost O(K·#inputs).
-            //
-            // `add_event` usually pushes, but it can also *drop* the event
-            // without retaining it (e.g. `queue_size: 0` -> `DropIncoming`), so
-            // we must keep blocking while the scheduler is still empty rather
-            // than assume a single `recv` made it non-empty — otherwise a
-            // dropped-only event would fall through to `scheduler.next() ==
-            // None` and be misread as a closed stream. This preserves the
-            // previous "block until a retained event arrives" behavior while
-            // checking `is_empty()` only twice in the common case instead of
-            // once per drained event.
-            while self.scheduler.is_empty() {
-                match self.receiver.recv().await {
-                    Some(event) => self.add_event(event),
-                    None => break,
+            // Zenoh samples are already in the per-input queues: the subscriber
+            // callback files them there itself, applying `queue_size` on arrival.
+            // Only the daemon thread's events still come through the channel.
+            // `add_event` may drop an event without retaining it (a `DropIncoming`
+            // eviction), so a delivery does not guarantee something to return;
+            // keep waiting until the scheduler hands one back, and treat a
+            // closed channel as the end of the stream only once the scheduler
+            // is drained.
+            loop {
+                // Anything the daemon thread delivered goes through the same
+                // per-input queues; zenoh samples are already in them.
+                while let Ok(event) = self.receiver.try_recv() {
+                    self.add_event(event);
+                }
+                if let Some(item) = self.scheduler_next() {
+                    break Some(Self::convert_event_item(item));
+                }
+                // Nothing deliverable: wait for either source. `Notify` keeps a
+                // permit if a callback fired between the check above and here.
+                let notify = self.arrival_notify.clone();
+                tokio::select! {
+                    _ = notify.notified() => {}
+                    event = self.receiver.recv() => match event {
+                        Some(event) => self.add_event(event),
+                        None => break self.scheduler_next().map(Self::convert_event_item),
+                    },
                 }
             }
-            while let Ok(event) = self.receiver.try_recv() {
-                self.add_event(event);
-            }
-            self.scheduler.next().map(Self::convert_event_item)
         };
 
         if let Some(ref event) = event {
@@ -1075,7 +1106,13 @@ impl EventStream {
     /// Check if there are any buffered events in the scheduler, the
     /// receiver, or the passthrough buffer used by pattern-aware helpers.
     pub fn is_empty(&self) -> bool {
-        self.pending_passthrough.is_empty() && self.scheduler.is_empty() && self.receiver.is_empty()
+        self.pending_passthrough.is_empty()
+            && self
+                .scheduler
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .is_empty()
+            && self.receiver.is_empty()
     }
 
     /// Returns and resets the accumulated drop counts per input ID.
@@ -1093,7 +1130,11 @@ impl EventStream {
     /// does not have to know which transport a payload took to learn it was
     /// lost (#3282).
     pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64> {
-        let mut counts = self.scheduler.drain_drop_counts();
+        let mut counts = self
+            .scheduler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .drain_drop_counts();
         for (id, dropped) in &self.ingress_drops {
             // Load before swapping: a node polling this every `recv()` pays a
             // read-modify-write per input otherwise, and the counter is zero on
@@ -1127,7 +1168,17 @@ impl EventStream {
                 write_events_to.mark_poisoned(&err, time_offset_secs);
             }
         }
-        self.scheduler.add_event(event);
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .add_event(event);
+    }
+
+    fn scheduler_next(&mut self) -> Option<EventItem> {
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .next()
     }
 
     fn record_event(&mut self, event: &EventItem) -> eyre::Result<()> {
@@ -1413,7 +1464,11 @@ impl EventStream {
         let (bucket, cap) = match &event {
             Event::Input { id, .. } => {
                 let id = id.clone();
-                let cap = self.scheduler.effective_cap_for(&id);
+                let cap = self
+                    .scheduler
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .effective_cap_for(&id);
                 (PassthroughBucket::Input(id), cap)
             }
             // Control events (`Reload`, a non-expected-server `NodeRestarted`,
@@ -1494,8 +1549,16 @@ impl EventStream {
         }
         self.pending_passthrough.remove(evict_at);
         match bucket {
-            PassthroughBucket::Input(id) => self.scheduler.record_drop(id),
-            PassthroughBucket::NonInput => self.scheduler.record_non_input_drop(),
+            PassthroughBucket::Input(id) => self
+                .scheduler
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_drop(id),
+            PassthroughBucket::NonInput => self
+                .scheduler
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .record_non_input_drop(),
         }
     }
 
@@ -2192,13 +2255,16 @@ impl EventStream {
         use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
         self.use_scheduler = true;
         let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
-        self.scheduler.add_event(EventItem::NodeEvent {
-            event: NodeEvent::Input {
-                id: id.into(),
-                metadata: std::sync::Arc::new(meta),
-                data: None,
-            },
-        });
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .add_event(EventItem::NodeEvent {
+                event: NodeEvent::Input {
+                    id: id.into(),
+                    metadata: std::sync::Arc::new(meta),
+                    data: None,
+                },
+            });
     }
 
     /// Test-only: buffer a `Stop` directly in the scheduler (a NON_INPUT_EVENT)
@@ -2208,9 +2274,12 @@ impl EventStream {
         use crate::event_stream::thread::EventItem;
         use dora_message::daemon_to_node::NodeEvent;
         self.use_scheduler = true;
-        self.scheduler.add_event(EventItem::NodeEvent {
-            event: NodeEvent::Stop,
-        });
+        self.scheduler
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .add_event(EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            });
     }
 }
 
@@ -3268,16 +3337,20 @@ mod tests {
         // An input the scheduler held back behind the prioritized Stop, carrying
         // a real (non-`Null`) typed payload so the one-shot check is consumed.
         events.use_scheduler = true;
-        events.scheduler.add_event(EventItem::ZenohInput {
-            id: id.clone(),
-            metadata: std::sync::Arc::new(Metadata::new(
-                dora_core::uhlc::HLC::default().new_timestamp(),
-            )),
-            data: {
-                use arrow::array::Array;
-                arrow::array::Int32Array::from(vec![1]).into_data()
-            },
-        });
+        events
+            .scheduler
+            .lock()
+            .unwrap()
+            .add_event(EventItem::ZenohInput {
+                id: id.clone(),
+                metadata: std::sync::Arc::new(Metadata::new(
+                    dora_core::uhlc::HLC::default().new_timestamp(),
+                )),
+                data: {
+                    use arrow::array::Array;
+                    arrow::array::Int32Array::from(vec![1]).into_data()
+                },
+            });
 
         let drained = events.recv();
         assert!(
@@ -3688,7 +3761,7 @@ mod tests {
         let (_node, mut events) = test_event_stream();
         let id = DataId::from("camera".to_string());
 
-        events.scheduler.record_drop(&id);
+        events.scheduler.lock().unwrap().record_drop(&id);
         events
             .ingress_drops
             .entry(id.clone())
