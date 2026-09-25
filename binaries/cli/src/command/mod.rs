@@ -7,6 +7,8 @@ mod daemon;
 mod doctor;
 mod down;
 mod expand;
+#[cfg(feature = "mcap-export")]
+mod export;
 mod graph;
 mod hub;
 pub mod inspect;
@@ -43,6 +45,8 @@ use daemon::Daemon;
 use doctor::Doctor;
 use down::Down;
 use expand::Expand;
+#[cfg(feature = "mcap-export")]
+use export::Export;
 use eyre::Context;
 use graph::Graph;
 use hub::Hub;
@@ -122,34 +126,38 @@ pub enum Command {
     /// Replay a recorded dataflow from a `.drec` file
     #[clap(display_order = 17)]
     Replay(Replay),
+    /// Export a recording to an MCAP file
+    #[cfg(feature = "mcap-export")]
+    #[clap(display_order = 18)]
+    Export(Export),
     /// View coordinator tracing spans
-    #[clap(subcommand, display_order = 18)]
+    #[clap(subcommand, display_order = 19)]
     Trace(Trace),
 
     // -- Setup --
     /// Check system health
-    #[clap(alias = "check", display_order = 20)]
+    #[clap(alias = "check", display_order = 21)]
     Status(system::status::Status),
     /// Run comprehensive system diagnostics
-    #[clap(display_order = 19)]
+    #[clap(display_order = 20)]
     Doctor(Doctor),
     /// Generate a new project or node
-    #[clap(display_order = 21)]
+    #[clap(display_order = 22)]
     New(NewArgs),
     /// Visualize a dataflow as a graph
-    #[clap(display_order = 22)]
+    #[clap(display_order = 23)]
     Graph(Graph),
     /// Expand module references and print the flat dataflow YAML
-    #[clap(display_order = 23)]
+    #[clap(display_order = 24)]
     Expand(Expand),
     /// Validate a dataflow YAML file and check type annotations
-    #[clap(display_order = 24)]
+    #[clap(display_order = 25)]
     Validate(Validate),
     /// System management commands
-    #[clap(subcommand, display_order = 25)]
+    #[clap(subcommand, display_order = 26)]
     System(System),
     /// Package, discover, and use dora nodes (unstable)
-    #[clap(subcommand, display_order = 26)]
+    #[clap(subcommand, display_order = 27)]
     Hub(Hub),
 
     // -- Utility --
@@ -212,6 +220,8 @@ impl Executable for Command {
             Command::Param(args) => args.execute(),
             Command::Record(args) => args.execute(),
             Command::Replay(args) => args.execute(),
+            #[cfg(feature = "mcap-export")]
+            Command::Export(args) => args.execute(),
             Command::Trace(args) => args.execute(),
             Command::Status(args) => args.execute(),
             Command::Doctor(args) => args.execute(),

@@ -537,6 +537,20 @@ dora replay <FILE> [OPTIONS]
 | `--replace <NODE_IDS>` | all recorded | Comma-separated nodes to replace |
 | `--output-yaml <PATH>` | | Write modified YAML without running (dry run) |
 
+#### `dora export`
+
+Convert a recorded `.drec` file to MCAP (Apache Arrow IPC encoding). Reachable only when the CLI was built with the `mcap-export` feature, e.g. `cargo install dora-cli --features mcap-export`. Sinks like Foxglove display plain arrow-ipc channels but do not render them natively.
+
+```
+dora export <RECORDING> [OPTIONS]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `<RECORDING>` | required | Path to `.drec` recording |
+| `-o, --output <PATH>` | `<RECORDING>.mcap` | Output MCAP file path |
+| `--topics <TOPICS>` | all | Comma-separated `node/output` topics to export |
+
 ---
 
 ### Monitoring Commands

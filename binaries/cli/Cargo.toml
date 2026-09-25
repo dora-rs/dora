@@ -19,6 +19,12 @@ path = "src/main.rs"
 default = ["tracing", "metrics", "redb-backend"]
 tracing = ["dep:dora-tracing"]
 metrics = ["dora-runtime-shared-lib/metrics", "dora-coordinator/metrics"]
+# `dora export` (the .drec -> MCAP remux). Optional so a default `cargo
+# install dora-cli` does not pay for mcap + its transitive crates. CI tests it
+# from the `test` job's dedicated step. Like tensor-pool, this is a sink we do
+# not want to silently rot -- but unlike the frozen 1.0 surface, feature-gated
+# commands are excluded from the default `cli-surface.txt` snapshot.
+mcap-export = ["dep:mcap", "dep:same-file"]
 # Marks a build that is hosted by the `dora-rs-cli` wheel rather than the
 # standalone binary, which changes how `dora self uninstall` and executable
 # path resolution behave. Internal wheel plumbing, not a supported knob.
@@ -86,6 +92,8 @@ dunce = "1.0.5"
 git2 = { workspace = true }
 zenoh = { workspace = true }
 arrow-json.workspace = true
+mcap = { version = "0.25.0", default-features = false, optional = true }
+same-file = { version = "1.0.6", optional = true }
 chrono = "0.4.45"
 dora-recording = { workspace = true }
 which = "8"
@@ -102,3 +110,6 @@ path = "src/lib.rs"
 dist = true
 
 [dev-dependencies]
+# Matches dora-message's pin (libraries/message/Cargo.toml); used only by the
+# `dora export` round-trip test to assemble the recorded `Output` payload.
+aligned-vec = { version = "0.6.4", features = ["serde"] }
