@@ -395,14 +395,46 @@ pub enum DaemonEvent {
 /// kilobytes already is, once rendered as a number array.
 pub const MAX_DAEMON_TEXT_MESSAGE_BYTES: usize = 1024 * 1024;
 
+/// Largest single WebSocket frame a default-configured client reads
+/// (`tokio-tungstenite`'s default `max_frame_size`).
+///
+/// The last hop of a topic debug frame is coordinator → `dora topic`, and the
+/// CLI connects with the default config — as does every released 1.0 CLI,
+/// which cannot be changed. A larger frame fails that socket rather than being
+/// skipped, ending the subscription, so it is the whole path's ceiling.
+const DEFAULT_CLIENT_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Largest topic debug payload that survives the whole daemon → coordinator →
+/// CLI path.
+///
+/// The coordinator forwards a payload to the CLI as one frame of
+/// `subscription id (16 bytes) | payload`, so [`DEFAULT_CLIENT_FRAME_BYTES`]
+/// minus that prefix is the real limit; rounded down to a whole MiB. An output
+/// past it is dropped at the daemon rather than sent for the coordinator to
+/// drop — or, worse, forwarded for the CLI to fail on.
+pub const MAX_TOPIC_DEBUG_PAYLOAD_BYTES: usize = 15 * 1024 * 1024;
+
 /// Largest binary topic debug frame (see [`encode_topic_debug_frame`]) a
 /// coordinator that offers `RegisterResult::Ok::binary_debug_frames` accepts,
-/// header included.
-pub const MAX_TOPIC_DEBUG_FRAME_BYTES: usize = 64 * 1024 * 1024;
+/// header included: one [`MAX_TOPIC_DEBUG_PAYLOAD_BYTES`] payload plus its
+/// header, which is 20 bytes and 16 more per subscription.
+pub const MAX_TOPIC_DEBUG_FRAME_BYTES: usize = 16 * 1024 * 1024;
 
 /// Length of the fixed part of a binary topic debug frame: the dataflow id
 /// and the subscription count.
 const TOPIC_DEBUG_FRAME_FIXED_HEADER: usize = 16 + 4;
+
+// The three limits above are one chain, checked here rather than left to
+// drift: a largest-possible payload must fit in a frame (with room left for
+// its subscription ids), and must still fit a default client's frame once the
+// coordinator has prefixed the subscription id.
+const _: () = {
+    assert!(
+        MAX_TOPIC_DEBUG_PAYLOAD_BYTES + TOPIC_DEBUG_FRAME_FIXED_HEADER
+            < MAX_TOPIC_DEBUG_FRAME_BYTES
+    );
+    assert!(MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 16 <= DEFAULT_CLIENT_FRAME_BYTES);
+};
 
 /// Encoded length of a binary topic debug frame, known before encoding it so
 /// an oversized frame can be dropped without copying its payload.
