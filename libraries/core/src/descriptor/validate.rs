@@ -5,7 +5,7 @@ use crate::{
 };
 
 use dora_message::{
-    config::{ByteSize, Input, InputMapping, UserInputMapping},
+    config::{Input, InputMapping, UserInputMapping, parse_byte_count},
     descriptor::{CoreNodeKind, DYNAMIC_SOURCE, OperatorSource, ResolvedNode, SHELL_SOURCE},
     id::{DataId, NodeId, OperatorId},
 };
@@ -464,15 +464,10 @@ impl ResolvedNodeExt for ResolvedNode {
 }
 
 fn parse_byte_size(s: &str) -> eyre::Result<u64> {
-    // Delegate to `dora_message::config::ByteSize`, which implements the exact
-    // same `<number><unit>` grammar (units B/KB/MB/GB, integer fast-path before
-    // the f64 path, and rejection of negative/non-finite/overflowing values).
-    // Keeping a single parser here avoids the two copies silently drifting
-    // apart when the grammar changes. `ByteSize` stores a `usize`, which on the
-    // 64-bit targets dora runs on is identical to the previous `u64` path.
-    s.parse::<ByteSize>()
-        .map(|b| b.as_bytes() as u64)
-        .map_err(|e| eyre!("{e}"))
+    // Share `dora_message::config::ByteSize`'s grammar, but parse in `u64`:
+    // `ByteSize` is `usize`-based, which would reject log sizes of 4 GiB and
+    // above on 32-bit targets (#3604).
+    parse_byte_count(s).map_err(|e| eyre!("{e}"))
 }
 
 fn parse_log_level(s: &str) -> eyre::Result<dora_message::common::LogLevelOrStdout> {
@@ -3237,6 +3232,16 @@ nodes:
         assert!(b < kb);
         assert!(kb < mb);
         assert!(mb < gb);
+    }
+
+    #[test]
+    fn parse_byte_size_accepts_sizes_above_4gib() {
+        // `usize` is 32 bits on i686/armv7; the log size limit must not be
+        // bounded by it (#3604).
+        assert_eq!(parse_byte_size("8GB").unwrap(), 8 << 30);
+        assert_eq!(parse_byte_size("5000MB").unwrap(), 5000 << 20);
+        assert_eq!(parse_byte_size("4294967296").unwrap(), 1 << 32);
+        assert_eq!(parse_byte_size("4.5GB").unwrap(), 9 << 29);
     }
 
     #[test]

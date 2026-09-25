@@ -594,52 +594,67 @@ impl FromStr for ByteSize {
     type Err = String;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.trim();
-        let (num_part, unit_part) = match s.find(|c: char| c.is_alphabetic()) {
-            Some(pos) => (s[..pos].trim(), s[pos..].trim()),
-            None => {
-                let bytes: usize = s.parse().map_err(|_| format!("invalid byte size: `{s}`"))?;
-                return Ok(ByteSize(bytes));
-            }
-        };
-
-        let multiplier: usize = match unit_part.to_uppercase().as_str() {
-            "B" => 1,
-            "KB" | "K" => 1024,
-            "MB" | "M" => 1024 * 1024,
-            "GB" | "G" => 1024 * 1024 * 1024,
-            other => return Err(format!("unknown byte size unit: `{other}`")),
-        };
-
-        // Use integer parse when possible to avoid f64 rounding above 2^53.
-        if let Ok(num) = num_part.parse::<usize>() {
-            return num
-                .checked_mul(multiplier)
-                .map(ByteSize)
-                .ok_or_else(|| format!("byte size `{s}` is too large"));
-        }
-
-        let num: f64 = num_part
-            .parse()
-            .map_err(|_| format!("invalid number in byte size: `{num_part}`"))?;
-
-        // Casting a negative or non-finite f64 to usize saturates (negatives
-        // and NaN to 0, +inf to usize::MAX) instead of erroring, so reject
-        // them up front.
-        if !num.is_finite() || num < 0.0 {
-            return Err(format!(
-                "byte size must be a non-negative, finite number: `{s}`"
-            ));
-        }
-        let bytes = num * multiplier as f64;
-        // `usize::MAX as f64` rounds up to 2^64, and no f64 values exist
-        // between usize::MAX and 2^64, so `>=` rejects exactly the results
-        // that exceed usize::MAX.
-        if bytes >= usize::MAX as f64 {
-            return Err(format!("byte size `{s}` is too large"));
-        }
-        Ok(ByteSize(bytes as usize))
+        let bytes = parse_byte_count(s)?;
+        usize::try_from(bytes)
+            .map(ByteSize)
+            .map_err(|_| format!("byte size `{}` is too large", s.trim()))
     }
+}
+
+/// Parses a byte size with the same grammar as [`ByteSize`], as a `u64`.
+///
+/// Unlike [`ByteSize`], whose range is `usize`, this accepts sizes of 4 GiB
+/// and above on 32-bit targets. Use it for sizes that describe files or
+/// totals rather than in-memory buffers, e.g. a log file size limit.
+///
+/// ```
+/// assert_eq!(dora_message::config::parse_byte_count("8GB"), Ok(8 << 30));
+/// assert!(dora_message::config::parse_byte_count("-1KB").is_err());
+/// ```
+pub fn parse_byte_count(s: &str) -> Result<u64, String> {
+    let s = s.trim();
+    let (num_part, unit_part) = match s.find(|c: char| c.is_alphabetic()) {
+        Some(pos) => (s[..pos].trim(), s[pos..].trim()),
+        None => {
+            return s.parse().map_err(|_| format!("invalid byte size: `{s}`"));
+        }
+    };
+
+    let multiplier: u64 = match unit_part.to_uppercase().as_str() {
+        "B" => 1,
+        "KB" | "K" => 1024,
+        "MB" | "M" => 1024 * 1024,
+        "GB" | "G" => 1024 * 1024 * 1024,
+        other => return Err(format!("unknown byte size unit: `{other}`")),
+    };
+
+    // Use integer parse when possible to avoid f64 rounding above 2^53.
+    if let Ok(num) = num_part.parse::<u64>() {
+        return num
+            .checked_mul(multiplier)
+            .ok_or_else(|| format!("byte size `{s}` is too large"));
+    }
+
+    let num: f64 = num_part
+        .parse()
+        .map_err(|_| format!("invalid number in byte size: `{num_part}`"))?;
+
+    // Casting a negative or non-finite f64 to u64 saturates (negatives and
+    // NaN to 0, +inf to u64::MAX) instead of erroring, so reject them up
+    // front.
+    if !num.is_finite() || num < 0.0 {
+        return Err(format!(
+            "byte size must be a non-negative, finite number: `{s}`"
+        ));
+    }
+    let bytes = num * multiplier as f64;
+    // `u64::MAX as f64` rounds up to 2^64, and no f64 values exist between
+    // u64::MAX and 2^64, so `>=` rejects exactly the results that exceed
+    // u64::MAX.
+    if bytes >= u64::MAX as f64 {
+        return Err(format!("byte size `{s}` is too large"));
+    }
+    Ok(bytes as u64)
 }
 
 impl fmt::Display for ByteSize {
