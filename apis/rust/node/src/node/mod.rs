@@ -1543,7 +1543,7 @@ impl DoraNode {
             FRAMING.to_string(),
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample_unchecked(output_id, parameters, Some(sample))
     }
 
     /// Sends the given Arrow array as an output message.
@@ -1638,7 +1638,7 @@ impl DoraNode {
             Parameter::String(FRAMING_ARROW_IPC.to_string()),
         );
 
-        self.send_output_sample(output_id, parameters, Some(sample))
+        self.send_output_sample_unchecked(output_id, parameters, Some(sample))
             .wrap_err("failed to send output")?;
 
         Ok(())
@@ -1739,6 +1739,21 @@ impl DoraNode {
     /// Ignores the output if the given `output_id` is not specified as node output in the dataflow
     /// configuration file.
     pub fn send_output_sample(
+        &mut self,
+        output_id: DataId,
+        parameters: MetadataParameters,
+        sample: Option<DataSample>,
+    ) -> NodeResult<()> {
+        if !self.validate_output(&output_id) {
+            return Ok(());
+        }
+        self.send_output_sample_unchecked(output_id, parameters, sample)
+    }
+
+    /// [`send_output_sample`](Self::send_output_sample) without the
+    /// declared-output check, for internal callers that already ran
+    /// [`validate_output`](Self::validate_output).
+    fn send_output_sample_unchecked(
         &mut self,
         output_id: DataId,
         mut parameters: MetadataParameters,
@@ -4140,6 +4155,37 @@ mod tests {
             ])
             .into_data(),
         );
+    }
+
+    /// `send_output_sample` must honor its documented contract and ignore an
+    /// output that is not declared — including one closed via
+    /// `close_outputs` — like every other `send_output*` entry point does.
+    #[test]
+    fn send_output_sample_ignores_undeclared_and_closed_outputs() {
+        let (mut node, events, mut rx) = test_node();
+        // The testing node is interactive (accepts any output id); make it
+        // enforce a real output declaration.
+        node.interactive = false;
+        let declared: DataId = "out".into();
+        node.node_config.outputs.insert(declared.clone());
+
+        node.send_output_sample("undeclared".into(), Default::default(), None)
+            .unwrap();
+        node.send_output_sample(declared.clone(), Default::default(), None)
+            .unwrap();
+        node.close_outputs(vec![declared.clone()]).unwrap();
+        node.send_output_sample(declared, Default::default(), None)
+            .unwrap();
+
+        drop(node);
+        drop(events);
+        let outputs = drain_outputs(&mut rx);
+        assert_eq!(
+            outputs.len(),
+            1,
+            "only the send to the open, declared output may go out: {outputs:?}"
+        );
+        assert_eq!(outputs[0]["id"], "out");
     }
 
     /// `close_outputs` must be atomic: if any id in the batch is unknown, the
