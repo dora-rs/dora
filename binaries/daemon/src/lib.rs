@@ -135,6 +135,7 @@ pub mod bench_support {
             clock,
             None,
             false, // bench: no remote receivers
+            None,
         )
         .await;
     }
@@ -145,6 +146,7 @@ mod coordinator_events;
 mod dataflow_lifecycle;
 mod debug_topic;
 mod dora_events;
+mod dynamic_peering;
 pub(crate) mod event_types;
 mod extension_table;
 mod extract_err_from_stderr;
@@ -336,6 +338,18 @@ pub struct RunDataflowOptions {
     /// (dora-rs/dora#2920). Off by default: for a long-lived dataflow the
     /// timer is exactly what keeps it alive.
     pub exit_when_nodes_finish: Option<bool>,
+    /// Fail the run if the daemon dropped a data message on an input that
+    /// declared `queue_policy: backpressure` — a promise not to drop that
+    /// the daemon could not keep (`FaultToleranceStats::
+    /// lost_backpressure_messages`).
+    ///
+    /// Off by default: a `warn!` per drop is the right level for a live
+    /// dataflow. `dora replay` turns it on, because every replayed input is
+    /// a backpressure input and a replay that did not deliver every recorded
+    /// message is not the reproduction it claims to be (dora-rs/dora#3397).
+    /// Drops on `drop_oldest` inputs never fail a run: those receivers chose
+    /// to lose messages over stalling their producer.
+    pub fail_on_lost_backpressure_messages: bool,
     /// The `dora` CLI executable to re-spawn as a shell node's guard on the
     /// `run_dataflow` spawn path, forwarded from the caller so the guard works
     /// under the `dora-rs-cli` wheel too, where the daemon runs in the python
@@ -348,6 +362,12 @@ pub struct RunDataflowOptions {
 }
 
 impl RunDataflowOptions {
+    /// Sets [`Self::fail_on_lost_backpressure_messages`].
+    pub fn fail_on_lost_backpressure_messages(mut self, fail: bool) -> Self {
+        self.fail_on_lost_backpressure_messages = fail;
+        self
+    }
+
     /// Sets [`Self::exit_when_nodes_finish`].
     ///
     /// A setter rather than a struct literal because the type is
@@ -958,6 +978,7 @@ impl Daemon {
     ) -> eyre::Result<DataflowResult> {
         let RunDataflowOptions {
             exit_when_nodes_finish,
+            fail_on_lost_backpressure_messages,
             shell_guard_host,
         } = options;
         let working_dir = dora_core::descriptor::canonicalize_working_dir(
@@ -1133,7 +1154,8 @@ impl Daemon {
                 }
             });
 
-        let (mut dataflow_results, ()) = future::try_join(run_result, spawn_result).await?;
+        let ((mut dataflow_results, ft_stats), ()) =
+            future::try_join(run_result, spawn_result).await?;
 
         let node_results = match dataflow_results.remove(&dataflow_id) {
             Some(results) => results,
@@ -1146,6 +1168,23 @@ impl Daemon {
                 return Err(eyre::eyre!("no node results for dataflow_id {dataflow_id}"));
             }
         };
+
+        // A node failure is the better diagnosis of a run that also lost
+        // messages (the loss is usually its consequence), so it is reported
+        // first and the loss only fails an otherwise clean run.
+        let lost = ft_stats
+            .lost_backpressure_messages
+            .load(atomic::Ordering::Relaxed);
+        if fail_on_lost_backpressure_messages
+            && lost > 0
+            && node_results.values().all(Result::is_ok)
+        {
+            bail!(
+                "{lost} message(s) on inputs with queue_policy: backpressure were dropped \
+                 (see the daemon's `dropping message` warnings above), so not every \
+                 output reached its consumer"
+            );
+        }
 
         Ok(DataflowResult {
             uuid: dataflow_id,
@@ -1169,7 +1208,7 @@ impl Daemon {
         inter_daemon_peer: Option<String>,
         shell_guard_host: Option<PathBuf>,
         disable_multicast: bool,
-    ) -> eyre::Result<DaemonRunResult> {
+    ) -> eyre::Result<(DaemonRunResult, Arc<FaultToleranceStats>)> {
         // Single-shot path (`dora run`): build the daemon and run one event
         // loop. The reconnecting daemon binary instead builds the daemon once
         // and reuses it across reconnects (see `run_inner_with_builds`), so that node
@@ -1203,13 +1242,15 @@ impl Daemon {
             shell_guard_host,
         )
         .await?;
-        daemon
+        let ft_stats = daemon.ft_stats.clone();
+        let results = daemon
             .run_inner(
                 external_events,
                 &mut dora_events_rx,
                 health_check_interval_duration,
             )
-            .await
+            .await?;
+        Ok((results, ft_stats))
     }
 
     /// Construct the node-serving daemon state: open the zenoh session, spawn
@@ -1712,6 +1753,14 @@ impl Daemon {
                                 .ft_stats
                                 .circuit_breaker_recoveries
                                 .load(atomic::Ordering::Relaxed),
+                            dropped_messages = self
+                                .ft_stats
+                                .dropped_messages
+                                .load(atomic::Ordering::Relaxed),
+                            lost_backpressure_messages = self
+                                .ft_stats
+                                .lost_backpressure_messages
+                                .load(atomic::Ordering::Relaxed),
                             "fault tolerance stats",
                         );
                     }
@@ -2044,6 +2093,9 @@ impl Daemon {
                         &self.clock,
                         Some(&self.ft_stats),
                         false, // WS topic publish: no Zenoh forwarding
+                        // No producer on this daemon to stall: a full
+                        // backpressure receiver drops (and counts) here.
+                        None,
                     )
                     .await?;
                     Result::<_, eyre::Report>::Ok(())

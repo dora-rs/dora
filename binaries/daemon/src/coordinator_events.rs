@@ -686,6 +686,8 @@ impl Daemon {
                     // node restarts reuse the same venv that `dora build` prepared.
                     let python_env_dir =
                         dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let backpressured_outputs = dataflow
+                        .backpressured_outputs_of(&node_id, &node.kind.run_config().outputs);
                     let task = spawner
                         .spawn_node(
                             node.clone(),
@@ -695,6 +697,7 @@ impl Daemon {
                             node_stderr,
                             None,
                             output_routing,
+                            backpressured_outputs,
                             &mut logger,
                         )
                         .await
@@ -880,11 +883,18 @@ impl Daemon {
                         .retain(|sub| sub.node_id != node_id);
 
                     // Clean up remaining state for this node.
-                    dataflow.running_nodes.remove(&node_id);
+                    if dataflow
+                        .running_nodes
+                        .remove(&node_id)
+                        .is_some_and(|node| node.node_config.dynamic)
+                    {
+                        Arc::make_mut(&mut dataflow.zenoh_peering).remove(&node_id);
+                    }
                     dataflow.open_inputs.remove(&node_id);
                     dataflow.data_inputs.remove(&node_id);
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+                    dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     // clear the connected marker too, else a re-added node ID
                     // would look already-connected before its new incarnation
@@ -1195,6 +1205,8 @@ impl Daemon {
                         .context("failed to clone logger")?;
                     let python_env_dir =
                         dora_core::build::managed_python_env_dir(&node, &base_working_dir);
+                    let backpressured_outputs = dataflow
+                        .backpressured_outputs_of(&node_id, &node.kind.run_config().outputs);
                     let task = spawner
                         .spawn_node(
                             node.clone(),
@@ -1204,6 +1216,7 @@ impl Daemon {
                             node_stderr.clone(),
                             None,
                             output_routing,
+                            backpressured_outputs,
                             &mut logger,
                         )
                         .await
@@ -1263,6 +1276,7 @@ impl Daemon {
                     //   descriptor holds the authoritative new definition).
                     dataflow.subscribe_channels.remove(&node_id);
                     dataflow.pending_messages.remove(&node_id);
+                    dataflow.drain_signals.remove(&node_id);
                     dataflow.all_inputs_closed_at.remove(&node_id);
                     dataflow.connected_nodes.remove(&node_id);
                     dataflow.finish_escalated.remove(&node_id);

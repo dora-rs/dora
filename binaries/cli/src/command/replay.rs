@@ -189,9 +189,22 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         args.speed,
         args.r#loop,
     );
-    let backpressure_inputs =
-        raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
-    if backpressure_inputs > 0 {
+    let sizing = raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+    for input in &sizing.lossy {
+        // Nothing holds the replay node for an input that is not under
+        // `backpressure`: on the direct zenoh path the receiver's ingress
+        // drops, on the daemon path (when a sibling consumer pins the output
+        // there) the daemon drops. Either is logged by whoever drops, and
+        // neither fails the replay — say here that it can happen
+        // (dora-rs/dora#3397).
+        eprintln!(
+            "warning: input `{input}` keeps its own queue policy, so a full-speed replay \
+             can drop messages it does not drain in time (logged as a warning by the \
+             daemon or the receiving node). Set queue_policy: backpressure on it to \
+             replay it losslessly."
+        );
+    }
+    if sizing.backpressure_inputs > 0 {
         // Replay makes replayed inputs `backpressure` so one pass is buffered
         // rather than silently dropped (#2144). Since #3429 that also pins each
         // replayed producer's output to the daemon transport path, so replay
@@ -261,7 +274,10 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
     let run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
-    run.execute()
+    // A replay exists to reproduce the recording: every replayed input is a
+    // backpressure input, and a message lost on one makes the run exit
+    // non-zero rather than warn (dora-rs/dora#3397).
+    run.execute_with(true)
 }
 
 /// Rewrites each recorded node in the descriptor into a replay node: swaps its
@@ -398,30 +414,39 @@ fn append_prefixed_outputs(
 /// - The sizing bounds one pass of the recording; `--loop` can still
 ///   overflow, at which point the backpressure policy logs errors at its
 ///   hard cap instead of dropping silently.
-/// - This addresses only the node input-queue layer. A *replayed* producer's
-///   output no longer traverses the direct node-to-node zenoh data plane at
-///   all: since #3429 a `backpressure` input pins its producer's output to the
-///   daemon transport path (`daemon_only`, `binaries/daemon/src/output_
-///   routing.rs`). That trades the direct path's silent `CongestionControl::
-///   Drop` (#3397) for the daemon path's own limits — no shared-memory
-///   zero-copy, and a hard `MAX_MESSAGE_BYTES` (64 MiB) per-message cap that
-///   fails the replay of any larger recorded message (dora-rs/dora#3448). The
-///   caller surfaces this demotion via the returned count. A live intermediate
-///   node in a *partial* `--replace` still re-emits over the direct Drop path
-///   into its own downstream consumers' default queues, so the `--speed 0`
-///   drop of #3397 remains possible there (warned at the call site).
+/// - The node input queue is one of three layers, and `backpressure` is what
+///   makes the other two hold. A *replayed* producer's output never
+///   traverses the direct node-to-node zenoh data plane: since #3429 a
+///   `backpressure` input pins its producer's output to the daemon transport
+///   path (`daemon_only`, `binaries/daemon/src/output_routing.rs`), and on
+///   that path the daemon holds the producer's send while the receiver's
+///   channel is full instead of dropping (#3397), so the replay node's
+///   `send_output` blocks and a full-speed pass delivers every message. The
+///   trade is the daemon path's own limits — no shared-memory zero-copy, and
+///   a hard `MAX_MESSAGE_BYTES` (64 MiB) per-message cap that fails the
+///   replay of any larger recorded message (dora-rs/dora#3448); the caller
+///   surfaces that via the returned count. Two edges stay on the direct path
+///   and are warned at the call site: an explicitly sized input (see above)
+///   and, in a *partial* `--replace`, a live intermediate node's re-emits
+///   into its own downstream consumers.
 ///
-/// Returns the number of replayed-sourced inputs that ended up backpressured,
-/// i.e. the number of replayed outputs pinned to the daemon transport path.
+/// Returns what the caller needs to warn about: how many replayed-sourced
+/// inputs ended up backpressured (i.e. how many replayed outputs are pinned
+/// to the daemon transport path), and which replayed-sourced inputs are not
+/// — they size their own queue, or chose `drop_oldest` — and so may drop.
 fn raise_replayed_input_queue_sizes(
     nodes: &mut serde_yaml::Sequence,
     nodes_to_replace: &BTreeSet<String>,
     recorded_counts: &BTreeMap<String, BTreeMap<String, u64>>,
-) -> usize {
-    let mut backpressure_inputs = 0;
+) -> ReplayInputSizing {
+    let mut sizing = ReplayInputSizing::default();
     for node in nodes.iter_mut() {
-        let node_id = node.get("id").and_then(|v| v.as_str()).unwrap_or_default();
-        if nodes_to_replace.contains(node_id) {
+        let node_id = node
+            .get("id")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_owned();
+        if nodes_to_replace.contains(&node_id) {
             continue;
         }
 
@@ -436,57 +461,88 @@ fn raise_replayed_input_queue_sizes(
                 _ => holder.get_mut("inputs").and_then(|v| v.as_mapping_mut()),
             };
             if let Some(inputs) = inputs {
-                backpressure_inputs +=
-                    raise_input_queue_sizes(inputs, nodes_to_replace, recorded_counts);
+                raise_input_queue_sizes(
+                    &node_id,
+                    inputs,
+                    nodes_to_replace,
+                    recorded_counts,
+                    &mut sizing,
+                );
             }
         }
         if let Some(operators) = node.get_mut("operators").and_then(|v| v.as_sequence_mut()) {
             for operator in operators.iter_mut() {
                 if let Some(inputs) = operator.get_mut("inputs").and_then(|v| v.as_mapping_mut()) {
-                    backpressure_inputs +=
-                        raise_input_queue_sizes(inputs, nodes_to_replace, recorded_counts);
+                    raise_input_queue_sizes(
+                        &node_id,
+                        inputs,
+                        nodes_to_replace,
+                        recorded_counts,
+                        &mut sizing,
+                    );
                 }
             }
         }
     }
-    backpressure_inputs
+    sizing
 }
 
-/// Returns the number of replayed-sourced inputs that end up under
-/// `queue_policy: backpressure` — i.e. the number of replayed producer outputs
-/// that will be pinned to the daemon transport path (see
-/// [`raise_replayed_input_queue_sizes`]).
+/// What [`raise_replayed_input_queue_sizes`] found, for the call site's
+/// warnings.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct ReplayInputSizing {
+    /// Replayed-sourced inputs under `queue_policy: backpressure` — each pins
+    /// its producer's output to the daemon transport path (#3448).
+    backpressure_inputs: usize,
+    /// Replayed-sourced inputs that end up without `backpressure` — they set
+    /// their own `queue_size` or `queue_policy: drop_oldest` — as
+    /// `<node>/<input>`; nothing holds the replay node for these.
+    lossy: Vec<String>,
+}
+
+/// Sizes the replayed-sourced inputs in `inputs` (see
+/// [`raise_replayed_input_queue_sizes`]) and accounts for them in `sizing`.
 fn raise_input_queue_sizes(
+    node_id: &str,
     inputs: &mut serde_yaml::Mapping,
     nodes_to_replace: &BTreeSet<String>,
     recorded_counts: &BTreeMap<String, BTreeMap<String, u64>>,
-) -> usize {
+    sizing: &mut ReplayInputSizing,
+) {
     let source_key = serde_yaml::Value::String("source".to_string());
     let queue_size_key = serde_yaml::Value::String("queue_size".to_string());
     let queue_policy_key = serde_yaml::Value::String("queue_policy".to_string());
 
-    let mut backpressure_inputs = 0;
-    for (_input_id, value) in inputs.iter_mut() {
+    for (input_id, value) in inputs.iter_mut() {
         // Inputs are either a plain `node/output` string or a mapping with
         // a `source` key (plus optional queue_size/queue_policy/timeout).
-        let source = match &*value {
-            serde_yaml::Value::String(s) => s.clone(),
-            serde_yaml::Value::Mapping(m) => {
-                if m.contains_key(&queue_size_key) {
-                    // Explicit user sizing wins (see fn docs).
-                    continue;
-                }
-                match m.get(&source_key).and_then(|v| v.as_str()) {
-                    Some(s) => s.to_string(),
-                    None => continue,
-                }
-            }
+        let (source, explicitly_sized) = match &*value {
+            serde_yaml::Value::String(s) => (s.clone(), false),
+            serde_yaml::Value::Mapping(m) => match m.get(&source_key).and_then(|v| v.as_str()) {
+                Some(s) => (s.to_string(), m.contains_key(&queue_size_key)),
+                None => continue,
+            },
             _ => continue,
         };
         let Some((source_node, source_output)) = source.split_once('/') else {
             continue;
         };
         if !nodes_to_replace.contains(source_node) {
+            continue;
+        }
+        let lossy = |sizing: &mut ReplayInputSizing| {
+            let input_id = input_id.as_str().unwrap_or_default();
+            sizing.lossy.push(format!("{node_id}/{input_id}"));
+        };
+        if explicitly_sized {
+            // Explicit user sizing wins (see fn docs); only the policy decides
+            // whether the input is held for.
+            let policy = value.get(&queue_policy_key).and_then(|v| v.as_str());
+            if policy == Some("backpressure") {
+                sizing.backpressure_inputs += 1;
+            } else {
+                lossy(sizing);
+            }
             continue;
         }
         let Some(&count) = recorded_counts
@@ -529,10 +585,11 @@ fn raise_input_queue_sizes(
             }
         };
         if policy_is_backpressure {
-            backpressure_inputs += 1;
+            sizing.backpressure_inputs += 1;
+        } else {
+            lossy(sizing);
         }
     }
-    backpressure_inputs
 }
 
 fn find_replay_node_binary() -> eyre::Result<PathBuf> {
@@ -547,14 +604,15 @@ mod tests {
         run_rewrite_counted(yaml, replaced, counts).0
     }
 
-    /// Like [`run_rewrite`], but also returns the backpressured-input count that
-    /// `raise_replayed_input_queue_sizes` reports (what drives the daemon-path
-    /// demotion warning, #3448).
+    /// Like [`run_rewrite`], but also returns what
+    /// `raise_replayed_input_queue_sizes` reports for the call site's warnings
+    /// (the daemon-path demotion count, #3448; the explicitly sized inputs
+    /// left on the direct path, #3397).
     fn run_rewrite_counted(
         yaml: &str,
         replaced: &[&str],
         counts: &[(&str, &str, u64)],
-    ) -> (String, usize) {
+    ) -> (String, ReplayInputSizing) {
         let mut descriptor: serde_yaml::Value = serde_yaml::from_str(yaml).unwrap();
         let nodes = descriptor
             .get_mut("nodes")
@@ -568,12 +626,8 @@ mod tests {
                 .or_default()
                 .insert(o.to_string(), *c);
         }
-        let backpressure_inputs =
-            raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
-        (
-            serde_yaml::to_string(&descriptor).unwrap(),
-            backpressure_inputs,
-        )
+        let sizing = raise_replayed_input_queue_sizes(nodes, &nodes_to_replace, &recorded_counts);
+        (serde_yaml::to_string(&descriptor).unwrap(), sizing)
     }
 
     fn replaced_with_replay(yaml: &str, replaced: &[&str]) -> String {
@@ -696,10 +750,13 @@ mod tests {
         assert_eq!(input["queue_policy"].as_str(), Some("backpressure"));
     }
 
+    /// An explicitly sized input keeps its sizing and policy — and is
+    /// reported as lossy, because nothing holds the replay node for an input
+    /// without `backpressure` (#3397).
     #[test]
-    fn explicit_queue_size_is_left_untouched() {
-        let out = run_rewrite(
-            "nodes:\n- id: sink\n  inputs:\n    message:\n      source: source/status\n      queue_size: 1\n",
+    fn explicit_queue_size_is_left_untouched_and_reported() {
+        let (out, sizing) = run_rewrite_counted(
+            "nodes:\n- id: sink\n  inputs:\n    message:\n      source: source/status\n      queue_size: 1\n    live: other/x\n",
             &["source"],
             &[("source", "status", 100)],
         );
@@ -707,11 +764,40 @@ mod tests {
         let input = &parsed["nodes"][0]["inputs"]["message"];
         assert_eq!(input["queue_size"].as_u64(), Some(1));
         assert!(input.get("queue_policy").is_none());
+        assert_eq!(
+            sizing,
+            ReplayInputSizing {
+                backpressure_inputs: 0,
+                lossy: vec!["sink/message".to_string()],
+            },
+            "only the replayed-sourced input is reported; the live one is not"
+        );
     }
 
+    /// An explicitly sized input that also asks for `backpressure` is on the
+    /// daemon path already, so there is nothing to warn about.
     #[test]
-    fn explicit_queue_policy_is_preserved() {
-        let out = run_rewrite(
+    fn explicit_queue_size_with_backpressure_is_not_reported() {
+        let (_, sizing) = run_rewrite_counted(
+            "nodes:\n- id: sink\n  inputs:\n    message:\n      source: source/status\n      queue_size: 5\n      queue_policy: backpressure\n",
+            &["source"],
+            &[("source", "status", 100)],
+        );
+        assert_eq!(
+            sizing,
+            ReplayInputSizing {
+                backpressure_inputs: 1,
+                lossy: Vec::new(),
+            },
+            "it still counts as a daemon-path pin"
+        );
+    }
+
+    /// An explicit `drop_oldest` is kept (sized to the recording all the
+    /// same) and reported as lossy, like an explicitly sized input.
+    #[test]
+    fn explicit_queue_policy_is_preserved_and_reported() {
+        let (out, sizing) = run_rewrite_counted(
             "nodes:\n- id: sink\n  inputs:\n    message:\n      source: source/status\n      queue_policy: drop_oldest\n",
             &["source"],
             &[("source", "status", 100)],
@@ -720,6 +806,7 @@ mod tests {
         let input = &parsed["nodes"][0]["inputs"]["message"];
         assert_eq!(input["queue_size"].as_u64(), Some(100));
         assert_eq!(input["queue_policy"].as_str(), Some("drop_oldest"));
+        assert_eq!(sizing.lossy, vec!["sink/message".to_string()]);
     }
 
     #[test]
@@ -727,7 +814,7 @@ mod tests {
         // Two replayed-sourced inputs get `backpressure` (each pins its
         // producer's output to the daemon path), so the reported count is 2 —
         // the signal the replay command uses to warn about the #3448 demotion.
-        let (_out, count) = run_rewrite_counted(
+        let (_out, sizing) = run_rewrite_counted(
             concat!(
                 "nodes:\n",
                 "- id: sink\n",
@@ -738,24 +825,24 @@ mod tests {
             &["source"],
             &[("source", "a", 100), ("source", "b", 50)],
         );
-        assert_eq!(count, 2);
+        assert_eq!(sizing.backpressure_inputs, 2);
 
         // A replayed input the user pinned to `drop_oldest` is NOT counted:
         // that edge keeps the direct path, so no daemon-path demotion.
-        let (_out, count) = run_rewrite_counted(
+        let (_out, sizing) = run_rewrite_counted(
             "nodes:\n- id: sink\n  inputs:\n    message:\n      source: source/status\n      queue_policy: drop_oldest\n",
             &["source"],
             &[("source", "status", 100)],
         );
-        assert_eq!(count, 0);
+        assert_eq!(sizing.backpressure_inputs, 0);
 
         // Nothing sourced from a replayed node -> nothing pinned, nothing to warn about.
-        let (_out, count) = run_rewrite_counted(
+        let (_out, sizing) = run_rewrite_counted(
             "nodes:\n- id: sink\n  inputs:\n    tick: dora/timer/millis/10\n    live: other/data\n",
             &["source"],
             &[("source", "status", 100)],
         );
-        assert_eq!(count, 0);
+        assert_eq!(sizing.backpressure_inputs, 0);
     }
 
     #[test]

@@ -773,3 +773,7 @@ fn two_daemons_link_through_the_coordinator(
         ));
     }
 }
+
+// Run the #2721 dynamic-join regressions in the existing multi-daemon nightly lane.
+#[path = "multi_daemon/dynamic_peering.rs"]
+mod dynamic_peering;

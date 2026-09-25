@@ -40,7 +40,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::{
-    broadcast,
+    Notify, broadcast,
     mpsc::{self, Sender},
     oneshot,
 };
@@ -302,7 +302,9 @@ pub struct RunningDataflow {
     pub(crate) descriptor: Descriptor,
     /// Per-node zenoh listener + dial-list, so the node↔node links this dataflow
     /// needs are established deterministically rather than left to gossip.
-    /// Populated when the dataflow is spawned; see `spawn::build_peering_plan`.
+    /// Populated for static nodes at spawn and for dynamic nodes on each
+    /// configuration request; see `spawn::build_peering_plan` and
+    /// `dynamic_peering`.
     pub(crate) zenoh_peering: Arc<BTreeMap<NodeId, crate::spawn::NodeZenohPeering>>,
     /// Keeps this daemon answering other daemons' node-endpoint queries (and
     /// probing for the ones it could not reach) for as long as the dataflow
@@ -313,6 +315,16 @@ pub struct RunningDataflow {
     pub(crate) subscribe_channels: HashMap<NodeId, Sender<Timestamped<NodeEvent>>>,
     /// Per-node pending message counters (incremented on send, decremented on recv)
     pub(crate) pending_messages: HashMap<NodeId, Arc<AtomicU64>>,
+    /// Per-node "the listener took something out of the subscribe channel"
+    /// signal, installed with the channel. A producer's listener holding a
+    /// deferred delivery for a full channel waits on it instead of polling
+    /// (see `DeferredDelivery`).
+    pub(crate) drain_signals: HashMap<NodeId, Arc<Notify>>,
+    /// Outputs with a `queue_policy: backpressure` consumer on another
+    /// daemon. A cross-daemon forward cannot hold its producer, so a
+    /// forward of one of these that is dropped is a lost backpressure
+    /// message (`FaultToleranceStats::lost_backpressure_messages`).
+    pub(crate) remote_backpressured_outputs: BTreeSet<OutputId>,
     pub(crate) mappings: HashMap<OutputId, BTreeSet<(NodeId, DataId)>>,
     /// Edges seen routed with the receiver missing from `subscribe_channels` —
     /// i.e. the receiver's daemon event stream was gone (dropped or closed)
@@ -439,6 +451,8 @@ impl RunningDataflow {
             dataflow_started: false,
             subscribe_channels: HashMap::new(),
             pending_messages: HashMap::new(),
+            drain_signals: HashMap::new(),
+            remote_backpressured_outputs: BTreeSet::new(),
             mappings: HashMap::new(),
             missing_channel_warned: BTreeSet::new(),
             dropped_event_streams: BTreeSet::new(),
@@ -1174,6 +1188,22 @@ impl RunningDataflow {
             .get(receiver)
             .and_then(|node| node.node_config.run_config.inputs.get(input_id))
             .is_some_and(crate::output_routing::input_is_backpressure)
+    }
+
+    /// The outputs among `outputs` of a node entering this running dataflow
+    /// that feed a `queue_policy: backpressure` input of a current receiver
+    /// (`output_routing::backpressured_outputs` for the live routing table).
+    pub(crate) fn backpressured_outputs_of(
+        &self,
+        node_id: &NodeId,
+        outputs: &BTreeSet<DataId>,
+    ) -> BTreeSet<DataId> {
+        crate::output_routing::added_node_backpressured_outputs(
+            node_id,
+            outputs,
+            &self.mappings,
+            |receiver, input_id| self.input_requires_backpressure(receiver, input_id),
+        )
     }
 
     /// The first `queue_policy: backpressure` input of a node entering this

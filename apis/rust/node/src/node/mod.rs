@@ -22,11 +22,12 @@ use dora_core::{
 use dora_message::{
     DataflowId,
     daemon_to_node::{DaemonCommunication, DaemonReply, NodeConfig, OutputRouting},
+    dynamic_node::{DynamicNodeConfigReply, DynamicNodePeering},
     metadata::{
         FIN, FLUSH, FRAMING, FRAMING_ARROW_IPC, Metadata, MetadataParameters, Parameter,
         SCHEMA_HASH, SEGMENT_ID, SEQ, SESSION_ID,
     },
-    node_to_daemon::{DaemonRequest, DataMessage, Timestamped},
+    node_to_daemon::{DaemonRequest, DataMessage},
 };
 use eyre::WrapErr;
 use is_terminal::IsTerminal;
@@ -49,6 +50,7 @@ use tracing::{debug, error, info, warn};
 
 pub mod arrow_utils;
 mod control_channel;
+mod peering;
 
 /// Runtime type checking mode, controlled by `DORA_RUNTIME_TYPE_CHECK` env var.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1132,7 +1134,7 @@ impl DoraNode {
             output,
             options,
         };
-        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm))?;
+        let (mut node, events) = Self::init_with_options(node_config, Some(testing_comm), None)?;
         node.interactive = true;
         Ok((node, events))
     }
@@ -1141,13 +1143,14 @@ impl DoraNode {
     #[doc(hidden)]
     #[tracing::instrument]
     pub fn init(node_config: NodeConfig) -> NodeResult<(Self, EventStream)> {
-        Self::init_with_options(node_config, None)
+        Self::init_with_options(node_config, None, None)
     }
 
     #[tracing::instrument(skip(testing_communication))]
     fn init_with_options(
         node_config: NodeConfig,
         testing_communication: Option<TestingCommunication>,
+        dynamic_peering: Option<DynamicNodePeering>,
     ) -> NodeResult<(Self, EventStream)> {
         // Before anything that can fail or block: a node spawned by `dora run`
         // must not outlive the CLI even if the rest of this initialization
@@ -1278,7 +1281,7 @@ impl DoraNode {
             // current-thread runtimes).
             let session = std::thread::scope(|s| {
                 match s
-                    .spawn(|| handle.block_on(dora_core::topics::open_zenoh_session(None)))
+                    .spawn(|| handle.block_on(peering::open_session(dynamic_peering.as_ref())))
                     .join()
                 {
                     Ok(Ok(session)) => Ok(session),
@@ -2717,23 +2720,22 @@ impl DoraNodeBuilder {
         let clock = Arc::new(uhlc::HLC::default());
 
         let reply = channel
-            .request(&Timestamped {
-                inner: DaemonRequest::NodeConfig { node_id },
-                timestamp: clock.new_timestamp(),
-            })
+            .dynamic_node_config(node_id, clock.new_timestamp())
             .wrap_err("failed to request node config from daemon")?;
 
         match reply {
-            DaemonReply::NodeConfig {
+            DynamicNodeConfigReply::NodeConfig {
                 result: Ok(node_config),
-            } => DoraNode::init(node_config),
-            DaemonReply::NodeConfig { result: Err(error) } => {
+                zenoh,
+            } => DoraNode::init_with_options(node_config, None, zenoh),
+            DynamicNodeConfigReply::NodeConfig {
+                result: Err(error), ..
+            } => {
                 let capped: String = error.chars().take(512).collect();
                 Err(NodeError::Init(format!(
                     "failed to get node config from daemon: {capped}"
                 )))
             }
-            _ => Err(NodeError::Init("unexpected reply from daemon".into())),
         }
     }
 }
