@@ -30,7 +30,9 @@ pub(crate) use state::{DaemonConnections, resolve_param_target};
 use std::{
     collections::{BTreeMap, HashMap},
     net::SocketAddr,
+    pin::Pin,
     sync::Arc,
+    task::Poll,
     time::{Duration, Instant},
 };
 use tokio_stream::wrappers::ReceiverStream;
@@ -272,11 +274,16 @@ async fn start_with_events(
     //
     // The capacity is a message count, which bounds memory only because every
     // event on it is itself size-bounded — by the daemon and control text
-    // message limits. Binary topic debug frames are the exception, so they are
-    // admitted against `ws_daemon::TOPIC_DEBUG_INGRESS_BYTES` instead and hold
-    // their share of it until handled below.
+    // message limits. Topic debug frames are the exception in both respects,
+    // in size and in how many of them a subscription produces, so they take
+    // the separate channel below instead.
     let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
     let ws_events = ReceiverStream::new(ws_event_rx);
+
+    // Topic debug frames (dora-rs/dora#3535). Served only when no control
+    // event is ready, and one frame deep — see `control_before_topic_debug`
+    // and `ws_daemon::TOPIC_DEBUG_CHANNEL_CAPACITY`.
+    let (topic_debug_tx, topic_debug_rx) = ws_daemon::topic_debug_channel();
 
     // Start WS server
     #[cfg(feature = "metrics")]
@@ -302,6 +309,7 @@ async fn start_with_events(
     let (port, ws_shutdown, ws_future) = ws_server::serve(
         bind,
         ws_event_tx.clone(),
+        topic_debug_tx,
         clock.clone(),
         auth_token,
         artifact_store,
@@ -317,7 +325,10 @@ async fn start_with_events(
         }
     }));
 
-    let events = (external_events, extra_events, ws_events).merge();
+    let events = control_before_topic_debug(
+        (external_events, extra_events, ws_events).merge(),
+        ReceiverStream::new(topic_debug_rx),
+    );
 
     let future = async move {
         start_inner(
@@ -383,6 +394,38 @@ impl Coordinator {
         .await?;
         Ok(())
     }
+}
+
+/// Merge the coordinator's control events with its topic debug frames so a
+/// debug frame is only taken when no control event is ready
+/// (dora-rs/dora#3535).
+///
+/// Dropping a debug frame rather than waiting to queue it keeps the daemon
+/// connection reading its socket, but it does not decide *where* the frames
+/// that were admitted sit: on one shared channel a burst still lands in front
+/// of the control events that follow it — a CLI `dora stop` request among
+/// them — and the loop can spend up to 100 ms per subscriber on each
+/// (`send_topic_frames`). Polling control first leaves a control event waiting
+/// for at most the one debug frame already being handled, which is what the
+/// daemon's writer does on the way out.
+///
+/// Control also decides when the merged stream ends: a coordinator whose
+/// control streams are done is shutting down, and a debug frame that never
+/// reaches its subscriber is exactly what may be dropped. A finished debug
+/// stream, conversely, is no reason to stop.
+pub(crate) fn control_before_topic_debug(
+    mut control: impl Stream<Item = Event> + Unpin,
+    mut topic_debug: impl Stream<Item = Event> + Unpin,
+) -> impl Stream<Item = Event> + Unpin {
+    futures::stream::poll_fn(move |cx| match Pin::new(&mut control).poll_next(cx) {
+        Poll::Ready(event) => Poll::Ready(event),
+        // `control` has registered its waker, so returning `Pending` for an
+        // exhausted debug stream neither spins nor loses a wake-up.
+        Poll::Pending => match Pin::new(&mut topic_debug).poll_next(cx) {
+            Poll::Ready(Some(event)) => Poll::Ready(Some(event)),
+            Poll::Ready(None) | Poll::Pending => Poll::Pending,
+        },
+    })
 }
 
 async fn start_inner(
@@ -513,10 +556,6 @@ async fn start_inner(
                 dataflow_id,
                 subscription_ids,
                 payload,
-                // Bound to the arm rather than dropped at the destructure, so
-                // the frame's bytes stay reserved until it has been handed to
-                // its subscribers.
-                budget: _budget,
             } => {
                 coordinator
                     .handle_topic_debug_data(dataflow_id, subscription_ids, payload)
@@ -680,4 +719,103 @@ async fn initiate_restart(
     // moment the restart becomes cancellable via a `Stop`, instead of
     // guessing a fixed delay.
     tracing::info!(dataflow = %dataflow_uuid, "restart pending; waiting for dataflow to finish stopping");
+}
+
+#[cfg(test)]
+mod control_priority_tests {
+    use super::*;
+    use futures::FutureExt;
+    use tokio::sync::mpsc;
+
+    fn debug_frame() -> Event {
+        Event::TopicDebugData {
+            dataflow_id: uuid::Uuid::new_v4(),
+            subscription_ids: Vec::new(),
+            payload: Vec::new(),
+        }
+    }
+
+    fn control_event() -> Event {
+        Event::DaemonHeartbeatInterval
+    }
+
+    /// The point of the separate channel: debug frames already waiting must not
+    /// be handled before a control event that arrived after them.
+    #[tokio::test]
+    async fn a_ready_control_event_comes_before_waiting_debug_frames() {
+        let (control_tx, control_rx) = mpsc::channel(8);
+        let (debug_tx, debug_rx) = mpsc::channel(8);
+        for _ in 0..4 {
+            debug_tx.try_send(debug_frame()).unwrap();
+        }
+        control_tx.try_send(control_event()).unwrap();
+
+        let mut events = control_before_topic_debug(
+            ReceiverStream::new(control_rx),
+            ReceiverStream::new(debug_rx),
+        );
+
+        assert!(matches!(
+            events.next().await,
+            Some(Event::DaemonHeartbeatInterval)
+        ));
+        // ... and the debug frames still follow, once control is idle.
+        assert!(matches!(
+            events.next().await,
+            Some(Event::TopicDebugData { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_debug_frame_is_taken_when_no_control_event_is_ready() {
+        let (_control_tx, control_rx) = mpsc::channel::<Event>(8);
+        let (debug_tx, debug_rx) = mpsc::channel(8);
+        debug_tx.try_send(debug_frame()).unwrap();
+
+        let mut events = control_before_topic_debug(
+            ReceiverStream::new(control_rx),
+            ReceiverStream::new(debug_rx),
+        );
+
+        assert!(matches!(
+            events.next().await,
+            Some(Event::TopicDebugData { .. })
+        ));
+    }
+
+    /// Shutdown is driven by the control side; a debug frame left over must not
+    /// keep the loop running, nor its absence end it early.
+    #[tokio::test]
+    async fn the_control_side_alone_ends_the_stream() {
+        let (control_tx, control_rx) = mpsc::channel::<Event>(8);
+        let (debug_tx, debug_rx) = mpsc::channel(8);
+        debug_tx.try_send(debug_frame()).unwrap();
+        let mut events = control_before_topic_debug(
+            ReceiverStream::new(control_rx),
+            ReceiverStream::new(debug_rx),
+        );
+
+        drop(control_tx);
+        assert!(events.next().await.is_none());
+
+        // The other way round: a debug stream that is done leaves the merged
+        // stream waiting on control, not finished.
+        let (control_tx, control_rx) = mpsc::channel::<Event>(8);
+        let (debug_tx, debug_rx) = mpsc::channel::<Event>(8);
+        drop(debug_tx);
+        let mut events = control_before_topic_debug(
+            ReceiverStream::new(control_rx),
+            ReceiverStream::new(debug_rx),
+        );
+
+        assert!(
+            events.next().now_or_never().is_none(),
+            "an exhausted debug stream must not end the merged stream"
+        );
+        control_tx.try_send(control_event()).unwrap();
+        assert!(matches!(
+            events.next().await,
+            Some(Event::DaemonHeartbeatInterval)
+        ));
+    }
 }
