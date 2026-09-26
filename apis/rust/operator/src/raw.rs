@@ -23,13 +23,25 @@ use std::ffi::c_void;
 /// The returned `operator_context` points to a leaked `Box<O>`. The caller must
 /// eventually pass it to [`dora_drop_operator::<O>`] exactly once (with the same
 /// `O`) to reclaim it, and must not use it after that.
+///
+/// A panic in `O::default()` is caught and reported as an init error with a
+/// null `operator_context`, like a panic in [`dora_on_event`]: this function is
+/// called straight from the generated `extern "C"` shim, where an unwinding
+/// panic would abort the whole runtime process.
 pub unsafe fn dora_init_operator<O: DoraOperator>() -> DoraInitResult {
-    let operator: O = Default::default();
-    let ptr: *mut O = Box::leak(Box::new(operator));
-    let operator_context: *mut c_void = ptr.cast();
-    DoraInitResult {
-        result: DoraResult { error: None },
-        operator_context,
+    match std::panic::catch_unwind(O::default) {
+        Ok(operator) => {
+            let ptr: *mut O = Box::leak(Box::new(operator));
+            let operator_context: *mut c_void = ptr.cast();
+            DoraInitResult {
+                result: DoraResult { error: None },
+                operator_context,
+            }
+        }
+        Err(panic) => DoraInitResult {
+            result: panic_error("init", &*panic),
+            operator_context: std::ptr::null_mut(),
+        },
     }
 }
 
@@ -40,10 +52,18 @@ pub unsafe fn dora_init_operator<O: DoraOperator>() -> DoraInitResult {
 /// `operator_context` must be a pointer previously returned by
 /// [`dora_init_operator::<O>`] for the same `O`, and must not have been dropped
 /// already. After this call the pointer is dangling and must not be reused.
+///
+/// A panic in `O`'s `Drop` impl is caught and reported as an error rather than
+/// unwinding across the C ABI boundary (see [`dora_init_operator`]).
 pub unsafe fn dora_drop_operator<O>(operator_context: *mut c_void) -> DoraResult {
     let raw: *mut O = operator_context.cast();
-    drop(unsafe { Box::from_raw(raw) });
-    DoraResult { error: None }
+    let operator = unsafe { Box::from_raw(raw) };
+    // `AssertUnwindSafe` is sound: the operator is consumed here, so nothing
+    // can observe it in a broken state after a panic.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || drop(operator))) {
+        Ok(()) => DoraResult { error: None },
+        Err(panic) => panic_error("drop", &*panic),
+    }
 }
 
 /// Dispatch one runtime event to the operator's [`DoraOperator::on_event`].
@@ -129,13 +149,18 @@ pub unsafe fn dora_on_event<O: DoraOperator>(
             status: DoraStatus::Stop,
         },
         Err(panic) => OnEventResult {
-            result: DoraResult::from_error(format!(
-                "operator on_event panicked: {}",
-                panic_message(&*panic)
-            )),
+            result: panic_error("on_event", &*panic),
             status: DoraStatus::Stop,
         },
     }
+}
+
+/// Report a panic caught in the operator's `stage` as a [`DoraResult`] error.
+fn panic_error(stage: &str, panic: &(dyn std::any::Any + Send)) -> DoraResult {
+    DoraResult::from_error(format!(
+        "operator {stage} panicked: {}",
+        panic_message(panic)
+    ))
 }
 
 /// Extract a human-readable message from a caught panic payload.
