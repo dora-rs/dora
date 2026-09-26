@@ -2333,8 +2333,9 @@ impl DoraNode {
     }
 
     /// Maximum serialized size of the log `fields` object before it is
-    /// dropped (60 KB). Matches the downstream 64 KB parse limit with headroom
-    /// for the message envelope. Measured on the serialized JSON (see
+    /// dropped (60 KB). Keeps a structured entry far below the daemon's 1 MiB
+    /// per-line limit, past which the JSON line would be cut and no longer
+    /// parse as structured. Measured on the serialized JSON (see
     /// [`log_fields_within_budget`]), not the raw key/value byte sum.
     const MAX_LOG_FIELDS_BYTES: usize = 60 * 1024;
 
