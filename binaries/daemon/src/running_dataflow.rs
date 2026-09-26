@@ -1094,6 +1094,9 @@ impl RunningDataflow {
             .entry(target_node.clone())
             .or_default()
             .insert(target_input.clone());
+        if let Some(drained) = self.drain_signals.get(&target_node) {
+            drained.reopen_input(&target_input);
+        }
         // A mapping is by construction a node-to-node edge, so this is a
         // data input and must gate the drain like any other. Without it
         // the opt-in would not see the new input at all, and could report
