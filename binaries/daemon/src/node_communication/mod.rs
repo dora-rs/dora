@@ -19,7 +19,7 @@ use futures::{Future, future, task};
 use std::{
     collections::{BTreeSet, VecDeque},
     sync::{
-        Arc,
+        Arc, PoisonError,
         atomic::{AtomicU64, Ordering},
     },
     task::Poll,
@@ -271,8 +271,9 @@ impl Listener {
                             Err(err) => tracing::error!("{err:?}"),
                         }
                         // The subscribe channel's receiver goes with this
-                        // listener: wake anyone waiting for room in it so
-                        // they see it closed.
+                        // listener: drop it, then wake anyone waiting for
+                        // room in it so they see it closed.
+                        drop(listener.subscribed_events.take());
                         listener.drained.notify.notify_waiters();
                     }
                     (Err(err), _) => {
@@ -786,7 +787,9 @@ impl Listener {
 /// A receiver that frees nothing for `BACKPRESSURE_STALL_LIMIT` is not
 /// waited for any longer: the event is dropped, loudly, and counted as lost,
 /// and the receiver is marked `gave_up` so that its producers are not held
-/// for it again until it drains.
+/// for it again until it drains. An input closed meanwhile — its producer
+/// exited without settling this delivery — gets nothing after its
+/// `InputClosed`: the event is dropped and counted as lost.
 async fn deliver_when_room(
     delivery: DeferredDelivery,
     last_activity: &AtomicU64,
@@ -794,6 +797,7 @@ async fn deliver_when_room(
 ) {
     let DeferredDelivery {
         receiver,
+        input,
         channel,
         pending,
         drained,
@@ -806,16 +810,36 @@ async fn deliver_when_room(
         let notified = drained.notify.notified();
         tokio::pin!(notified);
         notified.as_mut().enable();
-        if channel.capacity() >= CONTROL_EVENT_HEADROOM {
-            match channel.try_send(event) {
-                Ok(()) => {
-                    if let Some(pending) = &pending {
-                        pending.fetch_add(1, Ordering::Relaxed);
+        {
+            // Look and send under the lock `close_input` records the close
+            // under, so the event lands before its `InputClosed` or not at
+            // all (dora-rs/dora#3619).
+            let closed_inputs = drained
+                .closed_inputs
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            if closed_inputs.contains(&input) {
+                drop(closed_inputs);
+                tracing::warn!(
+                    receiver = %receiver,
+                    input = %input,
+                    "input closed while its producer was held: dropping a message the \
+                     input (queue_policy: backpressure) was promised"
+                );
+                ft_stats.record_drop(1, true);
+                return;
+            }
+            if channel.capacity() >= CONTROL_EVENT_HEADROOM {
+                match channel.try_send(event) {
+                    Ok(()) => {
+                        if let Some(pending) = &pending {
+                            pending.fetch_add(1, Ordering::Relaxed);
+                        }
+                        return;
                     }
-                    return;
+                    Err(mpsc::error::TrySendError::Closed(_)) => break,
+                    Err(mpsc::error::TrySendError::Full(returned)) => event = returned,
                 }
-                Err(mpsc::error::TrySendError::Closed(_)) => break,
-                Err(mpsc::error::TrySendError::Full(returned)) => event = returned,
             }
         }
         if channel.is_closed() {
@@ -967,6 +991,7 @@ mod tests {
         let pending = Arc::new(AtomicU64::new(0));
         let delivery = DeferredDelivery {
             receiver: NodeId::from("sink".to_string()),
+            input: DataId::from("in".to_string()),
             channel: channel.clone(),
             pending: Some(pending.clone()),
             drained: drained.clone(),
@@ -1071,6 +1096,86 @@ mod tests {
             .await
             .expect("flush must not block once the task is done");
         assert!(listener.pending_deferred.is_none());
+    }
+
+    /// A producer that exits while one of its messages is held never settles
+    /// that delivery, and the daemon loop closes the receiver's input
+    /// regardless. The held message must then not land after the
+    /// `InputClosed` (nor after an `AllInputsClosed`, where the node API
+    /// would discard it unseen): it is dropped and counted as lost, and
+    /// promptly — not after a stall limit that would mark the receiver
+    /// `gave_up` (dora-rs/dora#3619).
+    #[tokio::test]
+    async fn deferred_delivery_to_a_closed_input_is_a_counted_drop() {
+        let (listener, _tx) = listener();
+        let clock = listener.clock.clone();
+        let drained = Arc::new(DrainSignal::default());
+        let (tx, mut rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        for _ in 0..NODE_EVENT_CHANNEL_CAPACITY - (CONTROL_EVENT_HEADROOM - 1) {
+            tx.try_send(input(&clock, 0)).unwrap();
+        }
+        let (delivery, pending) = deferred(&tx, &drained, metadata_heavy_input(&clock, 7));
+        let last_activity = listener.last_activity.clone();
+        let ft_stats = listener.backpressure.ft_stats.clone();
+        let held = tokio::spawn(async move {
+            deliver_when_room(delivery, &last_activity, &ft_stats).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(!held.is_finished(), "the delivery is held for room");
+
+        // What `close_input` does once the producer is gone.
+        drained
+            .closed_inputs
+            .lock()
+            .unwrap()
+            .insert(DataId::from("in".to_string()));
+        drained.notify.notify_waiters();
+        assert!(
+            crate::send_with_timestamp(
+                &tx,
+                NodeEvent::InputClosed {
+                    id: DataId::from("in".to_string()),
+                },
+                &clock,
+            )
+            .unwrap()
+        );
+
+        // The receiver drains everything, making room for the held event.
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event.inner);
+        }
+        drained.notify.notify_waiters();
+        tokio::time::timeout(std::time::Duration::from_secs(5), held)
+            .await
+            .expect("the delivery gives up on a closed input without a stall limit")
+            .unwrap();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event.inner);
+        }
+
+        let closed_at = events
+            .iter()
+            .position(|event| matches!(event, NodeEvent::InputClosed { .. }))
+            .expect("the InputClosed arrived");
+        assert_eq!(
+            closed_at,
+            events.len() - 1,
+            "no input event after its InputClosed: {:?}",
+            &events[closed_at..]
+        );
+        assert_eq!(
+            pending.load(Ordering::Relaxed),
+            0,
+            "not counted as delivered"
+        );
+        let stats = &listener.backpressure.ft_stats;
+        assert_eq!(stats.lost_backpressure_messages.load(Ordering::Relaxed), 1);
+        assert!(
+            !drained.gave_up.load(Ordering::Relaxed),
+            "a closed input is not a wedged receiver"
+        );
     }
 
     /// A held producer looks idle to the health check — its listener is
