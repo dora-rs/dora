@@ -18,7 +18,7 @@ use eyre::Result;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, atomic,
+        Arc, Mutex, PoisonError, atomic,
         atomic::{AtomicBool, AtomicU64},
     },
     time::Instant,
@@ -41,6 +41,9 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub(crate) struct DeferredDelivery {
     pub receiver: NodeId,
+    /// The receiver's input the event is for, checked against
+    /// `DrainSignal::closed_inputs` before it goes in.
+    pub input: DataId,
     pub channel: mpsc::Sender<Timestamped<NodeEvent>>,
     /// The receiver's pending-message counter, bumped once the event is in.
     pub pending: Option<Arc<AtomicU64>>,
@@ -67,6 +70,15 @@ pub(crate) struct DrainSignal {
     /// Set when the node dropped its event stream deliberately, so a held
     /// delivery that finds its channel closed afterwards is not a loss.
     pub stream_dropped: AtomicBool,
+    /// The receiver's inputs that `close_input` has closed. A held delivery
+    /// for one of them is dropped and counted rather than sent: its producer
+    /// is gone, and sent now it would land after its own `InputClosed` (and
+    /// maybe after `AllInputsClosed`, where the node API discards it without
+    /// the daemon ever counting a loss). `close_input` records the input here
+    /// before sending `InputClosed`, and a held delivery checks and sends
+    /// under this same lock, so its event lands before the close or not at
+    /// all (dora-rs/dora#3619).
+    pub closed_inputs: Mutex<BTreeSet<DataId>>,
 }
 
 pub(crate) fn note_output_sent_to_local_receivers(
@@ -253,6 +265,7 @@ fn offer_event<'a>(
             );
             deferred.push(DeferredDelivery {
                 receiver: receiver_id.clone(),
+                input: input_id.clone(),
                 channel: channel.clone(),
                 pending: dataflow.pending_messages.get(receiver_id).cloned(),
                 drained,
@@ -546,6 +559,18 @@ pub(crate) fn close_input(
 
     if !was_open && !was_broken {
         return;
+    }
+
+    // Before the `InputClosed` goes out: a producer held for this input
+    // must not get its event in after it (see `DrainSignal::closed_inputs`).
+    // Wake it too, so it gives up now instead of at its next stall tick.
+    if let Some(drained) = dataflow.drain_signals.get(receiver_id) {
+        drained
+            .closed_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(input_id.clone());
+        drained.notify.notify_waiters();
     }
 
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)

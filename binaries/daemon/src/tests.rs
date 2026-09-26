@@ -1397,6 +1397,36 @@ fn close_input_sends_all_inputs_closed() {
     assert!(disable_restart.load(atomic::Ordering::Acquire));
 }
 
+/// `close_input` records the close in the receiver's `DrainSignal` before
+/// its `InputClosed` goes out, so a message still held for that input
+/// (its producer exited without settling it) cannot land after the close
+/// (dora-rs/dora#3619).
+#[test]
+fn close_input_marks_the_input_closed_for_held_deliveries() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node_a: NodeId = "node_a".to_string().into();
+    let input_x: DataId = "input_x".to_string().into();
+    let input_y: DataId = "input_y".to_string().into();
+    for input in [&input_x, &input_y] {
+        df.open_inputs
+            .entry(node_a.clone())
+            .or_default()
+            .insert(input.clone());
+    }
+    df.running_nodes.insert(node_a.clone(), test_running_node());
+    let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    df.subscribe_channels.insert(node_a.clone(), tx);
+    let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+    df.drain_signals.insert(node_a.clone(), signal.clone());
+
+    close_input(&mut df, &node_a, &input_x, &clock);
+
+    let closed = signal.closed_inputs.lock().unwrap();
+    assert!(closed.contains(&input_x));
+    assert!(!closed.contains(&input_y), "only the closed input");
+}
+
 /// dora-rs/dora#2920: under `--exit-when-nodes-finish` a node drains
 /// once its DATA inputs close, even with a timer still open — and it
 /// must have restart disabled at the same moment. Otherwise it exits,
