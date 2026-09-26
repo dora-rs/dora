@@ -98,13 +98,22 @@ pub fn write_token(working_dir: &Path, token: &AuthToken) -> std::io::Result<()>
 fn write_token_to(path: &Path, token: &AuthToken) -> std::io::Result<()> {
     #[cfg(unix)]
     {
-        use std::os::unix::fs::OpenOptionsExt;
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        // `mode` only applies when the file is created. A token file that
+        // already exists with a looser mode (created by hand, copied with
+        // `cp`, restored from a backup) would keep it, so tighten the mode on
+        // the open fd before truncating and writing the new secret into it.
+        // Without this the secret lands world-readable, and
+        // `read_token_from_path` then rejects the file as too permissive.
         let mut file = fs::OpenOptions::new()
             .write(true)
             .create(true)
-            .truncate(true)
+            // Truncated below, once the mode is tight.
+            .truncate(false)
             .mode(0o600)
             .open(path)?;
+        file.set_permissions(fs::Permissions::from_mode(0o600))?;
+        file.set_len(0)?;
         file.write_all(token.as_hex().as_bytes())?;
         file.write_all(b"\n")?;
     }
@@ -256,6 +265,28 @@ mod tests {
 
         let read_back = read_token(dir.path()).unwrap().unwrap();
         assert_eq!(token.as_hex(), read_back.as_hex());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_token_tightens_an_existing_permissive_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".dora-token");
+        std::fs::write(&path, "stale token that is longer than the new one\n").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+
+        let token = generate_token();
+        write_token_to(&path, &token).unwrap();
+
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode, 0o600, "the secret must not stay world-readable");
+        let read_back = read_token_from_path(&path).unwrap();
+        assert_eq!(
+            read_back.map(|t| t.as_hex().to_owned()),
+            Some(token.as_hex().to_owned())
+        );
     }
 
     #[test]
