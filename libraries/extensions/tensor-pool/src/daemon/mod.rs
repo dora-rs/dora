@@ -100,24 +100,32 @@ mod cross_pool_write_tests {
     #[cfg(target_os = "linux")]
     fn orphan_sweep_only_touches_own_machine_prefix() {
         let dir = "/dev/shm";
+        let df = Uuid::new_v4();
         // "orphanB" prefix isolates this test from the other cross-pool
         // tests, which run in parallel and use segments under dora_pool_B_.
-        let own = "dora_pool_orphanB_orphantest_node_0";
-        let sibling = "dora_pool_orphanC_orphantest_node_0";
-        let local = "dora_pool_orphantest_node_0";
-        std::fs::write(format!("{dir}/{own}"), vec![0u8; 64]).unwrap();
-        std::fs::write(format!("{dir}/{sibling}"), vec![0u8; 64]).unwrap();
-        std::fs::write(format!("{dir}/{local}"), vec![0u8; 64]).unwrap();
+        let own = format!("dora_pool_orphanB_{df}_node_0");
+        let sibling = format!("dora_pool_orphanC_{df}_node_0");
+        // A sibling machine whose id merely *starts with* ours: the bare
+        // `dora_pool_orphanB_` prefix matches it, the dataflow-uuid check
+        // must not.
+        let prefixed_sibling = format!("dora_pool_orphanB_2_{df}_node_0");
+        let local = format!("dora_pool_{df}_node_0");
+        for name in [&own, &sibling, &prefixed_sibling, &local] {
+            std::fs::write(format!("{dir}/{name}"), vec![0u8; 64]).unwrap();
+        }
 
         let removed = cleanup_orphan_mirrors("orphanB");
 
         assert_eq!(removed, 1);
         assert!(!std::path::Path::new(&format!("{dir}/{own}")).exists());
-        assert!(std::path::Path::new(&format!("{dir}/{sibling}")).exists());
-        assert!(std::path::Path::new(&format!("{dir}/{local}")).exists());
-        // test hygiene
-        let _ = std::fs::remove_file(format!("{dir}/{sibling}"));
-        let _ = std::fs::remove_file(format!("{dir}/{local}"));
+        for survivor in [&sibling, &prefixed_sibling, &local] {
+            assert!(
+                std::path::Path::new(&format!("{dir}/{survivor}")).exists(),
+                "`{survivor}` must survive the orphanB sweep"
+            );
+            // test hygiene
+            let _ = std::fs::remove_file(format!("{dir}/{survivor}"));
+        }
     }
 
     /// `finish_dataflow` must unlink the mirror segments this daemon

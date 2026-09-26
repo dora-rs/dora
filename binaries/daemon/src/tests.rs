@@ -172,26 +172,7 @@ async fn barrier_completion_does_not_start_a_stopping_dataflow() {
 async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
     let (coordinator_sender, coordinator_rx) = coordinator::CoordinatorSender::for_test();
     drop(coordinator_rx);
-    let (mut daemon, _events_rx) = Daemon::build_daemon(
-        None,
-        Some(coordinator_sender),
-        DaemonId::new(None),
-        None,
-        Arc::new(HLC::default()),
-        None,
-        BTreeMap::new(),
-        LogDestination::Tracing,
-        None,
-        Vec::new(),
-        None,
-        Vec::new(),
-        ZenohBind::Derived(LOCALHOST),
-        false,
-        false,
-        None,
-    )
-    .await
-    .expect("daemon should build");
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
 
     let dataflow_id = Uuid::new_v4();
     let dataflow = test_dataflow();
@@ -259,26 +240,7 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     drop(coordinator_rx);
 
     let clock = Arc::new(HLC::default());
-    let (mut daemon, _events_rx) = Daemon::build_daemon(
-        None,
-        Some(coordinator_sender),
-        DaemonId::new(None),
-        None,
-        clock.clone(),
-        None,
-        BTreeMap::new(),
-        LogDestination::Tracing,
-        None,
-        Vec::new(),
-        None,
-        Vec::new(),
-        ZenohBind::Derived(LOCALHOST),
-        false,
-        false,
-        None,
-    )
-    .await
-    .expect("daemon should build");
+    let mut daemon = daemon_reporting_to(coordinator_sender, clock.clone()).await;
 
     let dataflow_id = Uuid::new_v4();
     daemon.pending_finished_dataflows.insert(
@@ -306,6 +268,144 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     assert!(
         daemon.pending_finished_dataflows.contains_key(&dataflow_id),
         "failed retry must keep the finish report pending for the next reconnect"
+    );
+}
+
+/// A daemon whose coordinator connection is `coordinator_sender`. The one
+/// place these tests call `build_daemon`, so a signature change touches only
+/// this.
+async fn daemon_reporting_to(
+    coordinator_sender: coordinator::CoordinatorSender,
+    clock: Arc<HLC>,
+) -> Daemon {
+    let (daemon, _events_rx) = Daemon::build_daemon(
+        None,
+        Some(coordinator_sender),
+        DaemonId::new(None),
+        None,
+        clock,
+        None,
+        BTreeMap::new(),
+        LogDestination::Tracing,
+        None,
+        Vec::new(),
+        None,
+        Vec::new(),
+        ZenohBind::Derived(LOCALHOST),
+        false,
+        false,
+    )
+    .await
+    .expect("daemon should build");
+    daemon
+}
+
+/// A finish report the WS writer accepted can still be lost with the
+/// connection — a failing socket write drops it, a half-open link swallows
+/// it. It is resent on the next connection, ahead of the `StatusReport`, so
+/// the coordinator never reads the dataflow's absence as a crash and
+/// re-spawns a dataflow that finished normally (dora-rs/dora#3602).
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_report_queued_on_a_lost_connection_is_resent_before_the_status_report() {
+    let (coordinator_sender, lost_link) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    daemon.running.insert(dataflow_id, test_dataflow());
+    daemon
+        .finish_dataflow(dataflow_id)
+        .await
+        .expect("the report is queued for the writer");
+    // The writer dies with the frame still queued.
+    drop(lost_link);
+    assert!(
+        daemon.pending_finished_dataflows.is_empty(),
+        "a queued report is not a failed one"
+    );
+    assert!(
+        daemon
+            .unconfirmed_finished_dataflows
+            .contains_key(&dataflow_id),
+        "but it is not known to be delivered either"
+    );
+
+    // Reconnect.
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    let clock = daemon.clock.clone();
+    let external_events = futures::stream::iter([Timestamped {
+        inner: Event::CtrlC,
+        timestamp: clock.new_timestamp(),
+    }]);
+    let (_dora_events_tx, mut dora_events_rx) = mpsc::channel(1);
+    daemon
+        .run_inner(external_events, &mut dora_events_rx, None)
+        .await
+        .expect("run the new connection");
+
+    let mut sent = Vec::new();
+    while let Ok(message) = coordinator_rx.try_recv() {
+        sent.push(message);
+    }
+    let finished = sent
+        .iter()
+        .position(|m| m.contains("AllNodesFinished") && m.contains(&dataflow_id.to_string()))
+        .unwrap_or_else(|| panic!("the finish report must be resent: {sent:#?}"));
+    let status = sent
+        .iter()
+        .position(|m| m.contains("StatusReport"))
+        .unwrap_or_else(|| panic!("the connection starts with a status report: {sent:#?}"));
+    assert!(
+        finished < status,
+        "the resent finish report must precede the status report: {sent:#?}"
+    );
+    assert!(
+        daemon
+            .unconfirmed_finished_dataflows
+            .contains_key(&dataflow_id),
+        "resent on a fresh connection, it is unconfirmed again"
+    );
+}
+
+/// A finish report whose connection stayed up well past the heartbeat
+/// timeout reached the coordinator, and is not resent on a later reconnect.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn finish_report_is_confirmed_once_its_connection_outlives_the_heartbeat_timeout() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+    let clock = daemon.clock.clone();
+    let result = || DataflowDaemonResult {
+        timestamp: clock.new_timestamp(),
+        node_results: BTreeMap::new(),
+    };
+    let (old, recent) = (Uuid::new_v4(), Uuid::new_v4());
+    let Some(long_ago) = Instant::now().checked_sub(FINISH_REPORT_CONFIRM_AFTER) else {
+        return; // Monotonic clock too close to its origin to go back that far.
+    };
+    daemon
+        .unconfirmed_finished_dataflows
+        .insert(old, (result(), long_ago));
+    daemon
+        .unconfirmed_finished_dataflows
+        .insert(recent, (result(), Instant::now()));
+
+    daemon.confirm_finished_dataflow_reports();
+    assert!(!daemon.unconfirmed_finished_dataflows.contains_key(&old));
+    assert!(daemon.unconfirmed_finished_dataflows.contains_key(&recent));
+
+    let (coordinator_sender, mut coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    daemon.coordinator_sender = Some(coordinator_sender);
+    daemon
+        .report_pending_finished_dataflows()
+        .await
+        .expect("resend");
+    let resent = coordinator_rx
+        .try_recv()
+        .expect("the recent report is resent");
+    assert!(resent.contains(&recent.to_string()), "{resent}");
+    assert!(
+        coordinator_rx.try_recv().is_err(),
+        "the confirmed report is not resent"
     );
 }
 
@@ -2010,7 +2110,7 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
                 df.pending_messages
                     .insert(receiver.clone(), Arc::new(AtomicU64::new(0)));
                 df.drain_signals
-                    .insert(receiver.clone(), Arc::new(tokio::sync::Notify::new()));
+                    .insert(receiver.clone(), Default::default());
                 receivers.push(rx);
             }
 
@@ -2084,6 +2184,97 @@ fn full_channel_defers_backpressure_inputs_and_counts_the_rest() {
                 "one warning per drop, none for the deferral: {levels:?}"
             );
         });
+    });
+}
+
+/// A backpressure receiver that already let a held delivery run into the
+/// stall limit is not waited for again until it drains: the next message to
+/// its full channel is dropped and counted instead of holding the producer
+/// for another stall limit (dora-rs/dora#3601).
+#[test]
+fn full_channel_of_a_given_up_receiver_is_a_counted_drop() {
+    use dora_message::config::QueuePolicy;
+    // Run under a scoped subscriber like the other tests that reach
+    // `send_output_to_local_receivers`: a first hit of its log callsites on a
+    // thread with none caches their interest as `never`, and a concurrently
+    // running test's `LevelCapture` then sees none of their events.
+    let capture = LevelCapture::default();
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+
+    tracing::subscriber::with_default(capture.clone(), || {
+        rt.block_on(async {
+            let mut df = test_dataflow();
+            let clock = test_clock();
+            let sender: NodeId = "sender".to_string().into();
+            let output: DataId = "output".to_string().into();
+            let input: DataId = "input".to_string().into();
+            let receiver: NodeId = "receiver".to_string().into();
+
+            df.mappings.insert(
+                OutputId(sender.clone(), output.clone()),
+                BTreeSet::from([(receiver.clone(), input.clone())]),
+            );
+            let inputs = BTreeMap::from([(
+                input.clone(),
+                user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+            )]);
+            df.running_nodes
+                .insert(receiver.clone(), running_node_with(inputs, None));
+            let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+            for _ in 0..NODE_EVENT_CHANNEL_CAPACITY {
+                tx.try_send(Timestamped {
+                    inner: NodeEvent::Stop,
+                    timestamp: clock.new_timestamp(),
+                })
+                .unwrap();
+            }
+            df.subscribe_channels.insert(receiver.clone(), tx);
+            let signal = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(receiver.clone(), signal.clone());
+
+            let ft_stats = FaultToleranceStats::default();
+            let metadata = metadata::Metadata::new(clock.new_timestamp());
+            let output_id = OutputId(sender, output);
+            let mut send = async |deferred: &mut Vec<_>| {
+                send_output_to_local_receivers(
+                    &output_id,
+                    &mut df,
+                    &metadata,
+                    None,
+                    &clock,
+                    Some(&ft_stats),
+                    false,
+                    Some(deferred),
+                )
+                .await
+                .unwrap();
+            };
+
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert_eq!(deferred.len(), 1, "a live receiver holds the producer");
+
+            signal.gave_up.store(true, atomic::Ordering::Relaxed);
+            let mut deferred = Vec::new();
+            send(&mut deferred).await;
+            assert!(deferred.is_empty(), "a given-up receiver does not");
+            assert_eq!(
+                ft_stats
+                    .lost_backpressure_messages
+                    .load(atomic::Ordering::Relaxed),
+                1,
+                "the message is dropped and counted as lost"
+            );
+        });
+
+        let levels = capture.levels.lock().unwrap();
+        let warns = levels
+            .iter()
+            .filter(|level| **level == tracing::Level::WARN)
+            .count();
+        assert_eq!(warns, 1, "one warning for the dropped message: {levels:?}");
     });
 }
 
@@ -2365,11 +2556,21 @@ fn finished_but_still_running_receiver_does_not_warn() {
                 .insert(finished.clone(), test_running_node());
             let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
             df.subscribe_channels.insert(finished.clone(), tx);
+            let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+            df.drain_signals.insert(finished.clone(), drained.clone());
             df.mark_event_stream_dropped(&finished);
             assert!(
                 !df.subscribe_channels.contains_key(&finished)
                     && df.dropped_event_streams.contains(&finished),
                 "mark_event_stream_dropped must drop the channel and set the marker"
+            );
+            // The drain signal the node subscribed with is the one a held
+            // delivery reads: a close after this is not a lost message.
+            assert!(
+                drained
+                    .stream_dropped
+                    .load(std::sync::atomic::Ordering::Acquire),
+                "mark_event_stream_dropped must mark the subscribed drain signal"
             );
 
             let metadata = metadata::Metadata::new(clock.new_timestamp());

@@ -5,7 +5,7 @@ use crate::{
     Coordinator, DataflowEvent, MAX_ARCHIVED_DATAFLOWS, MAX_BUFFERED_LOG_MESSAGES,
     broadcast_all_nodes_ready, buffer_log_message, cap_dataflow_results,
     close_topic_subscribers_on_finish, finalize_build, handle_dataflow_spawn_result,
-    handlers::{dataflow_result, send_log_message, send_topic_frames, start_dataflow},
+    handlers::{dataflow_result, send_log_message, start_dataflow},
     state::{ArchivedDataflow, CachedResult},
 };
 use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
@@ -318,9 +318,15 @@ impl Coordinator {
             bytes = payload.len(),
             "received topic debug frame from daemon"
         );
-        if let Some(dataflow) = self.running_dataflows.get_mut(&dataflow_id) {
-            send_topic_frames(&mut dataflow.topic_subscribers, subscription_ids, payload).await;
-        }
+        crate::topic_debug::forward_topic_frames(
+            &mut self.running_dataflows,
+            &mut self.daemon_connections,
+            dataflow_id,
+            subscription_ids,
+            payload,
+            &self.clock,
+        )
+        .await;
         Ok(())
     }
 

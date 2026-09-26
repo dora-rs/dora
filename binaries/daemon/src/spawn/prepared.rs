@@ -1330,7 +1330,10 @@ impl PreparedNode {
                                     format!("Could not create new log file after rotation: {err}"),
                                 )
                                 .await;
-                            break;
+                            // The old file was already flushed and dropped
+                            // above, so there is nothing left to flush.
+                            let _ = log_finish_tx.send(());
+                            return;
                         }
                     };
                     bytes_written = 0;
@@ -1344,16 +1347,29 @@ impl PreparedNode {
                 // Note: no per-line sync_all() — OS write-back is sufficient
                 // for log data. Avoids 1000+ fsync/s for high-frequency loggers.
             }
-            // Note: file may have been rotated (drop+recreate) inside the loop.
-            // No explicit flush needed here — the file is flushed during rotation
-            // and will be flushed on drop when this task ends.
-            let _ = log_finish_tx.send(()).map_err(|_| {
-                logger_c.log(
-                    LogLevel::Error,
-                    Some("daemon".into()),
-                    "Could not inform that log file thread finished".to_string(),
-                )
-            });
+            // `tokio::fs::File::write_all` can return before the bytes reach
+            // the OS (the last write may still be in flight on the blocking
+            // pool), and dropping the handle does not wait for it. Flush before
+            // signalling, so the log file is complete by the time the
+            // exit-waiter reports the node as finished.
+            if let Err(err) = file.flush().await {
+                logger_c
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        format!("Could not flush log file: {err}"),
+                    )
+                    .await;
+            }
+            if log_finish_tx.send(()).is_err() {
+                logger_c
+                    .log(
+                        LogLevel::Error,
+                        Some("daemon".into()),
+                        "Could not inform that log file thread finished".to_string(),
+                    )
+                    .await;
+            }
         });
         Ok(NodeKind::Spawned { pid })
     }

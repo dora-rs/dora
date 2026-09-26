@@ -215,6 +215,18 @@ const COORDINATOR_RECONNECT_BACKOFF: Duration = Duration::from_secs(1);
 /// (dora-rs/dora#1998). A coordinator that stays gone past this window is
 /// treated as permanently gone -> exit rather than orphan (dora-rs/dora#1996).
 const COORDINATOR_RECONNECT_RETRY_WINDOW: Duration = Duration::from_secs(30);
+/// How long the coordinator may stay silent before the daemon treats the
+/// connection as dead and reconnects.
+const COORDINATOR_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
+/// How long a connection must stay up after a finish report was queued on it
+/// before the report counts as delivered. A report the connection lost —
+/// dropped by a failing writer, or swallowed by a half-open link — ends the
+/// connection on this side only once the coordinator has been silent for
+/// [`COORDINATOR_HEARTBEAT_TIMEOUT`]. If only the daemon→coordinator
+/// direction is dead, the coordinator keeps sending heartbeats (every 3 s)
+/// until its own 30 s daemon timeout, so the worst case is 30 s + 3 s + 20 s
+/// plus one watchdog tick (5 s): 58 s. This leaves margin above that.
+const FINISH_REPORT_CONFIRM_AFTER: Duration = Duration::from_secs(75);
 
 /// Records a failed reconnect attempt and reports whether the retry window has
 /// elapsed (so the daemon should give up and exit). `deadline` tracks the
@@ -423,6 +435,13 @@ pub struct Daemon {
     pub(crate) exit_when_all_finished: bool,
     pub(crate) dataflow_node_results: BTreeMap<Uuid, BTreeMap<NodeId, Result<(), NodeError>>>,
     pub(crate) pending_finished_dataflows: BTreeMap<Uuid, DataflowDaemonResult>,
+    /// Finish reports handed to the current coordinator connection, with when.
+    /// A successful `send_event` only means the report was queued for the WS
+    /// writer: a writer that fails its socket write drops it, and a half-open
+    /// link swallows it, so it is kept until the connection has outlived
+    /// [`FINISH_REPORT_CONFIRM_AFTER`], and resent on reconnect otherwise
+    /// (dora-rs/dora#3602).
+    pub(crate) unconfirmed_finished_dataflows: BTreeMap<Uuid, (DataflowDaemonResult, Instant)>,
     pub(crate) clock: Arc<uhlc::HLC>,
     pub(crate) ft_stats: Arc<FaultToleranceStats>,
     pub(crate) zenoh_session: zenoh::Session,
@@ -1401,6 +1420,7 @@ impl Daemon {
             exit_when_all_finished: false,
             dataflow_node_results: BTreeMap::new(),
             pending_finished_dataflows: BTreeMap::new(),
+            unconfirmed_finished_dataflows: BTreeMap::new(),
             warned_late_outputs: HashSet::new(),
             clock,
             ft_stats: Default::default(),
@@ -1427,10 +1447,23 @@ impl Daemon {
         Ok((daemon, dora_events_rx))
     }
 
+    /// Sends the finish reports that may not have reached the coordinator:
+    /// those that failed to send, and those sent on a connection that has
+    /// since been replaced. Called at the start of every coordinator
+    /// connection, before the `StatusReport`, so the coordinator learns that
+    /// a dataflow finished here before it could read the dataflow's absence
+    /// from the report as a crash and auto-recover it. The coordinator
+    /// ignores a report for a dataflow it already saw finish.
     pub(crate) async fn report_pending_finished_dataflows(&mut self) -> eyre::Result<()> {
         let Some(sender) = &self.coordinator_sender else {
             return Ok(());
         };
+        let unconfirmed = std::mem::take(&mut self.unconfirmed_finished_dataflows);
+        for (dataflow_id, (result, _sent_at)) in unconfirmed {
+            self.pending_finished_dataflows
+                .entry(dataflow_id)
+                .or_insert(result);
+        }
 
         let pending: Vec<_> = self
             .pending_finished_dataflows
@@ -1442,9 +1475,18 @@ impl Daemon {
                 .await
                 .wrap_err("failed to retry dataflow finish report to dora-coordinator")?;
             self.pending_finished_dataflows.remove(&dataflow_id);
+            self.unconfirmed_finished_dataflows
+                .insert(dataflow_id, (result, Instant::now()));
         }
 
         Ok(())
+    }
+
+    /// Forgets the finish reports whose connection has stayed up for
+    /// [`FINISH_REPORT_CONFIRM_AFTER`] since they were sent.
+    pub(crate) fn confirm_finished_dataflow_reports(&mut self) {
+        self.unconfirmed_finished_dataflows
+            .retain(|_, (_, sent_at)| sent_at.elapsed() < FINISH_REPORT_CONFIRM_AFTER);
     }
 
     pub(crate) async fn send_all_nodes_finished(
@@ -1718,15 +1760,20 @@ impl Daemon {
                             .await
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 
-                        if self.last_coordinator_heartbeat.elapsed() > Duration::from_secs(20) {
+                        if self.last_coordinator_heartbeat.elapsed() > COORDINATOR_HEARTBEAT_TIMEOUT
+                        {
                             // Return error to trigger the reconnection loop in
                             // `run_inner_with_builds`. Because `run_inner` borrows
                             // `&mut self`, this error does NOT drop the daemon:
                             // running nodes and their `ProcessHandle`s survive,
                             // and the next reconnect re-adopts them
                             // (dora-rs/dora#2029).
-                            bail!("coordinator heartbeat timeout (20s)")
+                            bail!(
+                                "coordinator heartbeat timeout ({COORDINATOR_HEARTBEAT_TIMEOUT:?})"
+                            )
                         }
+                        // Only on a connection still known to be alive.
+                        self.confirm_finished_dataflow_reports();
                     }
                 }
                 Event::MetricsInterval => {
