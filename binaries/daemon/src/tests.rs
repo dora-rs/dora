@@ -787,6 +787,16 @@ async fn teardown_replacement_uses_configured_grace_period() {
     tokio::task::yield_now().await;
 
     assert!(
+        matches!(
+            replacement_rx.try_recv(),
+            Ok(ProcessOperation::StopRequested)
+        ),
+        "a planned stop must mark itself in flight before the grace period: a \
+         node that exits on the `NodeEvent::Stop` it just received is then \
+         recognized as stopping rather than as finished on its own, so its \
+         children keep the grace period (#3472 review)"
+    );
+    assert!(
         replacement_rx.try_recv().is_err(),
         "a racing replacement must not be killed immediately"
     );
