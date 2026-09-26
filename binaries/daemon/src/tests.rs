@@ -887,15 +887,21 @@ async fn teardown_replacement_uses_configured_grace_period() {
     dataflow.stop_rejected_replacement(&node_id, 8, replacement);
     tokio::task::yield_now().await;
 
+    let Ok(ProcessOperation::StopRequested { kill_at }) = replacement_rx.try_recv() else {
+        panic!(
+            "a planned stop must mark itself in flight before the grace period: \
+             a node that exits on the `NodeEvent::Stop` it just received is then \
+             recognized as stopping rather than as finished on its own, so its \
+             children keep the grace period (#3472 review)"
+        );
+    };
+    // The deadline the node's process-wait task holds its group for: the same
+    // instant this ladder escalates, so a node's children get exactly the grace
+    // this dataflow promised them, and no more.
+    let remaining = kill_at.saturating_duration_since(tokio::time::Instant::now());
     assert!(
-        matches!(
-            replacement_rx.try_recv(),
-            Ok(ProcessOperation::StopRequested)
-        ),
-        "a planned stop must mark itself in flight before the grace period: a \
-         node that exits on the `NodeEvent::Stop` it just received is then \
-         recognized as stopping rather than as finished on its own, so its \
-         children keep the grace period (#3472 review)"
+        remaining <= Duration::from_secs(6) && remaining >= Duration::from_secs(4),
+        "expected the 4s grace plus its 2s escalation, got {remaining:?}"
     );
     assert!(
         replacement_rx.try_recv().is_err(),

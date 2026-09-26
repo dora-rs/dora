@@ -2616,6 +2616,15 @@ fn run_stop_grace_lets_a_stopped_nodes_child_finish_its_cleanup() {
     let _ = fs::remove_file(&log);
     let _ = fs::remove_file(&marker);
 
+    // A node that stops within its grace period is not a node that had to be
+    // killed: the wait task drops its operation channel when the node is
+    // reaped, so the ladder's later escalation cannot report this stop as a
+    // timeout (#3472 review).
+    assert!(
+        !stderr_tail.contains("not stopping within"),
+        "a node that stopped inside its grace period must not be reported as \
+         killed for not stopping in time\nstderr tail:\n{stderr_tail}"
+    );
     assert!(
         cleaned,
         "a node's child must finish its cleanup after the stop's SIGTERM: the \

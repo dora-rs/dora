@@ -227,12 +227,14 @@ pub(crate) enum ProcessOperation {
     /// The stop sequence has started, but nothing is to be signalled yet: the
     /// node still has its grace period before the ladder's first `SoftKill`.
     ///
-    /// A node that honors the `NodeEvent::Stop` it was just sent exits during
-    /// that window, with its children possibly still shutting down. Carrying
-    /// the fact that a stop is in flight is what lets the node's process-wait
-    /// task tell that exit apart from a node that finished on its own, whose
-    /// abandoned forks must be contained at once (#3472 review).
-    StopRequested,
+    /// `kill_at` is when the ladder gives up and sends the `Kill` — the node's
+    /// process-wait task needs it to know how long a group it inherited may keep
+    /// running, without holding on to this operation channel: a node that honors
+    /// the `NodeEvent::Stop` it was just sent exits during the grace period,
+    /// with its children possibly still shutting down (#3472 review).
+    StopRequested {
+        kill_at: tokio::time::Instant,
+    },
     SoftKill,
     Kill,
 }
@@ -240,7 +242,7 @@ pub(crate) enum ProcessOperation {
 impl ProcessOperation {
     pub fn execute(&self, child: &mut dyn ChildWrapper) {
         match self {
-            Self::StopRequested => {}
+            Self::StopRequested { .. } => {}
             Self::SoftKill => {
                 #[cfg(unix)]
                 {
@@ -816,18 +818,22 @@ impl RunningDataflow {
                 }
             }
             StopProcessPolicy::Graceful(duration) => {
+                let kill_duration = duration / 2;
                 tokio::spawn(async move {
                     // Mark the stop as in flight before the grace period starts:
                     // a node that exits because of the `NodeEvent::Stop` it just
                     // received leaves before any signal is due, and its children
                     // are then mid-shutdown rather than abandoned (#3472 review).
-                    process.submit(ProcessOperation::StopRequested);
+                    // The deadline travels with it so the node's process-wait
+                    // task can hold the group for exactly as long as this ladder
+                    // would have held the node itself.
+                    process.submit(ProcessOperation::StopRequested {
+                        kill_at: tokio::time::Instant::now() + duration + kill_duration,
+                    });
                     tokio::time::sleep(duration).await;
                     if process.submit(ProcessOperation::SoftKill) {
                         grace_duration_kills.insert((node_id.clone(), generation));
                     }
-
-                    let kill_duration = duration / 2;
                     tokio::time::sleep(kill_duration).await;
                     if process.submit(ProcessOperation::Kill) {
                         grace_duration_kills.insert((node_id.clone(), generation));
@@ -1008,27 +1014,19 @@ impl RunningDataflow {
         }
 
         if let Some(proc) = process {
-            let duration = grace_duration.unwrap_or(default_grace);
-            // Mirror `stop_all`'s population of `grace_duration_kills`
-            // so SpawnedNodeResult can distinguish "daemon explicitly
-            // sent SIGTERM to this node" from "node received SIGTERM
-            // from somewhere else". Without this marker, a source node
-            // (which has `disable_restart` set at subscribe time, see
-            // lib.rs:3203) cannot be told apart from an externally
-            // killed source node when classifying the exit status
-            // (dora-rs/dora#1882).
-            let grace_duration_kills = self.grace_duration_kills.clone();
-            let node_id = node_id.clone();
-            tokio::spawn(async move {
-                tokio::time::sleep(duration).await;
-                if proc.submit(ProcessOperation::SoftKill) {
-                    grace_duration_kills.insert((node_id.clone(), generation));
-                }
-                tokio::time::sleep(duration / 2).await;
-                if proc.submit(ProcessOperation::Kill) {
-                    grace_duration_kills.insert((node_id, generation));
-                }
-            });
+            // One ladder for every stop path, so they cannot drift apart: this
+            // is also what marks the stop as in flight, which a node that exits
+            // on the `NodeEvent::Stop` above depends on to keep its grace period
+            // (#3472 review). It mirrors `stop_process_policy` in
+            // `grace_duration_kills` so SpawnedNodeResult can distinguish
+            // "daemon explicitly sent SIGTERM to this node" from "node received
+            // SIGTERM from somewhere else" (dora-rs/dora#1882).
+            self.schedule_process_stop(
+                node_id.clone(),
+                generation,
+                proc,
+                StopProcessPolicy::Graceful(grace_duration.unwrap_or(default_grace)),
+            );
         }
     }
 
