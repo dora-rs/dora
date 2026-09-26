@@ -9,7 +9,7 @@ use dora_message::{
     common::DaemonId,
     coordinator_to_daemon::ResolveMachineReply,
     daemon_to_coordinator::{
-        CoordinatorRequest, DaemonEvent, MAX_DAEMON_TEXT_MESSAGE_BYTES, Timestamped,
+        CoordinatorRequest, DaemonEvent, Timestamped, TopicDebugFrameAssembler,
         decode_topic_debug_frame,
     },
     ws_protocol::WsResponse,
@@ -46,6 +46,8 @@ pub(crate) async fn handle_daemon_ws(
     let mut tracked_connection_id: Option<Uuid> = None;
     // Topic debug frames this connection had to drop; see `DroppedDebugFrames`.
     let mut dropped_debug_frames = DroppedDebugFrames::default();
+    // The binary topic debug frame whose chunks are arriving, if any.
+    let mut debug_frame_assembler = TopicDebugFrameAssembler::default();
 
     loop {
         tokio::select! {
@@ -53,22 +55,11 @@ pub(crate) async fn handle_daemon_ws(
             msg = ws_rx.next() => {
                 let Some(msg) = msg else { break };
                 let text = match msg {
-                    // The socket admits messages up to the binary topic debug
-                    // frame size; text keeps the control-message limit every
-                    // coordinator has applied. Closing (rather than skipping)
-                    // is what exceeding it has always done, and it makes the
-                    // daemon reconnect instead of waiting on a lost reply.
-                    Ok(Message::Text(text)) if text.len() > MAX_DAEMON_TEXT_MESSAGE_BYTES => {
-                        tracing::warn!(
-                            "daemon sent a {}-byte text message, over the {MAX_DAEMON_TEXT_MESSAGE_BYTES}-byte limit — closing connection",
-                            text.len()
-                        );
-                        break;
-                    }
                     Ok(Message::Text(text)) => text,
                     Ok(Message::Binary(data)) => {
                         if !handle_daemon_binary_frame(
                             &data,
+                            &mut debug_frame_assembler,
                             &topic_debug_tx,
                             tracked_daemon_id.as_ref(),
                             &mut dropped_debug_frames,
@@ -167,9 +158,14 @@ pub(crate) fn topic_debug_channel() -> (mpsc::Sender<Event>, mpsc::Receiver<Even
     mpsc::channel(TOPIC_DEBUG_CHANNEL_CAPACITY)
 }
 
-/// Handle a daemon WS binary message: a topic debug frame, sent in place of
-/// JSON `DaemonEvent::TopicDebugData` because this coordinator offered
+/// Handle a daemon WS binary message: a chunk of a topic debug frame, sent in
+/// place of JSON `DaemonEvent::TopicDebugData` because this coordinator offered
 /// `RegisterResult::Ok::binary_debug_frames` (dora-rs/dora#3535).
+///
+/// Chunks are collected in `assembler` until the frame's last one arrives;
+/// only then is the frame handed on. A frame is sent as chunks so that the
+/// daemon's control messages — which this loop reads between them — never
+/// wait on the whole of a large frame, on either end of the socket.
 ///
 /// Returns false if the connection should close: on the topic debug channel
 /// closing, or on a frame from a daemon that has not registered, matching how
@@ -185,9 +181,10 @@ pub(crate) fn topic_debug_channel() -> (mpsc::Sender<Event>, mpsc::Receiver<Even
 /// egress. Debug frames are droppable, so a full channel drops the frame.
 ///
 /// The slot is taken before the frame is decoded, so a frame that will be
-/// dropped is never copied out of the socket buffer.
+/// dropped is not copied again to build its event.
 fn handle_daemon_binary_frame(
     data: &[u8],
+    assembler: &mut TopicDebugFrameAssembler,
     topic_debug_tx: &mpsc::Sender<Event>,
     tracked_daemon_id: Option<&DaemonId>,
     dropped: &mut DroppedDebugFrames,
@@ -196,6 +193,14 @@ fn handle_daemon_binary_frame(
         tracing::warn!("daemon sent binary frame before registering — closing connection");
         return false;
     }
+    let frame = match assembler.push(data) {
+        Ok(Some(frame)) => frame,
+        Ok(None) => return true,
+        Err(err) => {
+            tracing::warn!("dropping malformed topic debug frame from daemon: {err}");
+            return true;
+        }
+    };
     let slot = match topic_debug_tx.try_reserve() {
         Ok(slot) => slot,
         Err(mpsc::error::TrySendError::Full(())) => {
@@ -204,7 +209,7 @@ fn handle_daemon_binary_frame(
         }
         Err(mpsc::error::TrySendError::Closed(())) => return false,
     };
-    match decode_daemon_binary_frame(data) {
+    match decode_daemon_binary_frame(&frame) {
         Ok(event) => {
             slot.send(event);
             true
@@ -268,8 +273,9 @@ impl DroppedDebugFrames {
     }
 }
 
-/// Decode a daemon WS binary message into the same [`Event::TopicDebugData`]
-/// the JSON `DaemonEvent::TopicDebugData` translates to.
+/// Decode a reassembled binary topic debug frame into the same
+/// [`Event::TopicDebugData`] the JSON `DaemonEvent::TopicDebugData` translates
+/// to.
 fn decode_daemon_binary_frame(data: &[u8]) -> eyre::Result<Event> {
     let frame = decode_topic_debug_frame(data)?;
     Ok(Event::TopicDebugData {
@@ -622,7 +628,18 @@ async fn handle_daemon_response(
 #[cfg(test)]
 mod topic_debug_frame_tests {
     use super::*;
-    use dora_message::daemon_to_coordinator::encode_topic_debug_frame;
+    use dora_message::daemon_to_coordinator::{
+        TOPIC_DEBUG_CHUNK_BYTES, encode_topic_debug_chunks, encode_topic_debug_frame,
+    };
+
+    /// A small frame as the single binary message a daemon sends it in.
+    fn one_chunk(dataflow_id: Uuid, subscription_ids: &[Uuid], payload: &[u8]) -> Vec<u8> {
+        let [chunk] = <[_; 1]>::try_from(
+            encode_topic_debug_chunks(dataflow_id, subscription_ids, payload).unwrap(),
+        )
+        .expect("a small frame fits one chunk");
+        chunk
+    }
 
     fn topic_debug_data(event: Option<Event>) -> (Uuid, Vec<Uuid>, Vec<u8>) {
         match event {
@@ -672,10 +689,11 @@ mod topic_debug_frame_tests {
         let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
         let daemon_id = DaemonId::new(Some("A".to_string()));
         let dataflow_id = Uuid::new_v4();
-        let frame = encode_topic_debug_frame(dataflow_id, &[Uuid::new_v4()], b"data").unwrap();
+        let frame = one_chunk(dataflow_id, &[Uuid::new_v4()], b"data");
 
         assert!(handle_daemon_binary_frame(
             &frame,
+            &mut TopicDebugFrameAssembler::default(),
             &topic_debug_tx,
             Some(&daemon_id),
             &mut DroppedDebugFrames::default()
@@ -685,13 +703,46 @@ mod topic_debug_frame_tests {
         assert_eq!(payload, b"data");
     }
 
+    /// A frame larger than a chunk reaches the main loop whole, and only once
+    /// its last chunk is in — nothing of it is handed on part-way.
+    #[test]
+    fn a_chunked_frame_is_forwarded_once_its_last_chunk_arrives() {
+        let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let mut assembler = TopicDebugFrameAssembler::default();
+        let dataflow_id = Uuid::new_v4();
+        let payload: Vec<u8> = (0..2 * TOPIC_DEBUG_CHUNK_BYTES + 3)
+            .map(|i| i as u8)
+            .collect();
+        let chunks = encode_topic_debug_chunks(dataflow_id, &[Uuid::new_v4()], &payload).unwrap();
+        assert_eq!(chunks.len(), 3);
+
+        for chunk in &chunks {
+            assert!(
+                topic_debug_rx.try_recv().is_err(),
+                "a partial frame must not be forwarded"
+            );
+            assert!(handle_daemon_binary_frame(
+                chunk,
+                &mut assembler,
+                &topic_debug_tx,
+                Some(&daemon_id),
+                &mut DroppedDebugFrames::default()
+            ));
+        }
+        let (forwarded_dataflow, _, forwarded) = topic_debug_data(topic_debug_rx.try_recv().ok());
+        assert_eq!(forwarded_dataflow, dataflow_id);
+        assert_eq!(forwarded, payload);
+    }
+
     #[test]
     fn a_binary_frame_before_registration_closes_the_connection() {
         let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
-        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[], b"data").unwrap();
+        let frame = one_chunk(Uuid::new_v4(), &[], b"data");
 
         assert!(!handle_daemon_binary_frame(
             &frame,
+            &mut TopicDebugFrameAssembler::default(),
             &topic_debug_tx,
             None,
             &mut DroppedDebugFrames::default()
@@ -708,16 +759,18 @@ mod topic_debug_frame_tests {
         let daemon_id = DaemonId::new(Some("A".to_string()));
 
         assert!(handle_daemon_binary_frame(
-            &[1, 2, 3],
+            &[0, 1, 2, 3],
+            &mut TopicDebugFrameAssembler::default(),
             &topic_debug_tx,
             Some(&daemon_id),
             &mut DroppedDebugFrames::default()
         ));
         assert!(topic_debug_rx.try_recv().is_err());
 
-        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[], b"data").unwrap();
+        let frame = one_chunk(Uuid::new_v4(), &[], b"data");
         assert!(handle_daemon_binary_frame(
             &frame,
+            &mut TopicDebugFrameAssembler::default(),
             &topic_debug_tx,
             Some(&daemon_id),
             &mut DroppedDebugFrames::default()
@@ -735,12 +788,13 @@ mod topic_debug_frame_tests {
     fn a_binary_frame_is_dropped_rather_than_awaited_when_the_channel_is_full() {
         let (topic_debug_tx, mut topic_debug_rx) = debug_channel();
         let daemon_id = DaemonId::new(Some("A".to_string()));
-        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[Uuid::new_v4()], b"data").unwrap();
+        let frame = one_chunk(Uuid::new_v4(), &[Uuid::new_v4()], b"data");
         let mut dropped = DroppedDebugFrames::default();
 
         for _ in 0..TOPIC_DEBUG_CHANNEL_CAPACITY + 2 {
             assert!(handle_daemon_binary_frame(
                 &frame,
+                &mut TopicDebugFrameAssembler::default(),
                 &topic_debug_tx,
                 Some(&daemon_id),
                 &mut dropped
@@ -758,6 +812,7 @@ mod topic_debug_frame_tests {
         // Room returns as soon as the loop has taken one off.
         assert!(handle_daemon_binary_frame(
             &frame,
+            &mut TopicDebugFrameAssembler::default(),
             &topic_debug_tx,
             Some(&daemon_id),
             &mut dropped
@@ -772,10 +827,11 @@ mod topic_debug_frame_tests {
         let (topic_debug_tx, topic_debug_rx) = debug_channel();
         drop(topic_debug_rx);
         let daemon_id = DaemonId::new(Some("A".to_string()));
-        let frame = encode_topic_debug_frame(Uuid::new_v4(), &[], b"data").unwrap();
+        let frame = one_chunk(Uuid::new_v4(), &[], b"data");
 
         assert!(!handle_daemon_binary_frame(
             &frame,
+            &mut TopicDebugFrameAssembler::default(),
             &topic_debug_tx,
             Some(&daemon_id),
             &mut DroppedDebugFrames::default()

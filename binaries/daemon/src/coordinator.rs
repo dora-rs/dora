@@ -5,14 +5,14 @@ use dora_message::{
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DaemonRegisterRequest,
-        MAX_DAEMON_TEXT_MESSAGE_BYTES, MAX_TOPIC_DEBUG_FRAME_BYTES, MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
-        encode_topic_debug_frame, topic_debug_frame_len,
+        MAX_DAEMON_MESSAGE_BYTES, MAX_TOPIC_DEBUG_FRAME_BYTES, MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
+        encode_topic_debug_chunks, topic_debug_frame_len,
     },
     ws_protocol::WsResponse,
 };
 use eyre::eyre;
 use futures::{Sink, SinkExt, StreamExt};
-use std::{net::SocketAddr, sync::Arc, time::Duration};
+use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tokio_tungstenite::tungstenite::Message;
@@ -62,8 +62,10 @@ const TOPIC_DEBUG_QUEUE_BYTES: usize = 4 * MAX_TOPIC_DEBUG_FRAME_BYTES;
 /// A topic debug frame waiting to be written, holding its share of
 /// [`TOPIC_DEBUG_QUEUE_BYTES`] until it has been.
 struct QueuedDebugFrame {
-    message: Message,
-    /// Released on drop, i.e. once the writer is done with `message`.
+    /// The WS messages that carry the frame, in order: its binary chunks
+    /// (see [`encode_topic_debug_chunks`]), or the one JSON text message.
+    messages: VecDeque<Message>,
+    /// Released on drop, i.e. once the writer is done with `messages`.
     _budget: OwnedSemaphorePermit,
 }
 
@@ -159,7 +161,7 @@ impl CoordinatorSender {
     /// queue is full — either on its message count or, for large frames, on its
     /// [`TOPIC_DEBUG_QUEUE_BYTES`] budget.
     ///
-    /// Encoded as a WS binary message when the coordinator negotiated
+    /// Encoded as chunked WS binary messages when the coordinator negotiated
     /// `binary_debug_frames`, otherwise as the JSON `TopicDebugData` event
     /// every coordinator understands. Either way it goes on the debug channel,
     /// which the writer serves only after the control channels.
@@ -189,7 +191,7 @@ impl CoordinatorSender {
             mpsc::error::TrySendError::Full(()) => TrySendEventError::Full,
             mpsc::error::TrySendError::Closed(()) => TrySendEventError::Closed,
         })?;
-        let (message, budget) = if self.binary_debug_frames {
+        let (messages, budget) = if self.binary_debug_frames {
             // A binary frame's size follows from the payload, so both limits
             // and the byte budget are settled before the payload is copied.
             if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
@@ -206,18 +208,22 @@ impl CoordinatorSender {
                 });
             }
             let budget = self.reserve_debug_bytes(bytes)?;
-            let frame = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload)
+            let chunks = encode_topic_debug_chunks(dataflow_id, &subscription_ids, &payload)
                 .map_err(TrySendEventError::Encode)?;
-            (Message::Binary(frame.into()), budget)
+            let messages = chunks
+                .into_iter()
+                .map(|chunk| Message::Binary(chunk.into()))
+                .collect();
+            (messages, budget)
         } else {
             // Every payload byte takes at least two characters in the JSON
             // number array (a digit and a separator), so a payload past half
             // the limit cannot fit: skip rendering megabytes of text only to
             // throw them away.
-            if payload.len() > MAX_DAEMON_TEXT_MESSAGE_BYTES / 2 {
+            if payload.len() > MAX_DAEMON_MESSAGE_BYTES / 2 {
                 return Err(TrySendEventError::TooLarge {
                     bytes: payload.len().saturating_mul(2),
-                    limit: MAX_DAEMON_TEXT_MESSAGE_BYTES,
+                    limit: MAX_DAEMON_MESSAGE_BYTES,
                 });
             }
             let event = serde_json::to_vec(&Timestamped {
@@ -233,20 +239,20 @@ impl CoordinatorSender {
             })
             .map_err(|err| TrySendEventError::Encode(err.into()))?;
             let json = Self::format_event_message(&event)?;
-            if json.len() > MAX_DAEMON_TEXT_MESSAGE_BYTES {
+            if json.len() > MAX_DAEMON_MESSAGE_BYTES {
                 return Err(TrySendEventError::TooLarge {
                     bytes: json.len(),
-                    limit: MAX_DAEMON_TEXT_MESSAGE_BYTES,
+                    limit: MAX_DAEMON_MESSAGE_BYTES,
                 });
             }
             // A JSON message's length is only known once it is rendered, but
             // the check above keeps that bounded by the 1 MiB text limit — the
             // copy this path can waste is nothing like a camera frame.
             let budget = self.reserve_debug_bytes(json.len())?;
-            (Message::Text(json.into()), budget)
+            (VecDeque::from([Message::Text(json.into())]), budget)
         };
         slot.send(QueuedDebugFrame {
-            message,
+            messages,
             _budget: budget,
         });
         Ok(())
@@ -535,9 +541,14 @@ enum OutboundFrame {
 /// queue with control traffic let a `dora topic` subscription on a large
 /// output hold a stop reply or heartbeat behind a backlog of frames
 /// (dora-rs/dora#3535). Now a control message waits for at most the one debug
-/// frame already being written. The two control channels keep their existing
-/// unbiased interleaving with each other. What may pile up behind that is
-/// bounded by bytes, not just by frames — see [`TOPIC_DEBUG_QUEUE_BYTES`].
+/// message already being written — a chunk of at most
+/// `TOPIC_DEBUG_CHUNK_BYTES`, since a binary frame is written one chunk per
+/// turn of this loop and control is checked again before each. Bounding the
+/// wait in frames alone was not enough: a camera-sized frame on a slow link
+/// takes long enough to hold back the heartbeat past the coordinator's
+/// watchdog. The two control channels keep their existing unbiased
+/// interleaving with each other. What may pile up behind that is bounded by
+/// bytes, not just by frames — see [`TOPIC_DEBUG_QUEUE_BYTES`].
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<String>,
@@ -550,6 +561,9 @@ async fn run_coordinator_ws_writer<Tx>(
         Internal(Option<OutboundFrame>),
         Outgoing(Option<String>),
     }
+
+    // The frame whose chunks are being written, if one is part-way through.
+    let mut current_debug_frame = None;
 
     loop {
         tokio::select! {
@@ -582,11 +596,9 @@ async fn run_coordinator_ws_writer<Tx>(
                 // CoordinatorSender dropped: nothing more to send.
                 Control::Outgoing(None) => break,
             },
-            debug = topic_debug_rx.recv() => match debug {
-                // `_budget` drops with `frame` at the end of this arm, giving
-                // the queue back this frame's bytes only once it is written.
-                Some(frame) => {
-                    if ws_tx.send(frame.message).await.is_err() {
+            debug = next_debug_message(&mut current_debug_frame, &mut topic_debug_rx) => match debug {
+                Some(message) => {
+                    if ws_tx.send(message).await.is_err() {
                         break;
                     }
                 }
@@ -595,6 +607,31 @@ async fn run_coordinator_ws_writer<Tx>(
                 None => break,
             },
         }
+    }
+}
+
+/// The next WS message of the topic debug frame being written, moving on to the
+/// next queued frame once `current` has none left.
+///
+/// A finished frame is dropped — returning its [`TOPIC_DEBUG_QUEUE_BYTES`]
+/// share — only on the call after its last message was handed out, i.e. once
+/// the writer is done with that message.
+///
+/// Cancel-safe, which the writer's `select!` needs: the only await is the
+/// cancel-safe `recv`, and nothing is taken out of `current` before it.
+async fn next_debug_message(
+    current: &mut Option<QueuedDebugFrame>,
+    topic_debug_rx: &mut mpsc::Receiver<QueuedDebugFrame>,
+) -> Option<Message> {
+    loop {
+        if let Some(message) = current
+            .as_mut()
+            .and_then(|frame| frame.messages.pop_front())
+        {
+            return Some(message);
+        }
+        *current = None;
+        *current = Some(topic_debug_rx.recv().await?);
     }
 }
 
@@ -858,6 +895,7 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dora_message::daemon_to_coordinator::TOPIC_DEBUG_CHUNK_BYTES;
 
     /// What a 1.0.x coordinator may hand out: a same-host daemon's loopback
     /// listener next to a routable one. Only a daemon on the coordinator's
@@ -1075,7 +1113,10 @@ mod tests {
                 .try_acquire_many_owned(message.len() as u32)
                 .ok()?;
             topic_debug_tx
-                .try_send(QueuedDebugFrame { message, _budget })
+                .try_send(QueuedDebugFrame {
+                    messages: VecDeque::from([message]),
+                    _budget,
+                })
                 .ok()
         };
         for _ in 0..debug_frame_count {
@@ -1113,6 +1154,77 @@ mod tests {
                 .expect("debug frame");
             assert!(matches!(msg, Message::Binary(_)));
         }
+
+        drop((send_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
+    }
+
+    /// A control message queued while a large debug frame is part-way out goes
+    /// out before the rest of that frame: the writer yields between chunks, so
+    /// on a slow link a heartbeat or stop reply waits for one chunk rather than
+    /// the whole frame (dora-rs/dora#3536 review).
+    ///
+    /// The sink holds one message, so the writer is stuck on the frame's second
+    /// chunk when the control message is queued: that chunk goes first, since
+    /// a message being written cannot be taken back, and control follows it.
+    #[tokio::test]
+    async fn ws_writer_sends_control_between_the_chunks_of_a_debug_frame() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::channel::<Message>(0);
+        let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        let chunk_count = 6;
+        let chunks = (0..chunk_count).map(|i| Message::Binary(vec![i as u8].into()));
+        topic_debug_tx
+            .try_send(QueuedDebugFrame {
+                messages: chunks.collect(),
+                _budget: Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+            })
+            .unwrap();
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        async fn next(rx: &mut futures::channel::mpsc::Receiver<Message>) -> Message {
+            tokio::time::timeout(Duration::from_secs(5), rx.next())
+                .await
+                .expect("writer must make progress")
+                .expect("writer must write a message")
+        }
+        assert_eq!(next(&mut ws_out_rx).await, Message::Binary(vec![0].into()));
+        send_tx.try_send("heartbeat".to_owned()).unwrap();
+
+        let mut rest = Vec::new();
+        for _ in 0..chunk_count {
+            rest.push(next(&mut ws_out_rx).await);
+        }
+        let control_at = rest
+            .iter()
+            .position(|message| *message == Message::Text("heartbeat".into()))
+            .expect("the control message must be written");
+        assert!(
+            control_at < 2,
+            "control must go out right after the chunk in flight, not after the \
+             rest of the frame; got {rest:?}"
+        );
+        // The frame itself is still delivered whole and in order.
+        let chunks_out: Vec<_> = rest
+            .into_iter()
+            .filter(|message| matches!(message, Message::Binary(_)))
+            .collect();
+        let expected: Vec<_> = (1..chunk_count)
+            .map(|i| Message::Binary(vec![i as u8].into()))
+            .collect();
+        assert_eq!(chunks_out, expected);
 
         drop((send_tx, internal_tx, topic_debug_tx));
         tokio::time::timeout(Duration::from_secs(5), writer)
@@ -1161,10 +1273,12 @@ mod tests {
             )
             .unwrap();
 
-        let Ok(Message::Text(text)) = rx.try_recv().map(|frame| frame.message) else {
-            panic!("expected a JSON text frame");
+        let frame = rx.try_recv().expect("a queued frame");
+        let messages = Vec::from(frame.messages);
+        let [Message::Text(text)] = messages.as_slice() else {
+            panic!("expected a single JSON text message");
         };
-        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let raw: serde_json::Value = serde_json::from_str(text).unwrap();
         assert_eq!(raw["method"], "daemon_event");
         let event = &raw["params"]["inner"]["Event"]["event"]["TopicDebugData"];
         assert_eq!(event["dataflow_id"], dataflow_id.to_string());
@@ -1186,13 +1300,57 @@ mod tests {
             )
             .unwrap();
 
-        let Ok(Message::Binary(data)) = rx.try_recv().map(|frame| frame.message) else {
-            panic!("expected a binary frame");
-        };
+        let data = reassemble(rx.try_recv().expect("a queued frame"));
         let frame = dora_message::daemon_to_coordinator::decode_topic_debug_frame(&data).unwrap();
         assert_eq!(frame.dataflow_id, dataflow_id);
         assert_eq!(frame.subscription_ids, vec![subscription_id]);
         assert_eq!(frame.payload, &[1, 2, 3]);
+    }
+
+    /// Put a queued binary frame back together the way the coordinator does.
+    fn reassemble(frame: QueuedDebugFrame) -> Vec<u8> {
+        let mut assembler =
+            dora_message::daemon_to_coordinator::TopicDebugFrameAssembler::default();
+        let mut completed = None;
+        for message in frame.messages {
+            let Message::Binary(chunk) = message else {
+                panic!("expected binary chunks, got {message:?}");
+            };
+            assert!(completed.is_none(), "a chunk after the frame was complete");
+            completed = assembler.push(&chunk).unwrap();
+        }
+        completed.expect("the last chunk completes the frame")
+    }
+
+    /// A camera-sized payload is queued as chunks the writer can put control
+    /// messages between, none of them larger than a chunk.
+    #[test]
+    fn a_large_binary_frame_is_queued_as_bounded_chunks() {
+        let (sender, mut rx) = debug_sender(true);
+        let payload: Vec<u8> = (0..3 * TOPIC_DEBUG_CHUNK_BYTES + 7)
+            .map(|i| i as u8)
+            .collect();
+        sender
+            .try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                payload.clone(),
+            )
+            .unwrap();
+
+        let frame = rx.try_recv().expect("a queued frame");
+        assert_eq!(frame.messages.len(), 4);
+        assert!(
+            frame
+                .messages
+                .iter()
+                .all(|message| message.len() <= 1 + TOPIC_DEBUG_CHUNK_BYTES)
+        );
+        let data = reassemble(frame);
+        let decoded = dora_message::daemon_to_coordinator::decode_topic_debug_frame(&data).unwrap();
+        assert_eq!(decoded.payload, payload.as_slice());
     }
 
     /// A full debug queue drops the frame (reported as `Full`) rather than
@@ -1304,7 +1462,11 @@ mod tests {
                 vec![Uuid::new_v4()],
                 vec![255; payload_len],
             );
-            (result, rx.try_recv().ok().map(|frame| frame.message))
+            let first_message = rx
+                .try_recv()
+                .ok()
+                .and_then(|mut frame| frame.messages.pop_front());
+            (result, first_message)
         };
 
         // JSON: 300 KB renders to well over 1 MiB of text ...
@@ -1312,7 +1474,7 @@ mod tests {
         assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
         assert!(sent.is_none());
         // ... also when it only fails the exact check after rendering.
-        let (result, sent) = send(false, MAX_DAEMON_TEXT_MESSAGE_BYTES / 2);
+        let (result, sent) = send(false, MAX_DAEMON_MESSAGE_BYTES / 2);
         assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
         assert!(sent.is_none());
         // ... while the same payload goes out fine as a binary frame.

@@ -386,14 +386,16 @@ pub enum DaemonEvent {
     },
 }
 
-/// Largest WebSocket text message a coordinator accepts from a daemon.
+/// Largest WebSocket message a coordinator accepts from a daemon, text or
+/// binary.
 ///
 /// Every coordinator enforces this, including ones that predate binary topic
 /// debug frames, and one that receives a larger message drops the daemon's
 /// connection. A daemon therefore must not send a JSON
-/// [`DaemonEvent::TopicDebugData`] beyond it; a payload of a few hundred
-/// kilobytes already is, once rendered as a number array.
-pub const MAX_DAEMON_TEXT_MESSAGE_BYTES: usize = 1024 * 1024;
+/// [`DaemonEvent::TopicDebugData`] beyond it — a payload of a few hundred
+/// kilobytes already is, once rendered as a number array — and sends a binary
+/// frame larger than it as chunks (see [`TOPIC_DEBUG_CHUNK_BYTES`]).
+pub const MAX_DAEMON_MESSAGE_BYTES: usize = 1024 * 1024;
 
 /// Largest single WebSocket frame a default-configured client reads
 /// (`tokio-tungstenite`'s default `max_frame_size`).
@@ -417,8 +419,28 @@ pub const MAX_TOPIC_DEBUG_PAYLOAD_BYTES: usize = 15 * 1024 * 1024;
 /// Largest binary topic debug frame (see [`encode_topic_debug_frame`]) a
 /// coordinator that offers `RegisterResult::Ok::binary_debug_frames` accepts,
 /// header included: one [`MAX_TOPIC_DEBUG_PAYLOAD_BYTES`] payload plus its
-/// header, which is 20 bytes and 16 more per subscription.
+/// header, which is 20 bytes and 16 more per subscription. It bounds what the
+/// coordinator reassembles a frame's chunks into; no single message is this
+/// large.
 pub const MAX_TOPIC_DEBUG_FRAME_BYTES: usize = 16 * 1024 * 1024;
+
+/// Most bytes of a topic debug frame one WebSocket binary message carries (see
+/// [`encode_topic_debug_chunks`]), not counting its one-byte chunk marker.
+///
+/// A frame goes out as a run of these rather than as one message because the
+/// socket cannot interleave anything into a message already being written:
+/// a control message queued behind a debug frame — a stop reply, a heartbeat —
+/// waits for as much of it as is still unwritten, and on a slow link a
+/// camera-sized frame takes long enough for that to trip the coordinator's
+/// heartbeat watchdog. Between chunks the daemon's writer checks for control
+/// messages first, so one waits for at most one chunk: 256 KiB is about 0.2 s
+/// at 10 Mbit/s and 2 s at 1 Mbit/s.
+pub const TOPIC_DEBUG_CHUNK_BYTES: usize = 256 * 1024;
+
+/// Chunk marker of a binary message that ends its topic debug frame.
+const TOPIC_DEBUG_CHUNK_LAST: u8 = 0;
+/// Chunk marker of a binary message whose frame continues in the next one.
+const TOPIC_DEBUG_CHUNK_MORE: u8 = 1;
 
 /// Length of the fixed part of a binary topic debug frame: the dataflow id
 /// and the subscription count.
@@ -434,6 +456,9 @@ const _: () = {
             < MAX_TOPIC_DEBUG_FRAME_BYTES
     );
     assert!(MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 16 <= DEFAULT_CLIENT_FRAME_BYTES);
+    // A chunk, marker included, has to fit the per-message limit the daemon
+    // socket has always had, so chunking needs no larger one.
+    assert!(TOPIC_DEBUG_CHUNK_BYTES < MAX_DAEMON_MESSAGE_BYTES);
 };
 
 /// Encoded length of a binary topic debug frame, known before encoding it so
@@ -463,17 +488,130 @@ pub fn encode_topic_debug_frame(
     subscription_ids: &[uuid::Uuid],
     payload: &[u8],
 ) -> eyre::Result<Vec<u8>> {
-    let count = u32::try_from(subscription_ids.len())
-        .map_err(|_| eyre::eyre!("too many topic debug subscriptions for one frame"))?;
-    let mut frame =
-        Vec::with_capacity(topic_debug_frame_len(subscription_ids.len(), payload.len()));
-    frame.extend_from_slice(dataflow_id.as_bytes());
-    frame.extend_from_slice(&count.to_le_bytes());
-    for id in subscription_ids {
-        frame.extend_from_slice(id.as_bytes());
-    }
+    let mut frame = encode_topic_debug_frame_header(dataflow_id, subscription_ids)?;
+    frame.reserve_exact(payload.len());
     frame.extend_from_slice(payload);
     Ok(frame)
+}
+
+/// Everything of a topic debug frame that comes before its payload.
+fn encode_topic_debug_frame_header(
+    dataflow_id: DataflowId,
+    subscription_ids: &[uuid::Uuid],
+) -> eyre::Result<Vec<u8>> {
+    let count = u32::try_from(subscription_ids.len())
+        .map_err(|_| eyre::eyre!("too many topic debug subscriptions for one frame"))?;
+    let mut header = Vec::with_capacity(topic_debug_frame_len(subscription_ids.len(), 0));
+    header.extend_from_slice(dataflow_id.as_bytes());
+    header.extend_from_slice(&count.to_le_bytes());
+    for id in subscription_ids {
+        header.extend_from_slice(id.as_bytes());
+    }
+    Ok(header)
+}
+
+/// Encode a topic debug frame as the daemon→coordinator WebSocket binary
+/// messages that carry it — the form a daemon actually sends.
+///
+/// The frame of [`encode_topic_debug_frame`] is split into chunks of at most
+/// [`TOPIC_DEBUG_CHUNK_BYTES`], each sent as its own binary message behind a
+/// one-byte marker:
+///
+/// ```text
+/// marker (u8: 1 = more chunks follow, 0 = last chunk) | next ≤ TOPIC_DEBUG_CHUNK_BYTES bytes of the frame
+/// ```
+///
+/// A frame always has at least one chunk, and its chunks are sent back to
+/// back as far as binary messages go: other text messages may come between
+/// them, another frame's chunks may not. [`TopicDebugFrameAssembler`] puts
+/// them back together. The frame is copied once, straight into its chunks.
+pub fn encode_topic_debug_chunks(
+    dataflow_id: DataflowId,
+    subscription_ids: &[uuid::Uuid],
+    payload: &[u8],
+) -> eyre::Result<Vec<Vec<u8>>> {
+    let header = encode_topic_debug_frame_header(dataflow_id, subscription_ids)?;
+    let mut rest = (header.as_slice(), payload);
+    let frame_len = header.len() + payload.len();
+    let mut chunks = Vec::with_capacity(frame_len.div_ceil(TOPIC_DEBUG_CHUNK_BYTES));
+    loop {
+        let body_len = (rest.0.len() + rest.1.len()).min(TOPIC_DEBUG_CHUNK_BYTES);
+        let mut chunk = Vec::with_capacity(1 + body_len);
+        chunk.push(TOPIC_DEBUG_CHUNK_MORE);
+        // The header is always shorter than a chunk, but fill from both parts
+        // regardless rather than rely on that.
+        for part in [&mut rest.0, &mut rest.1] {
+            let take = part.len().min(1 + body_len - chunk.len());
+            let (head, tail) = part.split_at(take);
+            chunk.extend_from_slice(head);
+            *part = tail;
+        }
+        let last = rest.0.is_empty() && rest.1.is_empty();
+        if last {
+            chunk[0] = TOPIC_DEBUG_CHUNK_LAST;
+        }
+        chunks.push(chunk);
+        if last {
+            return Ok(chunks);
+        }
+    }
+}
+
+/// Reassembles topic debug frames from the chunked binary messages of
+/// [`encode_topic_debug_chunks`], for one daemon connection.
+///
+/// A frame is buffered only up to [`MAX_TOPIC_DEBUG_FRAME_BYTES`]; one that
+/// grows past it is reported once and the rest of its chunks skipped, so the
+/// next frame starts from a clean buffer.
+#[derive(Debug, Default)]
+pub struct TopicDebugFrameAssembler {
+    frame: Vec<u8>,
+    /// The frame being received has already been rejected; skip to its end.
+    skipping: bool,
+}
+
+impl TopicDebugFrameAssembler {
+    /// Take in the next binary message. Returns the frame it completes, if it
+    /// is that frame's last chunk; decode it with [`decode_topic_debug_frame`].
+    ///
+    /// An error rejects the frame in progress, not the connection: debug
+    /// frames are droppable, and the next one reassembles normally.
+    pub fn push(&mut self, message: &[u8]) -> eyre::Result<Option<Vec<u8>>> {
+        let Some((&marker, body)) = message.split_first() else {
+            self.reset();
+            eyre::bail!("empty topic debug chunk");
+        };
+        let last = match marker {
+            TOPIC_DEBUG_CHUNK_LAST => true,
+            TOPIC_DEBUG_CHUNK_MORE => false,
+            other => {
+                self.reset();
+                eyre::bail!("unknown topic debug chunk marker {other}");
+            }
+        };
+        if self.skipping {
+            if last {
+                self.reset();
+            }
+            return Ok(None);
+        }
+        if self.frame.len() + body.len() > MAX_TOPIC_DEBUG_FRAME_BYTES {
+            let received = self.frame.len() + body.len();
+            self.reset();
+            self.skipping = !last;
+            eyre::bail!(
+                "topic debug frame exceeds the {MAX_TOPIC_DEBUG_FRAME_BYTES}-byte limit \
+                 ({received} bytes so far)"
+            );
+        }
+        self.frame.extend_from_slice(body);
+        Ok(last.then(|| std::mem::take(&mut self.frame)))
+    }
+
+    fn reset(&mut self) {
+        self.frame = Vec::new();
+        self.skipping = false;
+    }
 }
 
 /// A binary topic debug frame decoded by [`decode_topic_debug_frame`].
@@ -572,6 +710,126 @@ mod topic_debug_frame_tests {
         let mut huge = vec![0; TOPIC_DEBUG_FRAME_FIXED_HEADER];
         huge[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(decode_topic_debug_frame(&huge).is_err());
+    }
+
+    fn reassemble(chunks: &[Vec<u8>]) -> Vec<u8> {
+        let mut assembler = TopicDebugFrameAssembler::default();
+        let (last, init) = chunks.split_last().unwrap();
+        for chunk in init {
+            assert_eq!(assembler.push(chunk).unwrap(), None);
+        }
+        assembler
+            .push(last)
+            .unwrap()
+            .expect("last chunk completes the frame")
+    }
+
+    /// The chunks carry exactly the frame `encode_topic_debug_frame` builds,
+    /// none of them past the chunk size, with only the last marked as such —
+    /// including at the boundaries, where an off-by-one would show.
+    #[test]
+    fn chunks_reassemble_into_the_frame() {
+        let subscription_ids = [uuid::Uuid::new_v4(), uuid::Uuid::new_v4()];
+        let header = topic_debug_frame_len(subscription_ids.len(), 0);
+        for payload_len in [
+            0,
+            1,
+            TOPIC_DEBUG_CHUNK_BYTES - header,
+            TOPIC_DEBUG_CHUNK_BYTES - header + 1,
+            3 * TOPIC_DEBUG_CHUNK_BYTES + 5,
+        ] {
+            let dataflow_id = uuid::Uuid::new_v4();
+            let payload: Vec<u8> = (0..payload_len).map(|i| i as u8).collect();
+            let frame = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload).unwrap();
+            let chunks =
+                encode_topic_debug_chunks(dataflow_id, &subscription_ids, &payload).unwrap();
+
+            assert_eq!(chunks.len(), frame.len().div_ceil(TOPIC_DEBUG_CHUNK_BYTES));
+            for (i, chunk) in chunks.iter().enumerate() {
+                assert!(chunk.len() <= 1 + TOPIC_DEBUG_CHUNK_BYTES);
+                let expected = if i + 1 == chunks.len() {
+                    TOPIC_DEBUG_CHUNK_LAST
+                } else {
+                    TOPIC_DEBUG_CHUNK_MORE
+                };
+                assert_eq!(
+                    chunk[0], expected,
+                    "chunk {i} of {payload_len}-byte payload"
+                );
+            }
+            assert_eq!(reassemble(&chunks), frame, "{payload_len}-byte payload");
+        }
+    }
+
+    /// Frames reassemble one after another from the same assembler.
+    #[test]
+    fn consecutive_frames_reassemble_independently() {
+        let mut assembler = TopicDebugFrameAssembler::default();
+        for payload in [vec![1; TOPIC_DEBUG_CHUNK_BYTES * 2], vec![2; 10]] {
+            let dataflow_id = uuid::Uuid::new_v4();
+            let chunks = encode_topic_debug_chunks(dataflow_id, &[], &payload).unwrap();
+            let mut completed = None;
+            for chunk in &chunks {
+                completed = assembler.push(chunk).unwrap();
+            }
+            let frame = completed.expect("frame completed");
+            let decoded = decode_topic_debug_frame(&frame).unwrap();
+            assert_eq!(decoded.dataflow_id, dataflow_id);
+            assert_eq!(decoded.payload, payload.as_slice());
+        }
+    }
+
+    /// A frame that grows past the limit is rejected once and its remaining
+    /// chunks skipped, and the frame after it still reassembles.
+    #[test]
+    fn an_oversized_frame_is_rejected_and_the_next_one_still_reassembles() {
+        let mut assembler = TopicDebugFrameAssembler::default();
+        let chunk = |marker: u8| {
+            let mut chunk = vec![0; 1 + TOPIC_DEBUG_CHUNK_BYTES];
+            chunk[0] = marker;
+            chunk
+        };
+        let chunks_to_limit = MAX_TOPIC_DEBUG_FRAME_BYTES / TOPIC_DEBUG_CHUNK_BYTES;
+        for _ in 0..chunks_to_limit {
+            assert_eq!(
+                assembler.push(&chunk(TOPIC_DEBUG_CHUNK_MORE)).unwrap(),
+                None
+            );
+        }
+        assert!(assembler.push(&chunk(TOPIC_DEBUG_CHUNK_MORE)).is_err());
+        // The rest of the rejected frame is skipped, not taken as a new one.
+        assert_eq!(
+            assembler.push(&chunk(TOPIC_DEBUG_CHUNK_MORE)).unwrap(),
+            None
+        );
+        assert_eq!(
+            assembler.push(&chunk(TOPIC_DEBUG_CHUNK_LAST)).unwrap(),
+            None
+        );
+
+        let dataflow_id = uuid::Uuid::new_v4();
+        let chunks = encode_topic_debug_chunks(dataflow_id, &[], b"next").unwrap();
+        let frame = assembler
+            .push(&chunks[0])
+            .unwrap()
+            .expect("one-chunk frame");
+        assert_eq!(decode_topic_debug_frame(&frame).unwrap().payload, b"next");
+    }
+
+    #[test]
+    fn a_malformed_chunk_is_rejected_and_resets_the_frame() {
+        let mut assembler = TopicDebugFrameAssembler::default();
+        assert_eq!(
+            assembler.push(&[TOPIC_DEBUG_CHUNK_MORE, 9, 9]).unwrap(),
+            None
+        );
+        assert!(assembler.push(&[]).is_err());
+        assert!(assembler.push(&[7, 1, 2]).is_err());
+
+        // Nothing of the abandoned frame leaks into the next one.
+        let chunks = encode_topic_debug_chunks(uuid::Uuid::new_v4(), &[], b"ok").unwrap();
+        let frame = assembler.push(&chunks[0]).unwrap().unwrap();
+        assert_eq!(decode_topic_debug_frame(&frame).unwrap().payload, b"ok");
     }
 }
 

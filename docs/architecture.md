@@ -820,7 +820,8 @@ File download utility for fetching operator/node binaries from HTTP URLs. Saniti
 | `MAX_TOPICS_PER_SUBSCRIBE` | 64 | Topic batch limit |
 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | 16 | Per-connection limit |
 | `MAX_TOPIC_DEBUG_PAYLOAD_BYTES` | 15 MiB | Largest `dora topic` payload: what fits a default client's WebSocket frame |
-| `MAX_TOPIC_DEBUG_FRAME_BYTES` | 16 MiB | Largest daemon->coordinator topic debug frame (payload plus header) |
+| `MAX_TOPIC_DEBUG_FRAME_BYTES` | 16 MiB | Largest daemon->coordinator topic debug frame (payload plus header), reassembled from chunks |
+| `TOPIC_DEBUG_CHUNK_BYTES` | 256 KiB | Topic debug frame bytes per daemon->coordinator WebSocket message; control messages go out between chunks |
 | `WATCHDOG_INTERVAL` | 5 seconds | Heartbeat to coordinator |
 | `METRICS_INTERVAL` | 2 seconds | Metrics collection |
 | `HEALTH_CHECK_INTERVAL` | 5 seconds | Default node health check |
