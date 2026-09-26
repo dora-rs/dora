@@ -887,7 +887,11 @@ async fn teardown_replacement_uses_configured_grace_period() {
     dataflow.stop_rejected_replacement(&node_id, 8, replacement);
     tokio::task::yield_now().await;
 
-    let Ok(ProcessOperation::StopRequested { kill_at }) = replacement_rx.try_recv() else {
+    let Ok(ProcessOperation::StopRequested {
+        soft_kill_at,
+        kill_at,
+    }) = replacement_rx.try_recv()
+    else {
         panic!(
             "a planned stop must mark itself in flight before the grace period: \
              a node that exits on the `NodeEvent::Stop` it just received is then \
@@ -895,13 +899,19 @@ async fn teardown_replacement_uses_configured_grace_period() {
              children keep the grace period (#3472 review)"
         );
     };
-    // The deadline the node's process-wait task holds its group for: the same
-    // instant this ladder escalates, so a node's children get exactly the grace
-    // this dataflow promised them, and no more.
-    let remaining = kill_at.saturating_duration_since(tokio::time::Instant::now());
+    // Both deadlines the node's process-wait task puts its group through, so a
+    // node's children get exactly the grace this dataflow promised them — the
+    // soft kill included, not straight to the escalation — and no more.
+    let now = tokio::time::Instant::now();
+    let soft = soft_kill_at.saturating_duration_since(now);
+    let hard = kill_at.saturating_duration_since(now);
     assert!(
-        remaining <= Duration::from_secs(6) && remaining >= Duration::from_secs(4),
-        "expected the 4s grace plus its 2s escalation, got {remaining:?}"
+        soft <= Duration::from_secs(5) && soft >= Duration::from_secs(3),
+        "expected the 4s soft kill, got {soft:?}"
+    );
+    assert!(
+        hard <= Duration::from_secs(7) && hard >= Duration::from_secs(5),
+        "expected the 4s grace plus its 2s escalation, got {hard:?}"
     );
     assert!(
         replacement_rx.try_recv().is_err(),

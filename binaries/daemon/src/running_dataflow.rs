@@ -233,6 +233,10 @@ pub(crate) enum ProcessOperation {
     /// the `NodeEvent::Stop` it was just sent exits during the grace period,
     /// with its children possibly still shutting down (#3472 review).
     StopRequested {
+        /// When the ladder sends its `SoftKill` to the node process — the same
+        /// instant, for the process group that outlives it.
+        soft_kill_at: tokio::time::Instant,
+        /// When the ladder sends its `Kill`.
         kill_at: tokio::time::Instant,
     },
     SoftKill,
@@ -824,11 +828,16 @@ impl RunningDataflow {
                     // a node that exits because of the `NodeEvent::Stop` it just
                     // received leaves before any signal is due, and its children
                     // are then mid-shutdown rather than abandoned (#3472 review).
-                    // The deadline travels with it so the node's process-wait
-                    // task can hold the group for exactly as long as this ladder
-                    // would have held the node itself.
+                    // Both deadlines travel with it so the node's process-wait
+                    // task can put the group through this same ladder once the
+                    // node process is gone, rather than cutting straight to the
+                    // escalation — a node that stops promptly must not leave its
+                    // children worse off than one that has to be chased
+                    // (#3472 review).
+                    let soft_kill_at = tokio::time::Instant::now() + duration;
                     process.submit(ProcessOperation::StopRequested {
-                        kill_at: tokio::time::Instant::now() + duration + kill_duration,
+                        soft_kill_at,
+                        kill_at: soft_kill_at + kill_duration,
                     });
                     tokio::time::sleep(duration).await;
                     if process.submit(ProcessOperation::SoftKill) {
