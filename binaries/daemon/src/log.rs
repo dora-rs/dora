@@ -36,6 +36,25 @@ pub fn log_path_rotated(
     dataflow_dir.join(format!("log_{node_id}.{index}.jsonl"))
 }
 
+/// Open a node's current log file for appending, creating it if needed, and
+/// return it with its current length.
+///
+/// A node restarted by its `restart_policy` (or `dora node restart`) is
+/// spawned again under the same dataflow id, so the file may already hold the
+/// previous incarnation's output — including the panic or traceback that
+/// caused the restart. Appending keeps those lines, and returning the length
+/// lets the caller count them toward `max_log_size`, so rotation keeps the
+/// documented disk bound.
+pub async fn open_log_file_for_append(path: &Path) -> std::io::Result<(tokio::fs::File, u64)> {
+    let file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await?;
+    let len = file.metadata().await?.len();
+    Ok((file, len))
+}
+
 /// Default max rotated files (excluding the current file).
 pub const DEFAULT_MAX_ROTATED_FILES: u32 = 5;
 
@@ -650,6 +669,32 @@ mod tests {
         assert_eq!(
             p,
             PathBuf::from("/tmp/work/out/00000000-0000-0000-0000-000000000000/log_sensor.3.jsonl")
+        );
+    }
+
+    #[tokio::test]
+    async fn reopening_a_log_file_keeps_the_previous_incarnation() {
+        use tokio::io::AsyncWriteExt;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("log_n.jsonl");
+
+        let (mut file, len) = open_log_file_for_append(&path).await.unwrap();
+        assert_eq!(len, 0);
+        file.write_all(b"panicked at main.rs\n").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        // The respawned incarnation opens the same path.
+        let (mut file, len) = open_log_file_for_append(&path).await.unwrap();
+        assert_eq!(len, "panicked at main.rs\n".len() as u64);
+        file.write_all(b"restarted\n").await.unwrap();
+        file.flush().await.unwrap();
+        drop(file);
+
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "panicked at main.rs\nrestarted\n"
         );
     }
 

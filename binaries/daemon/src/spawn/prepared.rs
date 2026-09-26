@@ -846,13 +846,15 @@ impl PreparedNode {
             std::fs::create_dir_all(&dataflow_dir).context("could not create dataflow_dir")?;
         }
         let (tx, mut rx) = mpsc::channel::<LogLine>(100);
-        let mut file = File::create(log::log_path(
+        // Append rather than truncate: on a restart this path holds the
+        // previous incarnation's output, including why it crashed.
+        let (mut file, mut bytes_written) = log::open_log_file_for_append(&log::log_path(
             &self.node_working_dir,
             &self.dataflow_id,
             &self.node.id,
         ))
         .await
-        .context("failed to create log file")?;
+        .context("failed to open log file")?;
         let mut child_stdout = tokio::io::BufReader::new(
             child
                 .stdout()
@@ -1065,7 +1067,6 @@ impl PreparedNode {
         let quiet = std::env::var_os("DORA_QUIET").is_some();
         // Log to file stream.
         tokio::spawn(async move {
-            let mut bytes_written: u64 = 0;
             while let Some(log_line) = rx.recv().await {
                 let LogLine { content, stream } = log_line;
                 let stream_str = match stream {
