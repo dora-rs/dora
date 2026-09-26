@@ -2340,6 +2340,68 @@ fn missing_event_stream_drops_are_counted_per_message() {
     });
 }
 
+/// A receiver whose event channel is still registered but closed (its
+/// listener died without `EventStreamDropped`, which would have unregistered
+/// it first) loses the message that finds it closed. That message is a
+/// counted drop like the ones after it, so `fail_on_lost_backpressure_messages`
+/// sees it even when it is the last one on the edge (dora-rs/dora#3620).
+#[test]
+fn closed_event_channel_drop_is_counted() {
+    use dora_message::config::QueuePolicy;
+    let rt = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    rt.block_on(async {
+        let mut df = test_dataflow();
+        let clock = test_clock();
+        let sender: NodeId = "sender".to_string().into();
+        let output: DataId = "output".to_string().into();
+        let input: DataId = "input".to_string().into();
+        let receiver: NodeId = "receiver".to_string().into();
+        df.mappings.insert(
+            OutputId(sender.clone(), output.clone()),
+            BTreeSet::from([(receiver.clone(), input.clone())]),
+        );
+        let inputs = BTreeMap::from([(
+            input.clone(),
+            user_input("sender", "output", Some(QueuePolicy::Backpressure)),
+        )]);
+        df.running_nodes
+            .insert(receiver.clone(), running_node_with(inputs, None));
+        let (tx, rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+        df.subscribe_channels.insert(receiver.clone(), tx);
+        drop(rx);
+
+        let ft_stats = FaultToleranceStats::default();
+        let metadata = metadata::Metadata::new(clock.new_timestamp());
+        let output_id = OutputId(sender, output);
+        send_output_to_local_receivers(
+            &output_id,
+            &mut df,
+            &metadata,
+            None,
+            &clock,
+            Some(&ft_stats),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(
+            !df.subscribe_channels.contains_key(&receiver),
+            "the closed channel is unregistered"
+        );
+        assert_eq!(ft_stats.dropped_messages.load(atomic::Ordering::Relaxed), 1);
+        assert_eq!(
+            ft_stats
+                .lost_backpressure_messages
+                .load(atomic::Ordering::Relaxed),
+            1,
+            "the message that found the channel closed is a lost promise"
+        );
+    });
+}
+
 /// A receiver recorded in `mappings` but missing from
 /// `subscribe_channels` gets routed to *nothing*: `send_output_to_local_receivers`
 /// cannot deliver, and the producer's send still "succeeds". The missing
