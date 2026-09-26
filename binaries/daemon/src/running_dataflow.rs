@@ -224,6 +224,15 @@ pub(crate) fn next_node_generation() -> u64 {
 
 #[derive(Debug)]
 pub(crate) enum ProcessOperation {
+    /// The stop sequence has started, but nothing is to be signalled yet: the
+    /// node still has its grace period before the ladder's first `SoftKill`.
+    ///
+    /// A node that honors the `NodeEvent::Stop` it was just sent exits during
+    /// that window, with its children possibly still shutting down. Carrying
+    /// the fact that a stop is in flight is what lets the node's process-wait
+    /// task tell that exit apart from a node that finished on its own, whose
+    /// abandoned forks must be contained at once (#3472 review).
+    StopRequested,
     SoftKill,
     Kill,
 }
@@ -231,6 +240,7 @@ pub(crate) enum ProcessOperation {
 impl ProcessOperation {
     pub fn execute(&self, child: &mut dyn ChildWrapper) {
         match self {
+            Self::StopRequested => {}
             Self::SoftKill => {
                 #[cfg(unix)]
                 {
@@ -796,6 +806,11 @@ impl RunningDataflow {
             }
             StopProcessPolicy::Graceful(duration) => {
                 tokio::spawn(async move {
+                    // Mark the stop as in flight before the grace period starts:
+                    // a node that exits because of the `NodeEvent::Stop` it just
+                    // received leaves before any signal is due, and its children
+                    // are then mid-shutdown rather than abandoned (#3472 review).
+                    process.submit(ProcessOperation::StopRequested);
                     tokio::time::sleep(duration).await;
                     if process.submit(ProcessOperation::SoftKill) {
                         grace_duration_kills.insert((node_id.clone(), generation));

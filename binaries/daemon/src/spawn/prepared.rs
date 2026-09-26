@@ -161,6 +161,68 @@ fn line_to_forward(raw: Vec<u8>) -> Option<Vec<u8>> {
     (!raw.is_empty()).then_some(raw)
 }
 
+/// Contain what a node left behind in its process group, the moment the node
+/// process itself is reaped.
+///
+/// Every node is spawned as its own group leader (`ProcessGroup::leader()`), so
+/// `pgid == pid`. A fire-and-forget background fork (`sh -c 'cmd &'`) outlives
+/// the node process and is then unreachable by the stop ladder's group kill, so
+/// the group is killed here. The in-node/shell-guard containment only runs while
+/// the node process is alive, which makes this the one place that catches a fork
+/// abandoned by a node that finished normally (dora-rs/dora#3472). It must not
+/// wait for the log drain either: a straggler holding the node's stdout/stderr
+/// pipes keeps that drain open indefinitely.
+///
+/// `stopping` is the exception, and it covers two cases: a node the ladder
+/// already signalled, and — the subtler one — a node that honored the
+/// `NodeEvent::Stop` and exited during the grace period, before any signal was
+/// due. In both the group was asked to shut down and its members may be
+/// mid-cleanup, so killing it now would cut the stop grace period short for
+/// every one of them (dora-rs/dora#3472 review). The escalation is the ladder's
+/// to make, then: keep the receiver alive and SIGKILL the group when the
+/// grace-period `Kill` arrives, exactly as if the leader had outlived the stop.
+#[cfg(unix)]
+fn contain_exited_group(pid: u32, stopping: bool, op_rx: flume::Receiver<ProcessOperation>) {
+    if stopping {
+        tokio::spawn(async move {
+            while let Ok(op) = op_rx.recv_async().await {
+                if matches!(op, ProcessOperation::Kill) {
+                    break;
+                }
+            }
+            kill_group_members(pid);
+        });
+    } else {
+        kill_group_members(pid);
+        // Drop `op_rx` here so any grace-kill task still holding the paired
+        // `op_tx` sees a closed channel on the next `submit()` instead of
+        // routing operations to the subsequent incarnation (dora-rs/adora#152).
+        drop(op_rx);
+    }
+}
+
+/// `killpg(SIGKILL)`, but only while the group still has members.
+///
+/// The leader is already reaped by the time this runs, so its pgid is free and
+/// can be recycled — during the deferred branch's wait for the ladder's `Kill`,
+/// that is up to half a grace period — and a recycled pgid belongs to whatever
+/// process group took the number, not to this node. Probing with signal `0`
+/// first makes the kill conditional on the group still being there, which also
+/// covers the common case of every member having exited cleanly (nothing to
+/// contain) without sending anything (dora-rs/dora#3472 review, 2026-09-26).
+#[cfg(unix)]
+fn kill_group_members(pid: u32) {
+    let pgid = pid as libc::pid_t;
+    // SAFETY: signal 0 performs error checking only and sends no signal.
+    if unsafe { libc::killpg(pgid, 0) } != 0 {
+        return;
+    }
+    // SAFETY: the group this process spawned as its leader.
+    unsafe {
+        libc::killpg(pgid, libc::SIGKILL);
+    }
+}
+
 /// The value of the in-process `dora run` parent marker on `command`, if any.
 ///
 /// `bind_nodes_to_parent` injects `DORA_RUN_PARENT_PID` only on the in-process
@@ -993,7 +1055,7 @@ impl PreparedNode {
         let dataflow_id = self.dataflow_id;
 
         tokio::spawn(async move {
-            let mut stop_sent = false;
+            let mut stopping = false;
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
                     status = child.wait() => {
@@ -1002,9 +1064,13 @@ impl PreparedNode {
                     result = op_rx.recv_async() => {
                         match result {
                             Ok(op) => {
-                                stop_sent = matches!(
+                                // Sticky: once a stop is in flight this node's
+                                // exit is a stop, whatever else arrives after.
+                                stopping |= matches!(
                                     op,
-                                    ProcessOperation::SoftKill | ProcessOperation::Kill
+                                    ProcessOperation::StopRequested
+                                        | ProcessOperation::SoftKill
+                                        | ProcessOperation::Kill
                                 );
                                 op.execute(child.as_mut());
                             }
@@ -1017,52 +1083,12 @@ impl PreparedNode {
                 }
             };
 
-            // Contain stragglers the gone node left in its process group:
-            // every node is spawned as its own group leader (prepared.rs
-            // `ProcessGroup::leader()`), so pgid == node pid. A fire-and-forget
-            // background fork (`sh -c 'cmd &'`) survives the node process and is
-            // unreachable by the stop ladder's group kill once the node already
-            // exited on its own — kill it here, the moment the kernel reports
-            // the node dead, WITHOUT waiting for the log drain below: a straggler
-            // still holding the node's stdout/stderr pipes keeps the drain open,
-            // so gating the kill on it would deadlock (dora-rs/dora#3472 review).
-            // The in-node/shell-guard containment only runs while the node
-            // process is alive, so this is the one place that catches a fork
-            // abandoned by a node that finished normally. Best effort: an
-            // already-empty group just yields ESRCH.
+            // Contain stragglers the gone node left in its process group: the
+            // moment the kernel reports the node dead, before the log drain
+            // below — a straggler still holding the node's stdout/stderr pipes
+            // would keep that drain open forever.
             #[cfg(unix)]
-            if stop_sent {
-                // The stop already SIGTERMed this group, so its children may
-                // be mid-cleanup; killing the group here would cut the stop
-                // grace period short for every one of them (dora-rs/dora#3472
-                // review, 2026-09-24). The leader's exit above ends this loop,
-                // so hand the escalation to the ladder's grace-period `Kill`:
-                // keep the receiver alive and SIGKILL the group when it
-                // arrives, exactly as if the leader had outlived the stop.
-                let stop_rx = op_rx;
-                tokio::spawn(async move {
-                    while let Ok(op) = stop_rx.recv_async().await {
-                        if matches!(op, ProcessOperation::Kill) {
-                            break;
-                        }
-                    }
-                    // SAFETY: `killpg` on the group this process spawned as its
-                    // leader; best effort, an empty group just yields ESRCH.
-                    unsafe {
-                        libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-                    }
-                });
-            } else {
-                // SAFETY: as above.
-                unsafe {
-                    libc::killpg(pid as libc::pid_t, libc::SIGKILL);
-                }
-                // Drop `op_rx` here so any grace-kill task still holding
-                // the paired `op_tx` sees a closed channel on the next
-                // `submit()` instead of routing operations to the
-                // subsequent incarnation (dora-rs/adora#152).
-                drop(op_rx);
-            }
+            contain_exited_group(pid, stopping, op_rx);
 
             #[cfg(not(unix))]
             drop(op_rx);
@@ -1723,5 +1749,98 @@ mod tests {
         // The remainder of the over-long line is discarded, so the next line
         // is read intact rather than being merged with the overflow.
         assert_eq!(lines[1], b"next\n".to_vec());
+    }
+
+    /// Spawn a group-leading `sh` with one long-lived background child, as a
+    /// node's process group looks to [`contain_exited_group`]: `pgid == pid`,
+    /// and a member that outlives the leader unless the group is killed.
+    /// Returns the leader and the background child's pid.
+    #[cfg(unix)]
+    fn spawn_group_with_background_child(pid_file: &std::path::Path) -> (std::process::Child, u32) {
+        use std::os::unix::process::CommandExt as _;
+
+        let mut leader = std::process::Command::new("sh");
+        let mut leader = leader
+            .arg("-c")
+            .arg(format!(
+                "sleep 120 & echo $! > {}; exec sleep 120",
+                pid_file.display()
+            ))
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn the group leader");
+
+        let child_pid = loop {
+            if let Ok(Ok(pid)) =
+                std::fs::read_to_string(pid_file).map(|contents| contents.trim().parse::<u32>())
+            {
+                break pid;
+            }
+            assert!(
+                leader.try_wait().expect("try_wait failed").is_none(),
+                "the group leader exited before reporting its child pid"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+
+        (leader, child_pid)
+    }
+
+    #[cfg(unix)]
+    fn process_alive(pid: u32) -> bool {
+        // SAFETY: signal 0 performs error checking only and sends no signal.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_exit(pid: u32, what: &str) {
+        for _ in 0..200 {
+            if !process_alive(pid) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("{what} {pid} was still alive after 10s");
+    }
+
+    /// A node that exited on its own left a fork behind, and nothing else will
+    /// ever clean it up: the group is killed at once.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_node_group_is_killed_when_no_stop_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_background_child(&dir.path().join("child.pid"));
+        let (_op_tx, op_rx) = flume::bounded(2);
+
+        contain_exited_group(leader.id(), false, op_rx);
+
+        wait_for_exit(child, "the abandoned fork").await;
+        let _ = leader.kill();
+    }
+
+    /// The stop path: the group was already asked to shut down, so its members
+    /// may be mid-cleanup. The kill waits for the ladder's grace-period `Kill`
+    /// instead of cutting that grace period short (#3472 review).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_node_group_survives_until_the_ladder_kills_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_background_child(&dir.path().join("child.pid"));
+        let (op_tx, op_rx) = flume::bounded(2);
+
+        contain_exited_group(leader.id(), true, op_rx);
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            process_alive(child),
+            "a node that exited during the stop grace period must leave its \
+             children alone until the ladder escalates"
+        );
+
+        // The ladder's grace-period `Kill` is the escalation point.
+        op_tx.send(ProcessOperation::Kill).unwrap();
+        wait_for_exit(child, "the child left mid-shutdown").await;
+        let _ = leader.kill();
     }
 }
