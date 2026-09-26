@@ -14,7 +14,7 @@
 //! able to serialize and deserialize context that has been sent via the middleware.
 //! Supports any OTLP-compatible backend (Jaeger, Zipkin, Tempo, etc.).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use eyre::Context as EyreContext;
 use opentelemetry::trace::TracerProvider;
@@ -184,7 +184,7 @@ impl TracingBuilder {
         let file_name = file_name.into();
         let out_dir = Path::new("out");
         std::fs::create_dir_all(out_dir).context("failed to create `out` directory")?;
-        let path = out_dir.join(file_name).with_extension("txt");
+        let path = log_file_path(out_dir, &file_name);
         let file = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -355,9 +355,38 @@ pub fn init_tracing_subscriber(
     Ok(guard)
 }
 
+/// `<out_dir>/<file_name>.txt`.
+///
+/// Appends the extension rather than using `Path::with_extension`, which
+/// *replaces* everything after the last `.`: the daemon names its file
+/// `dora-daemon-<machine_id>`, so machine ids `10.0.0.1` and `10.0.0.2` would
+/// both log to `dora-daemon-10.0.0.txt`, and `robot.local` to
+/// `dora-daemon-robot.txt`.
+fn log_file_path(out_dir: &Path, file_name: &str) -> PathBuf {
+    out_dir.join(format!("{file_name}.txt"))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::env_configures_target;
+    use super::{env_configures_target, log_file_path};
+    use std::path::Path;
+
+    #[test]
+    fn log_file_path_keeps_dots_in_the_name() {
+        let out = Path::new("out");
+        assert_eq!(
+            log_file_path(out, "dora-daemon-10.0.0.1"),
+            out.join("dora-daemon-10.0.0.1.txt")
+        );
+        assert_eq!(
+            log_file_path(out, "dora-daemon-robot.local"),
+            out.join("dora-daemon-robot.local.txt")
+        );
+        assert_eq!(
+            log_file_path(out, "dora-coordinator"),
+            out.join("dora-coordinator.txt")
+        );
+    }
 
     #[test]
     fn exact_target_is_configured() {
