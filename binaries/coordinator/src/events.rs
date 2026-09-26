@@ -65,6 +65,11 @@ pub enum Event {
         metrics: BTreeMap<NodeId, NodeMetrics>,
         network: Option<NetworkMetrics>,
     },
+    /// A topic debug frame for `dora topic` subscribers (dora-rs/dora#3535).
+    ///
+    /// Reaches the main loop on its own channel rather than the shared event
+    /// one, so it can neither delay a control event nor pile up ahead of one:
+    /// see `ws_daemon::topic_debug_channel` and `control_before_topic_debug`.
     TopicDebugData {
         dataflow_id: Uuid,
         subscription_ids: Vec<Uuid>,
