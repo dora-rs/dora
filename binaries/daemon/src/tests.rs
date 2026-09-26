@@ -2340,6 +2340,38 @@ fn missing_event_stream_drops_are_counted_per_message() {
     });
 }
 
+/// `close_input` marks the input closed on the receiver's drain signal before
+/// it sends `InputClosed`, so a message still held for that input cannot land
+/// behind the close (dora-rs/dora#3619).
+#[test]
+fn close_input_marks_the_input_closed_for_held_deliveries() {
+    let mut df = test_dataflow();
+    let clock = test_clock();
+    let node: NodeId = "node".to_string().into();
+    let input: DataId = "input".to_string().into();
+    df.open_inputs
+        .entry(node.clone())
+        .or_default()
+        .insert(input.clone());
+    let (tx, _rx) = mpsc::channel(NODE_EVENT_CHANNEL_CAPACITY);
+    df.subscribe_channels.insert(node.clone(), tx);
+    let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+    df.drain_signals.insert(node.clone(), drained.clone());
+
+    close_input(&mut df, &node, &input, &clock);
+
+    assert!(drained.closed_inputs.lock().unwrap().contains(&input));
+
+    // A reload that maps the input again reopens it for held deliveries.
+    df.add_mapping(
+        "sender".to_string().into(),
+        "output".to_string().into(),
+        node.clone(),
+        input.clone(),
+    );
+    assert!(!drained.closed_inputs.lock().unwrap().contains(&input));
+}
+
 /// A receiver recorded in `mappings` but missing from
 /// `subscribe_channels` gets routed to *nothing*: `send_output_to_local_receivers`
 /// cannot deliver, and the producer's send still "succeeds". The missing

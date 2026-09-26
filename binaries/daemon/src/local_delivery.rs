@@ -18,7 +18,7 @@ use eyre::Result;
 use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
-        Arc, atomic,
+        Arc, Mutex, PoisonError, atomic,
         atomic::{AtomicBool, AtomicU64},
     },
     time::Instant,
@@ -41,6 +41,9 @@ use tokio::sync::mpsc;
 #[derive(Debug)]
 pub(crate) struct DeferredDelivery {
     pub receiver: NodeId,
+    /// The receiver's input the event is for; checked against
+    /// `DrainSignal::closed_inputs` before the event is sent.
+    pub input: DataId,
     pub channel: mpsc::Sender<Timestamped<NodeEvent>>,
     /// The receiver's pending-message counter, bumped once the event is in.
     pub pending: Option<Arc<AtomicU64>>,
@@ -67,6 +70,33 @@ pub(crate) struct DrainSignal {
     /// Set when the node dropped its event stream deliberately, so a held
     /// delivery that finds its channel closed afterwards is not a loss.
     pub stream_dropped: AtomicBool,
+    /// Inputs of this receiver the daemon loop has closed for good. A held
+    /// delivery checks it and sends under the same lock, and `close_input`
+    /// adds to it before sending `InputClosed`, so a held message either
+    /// lands before the close or not at all: its producer crashing while it
+    /// is held must not put an `Input` behind that input's `InputClosed`
+    /// (dora-rs/dora#3619).
+    pub closed_inputs: Mutex<BTreeSet<DataId>>,
+}
+
+impl DrainSignal {
+    /// Marks `input` closed for held deliveries, and wakes them so they
+    /// give up on it now rather than after waiting for room.
+    pub fn close_input(&self, input: &DataId) {
+        self.closed_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(input.clone());
+        self.notify.notify_waiters();
+    }
+
+    /// Undoes [`Self::close_input`] for an input a reload maps again.
+    pub fn reopen_input(&self, input: &DataId) {
+        self.closed_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(input);
+    }
 }
 
 pub(crate) fn note_output_sent_to_local_receivers(
@@ -253,6 +283,7 @@ fn offer_event<'a>(
             );
             deferred.push(DeferredDelivery {
                 receiver: receiver_id.clone(),
+                input: input_id.clone(),
                 channel: channel.clone(),
                 pending: dataflow.pending_messages.get(receiver_id).cloned(),
                 drained,
@@ -546,6 +577,12 @@ pub(crate) fn close_input(
 
     if !was_open && !was_broken {
         return;
+    }
+
+    // Before `InputClosed` goes out, so a message still held for this input
+    // cannot land behind it (dora-rs/dora#3619).
+    if let Some(drained) = dataflow.drain_signals.get(receiver_id) {
+        drained.close_input(input_id);
     }
 
     if let Some(channel) = dataflow.subscribe_channels.get(receiver_id)
