@@ -161,6 +161,149 @@ fn line_to_forward(raw: Vec<u8>) -> Option<Vec<u8>> {
     (!raw.is_empty()).then_some(raw)
 }
 
+/// Contain what a node left behind in its process group, the moment the node
+/// process itself is reaped.
+///
+/// Every node is spawned as its own group leader (`ProcessGroup::leader()`), so
+/// `pgid == pid`. A fire-and-forget background fork (`sh -c 'cmd &'`) outlives
+/// the node process and is then unreachable by the stop ladder's group kill, so
+/// the group is killed here. The in-node/shell-guard containment only runs while
+/// the node process is alive, which makes this the one place that catches a fork
+/// abandoned by a node that finished normally (dora-rs/dora#3472).
+///
+/// The two instants a [`ProcessOperation::StopRequested`] marks, so that a group
+/// whose leader has already exited gets the same treatment it would have had if
+/// the leader were still there to receive it.
+#[cfg(unix)]
+type StopLadder = (tokio::time::Instant, tokio::time::Instant);
+
+/// The `stop` exception covers two cases: a node the ladder already signalled,
+/// and — the subtler one — a node that honored the `NodeEvent::Stop` and exited
+/// during the grace period, before any signal was due. In both the group was
+/// asked to shut down and its members may be mid-cleanup, so killing it now would
+/// cut the stop grace period short for every one of them (#3472 review). The
+/// escalation is the ladder's to make, then, and this replays it onto the group:
+/// `SIGTERM` at the soft-kill instant, `SIGKILL` at the escalation deadline.
+///
+/// Replaying it matters because a node that stops *promptly* would otherwise be
+/// the worst case for its children: the ladder's own `SIGTERM` was going to the
+/// node process, which is already gone, so a prompt node's children would be
+/// `SIGKILL`ed having never been asked to stop (#3472 review) — a node returning
+/// from `STOP` without terminating the subprocess it started loses its file
+/// mid-write instead of getting the signal it would have got had it hung on.
+///
+/// This runs before the node's exit is reported (see the `finished_tx` send), so
+/// a dataflow cannot finish — and `dora run` cannot exit, cancelling the wait —
+/// while a group it deferred is still outstanding.
+#[cfg(unix)]
+async fn contain_exited_group(pid: u32, stop: Option<StopLadder>) {
+    /// How often the group is re-checked while waiting: short enough that the
+    /// wait ends right after the last member exits, long enough to be free.
+    const POLL: std::time::Duration = std::time::Duration::from_millis(250);
+
+    let Some((soft_kill_at, kill_at)) = stop else {
+        // Nothing is waiting for this group: its members are abandoned.
+        signal_group(pid, libc::SIGKILL);
+        return;
+    };
+    let mut asked_to_stop = false;
+
+    loop {
+        // Re-checking is also what keeps the wait from outliving the group: the
+        // leader is reaped, so its pgid can be recycled once the last member is
+        // gone, and a recycled group is not ours to kill. Bailing out as soon as
+        // the group is empty keeps that window to a poll interval instead of the
+        // rest of the grace period.
+        if !group_has_live_members(pid) {
+            return;
+        }
+        let now = tokio::time::Instant::now();
+        if now >= kill_at {
+            signal_group(pid, libc::SIGKILL);
+            return;
+        }
+        if !asked_to_stop && now >= soft_kill_at {
+            signal_group(pid, libc::SIGTERM);
+            asked_to_stop = true;
+            continue;
+        }
+        tokio::time::sleep(POLL.min(kill_at.saturating_duration_since(now))).await;
+    }
+}
+
+/// Whether the process group still has a member that could still be doing
+/// something.
+///
+/// A zombie is a member of its group but holds nothing: it is dead, and killing it
+/// is a no-op. That is why the caller reaps the group leader before asking, and
+/// why the group is not enough to ask about. When dora is PID 1 — a container
+/// without an init, e.g. `docker/slim` — a node's orphaned children are reparented
+/// to dora itself, and dora reaps only the children it spawned, so they stay
+/// zombies forever. Reading that as "the group is still busy" would delay the
+/// node's exit report, and with it the dataflow finishing and `dora run` exiting,
+/// by the full grace period on every stop (#3472 review).
+#[cfg(unix)]
+fn group_has_live_members(pid: u32) -> bool {
+    // The kernel's own answer first, and the only one where there is no /proc to
+    // enumerate: ESRCH means the group is gone, which is the common exit from
+    // this wait and costs no scan.
+    // SAFETY: signal 0 performs error checking only and sends no signal.
+    if unsafe { libc::killpg(pid as libc::pid_t, 0) } != 0 {
+        return false;
+    }
+    #[cfg(target_os = "linux")]
+    if let Some(live) = linux_group_has_live_member(pid) {
+        return live;
+    }
+    // Elsewhere PID 1 is never dora (launchd/systemd reaps), so a lingering
+    // zombie cannot be the case here and the kernel's answer is the whole one.
+    true
+}
+
+/// Whether any non-zombie member of `pid`'s process group exists, by scanning
+/// `/proc`, or `None` if it could not be read.
+///
+/// ponytail: O(every pid in /proc) per call, and only called while the kernel
+/// still reports a member — so a group that empties mid-cleanup is found by the
+/// next entry, and a container's /proc is small. A host-wide run as PID 1 in a
+/// namespace over a large /proc would want a `pidfd` for the adopted children.
+#[cfg(target_os = "linux")]
+fn linux_group_has_live_member(pid: u32) -> Option<bool> {
+    let mut live = false;
+    for entry in std::fs::read_dir("/proc").ok()?.flatten() {
+        // `pid (comm) state ppid pgrp …`; `comm` may contain spaces and parens, so
+        // the numeric fields are counted from the last `)`. Only thread-group
+        // leaders are listed, which is enough: a member with threads has a live
+        // leader.
+        let Ok(stat) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        let Some((_, fields)) = stat.rsplit_once(')') else {
+            continue;
+        };
+        let mut fields = fields.split_whitespace();
+        let (Some(state), Some(_ppid), Some(pgrp)) = (fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        if pgrp.parse::<u32>().ok() == Some(pid) && !matches!(state, "Z" | "X" | "x") {
+            live = true;
+            break;
+        }
+    }
+    Some(live)
+}
+
+/// Signal the whole group, best effort: an already-empty group just yields ESRCH.
+#[cfg(unix)]
+fn signal_group(pid: u32, signal: libc::c_int) {
+    // SAFETY: the group this process spawned as its leader, and a pid always
+    // fits the `pid_t` the kernel hands it out as.
+    unsafe {
+        libc::killpg(pid as libc::pid_t, signal);
+    }
+}
+
 /// The value of the in-process `dora run` parent marker on `command`, if any.
 ///
 /// `bind_nodes_to_parent` injects `DORA_RUN_PARENT_PID` only on the in-process
@@ -993,6 +1136,10 @@ impl PreparedNode {
         let dataflow_id = self.dataflow_id;
 
         tokio::spawn(async move {
+            // When a stop is in flight, when its escalation deadline is. Sticky:
+            // once a stop has been requested, this node's exit is a stop, whatever
+            // else arrives after.
+            let mut stop = None;
             let exit_status: NodeExitStatus = loop {
                 tokio::select! {
                     status = child.wait() => {
@@ -1000,7 +1147,16 @@ impl PreparedNode {
                     }
                     result = op_rx.recv_async() => {
                         match result {
-                            Ok(op) => op.execute(child.as_mut()),
+                            Ok(op) => {
+                                if let ProcessOperation::StopRequested {
+                                    soft_kill_at,
+                                    kill_at,
+                                } = op
+                                {
+                                    stop.get_or_insert((soft_kill_at, kill_at));
+                                }
+                                op.execute(child.as_mut());
+                            }
                             Err(_) => {
                                 // Sender dropped
                                 break child.wait().await.into();
@@ -1010,12 +1166,23 @@ impl PreparedNode {
                 }
             };
 
-            let _ = log_finish_rx.await;
-            // Drop `op_rx` here so any grace-kill task still holding
-            // the paired `op_tx` sees a closed channel on the next
-            // `submit()` instead of routing operations to the
-            // subsequent incarnation (dora-rs/adora#152).
+            // The node is gone, so nothing can be delivered to it. Drop the
+            // receiver before waiting anything out: a held receiver would make the
+            // ladder's later submits succeed, filing a "killed for not stopping"
+            // classification and a `grace_duration_kills` entry for a node that
+            // stopped in time, and would route any op to the next incarnation
+            // (dora-rs/adora#152).
             drop(op_rx);
+
+            // Contain stragglers the gone node left in its process group, before
+            // the log drain below — a straggler still holding the node's
+            // stdout/stderr pipes would keep that drain open forever — and before
+            // reporting the exit, so the dataflow cannot finish while a group it
+            // deferred is still outstanding.
+            #[cfg(unix)]
+            contain_exited_group(pid, stop).await;
+
+            let _ = log_finish_rx.await;
             let _ = finished_tx.send(NodeProcessFinished { exit_status, pid });
         });
 
@@ -1688,5 +1855,279 @@ mod tests {
         // The remainder of the over-long line is discarded, so the next line
         // is read intact rather than being merged with the overflow.
         assert_eq!(lines[1], b"next\n".to_vec());
+    }
+
+    /// Spawn a group-leading `sh` whose background child outlives it, as a node's
+    /// process group looks to [`contain_exited_group`]: `pgid == pid`, and members
+    /// that survive the leader unless the group is killed. `child_script` is run
+    /// by `sh` as that background child, and the leader itself lives for
+    /// `leader_hold_secs` — a leader that outlives its child is what keeps the
+    /// group non-empty, so this is what a test makes the group "empty" with.
+    /// Returns the leader and the child's pid.
+    #[cfg(unix)]
+    fn spawn_group_with_child(
+        dir: &std::path::Path,
+        child_script: &str,
+        leader_hold_secs: u32,
+    ) -> (std::process::Child, u32) {
+        use std::os::unix::process::CommandExt as _;
+
+        let script = dir.join("child.sh");
+        std::fs::write(&script, child_script).expect("failed to write the child script");
+        let pid_file = dir.join("pid");
+        let mut leader = std::process::Command::new("sh");
+        let mut leader = leader
+            .arg("-c")
+            .arg(format!(
+                "sh {} & echo $! > {}; exec sleep {leader_hold_secs}",
+                script.display(),
+                pid_file.display()
+            ))
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn the group leader");
+
+        let child_pid = loop {
+            if let Ok(Ok(pid)) =
+                std::fs::read_to_string(&pid_file).map(|contents| contents.trim().parse::<u32>())
+            {
+                break pid;
+            }
+            assert!(
+                leader.try_wait().expect("try_wait failed").is_none(),
+                "the group leader exited before reporting its child pid"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        };
+
+        (leader, child_pid)
+    }
+
+    /// A child that only stops when the group is killed: it ignores the stop it
+    /// is first asked for, so only the escalation can end it.
+    #[cfg(unix)]
+    const TERM_IGNORING_CHILD: &str = "trap '' TERM; sleep 300";
+
+    #[cfg(unix)]
+    fn process_alive(pid: u32) -> bool {
+        // SAFETY: signal 0 performs error checking only and sends no signal.
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(unix)]
+    async fn wait_for_exit(pid: u32, what: &str) {
+        for _ in 0..200 {
+            if !process_alive(pid) {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        panic!("{what} {pid} was still alive after 10s");
+    }
+
+    /// A node that exited on its own left a fork behind, and nothing else will
+    /// ever clean it up: the group is killed at once, with no stop to wait for.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn exited_node_group_is_killed_when_no_stop_is_in_flight() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
+        let started = std::time::Instant::now();
+
+        contain_exited_group(leader.id(), None).await;
+
+        wait_for_exit(child, "the abandoned fork").await;
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "an abandoned group must be killed without waiting for a deadline"
+        );
+        let _ = leader.kill();
+    }
+
+    /// The stop path: the group was already asked to shut down, so its members
+    /// may be mid-cleanup. Nothing touches it before the ladder's own soft-kill
+    /// instant, and the escalation is what ends it (#3472 review).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_node_group_survives_until_the_ladder_kills_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
+        let leader_pid = leader.id();
+        // Reap the leader while the containment runs, as the node's own
+        // process-wait task does — an unreaped one lingers as a zombie and keeps
+        // the group non-empty.
+        let reaper = tokio::task::spawn_blocking(move || leader.wait());
+
+        let started = tokio::time::Instant::now();
+        let containment = tokio::spawn(async move {
+            let now = tokio::time::Instant::now();
+            contain_exited_group(
+                leader_pid,
+                Some((
+                    now + std::time::Duration::from_secs(2),
+                    now + std::time::Duration::from_secs(4),
+                )),
+            )
+            .await
+        });
+
+        // Well past the soft-kill instant and short of the escalation, the child
+        // is untouched: a group that a node was asked to shut down may be
+        // mid-cleanup, and killing it early cuts the grace period short.
+        tokio::time::sleep(std::time::Duration::from_millis(3_000)).await;
+        assert!(
+            process_alive(child),
+            "the child must survive until the ladder's escalation, not be killed at the soft-kill \
+             instant"
+        );
+        containment.await.expect("containment task panicked");
+        wait_for_exit(child, "the child left mid-shutdown").await;
+        assert!(
+            started.elapsed() >= std::time::Duration::from_millis(3_500),
+            "the containment must not return before the escalation deadline (returned after {:?})",
+            started.elapsed()
+        );
+        let _ = reaper.await;
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_state(pid: u32) -> Option<String> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let (_, fields) = stat.rsplit_once(')')?;
+        Some(fields.split_whitespace().next()?.to_string())
+    }
+
+    /// The PID-1 case, in one process. A zombie is a member of its group, the
+    /// kernel counts it, and when dora is PID 1 nothing will ever reap it — so
+    /// waiting on the kernel's answer would stall every stop for the whole grace
+    /// period (#3472 review).
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn a_zombie_left_in_the_group_is_not_a_live_member() {
+        use std::os::unix::process::CommandExt as _;
+
+        // Deliberately never `wait()`ed: the zombie *is* the fixture.
+        #[allow(clippy::zombie_processes)]
+        let zombie = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn a group of its own");
+        let zombie_pid = zombie.id();
+        for _ in 0..200 {
+            if process_state(zombie_pid).as_deref() == Some("Z") {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+        assert_eq!(
+            process_state(zombie_pid).as_deref(),
+            Some("Z"),
+            "the child must have exited and be left unreaped, as PID 1 leaves it"
+        );
+        // SAFETY: signal 0 performs error checking only and sends no signal.
+        assert_eq!(
+            unsafe { libc::killpg(zombie_pid as libc::pid_t, 0) },
+            0,
+            "the kernel reports the zombie as a member, which is why the raw probe is not the answer"
+        );
+        assert!(
+            !group_has_live_members(zombie_pid),
+            "a zombie holds nothing, so the containment must read the group as empty rather \
+             than wait out the whole grace period for a member that is already dead"
+        );
+
+        // The other direction: a group with a process still running in it is
+        // still busy, and must be found rather than given up on.
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, _child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
+        assert!(group_has_live_members(leader.id()));
+        let _ = leader.kill();
+    }
+
+    /// A node that stops promptly must leave its children no worse off than one
+    /// that has to be chased: the group still gets the ladder's `SIGTERM`, at the
+    /// soft-kill instant, and a child that shuts down on it is then left alone.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_node_group_is_asked_to_stop_before_it_is_killed() {
+        let dir = tempfile::tempdir().unwrap();
+        let marker = dir.path().join("term");
+        let (mut leader, child) = spawn_group_with_child(
+            dir.path(),
+            &format!(
+                "trap 'echo term > {}; exit 0' TERM\nsleep 300",
+                marker.display()
+            ),
+            1,
+        );
+
+        // The node exits on its own, before any signal is due, leaving the child
+        // with nothing asked of it: the shape that has to go through the ladder.
+        let started = tokio::time::Instant::now();
+        let now = tokio::time::Instant::now();
+        contain_exited_group(
+            leader.id(),
+            Some((
+                now + std::time::Duration::from_secs(2),
+                now + std::time::Duration::from_secs(120),
+            )),
+        )
+        .await;
+
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(20),
+            "the child handled the SIGTERM, so nothing is left to kill (took {:?})",
+            started.elapsed()
+        );
+        assert_eq!(
+            std::fs::read_to_string(&marker).ok().as_deref(),
+            Some("term\n"),
+            "the group must get the ladder's SIGTERM, not be left to the SIGKILL alone"
+        );
+        wait_for_exit(child, "the child that handles SIGTERM").await;
+        let _ = leader.kill();
+    }
+
+    /// …and the wait does not outlive the group: members that shut down on their
+    /// own end it, instead of the containment sitting there until the deadline
+    /// with a pgid the kernel is free to hand to somebody else.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn stopped_node_group_wait_ends_as_soon_as_the_group_empties() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_child(dir.path(), "sleep 1", 1);
+        // Reap the leader while the containment waits, as the node's own
+        // process-wait task does — an unreaped one lingers as a zombie and keeps
+        // the group non-empty forever.
+        let leader_pid = leader.id();
+        let reaper = tokio::task::spawn_blocking(move || leader.wait());
+
+        let started = tokio::time::Instant::now();
+        let now = tokio::time::Instant::now();
+        contain_exited_group(
+            leader_pid,
+            Some((
+                now + std::time::Duration::from_secs(120),
+                now + std::time::Duration::from_secs(240),
+            )),
+        )
+        .await;
+
+        assert!(
+            !process_alive(child),
+            "the child exited on its own, so the group has nothing left to contain"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(30),
+            "the wait must end with the group, not at the 120s deadline (took {:?})",
+            started.elapsed()
+        );
+        let _ = reaper.await;
     }
 }

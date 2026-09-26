@@ -33,8 +33,7 @@
 //! window *before* `init` from its side: on Linux, on the same `dora run` spawn
 //! path, it asks the kernel to `SIGKILL` the spawned child when its parent (the
 //! `dora run` process) dies (dora-rs/dora#3473). That needs no dora code in the
-//! child, so it also covers a `path: shell` node that never runs any
-//! (dora-rs/dora#3472).
+//! child, so the *direct* child is contained even before it reaches this module.
 //!
 //! It is a complement, not the mechanism, because it is neither complete nor
 //! free:
@@ -61,11 +60,18 @@
 //!
 //! This guard owns the window from [`DoraNode::init`][crate::DoraNode::init]
 //! onwards. The pre-`init` window — a Python node still in `import torch`, a
-//! `uv run` still resolving dependencies, a `path: shell` command that never
-//! runs any dora code — is covered on Linux by the daemon's `PR_SET_PDEATHSIG`
-//! (above), with two residual gaps: on macOS, which has no `PDEATHSIG`
-//! equivalent, and the interpreter under a `--uv` wrapper, which the signal
-//! reaches only once that interpreter reaches `init` here.
+//! `uv run` still resolving dependencies — is covered on Linux by the daemon's
+//! `PR_SET_PDEATHSIG` (above), with two residual gaps: on macOS, which has no
+//! `PDEATHSIG` equivalent, and the interpreter under a `--uv` wrapper, which
+//! the signal reaches only once that interpreter reaches `init` here.
+//!
+//! A `path: shell` node is *also* excluded from this module: it never calls
+//! [`DoraNode::init`][crate::DoraNode::init], so nothing here arms. It is
+//! instead wrapped by the daemon in `dora __shell-guard`, a hidden CLI
+//! subcommand that becomes the daemon's direct child and process-group leader,
+//! spawns the shell inside that group, and `killpg`s it once the
+//! `DORA_RUN_PARENT_PID` process is gone — covering the background forks a
+//! bare `PDEATHSIG` on the shell cannot (dora-rs/dora#3472).
 //!
 //! Unix only; on Windows this module compiles to a no-op and the gap remains.
 //! Windows has no process groups in this sense, so a node cannot contain its

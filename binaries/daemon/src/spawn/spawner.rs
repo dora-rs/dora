@@ -617,6 +617,14 @@ pub struct Spawner {
     /// dataflow; see [`DORA_RUN_PARENT_PID_ENV`] for why the `dora up` +
     /// `dora start` path must not.
     pub bind_nodes_to_parent: bool,
+    /// The `dora` CLI executable to re-spawn as a shell node's guard, on the
+    /// in-process `dora run` / `Daemon::run_dataflow` path. Forwarded by the
+    /// caller (standalone binary: `current_exe`; `dora-rs-cli` wheel: the
+    /// recorded `sys.argv[0]` console-script path) so the guard is not slipped
+    /// when the daemon runs inside the python interpreter. `None` leaves the
+    /// spawner to its `current_exe`-named-`dora` fallback, then a plain
+    /// `sh -c` (#3472 review).
+    pub shell_guard_host: Option<PathBuf>,
 }
 
 impl Spawner {
@@ -836,6 +844,8 @@ impl Spawner {
                     logger,
                     n,
                     true,
+                    self.bind_nodes_to_parent,
+                    self.shell_guard_host.as_deref(),
                 )
                 .await?;
 
@@ -975,6 +985,7 @@ mod tests {
             // The `dora up` shape: a long-lived daemon whose nodes outlive it.
             // The `dora run` shape is covered by its own test below.
             bind_nodes_to_parent: false,
+            shell_guard_host: None,
         }
     }
 

@@ -22,6 +22,8 @@ mod restart;
 mod run;
 mod runtime;
 mod self_;
+#[cfg(unix)]
+mod shell_guard;
 mod start;
 mod stop;
 mod system;
@@ -57,6 +59,8 @@ use replay::Replay;
 use restart::Restart;
 use runtime::Runtime;
 use self_::SelfSubCommand;
+#[cfg(unix)]
+use shell_guard::ShellGuardArgs;
 use start::Start;
 use stop::Stop;
 use system::System;
@@ -170,6 +174,11 @@ pub enum Command {
     Runtime(Runtime),
     #[clap(hide = true)]
     Coordinator(Coordinator),
+    /// Process-group supervisor for `path: shell` nodes, spawned by the daemon
+    /// on unix only (Windows shell spawns go through `cmd /C`, unchanged).
+    #[cfg(unix)]
+    #[clap(name = "__shell-guard", hide = true)]
+    ShellGuard(ShellGuardArgs),
     /// Real-time resource monitor (shortcut for `inspect top`)
     #[clap(display_order = 12)]
     Top(inspect::top::Top),
@@ -226,6 +235,8 @@ impl Executable for Command {
             Command::Daemon(args) => args.execute(),
             Command::Runtime(args) => args.execute(),
             Command::Coordinator(args) => args.execute(),
+            #[cfg(unix)]
+            Command::ShellGuard(args) => args.execute(),
             Command::Top(args) => args.execute(),
         }
     }
@@ -867,6 +878,25 @@ mod tests {
     #[test]
     fn reject_unknown_subcommand() {
         parse_err(&["dora", "foo"]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parse_shell_guard() {
+        // The daemon spawns the guard hidden subcommand with a `--` separator,
+        // so shell args beginning with `-` stay as shell args.
+        parse_ok(&[
+            "dora",
+            "__shell-guard",
+            "--",
+            "sh",
+            "-c",
+            "sleep 1000 & wait",
+        ]);
+        parse_ok(&["dora", "__shell-guard", "--", "sh", "-c", "true"]);
+        // An empty trailing command parses but fails at runtime with a clear
+        // error (`trailing_var_arg` collects zero-or-more).
+        parse_ok(&["dora", "__shell-guard"]);
     }
 
     #[test]

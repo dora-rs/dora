@@ -11,6 +11,7 @@
 //!   - Multiple `dora run` calls can execute in parallel.
 
 use super::Executable;
+use crate::command::up::dora_executable_path;
 use crate::common::parse_duration;
 use crate::{
     BuildConfig, build as build_dataflow,
@@ -304,6 +305,23 @@ impl Run {
         let debug = self.debug;
         let working_dir_override = self.working_dir.clone();
         let exit_when_nodes_finish = self.exit_when_nodes_finish;
+        // Left unset the descriptor decides; given, it overrides.
+        let daemon_options = match exit_when_nodes_finish {
+            Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
+            None => RunDataflowOptions::default(),
+        }
+        .fail_on_lost_backpressure_messages(fail_on_lost_backpressure_messages);
+        // Tell the in-process daemon which executable hosts the CLI, so it can
+        // re-spawn it as a shell node's `__shell-guard`. Under the
+        // `dora-rs-cli` wheel, `current_exe` is the python interpreter — and a
+        // PATH lookup is refused (#3472 review) — so the recorded `sys.argv[0]`
+        // console-script path is what the guard must come back as. Best-effort:
+        // a caller that cannot resolve one (e.g. the wheel's `run()` python API)
+        // leaves the daemon to its own `current_exe` fallback, exactly as today.
+        let daemon_options = match dora_executable_path() {
+            Ok(host) => daemon_options.shell_guard_host(host.into()),
+            Err(_) => daemon_options,
+        };
         let handle = rt.spawn(async move {
             Daemon::run_dataflow_with(
                 None,
@@ -319,12 +337,7 @@ impl Run {
                 working_dir_override,
                 // hub-resolved descriptor and/or `--env` merge — see above
                 descriptor_override,
-                // Left unset the descriptor decides; given, it overrides.
-                match exit_when_nodes_finish {
-                    Some(v) => RunDataflowOptions::default().exit_when_nodes_finish(v),
-                    None => RunDataflowOptions::default(),
-                }
-                .fail_on_lost_backpressure_messages(fail_on_lost_backpressure_messages),
+                daemon_options,
             )
             .await
         });

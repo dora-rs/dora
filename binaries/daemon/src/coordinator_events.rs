@@ -672,6 +672,7 @@ impl Daemon {
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
                         bind_nodes_to_parent: self.bind_nodes_to_parent,
+                        shell_guard_host: self.shell_guard_host.clone(),
                         machine_id: self.machine_id.clone(),
                     };
                     let mut logger = self
@@ -1192,6 +1193,7 @@ impl Daemon {
                         zenoh_peering: dataflow.zenoh_peering.clone(),
                         disable_multicast: self.disable_multicast,
                         bind_nodes_to_parent: self.bind_nodes_to_parent,
+                        shell_guard_host: self.shell_guard_host.clone(),
                         machine_id: self.machine_id.clone(),
                     };
                     let mut logger = self

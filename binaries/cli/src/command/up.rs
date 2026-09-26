@@ -761,14 +761,35 @@ fn choose_executable_path(
     current_exe: impl FnOnce() -> std::io::Result<PathBuf>,
 ) -> eyre::Result<std::ffi::OsString> {
     if from_python_wrapper {
-        recorded.context(
-            "could not determine the dora executable path from the Python wrapper \
-             (sys.argv[0] was not recorded)",
-        )
+        // The guard is spawned with the *node's* working directory, so a
+        // relative `sys.argv[0]` (`.venv/bin/dora`, as typed) would be resolved
+        // against that directory and fail with ENOENT — taking the shell node
+        // down with it. Anchor it to the caller's cwd now, where it is still
+        // meaningful.
+        recorded
+            .map(|path| absolutize(path.into()))
+            .map(Into::into)
+            .context(
+                "could not determine the dora executable path from the Python wrapper \
+                 (sys.argv[0] was not recorded)",
+            )
     } else {
         current_exe()
             .map(Into::into)
             .wrap_err("could not determine dora executable path")
+    }
+}
+
+/// Make `path` absolute against the current directory, without touching the
+/// filesystem. A bare command name (`dora`, from a PATH lookup) is left alone:
+/// re-spawning it by name is exactly what the user asked for.
+fn absolutize(path: PathBuf) -> PathBuf {
+    if path.is_absolute() || path.components().count() <= 1 {
+        return path;
+    }
+    match std::env::current_dir() {
+        Ok(cwd) => cwd.join(path),
+        Err(_) => path,
     }
 }
 
@@ -796,6 +817,37 @@ mod executable_path_tests {
         })
         .expect("recorded path should resolve");
         assert_eq!(path, OsString::from("/opt/venv/bin/dora"));
+    }
+
+    #[test]
+    fn python_wrapper_anchors_a_relative_recorded_argv0() {
+        // The guard is spawned with the node's working directory, so a relative
+        // console-script path must be resolved here or the spawn ENOENTs and the
+        // shell node never runs (dora-rs/dora#3472 review).
+        let path = choose_executable_path(true, Some(OsString::from(".venv/bin/dora")), || {
+            panic!("current_exe must not be consulted for the Python wrapper")
+        })
+        .expect("recorded path should resolve");
+        let path = PathBuf::from(path);
+        assert!(
+            path.is_absolute(),
+            "relative argv[0] must be anchored to the caller's cwd, got {path:?}"
+        );
+        assert!(
+            path.ends_with(".venv/bin/dora"),
+            "the tail of the path must be preserved, got {path:?}"
+        );
+    }
+
+    #[test]
+    fn python_wrapper_keeps_a_bare_command_name_for_path_lookup() {
+        // A bare `dora` is what a PATH invocation records; re-spawning it by
+        // name is the caller's intent and must survive absolutizing.
+        let path = choose_executable_path(true, Some(OsString::from("dora")), || {
+            panic!("current_exe must not be consulted for the Python wrapper")
+        })
+        .expect("recorded path should resolve");
+        assert_eq!(path, OsString::from("dora"));
     }
 
     #[test]

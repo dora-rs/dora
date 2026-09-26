@@ -2411,6 +2411,563 @@ fn run_killed_before_node_init_does_not_orphan() {
     }
 }
 
+/// dora-rs/dora#3472: the background fork of a shell node must not survive a
+/// SIGKILLed `dora run`.
+///
+/// `path: shell` nodes run `sh -c <args>` with no dora code in them, so the
+/// in-node `DORA_RUN_PARENT_PID` guard (covered by the tests above) never
+/// arms. Those tests also show the bare shell is contained by the daemon's
+/// spawn-time PDEATHSIG, but a shell that forks a background child
+/// (`sh -c 'sleep 1000 & wait'`) leaks that child: the signal fires on the
+/// shell alone, orphaning the grandchild to `ppid 1`.
+///
+/// The daemon therefore routes shell spawns through `dora __shell-guard`
+/// (binaries/cli/src/command/shell_guard.rs), a hidden CLI subcommand spawned
+/// as the daemon's direct child AND the process-group leader. It launches the
+/// shell inside that group and, once the `DORA_RUN_PARENT_PID` process is
+/// gone, `killpg`s the whole group — guard, shell, and background forks
+/// together.
+///
+/// The fixture is the point of the test: the shell must not only run but fork
+/// a long-lived background child AND publish the pids of both to disk.
+/// Without containment the sleep outlives the CLI by construction — an orphan
+/// is forever — so the 30s deadline fails the test rather than passing on a
+/// race where nothing was ever spawned.
+#[test]
+#[cfg(unix)]
+fn run_killed_by_sigkill_does_not_orphan_shell_nodes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start();
+    let (shell_pid, child_pid) = run.wait_for_shell_and_child();
+
+    let killed = Command::new("kill")
+        .args(["-KILL", &run.cli.id().to_string()])
+        .status()
+        .expect("failed to run `kill`");
+    // Checked: an undelivered signal would make the waits below time out and
+    // report an orphan that was never actually orphaned.
+    assert!(killed.success(), "failed to SIGKILL `dora run`");
+    // Reaped immediately: the CLI cannot run teardown code after SIGKILL, so
+    // there is nothing to wait for, and leaving it unreaped would keep a
+    // zombie around for the rest of the suite.
+    let status = run.cli.wait().expect("failed to reap `dora run`");
+    run.cli_reaped = true;
+
+    // The guard re-checks the parent twice a second, so a working containment
+    // lands in about a second. 30s is slack for a loaded runner while still
+    // bounding it: an orphan is forever, not slow.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    for (pid, what) in [
+        (shell_pid, "the shell"),
+        (child_pid, "its background child"),
+    ] {
+        while process_alive(&pid.to_string()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} {pid} outlived a SIGKILLed `dora run` ({status}) by 30s: \
+                 the background fork of a shell node is not contained (#3472)\n\
+                 stderr tail:\n{}",
+                run.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+/// dora-rs/dora#3472 (review): a shell that ignores the daemon's SIGTERM must
+/// not orphan under the *normal* stop path.
+///
+/// The daemon stops a node with SIGTERM to its whole process group, then —
+/// only if the node is *still registered* after the grace period — SIGKILL to
+/// that group. Without the guard, the node's shell is directly group-killed
+/// by that escalation. With the guard, the kill targets the guard's group, so
+/// the guard must survive the first SIGTERM (installing handlers before the
+/// spawn) to keep the node registered until the group SIGKILL lands; a guard
+/// that dies on the TERM would be unregistered, the escalation skipped, and a
+/// TERM-ignoring shell (plus its forks) survive reparented to init. This test
+/// pins that guard behavior: it exercises the guard's stop-path handling, so
+/// on `main` — where no guard runs in this path — it passes by construction.
+#[test]
+#[cfg(unix)]
+fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start_term_ignoring(Duration::from_secs(3));
+    let (shell_pid, child_pid) = run.wait_for_shell_and_child();
+
+    // Normal stop via `--stop-after`: wait for the CLI to exit on its own.
+    // With the 10s default stop grace, the full ladder is roughly 3s (stop)
+    // + 10s (SIGTERM) + 5s (SIGKILL escalation), so 60s is generous slack for
+    // a loaded runner. A regression that never completes (e.g. the guard
+    // stopping to trap signals, leaving `dora run` held open) must FAIL here
+    // with the stderr tail instead of hanging the CI job until its timeout.
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        match run.cli.try_wait().expect("try_wait failed") {
+            Some(status) => break status,
+            None => {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "`dora run` did not exit within 60s of its normal stop path; \
+                     a TERM-ignoring shell node stuck the stop ladder (#3472)\n\
+                     stderr tail:\n{}",
+                    run.stderr_tail()
+                );
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        }
+    };
+    run.cli_reaped = true;
+
+    // The fixture's `TERM` trap appends one line per SIGTERM the shell got.
+    // The daemon group-kill delivers SIGTERM to the shell directly, so the
+    // guard must not re-forward it: that would run the trap twice, turning a
+    // graceful stop into a "force" for anything that counts deliveries
+    // (dora-rs/dora#3472 review).
+    assert_eq!(
+        run.count_terms(),
+        1,
+        "the stop ladder must deliver SIGTERM to the shell exactly once; a \
+         re-forward by the shell guard makes it twice (#3472)\nstderr tail:\n{}",
+        run.stderr_tail()
+    );
+
+    // The fixture shell ignores SIGTERM, and so does its background child, so
+    // only the group SIGKILL can have ended them; both pids must be gone
+    // shortly after the CLI exits.
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    for (pid, what) in [
+        (shell_pid, "the shell"),
+        (child_pid, "its background child"),
+    ] {
+        while process_alive(&pid.to_string()) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{what} {pid} outlived a stopped `dora run` ({status}) by 30s: a \
+                 TERM-ignoring shell node is not contained by the normal stop \
+                 path (#3472)\n\
+                 stderr tail:\n{}",
+                run.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+}
+
+/// dora-rs/dora#3472 (review, 2026-09-24): the exit-time `killpg` that contains
+/// a node's abandoned forks must NOT cut short the stop grace period.
+///
+/// Fixture: a shell node whose own `wait` is interrupted by the stop's SIGTERM,
+/// so the group leader dies immediately, while a background child runs a
+/// cleanup that outlives it. With the containment firing on the leader's exit,
+/// the child is SIGKILLed mid-cleanup; with the grace period intact it finishes
+/// and writes the marker.
+#[test]
+#[cfg(unix)]
+fn run_stop_grace_lets_a_stopped_nodes_child_finish_its_cleanup() {
+    use std::os::unix::process::CommandExt as _;
+
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    ensure_cli_built();
+    let dora = dora_bin();
+    let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+    let stamp = std::process::id();
+    let marker = target.join(format!("dora-3472-cleanup-{stamp}.txt"));
+    let yaml = target.join(format!("dora-3472-cleanup-{stamp}.yml"));
+    let log = target.join(format!("dora-3472-cleanup-{stamp}.log"));
+    for path in [&marker, &yaml, &log] {
+        let _ = fs::remove_file(path);
+    }
+
+    // The outer shell has no TERM trap, so the stop's group SIGTERM kills it
+    // right away (leader dies during the stop). The child traps TERM, cleans
+    // up for 2s — well inside the 5s between the ladder's SIGTERM and its
+    // SIGKILL escalation — and records that it got to finish.
+    let body = format!(
+        "(trap 'sleep 2; echo cleaned > {}' TERM; sleep 30) & wait",
+        marker.display()
+    );
+    fs::write(
+        &yaml,
+        format!("nodes:\n  - id: cleanup\n    path: shell\n    args: \"{body}\"\n"),
+    )
+    .expect("failed to write cleanup dataflow YAML");
+
+    let log_file = fs::File::create(&log).expect("failed to create log file");
+    let output = Command::new(&dora)
+        .args([
+            "run",
+            yaml.to_str().unwrap(),
+            "--allow-shell-nodes",
+            "--stop-after",
+            "1s",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(log_file))
+        .process_group(0)
+        .output()
+        .expect("failed to run dora run");
+
+    let stderr_tail = fs::read_to_string(&log).unwrap_or_default();
+    let cleaned = marker.exists();
+    let _ = fs::remove_file(&yaml);
+    let _ = fs::remove_file(&log);
+    let _ = fs::remove_file(&marker);
+
+    // A node that stops within its grace period is not a node that had to be
+    // killed: the wait task drops its operation channel when the node is
+    // reaped, so the ladder's later escalation cannot report this stop as a
+    // timeout (#3472 review).
+    assert!(
+        !stderr_tail.contains("not stopping within"),
+        "a node that stopped inside its grace period must not be reported as \
+         killed for not stopping in time\nstderr tail:\n{stderr_tail}"
+    );
+    assert!(
+        cleaned,
+        "a node's child must finish its cleanup after the stop's SIGTERM: the \
+         exit-time group kill fired while the child was still cleaning up, \
+         cutting the stop grace period short (#3472 review)\n\
+         `dora run` status: {}\nstderr tail:\n{}",
+        output.status,
+        stderr_tail
+            .lines()
+            .rev()
+            .take(20)
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// dora-rs/dora#3472 (review): a background fork abandoned by a shell that
+/// exits immediately (`sh -c 'cmd &'`, no `wait`) must not orphan.
+///
+/// The shell-guard's own containment runs only while the guard is alive: the
+/// shell exits at once, the reaper thread exits the guard, and no `killpg`
+/// ever fires from the guard's side — the remaining fork is reachable only
+/// from the daemon. The node's process-wait task (`prepared.rs`) `killpg`s
+/// the node's process group the moment the node process exits; on a branch
+/// without that daemon-side kill, the fork survives reparented to init until
+/// teardown.
+///
+/// The fork keeps the node's log drain (and hence the dataflow, and with it
+/// `dora run` itself) open while it lives, so the CLI's exit is downstream of
+/// containment — watching the FORK is the honest assertion, not watching the
+/// CLI. The fork must be gone shortly after the pid file lands: the pid file
+/// is written by the shell before it exits, and the daemon's kill fires once
+/// the (already-exited) node process is reaped, so the ordering is
+/// deterministic.
+#[test]
+#[cfg(unix)]
+fn shell_node_abandoned_background_fork_is_contained_on_normal_exit() {
+    let _guard = LIFECYCLE_LOCK.lock().unwrap_or_else(|p| p.into_inner());
+
+    let mut run = ShellOrphanRun::start_abandoned_fork();
+    let child_pid = run.wait_for_abandoned_child();
+
+    // The node process is the only thing keeping the fork in check, and it
+    // exits with the shell. The daemon must have contained the fork already
+    // by now; 30s is slack for a loaded runner while still bounding it (an
+    // orphan is forever, not slow).
+    let deadline = std::time::Instant::now() + Duration::from_secs(30);
+    while process_alive(&child_pid.to_string()) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "abandoned background fork {child_pid} outlived the node that spawned \
+             it by 30s: a `sh -c 'cmd &'` fork is not contained on the node's \
+             normal exit (#3472)\nstderr tail:\n{}",
+            run.stderr_tail()
+        );
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
+/// A `dora run` of a shell fixture that forks a long-lived background child,
+/// plus the RAII teardown it needs. Teardown kills the CLI (while unreaped),
+/// then — identity-checked so a recycled pid is never signalled — kills a
+/// leftover shell process group and child instead of letting either litter
+/// the runner.
+#[cfg(unix)]
+struct ShellOrphanRun {
+    cli: std::process::Child,
+    cli_reaped: bool,
+    shell_pid: Option<u32>,
+    child_pid: Option<u32>,
+    log: std::path::PathBuf,
+    shell_pid_file: std::path::PathBuf,
+    child_pid_file: std::path::PathBuf,
+    terms_file: std::path::PathBuf,
+    files: Vec<std::path::PathBuf>,
+}
+
+/// Shared cmdline marker of the fixture's shell and its background child
+/// (`sleep 9527`): unique to this test, so a recycled pid is never matched.
+#[cfg(unix)]
+const SHELL_FIXTURE_MARKER: &str = "9527";
+
+/// Same identity question as the assertion-side checks, but safe to ask from a
+/// `Drop`: never panics (see `still_our_fixture`).
+#[cfg(unix)]
+fn still_our_shell(pid: u32) -> bool {
+    ps_args(pid).is_some_and(|args| args.contains(SHELL_FIXTURE_MARKER))
+}
+
+#[cfg(unix)]
+impl ShellOrphanRun {
+    fn start() -> Self {
+        Self::start_with(None, false, false)
+    }
+
+    /// A variant whose shell ignores SIGTERM/SIGINT/SIGHUP and which stops the
+    /// `dora run` on its own via `--stop-after` (the normal stop path).
+    fn start_term_ignoring(stop_after: Duration) -> Self {
+        Self::start_with(Some(stop_after), true, false)
+    }
+
+    /// A variant whose shell backgrounds a child and RETURNS IMMEDIATELY
+    /// (`sh -c 'cmd &'`, no trailing `wait`). The shell exits, the node
+    /// finishes, and the only thing left containing the fork is the daemon's
+    /// exit-time `killpg` of the node's process group (`prepared.rs`).
+    fn start_abandoned_fork() -> Self {
+        Self::start_with(None, false, true)
+    }
+
+    fn start_with(
+        stop_after: Option<Duration>,
+        ignore_term_signals: bool,
+        abandon_fork: bool,
+    ) -> Self {
+        use std::os::unix::process::CommandExt as _;
+
+        ensure_cli_built();
+        let dora = dora_bin();
+        let target = Path::new(env!("CARGO_MANIFEST_DIR")).join("target");
+
+        // Sweep artifacts from earlier runs: a stale pid file would be read as
+        // this run's process, and the test would assert against something that
+        // exited long ago.
+        if let Ok(entries) = fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                if entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("dora-3472-shell")
+                {
+                    let _ = fs::remove_file(entry.path());
+                }
+            }
+        }
+        let scratch =
+            |ext: &str| target.join(format!("dora-3472-shell-{}.{ext}", std::process::id()));
+        let (yaml, shell_pid_file, child_pid_file, terms_file, log) = (
+            scratch("yml"),
+            scratch("shell.pid"),
+            scratch("child.pid"),
+            scratch("terms.txt"),
+            scratch("log"),
+        );
+
+        // The keep-alive fixture forks a background `sleep` and then `wait`s so
+        // it stays up, and the shell pid is published for teardown. The
+        // abandoned-fork fixture skips both: shell pid and `wait` are absent,
+        // so the shell exits the moment the fork is handed off. In the stop
+        // variant the shell additionally ignores the stop signals, so only the
+        // daemon's SIGKILL escalation can end it; a `TERM` trap there counts
+        // SIGTERM deliveries, so the test can pin the stop ladder to a single
+        // one. Paths are single-quoted so spaces in `$CARGO_TARGET_DIR` cannot
+        // break out of the redirect (mirroring `write_shell_dataflow`).
+        let ignore = if ignore_term_signals && !abandon_fork {
+            format!(
+                "trap '' INT HUP; trap 'echo t >> '{}'' TERM; ",
+                terms_file.display(),
+            )
+        } else {
+            String::new()
+        };
+        // In the stop variant the background child also ignores SIGTERM — the
+        // fixture shell already does — so the daemon's group-SIGKILL escalation
+        // is the only thing that can end either, and the test genuinely
+        // exercises the escalation instead of passing on the group SIGTERM
+        // alone (#3472 review P2). `trap '' TERM` runs in a subshell so only
+        // this process stops ignoring it, and SIG_IGN survives the `exec`,
+        // reaching the sleep itself. The other variants keep a plain child.
+        let child = if ignore_term_signals {
+            format!("(trap '' TERM; exec sleep {SHELL_FIXTURE_MARKER})")
+        } else {
+            format!("sleep {SHELL_FIXTURE_MARKER}")
+        };
+        let shell_args = if abandon_fork {
+            format!("{ignore}{child} & echo $! > '{}'", child_pid_file.display(),)
+        } else {
+            format!(
+                "{ignore}echo $$ > '{}'; {child} & echo $! > '{}'; wait",
+                shell_pid_file.display(),
+                child_pid_file.display(),
+            )
+        };
+        fs::write(
+            &yaml,
+            format!("nodes:\n  - id: shell-orphan\n    path: shell\n    args: \"{shell_args}\"\n"),
+        )
+        .expect("failed to write shell orphan dataflow YAML");
+
+        let log_file = fs::File::create(&log).expect("failed to create log file");
+        let mut command = Command::new(&dora);
+        command
+            .args(["run", yaml.to_str().unwrap(), "--allow-shell-nodes"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(log_file))
+            // Its own process group, so that nothing the daemon or a node does
+            // on the way down can be delivered to the test harness's group.
+            .process_group(0);
+        if let Some(stop_after) = stop_after {
+            command.args(["--stop-after", &format!("{}s", stop_after.as_secs())]);
+        }
+        let cli = command.spawn().expect("failed to spawn dora run");
+
+        Self {
+            cli,
+            cli_reaped: false,
+            shell_pid: None,
+            child_pid: None,
+            log: log.clone(),
+            shell_pid_file: shell_pid_file.clone(),
+            child_pid_file: child_pid_file.clone(),
+            terms_file: terms_file.clone(),
+            files: vec![yaml, shell_pid_file, child_pid_file, terms_file, log],
+        }
+    }
+
+    fn stderr_tail(&self) -> String {
+        fs::read_to_string(&self.log)
+            .map(|s| s.lines().rev().take(20).collect::<Vec<_>>().join("\n"))
+            .unwrap_or_else(|e| format!("<could not read {}: {e}>", self.log.display()))
+    }
+
+    /// How many times the fixture's shell recorded receiving SIGTERM, if the
+    /// trap ever ran. `0` if the stop ladder never delivered SIGTERM at all.
+    fn count_terms(&self) -> usize {
+        fs::read_to_string(&self.terms_file)
+            .map(|s| s.lines().count())
+            .unwrap_or(0)
+    }
+
+    /// Block until both the shell and its background child have published
+    /// their pids, and record them for teardown.
+    fn wait_for_shell_and_child(&mut self) -> (u32, u32) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let (shell_pid, child_pid) = loop {
+            // If the CLI already died, say so with its status and stderr
+            // rather than blaming the pid files 60s from now.
+            if let Some(status) = self.cli.try_wait().expect("try_wait failed") {
+                self.cli_reaped = true;
+                panic!(
+                    "`dora run` exited early with {status} before the shell forked \
+                     its child.\nstderr tail:\n{}",
+                    self.stderr_tail()
+                );
+            }
+            if let (Some(shell), Some(child)) = (
+                fs::read_to_string(&self.shell_pid_file).ok(),
+                fs::read_to_string(&self.child_pid_file).ok(),
+            ) && let (Ok(shell), Ok(child)) =
+                (shell.trim().parse::<u32>(), child.trim().parse::<u32>())
+            {
+                break (shell, child);
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell never reported both pids to {} / {}\nstderr tail:\n{}",
+                self.shell_pid_file.display(),
+                self.child_pid_file.display(),
+                self.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(200));
+        };
+        self.shell_pid = Some(shell_pid);
+        self.child_pid = Some(child_pid);
+        for (pid, what) in [
+            (shell_pid, "the shell"),
+            (child_pid, "its background child"),
+        ] {
+            // `expect`, not a silent false: this is a precondition assert, and
+            // a bug where `ps` fails to run must fail loudly here rather than
+            // sinking the teardown into panic-inside-panic territory.
+            let args = ps_args(pid).expect("failed to run `ps -o args=`");
+            assert!(
+                process_alive(&pid.to_string()) && args.contains(SHELL_FIXTURE_MARKER),
+                "precondition: {what} {pid} should be running our fixture before we signal"
+            );
+        }
+        (shell_pid, child_pid)
+    }
+
+    /// Block until the abandoned fork published its pid to disk. There is no
+    /// shell to wait for: the shell exits as soon as the fork is handed off.
+    /// The caller must not read from `self.cli` inside the loop — the node
+    /// finishing is what closes the fork's containment window.
+    fn wait_for_abandoned_child(&mut self) -> u32 {
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        let child_pid = loop {
+            if let Some(raw) = fs::read_to_string(&self.child_pid_file).ok()
+                && let Ok(child) = raw.trim().parse::<u32>()
+            {
+                break child;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "fixture never published the abandoned fork pid to {}\nstderr tail:\n{}",
+                self.child_pid_file.display(),
+                self.stderr_tail()
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        };
+        self.child_pid = Some(child_pid);
+        child_pid
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ShellOrphanRun {
+    fn drop(&mut self) {
+        // Signal the CLI only while it is UNREAPED (see the `StubbornRun`
+        // teardown for the pid-recycling rationale).
+        if !self.cli_reaped {
+            let _ = Command::new("kill")
+                .args(["-KILL", &self.cli.id().to_string()])
+                .status();
+        }
+        // The shell and its child are the daemon's descendants, never ours, so
+        // we can never reap them and cannot lean on the unreaped rule above.
+        // Confirm identity instead (see `still_our_fixture`). Killing the
+        // shell's process GROUP reaches it whether the group is led by the
+        // shell itself (an unfixed daemon spawn) or -- after this fix -- by
+        // the shell guard, whose pgid the shell inherits.
+        if let Some(pid) = self.shell_pid
+            && still_our_shell(pid)
+        {
+            let _ = Command::new("kill")
+                .args(["-KILL", &format!("-{pid}")])
+                .status();
+        }
+        // Straggler sweep for the background child: the fixture is `sh -c
+        // '… & …; wait'`, so once the sleep dies the shell reaps it, ends its
+        // `wait`, and exits — no extra shell kill needed.
+        if let Some(pid) = self.child_pid
+            && still_our_shell(pid)
+        {
+            let _ = Command::new("kill")
+                .args(["-KILL", &pid.to_string()])
+                .status();
+        }
+        for f in &self.files {
+            let _ = fs::remove_file(f);
+        }
+    }
+}
+
 /// A `dora run` of the stubborn fixture, plus the RAII teardown both orphan
 /// tests need.
 ///
