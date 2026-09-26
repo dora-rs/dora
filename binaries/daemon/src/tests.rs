@@ -294,6 +294,7 @@ async fn daemon_reporting_to(
         ZenohBind::Derived(LOCALHOST),
         false,
         false,
+        None,
     )
     .await
     .expect("daemon should build");
