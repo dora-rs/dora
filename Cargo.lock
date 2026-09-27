@@ -2155,7 +2155,6 @@ dependencies = [
  "futures",
  "futures-concurrency",
  "indexmap 2.14.2",
- "itertools 0.15.0",
  "log",
  "opentelemetry",
  "petname",
@@ -2166,7 +2165,6 @@ dependencies = [
  "tokio-stream",
  "tokio-tungstenite",
  "tower",
- "tower-http 0.7.1",
  "tracing",
  "uuid",
  "zenoh",
@@ -2190,7 +2188,6 @@ dependencies = [
 name = "dora-core"
 version = "1.0.1"
 dependencies = [
- "arrow-buffer 59.3.0",
  "arrow-schema 59.3.0",
  "dora-message",
  "dunce",
@@ -2204,7 +2201,6 @@ dependencies = [
  "schemars 1.2.2",
  "semver",
  "serde",
- "serde-with-expand-env",
  "serde_json",
  "serde_yaml",
  "splitty",
@@ -2236,13 +2232,10 @@ dependencies = [
  "dora-node-api",
  "dora-tensor-pool",
  "dora-tracing",
- "dunce",
  "eyre",
  "flume 0.12.0",
  "futures",
  "futures-concurrency",
- "git2",
- "itertools 0.15.0",
  "libc",
  "memchr",
  "process-wrap",
@@ -2259,7 +2252,6 @@ dependencies = [
  "tokio-util",
  "tracing",
  "tracing-opentelemetry",
- "url",
  "uuid",
  "which",
  "windows 0.62.2",
@@ -2289,7 +2281,6 @@ dependencies = [
  "dora-coordinator",
  "dora-core",
  "dora-daemon",
- "dora-download",
  "dora-message",
  "dora-operator-api-types",
  "dora-tracing",
@@ -2300,7 +2291,6 @@ dependencies = [
  "libloading 0.9.0",
  "redb",
  "serde_json",
- "serde_yaml",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -2341,13 +2331,9 @@ name = "dora-mavlink2-bridge"
 version = "1.0.1"
 dependencies = [
  "arrow 59.3.0",
- "eyre",
  "mavlink",
  "num-traits",
- "serde",
  "thiserror 2.0.20",
- "tokio",
- "tracing",
  "url",
 ]
 
@@ -2649,7 +2635,6 @@ version = "1.0.1"
 dependencies = [
  "anyhow",
  "glob",
- "heck",
  "nom 8.0.0",
  "prettyplease 0.2.37",
  "proc-macro2",
@@ -6679,7 +6664,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tower",
- "tower-http 0.6.11",
+ "tower-http",
  "tower-service",
  "url",
  "wasm-bindgen",
@@ -8492,21 +8477,6 @@ dependencies = [
  "tower-layer",
  "tower-service",
  "url",
-]
-
-[[package]]
-name = "tower-http"
-version = "0.7.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "08a05a66a4fdd61cbbe0a1d755ffe0ca6aba159dd4820936a0ff8a8278245b9c"
-dependencies = [
- "bitflags 2.13.2",
- "bytes",
- "http",
- "percent-encoding",
- "pin-project-lite",
- "tower-layer",
- "tower-service",
 ]
 
 [[package]]

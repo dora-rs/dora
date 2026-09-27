@@ -11,12 +11,6 @@ description = "MAVLink 2 bridge for dora-rs"
 [dependencies]
 mavlink = { workspace = true }
 arrow = { workspace = true }
-serde = { workspace = true }
 thiserror = { workspace = true }
-tracing = { workspace = true }
-eyre = { workspace = true }
 num-traits = "0.2"
 url = { workspace = true }
-
-[dev-dependencies]
-tokio = { workspace = true, features = ["full"] }
