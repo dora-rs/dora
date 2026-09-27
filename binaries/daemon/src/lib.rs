@@ -1724,7 +1724,7 @@ impl Daemon {
                             timestamp: self.clock.new_timestamp(),
                         })?;
                         sender
-                            .send_event(&msg)
+                            .send_heartbeat(&msg)
                             .await
                             .wrap_err("failed to send watchdog message to dora-coordinator")?;
 

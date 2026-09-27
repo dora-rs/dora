@@ -37,6 +37,9 @@ const CONTROL_CHANNEL_CAPACITY: usize = 64;
 /// Capacity of the outbound topic debug channel. Frames beyond it are dropped
 /// (see [`CoordinatorSender::try_send_topic_debug_frame`]).
 const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
+/// Capacity of the outbound heartbeat channel; see
+/// [`CoordinatorSender::send_heartbeat`].
+const LIVENESS_CHANNEL_CAPACITY: usize = 4;
 /// Largest message the coordinator accepts on the daemon socket
 /// (`MAX_CONTROL_MESSAGE_BYTES` in its `ws_server`). A larger one makes it
 /// close the connection, so a topic debug frame past it is dropped here
@@ -58,6 +61,9 @@ pub struct CoordinatorSender {
     /// Topic debug frames, kept off `sender` so they can never delay a control
     /// message: the writer only drains this when the control side is empty.
     topic_debug: mpsc::Sender<String>,
+    /// Heartbeats, which the writer keeps sending while a finish report
+    /// holds back the other events; see [`Self::send_heartbeat`].
+    liveness: mpsc::Sender<OutgoingEvent>,
 }
 
 #[derive(Debug)]
@@ -116,9 +122,31 @@ impl CoordinatorSender {
     /// behind it would reach the coordinator after the close and be dropped,
     /// cutting the end off a `dora topic echo` or a `dora record --proxy`
     /// recording (dora-rs/dora#3536 review). The wait is bounded by the debug
-    /// queue's capacity; every other control message keeps its priority.
+    /// queue's capacity.
+    ///
+    /// The events sent after it wait with it, so they keep their order —
+    /// an `Exit` must not reach the coordinator ahead of the finish report.
+    /// Heartbeats ([`Self::send_heartbeat`]) and replies to coordinator
+    /// commands do not wait: the frames go out one at a time with those in
+    /// between, so the coordinator's heartbeat watchdog keeps being fed.
     pub async fn send_event_after_topic_debug(&self, message: &[u8]) -> eyre::Result<()> {
         self.send_outgoing(message, true).await
+    }
+
+    /// Send a heartbeat event on its own channel, which the writer serves
+    /// alongside command replies even while a finish report holds back the
+    /// other events ([`Self::send_event_after_topic_debug`]). A heartbeat
+    /// needs no ordering with other events, and the coordinator drops a daemon
+    /// whose heartbeats stop for 30 s.
+    pub async fn send_heartbeat(&self, message: &[u8]) -> eyre::Result<()> {
+        let text = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
+        self.liveness
+            .send(OutgoingEvent {
+                text,
+                after_topic_debug: false,
+            })
+            .await
+            .map_err(|_| eyre!("WS send channel closed"))
     }
 
     async fn send_outgoing(&self, message: &[u8], after_topic_debug: bool) -> eyre::Result<()> {
@@ -219,6 +247,8 @@ impl CoordinatorSender {
         let (topic_debug, _) = mpsc::channel(1);
         (
             Self {
+                // Heartbeats land among the other events, in the order sent.
+                liveness: sender.clone(),
                 sender,
                 topic_debug,
             },
@@ -350,6 +380,7 @@ pub async fn register(
     // Topic debug frames get their own channel so they queue behind nothing
     // but each other; see `run_coordinator_ws_writer`.
     let (topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+    let (liveness_tx, liveness_rx) = mpsc::channel::<OutgoingEvent>(LIVENESS_CHANNEL_CAPACITY);
 
     // Send Register request.
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
@@ -432,6 +463,7 @@ pub async fn register(
     tokio::spawn(run_coordinator_ws_writer(
         ws_tx,
         send_rx,
+        liveness_rx,
         internal_rx,
         topic_debug_rx,
     ));
@@ -451,6 +483,7 @@ pub async fn register(
         CoordinatorSender {
             sender: send_tx,
             topic_debug: topic_debug_tx,
+            liveness: liveness_tx,
         },
         ReceiverStream::new(rx),
     ))
@@ -504,12 +537,18 @@ enum OutboundFrame {
 /// unbiased interleaving with each other.
 ///
 /// The exception is an event marked `after_topic_debug`, which ends a
-/// dataflow's topic streams: the debug frames queued when it is taken are
-/// written first, so none of them arrives after the coordinator has closed
-/// their subscribers. It still goes out in its place among control messages.
+/// dataflow's topic streams: it is held until the debug frames queued when it
+/// was taken have been written, so none of them arrives after the coordinator
+/// has closed their subscribers. Those frames still go out through this loop,
+/// one per turn, so heartbeats (`liveness_rx`) and command replies
+/// (`internal_rx`) keep going out between them — writing them back to back
+/// would starve the coordinator's heartbeat watchdog on a slow link
+/// (dora-rs/dora#3636 review). The other events (`send_rx`) are not read
+/// while the report is held, so they keep their order behind it.
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<OutgoingEvent>,
+    mut liveness_rx: mpsc::Receiver<OutgoingEvent>,
     mut internal_rx: mpsc::Receiver<OutboundFrame>,
     mut topic_debug_rx: mpsc::Receiver<String>,
 ) where
@@ -517,10 +556,17 @@ async fn run_coordinator_ws_writer<Tx>(
 {
     enum Control {
         Internal(Option<OutboundFrame>),
+        Liveness(Option<OutgoingEvent>),
         Outgoing(Option<OutgoingEvent>),
     }
 
+    // A finish report waiting for the debug frames queued ahead of it, and how
+    // many of those are still to be written. While it waits, `send_rx` is not
+    // read, so the events behind it keep their order.
+    let mut held_report: Option<(String, usize)> = None;
+
     loop {
+        let events_open = held_report.is_none();
         tokio::select! {
             biased;
             // Every `recv` here is cancel-safe, so losing the race to the
@@ -528,7 +574,8 @@ async fn run_coordinator_ws_writer<Tx>(
             control = async {
                 tokio::select! {
                     frame = internal_rx.recv() => Control::Internal(frame),
-                    outgoing = send_rx.recv() => Control::Outgoing(outgoing),
+                    heartbeat = liveness_rx.recv() => Control::Liveness(heartbeat),
+                    outgoing = send_rx.recv(), if events_open => Control::Outgoing(outgoing),
                 }
             } => match control {
                 Control::Internal(Some(OutboundFrame::Ws(msg))) => {
@@ -543,33 +590,32 @@ async fn run_coordinator_ws_writer<Tx>(
                 // Reader stopped; all frames it queued (FIFO) are already
                 // flushed, so close the write half by dropping `ws_tx`.
                 Control::Internal(None) => break,
-                Control::Outgoing(Some(event)) => {
-                    if event.after_topic_debug {
-                        // Only what is queued now: frames that keep arriving
-                        // must not hold the event back indefinitely.
-                        let mut failed = false;
-                        for _ in 0..topic_debug_rx.len() {
-                            let Ok(text) = topic_debug_rx.try_recv() else { break };
-                            if ws_tx.send(Message::Text(text.into())).await.is_err() {
-                                failed = true;
-                                break;
-                            }
-                        }
-                        if failed {
-                            break;
-                        }
-                    }
-                    if ws_tx.send(Message::Text(event.text.into())).await.is_err() {
+                Control::Liveness(Some(event)) | Control::Outgoing(Some(event)) => {
+                    // Only the frames queued now: frames that keep arriving
+                    // must not hold the report back indefinitely.
+                    let queued = topic_debug_rx.len();
+                    if event.after_topic_debug && queued > 0 {
+                        held_report = Some((event.text, queued));
+                    } else if ws_tx.send(Message::Text(event.text.into())).await.is_err() {
                         break;
                     }
                 }
                 // CoordinatorSender dropped: nothing more to send.
-                Control::Outgoing(None) => break,
+                Control::Liveness(None) | Control::Outgoing(None) => break,
             },
             debug = topic_debug_rx.recv() => match debug {
                 Some(text) => {
                     if ws_tx.send(Message::Text(text.into())).await.is_err() {
                         break;
+                    }
+                    if let Some((_, frames_left)) = &mut held_report {
+                        *frames_left -= 1;
+                        if *frames_left == 0
+                            && let Some((report, _)) = held_report.take()
+                            && ws_tx.send(Message::Text(report.into())).await.is_err()
+                        {
+                            break;
+                        }
                     }
                 }
                 // Dropped together with `send_rx`'s sender (both live in
@@ -994,9 +1040,12 @@ mod tests {
         // writer, just as dropping the `CoordinatorSender` does in production.
         let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(1);
 
+        // Held open for the test's duration, like the debug channel.
+        let (_liveness_tx, liveness_rx) = mpsc::channel::<OutgoingEvent>(1);
         let writer = tokio::spawn(run_coordinator_ws_writer(
             ws_out_tx,
             send_rx,
+            liveness_rx,
             internal_rx,
             topic_debug_rx,
         ));
@@ -1082,9 +1131,12 @@ mod tests {
             send_tx.try_send(control(&format!("control-{i}"))).unwrap();
         }
 
+        // Held open for the test's duration, like the debug channel.
+        let (_liveness_tx, liveness_rx) = mpsc::channel::<OutgoingEvent>(1);
         let writer = tokio::spawn(run_coordinator_ws_writer(
             ws_out_tx,
             send_rx,
+            liveness_rx,
             internal_rx,
             topic_debug_rx,
         ));
@@ -1135,9 +1187,12 @@ mod tests {
             .unwrap();
         send_tx.try_send(control("after-finish")).unwrap();
 
+        // Held open for the test's duration, like the debug channel.
+        let (_liveness_tx, liveness_rx) = mpsc::channel::<OutgoingEvent>(1);
         let writer = tokio::spawn(run_coordinator_ws_writer(
             ws_out_tx,
             send_rx,
+            liveness_rx,
             internal_rx,
             topic_debug_rx,
         ));
@@ -1168,6 +1223,103 @@ mod tests {
             .unwrap();
     }
 
+    /// While a finish report waits for the debug frames queued ahead of it,
+    /// heartbeats and command replies keep going out between those frames:
+    /// written back to back, a backlog of large frames on a slow link would
+    /// hold the heartbeat past the coordinator's 30 s watchdog
+    /// (dora-rs/dora#3636 review). Events sent after the report stay behind
+    /// it, so e.g. an `Exit` cannot overtake it.
+    ///
+    /// The sink holds one message, so the writer is stuck writing the second
+    /// frame when the heartbeat and the reply are queued.
+    #[tokio::test]
+    async fn ws_writer_keeps_heartbeats_and_replies_going_while_a_finish_report_waits() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::channel::<Message>(0);
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
+        let (liveness_tx, liveness_rx) = mpsc::channel::<OutgoingEvent>(1);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        let frame_count = 4;
+        for i in 0..frame_count {
+            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+        }
+        send_tx
+            .try_send(OutgoingEvent {
+                text: "all-nodes-finished".to_owned(),
+                after_topic_debug: true,
+            })
+            .unwrap();
+        send_tx.try_send(control("exit")).unwrap();
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            liveness_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        async fn next(rx: &mut futures::channel::mpsc::Receiver<Message>) -> String {
+            match tokio::time::timeout(Duration::from_secs(5), rx.next())
+                .await
+                .expect("writer must make progress")
+                .expect("writer must write a message")
+            {
+                Message::Text(text) => text.to_string(),
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+        assert_eq!(next(&mut ws_out_rx).await, "debug-0");
+        liveness_tx.try_send(control("heartbeat")).unwrap();
+        internal_tx
+            .try_send(OutboundFrame::Ws(Message::Text("pong".into())))
+            .unwrap();
+
+        let mut rest = Vec::new();
+        for _ in 0..(frame_count - 1) + 4 {
+            rest.push(next(&mut ws_out_rx).await);
+        }
+        let at = |text: &str| {
+            rest.iter()
+                .position(|written| written == text)
+                .unwrap_or_else(|| panic!("`{text}` must be written; got {rest:?}"))
+        };
+        // `debug-1` was already being written; the heartbeat and the reply
+        // go out right after it, not after the whole backlog.
+        assert!(at("heartbeat") < at("debug-2"), "{rest:?}");
+        assert!(at("pong") < at("debug-2"), "{rest:?}");
+        // The report still comes after every frame queued before it, and the
+        // event sent after the report stays after it.
+        assert!(at("debug-3") < at("all-nodes-finished"), "{rest:?}");
+        assert_eq!(at("all-nodes-finished") + 1, at("exit"), "{rest:?}");
+
+        drop((send_tx, liveness_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_heartbeat_takes_the_liveness_channel() {
+        let (sender, _) = mpsc::channel(1);
+        let (topic_debug, _) = mpsc::channel(1);
+        let (liveness, mut liveness_rx) = mpsc::channel(1);
+        let sender = CoordinatorSender {
+            sender,
+            topic_debug,
+            liveness,
+        };
+        sender.send_heartbeat(b"{}").await.unwrap();
+        let heartbeat = liveness_rx
+            .try_recv()
+            .expect("a heartbeat on its own channel");
+        assert!(!heartbeat.after_topic_debug);
+        assert!(heartbeat.text.contains(r#""method":"daemon_event""#));
+    }
+
     #[tokio::test]
     async fn send_event_after_topic_debug_marks_the_event() {
         let (sender, mut rx) = CoordinatorSender::for_test();
@@ -1182,6 +1334,7 @@ mod tests {
         let (topic_debug, topic_debug_rx) = mpsc::channel(4);
         (
             CoordinatorSender {
+                liveness: sender.clone(),
                 sender,
                 topic_debug,
             },
