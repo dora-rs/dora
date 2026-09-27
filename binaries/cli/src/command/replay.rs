@@ -1,7 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::File,
-    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -233,12 +232,8 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write to temp file and run
-    let mut tmp =
-        tempfile::NamedTempFile::with_suffix(".yml").wrap_err("failed to create temp file")?;
-    tmp.write_all(modified_yaml.as_bytes())?;
-    tmp.flush()?;
-    let tmp_path = tmp.into_temp_path();
+    // Write to a private temp dir and run
+    let (_tmp_dir, tmp_path) = crate::common::write_temp_dataflow(&modified_yaml)?;
 
     eprintln!(
         "Replaying {} nodes from {}",
@@ -255,7 +250,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
     );
     eprintln!("Speed: {}x\n", args.speed);
 
-    // The modified YAML lives in /tmp, but the original descriptor's
+    // The modified YAML lives in a temp dir, but the original descriptor's
     // `build: cargo build -p <node>` directives need to run in a dir where
     // Cargo.toml is reachable and the descriptor's relative `path:` entries
     // resolve. Mirror `dora record`'s fix (#1674) with the .drec file's
