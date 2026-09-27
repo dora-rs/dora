@@ -17,7 +17,9 @@ use dora_message::{
     common::{DaemonId, GitSource},
     coordinator_to_cli::{DataflowResult, LogMessage},
     coordinator_to_daemon::{BuildDataflowNodes, DaemonCoordinatorEvent, Timestamped},
-    daemon_to_coordinator::{DaemonCoordinatorReply, DataflowDaemonResult},
+    daemon_to_coordinator::{
+        DaemonCoordinatorReply, DataflowDaemonResult, MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
+    },
     descriptor::{Descriptor, ResolvedNode},
 };
 use eyre::{ContextCompat, WrapErr, bail, eyre};
@@ -28,8 +30,6 @@ use std::{
     time::Duration,
 };
 use uuid::Uuid;
-
-const MAX_TOPIC_DEBUG_PAYLOAD_BYTES: usize = 64 * 1024 * 1024;
 
 // Resolve the dataflow name.
 pub(crate) fn resolve_name(
@@ -124,6 +124,12 @@ pub(crate) async fn send_topic_frames(
     subscription_ids: Vec<Uuid>,
     payload: Vec<u8>,
 ) -> Vec<(Uuid, TopicSubscriber)> {
+    // Each subscriber is sent `subscription id | payload` as a single frame,
+    // and the CLI reads with a default-configured socket — so a payload past
+    // this limit would not be skipped by the subscriber but would fail its
+    // socket, ending the subscription (dora-rs/dora#3535 review). The daemon
+    // drops such an output before sending it; this is the backstop for the
+    // paths that do not come from a daemon that knows the limit.
     if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
         tracing::warn!(
             "dropping oversized topic debug payload ({} bytes) for {} subscription(s)",
@@ -934,6 +940,51 @@ mod tests {
                 .unwrap()
                 .record_timeout(),
             1
+        );
+    }
+
+    /// A payload the subscriber's socket could not read is dropped rather than
+    /// forwarded: the CLI reads with a default-configured socket, so an
+    /// oversized frame would end the subscription instead of being skipped
+    /// (dora-rs/dora#3535). The daemon already drops these, so reaching here
+    /// means an older daemon or another producer — the subscription has to
+    /// survive it either way.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn send_topic_frames_drops_a_payload_no_cli_socket_could_read() {
+        let subscription_id = Uuid::new_v4();
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut subscribers = BTreeMap::new();
+        subscribers.insert(subscription_id, TopicSubscriber::new(BTreeMap::new(), tx));
+
+        send_topic_frames(
+            &mut subscribers,
+            vec![subscription_id],
+            vec![0; MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 1],
+        )
+        .await;
+
+        assert!(
+            rx.try_recv().is_err(),
+            "the oversized payload was forwarded"
+        );
+        assert!(
+            subscribers.contains_key(&subscription_id),
+            "dropping a frame must not cost the subscription"
+        );
+
+        // The largest payload that does fit still goes out.
+        send_topic_frames(
+            &mut subscribers,
+            vec![subscription_id],
+            vec![0; MAX_TOPIC_DEBUG_PAYLOAD_BYTES],
+        )
+        .await;
+        assert_eq!(
+            rx.try_recv()
+                .expect("a payload at the limit is forwarded")
+                .payload
+                .len(),
+            MAX_TOPIC_DEBUG_PAYLOAD_BYTES
         );
     }
 

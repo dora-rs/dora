@@ -86,17 +86,62 @@ pub enum RegisterResult {
         /// wiring it already had.
         #[serde(default)]
         peer_zenoh_endpoints: Vec<String>,
+        /// Whether this coordinator accepts topic debug frames as WebSocket
+        /// binary messages (see
+        /// [`crate::daemon_to_coordinator::encode_topic_debug_frame`]).
+        ///
+        /// Sending them as JSON [`crate::daemon_to_coordinator::DaemonEvent::TopicDebugData`]
+        /// renders the payload as a decimal number array, several times its
+        /// size, which for a camera-sized output is megabytes of text per
+        /// frame. The binary form carries the payload as-is.
+        ///
+        /// `#[serde(default)]` is what makes this a negotiation rather than a
+        /// break: a coordinator built before this field existed omits it, so
+        /// the daemon reads `false` and keeps sending `TopicDebugData`, which
+        /// every coordinator understands. An old daemon ignores the field and
+        /// does the same. The daemon re-registers on every reconnect, so the
+        /// flag always describes the coordinator it is currently talking to.
+        #[serde(default)]
+        binary_debug_frames: bool,
     },
     Err(String),
 }
 
 impl RegisterResult {
     /// A successful registration: the assigned id and the peers to dial.
+    ///
+    /// Does not offer binary topic debug frames; see
+    /// [`RegisterResult::with_binary_debug_frames`].
     pub fn ok(daemon_id: DaemonId, peer_zenoh_endpoints: Vec<String>) -> Self {
         Self::Ok {
             daemon_id,
             peer_zenoh_endpoints,
+            binary_debug_frames: false,
         }
+    }
+
+    /// Set [`RegisterResult::Ok::binary_debug_frames`]. No effect on `Err`.
+    pub fn with_binary_debug_frames(mut self, enabled: bool) -> Self {
+        if let Self::Ok {
+            binary_debug_frames,
+            ..
+        } = &mut self
+        {
+            *binary_debug_frames = enabled;
+        }
+        self
+    }
+
+    /// Whether the coordinator accepts binary topic debug frames; `false` for
+    /// an `Err` reply. See [`RegisterResult::Ok::binary_debug_frames`].
+    pub fn binary_debug_frames(&self) -> bool {
+        matches!(
+            self,
+            Self::Ok {
+                binary_debug_frames: true,
+                ..
+            }
+        )
     }
 
     /// The assigned id alone, for callers that do not wire zenoh.
@@ -111,6 +156,7 @@ impl RegisterResult {
             RegisterResult::Ok {
                 daemon_id,
                 peer_zenoh_endpoints,
+                ..
             } => Ok((daemon_id, peer_zenoh_endpoints)),
             RegisterResult::Err(err) => Err(eyre::eyre!(err)),
         }
@@ -338,13 +384,45 @@ mod register_result_tests {
     #[test]
     fn peer_endpoints_round_trip() {
         let peers = vec!["tcp/10.0.2.100:5456".to_string()];
-        let encoded = serde_json::to_string(&RegisterResult::Ok {
-            daemon_id: DaemonId::new(Some("A".to_string())),
-            peer_zenoh_endpoints: peers.clone(),
-        })
+        let encoded = serde_json::to_string(&RegisterResult::ok(
+            DaemonId::new(Some("A".to_string())),
+            peers.clone(),
+        ))
         .expect("serialize");
         let decoded: RegisterResult = serde_json::from_str(&encoded).expect("deserialize");
         assert_eq!(decoded.into_parts().expect("ok").1, peers);
+    }
+
+    /// A coordinator built before `binary_debug_frames` existed omits it. The
+    /// daemon must read that as "send JSON `TopicDebugData`" — the one shape
+    /// such a coordinator understands — not fail registration.
+    #[test]
+    fn a_reply_without_binary_debug_frames_decodes_as_false() {
+        let legacy = r#"{"Ok":{"daemon_id":{"machine_id":"A","uuid":"00000000-0000-0000-0000-000000000001"},"peer_zenoh_endpoints":[]}}"#;
+        let decoded: RegisterResult =
+            serde_json::from_str(legacy).expect("legacy register reply must stay decodable");
+        assert!(!decoded.binary_debug_frames());
+    }
+
+    #[test]
+    fn binary_debug_frames_round_trips_and_defaults_off() {
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let plain = RegisterResult::ok(daemon_id.clone(), Vec::new());
+        assert!(!plain.binary_debug_frames());
+
+        let offered = RegisterResult::ok(daemon_id, Vec::new()).with_binary_debug_frames(true);
+        let encoded = serde_json::to_string(&offered).expect("serialize");
+        let decoded: RegisterResult = serde_json::from_str(&encoded).expect("deserialize");
+        assert!(decoded.binary_debug_frames());
+    }
+
+    /// An `Err` reply has nothing to negotiate: the setter leaves it alone and
+    /// the accessor reports `false`.
+    #[test]
+    fn an_error_reply_never_offers_binary_debug_frames() {
+        let reply = RegisterResult::Err("nope".into()).with_binary_debug_frames(true);
+        assert!(!reply.binary_debug_frames());
+        assert!(reply.to_result().is_err());
     }
 
     /// `to_result` is the id-only convenience over `into_parts`; an `Err` reply

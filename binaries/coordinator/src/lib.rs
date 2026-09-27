@@ -272,15 +272,17 @@ async fn start_with_events(
 
     // Setup WS event channel (used by axum WS handlers).
     //
-    // Topic debug frames take the separate channel below instead: a
-    // subscription produces them at its output's rate, and on this channel
-    // they would queue ahead of the control events behind them.
+    // The capacity is a message count, which bounds memory only because every
+    // event on it is itself size-bounded — by the daemon and control text
+    // message limits. Topic debug frames are the exception in both respects,
+    // in size and in how many of them a subscription produces, so they take
+    // the separate channel below instead.
     let (ws_event_tx, ws_event_rx) = tokio::sync::mpsc::channel::<Event>(64);
     let ws_events = ReceiverStream::new(ws_event_rx);
 
     // Topic debug frames (dora-rs/dora#3535). Served only when no control
-    // event is ready — see `control_before_topic_debug` and
-    // `ws_daemon::topic_debug_channel`.
+    // event is ready, and bounded in frames and bytes — see
+    // `control_before_topic_debug` and `ws_daemon::topic_debug_channel`.
     let (topic_debug_tx, topic_debug_rx) = ws_daemon::topic_debug_channel();
 
     // Start WS server
@@ -597,6 +599,8 @@ async fn start_inner(
                 dataflow_id,
                 subscription_ids,
                 payload,
+                // Held until the frame has been handed to its subscribers.
+                budget: _budget,
             } => {
                 coordinator
                     .handle_topic_debug_data(dataflow_id, subscription_ids, payload)
@@ -773,6 +777,7 @@ mod control_priority_tests {
             dataflow_id: uuid::Uuid::new_v4(),
             subscription_ids: Vec::new(),
             payload: Vec::new(),
+            budget: None,
         }
     }
 

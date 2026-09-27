@@ -5,6 +5,8 @@ use dora_message::{
     coordinator_to_daemon::RegisterResult,
     daemon_to_coordinator::{
         CoordinatorRequest, DaemonCoordinatorReply, DaemonEvent, DaemonRegisterRequest,
+        MAX_DAEMON_MESSAGE_BYTES, MAX_TOPIC_DEBUG_FRAME_BYTES, MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
+        encode_topic_debug_chunks, topic_debug_frame_len,
     },
     ws_protocol::WsResponse,
 };
@@ -12,7 +14,7 @@ use eyre::eyre;
 use futures::{Sink, SinkExt, StreamExt};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
 use tokio::{
-    sync::{mpsc, oneshot},
+    sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot},
     time::Instant,
 };
 use tokio_stream::{Stream, wrappers::ReceiverStream};
@@ -55,11 +57,35 @@ const MAX_EVENTS_BEHIND_A_HELD_REPORT: usize = 1024;
 /// (dora-rs/dora#3536 review). It also bounds how long `dora stop` can wait
 /// behind a debug backlog.
 pub(crate) const MAX_FINISH_REPORT_HOLD: Duration = Duration::from_secs(5);
-/// Largest message the coordinator accepts on the daemon socket
-/// (`MAX_CONTROL_MESSAGE_BYTES` in its `ws_server`). A larger one makes it
-/// close the connection, so a topic debug frame past it is dropped here
-/// instead of taking the control plane down with it.
-const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
+/// Memory the queued topic debug frames may hold in total.
+///
+/// Debug frames are variable-sized — a few bytes for a scalar output, up to
+/// [`MAX_TOPIC_DEBUG_FRAME_BYTES`] for a camera one — so a message count is
+/// not a memory bound on its own: the capacity above would admit a gigabyte of
+/// camera frames whenever the coordinator falls behind. Each frame takes one
+/// permit per byte before it is queued and releases them once it has been
+/// written, so this is the real ceiling and the capacity only caps how many
+/// tiny frames can queue.
+///
+/// Four largest-possible frames, which leaves those slots to the frames a byte
+/// bound is beside the point for. Depth is worth having here because this
+/// queue's consumer is the socket writer, which does nothing but write:
+/// absorbing a burst while one write is in flight is what the queue is for.
+/// The coordinator's ingress queue is bounded the other way round — one frame,
+/// no byte budget (`ws_daemon::TOPIC_DEBUG_CHANNEL_CAPACITY` there) — because
+/// its consumer is the main event loop, where a queued debug frame is work
+/// done ahead of control events rather than behind them.
+const TOPIC_DEBUG_QUEUE_BYTES: usize = 4 * MAX_TOPIC_DEBUG_FRAME_BYTES;
+
+/// A topic debug frame waiting to be written, holding its share of
+/// [`TOPIC_DEBUG_QUEUE_BYTES`] until it has been.
+struct QueuedDebugFrame {
+    /// The WS messages that carry the frame, in order: its binary chunks
+    /// (see [`encode_topic_debug_chunks`]), or the one JSON text message.
+    messages: VecDeque<Message>,
+    /// Released on drop, i.e. once the writer is done with `messages`.
+    _budget: OwnedSemaphorePermit,
+}
 
 /// A message on the outbound control channel.
 struct OutgoingEvent {
@@ -86,15 +112,23 @@ pub struct CoordinatorSender {
     sender: mpsc::Sender<OutgoingEvent>,
     /// Topic debug frames, kept off `sender` so they can never delay a control
     /// message: the writer only drains this when the control side is empty.
-    topic_debug: mpsc::Sender<String>,
+    topic_debug: mpsc::Sender<QueuedDebugFrame>,
+    /// One permit per byte of [`TOPIC_DEBUG_QUEUE_BYTES`], held by each queued
+    /// frame for its own size.
+    topic_debug_budget: Arc<Semaphore>,
+    /// Negotiated at registration (`RegisterResult::Ok::binary_debug_frames`):
+    /// send topic debug frames as WS binary messages rather than JSON
+    /// `TopicDebugData`.
+    binary_debug_frames: bool,
 }
 
 #[derive(Debug)]
 pub enum TrySendEventError {
     InvalidUtf8(std::str::Utf8Error),
     Encode(eyre::Report),
-    /// Larger than the coordinator accepts on the daemon socket: sending it
-    /// would cost the connection.
+    /// Larger than some hop on the way to the subscriber accepts: sending it
+    /// would cost the coordinator connection (an oversized message closes it)
+    /// or the subscription (an oversized frame fails the CLI's socket).
     TooLarge {
         bytes: usize,
         limit: usize,
@@ -110,7 +144,7 @@ impl std::fmt::Display for TrySendEventError {
             Self::Encode(err) => write!(f, "failed to encode event message: {err}"),
             Self::TooLarge { bytes, limit } => write!(
                 f,
-                "{bytes} bytes exceeds the {limit}-byte message limit of the coordinator"
+                "{bytes} bytes exceeds the {limit}-byte limit a topic debug frame has to fit"
             ),
             Self::Full => write!(f, "WS send channel full"),
             Self::Closed => write!(f, "WS send channel closed"),
@@ -198,19 +232,27 @@ impl CoordinatorSender {
             .map_err(|_| eyre!("WS send channel closed"))
     }
 
-    /// Queue a topic debug frame for the coordinator, dropping it (`Full`) if
-    /// the debug queue has no room rather than blocking the caller, which runs
-    /// on the daemon's main loop.
+    /// Queue a topic debug frame for the coordinator, dropping it if the debug
+    /// queue is full — either on its message count or, for large frames, on its
+    /// [`TOPIC_DEBUG_QUEUE_BYTES`] budget.
     ///
-    /// It goes on the debug channel, which the writer serves only after the
-    /// control channels, so it cannot hold up a stop reply or heartbeat queued
-    /// after it.
+    /// Encoded as chunked WS binary messages when the coordinator negotiated
+    /// `binary_debug_frames`, otherwise as the JSON `TopicDebugData` event
+    /// every coordinator understands. Either way it goes on the debug channel,
+    /// which the writer serves only after the control channels.
     ///
-    /// A frame larger than the coordinator accepts is dropped (`TooLarge`):
-    /// the coordinator closes the daemon connection on an oversized message,
-    /// so sending it would take the control plane down (dora-rs/dora#3535).
-    /// The queue slot is reserved first and the size checked before and after
-    /// rendering, so a frame that will be dropped costs as little as possible.
+    /// Nothing is copied until the frame has somewhere to go: the queue slot
+    /// and, in binary mode, the frame's bytes are taken first, so a frame that
+    /// will be dropped never costs a multi-megabyte encode. Both are given
+    /// back if a later step fails, and a reserved slot cannot be taken by
+    /// anyone else, so the queueing at the end cannot fail.
+    ///
+    /// A frame larger than the coordinator accepts in that encoding — or than
+    /// the CLI can be handed afterwards ([`MAX_TOPIC_DEBUG_PAYLOAD_BYTES`]) —
+    /// is dropped here (`TooLarge`): the coordinator closes the connection on
+    /// an oversized message, which would take the control plane down with it,
+    /// and an oversized *payload* would fail the subscriber's socket on the
+    /// next hop.
     pub fn try_send_topic_debug_frame(
         &self,
         daemon_id: &DaemonId,
@@ -219,40 +261,86 @@ impl CoordinatorSender {
         subscription_ids: Vec<Uuid>,
         payload: Vec<u8>,
     ) -> Result<(), TrySendEventError> {
+        // Queue space first, before anything is rendered or copied.
         let slot = self.topic_debug.try_reserve().map_err(|err| match err {
             mpsc::error::TrySendError::Full(()) => TrySendEventError::Full,
             mpsc::error::TrySendError::Closed(()) => TrySendEventError::Closed,
         })?;
-        // Every payload byte takes at least two characters in the JSON number
-        // array (a digit and a separator), so a payload past half the limit
-        // cannot fit: skip rendering megabytes of text only to throw them away.
-        if payload.len() > MAX_COORDINATOR_MESSAGE_BYTES / 2 {
-            return Err(TrySendEventError::TooLarge {
-                bytes: payload.len().saturating_mul(2),
-                limit: MAX_COORDINATOR_MESSAGE_BYTES,
-            });
-        }
-        let event = serde_json::to_vec(&Timestamped {
-            inner: CoordinatorRequest::Event {
-                daemon_id: daemon_id.clone(),
-                event: DaemonEvent::TopicDebugData {
-                    dataflow_id,
-                    subscription_ids,
-                    payload,
+        let (messages, budget) = if self.binary_debug_frames {
+            // A binary frame's size follows from the payload, so both limits
+            // and the byte budget are settled before the payload is copied.
+            if payload.len() > MAX_TOPIC_DEBUG_PAYLOAD_BYTES {
+                return Err(TrySendEventError::TooLarge {
+                    bytes: payload.len(),
+                    limit: MAX_TOPIC_DEBUG_PAYLOAD_BYTES,
+                });
+            }
+            let bytes = topic_debug_frame_len(subscription_ids.len(), payload.len());
+            if bytes > MAX_TOPIC_DEBUG_FRAME_BYTES {
+                return Err(TrySendEventError::TooLarge {
+                    bytes,
+                    limit: MAX_TOPIC_DEBUG_FRAME_BYTES,
+                });
+            }
+            let budget = self.reserve_debug_bytes(bytes)?;
+            let chunks = encode_topic_debug_chunks(dataflow_id, &subscription_ids, &payload)
+                .map_err(TrySendEventError::Encode)?;
+            let messages = chunks
+                .into_iter()
+                .map(|chunk| Message::Binary(chunk.into()))
+                .collect();
+            (messages, budget)
+        } else {
+            // Every payload byte takes at least two characters in the JSON
+            // number array (a digit and a separator), so a payload past half
+            // the limit cannot fit: skip rendering megabytes of text only to
+            // throw them away.
+            if payload.len() > MAX_DAEMON_MESSAGE_BYTES / 2 {
+                return Err(TrySendEventError::TooLarge {
+                    bytes: payload.len().saturating_mul(2),
+                    limit: MAX_DAEMON_MESSAGE_BYTES,
+                });
+            }
+            let event = serde_json::to_vec(&Timestamped {
+                inner: CoordinatorRequest::Event {
+                    daemon_id: daemon_id.clone(),
+                    event: DaemonEvent::TopicDebugData {
+                        dataflow_id,
+                        subscription_ids,
+                        payload,
+                    },
                 },
-            },
-            timestamp: clock.new_timestamp(),
-        })
-        .map_err(|err| TrySendEventError::Encode(err.into()))?;
-        let json = Self::format_event_message(&event)?;
-        if json.len() > MAX_COORDINATOR_MESSAGE_BYTES {
-            return Err(TrySendEventError::TooLarge {
-                bytes: json.len(),
-                limit: MAX_COORDINATOR_MESSAGE_BYTES,
-            });
-        }
-        slot.send(json);
+                timestamp: clock.new_timestamp(),
+            })
+            .map_err(|err| TrySendEventError::Encode(err.into()))?;
+            let json = Self::format_event_message(&event)?;
+            if json.len() > MAX_DAEMON_MESSAGE_BYTES {
+                return Err(TrySendEventError::TooLarge {
+                    bytes: json.len(),
+                    limit: MAX_DAEMON_MESSAGE_BYTES,
+                });
+            }
+            // A JSON message's length is only known once it is rendered, but
+            // the check above keeps that bounded by the 1 MiB text limit — the
+            // copy this path can waste is nothing like a camera frame.
+            let budget = self.reserve_debug_bytes(json.len())?;
+            (VecDeque::from([Message::Text(json.into())]), budget)
+        };
+        slot.send(QueuedDebugFrame {
+            messages,
+            _budget: budget,
+        });
         Ok(())
+    }
+
+    /// Take `bytes` off the queue's [`TOPIC_DEBUG_QUEUE_BYTES`] budget, or
+    /// report `Full` if that much is not left. The permit rides with the queued
+    /// frame and frees the bytes once it has been written.
+    fn reserve_debug_bytes(&self, bytes: usize) -> Result<OwnedSemaphorePermit, TrySendEventError> {
+        let bytes = u32::try_from(bytes).map_err(|_| TrySendEventError::Full)?;
+        Arc::clone(&self.topic_debug_budget)
+            .try_acquire_many_owned(bytes)
+            .map_err(|_| TrySendEventError::Full)
     }
 
     /// Build a detached sender (and its receiver) for tests that only need a
@@ -265,6 +353,8 @@ impl CoordinatorSender {
             Self {
                 sender,
                 topic_debug,
+                topic_debug_budget: Arc::new(Semaphore::new(TOPIC_DEBUG_QUEUE_BYTES)),
+                binary_debug_frames: false,
             },
             OutboundForTest(rx),
         )
@@ -393,7 +483,9 @@ pub async fn register(
     let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
     // Topic debug frames get their own channel so they queue behind nothing
     // but each other; see `run_coordinator_ws_writer`.
-    let (topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+    let (topic_debug_tx, topic_debug_rx) =
+        mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+    let topic_debug_budget = Arc::new(Semaphore::new(TOPIC_DEBUG_QUEUE_BYTES));
 
     // Send Register request.
     // Serialize params via to_string (not to_value) to preserve u128 fidelity
@@ -418,7 +510,7 @@ pub async fn register(
     // Wait for register reply with timeout.
     // The coordinator's register handler sends back Timestamped<RegisterResult>
     // wrapped in a WsRequest with method "daemon_event".
-    let (daemon_id, peer_zenoh_endpoints) = tokio::time::timeout(REGISTER_TIMEOUT, async {
+    let register_result = tokio::time::timeout(REGISTER_TIMEOUT, async {
         loop {
             let msg = ws_rx
                 .next()
@@ -441,11 +533,13 @@ pub async fn register(
                 tracing::warn!("failed to update timestamp after register: {err}");
             }
 
-            break result.inner.into_parts();
+            break eyre::Ok(result.inner);
         }
     })
     .await
     .map_err(|_| eyre!("timeout waiting for register reply from coordinator"))??;
+    let binary_debug_frames = register_result.binary_debug_frames();
+    let (daemon_id, peer_zenoh_endpoints) = register_result.into_parts()?;
     let peer_zenoh_endpoints = usable_peer_endpoints(addr, peer_zenoh_endpoints);
 
     tracing::info!("Connected to dora-coordinator at ws://{addr}/api/daemon");
@@ -495,6 +589,8 @@ pub async fn register(
         CoordinatorSender {
             sender: send_tx,
             topic_debug: topic_debug_tx,
+            topic_debug_budget,
+            binary_debug_frames,
         },
         ReceiverStream::new(rx),
     ))
@@ -540,31 +636,38 @@ enum OutboundFrame {
 /// reader does can stall it — see `register` and dora-rs/dora#3164.
 ///
 /// `topic_debug_rx` (topic debug frames) is served only when neither control
-/// channel has anything ready. A debug frame can approach the 1 MiB message
-/// limit, so sharing a queue with control traffic let a `dora topic`
-/// subscription hold a stop reply or heartbeat behind a backlog of frames
+/// channel has anything ready. A debug frame can be megabytes, so sharing a
+/// queue with control traffic let a `dora topic` subscription on a large
+/// output hold a stop reply or heartbeat behind a backlog of frames
 /// (dora-rs/dora#3535). Now a control message waits for at most the one debug
-/// frame already being written. The two control channels keep their existing
-/// unbiased interleaving with each other.
+/// message already being written — a chunk of at most
+/// `TOPIC_DEBUG_CHUNK_BYTES`, since a binary frame is written one chunk per
+/// turn of this loop and control is checked again before each. Bounding the
+/// wait in frames alone was not enough: a camera-sized frame on a slow link
+/// takes long enough to hold back the heartbeat past the coordinator's
+/// watchdog. The two control channels keep their existing unbiased
+/// interleaving with each other. What may pile up behind that is bounded by
+/// bytes, not just by frames — see [`TOPIC_DEBUG_QUEUE_BYTES`].
 ///
 /// The exception is an event marked [`OutgoingKind::AfterTopicDebug`] (a
 /// finish report), which ends a dataflow's topic streams: it is held until the
-/// debug frames queued when it was taken have been written, so none of them
-/// arrives after the coordinator has closed their subscribers. Those frames
-/// still go out through this loop, one per turn, so heartbeats and command
-/// replies keep going out between them — written back to back, they would
-/// starve the coordinator's heartbeat watchdog on a slow link
-/// (dora-rs/dora#3636 review). `send_rx` keeps being read throughout, so the
-/// daemon's main loop never blocks on the wait; the events that arrive
-/// meanwhile are held behind the report, keeping their order (a status report
-/// or an `Exit` must not overtake it), except heartbeats, which need none. See
-/// [`MAX_EVENTS_BEHIND_A_HELD_REPORT`] for the bound on those, and
-/// [`MAX_FINISH_REPORT_HOLD`] for how long the report waits at most.
+/// rest of the frame part-way out and the debug frames queued when it was
+/// taken have been written, so none of them arrives after the coordinator has
+/// closed their subscribers. Those frames still go out through this loop, one
+/// chunk per turn, so heartbeats and command replies keep going out between
+/// their chunks — written back to back, they would starve the coordinator's
+/// heartbeat watchdog on a slow link (dora-rs/dora#3636 review). `send_rx`
+/// keeps being read throughout, so the daemon's main loop never blocks on the
+/// wait; the events that arrive meanwhile are held behind the report, keeping
+/// their order (a status report or an `Exit` must not overtake it), except
+/// heartbeats, which need none. See [`MAX_EVENTS_BEHIND_A_HELD_REPORT`] for
+/// the bound on those, and [`MAX_FINISH_REPORT_HOLD`] for how long the report
+/// waits at most.
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<OutgoingEvent>,
     mut internal_rx: mpsc::Receiver<OutboundFrame>,
-    mut topic_debug_rx: mpsc::Receiver<String>,
+    mut topic_debug_rx: mpsc::Receiver<QueuedDebugFrame>,
 ) where
     Tx: Sink<Message> + Unpin,
 {
@@ -573,6 +676,8 @@ async fn run_coordinator_ws_writer<Tx>(
         Outgoing(Option<OutgoingEvent>),
     }
 
+    // The frame whose chunks are being written, if one is part-way through.
+    let mut current_debug_frame: Option<QueuedDebugFrame> = None;
     // A finish report waiting for the debug frames queued ahead of it.
     let mut held: Option<HeldReport> = None;
 
@@ -639,9 +744,10 @@ async fn run_coordinator_ws_writer<Tx>(
                             }
                         }
                         _ => {
+                            let queued =
+                                queued_debug_frames(&topic_debug_rx, &current_debug_frame);
                             let deadline = Instant::now() + MAX_FINISH_REPORT_HOLD;
-                            write_or_hold(&mut ws_tx, event, deadline, &topic_debug_rx, &mut held)
-                                .await
+                            write_or_hold(&mut ws_tx, event, queued, deadline, &mut held).await
                         }
                     };
                     if result.is_err() {
@@ -657,17 +763,17 @@ async fn run_coordinator_ws_writer<Tx>(
                     break;
                 }
             },
-            debug = topic_debug_rx.recv() => match debug {
-                Some(text) => {
-                    if ws_tx.send(Message::Text(text.into())).await.is_err() {
+            debug = next_debug_message(&mut current_debug_frame, &mut topic_debug_rx) => match debug {
+                Some((message, ends_frame)) => {
+                    if ws_tx.send(message).await.is_err() {
                         break;
                     }
-                    if let Some(report) = &mut held {
+                    if ends_frame && let Some(report) = &mut held {
                         report.frames_left -= 1;
                         if report.frames_left == 0
                             && let Some(report) = held.take()
                             && report
-                                .resume(&mut ws_tx, &topic_debug_rx, &mut held)
+                                .resume(&mut ws_tx, &topic_debug_rx, &current_debug_frame, &mut held)
                                 .await
                                 .is_err()
                         {
@@ -683,11 +789,23 @@ async fn run_coordinator_ws_writer<Tx>(
     }
 }
 
+/// Debug frames a finish report taken now has to wait for: those queued, and
+/// the one part-way out while it still has chunks to go.
+fn queued_debug_frames(
+    topic_debug_rx: &mpsc::Receiver<QueuedDebugFrame>,
+    current: &Option<QueuedDebugFrame>,
+) -> usize {
+    let in_progress = current
+        .as_ref()
+        .is_some_and(|frame| !frame.messages.is_empty());
+    topic_debug_rx.len() + usize::from(in_progress)
+}
+
 /// A finish report the writer holds until the debug frames queued ahead of
 /// it have been written, with the events that arrived after it.
 struct HeldReport {
     report: String,
-    /// Debug frames still to be written before the report.
+    /// Debug frames still to be written in full before the report.
     frames_left: usize,
     /// Events sent after the report, in order; heartbeats never wait here.
     behind: VecDeque<OutgoingEvent>,
@@ -705,7 +823,8 @@ impl HeldReport {
     async fn resume<Tx>(
         self,
         ws_tx: &mut Tx,
-        topic_debug_rx: &mpsc::Receiver<String>,
+        topic_debug_rx: &mpsc::Receiver<QueuedDebugFrame>,
+        current: &Option<QueuedDebugFrame>,
         held: &mut Option<HeldReport>,
     ) -> Result<(), ()>
     where
@@ -715,7 +834,10 @@ impl HeldReport {
         for event in self.behind {
             match held {
                 Some(report) => report.behind.push_back(event),
-                None => write_or_hold(ws_tx, event, self.deadline, topic_debug_rx, held).await?,
+                None => {
+                    let queued = queued_debug_frames(topic_debug_rx, current);
+                    write_or_hold(ws_tx, event, queued, self.deadline, held).await?
+                }
             }
         }
         Ok(())
@@ -736,19 +858,19 @@ impl HeldReport {
 }
 
 /// Write `event`, or hold it if it is a finish report with debug frames
-/// queued ahead of it — only those queued now, so frames that keep arriving
-/// cannot hold it back indefinitely, and only until `deadline`.
+/// (`queued`, see [`queued_debug_frames`]) ahead of it — only those queued
+/// now, so frames that keep arriving cannot hold it back indefinitely, and
+/// only until `deadline`.
 async fn write_or_hold<Tx>(
     ws_tx: &mut Tx,
     event: OutgoingEvent,
+    queued: usize,
     deadline: Instant,
-    topic_debug_rx: &mpsc::Receiver<String>,
     held: &mut Option<HeldReport>,
 ) -> Result<(), ()>
 where
     Tx: Sink<Message> + Unpin,
 {
-    let queued = topic_debug_rx.len();
     if event.kind == OutgoingKind::AfterTopicDebug && queued > 0 {
         *held = Some(HeldReport {
             report: event.text,
@@ -767,6 +889,31 @@ where
     Tx: Sink<Message> + Unpin,
 {
     ws_tx.send(Message::Text(text.into())).await.map_err(|_| ())
+}
+
+/// The next WS message of the topic debug frame being written, moving on to the
+/// next queued frame once `current` has none left, and whether it is that
+/// frame's last.
+///
+/// A finished frame is dropped — returning its [`TOPIC_DEBUG_QUEUE_BYTES`]
+/// share — only on the call after its last message was handed out, i.e. once
+/// the writer is done with that message.
+///
+/// Cancel-safe, which the writer's `select!` needs: the only await is the
+/// cancel-safe `recv`, and nothing is taken out of `current` before it.
+async fn next_debug_message(
+    current: &mut Option<QueuedDebugFrame>,
+    topic_debug_rx: &mut mpsc::Receiver<QueuedDebugFrame>,
+) -> Option<(Message, bool)> {
+    loop {
+        if let Some(frame) = current.as_mut()
+            && let Some(message) = frame.messages.pop_front()
+        {
+            return Some((message, frame.messages.is_empty()));
+        }
+        *current = None;
+        *current = Some(topic_debug_rx.recv().await?);
+    }
 }
 
 /// Inbound half of the coordinator WS connection: reads frames from `ws_rx`,
@@ -1029,6 +1176,7 @@ fn jittered_backoff(backoff: Duration, rand: u64) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use dora_message::daemon_to_coordinator::TOPIC_DEBUG_CHUNK_BYTES;
 
     /// What a 1.0.x coordinator may hand out: a same-host daemon's loopback
     /// listener next to a routable one. Only a daemon on the coordinator's
@@ -1181,7 +1329,7 @@ mod tests {
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
         // Held open for the test's duration: a closed debug channel ends the
         // writer, just as dropping the `CoordinatorSender` does in production.
-        let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(1);
+        let (_topic_debug_tx, topic_debug_rx) = mpsc::channel::<QueuedDebugFrame>(1);
 
         let writer = tokio::spawn(run_coordinator_ws_writer(
             ws_out_tx,
@@ -1239,6 +1387,18 @@ mod tests {
             .expect("writer must write a message")
     }
 
+    /// A queued debug frame made of `messages`, holding a budget of its own.
+    fn queued_frame(messages: impl IntoIterator<Item = Message>) -> QueuedDebugFrame {
+        QueuedDebugFrame {
+            messages: messages.into_iter().collect(),
+            _budget: Arc::new(Semaphore::new(1)).try_acquire_owned().unwrap(),
+        }
+    }
+
+    fn debug_text(i: usize) -> Message {
+        Message::Text(format!("debug-{i}").into())
+    }
+
     /// Regression test for dora-rs/dora#3535: with the topic debug queue full,
     /// control messages still go out first — all of them, ahead of every queued
     /// debug frame, not behind them.
@@ -1255,15 +1415,17 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
         for i in 0..TOPIC_DEBUG_CHANNEL_CAPACITY {
             topic_debug_tx
-                .try_send(format!("debug-{i}"))
-                .expect("debug queue has room up to its capacity");
+                .try_send(queued_frame([debug_text(i)]))
+                .unwrap_or_else(|_| panic!("debug queue has room up to its capacity"));
         }
         assert!(
-            topic_debug_tx.try_send("one too many".to_owned()).is_err(),
+            topic_debug_tx
+                .try_send(queued_frame([debug_text(usize::MAX)]))
+                .is_err(),
             "the debug queue must be full for this test to mean anything"
         );
         let control_count = 16;
@@ -1287,10 +1449,7 @@ mod tests {
         }
         // The debug frames are still delivered, in order, once control is drained.
         for i in 0..TOPIC_DEBUG_CHANNEL_CAPACITY {
-            assert_eq!(
-                next_written(&mut ws_out_rx).await,
-                Message::Text(format!("debug-{i}").into())
-            );
+            assert_eq!(next_written(&mut ws_out_rx).await, debug_text(i));
         }
 
         drop((send_tx, internal_tx, topic_debug_tx));
@@ -1310,11 +1469,16 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
-        for i in 0..3 {
-            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
-        }
+        // One of them in several chunks: it must go out whole, not just its
+        // first chunk.
+        topic_debug_tx
+            .try_send(queued_frame([debug_text(0), debug_text(1)]))
+            .unwrap_or_else(|_| panic!("queue has room"));
+        topic_debug_tx
+            .try_send(queued_frame([debug_text(2)]))
+            .unwrap_or_else(|_| panic!("queue has room"));
         send_tx.try_send(control("heartbeat")).unwrap();
         send_tx
             .try_send(OutgoingEvent {
@@ -1357,29 +1521,129 @@ mod tests {
             .unwrap();
     }
 
-    fn finish_report(text: &str) -> OutgoingEvent {
-        OutgoingEvent {
-            text: text.to_owned(),
-            kind: OutgoingKind::AfterTopicDebug,
-        }
-    }
+    /// A finish report taken while a frame is part-way out waits for the rest
+    /// of that frame too, not only for the frames still queued: its remaining
+    /// chunks would otherwise reach the coordinator after the report.
+    #[tokio::test]
+    async fn ws_writer_finishes_the_frame_in_progress_before_a_finish_report() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::channel::<Message>(0);
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
-    fn heartbeat() -> OutgoingEvent {
-        OutgoingEvent {
-            text: "heartbeat".to_owned(),
-            kind: OutgoingKind::Heartbeat,
-        }
-    }
+        let chunk_count = 6;
+        topic_debug_tx
+            .try_send(queued_frame(
+                (0..chunk_count).map(|i| Message::Binary(vec![i as u8].into())),
+            ))
+            .unwrap_or_else(|_| panic!("queue has room"));
 
-    async fn next_text(rx: &mut futures::channel::mpsc::Receiver<Message>) -> String {
-        match tokio::time::timeout(Duration::from_secs(5), rx.next())
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        async fn next(rx: &mut futures::channel::mpsc::Receiver<Message>) -> Message {
+            tokio::time::timeout(Duration::from_secs(5), rx.next())
+                .await
+                .expect("writer must make progress")
+                .expect("writer must write a message")
+        }
+        assert_eq!(next(&mut ws_out_rx).await, Message::Binary(vec![0].into()));
+        send_tx
+            .try_send(OutgoingEvent {
+                text: "all-nodes-finished".to_owned(),
+                kind: OutgoingKind::AfterTopicDebug,
+            })
+            .unwrap();
+
+        let mut rest = Vec::new();
+        for _ in 0..chunk_count {
+            rest.push(next(&mut ws_out_rx).await);
+        }
+        let mut expected: Vec<_> = (1..chunk_count)
+            .map(|i| Message::Binary(vec![i as u8].into()))
+            .collect();
+        expected.push(Message::Text("all-nodes-finished".into()));
+        assert_eq!(rest, expected);
+
+        drop((send_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
             .await
-            .expect("writer must make progress")
-            .expect("writer must write a message")
-        {
-            Message::Text(text) => text.to_string(),
-            other => panic!("unexpected message {other:?}"),
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
+    }
+
+    /// A control message queued while a large debug frame is part-way out goes
+    /// out before the rest of that frame: the writer yields between chunks, so
+    /// on a slow link a heartbeat or stop reply waits for one chunk rather than
+    /// the whole frame (dora-rs/dora#3536 review).
+    ///
+    /// The sink holds one message, so the writer is stuck on the frame's second
+    /// chunk when the control message is queued: that chunk goes first, since
+    /// a message being written cannot be taken back, and control follows it.
+    #[tokio::test]
+    async fn ws_writer_sends_control_between_the_chunks_of_a_debug_frame() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::channel::<Message>(0);
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        let chunk_count = 6;
+        topic_debug_tx
+            .try_send(queued_frame(
+                (0..chunk_count).map(|i| Message::Binary(vec![i as u8].into())),
+            ))
+            .unwrap_or_else(|_| panic!("queue has room"));
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        async fn next(rx: &mut futures::channel::mpsc::Receiver<Message>) -> Message {
+            tokio::time::timeout(Duration::from_secs(5), rx.next())
+                .await
+                .expect("writer must make progress")
+                .expect("writer must write a message")
         }
+        assert_eq!(next(&mut ws_out_rx).await, Message::Binary(vec![0].into()));
+        send_tx.try_send(control("heartbeat")).unwrap();
+
+        let mut rest = Vec::new();
+        for _ in 0..chunk_count {
+            rest.push(next(&mut ws_out_rx).await);
+        }
+        let control_at = rest
+            .iter()
+            .position(|message| *message == Message::Text("heartbeat".into()))
+            .expect("the control message must be written");
+        assert!(
+            control_at < 2,
+            "control must go out right after the chunk in flight, not after the \
+             rest of the frame; got {rest:?}"
+        );
+        // The frame itself is still delivered whole and in order.
+        let chunks_out: Vec<_> = rest
+            .into_iter()
+            .filter(|message| matches!(message, Message::Binary(_)))
+            .collect();
+        let expected: Vec<_> = (1..chunk_count)
+            .map(|i| Message::Binary(vec![i as u8].into()))
+            .collect();
+        assert_eq!(chunks_out, expected);
+
+        drop((send_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
     }
 
     /// While a finish report waits for the debug frames queued ahead of it,
@@ -1390,21 +1654,27 @@ mod tests {
     /// it, so e.g. an `Exit` cannot overtake it.
     ///
     /// The sink holds one message, so the writer is stuck writing the second
-    /// frame when the heartbeat and the reply are queued.
+    /// frame when the heartbeat and the reply are queued. The same holds
+    /// between the chunks of a large frame, since each chunk is one turn.
     #[tokio::test]
     async fn ws_writer_keeps_heartbeats_and_replies_going_while_a_finish_report_waits() {
         let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::channel::<Message>(0);
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
         let frame_count = 4;
         for i in 0..frame_count {
-            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+            topic_debug_tx
+                .try_send(queued_frame([debug_text(i)]))
+                .unwrap_or_else(|_| panic!("queue has room"));
         }
         send_tx
-            .try_send(finish_report("all-nodes-finished"))
+            .try_send(OutgoingEvent {
+                text: "all-nodes-finished".to_owned(),
+                kind: OutgoingKind::AfterTopicDebug,
+            })
             .unwrap();
         send_tx.try_send(control("exit")).unwrap();
 
@@ -1446,6 +1716,101 @@ mod tests {
             .unwrap();
     }
 
+    /// The dora-rs/dora#3636 review case exactly: a report taken while a
+    /// large frame is part-way out still lets a heartbeat through between that
+    /// frame's chunks, and goes out itself only after the frame's last chunk.
+    #[tokio::test]
+    async fn a_heartbeat_goes_out_between_chunks_while_a_finish_report_waits() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::channel::<Message>(0);
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        let chunk_count = 6;
+        let chunk = |i: usize| Message::Binary(vec![i as u8].into());
+        topic_debug_tx
+            .try_send(queued_frame((0..chunk_count).map(chunk)))
+            .unwrap_or_else(|_| panic!("queue has room"));
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        async fn next(rx: &mut futures::channel::mpsc::Receiver<Message>) -> Message {
+            tokio::time::timeout(Duration::from_secs(5), rx.next())
+                .await
+                .expect("writer must make progress")
+                .expect("writer must write a message")
+        }
+        assert_eq!(next(&mut ws_out_rx).await, chunk(0));
+        send_tx
+            .try_send(OutgoingEvent {
+                text: "all-nodes-finished".to_owned(),
+                kind: OutgoingKind::AfterTopicDebug,
+            })
+            .unwrap();
+        // Chunk 1 is already being written; let the writer take the report
+        // before the heartbeat arrives.
+        assert_eq!(next(&mut ws_out_rx).await, chunk(1));
+        send_tx.try_send(heartbeat()).unwrap();
+
+        let mut rest = Vec::new();
+        for _ in 0..chunk_count - 2 + 2 {
+            rest.push(next(&mut ws_out_rx).await);
+        }
+        let at = |message: &Message| {
+            rest.iter()
+                .position(|written| written == message)
+                .unwrap_or_else(|| panic!("{message:?} must be written; got {rest:?}"))
+        };
+        let heartbeat = Message::Text("heartbeat".into());
+        let report = Message::Text("all-nodes-finished".into());
+        assert!(
+            at(&heartbeat) < at(&chunk(chunk_count - 1)),
+            "the heartbeat must not wait for the rest of the frame; got {rest:?}"
+        );
+        assert_eq!(
+            at(&report),
+            rest.len() - 1,
+            "the report goes out after the frame's last chunk; got {rest:?}"
+        );
+
+        drop((send_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
+    }
+
+    fn finish_report(text: &str) -> OutgoingEvent {
+        OutgoingEvent {
+            text: text.to_owned(),
+            kind: OutgoingKind::AfterTopicDebug,
+        }
+    }
+
+    fn heartbeat() -> OutgoingEvent {
+        OutgoingEvent {
+            text: "heartbeat".to_owned(),
+            kind: OutgoingKind::Heartbeat,
+        }
+    }
+
+    async fn next_text(rx: &mut futures::channel::mpsc::Receiver<Message>) -> String {
+        match tokio::time::timeout(Duration::from_secs(5), rx.next())
+            .await
+            .expect("writer must make progress")
+            .expect("writer must write a message")
+        {
+            Message::Text(text) => text.to_string(),
+            other => panic!("unexpected message {other:?}"),
+        }
+    }
+
     /// A socket that takes 10 ms (of paused test time) per message, recording
     /// each text message with whether `done` was already set when it went
     /// out. Slow enough for a held report to wait a while, without the writer
@@ -1480,11 +1845,13 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(2);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
         let frame_count = 10;
         for i in 0..frame_count {
-            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+            topic_debug_tx
+                .try_send(queued_frame([debug_text(i)]))
+                .unwrap_or_else(|_| panic!("queue has room"));
         }
         send_tx
             .try_send(finish_report("all-nodes-finished"))
@@ -1542,12 +1909,14 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
         // Enough frames that the events overflow long before they are out.
         let frame_count = TOPIC_DEBUG_CHANNEL_CAPACITY;
         for i in 0..frame_count {
-            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+            topic_debug_tx
+                .try_send(queued_frame([debug_text(i)]))
+                .unwrap_or_else(|_| panic!("queue has room"));
         }
         send_tx
             .try_send(finish_report("all-nodes-finished"))
@@ -1622,12 +1991,14 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
         // One second per message: the frames alone would take a minute.
         let frame_count = TOPIC_DEBUG_CHANNEL_CAPACITY;
         for i in 0..frame_count {
-            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+            topic_debug_tx
+                .try_send(queued_frame([debug_text(i)]))
+                .unwrap_or_else(|_| panic!("queue has room"));
         }
         send_tx
             .try_send(finish_report("all-nodes-finished"))
@@ -1693,11 +2064,13 @@ mod tests {
         let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
-            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+            mpsc::channel::<QueuedDebugFrame>(TOPIC_DEBUG_CHANNEL_CAPACITY);
 
         // Control events are all read before any frame is written, so the
         // report is taken, held, and followed by `exit` and the close.
-        topic_debug_tx.try_send("debug-0".to_owned()).unwrap();
+        topic_debug_tx
+            .try_send(queued_frame([debug_text(0)]))
+            .unwrap_or_else(|_| panic!("queue has room"));
         send_tx
             .try_send(finish_report("all-nodes-finished"))
             .unwrap();
@@ -1734,36 +2107,62 @@ mod tests {
         assert_eq!(rx.0.try_recv().unwrap().kind, OutgoingKind::Heartbeat);
     }
 
-    fn debug_sender() -> (CoordinatorSender, mpsc::Receiver<String>) {
+    fn debug_sender(
+        binary_debug_frames: bool,
+    ) -> (CoordinatorSender, mpsc::Receiver<QueuedDebugFrame>) {
+        debug_sender_with_budget(binary_debug_frames, TOPIC_DEBUG_QUEUE_BYTES)
+    }
+
+    fn debug_sender_with_budget(
+        binary_debug_frames: bool,
+        budget_bytes: usize,
+    ) -> (CoordinatorSender, mpsc::Receiver<QueuedDebugFrame>) {
         let (sender, _) = mpsc::channel(1);
         let (topic_debug, topic_debug_rx) = mpsc::channel(4);
         (
             CoordinatorSender {
                 sender,
                 topic_debug,
+                topic_debug_budget: Arc::new(Semaphore::new(budget_bytes)),
+                binary_debug_frames,
             },
             topic_debug_rx,
         )
     }
 
-    fn send_debug_frame(
-        sender: &CoordinatorSender,
-        payload_len: usize,
-    ) -> Result<(), TrySendEventError> {
-        sender.try_send_topic_debug_frame(
-            &DaemonId::new(Some("A".to_string())),
-            &HLC::default(),
-            Uuid::new_v4(),
-            vec![Uuid::new_v4()],
-            vec![255; payload_len],
-        )
+    /// Without the negotiated flag the daemon must keep sending the JSON
+    /// `TopicDebugData` event: it is the only shape an older coordinator reads.
+    #[test]
+    fn topic_debug_frame_is_json_when_binary_frames_were_not_negotiated() {
+        let (sender, mut rx) = debug_sender(false);
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let (dataflow_id, subscription_id) = (Uuid::new_v4(), Uuid::new_v4());
+        sender
+            .try_send_topic_debug_frame(
+                &daemon_id,
+                &HLC::default(),
+                dataflow_id,
+                vec![subscription_id],
+                vec![1, 2, 3],
+            )
+            .unwrap();
+
+        let frame = rx.try_recv().expect("a queued frame");
+        let messages = Vec::from(frame.messages);
+        let [Message::Text(text)] = messages.as_slice() else {
+            panic!("expected a single JSON text message");
+        };
+        let raw: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(raw["method"], "daemon_event");
+        let event = &raw["params"]["inner"]["Event"]["event"]["TopicDebugData"];
+        assert_eq!(event["dataflow_id"], dataflow_id.to_string());
+        assert_eq!(event["subscription_ids"][0], subscription_id.to_string());
+        assert_eq!(event["payload"], serde_json::json!([1, 2, 3]));
     }
 
-    /// A topic debug frame goes on the debug channel as the JSON
-    /// `TopicDebugData` event the coordinator reads.
     #[test]
-    fn topic_debug_frame_is_queued_as_a_json_event() {
-        let (sender, mut rx) = debug_sender();
+    fn topic_debug_frame_is_binary_when_binary_frames_were_negotiated() {
+        let (sender, mut rx) = debug_sender(true);
         let (dataflow_id, subscription_id) = (Uuid::new_v4(), Uuid::new_v4());
         sender
             .try_send_topic_debug_frame(
@@ -1775,58 +2174,204 @@ mod tests {
             )
             .unwrap();
 
-        let text = rx.try_recv().expect("a queued frame");
-        let raw: serde_json::Value = serde_json::from_str(&text).unwrap();
-        assert_eq!(raw["method"], "daemon_event");
-        let event = &raw["params"]["inner"]["Event"]["event"]["TopicDebugData"];
-        assert_eq!(event["dataflow_id"], dataflow_id.to_string());
-        assert_eq!(event["subscription_ids"][0], subscription_id.to_string());
-        assert_eq!(event["payload"], serde_json::json!([1, 2, 3]));
+        let data = reassemble(rx.try_recv().expect("a queued frame"));
+        let frame = dora_message::daemon_to_coordinator::decode_topic_debug_frame(&data).unwrap();
+        assert_eq!(frame.dataflow_id, dataflow_id);
+        assert_eq!(frame.subscription_ids, vec![subscription_id]);
+        assert_eq!(frame.payload, &[1, 2, 3]);
+    }
+
+    /// Put a queued binary frame back together the way the coordinator does.
+    fn reassemble(frame: QueuedDebugFrame) -> Vec<u8> {
+        let mut assembler =
+            dora_message::daemon_to_coordinator::TopicDebugFrameAssembler::default();
+        let mut completed = None;
+        for message in frame.messages {
+            let Message::Binary(chunk) = message else {
+                panic!("expected binary chunks, got {message:?}");
+            };
+            assert!(completed.is_none(), "a chunk after the frame was complete");
+            completed = assembler.push(&chunk).unwrap();
+        }
+        completed.expect("the last chunk completes the frame")
+    }
+
+    /// A camera-sized payload is queued as chunks the writer can put control
+    /// messages between, none of them larger than a chunk.
+    #[test]
+    fn a_large_binary_frame_is_queued_as_bounded_chunks() {
+        let (sender, mut rx) = debug_sender(true);
+        let payload: Vec<u8> = (0..3 * TOPIC_DEBUG_CHUNK_BYTES + 7)
+            .map(|i| i as u8)
+            .collect();
+        sender
+            .try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                payload.clone(),
+            )
+            .unwrap();
+
+        let frame = rx.try_recv().expect("a queued frame");
+        assert_eq!(frame.messages.len(), 4);
+        assert!(
+            frame
+                .messages
+                .iter()
+                .all(|message| message.len() <= 1 + TOPIC_DEBUG_CHUNK_BYTES)
+        );
+        let data = reassemble(frame);
+        let decoded = dora_message::daemon_to_coordinator::decode_topic_debug_frame(&data).unwrap();
+        assert_eq!(decoded.payload, payload.as_slice());
     }
 
     /// A full debug queue drops the frame (reported as `Full`) rather than
     /// blocking the caller, which runs on the daemon's main loop.
     #[test]
     fn topic_debug_frame_is_dropped_when_the_debug_queue_is_full() {
-        let (sender, _rx) = debug_sender();
+        let (sender, _rx) = debug_sender(true);
+        let send = || {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                Vec::new(),
+            )
+        };
         for _ in 0..4 {
-            send_debug_frame(&sender, 0).unwrap();
+            send().unwrap();
         }
+        assert!(matches!(send(), Err(TrySendEventError::Full)));
+    }
+
+    /// The queue is bounded in bytes as well as in frames: a handful of camera
+    /// frames must not be able to hold hundreds of MiB just because the message
+    /// count is still under its capacity (dora-rs/dora#3535 review).
+    #[test]
+    fn topic_debug_frames_are_dropped_once_the_queue_byte_budget_is_spent() {
+        let payload_len = 4 * 1024;
+        // Room for two of these frames, not three, while the channel capacity
+        // (4 messages) is nowhere near reached.
+        let (sender, mut rx) = debug_sender_with_budget(
+            true,
+            2 * topic_debug_frame_len(1, payload_len) + payload_len / 2,
+        );
+        let send = || {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![7; payload_len],
+            )
+        };
+
+        send().unwrap();
+        send().unwrap();
+        assert!(
+            matches!(send(), Err(TrySendEventError::Full)),
+            "a frame past the byte budget must be dropped, not queued"
+        );
+
+        // Writing a queued frame returns its bytes, so the queue recovers.
+        drop(rx.try_recv().expect("a queued frame"));
+        send().expect("the budget frees up once a frame has been written");
+    }
+
+    /// Nothing is copied for a frame that will not be queued: the slot and the
+    /// bytes are taken before the frame is built and given back if it turns out
+    /// not to fit, so a dropped frame leaves the queue exactly as it found it.
+    #[test]
+    fn a_dropped_frame_leaves_neither_a_queue_slot_nor_budget_behind() {
+        let (sender, _rx) = debug_sender(true);
+        let free = sender.topic_debug_budget.available_permits();
+        let send = |payload_len: usize| {
+            sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![0; payload_len],
+            )
+        };
+
         assert!(matches!(
-            send_debug_frame(&sender, 0),
-            Err(TrySendEventError::Full)
+            send(MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 1),
+            Err(TrySendEventError::TooLarge { .. })
         ));
+        assert_eq!(
+            sender.topic_debug_budget.available_permits(),
+            free,
+            "a frame that was never queued must not hold any of the byte budget"
+        );
+
+        // The slot it reserved is back too: the queue still takes its full
+        // capacity afterwards.
+        for _ in 0..4 {
+            send(8).expect("the queue is still empty");
+        }
+        assert!(matches!(send(8), Err(TrySendEventError::Full)));
     }
 
     /// A frame the coordinator would reject must be dropped at the daemon, not
-    /// sent: the coordinator closes the connection on an oversized message
-    /// (dora-rs/dora#3535). As a JSON number array that limit is reached by
-    /// payloads of a few hundred kilobytes.
+    /// sent: the coordinator closes the connection on an oversized message. In
+    /// JSON mode that limit is reached by payloads far below a camera frame.
+    ///
+    /// A payload the *CLI* could not be handed is dropped here too: the
+    /// coordinator forwards it as a single frame, so one past
+    /// `MAX_TOPIC_DEBUG_PAYLOAD_BYTES` would fail the subscriber's socket
+    /// rather than be skipped by it — and there is no point putting those
+    /// bytes on the wire for the coordinator to drop.
     #[test]
     fn topic_debug_frame_beyond_the_coordinator_limit_is_dropped() {
-        let (sender, mut rx) = debug_sender();
+        let send = |binary: bool, payload_len: usize| {
+            let (sender, mut rx) = debug_sender(binary);
+            let result = sender.try_send_topic_debug_frame(
+                &DaemonId::new(None),
+                &HLC::default(),
+                Uuid::new_v4(),
+                vec![Uuid::new_v4()],
+                vec![255; payload_len],
+            );
+            let first_message = rx
+                .try_recv()
+                .ok()
+                .and_then(|mut frame| frame.messages.pop_front());
+            (result, first_message)
+        };
 
-        // Rejected before rendering ...
-        assert!(matches!(
-            send_debug_frame(&sender, MAX_COORDINATOR_MESSAGE_BYTES / 2 + 1),
-            Err(TrySendEventError::TooLarge { .. })
-        ));
-        // ... and after it, when only the exact check catches it.
-        assert!(matches!(
-            send_debug_frame(&sender, 300 * 1024),
-            Err(TrySendEventError::TooLarge { .. })
-        ));
-        assert!(rx.try_recv().is_err(), "nothing oversized may be queued");
+        // JSON: 300 KB renders to well over 1 MiB of text ...
+        let (result, sent) = send(false, 300 * 1024);
+        assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
+        assert!(sent.is_none());
+        // ... also when it only fails the exact check after rendering.
+        let (result, sent) = send(false, MAX_DAEMON_MESSAGE_BYTES / 2);
+        assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
+        assert!(sent.is_none());
+        // ... while the same payload goes out fine as a binary frame.
+        let (result, sent) = send(true, 300 * 1024);
+        assert!(result.is_ok());
+        assert!(matches!(sent, Some(Message::Binary(_))));
 
-        // A dropped frame gives back the slot it reserved: the queue still
-        // takes its full capacity afterwards.
-        for _ in 0..4 {
-            send_debug_frame(&sender, 8).expect("the queue is still empty");
-        }
+        // Binary: the frame limit includes the header.
+        let (result, sent) = send(true, MAX_TOPIC_DEBUG_FRAME_BYTES);
+        assert!(matches!(result, Err(TrySendEventError::TooLarge { .. })));
+        assert!(sent.is_none());
+        // ... and a payload the last hop could not deliver is dropped on that
+        // limit, which is the stricter of the two.
+        let (result, sent) = send(true, MAX_TOPIC_DEBUG_PAYLOAD_BYTES + 1);
         assert!(matches!(
-            send_debug_frame(&sender, 8),
-            Err(TrySendEventError::Full)
+            result,
+            Err(TrySendEventError::TooLarge { limit, .. }) if limit == MAX_TOPIC_DEBUG_PAYLOAD_BYTES
         ));
+        assert!(sent.is_none());
+        // The largest payload that does fit still goes out.
+        let (result, sent) = send(true, MAX_TOPIC_DEBUG_PAYLOAD_BYTES);
+        assert!(result.is_ok());
+        assert!(matches!(sent, Some(Message::Binary(_))));
     }
 
     /// Regression test for the reply routing `resolve_machine` depends on
