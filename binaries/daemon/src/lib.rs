@@ -1470,8 +1470,11 @@ impl Daemon {
             },
             timestamp: self.clock.new_timestamp(),
         })?;
+        // After the queued topic debug frames: the coordinator closes this
+        // dataflow's `dora topic` subscribers once every daemon has finished,
+        // so a frame still queued behind this report would be dropped.
         sender
-            .send_event(&msg)
+            .send_event_after_topic_debug(&msg)
             .await
             .wrap_err("failed to report dataflow finish to dora-coordinator")
     }

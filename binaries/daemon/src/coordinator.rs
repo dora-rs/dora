@@ -43,10 +43,18 @@ const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
 /// instead of taking the control plane down with it.
 const MAX_COORDINATOR_MESSAGE_BYTES: usize = 1024 * 1024;
 
+/// A message on the outbound control channel.
+struct OutgoingEvent {
+    text: String,
+    /// Write this only after the topic debug frames queued ahead of it; see
+    /// [`CoordinatorSender::send_event_after_topic_debug`].
+    after_topic_debug: bool,
+}
+
 /// Wraps the WS send channels for fire-and-forget daemon events to the coordinator.
 #[derive(Clone)]
 pub struct CoordinatorSender {
-    sender: mpsc::Sender<String>,
+    sender: mpsc::Sender<OutgoingEvent>,
     /// Topic debug frames, kept off `sender` so they can never delay a control
     /// message: the writer only drains this when the control side is empty.
     topic_debug: mpsc::Sender<String>,
@@ -97,9 +105,29 @@ impl CoordinatorSender {
     /// Embeds the raw JSON bytes directly to preserve u128 fidelity
     /// for uhlc::ID inside timestamps.
     pub async fn send_event(&self, message: &[u8]) -> eyre::Result<()> {
-        let json = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
+        self.send_outgoing(message, false).await
+    }
+
+    /// Like [`Self::send_event`], but the writer sends it only after the topic
+    /// debug frames queued at that point, instead of ahead of them.
+    ///
+    /// For an event after which the coordinator closes a dataflow's `dora
+    /// topic` subscribers (`AllNodesFinished`): any debug frame still queued
+    /// behind it would reach the coordinator after the close and be dropped,
+    /// cutting the end off a `dora topic echo` or a `dora record --proxy`
+    /// recording (dora-rs/dora#3536 review). The wait is bounded by the debug
+    /// queue's capacity; every other control message keeps its priority.
+    pub async fn send_event_after_topic_debug(&self, message: &[u8]) -> eyre::Result<()> {
+        self.send_outgoing(message, true).await
+    }
+
+    async fn send_outgoing(&self, message: &[u8], after_topic_debug: bool) -> eyre::Result<()> {
+        let text = Self::format_event_message(message).map_err(|err| eyre!("{err}"))?;
         self.sender
-            .send(json)
+            .send(OutgoingEvent {
+                text,
+                after_topic_debug,
+            })
             .await
             .map_err(|_| eyre!("WS send channel closed"))
     }
@@ -118,7 +146,10 @@ impl CoordinatorSender {
             std::str::from_utf8(params).map_err(|_| eyre::eyre!("params must be utf-8"))?
         );
         self.sender
-            .send(json)
+            .send(OutgoingEvent {
+                text: json,
+                after_topic_debug: false,
+            })
             .await
             .map_err(|_| eyre!("WS send channel closed"))
     }
@@ -183,7 +214,7 @@ impl CoordinatorSender {
     /// Build a detached sender (and its receiver) for tests that only need a
     /// distinct, valid `CoordinatorSender` instance.
     #[cfg(test)]
-    pub(crate) fn for_test() -> (Self, mpsc::Receiver<String>) {
+    pub(crate) fn for_test() -> (Self, OutboundForTest) {
         let (sender, rx) = mpsc::channel(8);
         let (topic_debug, _) = mpsc::channel(1);
         (
@@ -191,8 +222,32 @@ impl CoordinatorSender {
                 sender,
                 topic_debug,
             },
-            rx,
+            OutboundForTest(rx),
         )
+    }
+}
+
+/// The control messages a [`CoordinatorSender::for_test`] sender queued.
+#[cfg(test)]
+pub(crate) struct OutboundForTest(mpsc::Receiver<OutgoingEvent>);
+
+#[cfg(test)]
+impl OutboundForTest {
+    pub(crate) fn try_recv(&mut self) -> Result<String, mpsc::error::TryRecvError> {
+        self.0.try_recv().map(|event| event.text)
+    }
+
+    pub(crate) async fn recv(&mut self) -> Option<String> {
+        self.0.recv().await.map(|event| event.text)
+    }
+
+    /// The next message, and whether it was sent after the topic debug
+    /// frames queued ahead of it.
+    pub(crate) async fn recv_marked(&mut self) -> Option<(String, bool)> {
+        self.0
+            .recv()
+            .await
+            .map(|event| (event.text, event.after_topic_debug))
     }
 }
 
@@ -291,7 +346,7 @@ pub async fn register(
     // Channel for outgoing messages (daemon events + command replies).
     // The coordinator sender writes to this, and the writer task below reads
     // and forwards to WS.
-    let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
+    let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
     // Topic debug frames get their own channel so they queue behind nothing
     // but each other; see `run_coordinator_ws_writer`.
     let (topic_debug_tx, topic_debug_rx) = mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
@@ -447,9 +502,14 @@ enum OutboundFrame {
 /// (dora-rs/dora#3535). Now a control message waits for at most the one debug
 /// frame already being written. The two control channels keep their existing
 /// unbiased interleaving with each other.
+///
+/// The exception is an event marked `after_topic_debug`, which ends a
+/// dataflow's topic streams: the debug frames queued when it is taken are
+/// written first, so none of them arrives after the coordinator has closed
+/// their subscribers. It still goes out in its place among control messages.
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
-    mut send_rx: mpsc::Receiver<String>,
+    mut send_rx: mpsc::Receiver<OutgoingEvent>,
     mut internal_rx: mpsc::Receiver<OutboundFrame>,
     mut topic_debug_rx: mpsc::Receiver<String>,
 ) where
@@ -457,7 +517,7 @@ async fn run_coordinator_ws_writer<Tx>(
 {
     enum Control {
         Internal(Option<OutboundFrame>),
-        Outgoing(Option<String>),
+        Outgoing(Option<OutgoingEvent>),
     }
 
     loop {
@@ -483,8 +543,23 @@ async fn run_coordinator_ws_writer<Tx>(
                 // Reader stopped; all frames it queued (FIFO) are already
                 // flushed, so close the write half by dropping `ws_tx`.
                 Control::Internal(None) => break,
-                Control::Outgoing(Some(text)) => {
-                    if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                Control::Outgoing(Some(event)) => {
+                    if event.after_topic_debug {
+                        // Only what is queued now: frames that keep arriving
+                        // must not hold the event back indefinitely.
+                        let mut failed = false;
+                        for _ in 0..topic_debug_rx.len() {
+                            let Ok(text) = topic_debug_rx.try_recv() else { break };
+                            if ws_tx.send(Message::Text(text.into())).await.is_err() {
+                                failed = true;
+                                break;
+                            }
+                        }
+                        if failed {
+                            break;
+                        }
+                    }
+                    if ws_tx.send(Message::Text(event.text.into())).await.is_err() {
                         break;
                     }
                 }
@@ -913,7 +988,7 @@ mod tests {
         // Same capacity as production (`register`). The mock main loop sends far
         // more than this before replying, so the reply can only be produced if
         // the writer keeps draining `send_rx` concurrently.
-        let (send_tx, send_rx) = mpsc::channel::<String>(64);
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(64);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(64);
         // Held open for the test's duration: a closed debug channel ends the
         // writer, just as dropping the `CoordinatorSender` does in production.
@@ -938,7 +1013,7 @@ mod tests {
             if let Some(ev) = rx.recv().await {
                 for i in 0..500u32 {
                     send_tx
-                        .send(format!("outbound-{i}"))
+                        .send(control(&format!("outbound-{i}")))
                         .await
                         .expect("writer must keep draining send_rx");
                 }
@@ -961,16 +1036,34 @@ mod tests {
         .expect("WS router deadlocked under outbound backpressure (#3164)");
     }
 
+    fn control(text: &str) -> OutgoingEvent {
+        OutgoingEvent {
+            text: text.to_owned(),
+            after_topic_debug: false,
+        }
+    }
+
+    async fn next_written(rx: &mut futures::channel::mpsc::UnboundedReceiver<Message>) -> Message {
+        tokio::time::timeout(Duration::from_secs(5), rx.next())
+            .await
+            .expect("writer must make progress")
+            .expect("writer must write a message")
+    }
+
     /// Regression test for dora-rs/dora#3535: with the topic debug queue full,
-    /// a control message still goes out next — ahead of every queued debug
-    /// frame, not behind them.
+    /// control messages still go out first — all of them, ahead of every queued
+    /// debug frame, not behind them.
     ///
     /// Everything is queued before the writer starts, so the order it writes
     /// in is decided by its select priority alone, not by which task ran first.
+    /// Several control messages rather than one: without `biased;` the select
+    /// picks either ready arm at random, so a single message would come first
+    /// half the time anyway, while all of these come first only with
+    /// probability 2^-16.
     #[tokio::test]
     async fn ws_writer_sends_control_before_queued_topic_debug_frames() {
         let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::unbounded::<Message>();
-        let (send_tx, send_rx) = mpsc::channel::<String>(CONTROL_CHANNEL_CAPACITY);
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
         let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
         let (topic_debug_tx, topic_debug_rx) =
             mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
@@ -984,7 +1077,10 @@ mod tests {
             topic_debug_tx.try_send("one too many".to_owned()).is_err(),
             "the debug queue must be full for this test to mean anything"
         );
-        send_tx.try_send("stop-reply".to_owned()).unwrap();
+        let control_count = 16;
+        for i in 0..control_count {
+            send_tx.try_send(control(&format!("control-{i}"))).unwrap();
+        }
 
         let writer = tokio::spawn(run_coordinator_ws_writer(
             ws_out_tx,
@@ -993,23 +1089,19 @@ mod tests {
             topic_debug_rx,
         ));
 
-        let first = tokio::time::timeout(Duration::from_secs(5), ws_out_rx.next())
-            .await
-            .expect("writer must make progress")
-            .expect("writer must write a message");
-        assert_eq!(
-            first,
-            Message::Text("stop-reply".into()),
-            "a control message queued behind a full debug queue must be written first"
-        );
-
+        for i in 0..control_count {
+            assert_eq!(
+                next_written(&mut ws_out_rx).await,
+                Message::Text(format!("control-{i}").into()),
+                "control messages queued behind a full debug queue must be written first"
+            );
+        }
         // The debug frames are still delivered, in order, once control is drained.
         for i in 0..TOPIC_DEBUG_CHANNEL_CAPACITY {
-            let msg = tokio::time::timeout(Duration::from_secs(5), ws_out_rx.next())
-                .await
-                .expect("writer must keep draining debug frames")
-                .expect("debug frame");
-            assert_eq!(msg, Message::Text(format!("debug-{i}").into()));
+            assert_eq!(
+                next_written(&mut ws_out_rx).await,
+                Message::Text(format!("debug-{i}").into())
+            );
         }
 
         drop((send_tx, internal_tx, topic_debug_tx));
@@ -1017,6 +1109,72 @@ mod tests {
             .await
             .expect("writer must stop once its senders are gone")
             .unwrap();
+    }
+
+    /// A finish report goes out after the debug frames queued before it, so
+    /// none of them reaches the coordinator after it has closed the dataflow's
+    /// topic subscribers (dora-rs/dora#3536 review). Other control messages
+    /// keep their priority, and the report keeps its place among them.
+    #[tokio::test]
+    async fn ws_writer_sends_a_finish_report_after_the_queued_topic_debug_frames() {
+        let (ws_out_tx, mut ws_out_rx) = futures::channel::mpsc::unbounded::<Message>();
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        for i in 0..3 {
+            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+        }
+        send_tx.try_send(control("heartbeat")).unwrap();
+        send_tx
+            .try_send(OutgoingEvent {
+                text: "all-nodes-finished".to_owned(),
+                after_topic_debug: true,
+            })
+            .unwrap();
+        send_tx.try_send(control("after-finish")).unwrap();
+
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            ws_out_tx,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+
+        let mut written = Vec::new();
+        for _ in 0..6 {
+            match next_written(&mut ws_out_rx).await {
+                Message::Text(text) => written.push(text.to_string()),
+                other => panic!("unexpected message {other:?}"),
+            }
+        }
+        assert_eq!(
+            written,
+            [
+                "heartbeat",
+                "debug-0",
+                "debug-1",
+                "debug-2",
+                "all-nodes-finished",
+                "after-finish"
+            ]
+        );
+
+        drop((send_tx, internal_tx, topic_debug_tx));
+        tokio::time::timeout(Duration::from_secs(5), writer)
+            .await
+            .expect("writer must stop once its senders are gone")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn send_event_after_topic_debug_marks_the_event() {
+        let (sender, mut rx) = CoordinatorSender::for_test();
+        sender.send_event(b"{}").await.unwrap();
+        sender.send_event_after_topic_debug(b"{}").await.unwrap();
+        assert!(!rx.0.try_recv().unwrap().after_topic_debug);
+        assert!(rx.0.try_recv().unwrap().after_topic_debug);
     }
 
     fn debug_sender() -> (CoordinatorSender, mpsc::Receiver<String>) {
