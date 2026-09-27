@@ -1,43 +1,38 @@
-//! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file **without
-//! re-encoding any payload**.
+//! Rewrite a dora recording (`.drec`) as an MCAP (`.mcap`) file, remuxing the
+//! recorded payload bytes without decoding or re-encoding them.
 //!
-//! Tier 1 is a pure remux. Each recorded `Output` entry is decoded only enough
-//! to recover:
-//!  - its **topic** (`{node_id}/{output_id}` — the same topic string
-//!    Foxglove/Foxglove Mesh V2 + `dora replay` use to name it, and the same
-//!    per-topic key `dora topic hz` reports),
-//!  - its **producer HLC stamp** ([`MetadataHeader::timestamp`]) — the same
-//!    source the merged hz producer-stamp fix (#3523) reads for the same
-//!    topic (`metadata.timestamp().get_time().to_duration().as_nanos()`),
-//!  - and the **Arrow IPC payload bytes verbatim** — never decoded, never
-//!    re-encoded.
+//! Each recorded `Output` entry becomes one MCAP message on an `arrow-ipc`
+//! channel named `{node_id}/{output_id}`:
+//! - `log_time`     = the recording wall clock:
+//!   `header.start_nanos + entry.timestamp_offset_nanos`,
+//! - `publish_time` = the producer HLC stamp (`metadata.timestamp()`), the same
+//!   source `dora topic hz` reports for that topic,
+//! - `sequence`     = per-channel monotonic 1-based counter,
+//! - `data`         = the recorded Arrow IPC payload bytes verbatim.
 //!
-//! Time mapping (the contract the merged hz fix establishes, so a
-//! publish-vs-log scatter agrees with what `dora topic hz` reports for the
-//! same topic):
-//! - `log_time`     = the recording wall clock: `header.start_nanos +
-//!   entry.timestamp_offset_nanos`. (For the Arrow IPC payload this is **not**
-//!   the value on the wire — the wire value is the length-prefixed Arrow IPC
-//!   header of the payload itself. We preserve that verbatim as the message
-//!   `data`, and put the wall clock in `log_time` as the recording contract
-//!   requires.)
-//! - `publish_time` = the producer HLC stamp, expressed as elapsed nanos
-//!   (the same source `hz` uses),
-//! - `sequence`     = per-channel monotonic 1-based counter (matching what
-//!   `dora replay` delivers).
+//! # Limits
+//!
+//! - `metadata.parameters` is **not** exported. That is where image outputs
+//!   carry `width`/`height`/`encoding` and where services and actions carry
+//!   `request_id`/`goal_id`, so an exported image topic cannot be decoded on
+//!   its own. MCAP has no per-message metadata field to put them in.
+//! - A recorded message with no payload (`data: None`, what a typical
+//!   `send_output("tick", pa.array([]))` trigger leaves behind) is written as
+//!   the Arrow IPC stream for a zero-length `NullArray`, which is what
+//!   `dora replay` would deliver, rather than as an empty message.
+//! - Chunks are uncompressed: `mcap` is built with `default-features = false`.
 use std::{
-    borrow::Cow,
-    collections::{BTreeMap, HashMap},
-    fs::File,
+    collections::{BTreeMap, HashMap, HashSet},
+    fs::{self, File},
     io::BufWriter,
-    sync::Arc,
+    path::{Path, PathBuf},
 };
 
 use dora_message::{common::Timestamped, daemon_to_daemon::InterDaemonEvent};
 use dora_recording::RecordingReader;
 use eyre::{WrapErr, eyre};
-use mcap::records::Metadata;
-use mcap::{Channel, Message, Writer};
+use mcap::Writer;
+use mcap::records::{MessageHeader, Metadata};
 use same_file::is_same_file;
 
 #[derive(Debug, clap::Args)]
@@ -46,7 +41,8 @@ pub struct Export {
     #[clap(value_name = "RECORDING")]
     input: String,
 
-    /// Path of the output `.mcap` file (defaults to `<input>.mcap`)
+    /// Path of the output `.mcap` file (defaults to the input with its
+    /// extension replaced, e.g. `capture.drec` -> `capture.mcap`)
     #[clap(short, long, value_name = "OUTPUT")]
     output: Option<String>,
 
@@ -60,6 +56,16 @@ impl crate::command::Executable for Export {
     fn execute(self) -> eyre::Result<()> {
         run_export(self)
     }
+}
+
+/// The default output path: the input with its extension replaced rather than
+/// appended to, so `capture.drec` becomes `capture.mcap` and not
+/// `capture.drec.mcap`.
+fn default_output_path(input: &str) -> String {
+    Path::new(input)
+        .with_extension("mcap")
+        .to_string_lossy()
+        .into_owned()
 }
 
 fn parse_topic_filter(topics: &[String]) -> eyre::Result<Vec<(String, String)>> {
@@ -82,7 +88,7 @@ fn run_export(args: Export) -> eyre::Result<()> {
 
     let output = args
         .output
-        .unwrap_or_else(|| format!("{}.mcap", args.input));
+        .unwrap_or_else(|| default_output_path(&args.input));
     if output_aliases_input(&args.input, &output)? {
         return Err(eyre!(
             "output `{output}` is the input recording `{}` (or an alias of it); \
@@ -93,39 +99,100 @@ fn run_export(args: Export) -> eyre::Result<()> {
 
     let mut reader =
         RecordingReader::open(input_file).wrap_err("failed to initialise recording reader")?;
-    let header = reader.header();
-    let start_nanos: u64 = header.start_nanos;
 
-    let out_file =
-        File::create(&output).wrap_err_with(|| eyre!("failed to create output `{}`", output))?;
+    // Write to a sibling temp file and rename on success: an export that fails
+    // halfway must not leave a truncated `.mcap` where a readable one used to
+    // be, and must not clobber an existing output until it has a complete
+    // replacement. The temp name lives in the output's directory so the rename
+    // stays on one filesystem and is therefore atomic.
+    let tmp_path = temp_output_path(&output)?;
+    let message_count = match write_mcap(&mut reader, &filter, &tmp_path) {
+        Ok(count) => count,
+        Err(err) => {
+            let _ = fs::remove_file(&tmp_path);
+            return Err(err);
+        }
+    };
+    fs::rename(&tmp_path, &output).wrap_err_with(|| {
+        eyre!(
+            "failed to move the finished export into `{output}` (left as `{}`)",
+            tmp_path.display()
+        )
+    })?;
+
+    eprintln!(
+        "Exported {message_count} messages to `{output}` (publish_time = producer HLC stamp, matching `dora topic hz`)"
+    );
+    Ok(())
+}
+
+/// A hidden sibling of `output` to write the export into. The pid keeps two
+/// concurrent exports of different recordings in the same directory apart.
+fn temp_output_path(output: &str) -> eyre::Result<PathBuf> {
+    let output = Path::new(output);
+    let file_name = output
+        .file_name()
+        .ok_or_else(|| eyre!("`{output:?}` is not a file path"))?;
+    let parent = match output.parent() {
+        Some(parent) if !parent.as_os_str().is_empty() => parent,
+        // A bare file name has an empty parent; write next to the cwd.
+        _ => Path::new("."),
+    };
+    Ok(parent.join(format!(
+        ".{}.{}.tmp",
+        file_name.to_string_lossy(),
+        std::process::id()
+    )))
+}
+
+fn write_mcap(
+    reader: &mut RecordingReader<File>,
+    filter: &[(String, String)],
+    output: &Path,
+) -> eyre::Result<u64> {
+    let (start_nanos, dataflow_id, descriptor_yaml) = {
+        let header = reader.header();
+        (
+            header.start_nanos,
+            header.dataflow_id.to_string(),
+            String::from_utf8_lossy(&header.descriptor_yaml).into_owned(),
+        )
+    };
+
+    let out_file = File::create(output)
+        .wrap_err_with(|| eyre!("failed to create output `{}`", output.display()))?;
     let mut writer =
         Writer::new(BufWriter::new(out_file)).wrap_err("failed to initialise MCAP writer")?;
     writer
         .write_metadata(&Metadata {
             name: "dora-recording".to_string(),
             metadata: BTreeMap::from([
-                ("dataflow_id".to_string(), header.dataflow_id.to_string()),
-                (
-                    "descriptor_yaml".to_string(),
-                    String::from_utf8_lossy(&header.descriptor_yaml).into_owned(),
-                ),
+                ("dataflow_id".to_string(), dataflow_id),
+                ("descriptor_yaml".to_string(), descriptor_yaml),
             ]),
         })
         .wrap_err("failed to write MCAP metadata")?;
 
-    let mut channel_ids: HashMap<(String, String), u16> = HashMap::new();
-    let mut sequences: HashMap<(String, String), u64> = HashMap::new();
+    // Constant, so encode it once rather than per empty message.
+    let empty_ipc = encode_empty_ipc()?;
+
+    // One lookup per topic: the channel it was added as, and its next
+    // per-channel sequence. `write_to_known_channel` then skips rebuilding an
+    // `Arc<Channel>` and re-cloning the topic for every message.
+    let mut channels: HashMap<String, (u16, u32)> = HashMap::new();
+    let mut matched: HashSet<usize> = HashSet::new();
     let mut message_count: u64 = 0;
 
     while let Some(entry) = reader
         .next_entry()
         .wrap_err("failed to read a recording entry")?
     {
-        let node_id = entry.node_id.clone();
-        let output_id = entry.output_id.clone();
-        let topic = format!("{node_id}/{output_id}");
-        if !filter.is_empty() && !filter.contains(&(node_id.clone(), output_id.clone())) {
-            continue;
+        if !filter.is_empty() {
+            let key = (&entry.node_id, &entry.output_id);
+            let Some(pos) = filter.iter().position(|(n, o)| (n, o) == key) else {
+                continue;
+            };
+            matched.insert(pos);
         }
 
         let timestamped = Timestamped::deserialize_inter_daemon_event(&entry.event_bytes)
@@ -138,49 +205,100 @@ fn run_export(args: Export) -> eyre::Result<()> {
             _ => continue,
         };
 
-        let channel_id = if let Some(&id) = channel_ids.get(&(node_id.clone(), output_id.clone())) {
-            id
-        } else {
-            let id = writer
-                .add_channel(0, &topic, "arrow-ipc", &BTreeMap::new())
-                .wrap_err_with(|| eyre!("failed to add MCAP channel `{topic}`"))?;
-            channel_ids.insert((node_id.clone(), output_id.clone()), id);
-            id
+        let topic = format!("{}/{}", entry.node_id, entry.output_id);
+        let (channel_id, sequence) = match channels.get_mut(&topic) {
+            Some(state) => {
+                state.1 = state.1.checked_add(1).ok_or_else(|| {
+                    eyre!("recording has more than 2^32 messages on one topic `{topic}`")
+                })?;
+                *state
+            }
+            None => {
+                let channel_id = writer
+                    .add_channel(0, &topic, "arrow-ipc", &BTreeMap::new())
+                    .wrap_err_with(|| eyre!("failed to add MCAP channel `{topic}`"))?;
+                channels.insert(topic.clone(), (channel_id, 1));
+                (channel_id, 1)
+            }
         };
 
-        let sequence = sequences
-            .entry((node_id.clone(), output_id.clone()))
-            .or_insert(0);
-        *sequence += 1;
-        let sequence = u32::try_from(*sequence)
-            .wrap_err("recording has more than 2^32 messages on one topic")?;
-
-        let log_time = start_nanos.saturating_add(entry.timestamp_offset_nanos);
-
-        let message = Message {
-            channel: Arc::new(Channel {
-                id: channel_id,
-                topic,
-                schema: None,
-                message_encoding: "arrow-ipc".to_string(),
-                metadata: BTreeMap::new(),
-            }),
-            sequence,
-            log_time,
-            publish_time,
-            data: Cow::Borrowed(publish_data.as_deref().unwrap_or(&[])),
+        // A metadata-only message is recorded as `data: None` but replays as a
+        // zero-length `NullArray`, so it has to be written as that IPC stream:
+        // a zero-byte message is not a decodable Arrow stream, and would fail
+        // every reader on the channel.
+        let data = match publish_data.as_deref() {
+            Some(data) => data,
+            None => empty_ipc.as_slice(),
         };
+
         writer
-            .write(&message)
-            .wrap_err("failed to write MCAP message")?;
+            .write_to_known_channel(
+                &MessageHeader {
+                    channel_id,
+                    sequence,
+                    log_time: start_nanos.saturating_add(entry.timestamp_offset_nanos),
+                    publish_time,
+                },
+                data,
+            )
+            .wrap_err_with(|| eyre!("failed to write MCAP message on `{topic}`"))?;
         message_count += 1;
     }
 
+    // `finish` writes the summary and footer; dropping the writer flushes the
+    // `BufWriter` underneath it, which must happen before the rename.
     writer.finish().wrap_err("failed to finish MCAP file")?;
-    eprintln!(
-        "Exported {message_count} messages to `{output}` (publish_time = producer HLC stamp, matching `dora topic hz`)"
-    );
-    Ok(())
+    drop(writer);
+
+    for (node, output_id) in unmatched_topics(filter, &matched) {
+        eprintln!(
+            "warning: --topics entry `{node}/{output_id}` matched no messages in the recording"
+        );
+    }
+
+    Ok(message_count)
+}
+
+/// The `--topics` entries that never matched a recorded message: a typo, or a
+/// topic this recording never carried. Worth saying out loud, since the export
+/// otherwise looks successful.
+fn unmatched_topics<'a>(
+    filter: &'a [(String, String)],
+    matched: &HashSet<usize>,
+) -> Vec<&'a (String, String)> {
+    filter
+        .iter()
+        .enumerate()
+        .filter(|(pos, _)| !matched.contains(pos))
+        .map(|(_, topic)| topic)
+        .collect()
+}
+
+/// The Arrow IPC stream for a zero-length `NullArray`, matching what `dora
+/// replay` delivers for a recorded message with no payload.
+fn encode_empty_ipc() -> eyre::Result<Vec<u8>> {
+    use arrow::array::NullArray;
+    use arrow::ipc::writer::StreamWriter;
+    use arrow::record_batch::RecordBatch;
+    use arrow_schema::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    let schema = Arc::new(Schema::new(vec![Field::new("data", DataType::Null, true)]));
+    let batch = RecordBatch::try_new(schema.clone(), vec![Arc::new(NullArray::new(0))])
+        .wrap_err("failed to build the empty Arrow record batch")?;
+
+    let mut buf = Vec::new();
+    {
+        let mut stream =
+            StreamWriter::try_new(&mut buf, schema.as_ref()).wrap_err("failed to open stream")?;
+        stream
+            .write(&batch)
+            .wrap_err("failed to write the empty Arrow record batch")?;
+        stream
+            .finish()
+            .wrap_err("failed to finish the Arrow stream")?;
+    }
+    Ok(buf)
 }
 
 /// Whether `output` refers to the same file as the `input` recording — via
@@ -203,7 +321,7 @@ fn output_aliases_input(input: &str, output: &str) -> eyre::Result<bool> {
 mod tests {
     use std::{fs, io::BufWriter};
 
-    use super::{Export, run_export};
+    use super::{Export, default_output_path, run_export, unmatched_topics};
     use aligned_vec::AVec;
     use dora_message::{
         common::Timestamped,
@@ -602,5 +720,188 @@ mod tests {
 
         result.expect("fresh bare-relative output must succeed");
         assert!(dir.path().join("fresh.mcap").exists(), "output written");
+    }
+
+    /// A recorded `Output` entry with no payload, the way a `send_output("tick",
+    /// pa.array([]))` trigger is recorded.
+    fn empty_output_event_bytes(node_id: &str, output_id: &str) -> Vec<u8> {
+        let event = InterDaemonEvent::Output {
+            dataflow_id: Uuid::nil(),
+            node_id: NodeId::from(node_id.to_string()),
+            output_id: DataId::from(output_id.to_string()),
+            metadata: Metadata::new(sample_timestamp()),
+            data: None,
+        };
+        Timestamped {
+            inner: event,
+            timestamp: sample_timestamp(),
+        }
+        .serialize()
+        .expect("serialize empty output event")
+    }
+
+    fn header() -> RecordingHeader {
+        RecordingHeader {
+            version: FORMAT_VERSION,
+            start_nanos: 1_000_000_000,
+            dataflow_id: Uuid::nil(),
+            descriptor_yaml: b"nodes: []".to_vec(),
+        }
+    }
+
+    /// A recorded `data: None` message has to land as a decodable Arrow stream.
+    /// The old remux wrote zero bytes, which is not a valid Arrow IPC stream at
+    /// all: every consumer of that channel would fail on the message.
+    #[test]
+    fn empty_payload_is_exported_as_a_decodable_arrow_stream() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("input.drec");
+        let mcap_path = dir.path().join("output.mcap");
+
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header()).expect("init writer");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "tick".to_string(),
+                    output_id: "tick".to_string(),
+                    timestamp_offset_nanos: 100,
+                    event_bytes: empty_output_event_bytes("tick", "tick"),
+                })
+                .expect("write entry");
+            writer.finish().expect("finish recording");
+        }
+
+        run_export(Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec![],
+        })
+        .expect("run export");
+
+        let mcap_bytes = fs::read(&mcap_path).expect("read mcap");
+        let messages: Vec<_> = MessageStream::new(&mcap_bytes)
+            .expect("open mcap")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("read mcap messages");
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].channel.topic, "tick/tick");
+
+        // Decodes as the zero-length `NullArray` that `dora replay` delivers.
+        let reader = arrow::ipc::reader::StreamReader::try_new(
+            std::io::Cursor::new(messages[0].data.as_ref()),
+            None,
+        )
+        .expect("exported empty payload must be a valid Arrow IPC stream");
+        let schema = reader.schema();
+        assert_eq!(schema.fields().len(), 1);
+        assert_eq!(schema.field(0).data_type(), &arrow_schema::DataType::Null);
+        let batches: Vec<_> = reader.collect::<Result<Vec<_>, _>>().expect("read batches");
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 0);
+        assert_eq!(batches[0].num_columns(), 1);
+    }
+
+    #[test]
+    fn default_output_replaces_the_recording_extension() {
+        assert_eq!(default_output_path("capture.drec"), "capture.mcap");
+        assert_eq!(
+            default_output_path("/data/runs/capture.drec"),
+            "/data/runs/capture.mcap"
+        );
+        // An extension-less or differently-named recording still gets `.mcap`
+        // rather than `capture.mcap.drec`.
+        assert_eq!(default_output_path("capture"), "capture.mcap");
+        assert_eq!(default_output_path("capture.tar.drec"), "capture.tar.mcap");
+    }
+
+    #[test]
+    fn default_output_lands_next_to_the_recording() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("input.drec");
+        write_minimal_recording(&recording_path);
+
+        run_export(Export {
+            input: recording_path.to_string_lossy().into(),
+            output: None,
+            topics: vec![],
+        })
+        .expect("run export");
+
+        assert!(
+            dir.path().join("input.mcap").exists(),
+            "default output replaces the input extension, it does not append it"
+        );
+    }
+
+    /// A failed export must not leave a half-written file where a good one
+    /// used to be, and must not leave its temp file behind either.
+    #[test]
+    fn failed_export_keeps_the_previous_output_and_cleans_up() {
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("garbled.drec");
+        let mcap_path = dir.path().join("output.mcap");
+        // A structurally valid recording whose one entry carries unparseable
+        // event bytes: the header parses and the temp file is created, so the
+        // export only fails once it is already writing.
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header()).expect("init writer");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "camera".to_string(),
+                    output_id: "image".to_string(),
+                    timestamp_offset_nanos: 100,
+                    event_bytes: vec![0xff; 16],
+                })
+                .expect("write entry");
+            writer.finish().expect("finish recording");
+        }
+        fs::write(&mcap_path, b"previous good export").expect("seed output");
+
+        let err = run_export(Export {
+            input: recording_path.to_string_lossy().into(),
+            output: Some(mcap_path.to_string_lossy().into()),
+            topics: vec![],
+        })
+        .expect_err("unparseable event bytes must fail the export");
+
+        assert!(
+            err.to_string().contains("deserialize"),
+            "the failure must come from the entry loop, i.e. after the temp file \
+             exists, otherwise this test proves nothing: {err}"
+        );
+
+        assert_eq!(
+            fs::read(&mcap_path).expect("read previous output"),
+            b"previous good export",
+            "a failed export must not clobber the existing output"
+        );
+        let leftovers: Vec<_> = fs::read_dir(dir.path())
+            .expect("read dir")
+            .filter_map(|entry| entry.ok().map(|entry| entry.file_name()))
+            .filter(|name| name.to_string_lossy().ends_with(".tmp"))
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "a failed export must remove its temp file, left {leftovers:?}"
+        );
+    }
+
+    #[test]
+    fn unmatched_topic_filter_entries_are_reported() {
+        let filter = vec![
+            ("camera".to_string(), "image".to_string()),
+            ("lidar".to_string(), "points".to_string()),
+            ("typo".to_string(), "nope".to_string()),
+        ];
+        let matched = [0usize, 1].into_iter().collect();
+
+        assert_eq!(
+            unmatched_topics(&filter, &matched),
+            vec![&("typo".to_string(), "nope".to_string())]
+        );
     }
 }

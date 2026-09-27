@@ -7,8 +7,6 @@ mod daemon;
 mod doctor;
 mod down;
 mod expand;
-#[cfg(feature = "mcap-export")]
-mod export;
 mod graph;
 mod hub;
 pub mod inspect;
@@ -19,6 +17,8 @@ mod node;
 mod node_binary;
 mod param;
 mod record;
+#[cfg(feature = "mcap-export")]
+mod recording;
 mod replay;
 mod restart;
 mod run;
@@ -45,8 +45,6 @@ use daemon::Daemon;
 use doctor::Doctor;
 use down::Down;
 use expand::Expand;
-#[cfg(feature = "mcap-export")]
-use export::Export;
 use eyre::Context;
 use graph::Graph;
 use hub::Hub;
@@ -57,6 +55,8 @@ use new::NewArgs;
 use node::Node;
 use param::Param;
 use record::Record;
+#[cfg(feature = "mcap-export")]
+use recording::Recording;
 use replay::Replay;
 use restart::Restart;
 use runtime::Runtime;
@@ -126,10 +126,10 @@ pub enum Command {
     /// Replay a recorded dataflow from a `.drec` file
     #[clap(display_order = 17)]
     Replay(Replay),
-    /// Export a recording to an MCAP file
+    /// Manage dataflow recordings
     #[cfg(feature = "mcap-export")]
-    #[clap(display_order = 18)]
-    Export(Export),
+    #[clap(subcommand, display_order = 18)]
+    Recording(Recording),
     /// View coordinator tracing spans
     #[clap(subcommand, display_order = 19)]
     Trace(Trace),
@@ -221,7 +221,7 @@ impl Executable for Command {
             Command::Record(args) => args.execute(),
             Command::Replay(args) => args.execute(),
             #[cfg(feature = "mcap-export")]
-            Command::Export(args) => args.execute(),
+            Command::Recording(args) => args.execute(),
             Command::Trace(args) => args.execute(),
             Command::Status(args) => args.execute(),
             Command::Doctor(args) => args.execute(),

@@ -5,9 +5,6 @@
 #
 # One line per command, then one per argument. Hidden commands are included:
 # `dora daemon` and `dora coordinator` are undocumented but scripted against.
-# Feature-gated commands (e.g. `dora export` behind `mcap-export`) are
-# excluded: the snapshot pins the default-build surface, so a default
-# `cargo install dora-cli` is what 1.0 freezes.
 # Removing any line is a breaking change; adding one is not.
 
 dora
@@ -252,6 +249,11 @@ dora record | --queue-size <value>
 dora record | --topics <value>
 dora record | -o/--output <value>
 dora record | <file> (required)
+dora recording
+dora recording export
+dora recording export | --topics <value>
+dora recording export | -o/--output <value>
+dora recording export | <input> (required)
 dora replay
 dora replay | --loop
 dora replay | --output-yaml <value>

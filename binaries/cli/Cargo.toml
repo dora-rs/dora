@@ -16,14 +16,14 @@ name = "dora"
 path = "src/main.rs"
 
 [features]
-default = ["tracing", "metrics", "redb-backend"]
+default = ["tracing", "metrics", "redb-backend", "mcap-export"]
 tracing = ["dep:dora-tracing"]
 metrics = ["dora-runtime-shared-lib/metrics", "dora-coordinator/metrics"]
-# `dora export` (the .drec -> MCAP remux). Optional so a default `cargo
-# install dora-cli` does not pay for mcap + its transitive crates. CI tests it
-# from the `test` job's dedicated step. Like tensor-pool, this is a sink we do
-# not want to silently rot -- but unlike the frozen 1.0 surface, feature-gated
-# commands are excluded from the default `cli-surface.txt` snapshot.
+# `dora recording export` (the .drec -> MCAP remux). On by default: it is the
+# only stable way to get data back out of a `.drec` recording, so it belongs in
+# release binaries, in the `dora-rs-cli` wheel and in `dora self update` rather
+# than only in `cargo install dora-cli --features mcap-export` -- and being on
+# by default, it is part of the surface `cli-surface.txt` now pins.
 mcap-export = ["dep:mcap", "dep:same-file"]
 # Marks a build that is hosted by the `dora-rs-cli` wheel rather than the
 # standalone binary, which changes how `dora self uninstall` and executable
