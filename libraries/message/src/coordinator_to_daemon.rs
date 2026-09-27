@@ -88,7 +88,7 @@ pub enum RegisterResult {
         peer_zenoh_endpoints: Vec<String>,
         /// Whether this coordinator accepts topic debug frames as WebSocket
         /// binary messages (see
-        /// [`crate::daemon_to_coordinator::encode_topic_debug_frame`]).
+        /// [`crate::daemon_to_coordinator::encode_topic_debug_chunks`]).
         ///
         /// Sending them as JSON [`crate::daemon_to_coordinator::DaemonEvent::TopicDebugData`]
         /// renders the payload as a decimal number array, several times its

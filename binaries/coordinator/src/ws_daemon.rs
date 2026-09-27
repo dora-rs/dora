@@ -697,8 +697,7 @@ async fn handle_daemon_response(
 mod topic_debug_frame_tests {
     use super::*;
     use dora_message::daemon_to_coordinator::{
-        TOPIC_DEBUG_CHUNK_BYTES, encode_topic_debug_chunks, encode_topic_debug_frame,
-        topic_debug_frame_len,
+        TOPIC_DEBUG_CHUNK_BYTES, encode_topic_debug_chunks, topic_debug_frame_len,
     };
 
     /// A small frame as the single binary message a daemon sends it in.
@@ -746,7 +745,10 @@ mod topic_debug_frame_tests {
             },
             Uuid::new_v4(),
         ));
-        let binary = encode_topic_debug_frame(dataflow_id, &subscription_ids, &payload).unwrap();
+        let binary = TopicDebugFrameAssembler::default()
+            .push(&one_chunk(dataflow_id, &subscription_ids, &payload))
+            .unwrap()
+            .expect("a one-chunk frame is complete");
         let from_binary = topic_debug_data(decode_daemon_binary_frame(&binary).ok());
 
         assert_eq!(from_json, (dataflow_id, subscription_ids, payload));

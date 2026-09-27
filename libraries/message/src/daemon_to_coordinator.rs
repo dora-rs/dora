@@ -348,7 +348,7 @@ pub enum DaemonEvent {
     ///
     /// This JSON form is the fallback. A coordinator that sets
     /// `RegisterResult::Ok::binary_debug_frames` receives the same data as a
-    /// WebSocket binary message instead (see [`encode_topic_debug_frame`]),
+    /// WebSocket binary messages instead (see [`encode_topic_debug_chunks`]),
     /// because JSON renders `payload` as a decimal number array several times
     /// its size. The variant stays for coordinators that do not set the flag.
     TopicDebugData {
@@ -410,13 +410,13 @@ const DEFAULT_CLIENT_FRAME_BYTES: usize = 16 * 1024 * 1024;
 /// CLI path.
 ///
 /// The coordinator forwards a payload to the CLI as one frame of
-/// `subscription id (16 bytes) | payload`, so [`DEFAULT_CLIENT_FRAME_BYTES`]
+/// `subscription id (16 bytes) | payload`, so `DEFAULT_CLIENT_FRAME_BYTES`
 /// minus that prefix is the real limit; rounded down to a whole MiB. An output
 /// past it is dropped at the daemon rather than sent for the coordinator to
 /// drop — or, worse, forwarded for the CLI to fail on.
 pub const MAX_TOPIC_DEBUG_PAYLOAD_BYTES: usize = 15 * 1024 * 1024;
 
-/// Largest binary topic debug frame (see [`encode_topic_debug_frame`]) a
+/// Largest binary topic debug frame (see [`encode_topic_debug_chunks`]) a
 /// coordinator that offers `RegisterResult::Ok::binary_debug_frames` accepts,
 /// header included: one [`MAX_TOPIC_DEBUG_PAYLOAD_BYTES`] payload plus its
 /// header, which is 20 bytes and 16 more per subscription. It bounds what the
@@ -469,21 +469,11 @@ pub fn topic_debug_frame_len(subscription_count: usize, payload_len: usize) -> u
         .saturating_add(payload_len)
 }
 
-/// Encode a topic debug frame as the body of a daemon→coordinator WebSocket
-/// binary message: the binary counterpart of [`DaemonEvent::TopicDebugData`],
-/// used only when the coordinator set `RegisterResult::Ok::binary_debug_frames`.
-///
-/// Layout, mirroring the coordinator→CLI topic data frames (fixed-width ids
-/// ahead of the untouched payload):
-///
-/// ```text
-/// dataflow id (16 bytes) | subscription count n (u32 LE) | n × subscription id (16 bytes) | payload
-/// ```
-///
-/// No daemon/coordinator timestamp and no daemon id: the socket is already
-/// bound to the registered daemon, and the payload carries the producer's own
-/// timestamp.
-pub fn encode_topic_debug_frame(
+/// A whole topic debug frame, unchunked: the reference the chunk tests compare
+/// against. Only chunks go on the wire ([`encode_topic_debug_chunks`]), so this
+/// is not part of the crate's API.
+#[cfg(test)]
+fn encode_topic_debug_frame(
     dataflow_id: DataflowId,
     subscription_ids: &[uuid::Uuid],
     payload: &[u8],
@@ -511,15 +501,30 @@ fn encode_topic_debug_frame_header(
 }
 
 /// Encode a topic debug frame as the daemon→coordinator WebSocket binary
-/// messages that carry it — the form a daemon actually sends.
+/// messages that carry it: the binary counterpart of
+/// [`DaemonEvent::TopicDebugData`], used only when the coordinator set
+/// `RegisterResult::Ok::binary_debug_frames`.
 ///
-/// The frame of [`encode_topic_debug_frame`] is split into chunks of at most
-/// [`TOPIC_DEBUG_CHUNK_BYTES`], each sent as its own binary message behind a
-/// one-byte marker:
+/// The frame's layout mirrors the coordinator→CLI topic data frames
+/// (fixed-width ids ahead of the untouched payload):
+///
+/// ```text
+/// dataflow id (16 bytes) | subscription count n (u32 LE) | n × subscription id (16 bytes) | payload
+/// ```
+///
+/// No daemon/coordinator timestamp and no daemon id: the socket is already
+/// bound to the registered daemon, and the payload carries the producer's own
+/// timestamp.
+///
+/// The frame is split into chunks of at most [`TOPIC_DEBUG_CHUNK_BYTES`], each
+/// sent as its own binary message behind a one-byte marker:
 ///
 /// ```text
 /// marker (u8: 1 = more chunks follow, 0 = last chunk) | next ≤ TOPIC_DEBUG_CHUNK_BYTES bytes of the frame
 /// ```
+///
+/// Both layouts are a wire format between daemon and coordinator versions;
+/// `a_frame_and_its_chunk_match_their_golden_bytes` pins them.
 ///
 /// A frame always has at least one chunk, and its chunks are sent back to
 /// back as far as binary messages go: other text messages may come between
@@ -623,8 +628,8 @@ pub struct TopicDebugFrame<'a> {
     pub payload: &'a [u8],
 }
 
-/// Decode a daemon→coordinator WebSocket binary message produced by
-/// [`encode_topic_debug_frame`].
+/// Decode a topic debug frame, as [`TopicDebugFrameAssembler`] reassembles it
+/// from the chunks of [`encode_topic_debug_chunks`].
 ///
 /// The input comes from the network, so the subscription count is checked
 /// against the frame length before anything is allocated for it.
@@ -710,6 +715,55 @@ mod topic_debug_frame_tests {
         let mut huge = vec![0; TOPIC_DEBUG_FRAME_FIXED_HEADER];
         huge[16..20].copy_from_slice(&u32::MAX.to_le_bytes());
         assert!(decode_topic_debug_frame(&huge).is_err());
+    }
+
+    /// Pins the wire format, which mixed daemon/coordinator versions rely on
+    /// and which neither the serde-based breaking-change gate nor the
+    /// round-trip tests would notice changing (dora-rs/dora#3636 review). The
+    /// expected bytes are written out, not derived from the encoder: if this
+    /// test needs updating, released peers can no longer talk to the new one.
+    #[test]
+    fn a_frame_and_its_chunk_match_their_golden_bytes() {
+        let dataflow_id = uuid::Uuid::from_u128(0x0011_2233_4455_6677_8899_aabb_ccdd_eeff);
+        let subscription_id = uuid::Uuid::from_u128(0xf0e1_d2c3_b4a5_9687_7869_5a4b_3c2d_1e0f);
+        let golden_chunk: &[u8] = &[
+            // marker: last (and only) chunk
+            0x00, //
+            // dataflow id
+            0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, //
+            0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, //
+            // subscription count, u32 LE
+            0x01, 0x00, 0x00, 0x00, //
+            // subscription id
+            0xf0, 0xe1, 0xd2, 0xc3, 0xb4, 0xa5, 0x96, 0x87, //
+            0x78, 0x69, 0x5a, 0x4b, 0x3c, 0x2d, 0x1e, 0x0f, //
+            // payload, as-is
+            0xde, 0xad, 0xbe, 0xef,
+        ];
+
+        let chunks =
+            encode_topic_debug_chunks(dataflow_id, &[subscription_id], &[0xde, 0xad, 0xbe, 0xef])
+                .unwrap();
+        assert_eq!(chunks, [golden_chunk.to_vec()]);
+
+        // ... and the decoding side reads exactly those bytes back.
+        let frame = TopicDebugFrameAssembler::default()
+            .push(golden_chunk)
+            .unwrap()
+            .expect("a last-chunk marker completes the frame");
+        assert_eq!(frame, golden_chunk[1..]);
+        let decoded = decode_topic_debug_frame(&frame).unwrap();
+        assert_eq!(decoded.dataflow_id, dataflow_id);
+        assert_eq!(decoded.subscription_ids, [subscription_id]);
+        assert_eq!(decoded.payload, [0xde, 0xad, 0xbe, 0xef]);
+
+        // A frame continued in a later message is marked 1.
+        let mut assembler = TopicDebugFrameAssembler::default();
+        assert_eq!(assembler.push(&[0x01, 0x00, 0x11]).unwrap(), None);
+        assert_eq!(
+            assembler.push(&[0x00, 0x22]).unwrap(),
+            Some(vec![0x00, 0x11, 0x22])
+        );
     }
 
     fn reassemble(chunks: &[Vec<u8>]) -> Vec<u8> {
