@@ -833,12 +833,16 @@ impl RunningDataflow {
                 // node that stops promptly must not leave its children worse off
                 // than one that has to be chased (#3472 review).
                 //
-                // Submitted here and not from the task below: `stop_all` already
-                // sent `NodeEvent::Stop` to the node, so a node that exits on it
-                // can beat a marker queued by a spawned task, and its group
-                // would be killed at once instead of held. Nothing awaits
-                // between that send and this submit, so the marker is in the
-                // channel before the node can act on the event (#3472 review).
+                // Submitted here and not from the task below, so the marker is
+                // queued before the wait task can look for one. `stop_all` sends
+                // `NodeEvent::Stop` to every node before it gets here, and a node
+                // is a separate process that can act on that event immediately,
+                // so the wait task may already be running; but it cannot reach
+                // the point where it takes a queued marker until the executor
+                // yields, and nothing between those sends and these submits
+                // awaits. A marker submitted by a spawned task would be queued a
+                // whole task wakeup later, by which time the group is SIGKILLed
+                // at once instead of held (#3472 review).
                 let soft_kill_at = tokio::time::Instant::now() + duration;
                 process.submit(ProcessOperation::StopRequested {
                     soft_kill_at,

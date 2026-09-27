@@ -1060,12 +1060,14 @@ impl PreparedNode {
                 }
             };
 
-            // `select!` breaks on whichever branch is ready and picks between
-            // two ready branches at random, so the stop marker can still be
-            // sitting in the queue at this point. A stop is submitted
-            // synchronously when it is scheduled, so if one is coming it is
-            // already here; take it, or the group below is killed at once
-            // instead of held to this node's ladder (#3472 review).
+            // Both halves of the marker guarantee land here. It is queued before
+            // the ladder task's first sleep, and the wait task cannot reach the
+            // point where it takes one until the executor yields, which the
+            // submits in `schedule_process_stop` do not do; so the only way a
+            // marker is missed is if it is never submitted. `select!` breaks on
+            // whichever branch is ready and picks between two ready branches at
+            // random, so take whatever is still queued — before the receiver goes,
+            // since the ladder's later submits would then find it open.
             take_queued_stop(&op_rx, &mut stop);
 
             // The node is gone, so nothing can be delivered to it. Drop the

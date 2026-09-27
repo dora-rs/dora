@@ -2562,14 +2562,19 @@ fn run_stop_does_not_orphan_term_ignoring_shell_nodes() {
 /// outlives the signal, so the wait task is still running when the escalation
 /// lands and the group's single delivery is easy to explain. This is the
 /// opposite shape, and the only one that reaches the `signalled` bookkeeping in
-/// the wait task: the fixture shell has no SIGTERM handler, so the ladder's
-/// first group signal kills it, the node finishes on its own, and the daemon
-/// then contains whatever is left in the group — the child, which handles
-/// SIGTERM and counts. The group was already asked to stop by the `SoftKill`
-/// the wait task ran, so the containment must not deliver a second one; without
-/// that flag the child counts two and this test fails. Nothing in the daemon's
-/// unit tests reaches that wiring, since the flag is only ever set from inside
-/// the wait task.
+/// the wait task: the fixture shell's SIGTERM handler exits it a second later, so
+/// the node finishes on its own well after the signal, and the daemon then
+/// contains whatever is left in the group — the child, which handles SIGTERM and
+/// counts. The group was already asked to stop by the `SoftKill` the wait task
+/// ran, so the containment must not deliver a second one; without that flag the
+/// child counts two and this test fails. Nothing in the daemon's unit tests
+/// reaches that wiring, since the flag is only ever set from inside the wait task.
+///
+/// That one second is load-bearing. The signals are not queued per process, so a
+/// replay delivered while the child's trap was still running would be folded into
+/// the first one and the count would stay at one even with the regression: at a
+/// few ms the mutant slipped through on a loaded machine once. Widening the gap
+/// past the trap's turnaround is what makes the count mean what it says.
 #[test]
 #[cfg(unix)]
 fn run_stop_signals_the_group_of_a_node_that_died_on_term_once() {
@@ -2791,8 +2796,9 @@ enum ShellStop {
     Default,
     /// Ignore the stop signals, and count the SIGTERM deliveries.
     Ignore,
-    /// No handler, so the first SIGTERM ends the shell and with it the node,
-    /// while the child counts instead of dying.
+    /// A handler that exits a second later, ending the node on the ladder's
+    /// first SIGTERM but late enough that the child has re-armed its own by
+    /// then, while the child counts instead of dying.
     DieOnTerm,
 }
 
@@ -2808,10 +2814,11 @@ impl ShellOrphanRun {
         Self::start_with(Some(stop_after), ShellStop::Ignore, false)
     }
 
-    /// A variant whose shell has no `SIGTERM` handler, so the stop ladder's
-    /// first signal ends the *node* while its background child handles `SIGTERM`
+    /// A variant whose shell exits when the stop ladder's `SIGTERM` arrives —
+    /// a second later, so the replay the containment must not send would land
+    /// well clear of the first — while its background child handles `SIGTERM`
     /// and counts the deliveries. The group is therefore signalled once and the
-    /// node then exits on its own — the case where the daemon's containment has
+    /// node then exits on its own: the case where the daemon's containment has
     /// to know the group was already asked to stop, and must not ask again
     /// (#3472 review).
     fn start_node_dying_on_term(stop_after: Duration) -> Self {
@@ -2865,10 +2872,9 @@ impl ShellOrphanRun {
         // `Ignore` variant the shell additionally ignores the stop signals, so
         // only the daemon's SIGKILL escalation can end it; a `TERM` trap there
         // counts SIGTERM deliveries, so the test can pin the stop ladder to a
-        // single one. `DieOnTerm` installs the other half of that trap on the
-        // child instead — the shell keeps SIGTERM's default action and so
-        // disappears on the ladder's first signal, ending the node, while the
-        // child lives on and counts. Paths are single-quoted so spaces in
+        // single one. `DieOnTerm` splits the two roles instead: the shell exits
+        // on the ladder's first SIGTERM, ending the node, while the child lives
+        // on and counts. Paths are single-quoted so spaces in
         // `$CARGO_TARGET_DIR` cannot break out of the redirect (mirroring
         // `write_shell_dataflow`).
         let ignore = if abandon_fork {
@@ -2880,7 +2886,14 @@ impl ShellOrphanRun {
                     "trap '' INT HUP; trap 'echo t >> '{}'' TERM; ",
                     terms_file.display(),
                 ),
-                ShellStop::DieOnTerm => "trap '' INT HUP; ".to_string(),
+                // The delay is the point: the node outlives the ladder's SIGTERM
+                // by a second, so the containment runs long after the child's
+                // trap has re-armed. A replay delivered a few ms later would be
+                // folded into the first signal by the kernel and the count would
+                // stay at one even with the regression (#3472 review).
+                ShellStop::DieOnTerm => {
+                    "trap '' INT HUP; trap 'sleep 1; exit 0' TERM; ".to_string()
+                }
             }
         };
         // In the `Ignore` variant the background child also ignores SIGTERM —
