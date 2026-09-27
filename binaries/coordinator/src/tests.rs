@@ -546,7 +546,7 @@ async fn start_topic_debug_stream_does_not_orphan_subscriber_on_missing_daemon_c
         &mut daemon_connections,
         dataflow_id,
         topics,
-        tx,
+        tx.into(),
         &clock,
     )
     .await;
@@ -1875,7 +1875,7 @@ async fn start_topic_debug_stream_targets_source_daemon() {
         &mut daemon_connections,
         dataflow_id,
         vec![(node_id.clone(), data_id.clone())],
-        frame_tx,
+        frame_tx.into(),
         &HLC::default(),
     )
     .await
@@ -1991,7 +1991,7 @@ async fn start_topic_debug_stream_rolls_back_on_daemon_error() {
         &mut daemon_connections,
         dataflow_id,
         vec![(node_id_a, data_id.clone()), (node_id_b, data_id)],
-        frame_tx,
+        frame_tx.into(),
         &HLC::default(),
     )
     .await

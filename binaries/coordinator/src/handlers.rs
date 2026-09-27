@@ -145,6 +145,7 @@ pub(crate) async fn send_topic_frames(
             let frame = crate::topic_subscriber::TopicFrame {
                 subscription_id,
                 payload: shared_payload.clone(),
+                budget: None,
             };
             let send_result =
                 tokio::time::timeout(Duration::from_millis(100), subscriber.send_frame(frame))
@@ -998,6 +999,7 @@ mod tests {
         tx.send(crate::topic_subscriber::TopicFrame {
             subscription_id,
             payload: std::sync::Arc::from(vec![].into_boxed_slice()),
+            budget: None,
         })
         .await
         .unwrap();
