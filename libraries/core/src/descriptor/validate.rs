@@ -326,9 +326,20 @@ pub trait ResolvedNodeExt {
     fn max_rotated_files(&self) -> eyre::Result<Option<u32>>;
 }
 
+/// Check that a resolved `send_stdout_as` / `send_logs_as` name is a valid
+/// [`DataId`]. The daemon's per-node log task turns it into one for every log
+/// line, and an invalid name (empty, a space, `op/` from an empty operator
+/// entry, ...) would otherwise panic that task on the node's first line and
+/// silently drop all of the node's later logs.
+fn checked_output_name(field: &str, name: String) -> eyre::Result<String> {
+    name.parse::<DataId>()
+        .map_err(|err| eyre!("`{field}: {name}` is not a valid output id: {err}"))?;
+    Ok(name)
+}
+
 impl ResolvedNodeExt for ResolvedNode {
     fn send_stdout_as(&self) -> eyre::Result<Option<String>> {
-        match &self.kind {
+        let name = match &self.kind {
             // TODO: Split stdout between operators
             CoreNodeKind::Runtime(n) => {
                 let count = n
@@ -345,19 +356,21 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `send_stdout_as` entries for a runtime node. Please only use one `send_stdout_as` per runtime."
                     ));
                 }
-                Ok(n.operators.iter().find_map(|op| {
+                n.operators.iter().find_map(|op| {
                     op.config
                         .send_stdout_as
-                        .clone()
+                        .as_ref()
                         .map(|stdout| format!("{}/{}", op.id, stdout))
-                }))
+                })
             }
-            CoreNodeKind::Custom(n) => Ok(n.send_stdout_as.clone()),
-        }
+            CoreNodeKind::Custom(n) => n.send_stdout_as.clone(),
+        };
+        name.map(|name| checked_output_name("send_stdout_as", name))
+            .transpose()
     }
 
     fn send_logs_as(&self) -> eyre::Result<Option<String>> {
-        match &self.kind {
+        let name = match &self.kind {
             CoreNodeKind::Runtime(n) => {
                 let count = n
                     .operators
@@ -369,15 +382,17 @@ impl ResolvedNodeExt for ResolvedNode {
                         "More than one `send_logs_as` entries for a runtime node. Please only use one `send_logs_as` per runtime."
                     ));
                 }
-                Ok(n.operators.iter().find_map(|op| {
+                n.operators.iter().find_map(|op| {
                     op.config
                         .send_logs_as
-                        .clone()
+                        .as_ref()
                         .map(|logs| format!("{}/{}", op.id, logs))
-                }))
+                })
             }
-            CoreNodeKind::Custom(n) => Ok(n.send_logs_as.clone()),
-        }
+            CoreNodeKind::Custom(n) => n.send_logs_as.clone(),
+        };
+        name.map(|name| checked_output_name("send_logs_as", name))
+            .transpose()
     }
 
     fn min_log_level(&self) -> eyre::Result<Option<dora_message::common::LogLevelOrStdout>> {
@@ -3307,6 +3322,73 @@ nodes:
         assert!(parse_byte_size("abc").is_err());
         assert!(parse_byte_size("abcKB").is_err());
         assert!(parse_byte_size("1.2.3KB").is_err());
+    }
+
+    #[test]
+    fn send_as_rejects_names_that_are_not_valid_output_ids() {
+        for (field, value) in [
+            ("send_stdout_as", "std out"),
+            ("send_stdout_as", "out/"),
+            ("send_logs_as", "\"\""),
+            ("send_logs_as", "a//b"),
+        ] {
+            let yaml = format!(
+                "nodes:\n  - id: talker\n    path: talker\n    {field}: {value}\n    outputs: [out]\n"
+            );
+            let descriptor: Descriptor = serde_yaml::from_str(&yaml).unwrap();
+            let err = check_dataflow_static(&descriptor)
+                .expect_err(&format!("`{field}: {value}` must be rejected"));
+            assert!(
+                format!("{err:?}").contains("is not a valid output id"),
+                "unexpected error for `{field}: {value}`: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn send_as_rejects_empty_operator_entry() {
+        let yaml = r#"
+nodes:
+  - id: rt
+    operators:
+      - id: op1
+        python: op.py
+        send_stdout_as: ""
+        send_logs_as: ""
+        outputs: [out]
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let node = &nodes[&NodeId::from("rt".to_string())];
+        assert!(node.send_stdout_as().is_err());
+        assert!(node.send_logs_as().is_err());
+    }
+
+    #[test]
+    fn send_as_accepts_valid_names() {
+        let yaml = r#"
+nodes:
+  - id: rt
+    operators:
+      - id: op1
+        python: op.py
+        send_stdout_as: stdout
+        send_logs_as: logs
+        outputs: [stdout, logs]
+  - id: talker
+    path: talker
+    send_stdout_as: stdout
+    send_logs_as: logs
+    outputs: [stdout, logs]
+"#;
+        let descriptor: Descriptor = serde_yaml::from_str(yaml).unwrap();
+        let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+        let rt = &nodes[&NodeId::from("rt".to_string())];
+        assert_eq!(rt.send_stdout_as().unwrap().as_deref(), Some("op1/stdout"));
+        assert_eq!(rt.send_logs_as().unwrap().as_deref(), Some("op1/logs"));
+        let talker = &nodes[&NodeId::from("talker".to_string())];
+        assert_eq!(talker.send_stdout_as().unwrap().as_deref(), Some("stdout"));
+        assert_eq!(talker.send_logs_as().unwrap().as_deref(), Some("logs"));
     }
 
     // parse_log_level: every level variant ----
