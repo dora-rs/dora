@@ -22,6 +22,7 @@ use dora_node_api::{DoraArray, Metadata, arrow_utils::encode_arrow_ipc};
 use eyre::{ContextCompat, WrapErr};
 use process_wrap::tokio::CommandWrap;
 
+#[cfg(unix)]
 use super::group_lifetime::contain_exited_group;
 use std::{
     path::{Path, PathBuf},
