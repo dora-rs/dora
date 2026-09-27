@@ -392,14 +392,10 @@ fn insert_overlay_value(
 }
 
 #[cfg(feature = "zenoh")]
-pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Result<zenoh::Session> {
+pub async fn open_zenoh_session() -> eyre::Result<zenoh::Session> {
     // Nodes and the coordinator have no in-process way to know, so
     // [`DORA_ZENOH_MULTICAST_ENV`] (honored inside) is their only channel.
-    let (session, _) = open_zenoh_session_with_listen(ZenohSessionParams {
-        coordinator_addr,
-        ..Default::default()
-    })
-    .await?;
+    let (session, _) = open_zenoh_session_with_listen(ZenohSessionParams::default()).await?;
     Ok(session)
 }
 
@@ -414,9 +410,6 @@ pub async fn open_zenoh_session(coordinator_addr: Option<IpAddr>) -> eyre::Resul
 #[cfg(feature = "zenoh")]
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ZenohSessionParams<'a> {
-    /// Coordinator to reach through a zenoh router/peer pair. Unused by every
-    /// in-tree caller today; see the `coordinator_addr` branch below.
-    pub coordinator_addr: Option<IpAddr>,
     /// Endpoint this session listens on and advertises to its peers, e.g.
     /// `tcp/127.0.0.1:43217` for a single-machine daemon or `tcp/10.0.2.100:5456`
     /// for one in a cluster. Verified against `info().locators()` after open;
@@ -456,20 +449,6 @@ pub struct ZenohSessionParams<'a> {
     pub multicast: MulticastScouting,
 }
 
-/// Builds the zenoh `connect/endpoints` JSON5 for a coordinator peer.
-///
-/// The peer address is formatted through a [`SocketAddr`] so that IPv6
-/// addresses are bracketed (`tcp/[::1]:5456`), matching zenoh's TCP locator
-/// grammar. Interpolating a bare [`IpAddr`] instead would emit `tcp/::1:5456`
-/// for IPv6 — a malformed locator where the port colon is indistinguishable
-/// from the address colons, which `insert_json5` rejects (#3041). This is the
-/// same bracketing [`reserve_zenoh_endpoint`] already relies on.
-#[cfg(feature = "zenoh")]
-fn coordinator_connect_endpoints(addr: IpAddr) -> String {
-    let peer = SocketAddr::new(addr, 5456);
-    format!(r#"{{ router: ["tcp/[::]:7447"], peer: ["tcp/{peer}"] }}"#)
-}
-
 /// Computed Zenoh configuration and endpoint metadata built from session parameters and environment.
 #[cfg(feature = "zenoh")]
 #[derive(Debug)]
@@ -493,7 +472,6 @@ pub(crate) fn build_zenoh_config(
     let ZenohSessionParams {
         listen_endpoint,
         inter_daemon_peer,
-        coordinator_addr,
         connect_endpoints,
         discovered_connect_endpoints,
         multicast,
@@ -777,12 +755,6 @@ pub(crate) fn build_zenoh_config(
         warn!("failed to disable zenoh scouting/multicast: {err}");
     }
 
-    if let Some(addr) = coordinator_addr
-        && let Err(err) =
-            zenoh_config.insert_json5("connect/endpoints", &coordinator_connect_endpoints(addr))
-    {
-        warn!("failed to set zenoh connect/endpoints for coordinator {addr}: {err}");
-    }
     // Last, so an operator's setting wins over dora's default for the
     // same key. The endpoint lists are already merged above rather than
     // overwritten here — that is what makes the overlay additive.
@@ -1096,8 +1068,8 @@ pub fn zenoh_endpoint_is_loopback(endpoint: &str) -> bool {
 /// Only used when a deployment *names* the port — `--zenoh-listen <IP>` alone
 /// still reserves an ephemeral one. An explicit mesh needs a port its peers can
 /// predict, since they must dial the endpoint before the daemon has told anyone
-/// what it bound. 5456 is the port dora already uses for a zenoh peer in
-/// [`coordinator_connect_endpoints`] and in every deployment doc example.
+/// what it bound. 5456 is the port every deployment doc example already uses
+/// for a zenoh peer.
 pub const DORA_ZENOH_LISTEN_PORT_DEFAULT: u16 = 5456;
 
 /// Format `addr:port` as a zenoh TCP endpoint string.
@@ -1651,29 +1623,6 @@ mod tests {
                 ) || e.raw_os_error() == Some(97) => {}
             Err(e) => panic!("unexpected error reserving ::1 endpoint: {e}"),
         }
-    }
-
-    // The coordinator peer endpoint must bracket IPv6 too, or `insert_json5`
-    // rejects the malformed locator and the peer connect-endpoint is silently
-    // dropped (#3041). Pure string formatting — no session is opened.
-    #[cfg(feature = "zenoh")]
-    #[test]
-    fn coordinator_connect_endpoints_bracket_ipv6() {
-        let v6 = coordinator_connect_endpoints(IpAddr::V6(std::net::Ipv6Addr::LOCALHOST));
-        assert!(
-            v6.contains(r#"peer: ["tcp/[::1]:5456"]"#),
-            "IPv6 coordinator peer must be bracketed, got {v6}"
-        );
-        assert!(
-            !v6.contains("tcp/::1:5456"),
-            "unbracketed IPv6 peer locator is malformed, got {v6}"
-        );
-
-        let v4 = coordinator_connect_endpoints(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)));
-        assert!(
-            v4.contains(r#"peer: ["tcp/127.0.0.1:5456"]"#),
-            "IPv4 coordinator peer must be unbracketed, got {v4}"
-        );
     }
 
     // The filter behind the routing lookup, tested directly rather than through
