@@ -15,9 +15,11 @@ pub fn init(
     tx: mpsc::Sender<EventItem>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    ingress: Option<Arc<super::Ingress>>,
 ) -> eyre::Result<EventStreamThreadHandle> {
     let node_id_cloned = node_id.clone();
-    let join_handle = std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock));
+    let join_handle =
+        std::thread::spawn(|| event_stream_loop(node_id_cloned, tx, channel, clock, ingress));
     Ok(EventStreamThreadHandle::new(node_id, join_handle))
 }
 
@@ -92,12 +94,13 @@ impl Drop for EventStreamThreadHandle {
     }
 }
 
-#[tracing::instrument(skip(tx, channel, clock))]
+#[tracing::instrument(skip(tx, channel, clock, ingress))]
 fn event_stream_loop(
     node_id: NodeId,
     tx: mpsc::Sender<EventItem>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
+    ingress: Option<Arc<super::Ingress>>,
 ) {
     let mut tx = Some(tx);
     let mut close_tx = false;
@@ -149,6 +152,15 @@ fn event_stream_loop(
             // not ask for; the extension drains the queue on its own schedule.
             if let NodeEvent::ExtensionDropped { namespace, key } = &inner {
                 crate::event_stream::extensions::push_dropped(namespace.clone(), key.clone());
+                continue;
+            }
+
+            // Inputs are queued on arrival (see `Ingress`), the same as on the
+            // zenoh path; the channel carries the rest.
+            if let Some(ingress) = ingress.as_deref()
+                && matches!(&inner, NodeEvent::Input { id, .. } if ingress.takes(id))
+            {
+                ingress.push(EventItem::NodeEvent { event: inner });
                 continue;
             }
 

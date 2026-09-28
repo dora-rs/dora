@@ -371,15 +371,22 @@ impl Scheduler {
 
         let cap = policy.effective_cap(*size);
         if queue.len() >= cap {
+            let dropped = self.dropped.entry(event_id.clone()).or_insert(0);
+            *dropped += 1;
             if policy == QueuePolicy::Backpressure {
                 tracing::error!(
                     "Backpressure input `{event_id}` hit hard cap ({cap}), \
                      dropping oldest to prevent OOM"
                 );
-            } else {
-                tracing::warn!("Discarding event for input `{event_id}` due to queue size limit");
+            } else if super::should_warn_ingress_drop(*dropped) {
+                // This runs on whichever thread received the message, under
+                // the scheduler lock, so log at the same power-of-two cadence
+                // as the ingress-drop counter rather than on every eviction.
+                tracing::warn!(
+                    "Discarding event for input `{event_id}` due to queue size limit \
+                     ({dropped} dropped since last drained)"
+                );
             }
-            *self.dropped.entry(event_id.clone()).or_insert(0) += 1;
             match select_eviction(queue, &event) {
                 Eviction::RemoveAt(idx) => {
                     queue.remove(idx);

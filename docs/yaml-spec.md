@@ -162,18 +162,19 @@ inputs:
 | Input option | Type | Default | Description |
 |-------------|------|---------|-------------|
 | `source` | string | **required** | `<node-id>/<output-id>` or timer path |
-| `queue_size` | integer | `10` | Input buffer size |
+| `queue_size` | integer | `10` | How many messages the node holds for this input. Applied when a message arrives, so a node that is slow to read never holds more than this per input |
 | `queue_policy` | string | `drop_oldest` | `drop_oldest`: drops oldest message when full. `backpressure`: buffers up to 10x `queue_size` without dropping (drops with ERROR log at hard cap) |
 | `input_timeout` | float | -- | Circuit breaker timeout in seconds. If no message arrives within this period, the daemon closes the input and the node receives an `InputClosed` event for graceful degradation |
 
-A `backpressure` input keeps its producer's output on the daemon path instead
-of the direct zenoh path. The direct path's callback drops at the receiver's
-shared ingress channel when that channel is full, so a timer or a busier input
-can discard the message before the per-input policy ever applies; the daemon
-path feeds the same channel with a blocking send, and when the receiver's
-per-node channel (1000 events) is full as well, the daemon holds the producer's
-send until there is room, so the producer's `send_output` blocks instead of the
-message being dropped. Two cases still drop, each logged and counted: a
+A `drop_oldest` input is bounded where the message arrives: whichever thread
+receives it files it into that input's queue and evicts the oldest entry when
+the queue is full, on the direct zenoh path and the daemon path alike. A
+`backpressure` input keeps its producer's output on the daemon path instead of
+the direct zenoh path, and its messages go through the receiver's shared
+channel with a blocking send; when the receiver's per-node channel (1000
+events) is full as well, the daemon holds the producer's send until there is
+room, so the producer's `send_output` blocks instead of the message being
+dropped. Two cases still drop, each logged and counted: a
 producer on another machine cannot be held, so a message forwarded across
 daemons to a full receiver is dropped; and a receiver that frees no room at all
 for 60 seconds (wedged, or blocked on its own producer in a backpressure cycle)
