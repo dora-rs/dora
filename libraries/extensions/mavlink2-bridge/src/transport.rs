@@ -30,9 +30,17 @@
 //!   a self-loopback HEARTBEAT to the bound port), so flipping this
 //!   would require revisiting that path too.
 //! * **Serial** baud defaults to `115_200` when `?baud=` is omitted.
+//!
+//! Serial ports are opened from a [`SerialConfig`] rather than the
+//! `serial:<port>:<baud>` string: mavlink splits that string at the first
+//! `:` after the scheme, so a device path containing `:` (common under
+//! `/dev/serial/by-path/`) would otherwise be cut short and the rest
+//! misread as the baud rate.
 
 use crate::{BridgeError, BridgeResult};
-use mavlink::{MavConnection, MavlinkVersion, dialects::common::MavMessage};
+use mavlink::{
+    Connectable, MavConnection, MavlinkVersion, SerialConfig, dialects::common::MavMessage,
+};
 use url::Url;
 
 /// Default MAVLink TCP port used when the URL omits one.
@@ -77,9 +85,25 @@ fn connect_udp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Se
 }
 
 fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
+    let device = serial_device(url)?;
+    let baud = parse_baud(url)?;
+    let version = parse_proto_query(url)?;
+    let mut conn = SerialConfig::new(device.clone(), baud)
+        .connect::<MavMessage>()
+        .map_err(|e| {
+            BridgeError::Config(format!(
+                "failed to connect mavlink to serial '{device}' at {baud} baud: {e}"
+            ))
+        })?;
+    conn.set_protocol_version(version);
+    Ok(Box::new(conn))
+}
+
+/// Extract the serial device name from a `serial:` URL.
+fn serial_device(url: &Url) -> BridgeResult<String> {
     // Windows form `serial://COM1?...` puts the device in `host_str()`;
     // Unix form `serial:///dev/tty.usbmodem1?...` puts it in `path()`
-    // (with leading slash, which mavlink's parser keeps).
+    // (with its leading slash).
     let device = match url.host_str() {
         Some(host) if !host.is_empty() => host.to_string(),
         _ => url.path().to_string(),
@@ -89,9 +113,7 @@ fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> +
             "missing device path in '{url}'"
         )));
     }
-    let baud = parse_baud(url)?;
-    let version = parse_proto_query(url)?;
-    open_mavlink_versioned(&format!("serial:{device}:{baud}"), version)
+    Ok(device)
 }
 
 /// Resolve the serial baud rate from an optional `?baud=` query parameter.
@@ -190,6 +212,40 @@ mod tests {
         // than handing `serial:/dev/...:0` to the mavlink layer.
         let url = Url::parse("serial:///dev/tty.usbmodem1?baud=0").unwrap();
         assert!(parse_baud(&url).is_err());
+    }
+
+    #[test]
+    fn serial_device_keeps_colons_in_path() {
+        let url = Url::parse(
+            "serial:///dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0?baud=57600",
+        )
+        .unwrap();
+        assert_eq!(
+            serial_device(&url).unwrap(),
+            "/dev/serial/by-path/pci-0000:00:14.0-usb-0:2:1.0-port0"
+        );
+    }
+
+    #[test]
+    fn serial_device_with_colon_reaches_the_port_open() {
+        // Regression: the device used to be passed to mavlink as
+        // `serial:<device>:<baud>`, which mavlink splits at the first `:`
+        // after the scheme, so this path failed with "Invalid baud rate"
+        // before any port was opened. It must now fail only because the
+        // device does not exist.
+        let url = Url::parse("serial:///nonexistent/dora-test:00:14.0-port0?baud=57600").unwrap();
+        let err = match connect(&url) {
+            Ok(_) => panic!("opening a nonexistent serial device must fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(
+            err.contains("/nonexistent/dora-test:00:14.0-port0"),
+            "error should name the full device path: {err}"
+        );
+        assert!(
+            !err.to_lowercase().contains("invalid baud"),
+            "device path must not be split into the baud rate: {err}"
+        );
     }
 
     #[test]
