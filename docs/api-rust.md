@@ -288,7 +288,7 @@ pub fn is_empty(&self) -> bool
 pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64>
 ```
 
-`EventStream` also implements `futures::Stream<Item = Event>`, so it can be used with `StreamExt::next()` and other combinators. It goes through the same scheduler as `recv`/`recv_async`, so inputs get the same `queue_size` and round-robin order on both.
+`EventStream` also implements `futures::Stream<Item = Event>`, so it can be used with `StreamExt::next()` and other combinators. Unlike `recv`/`recv_async`, the `Stream` implementation hands events out in the order they arrived rather than the scheduler's control-first, round-robin order; each input's `queue_size` applies to both.
 
 ---
 
