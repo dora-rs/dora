@@ -280,20 +280,15 @@ pub fn drain(&mut self) -> Option<Vec<Event>>
 // True if no events are buffered in the scheduler or receiver.
 pub fn is_empty(&self) -> bool
 
-// Returns and resets accumulated drop counts per input ID, across both
-// loss sites:
-//   - The scheduler's per-input queue. For `drop_oldest` inputs drops
-//     happen at `queue_size`; for `backpressure` inputs at 10x `queue_size`
-//     (hard safety cap).
-//   - The shared zenoh ingress channel, which a payload on the direct
-//     zero-copy path overflows before the per-input policy ever applies.
-//     That channel is sized from the *sum* of the node's input
-//     `queue_size`s (floor 64), so raising any input's `queue_size`
-//     deepens it.
+// Returns and resets accumulated drop counts per input ID. For
+// `drop_oldest` inputs drops happen at `queue_size`, applied when the
+// message arrives on either path; for `backpressure` inputs at 10x
+// `queue_size` (hard safety cap), plus any message the shared channel
+// could not take.
 pub fn drain_drop_counts(&mut self) -> HashMap<DataId, u64>
 ```
 
-`EventStream` also implements `futures::Stream<Item = Event>`, so it can be used with `StreamExt::next()` and other combinators. Unlike `recv`/`recv_async`, the `Stream` implementation does **not** use the EventScheduler, preserving chronological event order.
+`EventStream` also implements `futures::Stream<Item = Event>`, so it can be used with `StreamExt::next()` and other combinators. It goes through the same scheduler as `recv`/`recv_async`, so inputs get the same `queue_size` and round-robin order on both.
 
 ---
 

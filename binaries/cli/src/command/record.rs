@@ -87,7 +87,7 @@ pub struct Record {
     ///
     /// How much slack each recorded topic gets before the oldest messages are
     /// dropped. Raise it to ride out longer write stalls; peak memory is about
-    /// `2 x queue_size x payload size` per topic. Dropped messages are reported
+    /// `queue_size x payload size` per topic. Dropped messages are reported
     /// when the run ends. See the `dora record` section of docs/cli.md before
     /// raising it for large frames.
     ///
