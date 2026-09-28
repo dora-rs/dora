@@ -948,6 +948,10 @@ impl EventStream {
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
     ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
+    ///
     /// The canonical node loop drains this stream until it closes, reacting to
     /// the events the node cares about (typically [`Event::Input`]) and ignoring
     /// the rest:
@@ -987,6 +991,10 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
     pub fn recv_timeout(&mut self, dur: Duration) -> Option<Event> {
         futures::executor::block_on(self.recv_async_timeout(dur))
     }
@@ -1000,6 +1008,10 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
     pub async fn recv_async(&mut self) -> Option<Event> {
         // Drain any events that were stashed by pattern-aware helpers
         // (`recv_service_response`, `recv_action_result`) while they
@@ -1042,7 +1054,7 @@ impl EventStream {
             // events from `receiver`; the dataflow is stopping, and on the
             // non-scheduler path returning `None` closes the stream against
             // zenoh-held senders.
-            return self.pop_scheduled(true);
+            return self.pop_scheduled(true, false);
         }
         let event = if !self.use_scheduler {
             self.receiver.recv().await.map(Self::convert_event_item)
@@ -1080,11 +1092,19 @@ impl EventStream {
     /// Pop the next event buffered in the scheduler, converted and
     /// post-processed. With `inputs_only` (the post-`Stop` drain, see
     /// `recv_from_stream`), control events are discarded instead of returned.
-    fn pop_scheduled(&mut self, inputs_only: bool) -> Option<Event> {
+    /// `in_arrival_order` is the Stream path's order; `recv` takes the
+    /// scheduler's.
+    fn pop_scheduled(&mut self, inputs_only: bool, in_arrival_order: bool) -> Option<Event> {
         if !self.use_scheduler {
             return None;
         }
-        while let Some(item) = self.scheduler_next() {
+        loop {
+            let next = if in_arrival_order {
+                self.scheduler_next_in_arrival_order()
+            } else {
+                self.scheduler_next()
+            };
+            let Some(item) = next else { break };
             if inputs_only
                 && !matches!(
                     &item,
@@ -1218,6 +1238,13 @@ impl EventStream {
         Some(item)
     }
 
+    /// Like `scheduler_next`, in arrival order: the Stream path's contract.
+    fn scheduler_next_in_arrival_order(&mut self) -> Option<EventItem> {
+        let item = self.scheduler().next_in_arrival_order()?;
+        self.record_delivered(&item);
+        Some(item)
+    }
+
     fn record_delivered(&mut self, event: &EventItem) {
         // Event recording is observability-only (writes to the optional
         // `write_events_to` log). A write failure must not panic the event
@@ -1328,6 +1355,10 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
     pub fn try_recv(&mut self) -> Result<Event, TryRecvError> {
         match self.recv_async().now_or_never() {
             Some(Some(event)) => Ok(event),
@@ -1374,6 +1405,10 @@ impl EventStream {
     /// This method uses an [`EventScheduler`] internally to **reorder events**. This means that the
     /// events might be returned in a different order than they occurred. For details, check the
     /// documentation of the [`EventScheduler`] struct.
+    ///
+    /// If you want to receive the events in their original chronological order, use the
+    /// [`StreamExt::next`](futures::StreamExt::next) method instead ([`EventStream`] implements the
+    /// [`Stream`] trait).
     pub async fn recv_async_timeout(&mut self, dur: Duration) -> Option<Event> {
         match select(Delay::new(dur), pin!(self.recv_async())).await {
             Either::Left((_elapsed, _)) => Some(Self::convert_event_item(EventItem::TimeoutError(
@@ -2097,7 +2132,7 @@ impl Stream for EventStream {
         // Inputs still buffered in the scheduler are delivered first, as
         // `recv_async` does.
         if self.stop_received {
-            return std::task::Poll::Ready(self.pop_scheduled(true));
+            return std::task::Poll::Ready(self.pop_scheduled(true, true));
         }
 
         if !self.use_scheduler {
@@ -2115,12 +2150,13 @@ impl Stream for EventStream {
         }
 
         // Inputs land in the scheduler from other threads (see `Ingress`), so
-        // this path goes through it for everything, like `recv_async`: hand
-        // out what is scheduled, drain the channel into the scheduler, and
-        // otherwise wait on both the doorbell and the channel.
+        // this path reads the scheduler too, but in arrival order rather than
+        // `recv`'s control-first round-robin: hand out what is queued, drain
+        // the channel into the scheduler, and otherwise wait on both the
+        // doorbell and the channel.
         loop {
             if self.ingress.maybe_nonempty.load(Ordering::Relaxed) {
-                if let Some(event) = self.pop_scheduled(false) {
+                if let Some(event) = self.pop_scheduled(false, true) {
                     return std::task::Poll::Ready(Some(event));
                 }
                 self.ingress.maybe_nonempty.store(false, Ordering::Relaxed);
@@ -2145,7 +2181,7 @@ impl Stream for EventStream {
             }
             if channel_closed {
                 // Nothing can arrive anymore; end once the queues are empty.
-                return std::task::Poll::Ready(self.pop_scheduled(false));
+                return std::task::Poll::Ready(self.pop_scheduled(false, true));
             }
             match self.doorbell.poll_recv(cx) {
                 std::task::Poll::Ready(Some(())) => {
@@ -3928,23 +3964,32 @@ mod tests {
 
     // ---- queue_size applied on arrival (dora-rs/dora#3591) ----
 
-    /// Like `test_event_stream`, but the testing daemon delivers its `Stop`
-    /// only after `stop_after` seconds, so the stream sits idle until then.
-    fn test_event_stream_idle_for(stop_after: f64) -> (crate::DoraNode, EventStream) {
-        let events = vec![TimedIncomingEvent {
-            time_offset_secs: stop_after,
-            event: IncomingEvent::Stop,
-        }];
+    /// A stream with nothing behind it: built with no testing events, so the
+    /// daemon thread exits at once, then re-pointed at a channel the test holds
+    /// the sender of, so it stays open and silent until the test speaks. (A
+    /// timed `Stop` cannot do this: the testing daemon holds the shared channel
+    /// lock while it waits, which blocks construction until the `Stop` is
+    /// already queued.)
+    fn quiet_event_stream() -> (
+        crate::DoraNode,
+        EventStream,
+        tokio::sync::mpsc::Sender<EventItem>,
+    ) {
         let inputs = TestingInput::Input(IntegrationTestInput::new(
             "test-node".parse().unwrap(),
-            events,
+            vec![],
         ));
-        let (tx, _rx) = crate::integration_testing::output_channel();
-        let outputs = TestingOutput::ToChannel(tx);
+        let (out_tx, _out_rx) = crate::integration_testing::output_channel();
         let options = TestingOptions {
             skip_output_time_offsets: true,
         };
-        crate::DoraNode::init_testing(inputs, outputs, options).unwrap()
+        let (node, mut events) =
+            crate::DoraNode::init_testing(inputs, TestingOutput::ToChannel(out_tx), options)
+                .unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(64);
+        events.receiver = rx;
+        events.use_scheduler = true;
+        (node, events, tx)
     }
 
     /// A `cam` sample carrying `value`, so tests can tell arrivals apart.
@@ -4017,18 +4062,19 @@ mod tests {
     /// passes through the shared channel for it.
     #[test]
     fn recv_wakes_on_arrival_from_another_thread() {
-        let (_node, mut events) = test_event_stream_idle_for(5.0);
-        events.use_scheduler = true;
+        let (_node, mut events, _channel) = quiet_event_stream();
         let ingress = events.ingress.clone();
         let feeder = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
             ingress.push(cam_item(1));
         });
 
-        let got = events.recv();
+        // Nothing else can wake this: the channel is open and silent, so a
+        // lost doorbell is a 2 s timeout, not a pass.
+        let got = events.recv_timeout(Duration::from_secs(2));
         assert!(
             matches!(&got, Some(Event::Input { id, .. }) if id.as_str() == "cam"),
-            "recv must return the arrival, got {got:?}"
+            "recv must return the arrival within 2 s, got {got:?}"
         );
         feeder.join().unwrap();
     }
@@ -4039,15 +4085,28 @@ mod tests {
     fn stream_next_wakes_on_arrival_from_another_thread() {
         use futures::StreamExt;
 
-        let (_node, mut events) = test_event_stream_idle_for(5.0);
-        events.use_scheduler = true;
+        let (_node, mut events, _channel) = quiet_event_stream();
         let ingress = events.ingress.clone();
         let feeder = std::thread::spawn(move || {
             std::thread::sleep(Duration::from_millis(50));
             ingress.push(cam_item(1));
         });
 
-        let got = futures::executor::block_on(events.next());
+        // Raced against a short delay for the same reason as the `recv` test.
+        // The delay goes first in the race: when it fires it must win, or the
+        // timer's own wake-up would let `poll_next` find the sample and pass
+        // without the doorbell ever ringing.
+        let got = futures::executor::block_on(async {
+            let next = std::pin::pin!(events.next());
+            match futures::future::select(futures_timer::Delay::new(Duration::from_secs(2)), next)
+                .await
+            {
+                futures::future::Either::Left(_) => {
+                    panic!("next() did not wake for the arrival within 2 s")
+                }
+                futures::future::Either::Right((event, _)) => event,
+            }
+        });
         assert!(
             matches!(&got, Some(Event::Input { id, .. }) if id.as_str() == "cam"),
             "next() must return the arrival, got {got:?}"
@@ -4077,8 +4136,7 @@ mod tests {
     /// input that arrived through the per-input queue is in it.
     #[test]
     fn recording_holds_arrival_inputs() {
-        let (_node, mut events) = test_event_stream_idle_for(5.0);
-        events.use_scheduler = true;
+        let (_node, mut events, _channel) = quiet_event_stream();
         let (recorder, _path) = write_events_to_with_tempfile();
         events.write_events_to = Some(recorder);
 
@@ -4091,5 +4149,39 @@ mod tests {
             recorded[0].get("type").and_then(|t| t.as_str()),
             Some("Input")
         );
+    }
+
+    /// `StreamExt::next()` keeps its documented contract: events in the order
+    /// they arrived, control events included, where `recv` would serve the
+    /// `Stop` first and round-robin the inputs.
+    #[test]
+    fn stream_next_delivers_in_arrival_order() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events, channel) = quiet_event_stream();
+        let mut lidar = cam_item(1);
+        if let EventItem::ZenohInput { id, .. } = &mut lidar {
+            *id = DataId::from("lidar".to_string());
+        }
+        events.ingress.push(cam_item(1));
+        events.ingress.push(lidar);
+        events.ingress.push(cam_item(2));
+        channel
+            .try_send(EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            })
+            .unwrap();
+        // The channel is drained into the scheduler on the first poll, so the
+        // Stop counts as arriving after the three inputs.
+        let mut order = Vec::new();
+        for _ in 0..5 {
+            match events.next().now_or_never() {
+                Some(Some(Event::Input { id, .. })) => order.push(id.to_string()),
+                Some(Some(Event::Stop(_))) => order.push("stop".into()),
+                Some(None) => order.push("end".into()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(order, ["cam", "lidar", "cam", "stop", "end"]);
     }
 }
