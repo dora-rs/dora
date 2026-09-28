@@ -15,30 +15,27 @@
 //! offset, matching what the official writer produces with its default
 //! `alignment = 64`.
 //!
-//! ## How the fast path stays correct without slice-truncation logic
+//! ## How the fast path stays correct with minimal slice handling
 //!
-//! Arrow's writer contains a lot of per-type code to *truncate* buffers for
-//! sliced arrays. We sidestep all of it with two rules:
+//! Arrow's writer contains a lot of per-type code to *truncate* and *rebase*
+//! buffers for sliced arrays. We avoid most of it with two rules:
 //!  * **Require `offset() == 0` on every node** — so logical element `i` lives at
 //!    physical position `i`. Any array (or child) with a non-zero offset routes
-//!    to the fallback.
-//!  * **Copy each data buffer in full.** Arrow tolerates buffers that are larger
-//!    than strictly required for `len` elements, so copying the whole buffer (a
-//!    freshly built array's buffers are exactly sized anyway) always decodes to
-//!    a logically-equal array. The only generated buffer is the all-ones
-//!    validity bitmap for a node with no nulls, exactly as arrow emits.
+//!    to the fallback. So do offset-carrying arrays (`Binary`, `Utf8`, `List`
+//!    and their `Large` variants) whose first offset is not 0, which would
+//!    need their offsets rebased.
+//!  * **Copy each buffer's prefix, never rewrite it.** A buffer is copied from
+//!    its start up to the bytes the node's `len` elements use: `len * width`
+//!    for fixed-width data, `len + 1` offsets, and values up to the last offset.
+//!    Slicing an offset-carrying array keeps `offset() == 0` but leaves the
+//!    parent's whole values buffer (or `List` child) attached, so without that
+//!    cut every sliced send would ship the entire parent. The only generated
+//!    buffer is the all-ones validity bitmap for a node with no nulls, exactly
+//!    as arrow emits.
 //!
-//! Two types need their children sliced before recursion because the child's
-//! IPC length is the parent's rather than the child's own: `Struct` (each field
-//! to the struct's `len`) and `FixedSizeList` (its child to `len * value_size`).
-//!
-//! The exception to copying in full is the offset-carrying types (`Binary`,
-//! `Utf8`, `List` and their `Large` variants). Slicing one keeps `offset() == 0`
-//! but only slices the offsets buffer, leaving the parent's whole values buffer
-//! (or `List` child) attached. Their values are therefore cut at the last
-//! offset, and offsets that do not start at 0 route to the fallback. Likewise a
-//! fixed-width buffer is cut at the bytes its `len` elements occupy, since a
-//! child sliced to its parent's length still carries its full buffer.
+//! Children are sliced before recursion to the length the parent implies:
+//! `Struct` fields to the struct's `len`, a `FixedSizeList` child to
+//! `len * value_size`, and a `List`/`LargeList` child to its last offset.
 
 use arrow::array::ArrayData;
 use arrow::buffer::Buffer as ArrowBuffer;
