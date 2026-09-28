@@ -89,29 +89,8 @@ fn check_dataflow_static_resolved(
     dataflow: &Descriptor,
     nodes: &BTreeMap<NodeId, ResolvedNode>,
 ) -> eyre::Result<()> {
-    // reject negative / non-finite / overflowing timing values before they
-    // reach the daemon, where `Duration::from_secs_f64` would panic on spawn.
     for node in nodes.values() {
-        if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
-            check_timing_fields(&node.id, custom)?;
-            if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
-                bail!(
-                    "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
-                    node.id
-                );
-            }
-        }
-        // `input_timeout` is a second-valued `f64` that the daemon also feeds
-        // to `Duration::from_secs_f64`, on both the initial-spawn and the
-        // reconnect paths.
-        for (input_id, input) in node_inputs(node) {
-            check_seconds_field(
-                &format!("input `{input_id}` of node `{}`", node.id),
-                "input_timeout",
-                input.input_timeout,
-                true,
-            )?;
-        }
+        check_node_timing(node)?;
     }
     // dataflow-level `health_check_interval` reaches `Duration::from_secs_f64`
     // in the same way (`binaries/daemon/src/lib.rs`). A zero interval must also
@@ -222,6 +201,39 @@ pub fn check_dataflow(dataflow: &Descriptor, working_dir: &Path) -> eyre::Result
         check_python_runtime()?;
     }
 
+    Ok(())
+}
+
+/// Validate the second-valued timing fields of one resolved node: the custom
+/// node's own timeouts and restart delays, plus every input's
+/// `input_timeout`.
+///
+/// The daemon feeds these to `Duration::from_secs_f64`, which panics on
+/// negative, non-finite, or overflowing values. [`check_dataflow_static`]
+/// runs this for every node; call it directly for a node that joins a running
+/// dataflow (`dora node add` / `dora node replace`), which never goes through
+/// whole-dataflow validation.
+pub fn check_node_timing(node: &ResolvedNode) -> eyre::Result<()> {
+    if let descriptor::CoreNodeKind::Custom(custom) = &node.kind {
+        check_timing_fields(&node.id, custom)?;
+        if custom.path.as_str() == DYNAMIC_SOURCE && custom.startup_timeout.is_some() {
+            bail!(
+                "dynamic node `{}` cannot specify `startup_timeout` (dynamic nodes connect out-of-band and are not managed by the startup watchdog)",
+                node.id
+            );
+        }
+    }
+    // `input_timeout` is a second-valued `f64` that the daemon also feeds
+    // to `Duration::from_secs_f64`, on both the initial-spawn and the
+    // reconnect paths.
+    for (input_id, input) in node_inputs(node) {
+        check_seconds_field(
+            &format!("input `{input_id}` of node `{}`", node.id),
+            "input_timeout",
+            input.input_timeout,
+            true,
+        )?;
+    }
     Ok(())
 }
 
