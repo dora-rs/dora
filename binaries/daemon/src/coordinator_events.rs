@@ -610,6 +610,10 @@ impl Daemon {
                 tracing::info!(%dataflow_id, %node_id, "adding node to running dataflow");
 
                 let result: eyre::Result<()> = async {
+                    // The coordinator validates this too; check again here, where
+                    // a bad value would panic `Duration::from_secs_f64`, so an
+                    // older coordinator cannot crash this daemon.
+                    dora_core::descriptor::validate::check_node_timing(&node)?;
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
@@ -1008,6 +1012,8 @@ impl Daemon {
                 tracing::info!(%dataflow_id, %node_id, "replacing node in running dataflow");
 
                 let result: eyre::Result<()> = async {
+                    // See the matching check in `AddNode`.
+                    dora_core::descriptor::validate::check_node_timing(&node)?;
                     let dataflow = self
                         .running
                         .get_mut(&dataflow_id)
