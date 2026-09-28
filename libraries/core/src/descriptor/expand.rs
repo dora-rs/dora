@@ -956,7 +956,11 @@ fn resolve_inner_node_paths(
     project_root: &Path,
 ) -> eyre::Result<()> {
     let owner = node.id.to_string();
-    if let Some(ref mut path) = node.path {
+    // A `git:` node's `path` is relative to its clone (the node's working dir
+    // at build and spawn), not to the module file, so leave it untouched.
+    if node.git.is_none()
+        && let Some(ref mut path) = node.path
+    {
         resolve_module_relative_path(path, module_dir, project_root, &owner)?;
     }
     if let Some(ref mut operators) = node.operators {
@@ -4042,6 +4046,61 @@ nodes:
         assert_eq!(
             Path::new(expanded.nodes[0].path.as_ref().unwrap()),
             Path::new("worker.py")
+        );
+    }
+
+    /// A `git:` inner node's `path` names a file inside its clone, which is
+    /// the node's working dir at build and spawn. Re-rooting it to the module
+    /// directory made the daemon look for `<clone>/<module_dir>/<path>`.
+    #[test]
+    fn expand_keeps_git_inner_node_path_relative_to_the_clone() {
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path();
+        std::fs::create_dir_all(base.join("modules")).unwrap();
+
+        write_file(
+            &base.join("modules"),
+            "git_module.yml",
+            r#"
+module:
+  name: git_module
+  outputs: [from_git, local]
+
+nodes:
+  - id: fromgit
+    git: https://github.com/example/x.git
+    path: ../bin/x
+    outputs:
+      - from_git
+  - id: sibling
+    path: worker.py
+    outputs:
+      - local
+"#,
+        );
+
+        let desc = parse_descriptor(
+            r#"
+nodes:
+  - id: m
+    module: modules/git_module.yml
+"#,
+        );
+
+        let expanded = expand_modules(&desc, base).unwrap();
+        let path_of = |id: &str| {
+            expanded
+                .nodes
+                .iter()
+                .find(|n| n.id.to_string() == id)
+                .and_then(|n| n.path.clone())
+                .unwrap()
+        };
+        assert_eq!(path_of("m.fromgit"), "../bin/x");
+        // A plain `path:` sibling is still re-rooted to the module directory.
+        assert_eq!(
+            Path::new(&path_of("m.sibling")),
+            Path::new("modules").join("worker.py")
         );
     }
 
