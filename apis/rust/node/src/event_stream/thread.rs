@@ -12,7 +12,7 @@ use crate::daemon_connection::DaemonChannel;
 
 pub fn init(
     node_id: NodeId,
-    tx: mpsc::Sender<EventItem>,
+    tx: mpsc::Sender<super::Stamped>,
     channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     ingress: Option<Arc<super::Ingress>>,
@@ -97,12 +97,13 @@ impl Drop for EventStreamThreadHandle {
 #[tracing::instrument(skip(tx, channel, clock, ingress))]
 fn event_stream_loop(
     node_id: NodeId,
-    tx: mpsc::Sender<EventItem>,
+    tx: mpsc::Sender<super::Stamped>,
     mut channel: DaemonChannel,
     clock: Arc<uhlc::HLC>,
     ingress: Option<Arc<super::Ingress>>,
 ) {
     let mut tx = Some(tx);
+    let mut ingress = ingress;
     let mut close_tx = false;
 
     let result = 'outer: loop {
@@ -156,24 +157,23 @@ fn event_stream_loop(
             }
 
             // Inputs are queued on arrival (see `Ingress`), the same as on the
-            // zenoh path; the channel carries the rest.
+            // zenoh path; the channel carries the rest, numbered when sent.
             if let Some(ingress) = ingress.as_deref()
                 && matches!(&inner, NodeEvent::Input { id, .. } if ingress.takes(id))
             {
                 ingress.push(EventItem::NodeEvent { event: inner });
-                continue;
-            }
-
-            if let Some(tx) = tx.as_ref() {
+            } else if let Some(tx) = tx.as_ref() {
                 // `blocking_send` is used because this function runs on a
                 // dedicated `std::thread` (not a tokio worker). Using
                 // `tokio::sync::mpsc` here — instead of `flume` — avoids the
                 // AB-BA deadlock between flume 0.10's spinlock and pyo3's
                 // GIL-acquiring waker (upstream dora-rs/dora#1603).
-                match tx.blocking_send(EventItem::NodeEvent { event: inner }) {
+                let stamped =
+                    super::Stamped::new(ingress.as_deref(), EventItem::NodeEvent { event: inner });
+                match tx.blocking_send(stamped) {
                     Ok(()) => {}
                     Err(send_error) => {
-                        let event = send_error.0;
+                        let event = send_error.0.item;
                         tracing::trace!(
                             "event channel was closed already, could not forward `{event:?}`"
                         );
@@ -186,15 +186,20 @@ fn event_stream_loop(
             }
 
             if close_tx {
+                // Nothing is forwarded after `AllInputsClosed`, by either route.
                 tx = None;
+                ingress = None;
             };
         }
     };
     if let Err(err) = result
         && let Some(tx) = tx.as_ref()
-        && let Err(mpsc::error::SendError(item)) = tx.blocking_send(EventItem::FatalError(err))
+        && let Err(mpsc::error::SendError(item)) = tx.blocking_send(super::Stamped::new(
+            ingress.as_deref(),
+            EventItem::FatalError(err),
+        ))
     {
-        let err = match item {
+        let err = match item.item {
             EventItem::FatalError(err) => err,
             _ => unreachable!(),
         };

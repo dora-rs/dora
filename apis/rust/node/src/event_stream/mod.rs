@@ -69,8 +69,8 @@ mod thread;
 /// Split out of the callback so the accounting is unit-testable without a live
 /// zenoh session.
 fn send_or_count_ingress_drop(
-    tx: &tokio::sync::mpsc::Sender<EventItem>,
-    item: EventItem,
+    tx: &tokio::sync::mpsc::Sender<Stamped>,
+    item: Stamped,
     input_id: &DataId,
     dropped: &AtomicU64,
 ) {
@@ -130,6 +130,10 @@ fn should_warn_ingress_drop(count: u64) -> bool {
 /// next calls `recv`. A node that is slow to poll therefore holds at most
 /// `queue_size` messages per input, instead of a shared channel's worth.
 ///
+/// What still travels through the shared channel (see [`Self::takes`]) is
+/// numbered by its sender with [`Self::stamp`], so the Stream path can put it
+/// in sequence with what was filed here directly.
+///
 /// The mutex orders the queue contents; the two flags are hints and the
 /// doorbell is what a waiting node thread sleeps on.
 pub(crate) struct Ingress {
@@ -155,6 +159,11 @@ impl Ingress {
         !self.via_channel.contains(input)
     }
 
+    /// Number an event that is about to go through the shared channel.
+    pub(crate) fn stamp(&self) -> u64 {
+        self.scheduler().stamp()
+    }
+
     /// File an input into its per-input queue and wake the node thread.
     pub(crate) fn push(&self, item: EventItem) {
         if self.stopped.load(Ordering::Relaxed) {
@@ -169,6 +178,24 @@ impl Ingress {
 
     fn scheduler(&self) -> std::sync::MutexGuard<'_, Scheduler> {
         self.scheduler.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+/// An event on the shared channel, with the arrival number it was given when
+/// it was sent (see [`Ingress`]).
+#[derive(Debug)]
+pub(crate) struct Stamped {
+    pub(crate) seq: u64,
+    pub(crate) item: EventItem,
+}
+
+impl Stamped {
+    /// Without a scheduler (integration tests) the number is never read.
+    pub(crate) fn new(ingress: Option<&Ingress>, item: EventItem) -> Self {
+        Self {
+            seq: ingress.map_or(0, Ingress::stamp),
+            item,
+        }
     }
 }
 
@@ -200,7 +227,7 @@ pub struct EventStream {
     // AB-BA deadlock between flume 0.10's spinlock and pyo3's GIL-acquiring
     // waker when a Python coroutine polls this stream
     // (upstream dora-rs/dora#1603).
-    receiver: tokio::sync::mpsc::Receiver<EventItem>,
+    receiver: tokio::sync::mpsc::Receiver<Stamped>,
     _thread_handle: EventStreamThreadHandle,
     /// Callback subscribers — kept alive for the lifetime of the
     /// EventStream. Dropping a subscriber undeclares it and stops further
@@ -647,6 +674,7 @@ impl EventStream {
                         input_id,
                         decoder.clone(),
                         tx.clone(),
+                        arrival_ingress.clone(),
                         schema_plane_failed.clone(),
                         &mut zenoh_schema_subscribers,
                     );
@@ -790,7 +818,9 @@ impl EventStream {
                                                         &mut first,
                                                         Instant::now(),
                                                     ) && tx_cb
-                                                        .try_send(EventItem::FatalError(eyre!(
+                                                        .try_send(Stamped::new(
+                                                            ingress_cb.as_deref(),
+                                                            EventItem::FatalError(eyre!(
                                                             "input `{input_id_cb}`: the `@schema` \
                                                              subscriber failed to declare (a \
                                                              degraded zenoh session) and the \
@@ -799,7 +829,8 @@ impl EventStream {
                                                              full-stream refresh — messages on \
                                                              this input are being dropped",
                                                             SCHEMA_PLANE_FATAL_GRACE.as_secs()
-                                                        )))
+                                                        )),
+                                                        ))
                                                         .is_ok()
                                                     {
                                                         schema_plane_failed.store(
@@ -845,7 +876,7 @@ impl EventStream {
                                     }
                                     send_or_count_ingress_drop(
                                         &tx_cb,
-                                        item,
+                                        Stamped::new(ingress_cb.as_deref(), item),
                                         &input_id_cb,
                                         &ingress_drops_cb,
                                     );
@@ -855,9 +886,12 @@ impl EventStream {
                                     input = %input_id_cb,
                                     "zenoh subscriber callback panicked"
                                 );
-                                let _ = tx_cb.try_send(EventItem::FatalError(eyre!(
-                                    "zenoh subscriber callback for input `{input_id_cb}` panicked"
-                                )));
+                                let _ = tx_cb.try_send(Stamped::new(
+                                    ingress_cb.as_deref(),
+                                    EventItem::FatalError(eyre!(
+                                        "zenoh subscriber callback for input `{input_id_cb}` panicked"
+                                    )),
+                                ));
                             }
                         })
                         .wait();
@@ -1057,11 +1091,14 @@ impl EventStream {
             return self.pop_scheduled(true, false);
         }
         let event = if !self.use_scheduler {
-            self.receiver.recv().await.map(Self::convert_event_item)
+            self.receiver
+                .recv()
+                .await
+                .map(|stamped| Self::convert_event_item(stamped.item))
         } else {
             // Inputs are already in their queues (see `Ingress`); the channel
-            // carries what still goes through it. Drain it, take the next
-            // scheduled event, and if there is none wait for either source.
+            // carries the rest. Drain it, take the next scheduled event, and
+            // if there is none wait for either source.
             // `add_event` may drop an event without retaining it (a
             // `DropIncoming` eviction), so a delivery does not guarantee
             // something to return; a closed channel ends the stream only once
@@ -1221,9 +1258,10 @@ impl EventStream {
         self.ingress.scheduler()
     }
 
-    /// File an event from the shared channel into the scheduler.
-    fn add_event(&mut self, event: EventItem) {
-        self.scheduler().add_event(event);
+    /// File an event from the shared channel into the scheduler, under the
+    /// number it was sent with.
+    fn add_event(&mut self, Stamped { seq, item }: Stamped) {
+        self.scheduler().add_event_stamped(seq, item);
         self.ingress.maybe_nonempty.store(true, Ordering::Relaxed);
     }
 
@@ -1957,7 +1995,8 @@ fn declare_schema_subscriber(
     source_output: &DataId,
     input_id: &DataId,
     decoder: Arc<std::sync::Mutex<crate::arrow_utils::ipc_encode::InputDecoder>>,
-    tx: tokio::sync::mpsc::Sender<EventItem>,
+    tx: tokio::sync::mpsc::Sender<Stamped>,
+    ingress: Option<Arc<Ingress>>,
     schema_plane_failed: Arc<std::sync::atomic::AtomicBool>,
     out: &mut Vec<zenoh_ext::AdvancedSubscriber<()>>,
 ) {
@@ -1994,9 +2033,12 @@ fn declare_schema_subscriber(
             }));
             if result.is_err() {
                 tracing::error!(input = %input_id_cb, "zenoh @schema subscriber callback panicked");
-                let _ = tx.try_send(EventItem::FatalError(eyre!(
-                    "zenoh @schema subscriber for input `{input_id_cb}` panicked"
-                )));
+                let _ = tx.try_send(Stamped::new(
+                    ingress.as_deref(),
+                    EventItem::FatalError(eyre!(
+                        "zenoh @schema subscriber for input `{input_id_cb}` panicked"
+                    )),
+                ));
             }
         })
         .wait();
@@ -2128,18 +2170,17 @@ impl Stream for EventStream {
         }
 
         // Close the stream after a Stop event: zenoh subscriber threads
-        // hold sender clones that would otherwise keep `receiver` open.
-        // Inputs still buffered in the scheduler are delivered first, as
-        // `recv_async` does.
+        // hold sender clones that would otherwise keep `receiver` open. In
+        // arrival order everything before the Stop was already delivered.
         if self.stop_received {
-            return std::task::Poll::Ready(self.pop_scheduled(true, true));
+            return std::task::Poll::Ready(None);
         }
 
         if !self.use_scheduler {
             let poll = self
                 .receiver
                 .poll_recv(cx)
-                .map(|item| item.map(Self::convert_event_item));
+                .map(|item| item.map(|stamped| Self::convert_event_item(stamped.item)));
             // Mirror recv_async(): run the first-message type check and stop
             // tracking on the Stream path too, via the shared helper so the two
             // paths stay in lockstep (dora-rs/adora#172, #174).
@@ -2151,23 +2192,24 @@ impl Stream for EventStream {
 
         // Inputs land in the scheduler from other threads (see `Ingress`), so
         // this path reads the scheduler too, but in arrival order rather than
-        // `recv`'s control-first round-robin: hand out what is queued, drain
-        // the channel into the scheduler, and otherwise wait on both the
-        // doorbell and the channel.
+        // `recv`'s control-first round-robin. Channel events are numbered when
+        // sent, so the channel is read until its next event is younger than
+        // the oldest queued one: what precedes that is then all queued, and
+        // the pop below returns the true oldest. Reading one event past that
+        // point keeps the drain bounded (a `backpressure` backlog stays in the
+        // channel, where it holds the daemon) without starving the channel
+        // under a steady input stream.
         loop {
-            if self.ingress.maybe_nonempty.load(Ordering::Relaxed) {
-                if let Some(event) = self.pop_scheduled(false, true) {
-                    return std::task::Poll::Ready(Some(event));
-                }
-                self.ingress.maybe_nonempty.store(false, Ordering::Relaxed);
-            }
-            let mut drained_any = false;
             let mut channel_closed = false;
             loop {
+                let oldest = self.scheduler().oldest_arrival();
                 match self.receiver.poll_recv(cx) {
-                    std::task::Poll::Ready(Some(item)) => {
-                        self.add_event(item);
-                        drained_any = true;
+                    std::task::Poll::Ready(Some(stamped)) => {
+                        let younger = oldest.is_some_and(|oldest| stamped.seq > oldest);
+                        self.add_event(stamped);
+                        if younger {
+                            break;
+                        }
                     }
                     std::task::Poll::Ready(None) => {
                         channel_closed = true;
@@ -2176,8 +2218,11 @@ impl Stream for EventStream {
                     std::task::Poll::Pending => break,
                 }
             }
-            if drained_any {
-                continue;
+            if self.ingress.maybe_nonempty.load(Ordering::Relaxed) {
+                if let Some(event) = self.pop_scheduled(false, true) {
+                    return std::task::Poll::Ready(Some(event));
+                }
+                self.ingress.maybe_nonempty.store(false, Ordering::Relaxed);
             }
             if channel_closed {
                 // Nothing can arrive anymore; end once the queues are empty.
@@ -2382,13 +2427,15 @@ impl EventStream {
         use dora_message::{daemon_to_node::NodeEvent, metadata::Metadata};
         self.use_scheduler = true;
         let meta = Metadata::new(dora_core::uhlc::HLC::default().new_timestamp());
-        self.add_event(EventItem::NodeEvent {
+        // Straight into the scheduler: `Ingress::push` discards after Stop.
+        self.scheduler().add_event(EventItem::NodeEvent {
             event: NodeEvent::Input {
                 id: id.into(),
                 metadata: std::sync::Arc::new(meta),
                 data: None,
             },
         });
+        self.ingress.maybe_nonempty.store(true, Ordering::Relaxed);
     }
 
     /// Test-only: buffer a `Stop` directly in the scheduler (a NON_INPUT_EVENT)
@@ -2398,9 +2445,10 @@ impl EventStream {
         use crate::event_stream::thread::EventItem;
         use dora_message::daemon_to_node::NodeEvent;
         self.use_scheduler = true;
-        self.add_event(EventItem::NodeEvent {
+        self.scheduler().add_event(EventItem::NodeEvent {
             event: NodeEvent::Stop,
         });
+        self.ingress.maybe_nonempty.store(true, Ordering::Relaxed);
     }
 }
 
@@ -3454,25 +3502,19 @@ mod tests {
         );
     }
 
-    /// The Stream path must drain buffered inputs after `Stop` exactly like
-    /// `recv` does (see `recv_drains_buffered_scheduler_inputs_after_stop`).
+    /// The Stream path ends at `Stop`, unlike `recv`: in arrival order,
+    /// whatever is still queued arrived after the Stop.
     #[test]
-    fn stream_next_drains_buffered_inputs_after_stop() {
+    fn stream_next_ends_at_stop() {
         use futures::{FutureExt, StreamExt};
 
         let (_node, mut events) = test_event_stream();
         assert!(matches!(events.recv(), Some(Event::Stop(_))));
-        events.push_scheduler_stop_for_testing();
         events.push_scheduler_input_for_testing("cam");
 
-        let drained = events.next().now_or_never();
-        assert!(
-            matches!(&drained, Some(Some(Event::Input { id, .. })) if id.as_str() == "cam"),
-            "buffered input must be drained after Stop, got {drained:?}"
-        );
         assert!(
             matches!(events.next().now_or_never(), Some(None)),
-            "stream must close after draining buffered inputs"
+            "the stream must close at Stop"
         );
     }
 
@@ -3888,17 +3930,18 @@ mod tests {
     /// audit item in `docs/audit-2026-06-04-soundness.md`.
     #[test]
     fn ingress_overflow_is_counted() {
-        let (tx, _rx) = tokio::sync::mpsc::channel::<EventItem>(1);
+        let (tx, _rx) = tokio::sync::mpsc::channel::<Stamped>(1);
         let id = DataId::from("camera".to_string());
         let drops = std::sync::Arc::new(AtomicU64::new(0));
+        let item = || Stamped::new(None, zenoh_item("camera"));
 
         // First fits the capacity-1 channel.
-        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        send_or_count_ingress_drop(&tx, item(), &id, &drops);
         assert_eq!(drops.load(Ordering::Relaxed), 0);
 
         // The next two find it full and must be counted, not just logged.
-        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
-        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        send_or_count_ingress_drop(&tx, item(), &id, &drops);
+        send_or_count_ingress_drop(&tx, item(), &id, &drops);
         assert_eq!(drops.load(Ordering::Relaxed), 2);
     }
 
@@ -3927,12 +3970,12 @@ mod tests {
     /// make every node report phantom drops as it tears down.
     #[test]
     fn ingress_send_to_a_closed_channel_is_not_a_drop() {
-        let (tx, rx) = tokio::sync::mpsc::channel::<EventItem>(1);
+        let (tx, rx) = tokio::sync::mpsc::channel::<Stamped>(1);
         drop(rx);
         let id = DataId::from("camera".to_string());
         let drops = std::sync::Arc::new(AtomicU64::new(0));
 
-        send_or_count_ingress_drop(&tx, zenoh_item("camera"), &id, &drops);
+        send_or_count_ingress_drop(&tx, Stamped::new(None, zenoh_item("camera")), &id, &drops);
         assert_eq!(drops.load(Ordering::Relaxed), 0);
     }
 
@@ -3973,7 +4016,7 @@ mod tests {
     fn quiet_event_stream() -> (
         crate::DoraNode,
         EventStream,
-        tokio::sync::mpsc::Sender<EventItem>,
+        tokio::sync::mpsc::Sender<Stamped>,
     ) {
         let inputs = TestingInput::Input(IntegrationTestInput::new(
             "test-node".parse().unwrap(),
@@ -4002,6 +4045,22 @@ mod tests {
                 dora_core::uhlc::HLC::default().new_timestamp(),
             )),
             data: arrow::array::Int32Array::from(vec![value]).into_data(),
+        }
+    }
+
+    /// `item` numbered as if sent on `events`' channel right now.
+    fn stamped(events: &EventStream, item: EventItem) -> Stamped {
+        Stamped::new(Some(&events.ingress), item)
+    }
+
+    /// A daemon-path sample for `id`, without payload.
+    fn daemon_input(id: &str) -> NodeEvent {
+        NodeEvent::Input {
+            id: DataId::from(id.to_string()),
+            metadata: std::sync::Arc::new(dora_message::metadata::Metadata::new(
+                dora_core::uhlc::HLC::default().new_timestamp(),
+            )),
+            data: None,
         }
     }
 
@@ -4166,13 +4225,13 @@ mod tests {
         events.ingress.push(cam_item(1));
         events.ingress.push(lidar);
         events.ingress.push(cam_item(2));
-        channel
-            .try_send(EventItem::NodeEvent {
+        let stop = stamped(
+            &events,
+            EventItem::NodeEvent {
                 event: NodeEvent::Stop,
-            })
-            .unwrap();
-        // The channel is drained into the scheduler on the first poll, so the
-        // Stop counts as arriving after the three inputs.
+            },
+        );
+        channel.try_send(stop).unwrap();
         let mut order = Vec::new();
         for _ in 0..5 {
             match events.next().now_or_never() {
@@ -4183,5 +4242,99 @@ mod tests {
             }
         }
         assert_eq!(order, ["cam", "lidar", "cam", "stop", "end"]);
+    }
+
+    /// A `Stop` on the channel is read before the next pop, so a node whose
+    /// inputs never go quiet still gets it in its place, and the stream ends
+    /// there.
+    #[test]
+    fn stream_next_delivers_stop_under_a_steady_input_stream() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events, channel) = quiet_event_stream();
+        events.ingress.push(cam_item(0));
+        let stop = stamped(
+            &events,
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            },
+        );
+        channel.try_send(stop).unwrap();
+        // A sample lands before every poll, so the scheduler never runs dry.
+        let mut order = Vec::new();
+        for value in 1..=3 {
+            events.ingress.push(cam_item(value));
+            match events.next().now_or_never() {
+                Some(Some(Event::Input { id, .. })) => order.push(id.to_string()),
+                Some(Some(Event::Stop(_))) => order.push("stop".into()),
+                Some(None) => order.push("end".into()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(order, ["cam", "stop", "end"]);
+    }
+
+    /// A channel event keeps its place among direct arrivals: numbered when
+    /// sent, read before the pop that would overtake it.
+    #[test]
+    fn stream_next_keeps_channel_events_in_sequence_under_a_steady_input_stream() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events, channel) = quiet_event_stream();
+        events.ingress.push(cam_item(0));
+        let slow = stamped(
+            &events,
+            EventItem::NodeEvent {
+                event: daemon_input("slow"),
+            },
+        );
+        channel.try_send(slow).unwrap();
+        let mut order = Vec::new();
+        for value in 1..=4 {
+            events.ingress.push(cam_item(value));
+            match events.next().now_or_never() {
+                Some(Some(Event::Input { id, .. })) => order.push(id.to_string()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(order, ["cam", "slow", "cam", "cam"]);
+    }
+
+    /// A `backpressure` backlog on the channel is older than the `Stop` behind
+    /// it, so all of it is delivered first, ahead of a sample that came later;
+    /// that sample arrived after the Stop and is not delivered.
+    #[test]
+    fn stream_next_delivers_a_channel_backlog_before_the_stop_behind_it() {
+        use futures::{FutureExt, StreamExt};
+
+        let (_node, mut events, channel) = quiet_event_stream();
+        events.ingress.push(cam_item(0));
+        for _ in 0..2 {
+            let slow = stamped(
+                &events,
+                EventItem::NodeEvent {
+                    event: daemon_input("slow"),
+                },
+            );
+            channel.try_send(slow).unwrap();
+        }
+        let stop = stamped(
+            &events,
+            EventItem::NodeEvent {
+                event: NodeEvent::Stop,
+            },
+        );
+        channel.try_send(stop).unwrap();
+        events.ingress.push(cam_item(1));
+        let mut order = Vec::new();
+        for _ in 0..5 {
+            match events.next().now_or_never() {
+                Some(Some(Event::Input { id, .. })) => order.push(id.to_string()),
+                Some(Some(Event::Stop(_))) => order.push("stop".into()),
+                Some(None) => order.push("end".into()),
+                other => panic!("unexpected {other:?}"),
+            }
+        }
+        assert_eq!(order, ["cam", "slow", "slow", "stop", "end"]);
     }
 }
