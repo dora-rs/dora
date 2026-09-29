@@ -941,6 +941,44 @@ async fn teardown_replacement_uses_configured_grace_period() {
     ));
 }
 
+/// A `grace_duration` a dataflow may ask for but the clock cannot hold must
+/// not take the daemon with it: `Instant + Duration` panics on overflow, and
+/// this runs on the event loop, where a panic is a dead daemon rather than a
+/// stopped node (#3472 review).
+///
+/// A real clock rather than `start_paused`, because the overflow is in
+/// `Instant`'s own arithmetic and not in the passage of time.
+#[tokio::test]
+async fn a_grace_period_too_large_to_add_does_not_panic_the_daemon() {
+    let mut dataflow = test_dataflow();
+    dataflow.stop_process_policy = Some(StopProcessPolicy::Graceful(Duration::MAX));
+    let mut node = test_running_node();
+    node.disable_restart();
+
+    let (replacement_tx, replacement_rx) = flume::bounded(4);
+    let outcome = node.replace_process_handle(7, 8, ProcessHandle::new(replacement_tx));
+    let HandleReplacement::RejectedTeardown(replacement) = outcome else {
+        panic!("teardown must retain ownership of the replacement handle");
+    };
+
+    let node_id: NodeId = "test".to_string().into();
+    dataflow.stop_rejected_replacement(&node_id, 8, replacement);
+
+    // The stop still has to happen, just with deadlines the clock can hold.
+    let Ok(ProcessOperation::StopRequested {
+        soft_kill_at,
+        kill_at,
+    }) = replacement_rx.try_recv()
+    else {
+        panic!("an unclampable grace period must still schedule a stop");
+    };
+    let now = tokio::time::Instant::now();
+    assert!(
+        soft_kill_at > now && kill_at > soft_kill_at,
+        "expected a far-future soft kill before the escalation, got {soft_kill_at:?} then {kill_at:?}"
+    );
+}
+
 #[test]
 fn current_handle_replacement_advances_generation() {
     let mut node = test_running_node();
@@ -2055,8 +2093,8 @@ async fn data_bytes_returned_with_and_without_local_receivers() {
 /// Minimal `tracing::Subscriber` that records the level of every event it
 /// receives, so a test can assert whether (and how often) a warning fires.
 #[derive(Clone, Default)]
-struct LevelCapture {
-    levels: Arc<Mutex<Vec<tracing::Level>>>,
+pub(crate) struct LevelCapture {
+    pub(crate) levels: Arc<Mutex<Vec<tracing::Level>>>,
 }
 
 impl tracing::Subscriber for LevelCapture {

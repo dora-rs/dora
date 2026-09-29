@@ -90,6 +90,18 @@ pub(super) async fn contain_exited_group(
         if !bind_to_run_parent {
             return;
         }
+        // A node that did its work and exited leaves an empty group behind, and
+        // that is the common case by far: a source that sends N messages and
+        // returns, anything that stops once its inputs close. Nothing was
+        // abandoned, so there is nothing to signal and nothing to say — and
+        // `dora run` prints warnings, so a warning here would tell every user
+        // with a short-lived node that their node had been SIGKILLed. The
+        // kernel's answer is the whole one, for the same reason as in the loop
+        // below: process-wrap's group wait reaps every process in the group
+        // before this runs, so a member still in the group is still running.
+        if !group_has_members(pid) {
+            return;
+        }
         tracing::warn!(
             "node process group {pid} was abandoned by a node that exited on its own; \
              SIGKILLing whatever is left in it (dora run)"
@@ -265,6 +277,65 @@ mod tests {
         );
         let _ = leader.kill();
         let _ = unsafe { libc::kill(child as libc::pid_t, libc::SIGKILL) };
+    }
+
+    /// A node that did its work and exited leaves an *empty* group behind,
+    /// which is not an abandonment: nothing to kill, and — `dora run` prints
+    /// warnings — nothing to say either (#3472 review).
+    #[tokio::test]
+    async fn a_node_that_exited_cleanly_is_not_reported_as_abandoned() {
+        use std::os::unix::process::CommandExt as _;
+
+        let mut leader = std::process::Command::new("sh")
+            .arg("-c")
+            .arg("exit 0")
+            .process_group(0)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("failed to spawn the group leader");
+        let exited = leader.wait().expect("failed to reap the group leader");
+        assert!(exited.success());
+        let pid = leader.id();
+
+        let capture = crate::tests::LevelCapture::default();
+        let _guard = tracing::subscriber::set_default(capture.clone());
+        contain_exited_group(pid, None, false, true).await;
+        drop(_guard);
+
+        let levels = capture.levels.lock().unwrap();
+        assert!(
+            !levels.contains(&tracing::Level::WARN),
+            "an empty group is not an abandoned one, and `dora run` prints warnings: {levels:?}"
+        );
+    }
+
+    /// The counterpart, and the reason the check is not just a log guard: the
+    /// group really is abandoned, and it is `SIGKILL`ed for it (#3472).
+    #[tokio::test]
+    async fn an_abandoned_group_is_killed_on_the_dora_run_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
+
+        let capture = crate::tests::LevelCapture::default();
+        let _guard = tracing::subscriber::set_default(capture.clone());
+        contain_exited_group(leader.id(), None, false, true).await;
+        drop(_guard);
+
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            !process_alive(child),
+            "a group abandoned on the dora run path must be SIGKILLed (#3472)"
+        );
+        assert!(
+            capture
+                .levels
+                .lock()
+                .unwrap()
+                .contains(&tracing::Level::WARN),
+            "killing a group the user cannot account for has to say so"
+        );
+        let _ = leader.kill();
     }
 
     /// The stop path: the group was already asked to shut down, so its members

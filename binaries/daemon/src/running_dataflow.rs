@@ -822,6 +822,16 @@ impl RunningDataflow {
                 }
             }
             StopProcessPolicy::Graceful(duration) => {
+                // `Instant + Duration` panics on overflow, and a dataflow gets
+                // to ask for whatever grace period it likes — so a typo like
+                // `grace_duration: 1000000000000s` would take the daemon's
+                // event loop down with it, turning a stop that was asked for
+                // into a daemon that is gone. Clamp instead: a grace period
+                // this long means "do not stop it", which is what it said, and
+                // every deadline below is then arithmetic that cannot overflow
+                // (~6.5e18 ns against the 9.2e18 an `Instant` holds).
+                const MAX_GRACE: Duration = Duration::from_secs(100 * 365 * 24 * 60 * 60);
+                let duration = duration.min(MAX_GRACE);
                 let kill_duration = duration / 2;
                 // Mark the stop as in flight before the grace period starts: a
                 // node that exits because of the `NodeEvent::Stop` it just

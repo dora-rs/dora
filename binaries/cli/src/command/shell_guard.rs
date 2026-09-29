@@ -206,6 +206,7 @@ fn install_stop_signal_handlers() -> eyre::Result<()> {
 /// Reset `signal` to its default action and re-raise it, so the process dies
 /// from the signal rather than the handler swallowing it.
 fn re_raise(signal: i32) -> ! {
+    clear_core_dumps();
     // SAFETY: `signal` and `raise` are async-signal-safe, and resetting to the
     // default first is what makes a second delivery terminal.
     unsafe {
@@ -215,6 +216,28 @@ fn re_raise(signal: i32) -> ! {
     // Defensive: if the signal was somehow blocked after re-raising, fall back
     // to the shell convention for "killed by signal N".
     std::process::exit(128 + signal);
+}
+
+/// Drop the core-dump limit, so dying from a crash that belongs to the guarded
+/// process leaves no dump behind.
+///
+/// The guard dies from the *guarded* process's signal on purpose, because the
+/// daemon classifies a stop by signal (`143` for SIGTERM, `139` for SIGSEGV).
+/// With the inherited `ulimit -c` still in place that also dumps core, and the
+/// core's executable is `dora` — so `coredumpctl` answers "dora segfaulted" for
+/// a crash inside someone's node, and a `dora`-sized core file lands in the cwd
+/// of a container. The exit status the daemon acts on is unaffected either way.
+fn clear_core_dumps() {
+    let no_core = libc::rlimit {
+        rlim_cur: 0,
+        rlim_max: 0,
+    };
+    // SAFETY: this process's own limit, and lowering a limit is always
+    // permitted. The hard limit is lowered with it, which is why this only
+    // runs on the way out.
+    unsafe {
+        libc::setrlimit(libc::RLIMIT_CORE, &no_core);
+    }
 }
 
 /// Whether the process identified by `parent` has exited.
@@ -281,3 +304,54 @@ fn clear_parent_death_signal() {
 
 #[cfg(all(unix, not(target_os = "linux")))]
 fn clear_parent_death_signal() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The guard must never be the executable in a core dump: it dies from the
+    /// guarded process's signal by design, and `ulimit -c` is inherited (#3472
+    /// review).
+    #[test]
+    fn the_core_limit_is_zeroed_before_the_guard_re_raises() {
+        // A developer's shell default, which is what the guard would inherit.
+        let inherited = libc::rlimit {
+            rlim_cur: 8 * 1024 * 1024,
+            rlim_max: libc::RLIM_INFINITY,
+        };
+        // SAFETY: `RLIM_INFINITY` hard limit with an 8 MiB soft limit is what
+        // a stock shell hands over, and setting it back needs no privilege. If
+        // this environment's hard limit is lower the test says so rather than
+        // passing vacuously.
+        let mut current = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        // SAFETY: reading this process's own limit.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) },
+            0
+        );
+        assert!(
+            current.rlim_max == libc::RLIM_INFINITY || current.rlim_max >= 8 * 1024 * 1024,
+            "environment cannot raise the core limit to the premise of this test: {current:?}"
+        );
+        // SAFETY: as above — not raising above the hard limit, so it is permitted.
+        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &inherited) }, 0);
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) },
+            0
+        );
+        assert_eq!(current.rlim_cur, 8 * 1024 * 1024, "premise: limit is set");
+
+        clear_core_dumps();
+
+        // SAFETY: as above.
+        assert_eq!(
+            unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) },
+            0
+        );
+        assert_eq!(current.rlim_cur, 0, "a re-raise must leave no core dump");
+    }
+}
