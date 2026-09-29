@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     io::Write,
     path::PathBuf,
-    time::SystemTime,
+    time::{Instant, SystemTime},
 };
 
 use clap::Args;
@@ -18,8 +18,8 @@ use crate::command::{Executable, Run, default_tracing, topic::selector::public_t
 
 /// Wall-clock nanoseconds since the Unix epoch, falling back to `0` when the
 /// clock is set before 1970 (e.g. an embedded target booting with an unset RTC
-/// before NTP sync) rather than panicking. Using the same fallback for both the
-/// recording base and each entry keeps `timestamp_offset_nanos` consistent.
+/// before NTP sync) rather than panicking. Only used for the header's
+/// `start_nanos`; entry offsets come from the monotonic clock.
 fn epoch_nanos() -> u64 {
     SystemTime::now()
         .duration_since(SystemTime::UNIX_EPOCH)
@@ -576,8 +576,11 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
 
     // Set up recording writer. `duration_since(UNIX_EPOCH)` errors when the
     // wall clock is set before 1970; `epoch_nanos` falls back to a zero base
-    // rather than panicking the recorder (see its doc).
+    // rather than panicking the recorder (see its doc). The wall clock is
+    // only for the header; entry offsets use the monotonic clock (see
+    // `dora_recording::offset_nanos`).
     let start_nanos = epoch_nanos();
+    let clock_start = Instant::now();
 
     let header = RecordingHeader {
         version: dora_recording::FORMAT_VERSION,
@@ -692,12 +695,13 @@ fn run_record_proxy(args: Record) -> eyre::Result<()> {
                     }
                 };
 
-                let now_nanos = epoch_nanos();
-
                 let entry = RecordEntry {
                     node_id,
                     output_id,
-                    timestamp_offset_nanos: now_nanos.saturating_sub(start_nanos),
+                    timestamp_offset_nanos: dora_recording::offset_nanos(
+                        clock_start,
+                        Instant::now(),
+                    ),
                     event_bytes,
                 };
                 writer.write_entry(&entry)?;
