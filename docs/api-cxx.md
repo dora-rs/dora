@@ -227,7 +227,7 @@ DoraResult send_output_with_metadata(
 
 #### send_arrow_output
 
-Send an Arrow array via the C Data Interface. The pointers must reference valid `ArrowArray` and `ArrowSchema` structs. Ownership of the Arrow data transfers to Rust on success.
+Send an Arrow array via the C Data Interface. The pointers must reference valid `ArrowArray` and `ArrowSchema` structs. Ownership of the Arrow data transfers to Rust once the output id is valid and both structs are live; the structs are then released and zeroed (even if the send itself fails). If the call returns an error before that point (null or already released struct, invalid output id, poisoned node lock), the structs are left untouched and the caller still owns them.
 
 ```cpp
 DoraResult send_arrow_output(
@@ -653,6 +653,9 @@ int main() {
 
             if (!result.error.empty()) {
                 std::cerr << "Send error: " << std::string(result.error) << std::endl;
+                // Early errors leave the structs with the caller.
+                if (out_c_array.release) out_c_array.release(&out_c_array);
+                if (out_c_schema.release) out_c_schema.release(&out_c_schema);
             }
         }
     }
