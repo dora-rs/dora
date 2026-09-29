@@ -310,6 +310,21 @@ impl Scheduler {
     }
 
     pub(crate) fn add_event(&mut self, event: EventItem) {
+        let seq = self.stamp();
+        self.add_event_stamped(seq, event);
+    }
+
+    /// Take the next arrival number. An event that travels through the shared
+    /// channel is numbered by its sender, so it keeps its place among the
+    /// events filed here directly.
+    pub(crate) fn stamp(&mut self) -> u64 {
+        let seq = self.next_arrival;
+        self.next_arrival += 1;
+        seq
+    }
+
+    /// Queue `event` under arrival number `seq`.
+    pub(crate) fn add_event_stamped(&mut self, seq: u64, event: EventItem) {
         let (event_id, should_flush) = match &event {
             EventItem::NodeEvent {
                 event: NodeEvent::Input { id, metadata, .. },
@@ -434,8 +449,6 @@ impl Scheduler {
                 }
             }
         }
-        let seq = self.next_arrival;
-        self.next_arrival += 1;
         self.arrivals
             .entry(event_id.clone())
             .or_default()
@@ -446,14 +459,22 @@ impl Scheduler {
     /// The oldest queued event across every queue, control events included:
     /// arrival order, which is what the Stream path promises.
     pub(crate) fn next_in_arrival_order(&mut self) -> Option<EventItem> {
-        let (id, _) = self
-            .arrivals
-            .iter()
-            .filter_map(|(id, seqs)| seqs.front().map(|seq| (id.clone(), *seq)))
-            .min_by_key(|(_, seq)| *seq)?;
+        let (id, _) = self.oldest()?;
         self.arrivals.get_mut(&id)?.pop_front();
         let (_size, queue) = self.event_queues.get_mut(&id)?;
         queue.pop_front()
+    }
+
+    /// The arrival number of the oldest queued event, if any.
+    pub(crate) fn oldest_arrival(&self) -> Option<u64> {
+        self.oldest().map(|(_, seq)| seq)
+    }
+
+    fn oldest(&self) -> Option<(DataId, u64)> {
+        self.arrivals
+            .iter()
+            .filter_map(|(id, seqs)| seqs.front().map(|seq| (id.clone(), *seq)))
+            .min_by_key(|(_, seq)| *seq)
     }
 
     pub(crate) fn next(&mut self) -> Option<EventItem> {
