@@ -466,21 +466,36 @@ impl TensorPoolManager {
     /// belongs to at most one daemon, so `is_local_node` keeps the sweep
     /// host-safe without narrowing what it can reclaim.
     ///
-    /// Segments are named `dora_pool_{dataflow_id}_{node_id}_{counter}`. Node
+    /// Segments are named `dora_pool_{dataflow_id}_{node_id}_{counter}`, or
+    /// `dora_pool_{machine_id}_{dataflow_id}_{node_id}_{counter}` when the
+    /// daemon has a machine id (it passes it to its nodes as
+    /// `DORA_MACHINE_ID`, and the node API then qualifies the name). Both
+    /// forms are swept; another machine's qualified names never match. Node
     /// ids may contain `_`, the counter never does, so the last component
     /// splits off the node id; a name that does not fit the pattern belongs
     /// to nobody identifiable and is left alone.
-    pub fn cleanup_orphans(dataflow_id: &str, is_local_node: impl Fn(&str) -> bool) {
+    pub fn cleanup_orphans(
+        dataflow_id: &str,
+        machine_id: Option<&str>,
+        is_local_node: impl Fn(&str) -> bool,
+    ) {
         #[cfg(target_os = "linux")]
         {
-            let prefix = format!("dora_pool_{}_", dataflow_id);
+            let prefixes = [
+                Some(format!("dora_pool_{dataflow_id}_")),
+                machine_id
+                    .filter(|m| !m.is_empty())
+                    .map(|m| format!("dora_pool_{m}_{dataflow_id}_")),
+            ];
             match std::fs::read_dir("/dev/shm") {
                 Ok(entries) => {
                     for entry in entries.flatten() {
                         let name = entry.file_name();
                         let name = name.to_string_lossy();
-                        let Some((node_id, counter)) = name
-                            .strip_prefix(&prefix)
+                        let Some((node_id, counter)) = prefixes
+                            .iter()
+                            .flatten()
+                            .find_map(|prefix| name.strip_prefix(prefix.as_str()))
                             .and_then(|rest| rest.rsplit_once('_'))
                         else {
                             continue;
@@ -508,7 +523,7 @@ impl TensorPoolManager {
         }
         #[cfg(not(target_os = "linux"))]
         {
-            let _ = (dataflow_id, is_local_node);
+            let _ = (dataflow_id, machine_id, is_local_node);
         }
     }
 
@@ -929,7 +944,7 @@ mod tests {
     #[test]
     fn cleanup_orphans_runs_without_panic() {
         // Sweep should run cleanly without panicking regardless of platform.
-        TensorPoolManager::cleanup_orphans("test-dataflow-uuid", |_| true);
+        TensorPoolManager::cleanup_orphans("test-dataflow-uuid", None, |_| true);
     }
 
     /// Two daemons on one host serve one dataflow, so both see the other's
@@ -958,12 +973,18 @@ mod tests {
             (format!("dora_pool_{dataflow_id}_local_notacounter"), true),
             // Another dataflow entirely, even for a local node id.
             (format!("dora_pool_{dataflow_id}other_local_0"), true),
+            // Machine-qualified names (the node got `DORA_MACHINE_ID`): our
+            // machine's local node is swept, its remote node and another
+            // machine's segments are not.
+            (format!("dora_pool_m1_{dataflow_id}_local_3"), false),
+            (format!("dora_pool_m1_{dataflow_id}_remote_3"), true),
+            (format!("dora_pool_m2_{dataflow_id}_local_3"), true),
         ];
         for (file, _) in &files {
             std::fs::write(segment(file), b"x").unwrap();
         }
 
-        TensorPoolManager::cleanup_orphans(&dataflow_id, |node| {
+        TensorPoolManager::cleanup_orphans(&dataflow_id, Some("m1"), |node| {
             matches!(node, "local" | "local_with_underscore")
         });
 
