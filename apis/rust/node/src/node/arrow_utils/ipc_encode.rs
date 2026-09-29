@@ -274,10 +274,14 @@ fn build_layout_rec(array: &ArrayData, layout: &mut Layout, off: &mut usize) -> 
             // the last offset so a sliced list does not ship the whole child.
             for child in array.child_data() {
                 let values_len = list_values_len?;
-                if child.len() < values_len {
-                    return None;
+                match child.len().cmp(&values_len) {
+                    std::cmp::Ordering::Less => return None,
+                    // Nothing to cut: skip `slice`, which clones the child.
+                    std::cmp::Ordering::Equal => build_layout_rec(child, layout, off)?,
+                    std::cmp::Ordering::Greater => {
+                        build_layout_rec(&child.slice(0, values_len), layout, off)?
+                    }
                 }
-                build_layout_rec(&child.slice(0, values_len), layout, off)?;
             }
         }
     }
