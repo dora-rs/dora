@@ -31,18 +31,18 @@
 //!   would require revisiting that path too.
 //! * **Serial** baud defaults to `115_200` when `?baud=` is omitted.
 //!
-//! Serial ports are opened from a [`SerialConfig`] rather than the
-//! `serial:<port>:<baud>` string: mavlink splits that string at the first
-//! `:` after the scheme, so a device path containing `:` (common under
-//! `/dev/serial/by-path/`) would otherwise be cut short and the rest
-//! misread as the baud rate.
+//! Every transport is opened from mavlink's typed config (`TcpConfig`,
+//! `UdpConfig`, `SerialConfig`) rather than a `mavlink::connect` address
+//! string: mavlink splits `serial:<port>:<baud>` at the first `:` after the
+//! scheme, so a device path containing `:` (common under
+//! `/dev/serial/by-path/`) would be cut short and the rest misread as the
+//! baud rate.
 
 use crate::{BridgeError, BridgeResult};
 use mavlink::{
-    Connectable, ConnectionAddress, MavConnection, MavlinkVersion, SerialConfig,
-    dialects::common::MavMessage,
+    Connectable, MavConnection, MavlinkVersion, SerialConfig, TcpConfig, TcpMode, UdpConfig,
+    UdpMode, dialects::common::MavMessage,
 };
-use std::fmt::Display;
 use url::Url;
 
 /// Default MAVLink TCP port used when the URL omits one.
@@ -74,7 +74,10 @@ fn connect_tcp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Se
         .ok_or_else(|| BridgeError::Config(format!("missing host in '{url}'")))?;
     let port = url.port().unwrap_or(DEFAULT_TCP_PORT);
     let version = parse_proto_query(url)?;
-    open_mavlink_versioned(&parse_address(&format!("tcpout:{host}:{port}"))?, version)
+    open_mavlink_versioned(
+        &TcpConfig::new(format!("{host}:{port}"), TcpMode::TcpOut),
+        version,
+    )
 }
 
 fn connect_udp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
@@ -83,7 +86,10 @@ fn connect_udp(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Se
         .ok_or_else(|| BridgeError::Config(format!("missing host in '{url}'")))?;
     let port = url.port().unwrap_or(DEFAULT_UDP_PORT);
     let version = parse_proto_query(url)?;
-    open_mavlink_versioned(&parse_address(&format!("udpin:{host}:{port}"))?, version)
+    open_mavlink_versioned(
+        &UdpConfig::new(format!("{host}:{port}"), UdpMode::Udpin),
+        version,
+    )
 }
 
 fn connect_serial(url: &Url) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
@@ -138,7 +144,7 @@ fn parse_baud(url: &Url) -> BridgeResult<u32> {
 }
 
 fn open_mavlink_versioned(
-    addr: &(impl Connectable + Display),
+    addr: &impl Connectable,
     version: MavlinkVersion,
 ) -> BridgeResult<Box<dyn MavConnection<MavMessage> + Send + Sync>> {
     let mut conn = addr
@@ -146,13 +152,6 @@ fn open_mavlink_versioned(
         .map_err(|e| BridgeError::Config(format!("failed to connect mavlink to '{addr}': {e}")))?;
     conn.set_protocol_version(version);
     Ok(Box::new(conn))
-}
-
-/// Parse a `mavlink::connect`-style address string (tcp/udp only; serial is
-/// built as a [`SerialConfig`], see the module docs).
-fn parse_address(addr: &str) -> BridgeResult<ConnectionAddress> {
-    ConnectionAddress::parse_address(addr)
-        .map_err(|e| BridgeError::Config(format!("invalid mavlink address '{addr}': {e}")))
 }
 
 /// Resolve the MAVLink protocol version from an optional `?proto=` query
