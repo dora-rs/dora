@@ -1,10 +1,13 @@
 //! What happens to a node's process group after the node process itself is gone.
 //!
 //! Split out from the spawn path on purpose (#3472 review): this is the logic
-//! every unix node runs, whether it was started by `dora run` or attached by
-//! `dora up`, and it is a different question from the one `prepared.rs` answers
-//! about a node that is still alive — the in-node guard and the shell guard
-//! live there. Keeping the two apart is what makes either reviewable.
+//! that runs for every unix node, whether it was started by `dora run` or
+//! attached by `dora up`, and it is a different question from the one
+//! `prepared.rs` answers about a node that is still alive — the in-node guard
+//! and the shell guard live there. Keeping the two apart is what makes either
+//! reviewable. The one exception is a group a node *abandoned*: that is only
+//! taken on the `dora run` path, which is the whole of #3472's ask and no more
+//! (see [`contain_exited_group`]).
 
 /// The two instants a [`crate::ProcessOperation::StopRequested`] marks, so that
 /// a group whose leader has already exited can be given the same treatment it
@@ -21,6 +24,28 @@ pub(super) type StopLadder = (tokio::time::Instant, tokio::time::Instant);
 /// node process is alive, which makes this the one place that catches a fork
 /// abandoned by a node that finished normally (dora-rs/dora#3472).
 ///
+/// # What a group a node abandoned is worth
+///
+/// `bind_to_run_parent` is the caller saying the node was spawned on the
+/// in-process `dora run` / `Daemon::run_dataflow` path (`bind_nodes_to_parent`,
+/// which is what injects `DORA_RUN_PARENT_PID`), as opposed to the
+/// coordinator-attached `dora up` path. It decides one case only, the one with
+/// no stop to wait for: a node that exited on its own.
+///
+/// On `dora run` such a group is killed, and that is #3472. `dora run` is a
+/// foreground process the user is watching, it is about to exit, and the fork is
+/// unreachable from it — leaving it behind is the hang #3472 reports, not a
+/// feature.
+///
+/// On `dora up` the group is left alone, deliberately. That dataflow outlives
+/// the node: a node that starts a viewer, a helper server or a launcher is
+/// allowed to exit without them, and a child the node itself stopped just before
+/// returning — `proc.terminate()`, a file still being flushed — is mid-cleanup,
+/// not abandoned. `SIGKILL`ing those with no grace period, no log line and no way
+/// to opt out would be a silent 1.0 behaviour change well beyond this PR's
+/// title, so it takes the narrower reading instead. A dataflow that wants its
+/// strays reaped says so by stopping the node, which is the case below.
+///
 /// `stop` is the exception, set when a stop is in flight, and it covers two
 /// cases: a node the ladder already signalled, and — the subtler one — a node
 /// that honored the `NodeEvent::Stop` and exited during the grace period, before
@@ -28,7 +53,8 @@ pub(super) type StopLadder = (tokio::time::Instant, tokio::time::Instant);
 /// may be mid-cleanup, so killing it now would cut the stop grace period short
 /// for every one of them (#3472 review). The escalation is the ladder's to make,
 /// then, and this replays it onto the group: `SIGTERM` at the soft-kill instant,
-/// `SIGKILL` at the escalation deadline.
+/// `SIGKILL` at the escalation deadline. That half is not gated on the spawn
+/// path: a group that was asked to stop is expected to end, on every path.
 ///
 /// Replaying it matters because a node that stops *promptly* would otherwise be
 /// the worst case for its children: the ladder's own `SIGTERM` was going to the
@@ -47,13 +73,27 @@ pub(super) type StopLadder = (tokio::time::Instant, tokio::time::Instant);
 /// `finished_tx` send), so a dataflow cannot finish — and `dora run` cannot
 /// exit, cancelling the wait — while a group it deferred is still outstanding.
 #[cfg(unix)]
-pub(super) async fn contain_exited_group(pid: u32, stop: Option<StopLadder>, signalled: bool) {
+pub(super) async fn contain_exited_group(
+    pid: u32,
+    stop: Option<StopLadder>,
+    signalled: bool,
+    bind_to_run_parent: bool,
+) {
     /// How often the group is re-checked while waiting: short enough that the
     /// wait ends right after the last member exits, long enough to be free.
     const POLL: std::time::Duration = std::time::Duration::from_millis(250);
 
     let Some((soft_kill_at, kill_at)) = stop else {
-        // Nothing is waiting for this group: its members are abandoned.
+        // Nothing is waiting for this group: its members are abandoned, which
+        // only the `dora run` path acts on. Everywhere else they are somebody's
+        // to look after, and the node never said to stop them.
+        if !bind_to_run_parent {
+            return;
+        }
+        tracing::warn!(
+            "node process group {pid} was abandoned by a node that exited on its own; \
+             SIGKILLing whatever is left in it (dora run)"
+        );
         signal_group(pid, libc::SIGKILL);
         return;
     };
@@ -75,6 +115,10 @@ pub(super) async fn contain_exited_group(pid: u32, stop: Option<StopLadder>, sig
         }
         let now = tokio::time::Instant::now();
         if now >= kill_at {
+            tracing::warn!(
+                "node process group {pid} ignored the stop grace period; \
+                 SIGKILLing what is left of it"
+            );
             signal_group(pid, libc::SIGKILL);
             return;
         }
@@ -181,13 +225,15 @@ mod tests {
 
     /// A node that exited on its own left a fork behind, and nothing else will
     /// ever clean it up: the group is killed at once, with no stop to wait for.
+    /// This is the `dora run` path, which is the one that takes abandoned groups
+    /// (#3472).
     #[tokio::test]
     async fn exited_node_group_is_killed_when_no_stop_is_in_flight() {
         let dir = tempfile::tempdir().unwrap();
         let (mut leader, child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
         let started = std::time::Instant::now();
 
-        contain_exited_group(leader.id(), None, false).await;
+        contain_exited_group(leader.id(), None, false, true).await;
 
         wait_for_exit(child, "the abandoned fork").await;
         assert!(
@@ -195,6 +241,30 @@ mod tests {
             "an abandoned group must be killed without waiting for a deadline"
         );
         let _ = leader.kill();
+    }
+
+    /// …but only on the `dora run` path. Off it, a group the node abandoned is
+    /// left running: on `dora up` the dataflow outlives the node, so a helper
+    /// the node started is somebody's to look after, and a child the node itself
+    /// stopped just before returning is mid-cleanup rather than abandoned. The
+    /// containment of #3472 is the `dora run` hang; taking every unix node's
+    /// strays with it would be a 1.0 behaviour change this PR does not need.
+    #[tokio::test]
+    async fn abandoned_group_is_left_alone_off_the_dora_run_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut leader, child) = spawn_group_with_child(dir.path(), TERM_IGNORING_CHILD, 300);
+
+        contain_exited_group(leader.id(), None, false, false).await;
+
+        // Nothing waits on this group, so there is no deadline for it to miss:
+        // a short settle is the whole assertion.
+        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        assert!(
+            process_alive(child),
+            "a group abandoned off the dora run path must be left alone, not SIGKILLed"
+        );
+        let _ = leader.kill();
+        let _ = unsafe { libc::kill(child as libc::pid_t, libc::SIGKILL) };
     }
 
     /// The stop path: the group was already asked to shut down, so its members
@@ -219,6 +289,7 @@ mod tests {
                     now + std::time::Duration::from_secs(4),
                 )),
                 false,
+                true,
             )
             .await
         });
@@ -271,6 +342,7 @@ mod tests {
                 now + std::time::Duration::from_secs(120),
             )),
             false,
+            true,
         )
         .await;
 
@@ -317,6 +389,7 @@ mod tests {
                 now + std::time::Duration::from_secs(3),
             )),
             true,
+            true,
         )
         .await;
         assert!(
@@ -341,6 +414,7 @@ mod tests {
                 now + std::time::Duration::from_secs(60),
             )),
             false,
+            true,
         )
         .await;
         assert_eq!(
@@ -374,6 +448,7 @@ mod tests {
                 now + std::time::Duration::from_secs(240),
             )),
             false,
+            true,
         )
         .await;
 
