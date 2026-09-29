@@ -1200,7 +1200,6 @@ fn rewrite_module_input(
     optional_inputs: &BTreeSet<String>,
 ) -> eyre::Result<Option<Input>> {
     match &input.mapping {
-        InputMapping::Timer { .. } => Ok(Some(input.clone())),
         // `dora/logs/<level>/<node>` naming a sibling: prefix the node filter
         // like a sibling data source, or it would match no node after
         // expansion and the sink would silently receive nothing.
@@ -1214,7 +1213,7 @@ fn rewrite_module_input(
             }),
             ..input.clone()
         })),
-        InputMapping::Logs(_) => Ok(Some(input.clone())),
+        InputMapping::Timer { .. } | InputMapping::Logs(_) => Ok(Some(input.clone())),
         InputMapping::User(user_mapping) => {
             let source_str = user_mapping.source.to_string();
 
