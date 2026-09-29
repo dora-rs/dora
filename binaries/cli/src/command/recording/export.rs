@@ -24,7 +24,7 @@
 use std::{
     collections::{BTreeMap, HashMap, HashSet},
     fs::{self, File},
-    io::BufWriter,
+    io::{BufWriter, Seek, Write},
     path::{Path, PathBuf},
 };
 
@@ -106,7 +106,9 @@ fn run_export(args: Export) -> eyre::Result<()> {
     // replacement. The temp name lives in the output's directory so the rename
     // stays on one filesystem and is therefore atomic.
     let tmp_path = temp_output_path(&output)?;
-    let message_count = match write_mcap(&mut reader, &filter, &tmp_path) {
+    let out_file = File::create(&tmp_path)
+        .wrap_err_with(|| eyre!("failed to create `{}`", tmp_path.display()))?;
+    let message_count = match write_mcap(&mut reader, &filter, BufWriter::new(out_file)) {
         Ok(count) => count,
         Err(err) => {
             let _ = fs::remove_file(&tmp_path);
@@ -145,10 +147,10 @@ fn temp_output_path(output: &str) -> eyre::Result<PathBuf> {
     )))
 }
 
-fn write_mcap(
+fn write_mcap<W: Write + Seek>(
     reader: &mut RecordingReader<File>,
     filter: &[(String, String)],
-    output: &Path,
+    out: W,
 ) -> eyre::Result<u64> {
     let (start_nanos, dataflow_id, descriptor_yaml) = {
         let header = reader.header();
@@ -159,10 +161,7 @@ fn write_mcap(
         )
     };
 
-    let out_file = File::create(output)
-        .wrap_err_with(|| eyre!("failed to create output `{}`", output.display()))?;
-    let mut writer =
-        Writer::new(BufWriter::new(out_file)).wrap_err("failed to initialise MCAP writer")?;
+    let mut writer = Writer::new(out).wrap_err("failed to initialise MCAP writer")?;
     writer
         .write_metadata(&Metadata {
             name: "dora-recording".to_string(),
@@ -245,10 +244,15 @@ fn write_mcap(
         message_count += 1;
     }
 
-    // `finish` writes the summary and footer; dropping the writer flushes the
-    // `BufWriter` underneath it, which must happen before the rename.
+    // `finish` writes the summary and footer and *then* flushes
+    // (`write_summary_and_footer_magic` ends in `writer.flush()?`,
+    // mcap-0.25.0 `write.rs:1460`), and that error is the one that matters: a
+    // full disk or a quota has to fail the export here, before the rename, or
+    // the write-then-rename above would put an `.mcap` with no footer where a
+    // readable one used to be and still report success. Both `Writer`'s and
+    // `BufWriter`'s `Drop` throw errors away, so nothing may be left to them;
+    // `a_flush_that_fails_fails_the_export` pins that.
     writer.finish().wrap_err("failed to finish MCAP file")?;
-    drop(writer);
 
     for (node, output_id) in unmatched_topics(filter, &matched) {
         eprintln!(
@@ -319,9 +323,12 @@ fn output_aliases_input(input: &str, output: &str) -> eyre::Result<bool> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, io::BufWriter};
+    use std::{
+        fs,
+        io::{BufWriter, Seek, Write},
+    };
 
-    use super::{Export, default_output_path, run_export, unmatched_topics};
+    use super::{Export, default_output_path, run_export, unmatched_topics, write_mcap};
     use aligned_vec::AVec;
     use dora_message::{
         common::Timestamped,
@@ -330,7 +337,9 @@ mod tests {
         metadata::Metadata,
         uhlc::{ID, NTP64, Timestamp},
     };
-    use dora_recording::{FORMAT_VERSION, RecordEntry, RecordingHeader, RecordingWriter};
+    use dora_recording::{
+        FORMAT_VERSION, RecordEntry, RecordingHeader, RecordingReader, RecordingWriter,
+    };
     use mcap::MessageStream;
     use tempfile::tempdir;
     use uuid::Uuid;
@@ -887,6 +896,70 @@ mod tests {
         assert!(
             leftovers.is_empty(),
             "a failed export must remove its temp file, left {leftovers:?}"
+        );
+    }
+
+    /// A flush that fails has to fail the export. `finish` writes the footer
+    /// into the buffer and never flushes it, and both `Writer`'s and
+    /// `BufWriter`'s `Drop` throw the error away — so a full disk used to be
+    /// renamed into place as an `.mcap` with no footer, while the CLI reported
+    /// success. That is the one outcome the temp-file-and-rename exists to
+    /// prevent (#3541 review).
+    #[test]
+    fn a_flush_that_fails_fails_the_export() {
+        /// Takes every byte, then fails the way a full disk does at the one
+        /// moment the export cannot recover from.
+        struct FailsOnFlush(std::io::Cursor<Vec<u8>>);
+
+        impl Write for FailsOnFlush {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.write(buf)
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("no space left on device"))
+            }
+        }
+
+        impl Seek for FailsOnFlush {
+            fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
+                self.0.seek(pos)
+            }
+        }
+
+        let dir = tempdir().expect("tempdir");
+        let recording_path = dir.path().join("input.drec");
+        {
+            let file = fs::File::create(&recording_path).expect("create recording");
+            let mut writer =
+                RecordingWriter::new(BufWriter::new(file), &header()).expect("init writer");
+            writer
+                .write_entry(&RecordEntry {
+                    node_id: "tick".to_string(),
+                    output_id: "tick".to_string(),
+                    timestamp_offset_nanos: 100,
+                    event_bytes: empty_output_event_bytes("tick", "tick"),
+                })
+                .expect("write entry");
+            writer.finish().expect("finish recording");
+        }
+
+        let input_file = fs::File::open(&recording_path).expect("open recording");
+        let mut reader = RecordingReader::open(input_file).expect("init reader");
+        // The export must fail, rather than rename a footerless `.mcap` into
+        // place over a good one and report success. If this ever returns `Ok`,
+        // the flush stopped being checked — either here or in `mcap` — and the
+        // temp-file-and-rename is no longer atomic in the only way it can fail.
+        let err = write_mcap(
+            &mut reader,
+            &[],
+            FailsOnFlush(std::io::Cursor::new(Vec::new())),
+        )
+        .expect_err("a flush that fails must fail the export");
+        assert!(
+            err.to_string().contains("finish") || err.to_string().contains("flush"),
+            "the failure must come from the end of the write, not from an early \
+             read or write, otherwise this test proves nothing: {err}"
         );
     }
 
