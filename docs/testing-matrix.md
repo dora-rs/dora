@@ -139,12 +139,12 @@ touched in the cycle. Tracked as #256.
 
 ```bash
 # Terminal 1
-dora coordinator --backend redb --store-path /tmp/dora-coord
+dora coordinator --store redb:/tmp/dora-coord
 # Terminal 2
 dora daemon --machine-id A --coordinator-addr 127.0.0.1
 # Terminal 3 — kill coordinator, restart, verify daemon auto-reconnects
 pkill dora-coordinator
-dora coordinator --backend redb --store-path /tmp/dora-coord
+dora coordinator --store redb:/tmp/dora-coord
 ```
 
 Not automated: failure-injection timing is flaky on cloud runners.
@@ -154,7 +154,7 @@ Planned: dedicated self-hosted runner for HA scenarios.
 
 ```bash
 # Machine A
-dora coordinator --bind 0.0.0.0
+dora coordinator --interface 0.0.0.0
 dora daemon --machine-id A --coordinator-addr <machine-a-ip>
 # Machine B
 dora daemon --machine-id B --coordinator-addr <machine-a-ip>
