@@ -312,46 +312,70 @@ mod tests {
     /// The guard must never be the executable in a core dump: it dies from the
     /// guarded process's signal by design, and `ulimit -c` is inherited (#3472
     /// review).
+    ///
+    /// Run in a forked child, because the check lowers the *hard* limit to 0
+    /// and that cannot be undone without privilege — in this process it would
+    /// silently disarm core dumps for every other test in the binary.
     #[test]
     fn the_core_limit_is_zeroed_before_the_guard_re_raises() {
-        // A developer's shell default, which is what the guard would inherit.
-        let inherited = libc::rlimit {
-            rlim_cur: 8 * 1024 * 1024,
-            rlim_max: libc::RLIM_INFINITY,
-        };
-        // SAFETY: `RLIM_INFINITY` hard limit with an 8 MiB soft limit is what
-        // a stock shell hands over, and setting it back needs no privilege. If
-        // this environment's hard limit is lower the test says so rather than
-        // passing vacuously.
+        // SAFETY: forking is fine here: the child runs only `setrlimit`,
+        // `getrlimit` and `_exit`, all async-signal-safe, and touches none of
+        // this process's state. The parent keeps its own limits either way.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            // SAFETY: `_exit` ends the child without running the parent's
+            // destructors, which is what a forked child must do.
+            unsafe { libc::_exit(zeroed_core_limit_leaves_no_dump()) };
+        }
+        let mut status = 0;
+        // SAFETY: waiting on the pid just forked, with a `status` this block
+        // initialises.
+        assert_eq!(unsafe { libc::waitpid(pid, &mut status, 0) }, pid);
+        assert_eq!(
+            libc::WEXITSTATUS(status),
+            0,
+            "the child rejected the core-limit check"
+        );
+    }
+
+    /// Child half of the above: establish that a non-zero core limit is
+    /// zeroed, and report through the exit status. Returns the exit code.
+    fn zeroed_core_limit_leaves_no_dump() -> i32 {
+        let eight_mib = 8 * 1024 * 1024;
         let mut current = libc::rlimit {
             rlim_cur: 0,
             rlim_max: 0,
         };
-        // SAFETY: reading this process's own limit.
-        assert_eq!(
-            unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) },
-            0
-        );
-        assert!(
-            current.rlim_max == libc::RLIM_INFINITY || current.rlim_max >= 8 * 1024 * 1024,
-            "environment cannot raise the core limit to the premise of this test: {current:?}"
-        );
-        // SAFETY: as above — not raising above the hard limit, so it is permitted.
-        assert_eq!(unsafe { libc::setrlimit(libc::RLIMIT_CORE, &inherited) }, 0);
-        // SAFETY: as above.
-        assert_eq!(
-            unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) },
-            0
-        );
-        assert_eq!(current.rlim_cur, 8 * 1024 * 1024, "premise: limit is set");
+        // SAFETY: reading and writing this child's own limit. The soft limit is
+        // raised only to what the current hard limit already allows, so
+        // `setrlimit` is permitted without privilege.
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) } != 0 {
+            return 1;
+        }
+        let raised = libc::rlimit {
+            rlim_cur: eight_mib.min(current.rlim_max),
+            rlim_max: current.rlim_max,
+        };
+        if unsafe { libc::setrlimit(libc::RLIMIT_CORE, &raised) } != 0 {
+            return 2;
+        }
+        // Premise: something to zero. A hard limit of 0 means the environment
+        // cannot express the case, so skip rather than pass vacuously.
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) } != 0 || current.rlim_cur == 0
+        {
+            return 3;
+        }
 
         clear_core_dumps();
 
         // SAFETY: as above.
-        assert_eq!(
-            unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) },
-            0
-        );
-        assert_eq!(current.rlim_cur, 0, "a re-raise must leave no core dump");
+        if unsafe { libc::getrlimit(libc::RLIMIT_CORE, &mut current) } != 0 {
+            return 4;
+        }
+        if current.rlim_cur != 0 || current.rlim_max != 0 {
+            return 5;
+        }
+        0
     }
 }

@@ -853,6 +853,19 @@ impl RunningDataflow {
                 // awaits. A marker submitted by a spawned task would be queued a
                 // whole task wakeup later, by which time the group is SIGKILLed
                 // at once instead of held (#3472 review).
+                // Deliberately a blocking `send` on the event loop, and
+                // deliberately not `try_send`. The channel holds 2 and this
+                // ladder sends 3 (`StopRequested`, then `SoftKill` and `Kill`),
+                // so it *can* be full — but only if the wait task has not
+                // drained it, and that task is the one consumer: it sits in a
+                // `select!` on `op_rx.recv_async()` for as long as the node
+                // lives, so a slot frees as soon as it is scheduled. A full
+                // channel here would mean the wait task is not running, i.e.
+                // the node is already gone and the receiver is dropped, in which
+                // case the send fails fast and returns `false` rather than
+                // blocking. A `try_send` fallback would be worse than blocking
+                // here: it drops the marker on a full channel, and the marker
+                // is what holds the group for its grace period (#3472 review).
                 let soft_kill_at = tokio::time::Instant::now() + duration;
                 process.submit(ProcessOperation::StopRequested {
                     soft_kill_at,
