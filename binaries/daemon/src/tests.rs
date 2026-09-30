@@ -271,6 +271,39 @@ async fn failed_pending_finish_retry_does_not_abort_reconnect_cycle() {
     );
 }
 
+/// A `Spawn` from a coordinator that predates `dora start` validation must
+/// not reach `Duration::from_secs_f64` with a bad timing value, which would
+/// panic the daemon and every dataflow on it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn spawn_rejects_invalid_timing_fields() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let descriptor: Descriptor = serde_json::from_str(
+        r#"{ "nodes": [ { "id": "node", "path": "/tmp/dummy", "restart_delay": -1.0 } ] }"#,
+    )
+    .unwrap();
+    let nodes = descriptor.resolve_aliases_and_set_defaults().unwrap();
+    let spawn_nodes = nodes.keys().cloned().collect();
+    let dataflow_id = Uuid::new_v4();
+    let err = daemon
+        .spawn_dataflow(
+            None,
+            dataflow_id,
+            std::env::temp_dir(),
+            nodes,
+            descriptor,
+            spawn_nodes,
+            false,
+            None,
+        )
+        .await
+        .err()
+        .expect("spawn must reject a negative restart_delay");
+    assert!(format!("{err:#}").contains("restart_delay"), "{err:#}");
+    assert!(!daemon.running.contains_key(&dataflow_id));
+}
+
 /// A daemon whose coordinator connection is `coordinator_sender`. The one
 /// place these tests call `build_daemon`, so a signature change touches only
 /// this.
