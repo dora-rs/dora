@@ -711,14 +711,45 @@ fn is_terminal_goal_status(status: ros2_client::action::GoalStatusEnum) -> bool 
     )
 }
 
+/// Decides whether a Zenoh `SendGoal` for goal `key` is accepted, making room
+/// in `goals` first when it is full.
+///
+/// Like `rcl_action`, a goal id that is already tracked is rejected and the
+/// table is left untouched: accepting it would overwrite the live goal,
+/// dropping its queued get-result waiters and any stored result, and hand the
+/// dora handler a second `goal` for the same id. Otherwise, when the table is
+/// full, finished goals the client never polled are retired so a burst of them
+/// can't permanently reject all future work; running goals are always kept.
+fn zenoh_accept_goal(
+    goals: &mut GoalSlots<String, ZenohServerGoal>,
+    key: &str,
+    has_payload: bool,
+) -> bool {
+    if goals.contains_key(key) {
+        return false;
+    }
+    if goals.len() >= MAX_CONCURRENT_GOALS {
+        let finished: Vec<String> = goals
+            .iter()
+            .filter(|(_, goal)| is_terminal_goal_status(goal.status))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in finished {
+            goals.remove(&k);
+        }
+    }
+    has_payload && goals.len() < MAX_CONCURRENT_GOALS
+}
+
 /// Picks the goals a Zenoh `CancelGoal` request moves to `Canceling` (a nil
 /// `requested` id means "all goals") and the matching response code.
 ///
-/// Like `rcl_action`, only goals that are still running can be canceled. A
+/// Like `rcl_action`, only goals that are still executing can be canceled. A
 /// finished goal whose result the client has not polled yet keeps its terminal
 /// status: flipping it back to `Canceling` would exempt it from the eviction of
 /// finished goals, so it would hold one of the `MAX_CONCURRENT_GOALS` slots
 /// forever, and it would be reported as canceling although it already ended.
+/// A goal that is already `Canceling` is not reported as newly canceled.
 fn zenoh_cancel_targets<'a>(
     goals: impl IntoIterator<Item = &'a ZenohServerGoal>,
     requested: ros2_client::action::GoalId,
@@ -728,24 +759,30 @@ fn zenoh_cancel_targets<'a>(
 ) {
     use ros2_client::action_msgs::CancelGoalResponseEnum;
 
+    use ros2_client::action::GoalStatusEnum;
+
     let mut targets = Vec::new();
-    let mut matched_terminal = false;
+    // Status of the goal a by-id request names, when it is not cancelable.
+    let mut matched_status = None;
     for goal in goals {
         if !(requested.uuid.is_nil() || requested.uuid == goal.id.uuid) {
             continue;
         }
-        if is_terminal_goal_status(goal.status) {
-            matched_terminal = true;
-        } else {
+        if matches!(
+            goal.status,
+            GoalStatusEnum::Accepted | GoalStatusEnum::Executing
+        ) {
             targets.push(goal.id);
+        } else {
+            matched_status = Some(goal.status);
         }
     }
-    let return_code = if !targets.is_empty() {
-        CancelGoalResponseEnum::None
-    } else if matched_terminal && !requested.uuid.is_nil() {
-        CancelGoalResponseEnum::GoalTerminated
-    } else {
-        CancelGoalResponseEnum::UnknownGoal
+    let return_code = match matched_status {
+        _ if !targets.is_empty() => CancelGoalResponseEnum::None,
+        _ if requested.uuid.is_nil() => CancelGoalResponseEnum::UnknownGoal,
+        Some(status) if is_terminal_goal_status(status) => CancelGoalResponseEnum::GoalTerminated,
+        Some(_) => CancelGoalResponseEnum::Rejected,
+        None => CancelGoalResponseEnum::UnknownGoal,
     };
     (targets, return_code)
 }
@@ -859,28 +896,7 @@ fn run_zenoh_action_server(
                     }
                 };
                 let key = decoded.goal_id.uuid.to_string();
-                // Like `rcl_action`, refuse a goal id that is already tracked:
-                // re-inserting it would overwrite the live goal, dropping its
-                // queued get-result waiters and any stored result, and hand
-                // the dora handler a second `goal` for the same id. Checked
-                // before the eviction below, which would otherwise make room by
-                // retiring that very goal when it finished but was not polled.
-                let duplicate = goals.contains_key(&key);
-                // Retire completed goals the client never polled so a burst of
-                // finished goals can't permanently fill the slot table and reject
-                // all future work. Executing/Canceling goals are always kept.
-                if goals.len() >= MAX_CONCURRENT_GOALS {
-                    let finished: Vec<String> = goals
-                        .iter()
-                        .filter(|(_, goal)| is_terminal_goal_status(goal.status))
-                        .map(|(k, _)| k.clone())
-                        .collect();
-                    for k in finished {
-                        goals.remove(&k);
-                    }
-                }
-                let accepted =
-                    !duplicate && goals.len() < MAX_CONCURRENT_GOALS && decoded.goal.0.is_some();
+                let accepted = zenoh_accept_goal(&mut goals, &key, decoded.goal.0.is_some());
                 let response = serialize_cdr(&SendGoalResponse {
                     accepted,
                     stamp: ros2_client::builtin_interfaces::Time::from_nanos(unix_timestamp_ns()),
@@ -2318,6 +2334,20 @@ mod zenoh_cancel_tests {
     }
 
     #[test]
+    fn a_goal_that_is_already_canceling_is_not_canceled_again() {
+        let canceling = goal(GoalStatusEnum::Canceling);
+        let running = goal(GoalStatusEnum::Executing);
+        let (targets, code) = zenoh_cancel_targets([&canceling, &running], nil());
+        assert_eq!(targets.len(), 1);
+        assert_eq!(targets[0].uuid, running.id.uuid);
+        assert_eq!(code, CancelGoalResponseEnum::None);
+
+        let (targets, code) = zenoh_cancel_targets([&canceling], canceling.id);
+        assert!(targets.is_empty());
+        assert_eq!(code, CancelGoalResponseEnum::Rejected);
+    }
+
+    #[test]
     fn unknown_or_empty_cancel_reports_unknown_goal() {
         let running = goal(GoalStatusEnum::Executing);
         let (targets, code) = zenoh_cancel_targets([&running], GoalId::new_random());
@@ -2328,6 +2358,84 @@ mod zenoh_cancel_tests {
         let (targets, code) = zenoh_cancel_targets([&finished], nil());
         assert!(targets.is_empty());
         assert_eq!(code, CancelGoalResponseEnum::UnknownGoal);
+    }
+}
+
+#[cfg(test)]
+mod zenoh_accept_goal_tests {
+    use super::ros2_client::action::{GoalId, GoalStatusEnum};
+    use super::{GoalSlots, MAX_CONCURRENT_GOALS, ZenohServerGoal, zenoh_accept_goal};
+
+    fn insert(goals: &mut GoalSlots<String, ZenohServerGoal>, status: GoalStatusEnum) -> String {
+        let id = GoalId::new_random();
+        let key = id.uuid.to_string();
+        goals
+            .insert(
+                key.clone(),
+                ZenohServerGoal {
+                    id,
+                    status,
+                    result: Some(vec![1, 2, 3]),
+                    result_requests: Vec::new(),
+                },
+            )
+            .unwrap();
+        key
+    }
+
+    #[test]
+    fn a_new_goal_is_accepted() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        assert!(zenoh_accept_goal(&mut goals, "new", true));
+        assert!(!zenoh_accept_goal(&mut goals, "no-payload", false));
+    }
+
+    #[test]
+    fn a_reused_goal_id_is_rejected_and_the_live_goal_is_kept() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        let live = insert(&mut goals, GoalStatusEnum::Executing);
+        assert!(!zenoh_accept_goal(&mut goals, &live, true));
+        assert!(matches!(
+            goals.get(&live).map(|g| g.status),
+            Some(GoalStatusEnum::Executing)
+        ));
+    }
+
+    #[test]
+    fn a_reused_id_of_a_finished_goal_is_rejected_even_when_the_table_is_full() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        let finished = insert(&mut goals, GoalStatusEnum::Succeeded);
+        while goals.len() < MAX_CONCURRENT_GOALS {
+            insert(&mut goals, GoalStatusEnum::Executing);
+        }
+        assert!(!zenoh_accept_goal(&mut goals, &finished, true));
+        // The finished goal and its stored result must survive: the
+        // duplicate must not evict the very goal it collides with.
+        assert_eq!(
+            goals.get(&finished).and_then(|g| g.result.clone()),
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn a_full_table_retires_finished_goals_to_make_room() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        let finished = insert(&mut goals, GoalStatusEnum::Aborted);
+        while goals.len() < MAX_CONCURRENT_GOALS {
+            insert(&mut goals, GoalStatusEnum::Executing);
+        }
+        assert!(zenoh_accept_goal(&mut goals, "new", true));
+        assert!(!goals.contains_key(&finished));
+    }
+
+    #[test]
+    fn a_table_full_of_running_goals_rejects() {
+        let mut goals = GoalSlots::new(MAX_CONCURRENT_GOALS);
+        while goals.len() < MAX_CONCURRENT_GOALS {
+            insert(&mut goals, GoalStatusEnum::Executing);
+        }
+        assert!(!zenoh_accept_goal(&mut goals, "new", true));
+        assert_eq!(goals.len(), MAX_CONCURRENT_GOALS);
     }
 }
 
