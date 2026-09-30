@@ -43,12 +43,16 @@ impl Extractor for MetadataMap<'_> {
 /// ```
 ///
 /// This also installs the W3C TraceContext propagator as the process-global
-/// text-map propagator. [`serialize_context`] and [`deserialize_context`] go
-/// through that global, and OpenTelemetry's default is a no-op propagator, so
-/// without it no trace context would cross node boundaries and every node's
-/// spans would start a separate trace.
+/// text-map propagator, unless the application already installed one of its
+/// own. [`serialize_context`] and [`deserialize_context`] go through that
+/// global, and OpenTelemetry's default is a no-op propagator, so without it no
+/// trace context would cross node boundaries and every node's spans would
+/// start a separate trace.
 pub fn init_tracing(name: &str, endpoint: &str) -> eyre::Result<sdktrace::SdkTracerProvider> {
-    global::set_text_map_propagator(TraceContextPropagator::new());
+    // The no-op default propagates no fields; any real propagator does.
+    if global::get_text_map_propagator(|propagator| propagator.fields().next().is_none()) {
+        global::set_text_map_propagator(TraceContextPropagator::new());
+    }
 
     let exporter = opentelemetry_otlp::SpanExporter::builder()
         .with_tonic()
@@ -269,6 +273,37 @@ mod tests {
         assert_eq!(
             recovered.span().span_context().trace_id(),
             span_context.trace_id()
+        );
+    }
+
+    #[test]
+    fn init_tracing_keeps_an_application_propagator() {
+        use opentelemetry::propagation::TextMapCompositePropagator;
+        use opentelemetry_sdk::propagation::{BaggagePropagator, TraceContextPropagator};
+
+        let _guard = PROPAGATOR_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+        // An application that propagates baggage as well installs a composite
+        // propagator before setting up dora's tracing; `init_tracing` must not
+        // replace it with plain TraceContext.
+        opentelemetry::global::set_text_map_propagator(TextMapCompositePropagator::new(vec![
+            Box::new(TraceContextPropagator::new()),
+            Box::new(BaggagePropagator::new()),
+        ]));
+
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("tokio runtime");
+        let _rt_guard = rt.enter();
+        let _provider =
+            super::init_tracing("propagator_test", "http://127.0.0.1:4317").expect("init");
+
+        let fields: Vec<String> = opentelemetry::global::get_text_map_propagator(|p| {
+            p.fields().map(str::to_owned).collect()
+        });
+        assert!(
+            fields.iter().any(|f| f == "baggage"),
+            "the application's propagator was replaced: {fields:?}"
         );
     }
 
