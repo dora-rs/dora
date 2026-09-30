@@ -800,6 +800,7 @@ async fn deliver_when_room(
         pending,
         drained,
         mut event,
+        held: _held,
     } = delivery;
     let mut stalled = Duration::ZERO;
     loop {
@@ -1027,6 +1028,7 @@ mod tests {
             input: DataId::from("in".to_string()),
             channel: channel.clone(),
             pending: Some(pending.clone()),
+            held: drained.hold(&DataId::from("in".to_string())),
             drained: drained.clone(),
             event,
         };

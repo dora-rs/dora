@@ -2372,6 +2372,38 @@ fn close_input_marks_the_input_closed_for_held_deliveries() {
     assert!(!drained.closed_inputs.lock().unwrap().contains(&input));
 }
 
+/// The circuit breaker does not break an input while a message for it is
+/// held for the receiver's full channel: the break's `InputClosed` could land
+/// ahead of that message, and the producer is alive anyway. Once the held
+/// delivery is done, the timeout fires as usual (dora-rs/dora#3623 review).
+#[test]
+fn input_timeout_waits_for_a_held_delivery() {
+    let mut df = test_dataflow();
+    let node: NodeId = "node".to_string().into();
+    let input: DataId = "input".to_string().into();
+    df.input_deadlines.insert(
+        (node.clone(), input.clone()),
+        InputDeadline {
+            timeout: Duration::from_millis(1),
+            last_received: Some(Instant::now() - Duration::from_secs(10)),
+        },
+    );
+    let drained = Arc::new(crate::local_delivery::DrainSignal::default());
+    df.drain_signals.insert(node.clone(), drained.clone());
+
+    let held = drained.hold(&input);
+    assert!(
+        df.timed_out_inputs().is_empty(),
+        "an input with a held message must not be broken"
+    );
+
+    drop(held);
+    assert_eq!(
+        df.timed_out_inputs(),
+        vec![(node, input, Duration::from_millis(1))]
+    );
+}
+
 /// A receiver recorded in `mappings` but missing from
 /// `subscribe_channels` gets routed to *nothing*: `send_output_to_local_receivers`
 /// cannot deliver, and the producer's send still "succeeds". The missing

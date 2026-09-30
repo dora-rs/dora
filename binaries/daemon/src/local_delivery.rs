@@ -50,6 +50,9 @@ pub(crate) struct DeferredDelivery {
     /// The receiver's side of the hold.
     pub drained: Arc<DrainSignal>,
     pub event: Timestamped<NodeEvent>,
+    /// Marks `input` as having a held message until this delivery is done,
+    /// however it ends.
+    pub held: HeldInput,
 }
 
 /// What a producer held for a full backpressure receiver shares with that
@@ -77,6 +80,12 @@ pub(crate) struct DrainSignal {
     /// is held must not put an `Input` behind that input's `InputClosed`
     /// (dora-rs/dora#3619).
     pub closed_inputs: Mutex<BTreeSet<DataId>>,
+    /// How many held deliveries each input of this receiver has in flight.
+    /// The circuit breaker does not break an input while this is nonzero:
+    /// its producer is alive and produced, and a break's `InputClosed`
+    /// could otherwise land ahead of the held `Input` (dora-rs/dora#3623
+    /// review).
+    held_inputs: Mutex<BTreeMap<DataId, usize>>,
 }
 
 impl DrainSignal {
@@ -90,12 +99,57 @@ impl DrainSignal {
         self.notify.notify_waiters();
     }
 
+    /// Counts a held delivery for `input` until the returned guard drops.
+    pub fn hold(self: &Arc<Self>, input: &DataId) -> HeldInput {
+        *self
+            .held_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(input.clone())
+            .or_default() += 1;
+        HeldInput {
+            drained: self.clone(),
+            input: input.clone(),
+        }
+    }
+
+    /// Whether a delivery for `input` is still held.
+    pub fn is_held(&self, input: &DataId) -> bool {
+        self.held_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .contains_key(input)
+    }
+
     /// Undoes [`Self::close_input`] for an input a reload maps again.
     pub fn reopen_input(&self, input: &DataId) {
         self.closed_inputs
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .remove(input);
+    }
+}
+
+/// A held delivery's entry in [`DrainSignal::held_inputs`].
+#[derive(Debug)]
+pub(crate) struct HeldInput {
+    drained: Arc<DrainSignal>,
+    input: DataId,
+}
+
+impl Drop for HeldInput {
+    fn drop(&mut self) {
+        let mut held = self
+            .drained
+            .held_inputs
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(count) = held.get_mut(&self.input) {
+            *count -= 1;
+            if *count == 0 {
+                held.remove(&self.input);
+            }
+        }
     }
 }
 
@@ -286,6 +340,7 @@ fn offer_event<'a>(
                 input: input_id.clone(),
                 channel: channel.clone(),
                 pending: dataflow.pending_messages.get(receiver_id).cloned(),
+                held: drained.hold(input_id),
                 drained,
                 event,
             });

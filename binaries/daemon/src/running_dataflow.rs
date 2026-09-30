@@ -1065,6 +1065,38 @@ impl RunningDataflow {
         }
     }
 
+    /// The inputs whose circuit breaker should fire now, with their timeouts.
+    pub(crate) fn timed_out_inputs(&self) -> Vec<(NodeId, DataId, Duration)> {
+        let mut timed_out = Vec::new();
+        for ((node_id, input_id), deadline) in &self.input_deadlines {
+            // Skip inputs already tracked as broken (avoids duplicate warnings)
+            if self
+                .broken_inputs
+                .contains_key(&(node_id.clone(), input_id.clone()))
+            {
+                continue;
+            }
+            // A message for this input is held for its full channel: the
+            // producer is alive, and the break's `InputClosed` could land
+            // ahead of that message. Check again once it is delivered.
+            if self
+                .drain_signals
+                .get(node_id)
+                .is_some_and(|drained| drained.is_held(input_id))
+            {
+                continue;
+            }
+            // Only count elapsed time once the input has actually
+            // received a message. Inputs that never saw traffic are
+            // considered "not yet armed" — see InputDeadline::is_timed_out
+            // (dora-rs/adora#149).
+            if deadline.is_timed_out() {
+                timed_out.push((node_id.clone(), input_id.clone(), deadline.timeout));
+            }
+        }
+        timed_out
+    }
+
     pub(crate) fn open_inputs(&self, node_id: &NodeId) -> &BTreeSet<DataId> {
         self.open_inputs.get(node_id).unwrap_or(&self.empty_set)
     }
