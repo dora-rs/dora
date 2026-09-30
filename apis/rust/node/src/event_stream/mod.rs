@@ -314,6 +314,23 @@ fn connect_daemon_channel(
     Ok(channel)
 }
 
+/// Capacity of a node's ingress event channel: the sum of its inputs'
+/// `queue_size`s, at least 64.
+///
+/// `queue_size` is unvalidated, so the sum saturates and is clamped to the
+/// `usize::MAX >> 3` limit above which tokio's `mpsc::channel` panics. The
+/// channel allocates lazily, so a huge capacity costs nothing up front.
+fn ingress_channel_capacity<'a>(inputs: impl Iterator<Item = &'a Input>) -> usize {
+    const MAX_CHANNEL_CAPACITY: usize = usize::MAX >> 3;
+    inputs
+        .map(|c| {
+            c.queue_size
+                .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
+        })
+        .fold(0, usize::saturating_add)
+        .clamp(64, MAX_CHANNEL_CAPACITY)
+}
+
 impl EventStream {
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(level = "trace", skip(clock, zenoh_session))]
@@ -364,14 +381,7 @@ impl EventStream {
 
         let scheduler = Scheduler::with_policies(queue_size_limit, queue_policies);
 
-        let total_queue_capacity: usize = input_config
-            .values()
-            .map(|c| {
-                c.queue_size
-                    .unwrap_or(dora_message::config::DEFAULT_QUEUE_SIZE)
-            })
-            .sum::<usize>()
-            .max(64);
+        let total_queue_capacity = ingress_channel_capacity(input_config.values());
 
         let write_events_to = match write_events_to {
             Some(path) => {
@@ -2248,6 +2258,34 @@ impl EventStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn input_with_queue_size(queue_size: usize) -> Input {
+        serde_yaml::from_str(&format!("source: a/out\nqueue_size: {queue_size}\n"))
+            .expect("parse input")
+    }
+
+    #[test]
+    fn ingress_channel_capacity_saturates_for_huge_queue_sizes() {
+        for sizes in [
+            vec![usize::MAX],
+            vec![usize::MAX / 2 + 1, usize::MAX / 2 + 1],
+        ] {
+            let inputs: Vec<Input> = sizes.into_iter().map(input_with_queue_size).collect();
+            let capacity = ingress_channel_capacity(inputs.iter());
+            assert_eq!(capacity, usize::MAX >> 3);
+            // The capacity must be one tokio accepts.
+            let _ = tokio::sync::mpsc::channel::<()>(capacity);
+        }
+    }
+
+    #[test]
+    fn ingress_channel_capacity_sums_queue_sizes_with_a_floor() {
+        let inputs = [input_with_queue_size(50), input_with_queue_size(70)];
+        assert_eq!(ingress_channel_capacity(inputs.iter()), 120);
+        let small = [input_with_queue_size(1)];
+        assert_eq!(ingress_channel_capacity(small.iter()), 64);
+        assert_eq!(ingress_channel_capacity(std::iter::empty()), 64);
+    }
 
     // A caller may pass a very large `Duration` to a pattern-wait helper to mean
     // "wait effectively forever". The `Instant::now() + timeout` deadline used to
