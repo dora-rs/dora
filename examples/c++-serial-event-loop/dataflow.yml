@@ -1,0 +1,12 @@
+nodes:
+  - id: sender
+    path: build/cpp_sender
+    inputs:
+      tick: dora/timer/millis/100
+    outputs:
+      - counter
+
+  - id: receiver
+    path: build/cpp_receiver
+    inputs:
+      counter: sender/counter
