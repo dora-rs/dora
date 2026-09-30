@@ -232,9 +232,6 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         return Ok(());
     }
 
-    // Write to a private temp dir and run
-    let (_tmp_dir, tmp_path) = crate::common::write_temp_dataflow(&modified_yaml)?;
-
     eprintln!(
         "Replaying {} nodes from {}",
         nodes_to_replace.len(),
@@ -268,7 +265,7 @@ fn run_replay(args: Replay) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let run = Run::new(tmp_path.to_string_lossy().to_string()).with_working_dir(recording_dir);
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, recording_dir)?;
     // A replay exists to reproduce the recording: every replayed input is a
     // backpressure input, and a message lost on one makes the run exit
     // non-zero rather than warn (dora-rs/dora#3397).

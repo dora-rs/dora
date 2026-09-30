@@ -216,30 +216,6 @@ pub(crate) fn connect_with_retry(
     }
 }
 
-/// Writes a generated descriptor (`dora record` / `dora replay`) into a fresh
-/// private temp directory and returns that directory's guard together with the
-/// descriptor path. Keep the guard alive until the dataflow has finished; it
-/// removes the directory on drop.
-///
-/// The directory is private because `dora run` keeps its session state in an
-/// `out/` directory next to the descriptor, which must not be a shared
-/// `$TMPDIR/out/`.
-pub(crate) fn write_temp_dataflow(yaml: &str) -> eyre::Result<(tempfile::TempDir, PathBuf)> {
-    let mut builder = tempfile::Builder::new();
-    builder.prefix("dora-dataflow-");
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        builder.permissions(std::fs::Permissions::from_mode(0o700));
-    }
-    let dir = builder
-        .tempdir()
-        .context("failed to create temp dir for the generated dataflow")?;
-    let path = dir.path().join("dataflow.yml");
-    std::fs::write(&path, yaml).context("failed to write the generated dataflow")?;
-    Ok((dir, path))
-}
-
 pub(crate) fn resolve_dataflow(dataflow: String) -> eyre::Result<PathBuf> {
     let dataflow = if source_is_url(&dataflow) {
         // try to download the shared library
@@ -335,25 +311,6 @@ pub(crate) fn write_events_to() -> Option<PathBuf> {
 mod tests {
     use super::*;
     use std::collections::BTreeMap;
-
-    #[test]
-    fn temp_dataflow_keeps_session_state_in_a_private_dir() {
-        let (dir, path) = write_temp_dataflow("nodes: []\n").unwrap();
-        assert_eq!(std::fs::read_to_string(&path).unwrap(), "nodes: []\n");
-        // `dora run` puts its session state in `out/` next to the descriptor;
-        // that must land inside the private dir, not in the shared temp root.
-        assert_eq!(path.parent(), Some(dir.path()));
-        assert_ne!(dir.path(), std::env::temp_dir());
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
-            assert_eq!(mode & 0o077, 0, "temp dir must be private: {mode:o}");
-        }
-        let dir_path = dir.path().to_owned();
-        drop(dir);
-        assert!(!dir_path.exists(), "temp dir must be removed on drop");
-    }
 
     #[test]
     fn working_dir_or_parent_prefers_override() {

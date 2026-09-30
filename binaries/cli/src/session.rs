@@ -369,7 +369,7 @@ fn deserialize(session_file: &Path) -> eyre::Result<DataflowSession> {
     })
 }
 
-fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
+pub(crate) fn session_file_path(dataflow_path: &Path) -> eyre::Result<PathBuf> {
     let file_stem = dataflow_path
         .file_stem()
         .wrap_err("dataflow path has no file stem")?

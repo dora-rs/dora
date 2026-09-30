@@ -177,6 +177,35 @@ impl Run {
         self.working_dir = Some(working_dir);
         self
     }
+
+    /// A run of a descriptor generated in memory (`dora record` /
+    /// `dora replay`), with descriptor-relative paths resolved against
+    /// `working_dir`.
+    ///
+    /// The descriptor is written into a fresh private (0700 on Unix) temp
+    /// directory, whose guard is returned: keep it alive until the run
+    /// returns, it removes the directory on drop. The directory must be
+    /// private because the run keeps its session state in an `out/` directory
+    /// next to the descriptor, which must not be a shared `$TMPDIR/out/`.
+    pub(crate) fn for_generated_dataflow(
+        yaml: &str,
+        working_dir: PathBuf,
+    ) -> eyre::Result<(tempfile::TempDir, Self)> {
+        let mut builder = tempfile::Builder::new();
+        builder.prefix("dora-dataflow-");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            builder.permissions(std::fs::Permissions::from_mode(0o700));
+        }
+        let dir = builder
+            .tempdir()
+            .context("failed to create temp dir for the generated dataflow")?;
+        let path = dir.path().join("dataflow.yml");
+        std::fs::write(&path, yaml).context("failed to write the generated dataflow")?;
+        let run = Self::new(path.to_string_lossy().into_owned()).with_working_dir(working_dir);
+        Ok((dir, run))
+    }
 }
 
 pub fn run(dataflow: String, uv: bool) -> eyre::Result<()> {
@@ -352,5 +381,38 @@ impl Run {
         }
         let result = result.context("dora-run daemon task panicked")??;
         handle_dataflow_result(result, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn generated_dataflow_keeps_session_state_in_a_private_dir() {
+        let (dir, run) =
+            Run::for_generated_dataflow("nodes: []\n", PathBuf::from("source")).unwrap();
+        assert_eq!(run.working_dir.as_deref(), Some(Path::new("source")));
+        let dataflow = Path::new(&run.dataflow);
+        assert_eq!(std::fs::read_to_string(dataflow).unwrap(), "nodes: []\n");
+        // The session file `dora run` writes next to the descriptor must land
+        // inside the private dir, not in a shared `$TMPDIR/out/`.
+        let session_file = crate::session::session_file_path(dataflow).unwrap();
+        assert!(
+            session_file.starts_with(dir.path()),
+            "{} is outside {}",
+            session_file.display(),
+            dir.path().display()
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.path()).unwrap().permissions().mode();
+            assert_eq!(mode & 0o077, 0, "temp dir must be private: {mode:o}");
+        }
+        let dir_path = dir.path().to_owned();
+        drop(dir);
+        assert!(!dir_path.exists(), "temp dir must be removed on drop");
     }
 }

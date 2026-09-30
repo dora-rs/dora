@@ -414,7 +414,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
         .filter(|p| !p.as_os_str().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from("."));
-    let (_tmp_dir, tmp_path) = crate::common::write_temp_dataflow(&modified_yaml)?;
+    let (_tmp_dir, run) = Run::for_generated_dataflow(&modified_yaml, source_dir)?;
 
     eprintln!("Recording {} topics to {output_file}", topics.len());
     eprintln!(
@@ -423,9 +423,7 @@ fn run_record(args: Record) -> eyre::Result<()> {
     );
     eprintln!();
 
-    Run::new(tmp_path.to_string_lossy().to_string())
-        .with_working_dir(source_dir)
-        .execute()
+    run.execute()
 }
 
 /// What a Ctrl-C on the recording loop should do, given whether one was already
