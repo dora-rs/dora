@@ -11,7 +11,10 @@ use dora_message::{
 use eyre::eyre;
 use futures::{Sink, SinkExt, StreamExt};
 use std::{collections::VecDeque, net::SocketAddr, sync::Arc, time::Duration};
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{mpsc, oneshot},
+    time::Instant,
+};
 use tokio_stream::{Stream, wrappers::ReceiverStream};
 use tokio_tungstenite::tungstenite::Message;
 use uuid::Uuid;
@@ -42,6 +45,16 @@ const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
 /// sends the report and those events at once: the events are the control
 /// plane, while what waiting protects is only the tail of a topic stream.
 const MAX_EVENTS_BEHIND_A_HELD_REPORT: usize = 1024;
+/// Longest the writer holds a finish report back for the debug frames queued
+/// ahead of it. Past this it stops waiting and sends the report and the events
+/// behind it at once, like [`MAX_EVENTS_BEHIND_A_HELD_REPORT`]. The daemon
+/// counts a report as delivered [`crate::FINISH_REPORT_CONFIRM_AFTER`] after
+/// queueing it, and that budget has room for this hold only because it is
+/// short; unbounded, a backlog on a slow link could keep the report unwritten
+/// past it, and a connection lost after that would lose the report for good
+/// (dora-rs/dora#3536 review). It also bounds how long `dora stop` can wait
+/// behind a debug backlog.
+pub(crate) const MAX_FINISH_REPORT_HOLD: Duration = Duration::from_secs(5);
 /// Largest message the coordinator accepts on the daemon socket
 /// (`MAX_CONTROL_MESSAGE_BYTES` in its `ws_server`). A larger one makes it
 /// close the connection, so a topic debug frame past it is dropped here
@@ -545,7 +558,8 @@ enum OutboundFrame {
 /// daemon's main loop never blocks on the wait; the events that arrive
 /// meanwhile are held behind the report, keeping their order (a status report
 /// or an `Exit` must not overtake it), except heartbeats, which need none. See
-/// [`MAX_EVENTS_BEHIND_A_HELD_REPORT`] for the bound on those.
+/// [`MAX_EVENTS_BEHIND_A_HELD_REPORT`] for the bound on those, and
+/// [`MAX_FINISH_REPORT_HOLD`] for how long the report waits at most.
 async fn run_coordinator_ws_writer<Tx>(
     mut ws_tx: Tx,
     mut send_rx: mpsc::Receiver<OutgoingEvent>,
@@ -563,8 +577,24 @@ async fn run_coordinator_ws_writer<Tx>(
     let mut held: Option<HeldReport> = None;
 
     loop {
+        let hold_deadline = held.as_ref().map(|report| report.deadline);
         tokio::select! {
             biased;
+            // First, so that a steady stream of control messages or debug
+            // frames cannot keep a held report past its deadline.
+            () = tokio::time::sleep_until(hold_deadline.unwrap_or_else(Instant::now)),
+                if hold_deadline.is_some() =>
+            {
+                tracing::warn!(
+                    "sending a finish report before the topic debug frames queued ahead \
+                     of it: they were not written within {MAX_FINISH_REPORT_HOLD:?}"
+                );
+                if let Some(report) = held.take()
+                    && report.release(&mut ws_tx).await.is_err()
+                {
+                    break;
+                }
+            }
             // Every `recv` here is cancel-safe, so losing the race to the
             // debug arm drops no control message.
             control = async {
@@ -608,7 +638,11 @@ async fn run_coordinator_ws_writer<Tx>(
                                 Ok(())
                             }
                         }
-                        _ => write_or_hold(&mut ws_tx, event, &topic_debug_rx, &mut held).await,
+                        _ => {
+                            let deadline = Instant::now() + MAX_FINISH_REPORT_HOLD;
+                            write_or_hold(&mut ws_tx, event, deadline, &topic_debug_rx, &mut held)
+                                .await
+                        }
                     };
                     if result.is_err() {
                         break;
@@ -657,12 +691,17 @@ struct HeldReport {
     frames_left: usize,
     /// Events sent after the report, in order; heartbeats never wait here.
     behind: VecDeque<OutgoingEvent>,
+    /// When the writer stops waiting for the frames; see
+    /// [`MAX_FINISH_REPORT_HOLD`].
+    deadline: Instant,
 }
 
 impl HeldReport {
     /// The frames are out: write the report, then the events behind it in
     /// order — until one of them is itself a finish report with frames queued
-    /// ahead of it, which becomes the new `held` with the rest behind it.
+    /// ahead of it, which becomes the new `held` with the rest behind it. That
+    /// one keeps this report's deadline: it was taken after this report, so
+    /// counting from here keeps its hold within [`MAX_FINISH_REPORT_HOLD`] too.
     async fn resume<Tx>(
         self,
         ws_tx: &mut Tx,
@@ -676,7 +715,7 @@ impl HeldReport {
         for event in self.behind {
             match held {
                 Some(report) => report.behind.push_back(event),
-                None => write_or_hold(ws_tx, event, topic_debug_rx, held).await?,
+                None => write_or_hold(ws_tx, event, self.deadline, topic_debug_rx, held).await?,
             }
         }
         Ok(())
@@ -698,10 +737,11 @@ impl HeldReport {
 
 /// Write `event`, or hold it if it is a finish report with debug frames
 /// queued ahead of it — only those queued now, so frames that keep arriving
-/// cannot hold it back indefinitely.
+/// cannot hold it back indefinitely, and only until `deadline`.
 async fn write_or_hold<Tx>(
     ws_tx: &mut Tx,
     event: OutgoingEvent,
+    deadline: Instant,
     topic_debug_rx: &mpsc::Receiver<String>,
     held: &mut Option<HeldReport>,
 ) -> Result<(), ()>
@@ -714,6 +754,7 @@ where
             report: event.text,
             frames_left: queued,
             behind: VecDeque::new(),
+            deadline,
         });
         Ok(())
     } else {
@@ -1567,6 +1608,80 @@ mod tests {
             .collect();
         let expected: Vec<_> = (0..event_count).map(|i| format!("event-{i}")).collect();
         assert_eq!(events, expected, "events keep their order");
+    }
+
+    /// A report waits for its frames for at most [`MAX_FINISH_REPORT_HOLD`].
+    /// The daemon counts a report as delivered a fixed time after queueing
+    /// it, so a hold as long as a backlog on a slow link could take would let
+    /// a report be counted as delivered while still unwritten, and lost with
+    /// the connection (dora-rs/dora#3536 review). The events behind it go out
+    /// right after it, in order.
+    #[tokio::test(start_paused = true)]
+    async fn ws_writer_stops_waiting_for_the_frames_after_max_finish_report_hold() {
+        let written = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (send_tx, send_rx) = mpsc::channel::<OutgoingEvent>(CONTROL_CHANNEL_CAPACITY);
+        let (internal_tx, internal_rx) = mpsc::channel::<OutboundFrame>(1);
+        let (topic_debug_tx, topic_debug_rx) =
+            mpsc::channel::<String>(TOPIC_DEBUG_CHANNEL_CAPACITY);
+
+        // One second per message: the frames alone would take a minute.
+        let frame_count = TOPIC_DEBUG_CHANNEL_CAPACITY;
+        for i in 0..frame_count {
+            topic_debug_tx.try_send(format!("debug-{i}")).unwrap();
+        }
+        send_tx
+            .try_send(finish_report("all-nodes-finished"))
+            .unwrap();
+        send_tx.try_send(control("after-finish")).unwrap();
+
+        let start = tokio::time::Instant::now();
+        let sink = Box::pin(futures::sink::unfold(
+            written.clone(),
+            move |written, message: Message| async move {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                if let Message::Text(text) = message {
+                    written
+                        .lock()
+                        .unwrap()
+                        .push((text.to_string(), start.elapsed()));
+                }
+                Ok::<_, std::convert::Infallible>(written)
+            },
+        ));
+        let writer = tokio::spawn(run_coordinator_ws_writer(
+            sink,
+            send_rx,
+            internal_rx,
+            topic_debug_rx,
+        ));
+        tokio::time::sleep(MAX_FINISH_REPORT_HOLD * 3).await;
+        // The reader's channel stays open, as it does while the connection is
+        // up (see above).
+        drop((send_tx, topic_debug_tx));
+        writer.await.unwrap();
+        drop(internal_tx);
+
+        let written = written.lock().unwrap().clone();
+        let at = |text: &str| {
+            written
+                .iter()
+                .position(|(written, _)| written == text)
+                .unwrap_or_else(|| panic!("`{text}` must be written; got {written:?}"))
+        };
+        let report = at("all-nodes-finished");
+        // The deadline passes while a frame is being written, and the report
+        // follows that frame.
+        assert!(
+            written[report].1 <= MAX_FINISH_REPORT_HOLD + Duration::from_secs(2),
+            "the report must stop waiting after {MAX_FINISH_REPORT_HOLD:?}; got {written:?}"
+        );
+        assert_eq!(at("after-finish"), report + 1);
+        assert!(
+            written[report + 2..]
+                .iter()
+                .any(|(text, _)| text.starts_with("debug-")),
+            "the frames still queued go out after the report"
+        );
     }
 
     /// When the `CoordinatorSender` goes away with a report still held, the

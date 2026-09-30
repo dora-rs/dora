@@ -225,8 +225,16 @@ const COORDINATOR_HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(20);
 /// [`COORDINATOR_HEARTBEAT_TIMEOUT`]. If only the daemon→coordinator
 /// direction is dead, the coordinator keeps sending heartbeats (every 3 s)
 /// until its own 30 s daemon timeout, so the worst case is 30 s + 3 s + 20 s
-/// plus one watchdog tick (5 s): 58 s. This leaves margin above that.
+/// plus one watchdog tick (5 s): 58 s. On top of that, the WS writer may hold
+/// the report back for up to [`coordinator::MAX_FINISH_REPORT_HOLD`] (5 s)
+/// behind the topic debug frames queued ahead of it, so it is written up to
+/// 63 s after it was queued. This leaves margin above that.
 const FINISH_REPORT_CONFIRM_AFTER: Duration = Duration::from_secs(75);
+// The 58 s worst case above plus the longest hold, with margin.
+const _: () = assert!(
+    FINISH_REPORT_CONFIRM_AFTER.as_secs() > 58 + coordinator::MAX_FINISH_REPORT_HOLD.as_secs() + 5,
+    "a held finish report could count as delivered before it was written"
+);
 
 /// Records a failed reconnect attempt and reports whether the retry window has
 /// elapsed (so the daemon should give up and exit). `deadline` tracks the
