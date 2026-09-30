@@ -184,6 +184,50 @@ fn dynamic_node_prefixes_input_referencing_a_single_operator_producer() {
 }
 
 #[test]
+fn dynamic_node_with_invalid_timing_is_rejected() {
+    // `dora node add` / `dora node replace` never run whole-dataflow
+    // validation, so a negative or non-finite timing value used to reach the
+    // daemon, where `Duration::from_secs_f64` panics and takes down every
+    // dataflow on it. `resolve_single_node` must reject it up front.
+    let running = running_descriptor_with_operator_producer(serde_json::json!(null));
+
+    for (field, node) in [
+        (
+            "health_check_timeout",
+            serde_json::json!({
+                "id": "consumer",
+                "path": "consumer",
+                "health_check_timeout": -1.0,
+            }),
+        ),
+        (
+            "restart_delay",
+            serde_json::json!({
+                "id": "consumer",
+                "path": "consumer",
+                "restart_delay": 1e30,
+            }),
+        ),
+        (
+            "input_timeout",
+            serde_json::json!({
+                "id": "consumer",
+                "path": "consumer",
+                "inputs": {
+                    "reading": { "source": "producer/result", "input_timeout": -1.0 },
+                },
+            }),
+        ),
+    ] {
+        let added: Node = serde_json::from_value(node).expect("valid node");
+        let err = resolve_single_node(added, &running)
+            .expect_err("invalid timing must be rejected")
+            .to_string();
+        assert!(err.contains(field), "error should name `{field}`: {err}");
+    }
+}
+
+#[test]
 fn dynamic_node_inherits_the_running_dataflow_env() {
     // Regression guard for #2919, which shares this resolution path: the
     // node inherits the dataflow-level `env:` (including anything from
