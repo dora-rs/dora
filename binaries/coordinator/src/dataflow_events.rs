@@ -6,9 +6,9 @@ use crate::{
     broadcast_all_nodes_ready, buffer_log_message, cap_dataflow_results,
     close_topic_subscribers_on_finish, finalize_build, handle_dataflow_spawn_result,
     handlers::{dataflow_result, send_log_message, start_dataflow},
-    state::{ArchivedDataflow, CachedResult},
+    state::{ArchivedDataflow, CachedResult, now_millis},
 };
-use dora_coordinator_store::DataflowStatus as StoreDataflowStatus;
+use dora_coordinator_store::{DataflowRecord, DataflowStatus as StoreDataflowStatus};
 use dora_message::{
     BuildId,
     common::DaemonId,
@@ -16,7 +16,7 @@ use dora_message::{
     daemon_to_coordinator::DataflowDaemonResult,
 };
 use eyre::eyre;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use uuid::Uuid;
 
 impl Coordinator {
@@ -174,28 +174,7 @@ impl Coordinator {
                             };
                             // Persist: dataflow finished
                             let final_status =
-                                if let Some(results) = self.dataflow_results.get(&uuid) {
-                                    let errors: Vec<String> = results
-                                        .values()
-                                        .flat_map(|dr| dr.node_results.iter())
-                                        .filter_map(|(node_id, r)| {
-                                            r.as_ref().err().map(|e| format!("{node_id}: {e}"))
-                                        })
-                                        .collect();
-                                    if errors.is_empty() {
-                                        StoreDataflowStatus::Succeeded
-                                    } else {
-                                        StoreDataflowStatus::Failed {
-                                            error: errors.join("; "),
-                                            // Normal end-of-life failure: not flagged terminal
-                                            // because there is no concurrent path that could
-                                            // resurrect a properly-finished dataflow.
-                                            terminal: false,
-                                        }
-                                    }
-                                } else {
-                                    StoreDataflowStatus::Succeeded
-                                };
+                                dataflow_store_status(self.dataflow_results.get(&uuid));
                             if let Err(e) = finished_dataflow
                                 .make_record(final_status)
                                 .and_then(|r| self.store.put_dataflow(&r))
@@ -258,7 +237,31 @@ impl Coordinator {
                             existing.timestamp = result.timestamp;
                             existing.node_results.extend(result.node_results);
                         } else {
-                            tracing::warn!("dataflow not running on DataflowFinishedOnDaemon",);
+                            match self.store.get_dataflow(&uuid) {
+                                // A finish report the daemon queued on a connection
+                                // that died is resent when it reconnects (#3612).
+                                // When the coordinator processed the disconnect
+                                // first, `cleanup_disconnected_daemons_from_running_dataflows`
+                                // took the dataflow out of `running_dataflows` and
+                                // `begin_orphaned_dataflow_reclaim` left it
+                                // `Recovering`; the resend lands here.
+                                Ok(Some(record))
+                                    if record.status == StoreDataflowStatus::Recovering =>
+                                {
+                                    self.record_resent_finish_report(record, daemon_id, result);
+                                }
+                                Ok(_) => {
+                                    tracing::warn!(
+                                        "dataflow not running on DataflowFinishedOnDaemon",
+                                    );
+                                }
+                                Err(e) => {
+                                    tracing::warn!(
+                                        "failed to look up dataflow {uuid} on \
+                                         DataflowFinishedOnDaemon: {e}"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -269,6 +272,62 @@ impl Coordinator {
             }
         }
         Ok(())
+    }
+
+    /// Records a finish report a daemon resent after reconnecting for a
+    /// dataflow the orphan reclaim left `Recovering` in the store
+    /// (dora-rs/dora#3631), and finalizes it once the reports cover the whole
+    /// dataflow.
+    ///
+    /// The report only covers the daemon that sent it. Until the reported
+    /// node results cover every node the persisted record assigns, the
+    /// dataflow may still be running on a daemon that hasn't reported yet, so
+    /// the record is left `Recovering` for that daemon's `DaemonStatusReport`
+    /// to re-establish. Once the reports cover the record, nothing is left
+    /// running and the status is settled from the results, as the normal
+    /// finish path does. A duplicate report cannot settle it twice: the first
+    /// one moves the record out of `Recovering`, and the lookup in
+    /// `handle_dataflow_event` then drops the rest.
+    fn record_resent_finish_report(
+        &mut self,
+        mut record: DataflowRecord,
+        daemon_id: DaemonId,
+        result: DataflowDaemonResult,
+    ) {
+        let uuid = record.uuid;
+        self.dataflow_results
+            .entry(uuid)
+            .or_default()
+            .insert(daemon_id, result);
+
+        let reported: BTreeSet<String> = self
+            .dataflow_results
+            .get(&uuid)
+            .into_iter()
+            .flat_map(|results| results.values())
+            .flat_map(|result| result.node_results.keys())
+            .map(|node_id| node_id.to_string())
+            .collect();
+        if !record
+            .node_to_daemon
+            .keys()
+            .all(|node_id| reported.contains(node_id))
+        {
+            tracing::debug!(
+                "resent finish report for recovered dataflow {uuid} covers only part of \
+                 it; leaving it Recovering for the daemons that haven't reported"
+            );
+            return;
+        }
+
+        record.status = dataflow_store_status(self.dataflow_results.get(&uuid));
+        record.generation += 1;
+        record.updated_at = now_millis();
+        if let Err(e) = self.store.put_dataflow(&record) {
+            tracing::warn!("failed to persist finish of recovered dataflow {uuid}: {e}");
+            return;
+        }
+        tracing::info!("finalized recovered dataflow {uuid} from a resent finish report");
     }
 
     pub(crate) async fn handle_log(&mut self, message: LogMessage) -> eyre::Result<()> {
@@ -392,5 +451,33 @@ impl Coordinator {
         )
         .await;
         Ok(())
+    }
+}
+
+/// The persisted status for a dataflow whose daemons have reported: `Succeeded`
+/// when every node result is `Ok`, otherwise a non-terminal `Failed` naming the
+/// failing nodes. An absent entry means nothing was reported, which the
+/// coordinator treats as success — a dataflow with only dynamic nodes reports
+/// no per-node results.
+fn dataflow_store_status(
+    results: Option<&BTreeMap<DaemonId, DataflowDaemonResult>>,
+) -> StoreDataflowStatus {
+    let Some(results) = results else {
+        return StoreDataflowStatus::Succeeded;
+    };
+    let errors: Vec<String> = results
+        .values()
+        .flat_map(|result| result.node_results.iter())
+        .filter_map(|(node_id, r)| r.as_ref().err().map(|e| format!("{node_id}: {e}")))
+        .collect();
+    if errors.is_empty() {
+        StoreDataflowStatus::Succeeded
+    } else {
+        // Normal end-of-life failure: not flagged terminal because there is no
+        // concurrent path that could resurrect a properly-finished dataflow.
+        StoreDataflowStatus::Failed {
+            error: errors.join("; "),
+            terminal: false,
+        }
     }
 }
