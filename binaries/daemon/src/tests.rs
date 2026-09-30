@@ -300,6 +300,37 @@ async fn daemon_reporting_to(
     daemon
 }
 
+/// The coordinator sends `Logs` with `send_and_receive`, and the WS layer
+/// drops a `None` reply, so a `Logs` request for a dataflow this daemon does
+/// not know must still get an explicit error reply instead of leaving the
+/// coordinator to hit its 30s reply timeout.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn logs_for_unknown_dataflow_replies_with_an_error() {
+    let (coordinator_sender, _coordinator_rx) = coordinator::CoordinatorSender::for_test();
+    let mut daemon = daemon_reporting_to(coordinator_sender, Arc::new(HLC::default())).await;
+
+    let dataflow_id = Uuid::new_v4();
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let _status = daemon
+        .handle_coordinator_event(
+            DaemonCoordinatorEvent::Logs {
+                dataflow_id,
+                node_id: NodeId::from("node".to_string()),
+                tail: None,
+            },
+            reply_tx,
+        )
+        .await
+        .expect("Logs must not fail the daemon loop");
+
+    match reply_rx.await.expect("a reply must be sent") {
+        Some(DaemonCoordinatorReply::Logs(Err(err))) => {
+            assert!(err.contains(&dataflow_id.to_string()), "{err}");
+        }
+        other => panic!("expected a Logs error reply, got {other:?}"),
+    }
+}
+
 /// A finish report the WS writer accepted can still be lost with the
 /// connection — a failing socket write drops it, a half-open link swallows
 /// it. It is resent on the next connection, ahead of the `StatusReport`, so
