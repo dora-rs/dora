@@ -23,6 +23,7 @@ use uuid::Uuid;
 pub(crate) async fn handle_daemon_ws(
     socket: WebSocket,
     event_tx: mpsc::Sender<Event>,
+    topic_debug_tx: mpsc::Sender<Event>,
     clock: Arc<HLC>,
     store: Arc<dyn CoordinatorStore>,
     peer_addr: std::net::SocketAddr,
@@ -40,6 +41,8 @@ pub(crate) async fn handle_daemon_ws(
     // Track daemon_id and connection_id from incoming events for cleanup on disconnect
     let mut tracked_daemon_id: Option<DaemonId> = None;
     let mut tracked_connection_id: Option<Uuid> = None;
+    // Topic debug frames this connection had to drop; see `DroppedDebugFrames`.
+    let mut dropped_debug_frames = DroppedDebugFrames::default();
 
     loop {
         tokio::select! {
@@ -78,6 +81,8 @@ pub(crate) async fn handle_daemon_ws(
                     if !handle_daemon_request(
                         &text,
                         &event_tx,
+                        &topic_debug_tx,
+                        &mut dropped_debug_frames,
                         &clock,
                         &cmd_tx,
                         &pending_replies,
@@ -119,6 +124,78 @@ pub(crate) async fn handle_daemon_ws(
     }
 }
 
+/// Capacity of the main loop's topic debug channel, in frames.
+///
+/// Debug frames reach the main loop on this channel rather than the shared
+/// event one, and `crate::control_before_topic_debug` serves it only when no
+/// control event is ready — so a debug frame is never handled ahead of control
+/// work, whatever the depth here. The depth is what absorbs a subscription's
+/// jitter while the loop hands earlier frames to their subscribers. Every
+/// frame is capped by the daemon socket's 1 MiB message limit, so this bounds
+/// memory the same way the shared event channel's capacity does.
+pub(crate) const TOPIC_DEBUG_CHANNEL_CAPACITY: usize = 64;
+
+/// The channel topic debug frames reach the main loop on.
+pub(crate) fn topic_debug_channel() -> (mpsc::Sender<Event>, mpsc::Receiver<Event>) {
+    mpsc::channel(TOPIC_DEBUG_CHANNEL_CAPACITY)
+}
+
+/// Hand a topic debug event to the main loop, or drop it.
+///
+/// Returns false if the connection should close, on the channel closing.
+///
+/// A `try_send`, never an await: waiting for room would stop this connection
+/// from reading the socket at all — including the daemon's next stop reply —
+/// whenever the main loop falls behind (it can spend up to 100 ms per
+/// subscriber per frame in `send_topic_frames`), which is the same
+/// head-of-line block on the ingress side that the daemon's writer avoids on
+/// egress. Debug frames are droppable, so a full channel drops the frame.
+fn try_send_topic_debug(
+    event: Event,
+    topic_debug_tx: &mpsc::Sender<Event>,
+    dropped: &mut DroppedDebugFrames,
+) -> bool {
+    match topic_debug_tx.try_send(event) {
+        Ok(()) => true,
+        Err(mpsc::error::TrySendError::Full(_)) => {
+            dropped.record();
+            true
+        }
+        Err(mpsc::error::TrySendError::Closed(_)) => false,
+    }
+}
+
+/// Shortest gap between warnings about dropped topic debug frames. A backlog
+/// produces them at the subscription's rate, so each connection reports at most
+/// one line per interval, with the count since the last one.
+const TOPIC_DEBUG_DROP_LOG_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Rate-limited accounting of topic debug frames the coordinator could not
+/// admit, kept per daemon connection.
+#[derive(Default)]
+struct DroppedDebugFrames {
+    count: u64,
+    last_log: Option<std::time::Instant>,
+}
+
+impl DroppedDebugFrames {
+    fn record(&mut self) {
+        self.count += 1;
+        let now = std::time::Instant::now();
+        if self
+            .last_log
+            .is_none_or(|last| now.duration_since(last) >= TOPIC_DEBUG_DROP_LOG_INTERVAL)
+        {
+            tracing::warn!(
+                "dropped {} topic debug frame(s): the coordinator's topic debug queue is full",
+                self.count,
+            );
+            self.count = 0;
+            self.last_log = Some(now);
+        }
+    }
+}
+
 /// A helper struct to deserialize `Timestamped<CoordinatorRequest>` directly
 /// from the raw JSON text, so the payload is parsed once into its real type
 /// instead of going through the `serde_json::Value` used for routing.
@@ -132,11 +209,14 @@ struct DaemonWsRequestRaw {
     >,
 }
 
-/// Handle a daemon request (event or register). Returns false if the event channel closed.
+/// Handle a daemon request (event or register). Returns false if the channel it
+/// belongs on closed — the shared event one, or the topic debug one.
 #[allow(clippy::too_many_arguments)]
 async fn handle_daemon_request(
     raw_text: &str,
     event_tx: &mpsc::Sender<Event>,
+    topic_debug_tx: &mpsc::Sender<Event>,
+    dropped: &mut DroppedDebugFrames,
     clock: &HLC,
     cmd_tx: &mpsc::Sender<String>,
     pending_replies: &Arc<Mutex<HashMap<Uuid, oneshot::Sender<String>>>>,
@@ -233,11 +313,14 @@ async fn handle_daemon_request(
             // Use the tracked connection_id (set at registration); fall back to a fresh
             // UUID if somehow called before registration (shouldn't happen in practice).
             let connection_id = tracked_connection_id.unwrap_or_else(Uuid::new_v4);
-            if let Some(coordinator_event) = translate_daemon_event(daemon_id, event, connection_id)
-            {
-                event_tx.send(coordinator_event).await.is_ok()
-            } else {
-                true
+            match translate_daemon_event(daemon_id, event, connection_id) {
+                // Debug data takes the debug channel: it must not queue ahead
+                // of control events, and it is droppable.
+                Some(event @ Event::TopicDebugData { .. }) => {
+                    try_send_topic_debug(event, topic_debug_tx, dropped)
+                }
+                Some(coordinator_event) => event_tx.send(coordinator_event).await.is_ok(),
+                None => true,
             }
         }
         CoordinatorRequest::ResolveMachine { machine_id } => {
@@ -448,6 +531,155 @@ async fn handle_daemon_response(
         let _ = sender.send(result_json);
     } else {
         tracing::warn!("no pending reply for daemon WS response id {}", response.id);
+    }
+}
+
+#[cfg(test)]
+mod topic_debug_tests {
+    use super::*;
+
+    fn topic_debug_event(payload: Vec<u8>) -> Event {
+        translate_daemon_event(
+            DaemonId::new(Some("A".to_string())),
+            DaemonEvent::TopicDebugData {
+                dataflow_id: Uuid::new_v4(),
+                subscription_ids: vec![Uuid::new_v4()],
+                payload,
+            },
+            Uuid::new_v4(),
+        )
+        .expect("TopicDebugData translates to an event")
+    }
+
+    fn payload_of(event: Option<Event>) -> Vec<u8> {
+        match event {
+            Some(Event::TopicDebugData { payload, .. }) => payload,
+            other => panic!("expected a TopicDebugData event, got {other:?}"),
+        }
+    }
+
+    /// Topic debug data reaches the main loop on its own channel, so it cannot
+    /// sit on the shared event channel ahead of the control events behind it.
+    #[tokio::test]
+    async fn topic_debug_data_takes_the_debug_channel() {
+        let daemon_id = DaemonId::new(Some("A".to_string()));
+        let clock = HLC::default();
+        let request = Timestamped {
+            inner: CoordinatorRequest::Event {
+                daemon_id: daemon_id.clone(),
+                event: DaemonEvent::TopicDebugData {
+                    dataflow_id: Uuid::new_v4(),
+                    subscription_ids: vec![Uuid::new_v4()],
+                    payload: vec![1, 2, 3],
+                },
+            },
+            timestamp: clock.new_timestamp(),
+        };
+        let raw = format!(
+            r#"{{"id":"{}","method":"daemon_event","params":{}}}"#,
+            Uuid::new_v4(),
+            serde_json::to_string(&request).unwrap()
+        );
+
+        let (event_tx, mut event_rx) = mpsc::channel(8);
+        let (topic_debug_tx, mut topic_debug_rx) = topic_debug_channel();
+        let (cmd_tx, _cmd_rx) = mpsc::channel(8);
+        let store: Arc<dyn CoordinatorStore> = Arc::new(crate::InMemoryStore::new());
+
+        assert!(
+            handle_daemon_request(
+                &raw,
+                &event_tx,
+                &topic_debug_tx,
+                &mut DroppedDebugFrames::default(),
+                &clock,
+                &cmd_tx,
+                &Arc::new(Mutex::new(HashMap::new())),
+                &store,
+                &mut Some(daemon_id),
+                &mut Some(Uuid::new_v4()),
+                "127.0.0.1:1234".parse().unwrap(),
+                Arc::new(std::sync::RwLock::new(HashMap::new())),
+            )
+            .await
+        );
+
+        assert!(
+            event_rx.try_recv().is_err(),
+            "topic debug data must not take the shared event channel"
+        );
+        assert_eq!(payload_of(topic_debug_rx.try_recv().ok()), vec![1, 2, 3]);
+    }
+
+    /// Frames that arrive back to back while the main loop is busy with
+    /// something else are queued, not dropped (dora-rs/dora#3536 review: a
+    /// one-slot channel lost about a third of a 100 Hz topic this way).
+    #[test]
+    fn back_to_back_frames_are_queued_while_the_loop_is_busy() {
+        let (topic_debug_tx, mut topic_debug_rx) = topic_debug_channel();
+        let mut dropped = DroppedDebugFrames::default();
+
+        let frames = 16;
+        for i in 0..frames {
+            assert!(try_send_topic_debug(
+                topic_debug_event(vec![i as u8; 64]),
+                &topic_debug_tx,
+                &mut dropped
+            ));
+        }
+        for i in 0..frames {
+            assert_eq!(
+                payload_of(topic_debug_rx.try_recv().ok()),
+                vec![i as u8; 64],
+                "frame {i} must not be dropped"
+            );
+        }
+        assert_eq!(dropped.count, 0);
+    }
+
+    /// With the channel full, the next frame is dropped and the connection
+    /// stays open: the alternative is waiting for room while the daemon's
+    /// control traffic — a stop reply among it — goes unread.
+    #[test]
+    fn a_frame_is_dropped_rather_than_awaited_when_the_channel_is_full() {
+        let (topic_debug_tx, mut topic_debug_rx) = topic_debug_channel();
+        let mut dropped = DroppedDebugFrames::default();
+
+        for _ in 0..TOPIC_DEBUG_CHANNEL_CAPACITY + 2 {
+            assert!(try_send_topic_debug(
+                topic_debug_event(vec![0]),
+                &topic_debug_tx,
+                &mut dropped
+            ));
+        }
+        for _ in 0..TOPIC_DEBUG_CHANNEL_CAPACITY {
+            assert!(topic_debug_rx.try_recv().is_ok());
+        }
+        assert!(
+            topic_debug_rx.try_recv().is_err(),
+            "frames past the channel capacity are dropped, not queued"
+        );
+
+        // Room returns as soon as the loop has taken one off.
+        assert!(try_send_topic_debug(
+            topic_debug_event(vec![0]),
+            &topic_debug_tx,
+            &mut dropped
+        ));
+        assert!(topic_debug_rx.try_recv().is_ok());
+    }
+
+    /// A closed channel means the coordinator is gone: close the socket
+    /// instead of dropping frames into it forever.
+    #[test]
+    fn a_closed_channel_closes_the_connection() {
+        let (topic_debug_tx, topic_debug_rx) = topic_debug_channel();
+        drop(topic_debug_rx);
+        assert!(!try_send_topic_debug(
+            topic_debug_event(vec![0]),
+            &topic_debug_tx,
+            &mut DroppedDebugFrames::default()
+        ));
     }
 }
 

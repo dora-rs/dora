@@ -226,12 +226,16 @@ async fn finish_dataflow_cleans_local_state_when_coordinator_send_fails() {
         "pending finish report should be removed after successful retry"
     );
 
-    let retried = coordinator_rx
-        .recv()
+    let (retried, after_topic_debug) = coordinator_rx
+        .recv_marked()
         .await
         .expect("retry should send an event to the coordinator");
     assert!(retried.contains("AllNodesFinished"), "{retried}");
     assert!(retried.contains(&dataflow_id.to_string()), "{retried}");
+    assert!(
+        after_topic_debug,
+        "a finish report must go out after the queued topic debug frames"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
