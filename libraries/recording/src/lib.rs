@@ -53,7 +53,10 @@
 //! # }
 //! ```
 
-use std::io::{self, BufReader, BufWriter, Read, Write};
+use std::{
+    io::{self, BufReader, BufWriter, Read, Write},
+    time::Instant,
+};
 
 use eyre::Context;
 use uuid::Uuid;
@@ -91,6 +94,29 @@ pub struct RecordingHeader {
     pub start_nanos: u64,
     pub dataflow_id: Uuid,
     pub descriptor_yaml: Vec<u8>,
+}
+
+/// The [`RecordEntry::timestamp_offset_nanos`] of an entry captured at `now`
+/// in a recording whose clock started at `start`.
+///
+/// Offsets are measured on the monotonic clock, not the wall clock: replay
+/// sleeps for the difference between consecutive offsets, so a wall-clock
+/// step (NTP/GPS sync on a board that booted at 1970, a manual `date`) would
+/// otherwise turn into a decades-long stall or an unpaced burst. The wall
+/// clock belongs only in [`RecordingHeader::start_nanos`].
+///
+/// Saturates to 0 if `now` precedes `start` and to `u64::MAX` (~584 years).
+///
+/// ```
+/// use std::time::{Duration, Instant};
+///
+/// let start = Instant::now();
+/// let later = start + Duration::from_millis(5);
+/// assert_eq!(dora_recording::offset_nanos(start, later), 5_000_000);
+/// assert_eq!(dora_recording::offset_nanos(later, start), 0);
+/// ```
+pub fn offset_nanos(start: Instant, now: Instant) -> u64 {
+    u64::try_from(now.saturating_duration_since(start).as_nanos()).unwrap_or(u64::MAX)
 }
 
 /// A single recorded message entry.
@@ -532,6 +558,24 @@ mod tests {
             timestamp_offset_nanos: offset,
             event_bytes: data.to_vec(),
         }
+    }
+
+    /// Offsets are elapsed monotonic time since the recording started, so
+    /// consecutive entries never go backwards and a gap is exactly the time
+    /// that passed between captures (what replay sleeps for).
+    #[test]
+    fn offset_nanos_is_monotonic_elapsed_time() {
+        use std::time::Duration;
+
+        let start = Instant::now();
+        let mut prev = 0;
+        for ms in [0u64, 1, 1, 7, 250] {
+            let offset = offset_nanos(start, start + Duration::from_millis(ms));
+            assert_eq!(offset, ms * 1_000_000);
+            assert!(offset >= prev);
+            prev = offset;
+        }
+        assert_eq!(offset_nanos(start + Duration::from_secs(1), start), 0);
     }
 
     #[test]

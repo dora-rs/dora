@@ -119,8 +119,15 @@ impl PoolState {
     /// Reclaim segments a previous crash of *this dataflow's* nodes left
     /// behind. Scoped to the nodes this daemon spawns, since a co-located
     /// daemon may be starting the other half of the same dataflow right now.
-    pub fn sweep_orphans_for_dataflow(dataflow_id: Uuid, is_local_node: impl Fn(&str) -> bool) {
-        TensorPoolManager::cleanup_orphans(&dataflow_id.to_string(), is_local_node);
+    ///
+    /// `machine_id` is this daemon's machine id: nodes it spawned name their
+    /// segments with it, so the sweep must match that prefix too.
+    pub fn sweep_orphans_for_dataflow(
+        dataflow_id: Uuid,
+        machine_id: Option<&str>,
+        is_local_node: impl Fn(&str) -> bool,
+    ) {
+        TensorPoolManager::cleanup_orphans(&dataflow_id.to_string(), machine_id, is_local_node);
     }
 
     /// Stop feeding a dataflow whose spawn failed before it started running.

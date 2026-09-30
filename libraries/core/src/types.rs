@@ -696,12 +696,6 @@ impl TypeRegistry {
                 .parent()
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
-            if prefix.starts_with("std/") || prefix == "std" {
-                return Err(format!(
-                    "user types cannot use the \"std/\" prefix: {}",
-                    path.display()
-                ));
-            }
             let stem = rel
                 .file_stem()
                 .and_then(|s| s.to_str())
@@ -711,6 +705,15 @@ impl TypeRegistry {
             } else {
                 format!("{prefix}/{stem}")
             };
+            // Check the URN prefix, not just the directory: a top-level
+            // `types/std.yml` has no directory but still yields `std/<key>`
+            // URNs, which would silently overwrite built-in types.
+            if urn_prefix.starts_with("std/") || urn_prefix == "std" {
+                return Err(format!(
+                    "user types cannot use the \"std/\" prefix: {}",
+                    path.display()
+                ));
+            }
             let content =
                 std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
             let pkg: TypePackage =
@@ -1214,6 +1217,23 @@ mod tests {
         let err = reg.load_from_dir(dir.path());
         assert!(err.is_err());
         assert!(err.unwrap_err().contains("std/"));
+    }
+
+    /// A top-level `types/std.yml` has no `std` directory, but its URNs are
+    /// still `std/<key>`: it must be rejected rather than overriding a
+    /// built-in type.
+    #[test]
+    fn load_user_types_top_level_std_file_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("std.yml"),
+            "types:\n  core/v1/Float32:\n    arrow: Float64\n",
+        )
+        .unwrap();
+        let mut reg = TypeRegistry::new();
+        let err = reg.load_from_dir(dir.path());
+        assert!(err.unwrap_err().contains("std/"));
+        assert_eq!(reg.resolve("std/core/v1/Float32").unwrap().arrow, "Float32");
     }
 
     // --- Phase 2: resolve parameterized URN ---

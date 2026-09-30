@@ -170,6 +170,10 @@ bool send_output(DoraNode& dora_node, std::shared_ptr<arrow::Array> output_array
     if (!send_result.error.empty()) {
         std::string error_message(send_result.error);
         std::cerr << "Error sending Arrow array: " << error_message << std::endl;
+        // An error returned before import (e.g. an invalid output id) leaves
+        // the structs with us; release them if they are still live.
+        if (out_c_array.release != nullptr) out_c_array.release(&out_c_array);
+        if (out_c_schema.release != nullptr) out_c_schema.release(&out_c_schema);
         return false;
     }
 
