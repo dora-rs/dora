@@ -1548,10 +1548,10 @@ class Operator:
 dora up
 
 # Machine B (daemon only, pointing to coordinator on Machine A)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id B
+dora daemon --coordinator-addr 192.168.1.10 --machine-id B
 
 # Machine C (same)
-dora daemon --interface 0.0.0.0 --coordinator-addr 192.168.1.10 --machine-id C
+dora daemon --coordinator-addr 192.168.1.10 --machine-id C
 ```
 
 ### Dataflow with Machine Assignment

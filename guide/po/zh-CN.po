@@ -27107,7 +27107,7 @@ msgid "Run dataflow with `dora start --detach`"
 msgstr ""
 
 #: src/development/testing.md:345
-msgid "Poll `dora list --json` for completion"
+msgid "Poll `dora list --format json` for completion"
 msgstr ""
 
 #: src/development/testing.md:346
